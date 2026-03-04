@@ -1,0 +1,9 @@
+.mcp.json
+__pycache__/
+*.pyc
+
+# 工作区配置文件
+.vscode/
+.claude/
+.serena/
+.history/
