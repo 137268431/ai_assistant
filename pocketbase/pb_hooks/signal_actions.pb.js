@@ -90,6 +90,87 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
     }
 })
 
+// ── QC 信号拉取 & 确认 ──
+
+// GET /api/custom/signals/pending - QC 轮询拉取当天待执行信号
+routerAdd("GET", "/api/custom/signals/pending", (c) => {
+  try {
+    // UTC 转美东时间计算当天日期
+    const now = new Date();
+    const etOptions = { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" };
+    const etParts = new Intl.DateTimeFormat("en-CA", etOptions).formatToParts(now);
+    const todayET = etParts.find(p => p.type === "year").value
+      + "-" + etParts.find(p => p.type === "month").value
+      + "-" + etParts.find(p => p.type === "day").value;
+
+    const records = $app.findRecordsByFilter(
+      "signals",
+      `status = 'pending' && date = {:today}`,
+      "-bar_time_ms",
+      100,
+      0,
+      { today: todayET }
+    );
+
+    const signals = records.map((r) => {
+      const extra = r.get("extra") || {};
+      return {
+        id: r.id,
+        signal_id: r.get("signal_id"),
+        symbol: r.get("symbol"),
+        direction: r.get("direction"),
+        signal: r.get("signal"),
+        entry: r.get("entry"),
+        stop_loss: r.get("stop_loss"),
+        take_profit: r.get("take_profit"),
+        limit_price: r.get("limit_price"),
+        shares: r.get("shares"),
+        rr: r.get("rr"),
+        reason: r.get("reason"),
+        date: r.get("date"),
+        us_time: r.get("us_time"),
+        bar_time_ms: r.get("bar_time_ms"),
+        extra: extra,
+        created: r.get("created")
+      };
+    });
+
+    return c.json(200, { signals: signals });
+  } catch (err) {
+    console.error("Error fetching pending signals:", err);
+    return c.json(500, { error: err.message });
+  }
+}, $apis.requireSuperuserAuth());
+
+// POST /api/custom/signals/ack - QC 确认信号已处理
+routerAdd("POST", "/api/custom/signals/ack", (c) => {
+  const data = c.requestInfo().body || c.requestInfo().data || {};
+  const signalId = data.signal_id;
+  const status = data.status || "executed";
+  const note = data.note || "";
+
+  if (!signalId) {
+    return c.json(400, { error: "Missing signal_id" });
+  }
+
+  try {
+    const record = $app.findFirstRecordByFilter(
+      "signals",
+      `signal_id = {:sid}`,
+      { sid: signalId }
+    );
+
+    record.set("status", status);
+    record.set("note", note);
+    $app.save(record);
+
+    return c.json(200, { success: true, signal_id: signalId, status: status });
+  } catch (err) {
+    console.error("Error acknowledging signal:", err);
+    return c.json(500, { error: err.message });
+  }
+}, $apis.requireSuperuserAuth());
+
 // ── 订单操作 ──
 
 routerAdd("GET", "/webhook/order/cancel", (c) => {
