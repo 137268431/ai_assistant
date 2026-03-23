@@ -1602,7 +1602,7 @@
                             </div>
                         ` : ''}
 
-                        <div class="signal-actions" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                        <div class="signal-actions" style="display:flex;flex-direction:column;gap:8px;">
                             <div class="action-btns-row">
                                 <button class="action-btn btn-view${latestIndicator ? '' : ' disabled'}" onclick="showIndicatorDetails('${signal.id}')" ${latestIndicator ? '' : 'disabled'}>
                                     📊 技术指标${latestIndicator ? '' : '(无)'}
@@ -1615,7 +1615,7 @@
                                 </button>
                             </div>
                             ${isPending ? `
-                                <div style="display:flex;gap:6px;flex-shrink:0;">
+                                <div style="display:flex;gap:6px;justify-content:flex-end;">
                                     <button class="action-btn btn-confirm" onclick="confirmSignal('${signal.id}')">
                                         ✓ 确认
                                     </button>

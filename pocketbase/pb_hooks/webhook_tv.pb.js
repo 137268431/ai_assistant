@@ -374,7 +374,8 @@ routerAdd("POST", "/webhook/tv", (c) => {
             reason: d.reason,
             market_relation: marketRelationText,
             market_avg_pct: marketAvgPct,
-            market_indexes: marketInfos
+            market_indexes: marketInfos,
+            extra: extra
         });
     } catch (err) {
         console.error("[Feishu] 发送信号通知失败:", err);

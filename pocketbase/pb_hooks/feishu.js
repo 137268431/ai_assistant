@@ -91,25 +91,27 @@ function notifyNewSignal(signal) {
   const color = signal.direction === "long" ? "green" : "red";
   const tokenParam = SIGNAL_ACTION_TOKEN ? "&token=" + SIGNAL_ACTION_TOKEN : "";
 
-  // 从 indicators 表获取最新价格
+  // 从 signal.extra 获取涨幅数据（由 webhook_tv 传入，与 indicators 表一致）
   let currentPrice = signal.price;
   let currentChangePct = signal.change_pct;
-  try {
-    const latestIndicator = $app.findFirstRecordByFilter("indicators",
-      "symbol = {:sym}",
-      { sym: signal.symbol },
-      "-created"
-    );
-    if (latestIndicator) {
-      const extra = latestIndicator.get("extra") || {};
-      if (extra.close) {
-        currentPrice = extra.close;
-      }
-      if (extra.day_change_pct !== undefined) {
-        currentChangePct = extra.day_change_pct;
-      }
-    }
-  } catch(_) {}
+  let dayChangePct = null;
+  let prevCloseChangePct = null;
+  let change7d = null;
+
+  let extra = signal.extra || {};
+  if (typeof extra === "string") {
+    try { extra = JSON.parse(extra); } catch(_) { extra = {}; }
+  }
+
+  if (extra.close !== undefined && extra.close !== null) {
+    currentPrice = extra.close;
+  }
+  if (extra.day_change_pct !== undefined) {
+    dayChangePct = Number(extra.day_change_pct || 0);
+    prevCloseChangePct = Number(extra.prev_close_change_pct || 0);
+    change7d = Number(extra.change_7d || 0);
+    currentChangePct = extra.day_change_pct;
+  }
 
   // TODO: 接入 OpenClaw webhook 分析信号
 
@@ -181,14 +183,15 @@ function notifyNewSignal(signal) {
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + signal.symbol } });
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } });
 
-  // 当日涨幅（从 signal.extra 获取）
-  let dayChangePct = signal.extra?.day_change_pct;
-  let dayChangeDisplay = "N/A";
-  if (dayChangePct !== undefined && dayChangePct !== null) {
-    dayChangeDisplay = (dayChangePct > 0 ? "+" : "") + dayChangePct.toFixed(2) + "%";
+  // 涨幅（当日/前收/近7日，参考 signals.html 从 indicators.extra 获取）
+  let changeDisplay = "N/A";
+  if (dayChangePct !== null && dayChangePct !== undefined) {
+    const dayPct = Number(dayChangePct || 0);
+    const prevPct = Number(prevCloseChangePct || 0);
+    const d7Pct = Number(change7d || 0);
+    changeDisplay = `${dayPct > 0 ? '+' : ''}${dayPct.toFixed(2)}%/${prevPct > 0 ? '+' : ''}${prevPct.toFixed(2)}%/${d7Pct > 0 ? '+' : ''}${d7Pct.toFixed(2)}%`;
   }
-
-  leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + dayChangeDisplay } });
+  leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + changeDisplay } });
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**入场:** $" + signal.entry.toFixed(2) } });
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** $" + signal.take_profit.toFixed(2) } });
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** $" + signal.stop_loss.toFixed(2) } });
