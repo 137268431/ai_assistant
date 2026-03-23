@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>技术指标</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .search-row {
+            margin-bottom: 6px;
+        }
+
+        .search-row > div:first-child {
+            margin-bottom: 4px;
+        }
+
+        .search-row .date-picker {
+            margin-bottom: 0;
+            gap: 6px;
+        }
+
+        .search-row .date-btn {
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+
+        .search-row .refresh-control {
+            gap: 4px;
+        }
+
+        .search-row .refresh-btn {
+            padding: 4px 6px;
+            font-size: 12px;
+        }
+
+        .search-row .refresh-select {
+            padding: 4px 6px;
+            font-size: 11px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent);
+        }
+
+        .status-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+            overflow-x: auto;
+            padding: 8px 0;
+            background: var(--bg);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .indicator-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .indicator-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .indicator-symbol {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .indicator-time {
+            font-size: 12px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .indicator-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .indicator-section {
+            background: var(--surface2);
+            padding: 12px;
+            border-radius: 8px;
+        }
+
+        .section-title {
+            font-size: 12px;
+            color: var(--accent);
+            margin-bottom: 8px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 1px;
+        }
+
+        .indicator-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .indicator-label {
+            color: var(--muted);
+        }
+
+        .indicator-value {
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .indicator-interval {
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--surface2);
+            color: var(--accent);
+        }
+
+        .load-more-btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin-top: 16px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--accent);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .load-more-btn:active {
+            background: var(--surface);
+        }
+
+        .load-more-btn:disabled {
+            color: var(--muted);
+            cursor: not-allowed;
+        }
+
+        .date-range-picker {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            width: 100%;
+        }
+
+        .date-range-picker input {
+            flex: 1;
+            min-width: 0;
+            padding: 10px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 8px;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .date-range-picker input::-webkit-calendar-picker-indicator {
+            filter: invert(0.5);
+        }
+
+        .date-range-picker span {
+            color: var(--muted);
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        .apply-range-btn {
+            padding: 10px 14px;
+            background: var(--accent);
+            border: none;
+            color: var(--bg);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .apply-range-btn:hover {
+            opacity: 0.9;
+        }
+
+        .refresh-control {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .refresh-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--muted);
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:active {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .refresh-select {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .refresh-select:focus {
+            border-color: var(--accent);
+        }
+
+        .interval-filter {
+            width: 70px;
+            padding: 10px 8px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .interval-filter:focus {
+            border-color: var(--accent);
+        }
+
+        .indicator-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        .action-btn {
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-view {
+            background: var(--accent);
+            color: var(--bg);
+        }
+
+        .btn-view:active {
+            background: #4299e1;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-top">
+            <div class="logo">
+                <div class="logo-label">INDICATORS</div>
+                <div class="logo-title">📈 技术指标</div>
+            </div>
+            <div class="live-badge">
+                <div class="live-dot"></div>
+                LIVE
+            </div>
+        </div>
+    </div>
+
+    <div class="content">
+        <div class="search-row">
+            <div style="display:flex;gap:8px;align-items:center;">
+                <div id="datePicker" style="flex:1;"></div>
+                <select class="interval-filter" id="intervalFilter" onchange="onIntervalChange()">
+                    <option value="">全部</option>
+                    <option value="5">5m</option>
+                    <option value="15">15m</option>
+                    <option value="30">30m</option>
+                    <option value="60">1H</option>
+                    <option value="240">4H</option>
+                    <option value="D">D</option>
+                </select>
+                <div class="refresh-control">
+                    <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()">🔄</button>
+                    <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
+                        <option value="0">关闭</option>
+                        <option value="5">5秒</option>
+                        <option value="30" selected>30秒</option>
+                        <option value="60">1分钟</option>
+                    </select>
+                </div>
+            </div>
+            <input type="text" class="search-input" id="searchBox" placeholder="🔍 搜索股票代码..." oninput="onSearchChange(this.value)">
+        </div>
+
+        <div id="indicatorsContainer"><div class="loading">加载中...</div></div>
+        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreIndicators()" style="display: none;">加载更多</button>
+    </div>
+
+    <!-- 技术指标详情浮层 -->
+    <div class="modal-overlay" id="indicatorModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">技术指标详情</div>
+                <button class="modal-close" onclick="closeIndicatorModal()">×</button>
+            </div>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+
+    <!-- Bottom Nav -->
+    <div id="navContainer"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
+    <script>
+        const PB_URL = window.location.origin;
+        let allIndicators = [];
+        let currentDate = new Date().toISOString().split('T')[0];
+        let rangeStartDate = null;
+        let rangeEndDate = null;
+        let currentSearch = '';
+        let refreshTimer = null;
+        let currentInterval = 30;
+
+        // Pagination
+        let currentPage = 1;
+        const itemsPerPage = 10;
+        let displayedIndicators = [];
+        let hasMore = false;
+        let totalItems = 0;
+
+        // ── 渲染导航 ──
+        document.getElementById('navContainer').innerHTML = renderNav('/indicators.html');
+
+        // 初始化日期选择器
+        document.getElementById('datePicker').innerHTML = renderDatePicker();
+
+        window.onDateChange = function(startDate, endDate) {
+            currentDate = startDate;
+            rangeStartDate = null;
+            rangeEndDate = null;
+            document.getElementById('rangeStartDate').value = '';
+            document.getElementById('rangeEndDate').value = '';
+            loadIndicators();
+        };
+
+        // 日期范围筛选函数
+        function applyDateRange() {
+            const startInput = document.getElementById('rangeStartDate').value;
+            const endInput = document.getElementById('rangeEndDate').value;
+
+            if (!startInput || !endInput) {
+                showToast('请选择开始日期和结束日期');
+                return;
+            }
+
+            if (new Date(startInput) > new Date(endInput)) {
+                showToast('开始日期不能晚于结束日期');
+                return;
+            }
+
+            document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+            rangeStartDate = startInput;
+            rangeEndDate = endInput;
+            loadIndicators();
+        }
+
+        async function loadIndicators() {
+            try {
+                const token = getToken();
+                if (!token) { window.location.href = '/login.html?from=/indicators.html'; return; }
+
+                document.getElementById('indicatorsContainer').innerHTML = '<div class="loading">加载中...</div>';
+                currentPage = 1;
+
+                let startTime, endTime;
+                if (rangeStartDate && rangeEndDate) {
+                    startTime = `${rangeStartDate} 00:00:00`;
+                    endTime = `${rangeEndDate} 23:59:59`;
+                } else {
+                    startTime = `${currentDate} 00:00:00`;
+                    endTime = `${currentDate} 23:59:59`;
+                }
+
+                const conditions = [`created >= "${startTime}"`, `created <= "${endTime}"`];
+                const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+                if (searchTerm) {
+                    conditions.push(`symbol ~ "${searchTerm.toUpperCase()}"`);
+                }
+
+                const filter = conditions.join(' && ');
+                const response = await fetch(`${PB_URL}/api/collections/indicators/records?perPage=${itemsPerPage}&page=1&sort=-created&filter=${encodeURIComponent(filter)}`, {
+                    headers: { 'Authorization': token }
+                });
+
+                if (response.status === 401 || response.status === 403) {
+                    handleAuthError();
+                    return;
+                }
+                if (!response.ok) throw new Error('加载失败');
+
+                const data = await response.json();
+                allIndicators = data.items || [];
+                hasMore = data.items.length === itemsPerPage;
+                totalItems = data.totalItems || 0;
+
+                resetPagination();
+                renderIndicators();
+                updateLoadMoreButton();
+            } catch (error) {
+                console.error('加载失败:', error);
+                document.getElementById('indicatorsContainer').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${error.message}</div></div>`;
+            }
+        }
+
+        function getFilteredIndicators() {
+            const intervalFilter = document.getElementById('intervalFilter').value;
+            let filtered = allIndicators;
+
+            if (intervalFilter) {
+                filtered = filtered.filter(i => (i.interval || '') === intervalFilter);
+            }
+
+            return filtered;
+        }
+
+        function onIntervalChange() {
+            resetPagination();
+            renderIndicators();
+            updateLoadMoreButton();
+        }
+
+        function getPaginatedIndicators() {
+            const filtered = getFilteredIndicators();
+            const start = (currentPage - 1) * itemsPerPage;
+            return filtered.slice(0, start + itemsPerPage);
+        }
+
+        function updateLoadMoreButton() {
+            const btn = document.getElementById('loadMoreBtn');
+            const filtered = getFilteredIndicators();
+            const hasMoreData = displayedIndicators.length < filtered.length;
+            btn.style.display = hasMoreData ? 'block' : 'none';
+            btn.textContent = hasMoreData ? `加载更多 (${displayedIndicators.length}/${filtered.length})` : '没有更多了';
+            btn.disabled = !hasMoreData;
+        }
+
+        async function loadMoreIndicators() {
+            if (!hasMore) return;
+            try {
+                const token = getToken();
+                if (!token) return;
+
+                currentPage++;
+
+                let startTime, endTime;
+                if (rangeStartDate && rangeEndDate) {
+                    startTime = `${rangeStartDate} 00:00:00`;
+                    endTime = `${rangeEndDate} 23:59:59`;
+                } else {
+                    startTime = `${currentDate} 00:00:00`;
+                    endTime = `${currentDate} 23:59:59`;
+                }
+
+                const conditions = [`created >= \"${startTime}\"`, `created <= \"${endTime}\"`];
+                const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+                if (searchTerm) {
+                    conditions.push(`symbol ~ \"${searchTerm.toUpperCase()}\"`);
+                }
+
+                const filter = conditions.join(' && ');
+                const response = await fetch(`${PB_URL}/api/collections/indicators/records?perPage=${itemsPerPage}&page=${currentPage}&sort=-created&filter=${encodeURIComponent(filter)}`, {
+                    headers: { 'Authorization': token }
+                });
+
+                if (!response.ok) throw new Error('加载失败');
+
+                const data = await response.json();
+                allIndicators = [...allIndicators, ...data.items];
+                hasMore = data.items.length === itemsPerPage;
+                totalItems = data.totalItems || 0;
+
+                displayedIndicators = allIndicators;
+                renderIndicators();
+                updateLoadMoreButton();
+            } catch (error) {
+                console.error('加载更多失败:', error);
+                currentPage--;
+            }
+        }
+
+        function resetPagination() {
+            currentPage = 1;
+            displayedIndicators = getPaginatedIndicators();
+        }
+
+        function onSearchChange(val) {
+            currentSearch = val.trim();
+            resetPagination();
+            renderIndicators();
+            updateLoadMoreButton();
+        }
+
+        function renderIndicators() {
+            const container = document.getElementById('indicatorsContainer');
+            const filtered = displayedIndicators;
+
+            if (filtered.length === 0) {
+                container.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">暂无数据</div></div>';
+                return;
+            }
+
+            container.innerHTML = filtered.map(ind => {
+                let extra = ind.extra;
+                if (typeof extra === 'string') {
+                    try { extra = JSON.parse(extra); } catch (e) { extra = {}; }
+                }
+                extra = extra || {};
+
+                const intervalMap = { '5': '5m', '15': '15m', '30': '30m', '60': '1H', '240': '4H', 'D': '日' };
+                const intervalText = intervalMap[ind.interval] || ind.interval || '';
+
+                return `
+                    <div class="indicator-card" onclick="showIndicatorDetails('${ind.id}')" style="cursor:pointer;">
+                        <div class="indicator-header">
+                            <div class="indicator-symbol">${ind.symbol} ${intervalText ? `<span class="indicator-interval">${intervalText}</span>` : ''}</div>
+                            <div class="indicator-time">${extra.us_time}</div>
+                        </div>
+                        <div class="indicator-grid">
+                            <div class="indicator-section">
+                                <div class="section-title">价格信息</div>
+                                <div class="indicator-row"><span class="indicator-label">收盘价</span><span class="indicator-value">$${(extra.close || 0).toFixed(2)}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">日内涨幅</span><span class="indicator-value" style="color: ${(extra.day_change_pct || 0) >= 0 ? 'var(--long)' : 'var(--short)'}\">${(extra.day_change_pct || 0) >= 0 ? '+' : ''}${(extra.day_change_pct || 0).toFixed(2)}%</span></div>
+                                <div class="indicator-row"><span class="indicator-label">较昨收</span><span class="indicator-value" style="color: ${(extra.prev_close_change_pct || 0) >= 0 ? 'var(--long)' : 'var(--short)'}\">${(extra.prev_close_change_pct || 0) >= 0 ? '+' : ''}${(extra.prev_close_change_pct || 0).toFixed(2)}%</span></div>
+                                ${extra.atr_pct ? `<div class="indicator-row"><span class="indicator-label">ATR波动率</span><span class="indicator-value" style="color: ${extra.atr_pct >= 3 ? '#e53e3e' : extra.atr_pct >= 1.5 ? '#ed8936' : '#48bb78'}\">${extra.atr_pct.toFixed(2)}% ${extra.atr_pct >= 3 ? '⚡高' : extra.atr_pct >= 1.5 ? '〜中' : '·低'}</span></div>` : ''}
+                            </div>
+                            <div class="indicator-section">
+                                <div class="section-title">趋势信号</div>
+                                <div class="indicator-row"><span class="indicator-label">趋势方向</span><span class="indicator-value">${extra.trend_dir === 1 ? '📈 多头' : extra.trend_dir === -1 ? '📉 空头' : '➡️ 中性'}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">多头背离</span><span class="indicator-value">${extra.crsi_bull_div || extra.obv_bull_div ? '✅' : '❌'}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">空头背离</span><span class="indicator-value">${extra.crsi_bear_div || extra.obv_bear_div ? '✅' : '❌'}</span></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function showIndicatorDetails(indicatorId) {
+            const indicator = allIndicators.find(i => i.id === indicatorId);
+            if (!indicator) return;
+
+            const normalized = normalizeIndicatorRecord(indicator);
+            document.getElementById('modalBody').innerHTML = renderIndicatorModal(normalized);
+            document.getElementById('indicatorModal').classList.add('show');
+        }
+
+        function closeIndicatorModal() {
+            document.getElementById('indicatorModal').classList.remove('show');
+        }
+
+        document.addEventListener('click', (e) => {
+            const modal = document.getElementById('indicatorModal');
+            if (e.target === modal) {
+                closeIndicatorModal();
+            }
+        });
+
+        function manualRefresh() {
+            const btn = document.getElementById('refreshBtn');
+            btn.classList.add('spinning');
+            setTimeout(() => btn.classList.remove('spinning'), 600);
+            loadIndicators();
+        }
+
+        function changeRefreshInterval(seconds) {
+            currentInterval = parseInt(seconds);
+
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+
+            if (currentInterval > 0) {
+                refreshTimer = setInterval(loadIndicators, currentInterval * 1000);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadIndicators();
+            changeRefreshInterval(30);
+
+            // 向下滚动自动加载更多
+            let isLoadingMore = false;
+            window.addEventListener('scroll', () => {
+                const scrollTop = window.scrollY || document.documentElement.scrollTop;
+                const scrollHeight = document.documentElement.scrollHeight;
+                const clientHeight = document.documentElement.clientHeight;
+
+                // 距离底部 200px 时触发加载
+                if (scrollTop + clientHeight >= scrollHeight - 200) {
+                    if (!isLoadingMore && hasMore) {
+                        isLoadingMore = true;
+                        loadMoreIndicators().finally(() => {
+                            isLoadingMore = false;
+                        });
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>

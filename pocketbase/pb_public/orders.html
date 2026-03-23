@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>订单</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .stats-bar {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 8px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+        }
+
+        .stat-chip {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 6px 12px;
+            white-space: nowrap;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+        }
+
+        .stat-chip .stat-label {
+            color: var(--muted);
+        }
+
+        .stat-chip .stat-value {
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .direction-tabs {
+            margin-top: 8px;
+        }
+
+        .order-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+            transition: all 0.2s;
+        }
+
+        .order-card:active {
+            transform: scale(0.98);
+        }
+
+        .order-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .order-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .order-icon {
+            font-size: 20px;
+        }
+
+        .order-symbol {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .order-direction {
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 700;
+        }
+
+        .order-direction.long {
+            background: rgba(72,187,120,0.15);
+            color: var(--long);
+        }
+
+        .order-direction.short {
+            background: rgba(252,129,129,0.15);
+            color: var(--short);
+        }
+
+        .order-type-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            margin-left: 6px;
+        }
+
+        .type-entry {
+            background: rgba(59,130,246,0.2);
+            color: #60a5fa;
+        }
+
+        .type-takeprofit {
+            background: rgba(72,187,120,0.2);
+            color: var(--long);
+        }
+
+        .type-stoploss {
+            background: rgba(252,129,129,0.2);
+            color: var(--short);
+        }
+
+        .order-status {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .status-submitted {
+            background: rgba(246,173,85,0.2);
+            color: var(--pending);
+        }
+
+        .status-filled {
+            background: rgba(104,211,145,0.2);
+            color: var(--executed);
+        }
+
+        .status-canceled {
+            background: rgba(113,128,150,0.2);
+            color: var(--rejected);
+        }
+
+        .order-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .order-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .order-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+        }
+
+        .order-value {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .order-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        .action-btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: clamp(12px, 3vw, 14px);
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            letter-spacing: 0.5px;
+        }
+
+        .action-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .btn-close {
+            background: var(--short);
+            color: var(--bg);
+        }
+
+        .btn-close:active:not(:disabled) {
+            background: #e53e3e;
+        }
+
+        .btn-details {
+            background: var(--accent);
+            color: var(--bg);
+        }
+
+        .btn-details:active:not(:disabled) {
+            background: #2563eb;
+        }
+
+        .btn-cancel {
+            background: var(--pending);
+            color: var(--bg);
+        }
+
+        .btn-cancel:active:not(:disabled) {
+            background: #ed8936;
+        }
+
+        .bracket-info {
+            background: rgba(99,179,237,0.05);
+            border-left: 2px solid var(--accent);
+            padding: 10px;
+            margin-bottom: 10px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .refresh-control {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-top: 0;
+        }
+
+        .header-row {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .refresh-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--muted);
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:active {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .refresh-btn.spinning {
+            animation: spin 0.6s linear;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .refresh-select {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .refresh-select:focus {
+            border-color: var(--accent);
+        }
+
+        .search-row {
+            margin-top: 8px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent);
+        }
+
+
+        .signal-link {
+            background: rgba(99,179,237,0.1);
+            border: 1px solid rgba(99,179,237,0.2);
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .signal-link:active {
+            background: rgba(99,179,237,0.2);
+            transform: scale(0.98);
+        }
+
+        .signal-link-icon {
+            font-size: 16px;
+        }
+
+        .signal-link-text {
+            flex: 1;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .signal-link-arrow {
+            font-size: 14px;
+            color: var(--accent);
+        }
+
+        .load-more-btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin-top: 16px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--accent);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .load-more-btn:active {
+            background: var(--surface);
+        }
+
+        .load-more-btn:disabled {
+            color: var(--muted);
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-top">
+            <div class="logo">
+                <div class="logo-label">TRADING</div>
+                <div class="logo-title">📋 订单</div>
+            </div>
+            <div class="live-badge">
+                <div class="live-dot"></div>
+                LIVE
+            </div>
+        </div>
+        <div class="search-row">
+            <div style="display:flex;gap:8px;align-items:center;">
+                <div id="datePicker" style="flex:1;"></div>
+                <div class="refresh-control">
+                    <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()">🔄</button>
+                    <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
+                        <option value="0">关闭</option>
+                        <option value="5">5秒</option>
+                        <option value="30" selected>30秒</option>
+                        <option value="60">1分钟</option>
+                    </select>
+                </div>
+            </div>
+            <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID/订单ID..." oninput="onSearchChange(this.value)">
+        </div>
+        <div id="directionTabs"></div>
+    </div>
+
+    <div class="content">
+        <div class="stats-bar">
+            <div class="stat-chip">
+                <span class="stat-label">总计</span>
+                <span class="stat-value" id="stat-total">0</span>
+            </div>
+            <div class="stat-chip">
+                <span class="stat-label">活跃</span>
+                <span class="stat-value" id="stat-active">0</span>
+            </div>
+            <div class="stat-chip">
+                <span class="stat-label">已成交</span>
+                <span class="stat-value" id="stat-filled">0</span>
+            </div>
+        </div>
+
+        <div id="ordersContainer">
+            <div class="loading">加载中...</div>
+        </div>
+        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreOrders()" style="display: none;">加载更多</button>
+    </div>
+
+    <div id="nav"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
+    <script>
+        const pb = new PocketBase('https://pb.lzw-glory.top');
+        let allOrders = [];
+        let currentDate = new Date().toISOString().split('T')[0];
+        let currentDirection = 'all';
+        let currentSearch = '';
+        let refreshTimer = null;
+        let currentInterval = 30;
+        let orderReverseSignalsMap = {};   // { order_id: true/false }
+        let filterSignalId = null;
+
+        // Pagination
+        let currentPage = 1;
+        const itemsPerPage = 10;
+        let displayedOrders = [];
+
+        async function initAuth() {
+            const token = getToken();
+            if (!token) {
+                location.href = '/login.html?from=/orders.html';
+                return;
+            }
+            pb.authStore.save(token, null);
+        }
+
+        async function loadOrders() {
+            try {
+                const currentDate_obj = new Date(currentDate + 'T00:00:00Z');
+                const nextDate_obj = new Date(currentDate_obj.getTime() + 86400000);
+                const startTimeMs = currentDate_obj.getTime();
+                const endTimeMs = nextDate_obj.getTime();
+
+                allOrders = await pb.collection('orders').getFullList({
+                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    sort: '-created',
+                    expand: 'indicators_via_signal_id',
+                    $autoCancel: false
+                });
+
+                // 加载反向信号映射
+                await loadReverseSignalsMap();
+
+                resetPagination();
+                updateStats();
+                renderOrders();
+                updateLoadMoreButton();
+            } catch (error) {
+                console.error('加载失败:', error);
+                if (error.status === 401 || error.status === 403) {
+                    handleAuthError();
+                    return;
+                }
+                showToast('加载失败: ' + error.message);
+            }
+        }
+
+        // 加载反向信号映射（按 symbol 分组）
+        async function loadReverseSignalsMap() {
+            orderReverseSignalsMap = {};
+            try {
+                const startTime = `${currentDate} 00:00:00`;
+                const endTime = `${currentDate} 23:59:59`;
+
+                // 查询今日所有已确认的反向信号
+                const reverseSignals = await pb.collection('reverse_signals').getFullList({
+                    filter: `created >= "${startTime}" && created <= "${endTime}" && status = "confirmed"`,
+                    $autoCancel: false
+                });
+
+                // 按 order_id 建立映射（从 extra 中获取）
+                reverseSignals.forEach(rs => {
+                    const rsExtra = rs.extra || {};
+                    const orderId = rsExtra.order_id;
+                    if (orderId) {
+                        orderReverseSignalsMap[orderId] = true;
+                    }
+                });
+
+                console.log('[ReverseSignals] 加载完成:', orderReverseSignalsMap);
+            } catch (error) {
+                console.error('加载反向信号失败:', error);
+            }
+        }
+
+        function updateStats() {
+            const filtered = filterOrdersAll();
+            document.getElementById('stat-total').textContent = filtered.length;
+            document.getElementById('stat-active').textContent = filtered.filter(o => o.status === 'Submitted').length;
+            document.getElementById('stat-filled').textContent = filtered.filter(o => o.status === 'Filled').length;
+        }
+
+        function filterOrdersAll() {
+            let filtered = allOrders;
+            if (currentDirection !== 'all') {
+                filtered = filtered.filter(o => o.direction === currentDirection);
+            }
+            if (filterSignalId) {
+                filtered = filtered.filter(o => o.signal_id === filterSignalId);
+            }
+            if (currentSearch) {
+                const s = currentSearch.toUpperCase();
+                filtered = filtered.filter(o =>
+                    (o.symbol || '').toUpperCase().includes(s) ||
+                    (o.signal_id || '').toUpperCase().includes(s) ||
+                    (o.order_id || '').toUpperCase().includes(s) ||
+                    (o.unique_id || '').toUpperCase().includes(s) ||
+                    (o.order_type || '').toUpperCase().includes(s)
+                );
+            }
+            return filtered;
+        }
+
+        function getFilteredOrders() {
+            return filterOrdersAll();
+        }
+
+        function getPaginatedOrders() {
+            const filtered = getFilteredOrders();
+            const start = (currentPage - 1) * itemsPerPage;
+            return filtered.slice(0, start + itemsPerPage);
+        }
+
+        function updateLoadMoreButton() {
+            const btn = document.getElementById('loadMoreBtn');
+            const filtered = getFilteredOrders();
+            const hasMore = displayedOrders.length < filtered.length;
+            btn.style.display = hasMore ? 'block' : 'none';
+            btn.textContent = hasMore ? `加载更多 (${displayedOrders.length}/${filtered.length})` : '没有更多了';
+            btn.disabled = !hasMore;
+        }
+
+        function loadMoreOrders() {
+            currentPage++;
+            displayedOrders = getPaginatedOrders();
+            renderOrders();
+            updateLoadMoreButton();
+        }
+
+        function resetPagination() {
+            currentPage = 1;
+            displayedOrders = getPaginatedOrders();
+        }
+
+        function filterOrders() {
+            return displayedOrders;
+        }
+
+        function onSearchChange(val) {
+            currentSearch = val.trim();
+            resetPagination();
+            updateStats();
+            renderOrders();
+            updateLoadMoreButton();
+        }
+
+        function renderOrders() {
+            const container = document.getElementById('ordersContainer');
+            const filtered = filterOrders();
+
+            if (filtered.length === 0) {
+                container.innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">暂无订单</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = filtered.map(order => {
+                const directionIcon = order.direction === 'long' ? '📈' : '📉';
+                const directionClass = order.direction === 'long' ? 'long' : 'short';
+                const orderType = order.order_type || 'Entry';
+                const orderTypeClass = orderType.toLowerCase().replace(/\s/g, '');
+                const orderTypeText = {
+                    'Entry': '入场',
+                    'TakeProfit': '止盈',
+                    'StopLoss': '止损'
+                }[orderType] || orderType;
+
+                const statusClass = (order.status || 'Submitted').toLowerCase();
+                const statusText = {
+                    'submitted': '已提交',
+                    'filled': '已成交',
+                    'canceled': '已取消'
+                }[statusClass] || order.status;
+
+                // 判断是否可以平仓或取消
+                const isEntry = orderType === 'Entry';
+                const isBracket = orderType === 'TakeProfit' || orderType === 'StopLoss';
+                const isSubmitted = order.status === 'Submitted';
+                const isFilled = order.status === 'Filled';
+
+                // 入场订单：已成交可平仓，已提交可取消
+                const canClose = isEntry && isFilled;
+                const canCancel = isEntry && isSubmitted;
+
+                // 止盈止损订单：不能取消（由系统管理）
+                const bracketNote = isBracket ? '⚠️ 止盈止损订单由系统管理，不可手动取消' : '';
+
+                // 用 order_id 查询反向信号
+                const orderUniqueId = order.unique_id || order.order_id;
+                const hasReverseSignal = orderReverseSignalsMap[orderUniqueId] || false;
+
+                return `
+                    <div class="order-card">
+                        <div class="order-header">
+                            <div class="order-title">
+                                <span class="order-icon">${directionIcon}</span>
+                                <span class="order-symbol">${order.symbol}</span>
+                                <span class="order-direction ${directionClass}">${order.direction.toUpperCase()}</span>
+                                <span class="order-type-badge type-${orderTypeClass}">${orderTypeText}</span>
+                            </div>
+                            <div class="order-status status-${statusClass}">${statusText}</div>
+                        </div>
+
+                        <div class="order-grid">
+                            <div class="order-item">
+                                <div class="order-label">限价</div>
+                                <div class="order-value">$${(order.limit_price || 0).toFixed(2)}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">成交价</div>
+                                <div class="order-value">${order.fill_price ? '$' + order.fill_price.toFixed(2) : 'N/A'}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">数量</div>
+                                <div class="order-value">${order.quantity || 0}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">已成交</div>
+                                <div class="order-value">${order.filled_qty || 0}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">下单时间</div>
+                                <div class="order-value">${formatBeijingTime(order.created, 'time')}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">成交时间</div>
+                                <div class="order-value">${order.updated ? formatBeijingTime(order.updated, 'time') : 'N/A'}</div>
+                            </div>
+                        </div>
+
+                        ${order.signal_id ? `
+                            <div class="signal-link" onclick="viewSignal('${order.signal_id}')">
+                                <span class="signal-link-icon">📡</span>
+                                <span class="signal-link-text">查看关联信号</span>
+                                <span class="signal-link-arrow">→</span>
+                            </div>
+                        ` : ''}
+
+                        ${hasReverseSignal ? `
+                            <div class="signal-link" onclick="viewReverseSignal('${orderUniqueId}')">
+                                <span class="signal-link-icon">🔄</span>
+                                <span class="signal-link-text">反向信号</span>
+                                <span class="signal-link-arrow">→</span>
+                            </div>
+                        ` : ''}
+
+                        ${order.tp_price || order.sl_price ? `
+                            <div class="bracket-info">
+                                ${order.tp_price ? `TP: $${order.tp_price.toFixed(2)}` : ''}
+                                ${order.tp_price && order.sl_price ? ' | ' : ''}
+                                ${order.sl_price ? `SL: $${order.sl_price.toFixed(2)}` : ''}
+                            </div>
+                        ` : ''}
+
+                        ${bracketNote ? `<div class="bracket-info">${bracketNote}</div>` : ''}
+
+                        <div class="order-actions">
+                            <button class="action-btn btn-details" onclick="viewOrderDetails('${order.unique_id}', '${order.symbol}')">
+                                📜 明细
+                            </button>
+                            <button class="action-btn btn-close" onclick="closePosition('${order.id}', '${order.symbol}')" ${!canClose ? 'disabled' : ''}>
+                                🔒 平仓
+                            </button>
+                            <button class="action-btn btn-cancel" onclick="cancelOrder('${order.id}', '${order.symbol}')" ${!canCancel ? 'disabled' : ''}>
+                                ✕ 取消
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function closePosition(id, symbol) {
+            if (!confirm(`确认平仓 ${symbol}？`)) return;
+            try {
+                // 问题 14 修复: 只设置独立的 action 字段，不使用 extra.action
+                await pb.collection('orders').update(id, { action: 'close' });
+                showToast('✓ 平仓请求已发送');
+                await loadOrders();
+            } catch (error) {
+                console.error('平仓失败:', error);
+                showToast('✗ 平仓失败: ' + error.message);
+            }
+        }
+
+        async function cancelOrder(id, symbol) {
+            if (!confirm(`确认取消 ${symbol} 订单？`)) return;
+            try {
+                // 问题 14 修复: 只设置独立的 action 字段，不使用 extra.action
+                await pb.collection('orders').update(id, { action: 'cancel' });
+                showToast('✓ 取消请求已发送');
+                await loadOrders();
+            } catch (error) {
+                console.error('取消失败:', error);
+                showToast('✗ 取消失败: ' + error.message);
+            }
+        }
+
+        function viewSignal(signalId) {
+            if (!signalId) {
+                showToast('无法找到关联信号');
+                return;
+            }
+            location.href = `/signals.html?highlight=${encodeURIComponent(signalId)}`;
+        }
+
+        function viewReverseSignal(orderId) {
+            if (!orderId) {
+                showToast('无法找到反向信号');
+                return;
+            }
+            location.href = `/reverse_signals.html?order_id=${encodeURIComponent(orderId)}`;
+        }
+
+        function viewOrderDetails(uniqueId, symbol) {
+            if (!uniqueId) {
+                showToast('无法找到订单明细');
+                return;
+            }
+            location.href = `/order_details.html?order_id=${encodeURIComponent(uniqueId)}`;
+        }
+
+        window.onDateChange = function(startDate, endDate) {
+            currentDate = startDate;
+            loadOrders();
+        };
+
+        window.onDirectionChange = function(direction) {
+            currentDirection = direction;
+            resetPagination();
+            updateStats();
+            renderOrders();
+            updateLoadMoreButton();
+        };
+
+        function manualRefresh() {
+            const btn = document.getElementById('refreshBtn');
+            btn.classList.add('spinning');
+            setTimeout(() => btn.classList.remove('spinning'), 600);
+            loadOrders();
+        }
+
+        function changeRefreshInterval(seconds) {
+            currentInterval = parseInt(seconds);
+            if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+            if (currentInterval > 0) {
+                refreshTimer = setInterval(loadOrders, currentInterval * 1000);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initAuth();
+            document.getElementById('nav').innerHTML = renderNav('/orders.html');
+            document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
+
+            // 检查 URL 参数
+            const urlParams = new URLSearchParams(window.location.search);
+            const signalId = urlParams.get('signal_id');
+            const orderId = urlParams.get('order_id');
+            const action = urlParams.get('action');
+            const urlDate = urlParams.get('date');
+            const searchParam = urlParams.get('search');
+
+            // 优先使用 URL 参数中的日期
+            if (urlDate) {
+                currentDate = urlDate;
+            }
+
+            document.getElementById('datePicker').innerHTML = renderDatePicker();
+
+            // 如果是 URL 参数的日期，更新日期选择器的显示
+            if (urlDate) {
+                const dateInput = document.getElementById('customDate');
+                if (dateInput) dateInput.value = urlDate;
+            }
+
+            if (signalId) {
+                filterSignalId = signalId;
+                showToast(`📡 筛选信号: ${signalId.substring(0, 20)}...`);
+            }
+
+            // 如果有搜索参数，填充搜索框
+            if (searchParam) {
+                const searchInput = document.getElementById('searchInput');
+                if (searchInput) {
+                    searchInput.value = searchParam;
+                    currentSearch = searchParam;
+                }
+            }
+
+            loadOrders();
+
+            // 处理飞书通知的操作请求
+            if (orderId && action) {
+                setTimeout(async () => {
+                    const order = allOrders.find(o => o.unique_id === orderId);
+                    if (order) {
+                        if (action === 'cancel') {
+                            if (confirm(`确认取消 ${order.symbol} 订单？`)) {
+                                await cancelOrder(order.id, order.symbol);
+                            }
+                        } else if (action === 'close') {
+                            if (confirm(`确认平仓 ${order.symbol}？`)) {
+                                await closePosition(order.id, order.symbol);
+                            }
+                        }
+                        // 清除 URL 参数
+                        window.history.replaceState({}, '', '/orders.html');
+                    } else {
+                        showToast('未找到指定订单');
+                    }
+                }, 1500);
+            }
+
+            // 初始化定时刷新（默认30秒）
+            changeRefreshInterval(30);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Trading Flight - 首页</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .hero {
+            padding: 40px 20px 20px;
+            text-align: center;
+            background: linear-gradient(135deg, rgba(99,179,237,0.1) 0%, rgba(72,187,120,0.1) 100%);
+            border-bottom: 1px solid var(--border);
+            position: relative;
+        }
+
+        .hero-actions {
+            position: absolute;
+            top: 8px;
+            right: 14px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .hero-btn {
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            transition: all 0.2s;
+        }
+
+        .hero-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .hero-btn-logout:hover {
+            border-color: var(--short);
+            color: var(--short);
+        }
+
+        .hero-title {
+            font-size: clamp(28px, 8vw, 36px);
+            font-weight: 700;
+            margin-bottom: 12px;
+            background: linear-gradient(135deg, var(--accent), var(--long));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-subtitle {
+            font-size: clamp(14px, 3.5vw, 16px);
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 1px;
+        }
+
+        /* Market Index Cards */
+        .market-index-section {
+            padding: 0 16px 12px;
+        }
+
+        .market-index-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .market-index-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 8px;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .market-index-card:active {
+            transform: scale(0.95);
+        }
+
+        /* VIX 恐慌指数样式 */
+        .market-index-card.vix-panic {
+            border-color: #ef4444;
+            background: linear-gradient(135deg, rgba(239,68,68,0.1), rgba(239,68,68,0.05));
+        }
+        .market-index-card.vix-tension {
+            border-color: #eab308;
+            background: linear-gradient(135deg, rgba(234,179,8,0.1), rgba(234,179,8,0.05));
+        }
+        .market-index-card.vix-calm {
+            border-color: #22c55e;
+            background: linear-gradient(135deg, rgba(34,197,94,0.1), rgba(34,197,94,0.05));
+        }
+
+        .market-index-symbol {
+            font-size: 12px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .market-index-price {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .market-index-change {
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            line-height: 1.3;
+        }
+
+        .market-index-change.positive {
+            color: var(--long);
+        }
+
+        .market-index-change.negative {
+            color: var(--short);
+        }
+
+        .market-index-change.neutral {
+            color: var(--muted);
+        }
+
+        .market-index-loading {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .quick-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            padding: 12px 16px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px 12px;
+            text-align: center;
+            transition: all 0.2s;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            display: block;
+        }
+
+        .stat-card:active {
+            transform: scale(0.95);
+            background: var(--surface2);
+        }
+
+        .stat-icon {
+            font-size: 22px;
+            margin-bottom: 4px;
+        }
+
+        .stat-number {
+            font-size: clamp(18px, 4vw, 24px);
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 2px;
+        }
+
+        .stat-number-row {
+            display: inline-flex;
+            gap: 6px;
+            margin-bottom: 2px;
+        }
+
+        .stat-number-row .stat-number {
+            margin-bottom: 0;
+            font-size: 18px;
+        }
+
+        .stat-number-row .long {
+            color: var(--long);
+        }
+
+        .stat-number-row .short {
+            color: var(--short);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+        }
+
+        .quick-actions {
+            padding: 20px 16px;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--muted);
+            letter-spacing: 2px;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+        }
+
+        .action-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .action-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-decoration: none;
+            color: var(--text);
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .action-card:active {
+            transform: scale(0.95);
+            background: var(--surface2);
+        }
+
+        .action-icon {
+            font-size: 36px;
+        }
+
+        .action-label {
+            font-size: 14px;
+            font-weight: 700;
+            text-align: center;
+        }
+
+        .action-desc {
+            font-size: 11px;
+            color: var(--muted);
+            text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .recent-activity {
+            padding: 20px 16px;
+        }
+
+        .activity-item {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .activity-item:active {
+            background: var(--surface2);
+            transform: scale(0.98);
+        }
+
+        .activity-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .activity-icon {
+            font-size: 24px;
+        }
+
+        .activity-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .activity-title {
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .activity-time {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .activity-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+        }
+
+        .badge-long {
+            background: rgba(72,187,120,0.2);
+            color: var(--long);
+        }
+
+        .badge-short {
+            background: rgba(252,129,129,0.2);
+            color: var(--short);
+        }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <div class="hero-actions">
+            <a href="/config.html" class="hero-btn">⚙️ 设置</a>
+            <button class="hero-btn hero-btn-logout" onclick="handleLogout(event)">🚪 退出</button>
+        </div>
+        <div class="hero-title">Trading Flight</div>
+        <div class="hero-subtitle">智能交易管理系统</div>
+    </div>
+
+    <div class="market-index-section">
+        <div class="section-title">大盘监控</div>
+        <div class="market-index-grid" id="marketIndexGrid">
+            <div class="market-index-loading">加载中...</div>
+        </div>
+    </div>
+
+    <div class="content">
+        <div class="quick-stats">
+            <a href="/signals.html" class="stat-card">
+                <div class="stat-icon">📡</div>
+                <div class="stat-number-row" id="todaySignalsRow">
+                    <span class="stat-number long" id="todaySignalsLong">-</span>
+                    <span class="stat-number short" id="todaySignalsShort">-</span>
+                </div>
+                <div class="stat-label">今日信号 📈/📉</div>
+            </a>
+            <a href="/reverse_signals.html" class="stat-card">
+                <div class="stat-icon">🔄</div>
+                <div class="stat-number-row" id="reverseSignalsRow">
+                    <span class="stat-number" id="reverseSignalsPending">-</span>
+                </div>
+                <div class="stat-label">反转信号</div>
+            </a>
+            <a href="/orders.html" class="stat-card">
+                <div class="stat-icon">📋</div>
+                <div class="stat-number-row" id="todayOrdersRow">
+                    <span class="stat-number long" id="todayOrdersLong">-</span>
+                    <span class="stat-number short" id="todayOrdersShort">-</span>
+                </div>
+                <div class="stat-label">今日订单 📈/📉</div>
+            </a>
+            <a href="/orders.html?status=filled&type=entry" class="stat-card">
+                <div class="stat-icon">📈</div>
+                <div class="stat-number-row" id="activePositionsRow">
+                    <span class="stat-number long" id="activePositionsLong">-</span>
+                    <span class="stat-number short" id="activePositionsShort">-</span>
+                </div>
+                <div class="stat-label">持仓 📈/📉</div>
+            </a>
+            <div class="stat-card" style="cursor: default;">
+                <div class="stat-icon">💰</div>
+                <div class="stat-number" id="todayPnL">-</div>
+                <div class="stat-label">今日盈亏</div>
+            </div>
+        </div>
+
+        <div class="quick-actions">
+            <div class="section-title">快捷入口</div>
+            <div class="action-grid">
+                <a href="/signals.html" class="action-card">
+                    <div class="action-icon">📡</div>
+                    <div class="action-label">信号管理</div>
+                    <div class="action-desc">查看和确认交易信号</div>
+                </a>
+                <a href="/reverse_signals.html" class="action-card">
+                    <div class="action-icon">🔄</div>
+                    <div class="action-label">反转信号</div>
+                    <div class="action-desc">处理平仓/取消/调整信号</div>
+                </a>
+                <a href="/orders.html" class="action-card">
+                    <div class="action-icon">📋</div>
+                    <div class="action-label">订单管理</div>
+                    <div class="action-desc">管理和平仓订单</div>
+                </a>
+                <a href="/indicators.html" class="action-card">
+                    <div class="action-icon">📈</div>
+                    <div class="action-label">指标监控</div>
+                    <div class="action-desc">查看技术指标</div>
+                </a>
+            </div>
+        </div>
+
+        <div class="recent-activity">
+            <div class="section-title">最近活动</div>
+            <div id="activityList">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="nav"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
+    <script>
+        const pb = new PocketBase('https://pb.lzw-glory.top');
+
+        async function initAuth() {
+            const token = getToken();
+            if (!token) {
+                location.href = '/login.html?from=/index.html';
+                return;
+            }
+            pb.authStore.save(token, null);
+        }
+
+        async function loadDashboard() {
+            try {
+                showLoading('加载数据中...');
+                const today = new Date().toISOString().split('T')[0];
+                const startDate = new Date(today + 'T00:00:00Z');
+                const endDate = new Date(today + 'T23:59:59Z');
+                const startTimeMs = startDate.getTime();
+                const endTimeMs = endDate.getTime();
+
+                // 加载今日信号
+                const signals = await pb.collection('signals').getFullList({
+                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    sort: '-created',
+                    $autoCancel: false
+                });
+
+                // 加载今日反向信号
+                const reverseSignals = await pb.collection('reverse_signals').getFullList({
+                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    sort: '-created',
+                    $autoCancel: false
+                });
+
+                // 加载今日订单
+                const orders = await pb.collection('orders').getFullList({
+                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    sort: '-created',
+                    $autoCancel: false
+                });
+
+                // 加载活跃持仓
+                const activePositions = await pb.collection('orders').getFullList({
+                    filter: `status = "Filled" && order_type = "Entry"`,
+                    sort: '-created',
+                    $autoCancel: false
+                });
+
+                // 计算今日盈亏
+                const pnl = calculatePnL(orders);
+
+                // 统计信号多空
+                const longSignals = signals.filter(s => s.direction === 'long').length;
+                const shortSignals = signals.filter(s => s.direction === 'short').length;
+
+                // 统计反向信号
+                const pendingReverseSignals = reverseSignals.filter(s => !s.processed).length;
+
+                // 统计订单多空
+                const longOrders = orders.filter(o => o.direction === 'long').length;
+                const shortOrders = orders.filter(o => o.direction === 'short').length;
+
+                // 统计持仓多空
+                const longPositions = activePositions.filter(p => p.direction === 'long').length;
+                const shortPositions = activePositions.filter(p => p.direction === 'short').length;
+
+                // 更新统计数据
+                document.getElementById('todaySignalsLong').textContent = longSignals;
+                document.getElementById('todaySignalsShort').textContent = shortSignals;
+                document.getElementById('reverseSignalsPending').textContent = pendingReverseSignals;
+                if (pendingReverseSignals > 0) {
+                    document.getElementById('reverseSignalsPending').style.color = 'var(--short)';
+                }
+                document.getElementById('todayOrdersLong').textContent = longOrders;
+                document.getElementById('todayOrdersShort').textContent = shortOrders;
+                document.getElementById('activePositionsLong').textContent = longPositions;
+                document.getElementById('activePositionsShort').textContent = shortPositions;
+
+                const pnlEl = document.getElementById('todayPnL');
+                if (pnl !== 0) {
+                    pnlEl.textContent = (pnl > 0 ? '+' : '') + pnl.toFixed(0);
+                    pnlEl.style.color = pnl > 0 ? 'var(--long)' : 'var(--short)';
+                } else {
+                    pnlEl.textContent = '-';
+                }
+
+                // 渲染最近活动
+                renderRecentActivity(signals, orders);
+            } catch (error) {
+                console.error('加载失败:', error);
+                showToast('加载失败: ' + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // 加载大盘指数数据（从 indicators 表获取）
+        async function loadMarketIndex() {
+            const container = document.getElementById('marketIndexGrid');
+            if (!container) return;
+
+            try {
+                // 先获取配置的大盘指数代码
+                let symbols = ['SPY', 'QQQ', 'VIX'];
+                try {
+                    const config = await pb.collection('config').getFirstListItem(`key = "market_index_symbols"`);
+                    if (config && config.value) {
+                        symbols = config.value.split(',').map(s => s.trim());
+                    }
+                } catch(_) {
+                    // 使用默认值
+                }
+
+                // 确定时间范围（美国时区，当天）
+                const today = new Date().toISOString().split('T')[0];
+                const startDate = new Date(today + 'T00:00:00Z');
+                const endDate = new Date(today + 'T23:59:59Z');
+                const startTimeMs = startDate.getTime();
+                const endTimeMs = endDate.getTime();
+
+                // 从 indicators 表获取每个大盘的最新数据
+                const promises = symbols.map(async (symbol) => {
+                    try {
+                        const records = await pb.collection('indicators').getList(1, 1, {
+                            filter: `symbol = "${symbol}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                            sort: '-bar_time_ms',
+                            $autoCancel: false
+                        });
+                        if (records.items.length > 0) {
+                            return records.items[0];
+                        }
+                        return null;
+                    } catch(e) {
+                        return null;
+                    }
+                });
+
+                const results = await Promise.all(promises);
+
+                // 渲染大盘指数卡片
+                let html = '';
+                let hasData = false;
+                symbols.forEach((symbol, index) => {
+                    const data = results[index];
+                    if (data) {
+                        hasData = true;
+                        const price = data.extra?.close || data.close || 0;
+                        const changePct = data.extra?.day_change_pct || 0;
+                        const change7d = data.extra?.change_7d || 0;
+                        const yesterdayChangePct = data.extra?.yesterday_change_pct || 0;
+                        const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
+                        const changeText = (changePct > 0 ? '+' : '') + changePct.toFixed(2) + '%';
+                        const yesterdayText = (yesterdayChangePct > 0 ? '+' : '') + yesterdayChangePct.toFixed(2) + '%';
+                        const change7dText = (change7d > 0 ? '+' : '') + change7d.toFixed(2) + '%';
+                        const change7dClass = change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral');
+
+                        // VIX 恐慌指数特殊处理
+                        let vixBadge = '';
+                        let vixClass = '';
+                        if (symbol === 'VIX') {
+                            if (changePct >= 20) {
+                                vixBadge = '🔴 恐慌';
+                                vixClass = 'vix-panic';
+                            } else if (changePct >= 10) {
+                                vixBadge = '🟡 紧张';
+                                vixClass = 'vix-tension';
+                            } else {
+                                vixBadge = '🟢 平稳';
+                                vixClass = 'vix-calm';
+                            }
+                        }
+
+                        html += `
+                            <div class="market-index-card ${vixClass}">
+                                <div class="market-index-symbol">${symbol}${vixBadge ? ' ' + vixBadge : ''}</div>
+                                <div class="market-index-price">$${price.toFixed(2)}</div>
+                                <div class="market-index-change ${changeClass}">
+                                    <div>1D: ${changeText}</div>
+                                    <div>1D-: ${yesterdayText}</div>
+                                    <div class="${change7dClass}">7D: ${change7dText}</div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                });
+
+                if (!hasData) {
+                    html = '<div class="market-index-loading">暂无大盘数据</div>';
+                }
+
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('加载大盘数据失败:', error);
+                container.innerHTML = '<div class="market-index-loading">加载失败</div>';
+            }
+        }
+
+        function calculatePnL(orders) {
+            const entryOrders = {};
+            let totalPnL = 0;
+
+            orders.forEach(order => {
+                const uniqueId = order.unique_id || '';
+                const parts = uniqueId.split('_');
+                if (parts.length < 5) return;
+
+                const baseId = parts.slice(0, 4).join('_');
+                const orderType = parts[4];
+
+                if (orderType === 'Entry' && order.status === 'Filled') {
+                    entryOrders[baseId] = order;
+                } else if ((orderType === 'TP' || orderType === 'SL') && order.status === 'Filled') {
+                    const entry = entryOrders[baseId];
+                    if (entry) {
+                        const direction = order.direction;
+                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
+                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
+                        const quantity = parseFloat(order.filled_qty || order.quantity);
+
+                        let pnl = 0;
+                        if (direction === 'long') {
+                            pnl = (exitPrice - entryPrice) * quantity;
+                        } else {
+                            pnl = (entryPrice - exitPrice) * quantity;
+                        }
+                        totalPnL += pnl;
+                    }
+                }
+            });
+
+            return totalPnL;
+        }
+
+        function renderRecentActivity(signals, orders) {
+            const container = document.getElementById('activityList');
+
+            // 合并信号和订单，按时间排序
+            const activities = [
+                ...signals.slice(0, 5).map(s => ({
+                    type: 'signal',
+                    id: s.id,
+                    icon: s.direction === 'long' ? '📈' : '📉',
+                    title: `${s.symbol} 信号`,
+                    time: s.created,
+                    direction: s.direction
+                })),
+                ...orders.slice(0, 5).map(o => ({
+                    type: 'order',
+                    id: o.id,
+                    icon: o.order_type === 'Entry' ? '📋' : (o.order_type === 'TakeProfit' ? '✅' : '🛑'),
+                    title: `${o.symbol} ${o.order_type === 'Entry' ? '入场' : (o.order_type === 'TakeProfit' ? '止盈' : '止损')}`,
+                    time: o.created,
+                    direction: o.direction
+                }))
+            ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 8);
+
+            if (activities.length === 0) {
+                container.innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">暂无活动</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = activities.map(activity => `
+                <div class="activity-item" onclick="navigateToActivity('${activity.type}', '${activity.id || ''}')">
+                    <div class="activity-left">
+                        <div class="activity-icon">${activity.icon}</div>
+                        <div class="activity-info">
+                            <div class="activity-title">${activity.title}</div>
+                            <div class="activity-time">${formatRelativeTime(activity.time)}</div>
+                        </div>
+                    </div>
+                    <div class="activity-badge badge-${activity.direction}">
+                        ${activity.direction.toUpperCase()}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function navigateToActivity(type, id) {
+            if (type === 'signal') {
+                location.href = '/signals.html';
+            } else if (type === 'order') {
+                location.href = '/orders.html';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initAuth();
+            document.getElementById('nav').innerHTML = renderNav('/index.html');
+            loadDashboard();
+            loadMarketIndex();
+            setInterval(loadDashboard, 30000);
+            setInterval(loadMarketIndex, 30000);
+        });
+    </script>
+</body>
+</html>

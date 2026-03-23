@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>配置管理</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
+<script src="common.js"></script>
+<style>
+  /* ── Config Section ── */
+  .config-section {
+    margin-bottom: 24px;
+  }
+
+  .section-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── Config Item ── */
+  .config-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    transition: border-color 0.2s;
+  }
+
+  .config-item:hover {
+    border-color: rgba(99,179,237,0.3);
+  }
+
+  .config-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 8px;
+  }
+
+  .config-key {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .config-default {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--surface2);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .config-desc {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+
+  /* ── Input Controls ── */
+  .config-input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 16px; /* 防止移动端输入时页面放大 */
+    font-family: 'JetBrains Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .config-input:focus {
+    border-color: var(--accent);
+  }
+
+  /* Number Stepper */
+  .stepper-container {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+
+  .stepper-btn {
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .stepper-container .stepper-btn:first-of-type {
+    border-radius: 8px 0 0 8px;
+  }
+
+  .stepper-container .stepper-btn:last-of-type {
+    border-radius: 0 8px 8px 0;
+  }
+
+  .stepper-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .stepper-btn:active {
+    transform: scale(0.95);
+  }
+
+  .stepper-input {
+    width: 70px;
+    text-align: center;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+
+  .stepper-input:focus {
+    border-color: var(--border);
+  }
+
+  /* Toggle Switch */
+  .toggle-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.3s;
+  }
+
+  .toggle.active {
+    background: var(--long);
+    border-color: var(--long);
+  }
+
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: var(--text);
+    border-radius: 50%;
+    transition: transform 0.3s;
+  }
+
+  .toggle.active::after {
+    transform: translateX(20px);
+  }
+
+  .toggle-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .toggle.active + .toggle-label {
+    color: var(--long);
+  }
+
+  /* Select */
+  .config-select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 16px; /* 防止移动端输入时页面放大 */
+    font-family: 'JetBrains Mono', monospace;
+    outline: none;
+    cursor: pointer;
+  }
+
+  .config-select:focus {
+    border-color: var(--accent);
+  }
+
+  /* ── Save Button ── */
+  .save-btn {
+    position: fixed;
+    bottom: 90px;
+    right: 20px;
+    padding: 14px 24px;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(135deg, #48BB78, #38A169);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    font-family: 'Sora', sans-serif;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(72,187,120,0.3);
+    transition: all 0.2s;
+    z-index: 40;
+  }
+
+  .save-btn:active {
+    transform: scale(0.97);
+  }
+
+  .save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ── Modified Indicator ── */
+  .config-item.modified {
+    border-color: var(--accent);
+    background: rgba(99,179,237,0.03);
+  }
+
+  /* ── Reset Button ── */
+  .reset-btn {
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .reset-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .reset-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  /* ── Reset All Button ── */
+  .reset-all-btn {
+    position: fixed;
+    bottom: 90px;
+    left: 20px;
+    padding: 12px 18px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'Sora', sans-serif;
+    cursor: pointer;
+    transition: all 0.2s;
+    z-index: 40;
+  }
+
+  .reset-all-btn:hover {
+    border-color: #E53E3E;
+    color: #E53E3E;
+  }
+
+  .reset-all-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+</style>
+<script>document.write(getCommonStyles())</script>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-top">
+    <div class="logo">
+      <span class="logo-label">CONFIG MANAGER</span>
+      <span class="logo-title">配置管理</span>
+    </div>
+    <button class="refresh-btn" onclick="load()">↻</button>
+  </div>
+</div>
+
+<!-- Content -->
+<div class="content" id="configContainer">
+  <div class="loading">LOADING...</div>
+</div>
+
+<!-- Save Button -->
+<button class="save-btn" id="saveBtn" onclick="saveAll()" disabled>保存配置</button>
+
+<!-- Reset All Button -->
+<button class="reset-all-btn" id="resetAllBtn" onclick="resetAll()" disabled>重置全部</button>
+
+<!-- Bottom Nav -->
+<div id="navContainer"></div>
+
+<script>
+// ── 初始化 ──
+requireAuth('/config.html')
+
+let configs = []
+let originalValues = {}
+let modifiedKeys = new Set()
+
+// ── 渲染导航 ──
+document.getElementById('navContainer').innerHTML = renderNav('/config.html')
+
+// ── 配置分组 ──
+const CONFIG_GROUPS = {
+  '核心交易控制': ['trading_enabled', 'max_positions', 'max_daily_sl', 'max_loss_per_trade'],
+  '风险管理': ['risk_reward_ratio', 'sl_atr_mult', 'tp_atr_mult', 'atr_deviation'],
+  '时间窗口': ['day_start_time', 'trading_start_time', 'trading_end_time', 'order_start_time', 'order_end_time', 'sync_start_time', 'sync_end_time', 'eod_close_time'],
+  '定时调度': ['signal_interval_min', 'config_interval_min', 'watchlist_interval_min', 'health_check_trading_interval_min', 'health_check_nontrading_interval_hours', 'signal_validity_minutes'],
+  '日志监控': ['log_level', 'health_check_enabled', 'health_check_email', 'alert_email'],
+  '信号确认': ['signal_auto_confirm'],
+  '大盘监控': ['market_index_symbols'],
+  '其他': ['eod_keep_symbols', 'clear_daily_cache']
+}
+
+// ── 加载配置 ──
+async function load() {
+  try {
+    const data = await apiFetch('config', {
+      sort: 'key',
+      perPage: 200
+    })
+
+    configs = data.items || []
+    originalValues = {}
+    modifiedKeys.clear()
+
+    configs.forEach(c => {
+      originalValues[c.key] = c.value
+    })
+
+    render()
+  } catch (err) {
+    console.error('[Config] 加载失败:', err)
+    document.getElementById('configContainer').innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">⚠️</div>
+        <div class="empty-text">连接失败，请检查网络</div>
+      </div>
+    `
+  }
+}
+
+// ── 渲染 ──
+function render() {
+  const container = document.getElementById('configContainer')
+  const configMap = {}
+  configs.forEach(c => configMap[c.key] = c)
+
+  let html = ''
+
+  for (const [groupName, keys] of Object.entries(CONFIG_GROUPS)) {
+    html += `<div class="config-section"><div class="section-title">${groupName}</div>`
+
+    for (const key of keys) {
+      const config = configMap[key]
+      if (!config) continue
+
+      const isModified = modifiedKeys.has(key)
+      const modifiedClass = isModified ? 'modified' : ''
+
+      // 检查是否可以重置
+      const canReset = config.value !== config.default_value && config.default_value !== null && config.default_value !== ''
+      const resetDisabled = canReset ? '' : 'disabled'
+
+      html += `
+        <div class="config-item ${modifiedClass}" data-key="${key}">
+          <div class="config-header">
+            <div class="config-key">${key}</div>
+            <div class="config-default">默认: ${config.default_value || '-'}</div>
+          </div>
+          <div class="config-desc">${config.description || ''}</div>
+          ${renderControl(config)}
+          <div style="margin-top: 8px; text-align: right;">
+            <button class="reset-btn" onclick="resetOne('${key}')" ${resetDisabled}>重置</button>
+          </div>
+        </div>
+      `
+    }
+
+    html += `</div>`
+  }
+
+  container.innerHTML = html
+  updateSaveButton()
+}
+
+// ── 渲染控件 ──
+function renderControl(config) {
+  const key = config.key
+  const value = config.value || config.default_value || ''
+
+  // 布尔值 - Toggle
+  if (value === 'TRUE' || value === 'FALSE' || key.includes('enabled') || key.includes('email') || key.includes('_auto_') || key === 'clear_daily_cache') {
+    const isActive = value === 'TRUE'
+    return `
+      <div class="toggle-container">
+        <div class="toggle ${isActive ? 'active' : ''}" onclick="toggleBool('${key}', this)"></div>
+        <span class="toggle-label">${isActive ? '开启' : '关闭'}</span>
+      </div>
+    `
+  }
+
+  // 日志级别 - Select
+  if (key === 'log_level') {
+    return `
+      <select class="config-select" onchange="updateValue('${key}', this.value)">
+        <option value="DEBUG" ${value === 'DEBUG' ? 'selected' : ''}>DEBUG (详细)</option>
+        <option value="INFO" ${value === 'INFO' ? 'selected' : ''}>INFO (重要)</option>
+        <option value="WARN" ${value === 'WARN' ? 'selected' : ''}>WARN (告警)</option>
+        <option value="ERROR" ${value === 'ERROR' ? 'selected' : ''}>ERROR (错误)</option>
+      </select>
+    `
+  }
+
+  // 时间类 - Time Input (如 09:20, 15:30)
+  if (key.endsWith('_time')) {
+    return `<input type="time" class="config-input" value="${value}" onchange="updateValue('${key}', this.value)">`
+  }
+
+  // 数字类 - Number Input with range
+  if (key.includes('max_') || key.includes('_mult') || key.includes('interval') || key.includes('deviation') || key.includes('ratio') || key.includes('validity')) {
+    const step = key.includes('deviation') || key.includes('ratio') || key.includes('mult') ? '0.1' : '1'
+    // 设置合理的 min/max 范围
+    let min = '0', max = '9999', stepVal = '1', isInt = 'true'
+    if (key.includes('max_positions')) { min = '1'; max = '10'; stepVal = '1' }
+    else if (key.includes('max_daily_sl')) { min = '1'; max = '10'; stepVal = '1' }
+    else if (key.includes('max_loss')) { min = '10'; max = '1000'; stepVal = '10' }
+    else if (key.includes('interval') && key.includes('min')) { min = '1'; max = '60'; stepVal = '1' }
+    else if (key.includes('interval') && key.includes('hours')) { min = '1'; max = '24'; stepVal = '1' }
+    else if (key.includes('validity')) { min = '5'; max = '120'; stepVal = '5' }
+    else if (key.includes('atr_mult')) { min = '0.5'; max = '5.0'; stepVal = '0.1'; isInt = 'false' }
+    else if (key.includes('atr_deviation')) { min = '0.05'; max = '1.0'; stepVal = '0.05'; isInt = 'false' }
+    else if (key.includes('ratio')) { min = '0.5'; max = '5.0'; stepVal = '0.1'; isInt = 'false' }
+
+    // 自然整数使用步进按钮，其他用普通输入框
+    if (stepVal === '1' || stepVal === '10') {
+      return `
+        <div class="stepper-container">
+          <button class="stepper-btn" onclick="stepValue('${key}', -${stepVal})">−</button>
+          <input type="number" step="${stepVal}" min="${min}" max="${max}" class="config-input stepper-input" value="${value}" oninput="updateValue('${key}', this.value)">
+          <button class="stepper-btn" onclick="stepValue('${key}', ${stepVal})">+</button>
+        </div>
+      `
+    }
+
+    return `<input type="number" step="${step}" min="${min}" max="${max}" class="config-input" value="${value}" oninput="updateValue('${key}', this.value)">`
+  }
+
+  // 文本 - Text Input
+  return `<input type="text" class="config-input" value="${value}" oninput="updateValue('${key}', this.value)">`
+}
+
+// ── 步进数值 ──
+window.stepValue = function(key, delta) {
+  const config = configs.find(c => c.key === key)
+  if (!config) return
+
+  const currentVal = parseFloat(config.value) || 0
+  const newVal = Math.round((currentVal + delta) * 100) / 100
+
+  updateValue(key, String(newVal))
+
+  // 直接更新该 input 的值，不重新渲染整个页面
+  const input = document.querySelector(`.config-item[data-key="${key}"] .stepper-input`)
+  if (input) {
+    input.value = String(newVal)
+  }
+}
+
+// ── Toggle 布尔值 ──
+window.toggleBool = function(key, el) {
+  const isActive = el.classList.contains('active')
+  const newValue = isActive ? 'FALSE' : 'TRUE'
+
+  el.classList.toggle('active')
+  const label = el.nextElementSibling
+  label.textContent = isActive ? '关闭' : '开启'
+  label.style.color = isActive ? 'var(--muted)' : 'var(--long)'
+
+  updateValue(key, newValue)
+}
+
+// ── 更新值 ──
+window.updateValue = function(key, newValue) {
+  const config = configs.find(c => c.key === key)
+  if (!config) return
+
+  config.value = newValue
+
+  if (newValue !== originalValues[key]) {
+    modifiedKeys.add(key)
+  } else {
+    modifiedKeys.delete(key)
+  }
+
+  // 更新 modified 样式
+  const item = document.querySelector(`.config-item[data-key="${key}"]`)
+  if (item) {
+    if (modifiedKeys.has(key)) {
+      item.classList.add('modified')
+    } else {
+      item.classList.remove('modified')
+    }
+  }
+
+  updateSaveButton()
+}
+
+// ── 更新保存按钮 ──
+function updateSaveButton() {
+  const btn = document.getElementById('saveBtn')
+  const resetAllBtn = document.getElementById('resetAllBtn')
+  btn.disabled = modifiedKeys.size === 0
+  btn.textContent = modifiedKeys.size > 0 ? `保存配置 (${modifiedKeys.size})` : '保存配置'
+
+  // 检查是否有可重置的配置（当前值与默认值不同）
+  const hasResettable = configs.some(c => c.value !== c.default_value && c.default_value !== null)
+  resetAllBtn.disabled = !hasResettable
+}
+
+// ── 保存所有修改 ──
+async function saveAll() {
+  const btn = document.getElementById('saveBtn')
+  btn.disabled = true
+  btn.textContent = '保存中...'
+
+  let success = 0
+  let failed = 0
+
+  for (const key of modifiedKeys) {
+    const config = configs.find(c => c.key === key)
+    if (!config) continue
+
+    try {
+      const token = getToken()
+      const res = await fetch(`${BASE_URL}/api/collections/config/records/${config.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token
+        },
+        body: JSON.stringify({ value: config.value })
+      })
+
+      if (res.ok) {
+        originalValues[key] = config.value
+        success++
+      } else {
+        failed++
+      }
+    } catch (err) {
+      console.error(`[Config] 保存 ${key} 失败:`, err)
+      failed++
+    }
+  }
+
+  modifiedKeys.clear()
+
+  if (failed === 0) {
+    showToast(`✅ 成功保存 ${success} 项配置`)
+  } else {
+    showToast(`⚠️ 保存完成: 成功 ${success}, 失败 ${failed}`)
+  }
+
+  render()
+}
+
+// ── 重置单个配置 ──
+window.resetOne = function(key) {
+  const config = configs.find(c => c.key === key)
+  if (!config || config.default_value === null || config.default_value === undefined) return
+
+  config.value = config.default_value
+
+  if (config.value !== originalValues[key]) {
+    modifiedKeys.add(key)
+  } else {
+    modifiedKeys.delete(key)
+  }
+
+  render()
+  showToast(`已重置 ${key} 为默认值`)
+}
+
+// ── 重置全部配置 ──
+async function resetAll() {
+  const resettableConfigs = configs.filter(c =>
+    c.default_value !== null &&
+    c.default_value !== undefined &&
+    c.default_value !== '' &&
+    c.value !== c.default_value
+  )
+
+  if (resettableConfigs.length === 0) {
+    showToast('没有可重置的配置')
+    return
+  }
+
+  if (!confirm(`确定要重置 ${resettableConfigs.length} 项配置为默认值吗？`)) {
+    return
+  }
+
+  let success = 0
+  let failed = 0
+
+  for (const config of resettableConfigs) {
+    try {
+      const token = getToken()
+      const res = await fetch(`${BASE_URL}/api/collections/config/records/${config.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token
+        },
+        body: JSON.stringify({ value: config.default_value })
+      })
+
+      if (res.ok) {
+        config.value = config.default_value
+        originalValues[config.key] = config.default_value
+        modifiedKeys.delete(config.key)
+        success++
+      } else {
+        failed++
+      }
+    } catch (err) {
+      console.error(`[Config] 重置 ${config.key} 失败:`, err)
+      failed++
+    }
+  }
+
+  if (failed === 0) {
+    showToast(`✅ 成功重置 ${success} 项配置`)
+  } else {
+    showToast(`⚠️ 重置完成: 成功 ${success}, 失败 ${failed}`)
+  }
+
+  render()
+}
+
+// ── 初始加载 ──
+load()
+</script>
+</body>
+</html>

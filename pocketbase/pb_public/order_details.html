@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>订单明细</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .search-row {
+            margin-bottom: 6px;
+        }
+
+        .search-row > div:first-child {
+            margin-bottom: 4px;
+        }
+
+        .search-row .date-picker {
+            margin-bottom: 0;
+            gap: 6px;
+        }
+
+        .search-row .date-btn {
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+
+        .search-row .refresh-control {
+            gap: 4px;
+        }
+
+        .search-row .refresh-btn {
+            padding: 4px 6px;
+            font-size: 12px;
+        }
+
+        .search-row .refresh-select {
+            padding: 4px 6px;
+            font-size: 11px;
+        }
+
+        /* 覆盖 date-picker 样式 */
+        .date-picker {
+            margin-bottom: 0 !important;
+            flex: 1;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
+
+        .search-input:focus { border-color: var(--accent); }
+
+        /* 流程时间线 */
+        .flow-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+
+        .flow-symbol {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .flow-direction {
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+        }
+
+        .flow-long  { background: rgba(72,187,120,0.15); color: var(--long); }
+        .flow-short { background: rgba(252,129,129,0.15); color: var(--short); }
+
+        .flow-order-id {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+
+        .flow-timeline {
+            position: relative;
+            padding-left: 24px;
+        }
+
+        .flow-timeline::before {
+            content: '';
+            position: absolute;
+            left: 8px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--border);
+        }
+
+        .flow-item {
+            position: relative;
+            padding-bottom: 16px;
+        }
+
+        .flow-dot {
+            position: absolute;
+            left: -20px;
+            top: 16px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .flow-submitted { background: var(--pending); }
+        .flow-filled    { background: var(--executed); }
+        .flow-canceled  { background: var(--rejected); }
+        .flow-closed    { background: var(--short); }
+
+        .flow-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+        }
+
+        .flow-event-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .event-badge {
+            padding: 3px 10px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .event-submitted { background: rgba(246,173,85,0.2);  color: var(--pending); }
+        .event-filled    { background: rgba(104,211,145,0.2); color: var(--executed); }
+        .event-canceled  { background: rgba(113,128,150,0.2); color: var(--rejected); }
+        .event-closed    { background: rgba(252,129,129,0.2); color: var(--short); }
+
+        .flow-time {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .flow-info {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .flow-info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .flow-info-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .flow-info-value {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .flow-reason {
+            margin-top: 10px;
+            padding: 8px 10px;
+            background: rgba(99,179,237,0.05);
+            border-left: 2px solid var(--accent);
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .flow-last .flow-dot {
+            width: 16px;
+            height: 16px;
+            left: -22px;
+            top: 14px;
+        }
+
+        /* 列表模式（无筛选时） */
+        .detail-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 10px;
+        }
+
+        .detail-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .detail-symbol {
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .detail-time {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .detail-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .detail-value {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--accent);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            text-decoration: none;
+            margin-bottom: 12px;
+            transition: all 0.2s;
+        }
+
+        .back-btn:active { background: var(--surface); }
+
+        .load-more-btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin-top: 16px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--accent);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .load-more-btn:active {
+            background: var(--surface);
+        }
+
+        .load-more-btn:disabled {
+            color: var(--muted);
+            cursor: not-allowed;
+        }
+
+        .refresh-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--muted);
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:active {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .refresh-btn.spinning {
+            animation: spin 0.6s linear;
+        }
+
+        .refresh-control {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .refresh-select {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .refresh-select:focus {
+            border-color: var(--accent);
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-top">
+            <div class="logo">
+                <div class="logo-label">TRADING</div>
+                <div class="logo-title">📜 订单明细</div>
+            </div>
+            <div class="live-badge">
+                <div class="live-dot"></div>
+                LIVE
+            </div>
+        </div>
+    </div>
+
+    <div class="content">
+        <div class="search-row">
+            <div style="display:flex;gap:8px;align-items:center;">
+                <div id="datePicker" style="flex:1;"></div>
+                <div class="refresh-control">
+                    <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()">🔄</button>
+                    <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
+                        <option value="0">关闭</option>
+                        <option value="5">5秒</option>
+                        <option value="30" selected>30秒</option>
+                        <option value="60">1分钟</option>
+                    </select>
+                </div>
+            </div>
+            <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/订单ID..." oninput="onSearchChange()">
+        </div>
+        <div id="detailsContainer"><div class="loading">加载中...</div></div>
+        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreDetails()" style="display: none;">加载更多</button>
+    </div>
+
+    <div id="nav"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
+    <script>
+        const pb = new PocketBase('https://pb.lzw-glory.top');
+        let allDetails = [];
+        let filterOrderId = null;
+        let currentDate = new Date().toISOString().split('T')[0];
+        let refreshTimer = null;
+        let currentInterval = 30;
+
+        // Pagination
+        let currentPage = 1;
+        const itemsPerPage = 10;
+        let displayedDetails = [];
+        let hasMore = false;
+        let totalItems = 0;
+
+        async function initAuth() {
+            const token = getToken();
+            if (!token) { location.href = '/login.html?from=/order_details.html'; return; }
+            pb.authStore.save(token, null);
+        }
+
+        const urlParams = new URLSearchParams(window.location.search);
+        filterOrderId = urlParams.get('order_id');
+
+        // 有指定订单时，隐藏搜索框，改为返回按钮
+        if (filterOrderId) {
+            document.getElementById('searchRow').innerHTML = `
+                <a href="/orders.html" class="back-btn">← 返回订单</a>
+            `;
+        }
+
+        async function loadDetails() {
+            try {
+                // 构建日期过滤条件（除非有指定 order_id）
+                let filters = [];
+                if (filterOrderId) {
+                    filters.push(`order_id = "${filterOrderId}"`);
+                } else {
+                    // 按日期过滤
+                    const startTime = `${currentDate} 00:00:00`;
+                    const endTime = `${currentDate} 23:59:59`;
+                    filters.push(`created >= "${startTime}" && created <= "${endTime}"`);
+                }
+                const filter = filters.join(' && ');
+
+                const result = await pb.collection('order_details').getList(currentPage, itemsPerPage, {
+                    filter: filter,
+                    sort: 'created',
+                    $autoCancel: false
+                });
+                allDetails = result.items || [];
+                hasMore = result.items.length === itemsPerPage;
+                totalItems = result.totalItems || 0;
+                resetPagination();
+                renderDetails();
+                updateLoadMoreButton();
+            } catch (error) {
+                console.error('加载失败:', error);
+                if (error.status === 401 || error.status === 403) {
+                    handleAuthError();
+                    return;
+                }
+                document.getElementById('detailsContainer').innerHTML =
+                    `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${error.message}</div></div>`;
+            }
+        }
+
+        function getFilteredDetails() {
+            const searchTerm = (document.getElementById('searchInput')?.value || '').toLowerCase();
+            return searchTerm ? allDetails.filter(d =>
+                (d.symbol || '').toLowerCase().includes(searchTerm) ||
+                (d.order_id || '').toLowerCase().includes(searchTerm) ||
+                (d.signal_id || '').toLowerCase().includes(searchTerm)
+            ) : allDetails;
+        }
+
+        function getPaginatedDetails() {
+            const filtered = getFilteredDetails();
+            const start = (currentPage - 1) * itemsPerPage;
+            return filtered.slice(0, start + itemsPerPage);
+        }
+
+        function updateLoadMoreButton() {
+            const btn = document.getElementById('loadMoreBtn');
+            if (!btn) return;
+            const filtered = getFilteredDetails();
+            const hasMore = displayedDetails.length < filtered.length;
+            btn.style.display = hasMore ? 'block' : 'none';
+            btn.textContent = hasMore ? `加载更多 (${displayedDetails.length}/${filtered.length})` : '没有更多了';
+            btn.disabled = !hasMore;
+        }
+
+        async function loadMoreDetails() {
+            if (!hasMore) return;
+            try {
+                const token = getToken();
+                if (!token) return;
+
+                currentPage++;
+
+                let filters = [];
+                if (filterOrderId) {
+                    filters.push(`order_id = \"${filterOrderId}\"`);
+                } else {
+                    const startTime = `${currentDate} 00:00:00`;
+                    const endTime = `${currentDate} 23:59:59`;
+                    filters.push(`created >= \"${startTime}\" && created <= \"${endTime}\"`);
+                }
+                const filter = filters.join(' && ');
+
+                const result = await pb.collection('order_details').getList(currentPage, itemsPerPage, {
+                    filter: filter,
+                    sort: 'created',
+                    $autoCancel: false
+                });
+
+                allDetails = [...allDetails, ...result.items];
+                hasMore = result.items.length === itemsPerPage;
+                totalItems = result.totalItems || 0;
+
+                displayedDetails = allDetails;
+                renderDetails();
+                updateLoadMoreButton();
+            } catch (error) {
+                console.error('加载更多失败:', error);
+                currentPage--;
+            }
+        }
+
+        function resetPagination() {
+            currentPage = 1;
+            displayedDetails = getPaginatedDetails();
+        }
+
+        function renderDetails() {
+            const container = document.getElementById('detailsContainer');
+
+            if (filterOrderId && allDetails.length > 0) {
+                renderFlowView(container);
+                return;
+            }
+
+            const filtered = displayedDetails;
+
+            if (filtered.length === 0) {
+                container.innerHTML = `<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">暂无明细</div></div>`;
+                return;
+            }
+            container.innerHTML = filtered.map(renderDetailCard).join('');
+        }
+
+        function onSearchChange() {
+            resetPagination();
+            renderDetails();
+            updateLoadMoreButton();
+        }
+
+        function renderFlowView(container) {
+            const symbol    = allDetails[0]?.symbol || 'N/A';
+            const direction = allDetails[0]?.direction || '';
+            const orderId   = filterOrderId || '';
+
+            const sorted = [...allDetails].sort((a, b) =>
+                new Date(a.event_time || a.created) - new Date(b.event_time || b.created)
+            );
+
+            container.innerHTML = `
+                <div class="flow-header">
+                    <div class="flow-symbol">${symbol}</div>
+                    <div class="flow-direction flow-${direction}">${direction.toUpperCase()}</div>
+                    <div class="flow-order-id">${orderId}</div>
+                </div>
+                <div class="flow-timeline">
+                    ${sorted.map((detail, i) => {
+                        const isLast = i === sorted.length - 1;
+                        const extra  = detail.extra || {};
+                        const evt    = detail.event_type || 'submitted';
+                        return `
+                        <div class="flow-item ${isLast ? 'flow-last' : ''}">
+                            <div class="flow-dot flow-${evt}"></div>
+                            <div class="flow-card">
+                                <div class="flow-event-row">
+                                    <span class="event-badge event-${evt}">${evt.toUpperCase()}</span>
+                                    <span class="flow-time">${formatBeijingTime(detail.event_time || detail.created)}</span>
+                                </div>
+                                <div class="flow-info">
+                                    ${extra.order_type ? `<div class="flow-info-item"><div class="flow-info-label">订单类型</div><div class="flow-info-value">${extra.order_type}</div></div>` : ''}
+                                    ${extra.limit_price != null ? `<div class="flow-info-item"><div class="flow-info-label">限价</div><div class="flow-info-value">$${Number(extra.limit_price).toFixed(2)}</div></div>` : ''}
+                                    ${extra.fill_price  != null ? `<div class="flow-info-item"><div class="flow-info-label">成交价</div><div class="flow-info-value">$${Number(extra.fill_price).toFixed(2)}</div></div>` : ''}
+                                    ${extra.quantity    != null ? `<div class="flow-info-item"><div class="flow-info-label">数量</div><div class="flow-info-value">${extra.quantity}</div></div>` : ''}
+                                    ${extra.filled_qty  != null ? `<div class="flow-info-item"><div class="flow-info-label">已成交</div><div class="flow-info-value">${extra.filled_qty}</div></div>` : ''}
+                                    ${extra.sequence    != null ? `<div class="flow-info-item"><div class="flow-info-label">序号</div><div class="flow-info-value">#${extra.sequence}</div></div>` : ''}
+                                </div>
+                                ${detail.reason ? `<div class="flow-reason">${detail.reason}</div>` : ''}
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        function renderDetailCard(detail) {
+            const extra = detail.extra || {};
+            const evt   = detail.event_type || 'submitted';
+            return `
+                <div class="detail-card">
+                    <div class="detail-header">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span class="detail-symbol">${detail.symbol || 'N/A'}</span>
+                            <span class="event-badge event-${evt}">${evt.toUpperCase()}</span>
+                        </div>
+                        <span class="detail-time">${formatBeijingTime(detail.event_time || detail.created)}</span>
+                    </div>
+                    <div class="detail-grid">
+                        <div class="detail-item"><div class="detail-label">订单类型</div><div class="detail-value">${extra.order_type || 'N/A'}</div></div>
+                        <div class="detail-item"><div class="detail-label">方向</div><div class="detail-value">${detail.direction || 'N/A'}</div></div>
+                        <div class="detail-item"><div class="detail-label">限价</div><div class="detail-value">${extra.limit_price != null ? '$' + Number(extra.limit_price).toFixed(2) : 'N/A'}</div></div>
+                        <div class="detail-item"><div class="detail-label">成交价</div><div class="detail-value">${extra.fill_price != null ? '$' + Number(extra.fill_price).toFixed(2) : 'N/A'}</div></div>
+                        <div class="detail-item"><div class="detail-label">数量</div><div class="detail-value">${extra.quantity || 'N/A'}</div></div>
+                        <div class="detail-item"><div class="detail-label">已成交</div><div class="detail-value">${extra.filled_qty || 'N/A'}</div></div>
+                        <div class="detail-item" style="grid-column:1/-1;"><div class="detail-label">订单ID</div><div class="detail-value" style="font-size:11px;word-break:break-all;">${detail.order_id || 'N/A'}</div></div>
+                    </div>
+                    ${detail.reason ? `<div class="flow-reason" style="margin-top:10px;">${detail.reason}</div>` : ''}
+                    ${detail.signal_id ? `<div class="flow-reason" style="margin-top:6px;">信号ID: ${detail.signal_id}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function manualRefresh() {
+            const btn = document.getElementById('refreshBtn');
+            btn.classList.add('spinning');
+            setTimeout(() => btn.classList.remove('spinning'), 600);
+            loadDetails();
+        }
+
+        function changeRefreshInterval(seconds) {
+            currentInterval = parseInt(seconds);
+
+            // 清除旧的定时器
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+
+            // 设置新的定时器
+            if (currentInterval > 0) {
+                refreshTimer = setInterval(loadDetails, currentInterval * 1000);
+            }
+        }
+
+        window.onDateChange = function(startDate, endDate) {
+            currentDate = startDate;
+            loadDetails();
+        };
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initAuth();
+            document.getElementById('nav').innerHTML = renderNav('/order_details.html');
+            document.getElementById('datePicker').innerHTML = renderDatePicker();
+            if (filterOrderId) {
+                document.getElementById('datePicker').style.display = 'none';
+            }
+            loadDetails();
+            changeRefreshInterval(30);
+
+            // 向下滚动自动加载更多
+            let isLoadingMore = false;
+            window.addEventListener('scroll', () => {
+                const scrollTop = window.scrollY || document.documentElement.scrollTop;
+                const scrollHeight = document.documentElement.scrollHeight;
+                const clientHeight = document.documentElement.clientHeight;
+
+                // 距离底部 200px 时触发加载
+                if (scrollTop + clientHeight >= scrollHeight - 200) {
+                    if (!isLoadingMore && hasMore && !filterOrderId) {
+                        isLoadingMore = true;
+                        loadMoreDetails().finally(() => {
+                            isLoadingMore = false;
+                        });
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>

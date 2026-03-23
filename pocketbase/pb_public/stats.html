@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>统计分析 - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        /* 页面特定样式 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            padding: 12px 16px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+        }
+
+        .stat-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .stat-value.positive { color: var(--long); }
+        .stat-value.negative { color: var(--short); }
+
+        .chart-container {
+            margin: 12px 16px;
+            padding: 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .chart-title {
+            font-size: 13px;
+            margin-bottom: 12px;
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .detail-section {
+            margin: 12px 16px;
+            padding: 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .section-title {
+            font-size: 13px;
+            margin-bottom: 12px;
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        /* 日期选择按钮组 */
+        .date-range-selector {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .date-range-btn {
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .date-range-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--bg);
+            font-weight: 700;
+        }
+
+        .date-inputs {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .date-input {
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
+
+        .date-input::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+        }
+
+        .apply-date-btn {
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: none;
+            background: var(--accent);
+            color: var(--bg);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .refresh-btn {
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:active {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        /* 表格样式 */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+
+        .data-table th, .data-table td {
+            padding: 10px 8px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .data-table th {
+            color: var(--muted);
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 0.5px;
+        }
+
+        .data-table td {
+            color: var(--text);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .data-table tr:hover {
+            background: rgba(255,255,255,0.02);
+        }
+
+        .pnl-positive { color: var(--long); }
+        .pnl-negative { color: var(--short); }
+
+        /* 分页 */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            margin-top: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+        }
+
+        .pagination button {
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .pagination button.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--bg);
+            font-weight: 700;
+        }
+
+        .pagination .page-info {
+            color: var(--muted);
+        }
+
+        /* 错误提示 */
+        .error {
+            background: rgba(252,129,129,0.1);
+            border: 1px solid rgba(252,129,129,0.3);
+            color: var(--short);
+            padding: 12px;
+            margin: 12px 16px;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        /* Header 区域 */
+        .header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(8,11,16,0.92);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 20px 12px;
+        }
+
+        .header h1 {
+            font-size: 18px;
+            margin-bottom: 12px;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        /* 手机适配 */
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+                gap: 8px;
+                padding: 8px 12px;
+            }
+
+            .stat-card {
+                padding: 10px;
+            }
+
+            .stat-label {
+                font-size: 9px;
+                margin-bottom: 4px;
+            }
+
+            .stat-value {
+                font-size: 16px;
+            }
+
+            .chart-container {
+                margin: 8px 12px;
+                padding: 10px;
+            }
+
+            .detail-section {
+                margin: 8px 12px;
+                padding: 10px;
+            }
+
+            .data-table {
+                font-size: 10px;
+            }
+
+            .data-table th, .data-table td {
+                padding: 6px 4px;
+            }
+
+            .header {
+                padding: 12px 16px 8px;
+            }
+
+            .header h1 {
+                font-size: 16px;
+                margin-bottom: 8px;
+            }
+
+            .header-controls {
+                gap: 6px;
+            }
+
+            .date-range-btn {
+                padding: 4px 8px;
+                font-size: 10px;
+            }
+
+            .date-input {
+                padding: 4px 8px;
+                font-size: 10px;
+            }
+
+            .apply-date-btn {
+                padding: 4px 8px;
+                font-size: 10px;
+            }
+
+            .refresh-btn {
+                padding: 4px 8px;
+                font-size: 10px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .date-range-selector {
+                gap: 4px;
+            }
+
+            .date-inputs {
+                gap: 4px;
+                flex-wrap: wrap;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📈 统计分析</h1>
+        <div class="header-controls">
+            <div class="date-range-selector">
+                <button class="date-range-btn" data-range="7days">近7天</button>
+                <button class="date-range-btn active" data-range="30days">近30天</button>
+                <button class="date-range-btn" data-range="90days">近90天</button>
+                <button class="date-range-btn" data-range="all">全部</button>
+            </div>
+            <div class="date-inputs">
+                <input type="date" class="date-input" id="startDate" title="开始日期">
+                <span style="color: #94a3b8;">至</span>
+                <input type="date" class="date-input" id="endDate" title="结束日期">
+                <button class="apply-date-btn" onclick="applyCustomDate()">应用</button>
+            </div>
+            <button class="refresh-btn" onclick="loadStats()">🔄 刷新</button>
+        </div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-label">总订单数</div>
+            <div class="stat-value" id="totalOrders">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">平仓次数</div>
+            <div class="stat-value" id="totalTrades">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">总盈亏</div>
+            <div class="stat-value" id="totalPnL">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">总手续费</div>
+            <div class="stat-value" id="totalCommission">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">胜率</div>
+            <div class="stat-value" id="winRate">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">平均盈亏比</div>
+            <div class="stat-value" id="avgRR">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">盈利次数</div>
+            <div class="stat-value positive" id="wins">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">亏损次数</div>
+            <div class="stat-value negative" id="losses">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">总信号数</div>
+            <div class="stat-value" id="totalSignals">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">多头信号</div>
+            <div class="stat-value positive" id="signalsLong">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">空头信号</div>
+            <div class="stat-value negative" id="signalsShort">-</div>
+        </div>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">📈 收益曲线</div>
+        <canvas id="pnlChart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">📊 每日盈亏明细</div>
+        <canvas id="dailyChart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">🎯 信号曲线 (累计信号数)</div>
+        <canvas id="signalChart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <div class="chart-title">📦 订单曲线 (累计订单数)</div>
+        <canvas id="orderChart"></canvas>
+    </div>
+
+    <div class="detail-section">
+        <div class="section-title">📋 平仓订单明细</div>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>日期</th>
+                    <th>标的</th>
+                    <th>方向</th>
+                    <th>类型</th>
+                    <th>入场价</th>
+                    <th>平仓价</th>
+                    <th>数量</th>
+                    <th>盈亏</th>
+                    <th>盈亏比</th>
+                    <th>手续费</th>
+                </tr>
+            </thead>
+            <tbody id="tradesTable"></tbody>
+        </table>
+        <div class="pagination" id="pagination"></div>
+    </div>
+
+    <div id="nav"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
+    <script>
+        const pb = new PocketBase('https://pb.lzw-glory.top');
+        let currentRange = '30days';
+        let customStartDate = null;
+        let customEndDate = null;
+        let pnlChart = null;
+        let dailyChart = null;
+        let signalChart = null;
+        let orderChart = null;
+        let currentPage = 1;
+        const pageSize = 20;
+        let allTrades = [];
+
+        // Cache last loaded data so resize can redraw charts without refetching.
+        let cachedOrders = null;
+        let cachedSignals = null;
+        let cachedStartDate = null;
+        let cachedEndDate = null;
+
+        function getChartHeight() {
+            const width = window.innerWidth;
+            if (width < 480) return 150;
+            if (width < 768) return 160;
+            return 200;
+        }
+
+        function setCanvasHeights() {
+            const height = getChartHeight();
+            document.getElementById('pnlChart').height = height;
+            document.getElementById('dailyChart').height = height;
+            document.getElementById('signalChart').height = height;
+            document.getElementById('orderChart').height = height;
+        }
+
+        async function initAuth() {
+            const token = getToken();
+            if (!token) {
+                location.href = '/login.html?from=/stats.html';
+                return;
+            }
+            pb.authStore.save(token, null);
+        }
+
+        async function loadStats() {
+            try {
+                setCanvasHeights();
+                const endDate = new Date();
+                let startDate = new Date();
+
+                // 优先使用自定义日期
+                if (customStartDate && customEndDate) {
+                    startDate = new Date(customStartDate);
+                    endDate.setTime(new Date(customEndDate).getTime() + 86400000); // 加一天包含结束日期
+                } else if (currentRange === '7days') {
+                    startDate.setDate(endDate.getDate() - 7);
+                } else if (currentRange === '30days') {
+                    startDate.setDate(endDate.getDate() - 30);
+                } else if (currentRange === '90days') {
+                    startDate.setDate(endDate.getDate() - 90);
+                } else {
+                    startDate = new Date('2020-01-01');
+                }
+
+                const startTimeMs = startDate.getTime();
+                const endTimeMs = endDate.getTime();
+
+                // 使用 bar_time_ms 过滤（美国时间）
+                const orders = await pb.collection('orders').getFullList({
+                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    sort: '-created'
+                });
+
+                // 加载信号数据
+                const signals = await pb.collection('signals').getFullList({
+                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    sort: '-created'
+                });
+
+                const stats = calculateStats(orders);
+                renderStats(stats, signals);
+                renderCharts(orders, signals, startDate, endDate);
+                renderTradesTable(orders);
+
+                // Cache for resize redraw (no network requests on scroll).
+                cachedOrders = orders;
+                cachedSignals = signals;
+                cachedStartDate = startDate;
+                cachedEndDate = endDate;
+            } catch (error) {
+                console.error('加载失败:', error);
+                showError('加载数据失败: ' + error.message);
+            }
+        }
+
+        function calculateStats(orders) {
+            const entryOrders = {};
+            let totalPnL = 0;
+            let wins = 0;
+            let losses = 0;
+            let totalCommission = 0;
+            let rrSum = 0;
+            let rrCount = 0;
+            const trades = [];
+
+            orders.forEach(order => {
+                const uniqueId = order.unique_id || '';
+                const parts = uniqueId.split('_');
+
+                if (parts.length < 5) return;
+
+                const baseId = parts.slice(0, 4).join('_');
+                const orderType = parts[4];
+
+                if (orderType === 'Entry' && order.status === 'Filled') {
+                    entryOrders[baseId] = order;
+                } else if ((orderType === 'TakeProfit' || orderType === 'StopLoss') && order.status === 'Filled') {
+                    const entry = entryOrders[baseId];
+                    if (entry) {
+                        const direction = order.direction;
+                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
+                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
+                        const quantity = parseFloat(order.filled_qty || order.quantity);
+
+                        let pnl = 0;
+                        if (direction === 'long') {
+                            pnl = (exitPrice - entryPrice) * quantity;
+                        } else {
+                            pnl = (entryPrice - exitPrice) * quantity;
+                        }
+
+                        totalPnL += pnl;
+
+                        const commission = parseFloat(order.commission) || 0;
+                        totalCommission += commission;
+
+                        const rr = parseFloat(order.rr_ratio) || 0;
+                        if (rr > 0) {
+                            rrSum += rr;
+                            rrCount++;
+                        }
+
+                        if (pnl > 0) wins++;
+                        else if (pnl < 0) losses++;
+
+                        trades.push({
+                            date: order.created.split(' ')[0],
+                            symbol: order.symbol,
+                            direction: direction,
+                            orderType: orderType === 'TakeProfit' ? '止盈' : '止损',
+                            entryPrice: entryPrice,
+                            exitPrice: exitPrice,
+                            quantity: quantity,
+                            pnl: pnl,
+                            rr: rr,
+                            commission: commission
+                        });
+                    }
+                }
+            });
+
+            const totalTrades = wins + losses;
+            const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
+            const avgRR = rrCount > 0 ? rrSum / rrCount : 0;
+
+            return {
+                totalOrders: orders.length,
+                totalTrades: totalTrades,
+                totalPnL: totalPnL,
+                totalCommission: totalCommission,
+                winRate: winRate,
+                avgRR: avgRR,
+                wins: wins,
+                losses: losses,
+                trades: trades
+            };
+        }
+
+        function renderStats(stats, signals = []) {
+            document.getElementById('totalOrders').textContent = stats.totalOrders;
+            document.getElementById('totalTrades').textContent = stats.totalTrades;
+
+            const pnlEl = document.getElementById('totalPnL');
+            pnlEl.textContent = `$${stats.totalPnL.toFixed(2)}`;
+            pnlEl.className = 'stat-value ' + (stats.totalPnL >= 0 ? 'positive' : 'negative');
+
+            const commEl = document.getElementById('totalCommission');
+            commEl.textContent = `$${stats.totalCommission.toFixed(2)}`;
+            commEl.className = 'stat-value';
+
+            document.getElementById('winRate').textContent = stats.winRate + '%';
+            document.getElementById('avgRR').textContent = stats.avgRR > 0 ? stats.avgRR.toFixed(2) : '-';
+            document.getElementById('wins').textContent = stats.wins;
+            document.getElementById('losses').textContent = stats.losses;
+
+            // 信号统计
+            document.getElementById('totalSignals').textContent = signals.length;
+            const signalsLong = signals.filter(s => s.direction === 'long').length;
+            const signalsShort = signals.filter(s => s.direction === 'short').length;
+            document.getElementById('signalsLong').textContent = signalsLong;
+            document.getElementById('signalsShort').textContent = signalsShort;
+        }
+
+        function renderCharts(orders, signals, startDate, endDate) {
+            const dailyPnL = {};
+            const entryOrders = {};
+
+            // 每日信号统计（区分多空）
+            const dailySignalsLong = {};
+            const dailySignalsShort = {};
+
+            // 每日订单统计（区分多空）
+            const dailyOrdersLong = {};
+            const dailyOrdersShort = {};
+
+            orders.forEach(order => {
+                const date = order.created.split(' ')[0];
+                const uniqueId = order.unique_id || '';
+                const parts = uniqueId.split('_');
+
+                // 统计订单数
+                const orderDirection = order.direction;
+                if (orderDirection === 'long') {
+                    dailyOrdersLong[date] = (dailyOrdersLong[date] || 0) + 1;
+                } else if (orderDirection === 'short') {
+                    dailyOrdersShort[date] = (dailyOrdersShort[date] || 0) + 1;
+                }
+
+                if (parts.length < 5) return;
+
+                const baseId = parts.slice(0, 4).join('_');
+                const orderType = parts[4];
+
+                if (orderType === 'Entry' && order.status === 'Filled') {
+                    entryOrders[baseId] = order;
+                } else if ((orderType === 'TakeProfit' || orderType === 'StopLoss') && order.status === 'Filled') {
+                    const entry = entryOrders[baseId];
+                    if (entry) {
+                        const direction = order.direction;
+                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
+                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
+                        const quantity = parseFloat(order.filled_qty || order.quantity);
+
+                        let pnl = 0;
+                        if (direction === 'long') {
+                            pnl = (exitPrice - entryPrice) * quantity;
+                        } else {
+                            pnl = (entryPrice - exitPrice) * quantity;
+                        }
+
+                        dailyPnL[date] = (dailyPnL[date] || 0) + pnl;
+                    }
+                }
+            });
+
+            // 统计信号数
+            console.log('Signals data:', signals);
+            signals.forEach(signal => {
+                const date = signal.created.split(' ')[0];
+                const direction = signal.direction;
+                console.log('Signal:', signal.symbol, direction, date);
+                if (direction === 'long') {
+                    dailySignalsLong[date] = (dailySignalsLong[date] || 0) + 1;
+                } else if (direction === 'short') {
+                    dailySignalsShort[date] = (dailySignalsShort[date] || 0) + 1;
+                }
+            });
+            console.log('Daily signals long:', dailySignalsLong);
+            console.log('Daily signals short:', dailySignalsShort);
+
+            // 生成日期标签
+            const labels = [];
+            const currentDate = new Date(startDate);
+            while (currentDate <= endDate) {
+                labels.push(currentDate.toISOString().split('T')[0]);
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+
+            // 收益曲线
+            let cumulative = 0;
+            const pnlData = labels.map(dateStr => {
+                cumulative += (dailyPnL[dateStr] || 0);
+                return cumulative;
+            });
+
+            const ctx = document.getElementById('pnlChart').getContext('2d');
+            if (pnlChart) pnlChart.destroy();
+
+            pnlChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '累计盈亏 ($)',
+                        data: pnlData,
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { labels: { color: '#e0e6ed' } }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        },
+                        y: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        }
+                    }
+                }
+            });
+
+            // 每日盈亏柱状图
+            const dailyData = labels.map(date => dailyPnL[date] || 0);
+            const barColors = dailyData.map(pnl => pnl >= 0 ? '#10b981' : '#ef4444');
+
+            const ctx2 = document.getElementById('dailyChart').getContext('2d');
+            if (dailyChart) dailyChart.destroy();
+
+            dailyChart = new Chart(ctx2, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '每日盈亏 ($)',
+                        data: dailyData,
+                        backgroundColor: barColors
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { labels: { color: '#e0e6ed' } }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        },
+                        y: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        }
+                    }
+                }
+            });
+
+            // 信号曲线（区分多空）
+            let cumLong = 0, cumShort = 0;
+            const signalLongData = [];
+            const signalShortData = [];
+            labels.forEach(dateStr => {
+                cumLong += (dailySignalsLong[dateStr] || 0);
+                cumShort += (dailySignalsShort[dateStr] || 0);
+                signalLongData.push(cumLong);
+                signalShortData.push(cumShort);
+            });
+
+            const ctx3 = document.getElementById('signalChart').getContext('2d');
+            if (signalChart) signalChart.destroy();
+
+            signalChart = new Chart(ctx3, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '做多信号',
+                            data: signalLongData,
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: '做空信号',
+                            data: signalShortData,
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { labels: { color: '#e0e6ed' } }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        },
+                        y: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        }
+                    }
+                }
+            });
+
+            // 订单曲线（区分多空）
+            let orderLongCum = 0, orderShortCum = 0;
+            const orderLongData = [];
+            const orderShortData = [];
+            labels.forEach(dateStr => {
+                orderLongCum += (dailyOrdersLong[dateStr] || 0);
+                orderShortCum += (dailyOrdersShort[dateStr] || 0);
+                orderLongData.push(orderLongCum);
+                orderShortData.push(orderShortCum);
+            });
+
+            const ctx4 = document.getElementById('orderChart').getContext('2d');
+            if (orderChart) orderChart.destroy();
+
+            orderChart = new Chart(ctx4, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '做多订单',
+                            data: orderLongData,
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: '做空订单',
+                            data: orderShortData,
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { labels: { color: '#e0e6ed' } }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        },
+                        y: {
+                            ticks: { color: '#94a3b8' },
+                            grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderTradesTable(orders) {
+            const stats = calculateStats(orders);
+            allTrades = stats.trades;
+            currentPage = 1;
+            renderTradesPage();
+        }
+
+        function renderTradesPage() {
+            const tbody = document.getElementById('tradesTable');
+            const paginationEl = document.getElementById('pagination');
+
+            if (allTrades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无平仓记录</td></tr>';
+                paginationEl.innerHTML = '';
+                return;
+            }
+
+            const totalPages = Math.ceil(allTrades.length / pageSize);
+            const start = (currentPage - 1) * pageSize;
+            const end = Math.min(start + pageSize, allTrades.length);
+            const pageTrades = allTrades.slice(start, end);
+
+            tbody.innerHTML = pageTrades.map(trade => `
+                <tr>
+                    <td>${trade.date}</td>
+                    <td>${trade.symbol}</td>
+                    <td>${trade.direction === 'long' ? '做多' : '做空'}</td>
+                    <td>${trade.orderType}</td>
+                    <td>$${trade.entryPrice.toFixed(2)}</td>
+                    <td>$${trade.exitPrice.toFixed(2)}</td>
+                    <td>${trade.quantity}</td>
+                    <td class="${trade.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">$${trade.pnl.toFixed(2)}</td>
+                    <td>${trade.rr > 0 ? trade.rr.toFixed(2) : '-'}</td>
+                    <td>$${trade.commission.toFixed(2)}</td>
+                </tr>
+            `).join('');
+
+            // 渲染分页
+            let html = '';
+            html += `<button onclick="goPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>上一页</button>`;
+
+            for (let i = 1; i <= totalPages; i++) {
+                if (totalPages <= 7 || Math.abs(i - currentPage) <= 2 || i === 1 || i === totalPages) {
+                    html += `<button class="${i === currentPage ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
+                } else if (Math.abs(i - currentPage) === 3) {
+                    html += `<span class="page-info">...</span>`;
+                }
+            }
+
+            html += `<button onclick="goPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>下一页</button>`;
+            html += `<span class="page-info">${allTrades.length} 条</span>`;
+            paginationEl.innerHTML = html;
+        }
+
+        function goPage(page) {
+            const totalPages = Math.ceil(allTrades.length / pageSize);
+            if (page < 1 || page > totalPages) return;
+            currentPage = page;
+            renderTradesPage();
+            document.querySelector('.detail-section').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function showError(message) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error';
+            errorDiv.textContent = message;
+            document.body.insertBefore(errorDiv, document.body.firstChild);
+            setTimeout(() => errorDiv.remove(), 5000);
+        }
+
+        function applyCustomDate() {
+            const startInput = document.getElementById('startDate').value;
+            const endInput = document.getElementById('endDate').value;
+
+            if (!startInput || !endInput) {
+                showError('请选择开始日期和结束日期');
+                return;
+            }
+
+            if (new Date(startInput) > new Date(endInput)) {
+                showError('开始日期不能晚于结束日期');
+                return;
+            }
+
+            // 清除快捷按钮选中状态
+            document.querySelectorAll('.date-range-btn').forEach(b => b.classList.remove('active'));
+
+            // 设置自定义日期
+            customStartDate = startInput;
+            customEndDate = endInput;
+
+            loadStats();
+        }
+
+        document.querySelectorAll('.date-range-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.date-range-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentRange = btn.dataset.range;
+                loadStats();
+            });
+        });
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initAuth();
+            document.getElementById('nav').innerHTML = renderNav('/stats.html');
+            setCanvasHeights();
+            loadStats();
+
+            // iOS Safari scroll can trigger resize when the address bar shows/hides.
+            // Only redraw charts when width changes (orientation / desktop resize).
+            let lastInnerWidth = window.innerWidth;
+            window.addEventListener('resize', () => {
+                if (window.innerWidth === lastInnerWidth) return;
+                lastInnerWidth = window.innerWidth;
+
+                setCanvasHeights();
+                if (cachedOrders && cachedSignals && cachedStartDate && cachedEndDate) {
+                    renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

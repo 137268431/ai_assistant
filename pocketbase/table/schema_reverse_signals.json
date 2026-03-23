@@ -1,0 +1,258 @@
+[
+    {
+        "id": "_pb_reverse_signals_",
+        "listRule": null,
+        "viewRule": null,
+        "createRule": null,
+        "updateRule": null,
+        "deleteRule": null,
+        "name": "reverse_signals",
+        "type": "base",
+        "fields": [
+            {
+                "autogeneratePattern": "[a-z0-9]{15}",
+                "hidden": false,
+                "id": "text3208210256",
+                "max": 15,
+                "min": 15,
+                "name": "id",
+                "pattern": "^[a-z0-9]+$",
+                "presentable": false,
+                "primaryKey": true,
+                "required": true,
+                "system": true,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "rev_symbol",
+                "max": 0,
+                "min": 0,
+                "name": "symbol",
+                "pattern": "",
+                "presentable": true,
+                "primaryKey": false,
+                "required": true,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "hidden": false,
+                "id": "rev_direction",
+                "maxSelect": 1,
+                "name": "direction",
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "long",
+                    "short"
+                ]
+            },
+            {
+                "hidden": false,
+                "id": "rev_strength",
+                "maxSelect": 1,
+                "name": "strength",
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "strong",
+                    "medium",
+                    "weak"
+                ]
+            },
+            {
+                "hidden": false,
+                "id": "rev_score",
+                "max": null,
+                "min": null,
+                "name": "score",
+                "onlyInt": false,
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "number"
+            },
+            {
+                "hidden": false,
+                "id": "rev_triggered",
+                "maxSize": 2097152,
+                "name": "triggered_signals",
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "json"
+            },
+            {
+                "hidden": false,
+                "id": "rev_action",
+                "maxSelect": 1,
+                "name": "action_type",
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "close",
+                    "cancel",
+                    "adjust_sl",
+                    "adjust_tp"
+                ]
+            },
+            {
+                "hidden": false,
+                "id": "rev_status",
+                "maxSelect": 1,
+                "name": "status",
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "pending",
+                    "confirmed",
+                    "cancelled",
+                    "expired"
+                ]
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "rev_reason",
+                "max": 500,
+                "min": 0,
+                "name": "reason",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "hidden": false,
+                "id": "rev_extra",
+                "maxSize": 2097152,
+                "name": "extra",
+                "presentable": false,
+                "required": false,
+                "system": false,
+                "type": "json"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "rev_proc_time",
+                "max": 0,
+                "min": 0,
+                "name": "processed_time",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "hidden": false,
+                "id": "rev_bar_time",
+                "max": null,
+                "min": null,
+                "name": "bar_time_ms",
+                "onlyInt": true,
+                "presentable": false,
+                "required": false,
+                "system": false,
+                "type": "number"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "rev_us_time",
+                "max": 0,
+                "min": 0,
+                "name": "us_time",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "rev_cn_time",
+                "max": 0,
+                "min": 0,
+                "name": "cn_time",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "hidden": false,
+                "id": "rev_source",
+                "maxSelect": 1,
+                "name": "source",
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "signal",
+                    "indicator",
+                    "manual"
+                ]
+            },
+            {
+                "hidden": false,
+                "id": "rev_priority",
+                "max": 10,
+                "min": 1,
+                "name": "priority",
+                "onlyInt": true,
+                "presentable": false,
+                "required": true,
+                "system": false,
+                "type": "number"
+            },
+            {
+                "hidden": false,
+                "id": "autodate2990389176",
+                "name": "created",
+                "onCreate": true,
+                "onUpdate": false,
+                "presentable": false,
+                "system": false,
+                "type": "autodate"
+            },
+            {
+                "hidden": false,
+                "id": "autodate3332085495",
+                "name": "updated",
+                "onCreate": true,
+                "onUpdate": true,
+                "presentable": false,
+                "system": false,
+                "type": "autodate"
+            }
+        ],
+        "indexes": [
+            "CREATE INDEX idx_reverse_signals_symbol ON reverse_signals (symbol)",
+            "CREATE INDEX idx_reverse_signals_status ON reverse_signals (status)",
+            "CREATE INDEX idx_reverse_signals_bar_time_ms ON reverse_signals (bar_time_ms)",
+            "CREATE INDEX idx_reverse_signals_priority ON reverse_signals (priority)",
+            "CREATE INDEX idx_reverse_signals_source ON reverse_signals (source)"
+        ],
+        "system": false
+    }
+]
