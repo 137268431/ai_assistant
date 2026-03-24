@@ -124,19 +124,6 @@ function notifyNewSignal(signal) {
     }
   }
 
-  // 波动率和 ATR 信息
-  let volatilityText = "";
-  if (extra.atr_pct) {
-    const atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低";
-    const atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "〜" : "·";
-    volatilityText = `\n**波动率:** ${atrEmoji} ${atrLevel} (ATR: ${extra.atr_pct.toFixed(2)}%)`;
-    if (extra.sl_atr_ratio) {
-      volatilityText += `\n**ATR止损:** ${extra.sl_atr_ratio.toFixed(1)}倍`;
-    }
-  } else if (extra.atr) {
-    volatilityText = `\n**ATR:** ${extra.atr.toFixed(2)}`;
-  }
-
   // 计算止盈止损对应的盈亏金额（乘以股数）
   const isLong = signal.direction === "long";
   const shares = signal.shares || 0;
@@ -177,10 +164,16 @@ function notifyNewSignal(signal) {
   rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**风报比:** " + (signal.rr || "N/A") } });
   rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**股数:** " + (signal.shares || "N/A") } });
 
-  // 波动率和 ATR 信息
-  let volatilityColumn = null;
-  if (volatilityText) {
-    volatilityColumn = { tag: "div", text: { tag: "lark_md", content: volatilityText.replace(/^\n/, "") } };
+  // 波动率和 ATR 止损（股数下面）
+  if (extra.atr_pct) {
+    const atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低";
+    const atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "〜" : "·";
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: `**波动率:** ${atrEmoji} ${atrLevel} ${extra.atr_pct.toFixed(2)}%` } });
+    if (extra.sl_atr_ratio) {
+      rightColumn.push({ tag: "div", text: { tag: "lark_md", content: `**ATR止损:** ${extra.sl_atr_ratio.toFixed(1)}倍` } });
+    }
+  } else if (extra.atr) {
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**ATR:** " + extra.atr.toFixed(2) } });
   }
 
   // 大盘信息
@@ -226,16 +219,6 @@ function notifyNewSignal(signal) {
       { tag: "column", width: "weighted", weight: 1, elements: [signalIdColumn] }
     ]
   });
-
-  // 添加波动率行（如果存在）
-  if (volatilityColumn) {
-    elements.push({
-      tag: "column_set",
-      columns: [
-        { tag: "column", width: "weighted", weight: 1, elements: [volatilityColumn] }
-      ]
-    });
-  }
 
   // 添加大盘信息行（如果存在）
   if (marketColumn) {
