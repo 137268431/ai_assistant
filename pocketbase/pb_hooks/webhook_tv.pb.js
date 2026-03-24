@@ -20,12 +20,12 @@ routerAdd("POST", "/webhook/tv", (c) => {
     // 技术指标表（type = "indicator"）
     // ══════════════════════════════════════
     if (dataType === "indicator") {
-        // 以 barTimeMs + symbol + interval 作为去重 key
-        const dedupKey = String(d.barTimeMs) + "_" + d.symbol + "_" + d.interval
+        // 以 bar_time_ms + symbol + interval 作为去重 key
+        const dedupKey = String(d.bar_time_ms) + "_" + d.symbol + "_" + d.interval
         try {
             $app.findFirstRecordByFilter("indicators",
                 "bar_time_ms = {:ms} && symbol = {:sym} && interval = {:tf}",
-                { ms: d.barTimeMs, sym: d.symbol, tf: d.interval }
+                { ms: d.bar_time_ms, sym: d.symbol, tf: d.interval }
             )
             return c.json(200, { ok: true, msg: "duplicate indicator, skipped", key: dedupKey })
         } catch(_) {}
@@ -37,84 +37,14 @@ routerAdd("POST", "/webhook/tv", (c) => {
         rec.set("symbol",      d.symbol)
         rec.set("exchange",    d.exchange   || "")
         rec.set("interval",    d.interval   || "")
-        rec.set("script_tag",  d.scriptTag  || "")
-        rec.set("us_time",     d.usTime     || "")
-        rec.set("cn_time",     d.cnTime     || "")
-        rec.set("bar_time_ms", d.barTimeMs)
-        rec.set("bar_index",   d.barIndex)
+        rec.set("script_tag",  d.script_tag || "")
+        rec.set("us_time",     d.us_time    || "")
+        rec.set("cn_time",     d.cn_time    || "")
+        rec.set("bar_time_ms", d.bar_time_ms)
+        rec.set("bar_index",   d.bar_index)
 
-        // 所有指标值统一放入 extra JSON 字段，新增指标无需改表结构
-        const extra = {
-            // OHLCV
-            close:        d.close,
-            high:         d.high,
-            low:          d.low,
-            open:         d.open,
-            volume:       d.volume,
-            // 价格变动
-            day_change_pct:      d.dayChangePct,
-            prev_close_change_pct: d.prevCloseChangePct,
-            change_7d:    d.change7d,
-            // VWAP
-            vwap:         d.vwap,
-            vwap_upper1:  d.vwapUpper1,
-            vwap_lower1:  d.vwapLower1,
-            vwap_upper2:  d.vwapUpper2,
-            vwap_lower2:  d.vwapLower2,
-            vwap_dist:    d.vwapDist,
-            vwap_bullish: d.vwapBullish,
-            // EMA
-            ema_fast:      d.emaFast,
-            ema_slow:      d.emaSlow,
-            ema_trend:     d.emaTrend,
-            ema_longest:   d.emaLongest,
-            slope_slow:    d.slopeSlow,
-            slope_trend:   d.slopeTrend,
-            slope_longest: d.slopeLongest,
-            ema_bullish:   d.emaBullish,
-            ema_bearish:   d.emaBearish,
-            trend_dir:     d.trendDir,
-            // SD Channel
-            sd_reg:        d.sdReg,
-            sd_std_dev:    d.sdStdDev,
-            sd_zone:       d.sdZone,
-            sd_trend:      d.sdTrend,
-            // DTP
-            dtp_avg:       d.dtpAvg,
-            dtp_atr:       d.dtpAtr,
-            dtp_dir:       d.dtpDir,
-            dtp_phase:     d.dtpPhase    || "",
-            dtp_phase_bars:d.dtpPhaseBars,
-            // ATR / cRSI / OBV
-            atr:           d.atr,
-            atr_raw:       d.atrRaw,
-            atr_pct:       d.atrPct,
-            crsi:          d.crsi,
-            crsi_ub:       d.crsiUb,
-            crsi_db:       d.crsiDb,
-            crsi_ob:       d.crsiOB,
-            crsi_os:       d.crsiOS,
-            obv_rsi:       d.obvRsi,
-            // cRSI 背离
-            crsi_bull_div: d.crsiBullDiv,
-            crsi_bear_div: d.crsiBearDiv,
-            crsi_hid_bull: d.crsiHidBull,
-            crsi_hid_bear: d.crsiHidBear,
-            // OBV 背离
-            obv_bull_div:  d.obvBullDiv,
-            obv_bear_div:  d.obvBearDiv,
-            obv_hid_bull:  d.obvHidBull,
-            obv_hid_bear:  d.obvHidBear,
-            // 分形信号
-            fractal_bull:  d.fractalBull,
-            fractal_bear:  d.fractalBear,
-            // SD 通道触及
-            sd_lower:      d.sdLower,
-            sd_upper:      d.sdUpper,
-            // EMA 触及
-            ema_bull_touch: d.emaBullTouch,
-            ema_bear_touch: d.emaBearTouch
-        }
+        // 所有指标值统一放入 extra JSON 字段
+        const extra = d.extra || {}
         rec.set("extra", extra)
 
         $app.save(rec)
@@ -122,15 +52,14 @@ routerAdd("POST", "/webhook/tv", (c) => {
     }
 
     // ══════════════════════════════════════
-    // ══════════════════════════════════════
-    // 信号表（type = "signal" 或无 type 字段，向后兼容）
+    // 信号表（type = "signal"）
     // ══════════════════════════════════════
     try {
         $app.findFirstRecordByData("signals", "signal_id", d.signal_id)
         return c.json(200, { ok: true, msg: "duplicate, skipped" })
     } catch(_) {}
 
-    // 问题 3 修复: 添加必需字段验证
+    // 必需字段验证
     const requiredFields = ['symbol', 'direction', 'entry', 'stop_loss', 'take_profit', 'signal_id'];
     for (const field of requiredFields) {
         if (!d[field]) {
@@ -142,7 +71,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
         }
     }
 
-    // 问题 10 修复: 添加数据类型验证
+    // 数据类型验证
     const numericFields = ['entry', 'stop_loss', 'take_profit'];
     for (const field of numericFields) {
         if (typeof d[field] !== 'number' || d[field] <= 0) {
@@ -163,35 +92,22 @@ routerAdd("POST", "/webhook/tv", (c) => {
         });
     }
 
-    const extra = {
-        sd_zone:      d.sdZone      || "",
-        sd_trend:     d.sdTrend     || "",
-        dtp_dir:      d.dtpDir      || "",
-        dtp_phase:    d.dtpPhase    || "",
-        crsi_state:   d.crsiState   || "",
-        industry:     d.industry    || "",
-        atr:          d.atr         || 0,
-        atr_raw:      d.atr         || 0,  // Pine 传来的已是 atrRaw
-        atr_pct:      d.atrPct      || 0,
-        sl_dist_pct:  d.slDistPct   || 0,
-        sl_atr_ratio: d.slAtrRatio  || 0,
-        close:        d.close       || 0
-    }
+    // extra 直接使用请求中的 extra
+    const extra = d.extra || {}
 
     const col = $app.findCollectionByNameOrId("signals")
     const record = new Record(col, {})
 
-    // 问题 11 修复: 增强 date 字段提取
+    // date 字段提取
     let dateStr = ""
-    if (d.usTime) {
-        // 支持多种格式
-        const match = d.usTime.match(/(\d{4}-\d{2}-\d{2})/);
+    const usTimeStr = d.us_time || ""
+    if (usTimeStr) {
+        const match = usTimeStr.match(/(\d{4}-\d{2}-\d{2})/);
         if (match) {
             dateStr = match[1];
         }
     }
     if (!dateStr) {
-        // fallback: 使用服务器当前日期
         dateStr = new Date().toISOString().substring(0, 10);
     }
 
@@ -207,14 +123,14 @@ routerAdd("POST", "/webhook/tv", (c) => {
     record.set("signal_id",   d.signal_id)
     record.set("exchange",    d.exchange)
     record.set("interval",    d.interval)
-    record.set("reason",      d.reason)
-    record.set("us_time",     d.usTime)
-    record.set("cn_time",     d.cnTime)
+    record.set("reason",      extra.reason)
+    record.set("us_time",     d.us_time || "")
+    record.set("cn_time",     d.cn_time || "")
     record.set("date",        dateStr)
-    record.set("bar_time_ms", d.barTimeMs)
-    record.set("bar_index",   d.barIndex)
-    record.set("script_tag",  d.scriptTag)
-    record.set("chart_tf",    d.chartTf)
+    record.set("bar_time_ms", extra.bar_time_ms)
+    record.set("bar_index",   extra.bar_index)
+    record.set("script_tag",  extra.script_tag)
+    record.set("chart_tf",    extra.chart_tf)
     record.set("extra",       extra)
 
     // 根据配置决定初始状态
@@ -232,7 +148,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
 
     $app.save(record)
 
-    // 发送飞书通知（使用 feishu_notify.pb.js 中的 notifyNewSignal）
+    // 发送飞书通知
     try {
         notifyNewSignal({
             symbol: d.symbol,
@@ -243,8 +159,8 @@ routerAdd("POST", "/webhook/tv", (c) => {
             rr: d.rr,
             shares: d.shares,
             signal_id: d.signal_id,
-            us_time: d.usTime,
-            reason: d.reason,
+            us_time: d.us_time || "",
+            reason: extra.reason,
             extra: extra
         });
     } catch (err) {
@@ -281,9 +197,9 @@ routerAdd("POST", "/webhook/tv", (c) => {
                 revRecord.set("triggered_signals", ["信号反转"]);
                 revRecord.set("score", 10);
                 revRecord.set("status", "pending");
-                revRecord.set("bar_time_ms", d.barTimeMs || 0);
-                revRecord.set("us_time", d.usTime || "");
-                revRecord.set("cn_time", d.cnTime || "");
+                revRecord.set("bar_time_ms", extra.bar_time_ms || 0);
+                revRecord.set("us_time", d.us_time || "");
+                revRecord.set("cn_time", d.cn_time || "");
                 // 原始信号ID存为 origin_signal_id，与QC回写的 signal_id 区分
                 revRecord.set("extra", {
                     origin_signal_id: d.signal_id,
@@ -311,7 +227,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
                             [{ tag: "text", text: `操作: ${actionLabel}` }],
                             [{ tag: "text", text: `订单状态: ${orderStatus}` }],
                             [{ tag: "text", text: `信号ID: ${d.signal_id}` }],
-                            [{ tag: "text", text: `时间: ${d.usTime || ''}` }]
+                            [{ tag: "text", text: `时间: ${d.us_time || ''}` }]
                         ],
                         "error"
                     );

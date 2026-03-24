@@ -7,7 +7,7 @@
 var FEISHU_WEBHOOK_URL_SIGNAL = "https://open.feishu.cn/open-apis/bot/v2/hook/298ce054-9666-4a30-a59b-b14ac0faa8f1";
 var FEISHU_WEBHOOK_URL_ORDER = "https://open.feishu.cn/open-apis/bot/v2/hook/eee38484-b055-483b-87c8-b918ec8a178d";
 var FEISHU_WEBHOOK_URL_ERROR = "https://open.feishu.cn/open-apis/bot/v2/hook/98f6f9a5-5d5a-4974-b363-5bc6384aadd4";
-var FEISHU_WEBHOOK_URL = FEISHU_WEBHOOK_URL_SIGNAL;  // 默认用信号 webhook（向后兼容）
+var FEISHU_WEBHOOK_URL = FEISHU_WEBHOOK_URL_SIGNAL;  // 默认用信号 webhook
 
 function sendFeishuText(text, atAll = true) {
   // 使用 post 富文本类型，at tag 元素实现 @所有人
@@ -91,27 +91,7 @@ function notifyNewSignal(signal) {
   const color = signal.direction === "long" ? "green" : "red";
   const tokenParam = SIGNAL_ACTION_TOKEN ? "&token=" + SIGNAL_ACTION_TOKEN : "";
 
-  // 从 signal.extra 获取涨幅数据（由 webhook_tv 传入，与 indicators 表一致）
-  let currentPrice = signal.price;
-  let currentChangePct = signal.change_pct;
-  let dayChangePct = null;
-  let prevCloseChangePct = null;
-  let change7d = null;
-
-  let extra = signal.extra || {};
-  if (typeof extra === "string") {
-    try { extra = JSON.parse(extra); } catch(_) { extra = {}; }
-  }
-
-  if (extra.close !== undefined && extra.close !== null) {
-    currentPrice = extra.close;
-  }
-  if (extra.day_change_pct !== undefined) {
-    dayChangePct = Number(extra.day_change_pct || 0);
-    prevCloseChangePct = Number(extra.prev_close_change_pct || 0);
-    change7d = Number(extra.change_7d || 0);
-    currentChangePct = extra.day_change_pct;
-  }
+  const extra = signal.extra || {};
 
   // TODO: 接入 OpenClaw webhook 分析信号
 
@@ -142,25 +122,19 @@ function notifyNewSignal(signal) {
       const vixText = `\n**VIX恐慌:** ${vixLevel} ${vixData.change_pct > 0 ? '+' : ''}${vixData.change_pct.toFixed(1)}%`;
       marketInfoText += vixText;
     }
-  } else if (signal.market_relation && signal.market_relation !== "neutral") {
-    // 兼容旧格式
-    const relationEmoji = signal.market_relation === "with_trend" ? "✅" : "⚠️";
-    const relationLabel = signal.market_relation === "with_trend" ? "顺势" : "逆势";
-    const marketPctText = signal.market_avg_pct ? `${signal.market_avg_pct > 0 ? '+' : ''}${signal.market_avg_pct.toFixed(2)}%` : "N/A";
-    marketInfoText = `**大盘关联:** ${relationEmoji} ${relationLabel} (SPY/QQQ: ${marketPctText})`;
   }
 
   // 波动率和 ATR 信息
   let volatilityText = "";
-  if (signal.atr_pct) {
-    const atrLevel = signal.atr_pct >= 3 ? "高" : signal.atr_pct >= 1.5 ? "中" : "低";
-    const atrEmoji = signal.atr_pct >= 3 ? "⚡" : signal.atr_pct >= 1.5 ? "〜" : "·";
-    volatilityText = `\n**波动率:** ${atrEmoji} ${atrLevel} (ATR: ${signal.atr_pct.toFixed(2)}%)`;
-    if (signal.sl_atr_ratio) {
-      volatilityText += `\n**ATR止损:** ${signal.sl_atr_ratio.toFixed(1)}倍`;
+  if (extra.atr_pct) {
+    const atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低";
+    const atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "〜" : "·";
+    volatilityText = `\n**波动率:** ${atrEmoji} ${atrLevel} (ATR: ${extra.atr_pct.toFixed(2)}%)`;
+    if (extra.sl_atr_ratio) {
+      volatilityText += `\n**ATR止损:** ${extra.sl_atr_ratio.toFixed(1)}倍`;
     }
-  } else if (signal.atr) {
-    volatilityText = `\n**ATR:** ${signal.atr.toFixed(2)}`;
+  } else if (extra.atr) {
+    volatilityText = `\n**ATR:** ${extra.atr.toFixed(2)}`;
   }
 
   // 计算止盈止损对应的盈亏金额（乘以股数）
@@ -183,12 +157,12 @@ function notifyNewSignal(signal) {
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + signal.symbol } });
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } });
 
-  // 涨幅（当日/前收/近7日，参考 signals.html 从 indicators.extra 获取）
+  // 涨幅（当日/前收/近7日）
   let changeDisplay = "N/A";
-  if (dayChangePct !== null && dayChangePct !== undefined) {
-    const dayPct = Number(dayChangePct || 0);
-    const prevPct = Number(prevCloseChangePct || 0);
-    const d7Pct = Number(change7d || 0);
+  if (extra.day_change_pct !== undefined) {
+    const dayPct = Number(extra.day_change_pct || 0);
+    const prevPct = Number(extra.prev_close_change_pct || 0);
+    const d7Pct = Number(extra.change_7d || 0);
     changeDisplay = `${dayPct > 0 ? '+' : ''}${dayPct.toFixed(2)}%/${prevPct > 0 ? '+' : ''}${prevPct.toFixed(2)}%/${d7Pct > 0 ? '+' : ''}${d7Pct.toFixed(2)}%`;
   }
   leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + changeDisplay } });
@@ -202,18 +176,6 @@ function notifyNewSignal(signal) {
   rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**亏损:** -$" + formatAmount(slLoss) } });
   rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**风报比:** " + (signal.rr || "N/A") } });
   rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**股数:** " + (signal.shares || "N/A") } });
-
-  // 波动率等级（从 signal.extra 获取）
-  let volatilityLevelText = "";
-  if (signal.extra && signal.extra.atr_pct) {
-    const atrPct = signal.extra.atr_pct;
-    const atrLevel = atrPct >= 3 ? "高" : atrPct >= 1.5 ? "中" : "低";
-    const atrEmoji = atrPct >= 3 ? "⚡" : atrPct >= 1.5 ? "〜" : "·";
-    volatilityLevelText = `${atrEmoji} ${atrLevel}波动 ${atrPct.toFixed(2)}%`;
-  }
-  if (volatilityLevelText) {
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**波动率:** " + volatilityLevelText } });
-  }
 
   // 波动率和 ATR 信息
   let volatilityColumn = null;
@@ -229,8 +191,8 @@ function notifyNewSignal(signal) {
 
   // 添加原因（单独一行）
   let reasonColumn = null;
-  if (signal.reason) {
-    reasonColumn = { tag: "div", text: { tag: "lark_md", content: "**原因:** " + signal.reason } };
+  if (extra.reason) {
+    reasonColumn = { tag: "div", text: { tag: "lark_md", content: "**原因:** " + extra.reason } };
   }
 
   // 添加信号ID（单独一行）
