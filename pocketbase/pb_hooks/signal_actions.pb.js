@@ -92,24 +92,27 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
 
 // ── QC 信号拉取 & 确认 ──
 
-// GET /api/custom/signals/pending - QC 轮询拉取当天待执行信号
+// GET /api/custom/signals/pending?date=YYYY-MM-DD - QC 拉取待执行信号（默认当天美东）
 routerAdd("GET", "/api/custom/signals/pending", (c) => {
   try {
-    // UTC 转美东时间计算当天日期
-    const now = new Date();
-    const etOptions = { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" };
-    const etParts = new Intl.DateTimeFormat("en-CA", etOptions).formatToParts(now);
-    const todayET = etParts.find(p => p.type === "year").value
-      + "-" + etParts.find(p => p.type === "month").value
-      + "-" + etParts.find(p => p.type === "day").value;
+    // 支持 ?date= 查询指定日期，默认 UTC 转美东当天
+    let dateStr = c.request.url.query().get("date") || "";
+    if (!dateStr) {
+      const now = new Date();
+      const etOptions = { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" };
+      const etParts = new Intl.DateTimeFormat("en-CA", etOptions).formatToParts(now);
+      dateStr = etParts.find(p => p.type === "year").value
+        + "-" + etParts.find(p => p.type === "month").value
+        + "-" + etParts.find(p => p.type === "day").value;
+    }
 
     const records = $app.findRecordsByFilter(
       "signals",
-      `status = 'pending' && date = {:today}`,
+      `status = 'pending' && date = {:d}`,
       "-bar_time_ms",
       100,
       0,
-      { today: todayET }
+      { d: dateStr }
     );
 
     const signals = records.map((r) => {
