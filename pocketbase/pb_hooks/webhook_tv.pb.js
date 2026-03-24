@@ -17,39 +17,6 @@ routerAdd("POST", "/webhook/tv", (c) => {
     const dataType = d.type || "signal"
 
     // ══════════════════════════════════════
-    // 大盘指数表（type = "market_index"）
-    // ══════════════════════════════════════
-    if (dataType === "market_index") {
-        // 以 symbol + barTimeMs 作为去重 key
-        const dedupKey = d.symbol + "_" + d.barTimeMs
-
-        // 去重检查
-        try {
-            $app.findFirstRecordByFilter("market_index",
-                "symbol = {:sym} && bar_time_ms = {:ms}",
-                { sym: d.symbol, ms: d.barTimeMs }
-            )
-            return c.json(200, { ok: true, msg: "duplicate market_index, skipped", key: dedupKey })
-        } catch(_) {}
-
-        const col = $app.findCollectionByNameOrId("market_index")
-        const rec = new Record(col, {})
-
-        rec.set("symbol",      d.symbol)
-        rec.set("price",       d.price)
-        rec.set("change_pct",  d.changePct  || 0)
-        rec.set("prev_close_pct", d.prevClosePct || 0)
-        rec.set("us_time",     d.usTime     || "")
-        rec.set("cn_time",     d.cnTime     || "")
-        rec.set("bar_time_ms", d.barTimeMs)
-        rec.set("interval",    d.interval   || "")
-        rec.set("extra",       d.extra      || {})
-
-        $app.save(rec)
-        return c.json(200, { ok: true, type: "market_index", symbol: d.symbol })
-    }
-
-    // ══════════════════════════════════════
     // 技术指标表（type = "indicator"）
     // ══════════════════════════════════════
     if (dataType === "indicator") {
@@ -155,27 +122,6 @@ routerAdd("POST", "/webhook/tv", (c) => {
     }
 
     // ══════════════════════════════════════
-    // 信号过滤：检查是否为大盘指数
-    // ══════════════════════════════════════
-    if (dataType === "signal" || !dataType) {
-        // 读取配置的大盘指数列表
-        let marketIndexSymbols = []
-        try {
-            const configRecord = $app.findFirstRecordByFilter("config", "key = 'market_index_symbols'")
-            const configValue = configRecord.get("value") || ""
-            marketIndexSymbols = configValue.split(",").map(s => s.trim().toUpperCase()).filter(s => s)
-        } catch(_) {}
-
-        // 如果配置了大盘指数，检查信号标的是否在列表中
-        if (marketIndexSymbols.length > 0) {
-            const signalSymbol = (d.symbol || "").toUpperCase()
-            if (marketIndexSymbols.includes(signalSymbol)) {
-                console.log(`[Webhook] 过滤大盘指数信号: ${signalSymbol}`)
-                return c.json(200, { ok: true, msg: "market_index filtered, skipped", symbol: signalSymbol })
-            }
-        }
-    }
-
     // ══════════════════════════════════════
     // 信号表（type = "signal" 或无 type 字段，向后兼容）
     // ══════════════════════════════════════
@@ -229,81 +175,8 @@ routerAdd("POST", "/webhook/tv", (c) => {
         atr_pct:      d.atrPct      || 0,
         sl_dist_pct:  d.slDistPct   || 0,
         sl_atr_ratio: d.slAtrRatio  || 0,
-        close:        d.close       || 0,
-        // 大盘关联字段
-        market_indexes: []  // 将在后续填充
+        close:        d.close       || 0
     }
-
-    // ══════════════════════════════════════
-    // 获取大盘指数数据用于信号关联
-    // ══════════════════════════════════════
-    let marketIndexData = { SPY: null, QQQ: null, VIX: null }
-    try {
-        const configRecord = $app.findFirstRecordByFilter("config", "key = 'market_index_symbols'")
-        const configValue = configRecord.get("value") || "SPY,QQQ,VIX"
-        const symbols = configValue.split(",").map(s => s.trim().toUpperCase()).filter(s => s)
-
-        for (const sym of symbols) {
-            try {
-                const latest = $app.findFirstRecordByFilter("market_index",
-                    "symbol = {:sym}",
-                    { sym: sym },
-                    "-bar_time_ms"
-                )
-                if (latest) {
-                    marketIndexData[sym] = {
-                        symbol: sym,
-                        price: latest.get("price"),
-                        change_pct: latest.get("change_pct") || 0,
-                        prev_close_pct: latest.get("prev_close_pct") || 0
-                    }
-                }
-            } catch(_) {}
-        }
-    } catch(_) {}
-
-    // 计算与大盘的关联性
-    const signalDirection = d.direction
-    let marketRelation = "neutral"  // neutral, with_trend, against_trend
-    let marketRelationText = ""
-    const marketInfos = []
-
-    // 使用 SPY 和 QQQ 判断大盘方向
-    const spyPct = marketIndexData.SPY?.change_pct || 0
-    const qqqPct = marketIndexData.QQQ?.change_pct || 0
-    const marketAvgPct = (spyPct + qqqPct) / 2
-    const marketDirection = marketAvgPct > 0 ? "up" : (marketAvgPct < 0 ? "down" : "neutral")
-
-    if (signalDirection === "long" && marketDirection === "up") {
-        marketRelation = "with_trend"
-        marketRelationText = "顺势"
-    } else if (signalDirection === "long" && marketDirection === "down") {
-        marketRelation = "against_trend"
-        marketRelationText = "逆势"
-    } else if (signalDirection === "short" && marketDirection === "down") {
-        marketRelation = "with_trend"
-        marketRelationText = "顺势"
-    } else if (signalDirection === "short" && marketDirection === "up") {
-        marketRelation = "against_trend"
-        marketRelationText = "逆势"
-    }
-
-    // 收集大盘信息
-    for (const [sym, data] of Object.entries(marketIndexData)) {
-        if (data) {
-            marketInfos.push({
-                symbol: sym,
-                change_pct: data.change_pct,
-                direction: data.change_pct > 0 ? "up" : (data.change_pct < 0 ? "down" : "neutral")
-            })
-        }
-    }
-
-    // 更新 extra 中的大盘关联数据
-    extra.market_indexes = marketInfos
-    extra.market_relation = marketRelation
-    extra.market_relation_text = marketRelationText
-    extra.market_avg_pct = marketAvgPct
 
     const col = $app.findCollectionByNameOrId("signals")
     const record = new Record(col, {})
@@ -372,9 +245,6 @@ routerAdd("POST", "/webhook/tv", (c) => {
             signal_id: d.signal_id,
             us_time: d.usTime,
             reason: d.reason,
-            market_relation: marketRelationText,
-            market_avg_pct: marketAvgPct,
-            market_indexes: marketInfos,
             extra: extra
         });
     } catch (err) {
