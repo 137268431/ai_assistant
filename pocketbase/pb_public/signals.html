@@ -125,6 +125,12 @@
             color: #fff;
         }
 
+        .status-tab .tab-count {
+            font-size: 10px;
+            margin-left: 2px;
+            opacity: 0.8;
+        }
+
         .stat-chip {
             display: flex;
             align-items: center;
@@ -784,12 +790,12 @@
         </div>
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
-            <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部</button>
-            <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">待确认</button>
-            <button class="status-tab" data-status="executed" onclick="selectStatus('executed', this)">已执行</button>
-            <button class="status-tab" data-status="expired" onclick="selectStatus('expired', this)">已过期</button>
-            <button class="status-tab" data-status="canceled" onclick="selectStatus('canceled', this)">已取消</button>
-            <button class="status-tab" data-status="closed" onclick="selectStatus('closed', this)">已平仓</button>
+            <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">待确认<span class="tab-count" data-status="pending">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="executed" onclick="selectStatus('executed', this)">已执行<span class="tab-count" data-status="executed">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="expired" onclick="selectStatus('expired', this)">已过期<span class="tab-count" data-status="expired">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="canceled" onclick="selectStatus('canceled', this)">已取消<span class="tab-count" data-status="canceled">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="closed" onclick="selectStatus('closed', this)">已平仓<span class="tab-count" data-status="closed">(<span class="count-value">0</span>)</span></button>
         </div>
 
         <div id="directionTabs"></div>
@@ -830,7 +836,7 @@
 
         // Pagination
         let currentPage = 1;
-        const itemsPerPage = 10;
+        const itemsPerPage = 100;
         let displayedSignals = [];
         let hasMore = false;
         let totalItems = 0;
@@ -901,9 +907,9 @@
 
                 const filter = conditions.join(' && ');
 
-                // 使用分页 API，每次只请求 10 条
+                // 使用分页 API，每次请求 100 条用于统计
                 const page = currentPage;
-                const perPage = 10;
+                const perPage = 100;
 
                 showLoading('加载中...');
                 const result = await pb.collection('signals').getList(page, perPage, {
@@ -927,6 +933,7 @@
                 renderSignals();
                 updateCountdowns();
                 updateLoadMoreButton();
+                updateStatusTabCounts();
             } catch (error) {
                 console.error('加载失败:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -1169,6 +1176,34 @@
 
         function updateStats() {
             // 状态筛选使用 Tab，不再显示统计数字
+        }
+
+        // 更新状态标签的数量显示
+        function updateStatusTabCounts() {
+            const counts = {
+                'all': allSignals.length,
+                'pending': 0,
+                'executed': 0,
+                'expired': 0,
+                'canceled': 0,
+                'closed': 0
+            };
+
+            // 统计每个状态的数量
+            allSignals.forEach(signal => {
+                const status = signal.status || 'pending';
+                if (counts[status] !== undefined) {
+                    counts[status]++;
+                }
+            });
+
+            // 更新每个标签的数量
+            Object.keys(counts).forEach(status => {
+                const tab = document.querySelector(`.status-tab .tab-count[data-status="${status}"] .count-value`);
+                if (tab) {
+                    tab.textContent = counts[status];
+                }
+            });
         }
 
         function getFilteredSignals() {
