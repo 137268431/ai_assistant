@@ -1,0 +1,259 @@
+# PocketBase API 总览
+
+## 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              TradingView                                     │
+│                     (Pine Script 策略信号/指标)                             │
+└─────────────────────────────┬───────────────────────────────────────────────┘
+                              │ HTTP POST
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         PocketBase Webhook                                   │
+│                                                                            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
+│  │ webhook_tv  │  │  signals    │  │  orders     │  │  reverse_signals   │ │
+│  │             │  │             │  │             │  │                    │ │
+│  │ /webhook/tv │  │ /api/custom │  │ /api/custom │  │  /api/custom       │ │
+│  │             │  │ /signals/*  │  │ /orders/*   │  │  /reverse/*        │ │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────────┬────────┘ │
+│         │                 │                 │                     │         │
+└─────────┼─────────────────┼─────────────────┼─────────────────────┼─────────┘
+          │                 │                 │                     │
+          ▼                 ▼                 ▼                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            数据层                                            │
+│  ┌─────────┐  ┌─────────────┐  ┌─────────┐  ┌─────────────────────────┐    │
+│  │ signals │  │  indicators │  │ orders  │  │  reverse_signals        │    │
+│  └─────────┘  └─────────────┘  └─────────┘  └─────────────────────────┘    │
+│  ┌─────────────────┐                    ┌─────────────────────────────────┐ │
+│  │ order_details   │                    │  config                         │ │
+│  └─────────────────┘                    └─────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
+          │                 │                 │                     │
+          │                 │                 │                     │
+          ▼                 ▼                 ▼                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         飞书通知 (Feishu)                                    │
+│                                                                            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────────────┐│
+│  │ 信号卡片     │  │ 订单卡片     │  │ 异常/逆向信号通知                    ││
+│  │ (带按钮)    │  │ (带按钮)    │  │                                     ││
+│  └─────────────┘  └─────────────┘  └─────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 数据表结构
+
+### signals（信号表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | PB 记录ID |
+| `signal_id` | string | 业务信号ID（唯一） |
+| `symbol` | string | 股票代码 |
+| `direction` | string | `long` / `short` |
+| `entry` | number | 入场价 |
+| `stop_loss` | number | 止损价 |
+| `take_profit` | number | 止盈价 |
+| `shares` | number | 股数 |
+| `rr` | string | 风报比 |
+| `status` | string | `pending` / `executed` / `expired` / `rejected` / `closed` / `awaiting_confirm` |
+| `extra` | json | 附加数据 |
+| `bar_time_ms` | number | K线时间戳 |
+| `us_time` | string | 美国时间 |
+| `date` | string | 日期（YYYY-MM-DD） |
+
+### indicators（指标表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | PB 记录ID |
+| `symbol` | string | 股票代码 |
+| `interval` | string | 时间周期 |
+| `bar_time_ms` | number | K线时间戳（去重key） |
+| `extra` | json | 所有指标数据 |
+
+### orders（订单表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | PB 记录ID |
+| `unique_id` | string | 订单唯一ID（去重key） |
+| `order_id` | string | 券商订单ID |
+| `order_type` | string | `Entry` / `Exit` |
+| `symbol` | string | 股票代码 |
+| `direction` | string | `long` / `short` |
+| `status` | string | `Submitted` / `Filled` / `Canceled` / `Closed` |
+| `action` | string | 待执行操作（cancel/close） |
+| `signal_id` | string | 关联信号ID |
+| `pnl` | number | 盈亏 |
+| `extra` | json | 附加数据 |
+
+### reverse_signals（逆向信号表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | PB 记录ID |
+| `symbol` | string | 股票代码 |
+| `direction` | string | 当前持仓方向 |
+| `source` | string | `signal` / `indicator` |
+| `priority` | number | 优先级（1最高） |
+| `strength` | string | `weak` / `medium` / `strong` |
+| `score` | number | 逆向信号分数 |
+| `action_type` | string | `close` / `adjust_sl` / `cancel` |
+| `status` | string | `pending` / `confirmed` / `cancelled` / `expired` |
+| `extra` | json | 包含原始信号ID等 |
+
+---
+
+## 完整信号流程
+
+```
+                              ┌──────────────────┐
+                              │  TradingView     │
+                              │  Pine Script     │
+                              └────────┬─────────┘
+                                       │ type="signal"
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  POST /webhook/tv                                                            │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ 1. 验证必填字段                                                         │ │
+│  │ 2. 去重检查（signal_id）                                                │ │
+│  │ 3. 写入 signals 表                                                      │ │
+│  │    - 状态：pending 或 awaiting_confirm（根据 auto_confirm 配置）         │ │
+│  │ 4. 发送飞书通知（带确认/拒绝按钮）                                        │ │
+│  │ 5. 检测逆向信号（查询冲突持仓）                                            │ │
+│  │    - 有冲突 → 写入 reverse_signals 表                                    │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────┬───────────────────────────────────────┘
+                                     │
+                    ┌─────────────────┴─────────────────┐
+                    ▼                                   ▼
+        ┌───────────────────┐               ┌───────────────────┐
+        │  signals 表        │               │  reverse_signals   │
+        │  status=pending    │               │  (如有冲突)        │
+        └─────────┬─────────┘               └─────────┬─────────┘
+                  │                                   │
+                  │  QC 轮询                          │ QC 轮询
+                  ▼                                   ▼
+        ┌───────────────────┐               ┌───────────────────┐
+        │ GET /signals/pending│              │GET /reverse/pending│
+        └─────────┬─────────┘               └─────────┬─────────┘
+                  │                                   │
+                  │ 拉取待处理                          │ 拉取待处理
+                  ▼                                   ▼
+        ┌───────────────────┐               ┌───────────────────┐
+        │  QC 执行下单       │               │  QC 执行操作       │
+        │  - IBKR API        │               │  - cancel          │
+        └─────────┬─────────┘               │  - close           │
+                  │                         │  - adjust_sl       │
+                  │ 写入订单                               │
+                  ▼                                   ▼
+        ┌───────────────────────────────────────────────────────────┐
+        │  POST /api/custom/orders/upsert                            │
+        │  - 首次 Submitted → 发送交互式订单卡片（带取消/平仓按钮）      │
+        │  - Filled → 发送成交通知                                    │
+        │  - Canceled → 发送取消通知                                  │
+        │  - Closed → 发送平仓通知                                    │
+        └───────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 订单生命周期
+
+```
+┌─────────────┐
+│  QC 下单    │
+└──────┬──────┘
+       │ POST /orders/upsert (status=Submitted)
+       ▼
+┌─────────────┐     ┌─────────────┐
+│  Submitted  │────▶│  Filled     │
+│  (挂单中)   │     │  (已成交)    │
+└──────┬──────┘     └──────┬──────┘
+       │                   │
+       │ 点击"取消挂单"      │ 点击"平仓"
+       ▼                   ▼
+┌─────────────┐     ┌─────────────┐
+│  Canceled   │     │   Closed    │
+│  (已取消)   │     │   (已平仓)  │
+└─────────────┘     └─────────────┘
+```
+
+---
+
+## 定时任务
+
+### signal_expiry_check
+
+每分钟执行一次，检查 `pending` 信号是否超时。
+
+```
+cron: "* * * * *"
+逻辑：
+1. 读取 config.signal_validity_minutes（默认30分钟）
+2. 查询 bar_time_ms <= (当前时间 - 有效期) 的 pending 信号
+3. 批量更新 status = "expired"
+```
+
+---
+
+## 认证说明
+
+| 端点类型 | 认证方式 |
+|----------|----------|
+| `/webhook/*` | 无认证 或 Token 验证 |
+| `/api/custom/*` | 超级用户 JWT Token |
+
+### Token 获取
+
+```bash
+# 超级用户登录
+curl -X POST "https://pb.lzw-glory.top/api/collections/users/auth-with-password" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "identity": "your_email",
+      "password": "your_password"
+    }'
+```
+
+---
+
+## 文档目录
+
+1. [Webhook 接收](./webhook.md) - TradingView 数据入口
+2. [信号管理 API](./signals.md) - 信号操作与飞书按钮
+3. [订单管理 API](./orders.md) - 订单 Upsert 与操作
+4. [逆向信号 API](./reverse_signals.md) - 反转信号检测与处理
+5. [配置参考](./config.md) - 系统配置项
+6. [原始 curl 测试用例](./curl.md) - 所有 API 的 curl 示例
+
+---
+
+## 常见问题
+
+### Q: 信号状态为什么不变化？
+
+检查 `config.signal_auto_confirm` 配置，默认为 `true`（自动确认）。
+
+### Q: 飞书按钮提示无权限？
+
+检查 `config.signal_action_token` 配置，URL 中的 `token` 参数必须匹配。
+
+### Q: 逆向信号没有触发？
+
+1. 检查是否有冲突持仓（方向相反的订单）
+2. 检查 `reverse_signal_threshold` 配置
+3. 查看 PocketBase 日志 `[Webhook] 逆向信号检测失败`
+
+### Q: 订单没有收到通知？
+
+1. 检查 `orders` 表是否有对应记录
+2. 检查飞书 Webhook 是否正常
+3. 查看 PocketBase 日志 `[Feishu] 订单通知失败`

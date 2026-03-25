@@ -242,7 +242,8 @@
             letter-spacing: 0.5px;
         }
 
-        .status-pending {
+        .status-pending,
+        .status-awaiting_confirm {
             background: rgba(246,173,85,0.2);
             color: var(--pending);
         }
@@ -252,7 +253,7 @@
             color: var(--executed);
         }
 
-        .status-expired, .status-canceled {
+        .status-expired, .status-rejected {
             background: rgba(113,128,150,0.2);
             color: var(--rejected);
         }
@@ -791,11 +792,12 @@
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">待确认<span class="tab-count" data-status="pending">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="awaiting_confirm" onclick="selectStatus('awaiting_confirm', this)">待确认<span class="tab-count" data-status="awaiting_confirm">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">等待执行<span class="tab-count" data-status="pending">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="executed" onclick="selectStatus('executed', this)">已执行<span class="tab-count" data-status="executed">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="expired" onclick="selectStatus('expired', this)">已过期<span class="tab-count" data-status="expired">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="canceled" onclick="selectStatus('canceled', this)">已取消<span class="tab-count" data-status="canceled">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="closed" onclick="selectStatus('closed', this)">已平仓<span class="tab-count" data-status="closed">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="expired" onclick="selectStatus('expired', this)">已过期<span class="tab-count" data-status="expired">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="rejected" onclick="selectStatus('rejected', this)">已拒绝<span class="tab-count" data-status="rejected">(<span class="count-value">0</span>)</span></button>
         </div>
 
         <div id="directionTabs"></div>
@@ -1182,11 +1184,12 @@
         function updateStatusTabCounts() {
             const counts = {
                 'all': allSignals.length,
+                'awaiting_confirm': 0,
                 'pending': 0,
                 'executed': 0,
                 'expired': 0,
-                'canceled': 0,
-                'closed': 0
+                'closed': 0,
+                'rejected': 0
             };
 
             // 统计每个状态的数量
@@ -1470,14 +1473,15 @@
                 const directionClass = signal.direction === 'long' ? 'long' : 'short';
                 const statusClass = signal.status || 'pending';
                 const statusText = {
-                    'pending': '待确认',
+                    'pending': '等待执行',
+                    'awaiting_confirm': '待确认',
                     'executed': '已执行',
                     'expired': '已过期',
-                    'canceled': '已取消',
-                    'closed': '已平仓'
+                    'closed': '已平仓',
+                    'rejected': '已拒绝'
                 }[statusClass] || statusClass;
 
-                const isPending = signal.status === 'pending';
+                const isPending = signal.status === 'pending' || signal.status === 'awaiting_confirm';
 
                 // 计算开仓金额
                 const entryPrice = signal.entry || 0;
@@ -1679,8 +1683,12 @@
         async function confirmSignal(id) {
             if (!confirm('确认执行此信号？')) return;
             try {
-                await pb.collection('signals').update(id, { status: 'executed' });
-                showToast('✓ 信号已确认');
+                // awaiting_confirm → pending（已确认，等待QC执行）
+                // pending → executed（QC直接执行）
+                const signal = allSignals.find(s => s.id === id);
+                const newStatus = (signal?.status === 'awaiting_confirm') ? 'pending' : 'executed';
+                await pb.collection('signals').update(id, { status: newStatus });
+                showToast(newStatus === 'pending' ? '✓ 信号已确认，等待执行' : '✓ 信号已执行');
                 await loadSignals();
             } catch (error) {
                 console.error('确认失败:', error);
@@ -1689,14 +1697,14 @@
         }
 
         async function cancelSignal(id) {
-            if (!confirm('确认取消此信号？')) return;
+            if (!confirm('确认拒绝此信号？')) return;
             try {
-                await pb.collection('signals').update(id, { status: 'canceled' });
-                showToast('✓ 信号已取消');
+                await pb.collection('signals').update(id, { status: 'rejected' });
+                showToast('✓ 信号已拒绝');
                 await loadSignals();
             } catch (error) {
-                console.error('取消失败:', error);
-                showToast('✗ 取消失败: ' + error.message);
+                console.error('拒绝失败:', error);
+                showToast('✗ 拒绝失败: ' + error.message);
             }
         }
 
