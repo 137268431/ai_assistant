@@ -954,7 +954,7 @@ function getCommonStyles() {
         border-radius: 8px;
         border: 1px solid var(--border);
         background: transparent;
-        color: var(--muted);
+        color: #C4D4E4;
         font-size: clamp(11px, 3vw, 13px);
         font-family: 'JetBrains Mono', monospace;
         cursor: pointer;

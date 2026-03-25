@@ -71,12 +71,9 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
   try {
     let dateStr = c.request.url.query().get("date") || "";
     if (!dateStr) {
-      const now = new Date();
-      const etOptions = { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" };
-      const etParts = new Intl.DateTimeFormat("en-CA", etOptions).formatToParts(now);
-      dateStr = etParts.find(p => p.type === "year").value
-        + "-" + etParts.find(p => p.type === "month").value
-        + "-" + etParts.find(p => p.type === "day").value;
+      const loc = time.LoadLocation("America/New_York");
+      const et = time.Now().In(loc);
+      dateStr = et.Year() + "-" + et.Month() + "-" + et.Day();
     }
 
     const records = $app.findRecordsByFilter(
