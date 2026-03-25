@@ -7,6 +7,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
+    <script>document.write('<style>' + getIndicatorModalStyles() + '</style>');</script>
     <style>
         .search-row {
             margin-bottom: 6px;
@@ -341,16 +342,8 @@
         <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreIndicators()" style="display: none;">加载更多</button>
     </div>
 
-    <!-- 技术指标详情浮层 -->
-    <div class="modal-overlay" id="indicatorModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <div class="modal-title">技术指标详情</div>
-                <button class="modal-close" onclick="closeIndicatorModal()">×</button>
-            </div>
-            <div id="modalBody"></div>
-        </div>
-    </div>
+    <!-- 技术指标详情浮层（由 common.js 动态注入） -->
+    <div id="indicatorModalContainer"></div>
 
     <!-- Bottom Nav -->
     <div id="navContainer"></div>
@@ -595,20 +588,9 @@
             if (!indicator) return;
 
             const normalized = normalizeIndicatorRecord(indicator);
-            document.getElementById('modalBody').innerHTML = renderIndicatorModal(normalized);
-            document.getElementById('indicatorModal').classList.add('show');
+            // 调用 common.js 公用弹窗
+            showIndicatorModal(normalized);
         }
-
-        function closeIndicatorModal() {
-            document.getElementById('indicatorModal').classList.remove('show');
-        }
-
-        document.addEventListener('click', (e) => {
-            const modal = document.getElementById('indicatorModal');
-            if (e.target === modal) {
-                closeIndicatorModal();
-            }
-        });
 
         function manualRefresh() {
             const btn = document.getElementById('refreshBtn');

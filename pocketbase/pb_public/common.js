@@ -331,6 +331,7 @@ function normalizeIndicatorRecord(record) {
     // Price changes
     dayChangePct: extra.day_change_pct,
     prevCloseChangePct: extra.prev_close_change_pct,
+    change7d: extra.change_7d,
 
     // EMA
     emaFast: extra.ema_fast,
@@ -338,8 +339,13 @@ function normalizeIndicatorRecord(record) {
     emaTrend: extra.ema_trend,
     emaLongest: extra.ema_longest,
     trendDir: extra.trend_dir,
+    emaBullish: extra.ema_bullish,
+    emaBearish: extra.ema_bearish,
     emaBullTouch: extra.ema_bull_touch,
     emaBearTouch: extra.ema_bear_touch,
+    slopeSlow: extra.slope_slow,
+    slopeTrend: extra.slope_trend,
+    slopeLongest: extra.slope_longest,
 
     // Divergences
     crsiBullDiv: extra.crsi_bull_div,
@@ -348,6 +354,8 @@ function normalizeIndicatorRecord(record) {
     obvBearDiv: extra.obv_bear_div,
     crsiHidBull: extra.crsi_hid_bull,
     crsiHidBear: extra.crsi_hid_bear,
+    obvHidBull: extra.obv_hid_bull,
+    obvHidBear: extra.obv_hid_bear,
 
     // Fractals & Channels
     fractalBull: extra.fractal_bull,
@@ -356,13 +364,20 @@ function normalizeIndicatorRecord(record) {
     sdUpper: extra.sd_upper,
     sdZone: extra.sd_zone,
     sdTrend: extra.sd_trend,
+    sdReg: extra.sd_reg,
+    sdStdDev: extra.sd_std_dev,
 
     // DTP & RSI
     dtpDir: extra.dtp_dir,
     dtpPhase: extra.dtp_phase,
+    dtpPhaseBars: extra.dtp_phase_bars,
+    dtpAvg: extra.dtp_avg,
+    dtpAtr: extra.dtp_atr,
     crsi: extra.crsi,
     crsiOB: extra.crsi_ob,
     crsiOS: extra.crsi_os,
+    crsiUb: extra.crsi_ub,
+    crsiDb: extra.crsi_db,
     obvRsi: extra.obv_rsi,
     atr: extra.atr,
     atrRaw: extra.atr_raw,
@@ -370,6 +385,10 @@ function normalizeIndicatorRecord(record) {
 
     // VWAP
     vwap: extra.vwap,
+    vwapUpper1: extra.vwap_upper1,
+    vwapLower1: extra.vwap_lower1,
+    vwapUpper2: extra.vwap_upper2,
+    vwapLower2: extra.vwap_lower2,
     vwapDist: extra.vwap_dist,
     vwapBullish: extra.vwap_bullish
   };
@@ -423,6 +442,13 @@ function buildIndicatorBadges(signal, latestIndicator) {
     }
     if (latestIndicator.emaBearTouch) {
       badges.push(`<span class="indicator-badge badge-ema">EMA触及↓</span>`);
+    }
+    // EMA 多头/空头状态
+    if (latestIndicator.emaBullish) {
+      badges.push(`<span class="indicator-badge badge-ema">EMA 多头</span>`);
+    }
+    if (latestIndicator.emaBearish) {
+      badges.push(`<span class="indicator-badge badge-ema">EMA 空头</span>`);
     }
   }
 
@@ -492,6 +518,10 @@ function renderIndicatorModal(latestIndicator) {
           <div class="modal-value">${latestIndicator.trendDir === 1 ? '📈 多头' : latestIndicator.trendDir === -1 ? '📉 空头' : '➡️ 中性'}</div>
         </div>
         <div class="modal-item">
+          <div class="modal-label">EMA状态</div>
+          <div class="modal-value">${latestIndicator.emaBullish ? '📈 多头' : latestIndicator.emaBearish ? '📉 空头' : '➡️ 中性'}</div>
+        </div>
+        <div class="modal-item">
           <div class="modal-label">EMA触及</div>
           <div class="modal-value">
             ${latestIndicator.emaBullTouch ? '✅ 多头触及' : latestIndicator.emaBearTouch ? '✅ 空头触及' : '❌ 无'}
@@ -507,6 +537,12 @@ function renderIndicatorModal(latestIndicator) {
           <div class="modal-label">Trend斜率</div>
           <div class="modal-value" style="color: ${latestIndicator.slopeTrend > 0 ? 'var(--long)' : 'var(--short)'}">
             ${latestIndicator.slopeTrend > 0 ? '+' : ''}${(latestIndicator.slopeTrend || 0).toFixed(4)}
+          </div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">Longest斜率</div>
+          <div class="modal-value" style="color: ${latestIndicator.slopeLongest > 0 ? 'var(--long)' : 'var(--short)'}">
+            ${latestIndicator.slopeLongest > 0 ? '+' : ''}${(latestIndicator.slopeLongest || 0).toFixed(4)}
           </div>
         </div>
       </div>
@@ -600,6 +636,10 @@ function renderIndicatorModal(latestIndicator) {
           <div class="modal-value">${latestIndicator.dtpPhase || 'N/A'}</div>
         </div>
         <div class="modal-item">
+          <div class="modal-label">DTP 阶段Bar数</div>
+          <div class="modal-value">${latestIndicator.dtpPhaseBars || 0}</div>
+        </div>
+        <div class="modal-item">
           <div class="modal-label">DTP 平均值</div>
           <div class="modal-value">${(latestIndicator.dtpAvg || 0).toFixed(2)}</div>
         </div>
@@ -670,6 +710,22 @@ function renderIndicatorModal(latestIndicator) {
         <div class="modal-item">
           <div class="modal-label">VWAP 趋势</div>
           <div class="modal-value">${latestIndicator.vwapBullish ? '📈 多头' : '📉 空头'}</div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">U1 上轨</div>
+          <div class="modal-value">$${(latestIndicator.vwapUpper1 || 0).toFixed(2)}</div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">L1 下轨</div>
+          <div class="modal-value">$${(latestIndicator.vwapLower1 || 0).toFixed(2)}</div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">U2 上轨</div>
+          <div class="modal-value">$${(latestIndicator.vwapUpper2 || 0).toFixed(2)}</div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">L2 下轨</div>
+          <div class="modal-value">$${(latestIndicator.vwapLower2 || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">成交量</div>
@@ -1328,3 +1384,87 @@ if (typeof module !== 'undefined' && module.exports) {
     withLoading
   };
 }
+
+// ── 技术指标弹窗（signals.html / indicators.html 共用） ──
+function getIndicatorModalStyles() {
+  return `
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.8);
+      z-index: 1000;
+      display: none;
+      align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal-content {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      max-width: 600px; width: 100%;
+      max-height: 80vh; overflow-y: auto;
+      padding: 20px;
+    }
+    .modal-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px; padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-title { font-size: 16px; font-weight: 700; color: var(--text); }
+    .modal-close {
+      background: none; border: none; color: var(--muted);
+      font-size: 24px; cursor: pointer;
+      padding: 0; width: 32px; height: 32px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .modal-section { margin-bottom: 16px; }
+    .modal-section-title {
+      font-size: 12px; color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 8px; letter-spacing: 1px;
+    }
+    .modal-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .modal-item { display: flex; flex-direction: column; gap: 4px; }
+    .modal-label {
+      font-size: 10px; color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .modal-value {
+      font-size: 13px; font-weight: 700; color: var(--text);
+    }
+  `;
+}
+
+function renderIndicatorModalHTML() {
+  return `<div class="modal-overlay" id="indicatorModal" onclick="if(event.target===this)window.closeIndicatorModal()">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">技术指标详情</div>
+        <button class="modal-close" onclick="window.closeIndicatorModal()">×</button>
+      </div>
+      <div id="modalBody"></div>
+    </div>
+  </div>`;
+}
+
+function showIndicatorModal(normalized) {
+  const container = document.getElementById('indicatorModalContainer');
+  if (!container) return;
+  // 首次渲染 HTML
+  if (!document.getElementById('indicatorModal')) {
+    container.innerHTML = renderIndicatorModalHTML();
+  }
+  document.getElementById('modalBody').innerHTML = renderIndicatorModal(normalized);
+  document.getElementById('indicatorModal').classList.add('show');
+}
+
+window.closeIndicatorModal = function() {
+  const modal = document.getElementById('indicatorModal');
+  if (modal) modal.classList.remove('show');
+};
+
+window.showIndicatorModal = showIndicatorModal;
+window.getIndicatorModalStyles = getIndicatorModalStyles;
