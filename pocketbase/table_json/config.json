@@ -2,9 +2,9 @@
   "id": "_pb_config_",
   "listRule": "",
   "viewRule": "",
-  "createRule": null,
-  "updateRule": null,
-  "deleteRule": null,
+  "createRule": "",
+  "updateRule": "",
+  "deleteRule": "",
   "name": "config",
   "type": "base",
   "fields": [
@@ -103,6 +103,6 @@
     "CREATE UNIQUE INDEX idx_config_key ON config (key)"
   ],
   "created": "2026-03-16 18:28:18.285Z",
-  "updated": "2026-03-19 18:32:59.359Z",
+  "updated": "2026-03-25 08:05:10.357Z",
   "system": false
 }

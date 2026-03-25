@@ -11,12 +11,17 @@ cronAdd("signal_expiry_check", "* * * * *", () => {
     let validityMinutes = 30  // 默认 30 分钟
     try {
         const configRecord = $app.findFirstRecordByFilter("config", "key = 'signal_validity_minutes'")
-        const val = parseInt(configRecord.get("value"))
-        if (!isNaN(val) && val > 0) {
-            validityMinutes = val
+        if (configRecord) {
+            const val = parseInt(configRecord.get("value"))
+            if (!isNaN(val) && val > 0) {
+                validityMinutes = val
+                console.log(`[SignalExpiry] signal_validity_minutes 配置值: ${validityMinutes}`);
+            }
+        } else {
+            console.log(`[SignalExpiry] signal_validity_minutes 配置不存在，使用默认值: ${validityMinutes}`);
         }
-    } catch (_) {
-        // 配置不存在，使用默认值
+    } catch (err) {
+        console.log(`[SignalExpiry] signal_validity_minutes 配置读取失败: ${err}`);
     }
 
     // 计算截止时间（毫秒时间戳）

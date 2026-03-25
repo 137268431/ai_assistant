@@ -16,22 +16,7 @@ function _page(emoji, title, detail, color) {
 <body><div class="card"><div class="emoji">${emoji}</div><div class="title">${title}</div><div class="detail">${detail}</div></div></body></html>`
 }
 
-function _verifyToken(c) {
-    const token = c.request.url.query().get("token") || ""
-    try {
-        const cfg = $app.findFirstRecordByFilter("config", "key = 'signal_action_token'")
-        const expected = cfg.get("value") || ""
-        if (!expected) return true   // 未配置 token，跳过校验
-        return token === expected
-    } catch (_) {
-        return true  // config 不存在，跳过校验
-    }
-}
-
 routerAdd("GET", "/webhook/signal/confirm", (c) => {
-    if (!_verifyToken(c)) {
-        return c.html(403, _page("🔒", "无权限", "链接无效或已过期，请从飞书消息中重新点击", "#e53e3e"))
-    }
     const signalId = c.request.url.query().get("id") || ""
     if (!signalId) {
         return c.html(400, _page("❌", "参数错误", "缺少信号ID", "#e53e3e"))
@@ -42,7 +27,7 @@ routerAdd("GET", "/webhook/signal/confirm", (c) => {
         const symbol = record.get("symbol") || signalId
         const statusHints = {
             expired:   ["⏰", "信号已过期",   "该信号超时自动失效，无法操作", "#e53e3e"],
-            canceled:  ["❌", "信号已取消",   "该信号已被取消，无法重复操作", "#e53e3e"],
+            rejected:  ["❌", "信号已拒绝",   "该信号已被拒绝，无法重复操作", "#e53e3e"],
             executed:  ["✅", "信号已执行",   "该信号已执行，无需重复确认",   "#38a169"],
             pending:   ["✅", "信号已确认",   "该信号已确认，无需重复操作",   "#38a169"],
         }
@@ -60,9 +45,6 @@ routerAdd("GET", "/webhook/signal/confirm", (c) => {
 })
 
 routerAdd("GET", "/webhook/signal/cancel", (c) => {
-    if (!_verifyToken(c)) {
-        return c.html(403, _page("🔒", "无权限", "链接无效或已过期，请从飞书消息中重新点击", "#e53e3e"))
-    }
     const signalId = c.request.url.query().get("id") || ""
     if (!signalId) {
         return c.html(400, _page("❌", "参数错误", "缺少信号ID", "#e53e3e"))
@@ -72,18 +54,18 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
         const currentStatus = record.get("status")
         const symbol = record.get("symbol") || signalId
         const statusHints = {
-            expired:  ["⏰", "信号已过期",   "该信号超时自动失效，无法操作", "#e53e3e"],
-            canceled: ["❌", "信号已取消",   "该信号已被取消，无需重复操作", "#e53e3e"],
-            executed: ["✅", "信号已执行",   "信号已执行，无法取消",         "#e53e3e"],
-            pending:  ["⚠️", "信号已确认",   "该信号已确认，无法取消",       "#dd6b20"],
+            expired:   ["⏰", "信号已过期",   "该信号超时自动失效，无法操作", "#e53e3e"],
+            rejected:  ["❌", "信号已拒绝",   "该信号已被拒绝，无法重复操作", "#e53e3e"],
+            executed:  ["✅", "信号已执行",   "信号已执行，无需重复确认",   "#38a169"],
+            pending:   ["✅", "信号已确认",   "该信号已确认，无需重复操作",   "#38a169"],
         }
         if (currentStatus !== "pending" && currentStatus !== "awaiting_confirm") {
             const h = statusHints[currentStatus] || ["⚠️", "无法操作", "状态: " + currentStatus, "#888"]
             return c.html(200, _page(h[0], h[1], h[2] + "<br><small>" + symbol + "</small>", h[3]))
         }
-        record.set("status", "canceled")
+        record.set("status", "rejected")
         $app.save(record)
-        return c.html(200, _page("✅", "信号已取消", symbol, "#38a169"))
+        return c.html(200, _page("✅", "信号已拒绝", symbol, "#38a169"))
     } catch (err) {
         console.error("[SignalAction] 取消失败:", err)
         return c.html(404, _page("🔍", "信号不存在", "找不到信号: " + signalId, "#e53e3e"))
@@ -143,7 +125,7 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
     console.error("Error fetching pending signals:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});
 
 // POST /api/custom/signals/ack - QC 确认信号已处理
 routerAdd("POST", "/api/custom/signals/ack", (c) => {
@@ -172,14 +154,11 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
     console.error("Error acknowledging signal:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});
 
 // ── 订单操作 ──
 
 routerAdd("GET", "/webhook/order/cancel", (c) => {
-    if (!_verifyToken(c)) {
-        return c.html(403, _page("🔒", "无权限", "链接无效或已过期，请从飞书消息中重新点击", "#e53e3e"))
-    }
     const uniqueId = c.request.url.query().get("id") || ""
     if (!uniqueId) {
         return c.html(400, _page("❌", "参数错误", "缺少订单ID", "#e53e3e"))
@@ -207,9 +186,6 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
 })
 
 routerAdd("GET", "/webhook/order/close", (c) => {
-    if (!_verifyToken(c)) {
-        return c.html(403, _page("🔒", "无权限", "链接无效或已过期，请从飞书消息中重新点击", "#e53e3e"))
-    }
     const uniqueId = c.request.url.query().get("id") || ""
     if (!uniqueId) {
         return c.html(400, _page("❌", "参数错误", "缺少订单ID", "#e53e3e"))

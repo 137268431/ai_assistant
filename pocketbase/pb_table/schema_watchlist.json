@@ -1,12 +1,12 @@
 [
     {
-        "id": "_pb_indicators_",
-        "listRule": null,
-        "viewRule": null,
-        "createRule": null,
-        "updateRule": null,
-        "deleteRule": null,
-        "name": "indicators",
+        "id": "_pb_watchlist_",
+        "listRule": "",
+        "viewRule": "",
+        "createRule": "",
+        "updateRule": "",
+        "deleteRule": "",
+        "name": "watchlist",
         "type": "base",
         "fields": [
             {
@@ -26,9 +26,9 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "ind_symbol",
-                "max": 0,
-                "min": 0,
+                "id": "wl_ticker",
+                "max": 20,
+                "min": 1,
                 "name": "symbol",
                 "pattern": "",
                 "presentable": true,
@@ -40,8 +40,8 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "ind_exchange",
-                "max": 0,
+                "id": "wl_exchange",
+                "max": 50,
                 "min": 0,
                 "name": "exchange",
                 "pattern": "",
@@ -54,10 +54,10 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "ind_interval",
-                "max": 0,
+                "id": "wl_industry",
+                "max": 200,
                 "min": 0,
-                "name": "interval",
+                "name": "industry",
                 "pattern": "",
                 "presentable": false,
                 "primaryKey": false,
@@ -68,10 +68,10 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "ind_scripttag",
-                "max": 0,
+                "id": "wl_created_us",
+                "max": 50,
                 "min": 0,
-                "name": "script_tag",
+                "name": "created_us",
                 "pattern": "",
                 "presentable": false,
                 "primaryKey": false,
@@ -82,8 +82,64 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "ind_us_time",
-                "max": 0,
+                "id": "wl_created_cn",
+                "max": 50,
+                "min": 0,
+                "name": "created_cn",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "wl_updated_us",
+                "max": 50,
+                "min": 0,
+                "name": "updated_us",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "wl_updated_cn",
+                "max": 50,
+                "min": 0,
+                "name": "updated_cn",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "sig_note",
+                "max": 500,
+                "min": 0,
+                "name": "note",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "sig_us_time",
+                "max": 50,
                 "min": 0,
                 "name": "us_time",
                 "pattern": "",
@@ -96,8 +152,8 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "ind_cn_time",
-                "max": 0,
+                "id": "sig_cn_time",
+                "max": 50,
                 "min": 0,
                 "name": "cn_time",
                 "pattern": "",
@@ -109,7 +165,7 @@
             },
             {
                 "hidden": false,
-                "id": "ind_bartimems",
+                "id": "sig_bar_time_ms",
                 "max": null,
                 "min": null,
                 "name": "bar_time_ms",
@@ -118,28 +174,6 @@
                 "required": false,
                 "system": false,
                 "type": "number"
-            },
-            {
-                "hidden": false,
-                "id": "ind_barindex",
-                "max": null,
-                "min": null,
-                "name": "bar_index",
-                "onlyInt": true,
-                "presentable": false,
-                "required": false,
-                "system": false,
-                "type": "number"
-            },
-            {
-                "hidden": false,
-                "id": "ind_extra",
-                "maxSize": 2097152,
-                "name": "extra",
-                "presentable": false,
-                "required": false,
-                "system": false,
-                "type": "json"
             },
             {
                 "hidden": false,
@@ -163,10 +197,7 @@
             }
         ],
         "indexes": [
-            "CREATE INDEX idx_indicators_symbol ON indicators (symbol)",
-            "CREATE INDEX idx_indicators_bartimems ON indicators (bar_time_ms)",
-            "CREATE INDEX idx_indicators_created ON indicators (created)",
-            "CREATE INDEX idx_indicators_symbol_created ON indicators (symbol, created)"
+            "CREATE UNIQUE INDEX idx_watchlist_symbol ON watchlist (symbol)"
         ],
         "system": false
     }

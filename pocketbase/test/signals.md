@@ -14,13 +14,13 @@
 ## 端点总览
 
 | 方法 | 端点 | 认证 | 说明 |
-|------|------|------|------|
-| GET | `/api/custom/signals/pending` | 超级用户 | QC 拉取待执行信号 |
-| POST | `/api/custom/signals/ack` | 超级用户 | QC 确认信号已处理 |
-| GET | `/webhook/signal/confirm` | Token 验证 | 飞书确认按钮 |
-| GET | `/webhook/signal/cancel` | Token 验证 | 飞书取消按钮 |
-| GET | `/webhook/order/cancel` | Token 验证 | 飞书取消订单按钮 |
-| GET | `/webhook/order/close` | Token 验证 | 飞书平仓按钮 |
+|------|------|------|------|------|
+| GET | `/api/custom/signals/pending` | 无 | QC 拉取待执行信号 |
+| POST | `/api/custom/signals/ack` | 无 | QC 确认信号已处理 |
+| GET | `/webhook/signal/confirm` | 无 | 飞书确认按钮 |
+| GET | `/webhook/signal/cancel` | 无 | 飞书拒绝按钮 |
+| GET | `/webhook/order/cancel` | 无 | 飞书取消订单按钮 |
+| GET | `/webhook/order/close` | 无 | 飞书平仓按钮 |
 
 ---
 
@@ -41,8 +41,7 @@ GET /api/custom/signals/pending?date=2026-02-01
 ### 请求示例
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending?date=2026-02-01" \
-    -H "Authorization: Bearer YOUR_TOKEN"
+curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending?date=2026-02-01"
 ```
 
 ### 响应
@@ -90,7 +89,6 @@ POST /api/custom/signals/ack
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
       "signal_id": "signal_aapl_long_20260201_trend_U",
       "status": "executed",

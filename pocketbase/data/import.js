@@ -38,7 +38,8 @@ const configData = [
   {"key": "alert_email", "value": "137268431@qq.com", "default_value": "137268431@qq.com", "description": "邮件通知收件人: 状态/订单/健康检查/巡检统一收件邮箱"},
   {"key": "clear_daily_cache", "value": "FALSE", "default_value": "FALSE", "description": "清除当天缓存模式: 手动数据恢复后打开，清除所有 daily keys，恢复正常后关闭"},
   {"key": "signal_auto_confirm", "value": "FALSE", "default_value": "FALSE", "description": "信号自动确认: TRUE时信号直接进入pending状态自动执行，FALSE时需在管理页面手动确认"},
-  {"key": "market_index_symbols", "value": "SPY,QQQ,VIX", "default_value": "SPY,QQQ,VIX", "description": "大盘指数代码(逗号分隔): 用于监控和关联分析"}
+  {"key": "market_index_symbols", "value": "SPY,QQQ,VIX", "default_value": "SPY,QQQ,VIX", "description": "大盘指数代码(逗号分隔): 用于监控和关联分析"},
+  {"key": "scheduler_enabled", "value": "TRUE", "default_value": "TRUE", "description": "定时调度总开关: OFF时所有定时任务不执行（包括信号拉取、健康检查、巡检等）"}
 ];
 
 const watchlistData = [

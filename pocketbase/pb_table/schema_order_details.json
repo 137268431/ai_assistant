@@ -1,12 +1,12 @@
 [
     {
-        "id": "_pb_reverse_signals_",
-        "listRule": null,
-        "viewRule": null,
-        "createRule": null,
-        "updateRule": null,
-        "deleteRule": null,
-        "name": "reverse_signals",
+        "id": "_pb_order_details_",
+        "listRule": "",
+        "viewRule": "",
+        "createRule": "",
+        "updateRule": "",
+        "deleteRule": "",
+        "name": "order_details",
         "type": "base",
         "fields": [
             {
@@ -26,10 +26,10 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "rev_symbol",
-                "max": 0,
-                "min": 0,
-                "name": "symbol",
+                "id": "od_order_id",
+                "max": 200,
+                "min": 1,
+                "name": "order_id",
                 "pattern": "",
                 "presentable": true,
                 "primaryKey": false,
@@ -38,92 +38,89 @@
                 "type": "text"
             },
             {
+                "autogeneratePattern": "",
                 "hidden": false,
-                "id": "rev_direction",
-                "maxSelect": 1,
+                "id": "od_ticker",
+                "max": 20,
+                "min": 1,
+                "name": "symbol",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": true,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "od_direction",
+                "max": 20,
+                "min": 0,
                 "name": "direction",
+                "pattern": "",
                 "presentable": false,
-                "required": true,
+                "primaryKey": false,
+                "required": false,
                 "system": false,
-                "type": "select",
-                "values": [
-                    "long",
-                    "short"
-                ]
+                "type": "text"
             },
             {
                 "hidden": false,
-                "id": "rev_strength",
+                "id": "od_event_type",
                 "maxSelect": 1,
-                "name": "strength",
+                "name": "event_type",
                 "presentable": false,
                 "required": true,
                 "system": false,
                 "type": "select",
                 "values": [
-                    "strong",
-                    "medium",
-                    "weak"
-                ]
-            },
-            {
-                "hidden": false,
-                "id": "rev_score",
-                "max": null,
-                "min": null,
-                "name": "score",
-                "onlyInt": false,
-                "presentable": false,
-                "required": true,
-                "system": false,
-                "type": "number"
-            },
-            {
-                "hidden": false,
-                "id": "rev_triggered",
-                "maxSize": 2097152,
-                "name": "triggered_signals",
-                "presentable": false,
-                "required": true,
-                "system": false,
-                "type": "json"
-            },
-            {
-                "hidden": false,
-                "id": "rev_action",
-                "maxSelect": 1,
-                "name": "action_type",
-                "presentable": false,
-                "required": true,
-                "system": false,
-                "type": "select",
-                "values": [
-                    "close",
-                    "cancel",
-                    "adjust_sl",
-                    "adjust_tp"
-                ]
-            },
-            {
-                "hidden": false,
-                "id": "rev_status",
-                "maxSelect": 1,
-                "name": "status",
-                "presentable": false,
-                "required": true,
-                "system": false,
-                "type": "select",
-                "values": [
-                    "pending",
-                    "confirmed",
-                    "cancelled",
-                    "expired"
+                    "submitted",
+                    "filled",
+                    "canceled",
+                    "closed",
+                    "tp_price_changed",
+                    "sl_price_changed",
+                    "qty_changed",
+                    "manual_close",
+                    "manual_cancel",
+                    "tp_filled",
+                    "sl_filled",
+                    "partial_fill"
                 ]
             },
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "rev_reason",
+                "id": "od_old_value",
+                "max": 2000,
+                "min": 0,
+                "name": "old_value",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "od_new_value",
+                "max": 2000,
+                "min": 0,
+                "name": "new_value",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "od_reason",
                 "max": 500,
                 "min": 0,
                 "name": "reason",
@@ -135,22 +132,12 @@
                 "type": "text"
             },
             {
-                "hidden": false,
-                "id": "rev_extra",
-                "maxSize": 2097152,
-                "name": "extra",
-                "presentable": false,
-                "required": false,
-                "system": false,
-                "type": "json"
-            },
-            {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "rev_proc_time",
-                "max": 0,
+                "id": "od_signal_id",
+                "max": 200,
                 "min": 0,
-                "name": "processed_time",
+                "name": "signal_id",
                 "pattern": "",
                 "presentable": false,
                 "primaryKey": false,
@@ -159,22 +146,24 @@
                 "type": "text"
             },
             {
+                "autogeneratePattern": "",
                 "hidden": false,
-                "id": "rev_bar_time",
-                "max": null,
-                "min": null,
-                "name": "bar_time_ms",
-                "onlyInt": true,
+                "id": "od_event_time",
+                "max": 50,
+                "min": 0,
+                "name": "event_time",
+                "pattern": "",
                 "presentable": false,
+                "primaryKey": false,
                 "required": false,
                 "system": false,
-                "type": "number"
+                "type": "text"
             },
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "rev_us_time",
-                "max": 0,
+                "id": "od_us_time",
+                "max": 50,
                 "min": 0,
                 "name": "us_time",
                 "pattern": "",
@@ -187,8 +176,8 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "rev_cn_time",
-                "max": 0,
+                "id": "od_cn_time",
+                "max": 50,
                 "min": 0,
                 "name": "cn_time",
                 "pattern": "",
@@ -200,30 +189,25 @@
             },
             {
                 "hidden": false,
-                "id": "rev_source",
-                "maxSelect": 1,
-                "name": "source",
+                "id": "od_bar_time_ms",
+                "max": null,
+                "min": null,
+                "name": "bar_time_ms",
+                "onlyInt": true,
                 "presentable": false,
-                "required": true,
+                "required": false,
                 "system": false,
-                "type": "select",
-                "values": [
-                    "signal",
-                    "indicator",
-                    "manual"
-                ]
+                "type": "number"
             },
             {
                 "hidden": false,
-                "id": "rev_priority",
-                "max": 10,
-                "min": 1,
-                "name": "priority",
-                "onlyInt": true,
+                "id": "od_extra",
+                "maxSize": 2097152,
+                "name": "extra",
                 "presentable": false,
-                "required": true,
+                "required": false,
                 "system": false,
-                "type": "number"
+                "type": "json"
             },
             {
                 "hidden": false,
@@ -247,11 +231,10 @@
             }
         ],
         "indexes": [
-            "CREATE INDEX idx_reverse_signals_symbol ON reverse_signals (symbol)",
-            "CREATE INDEX idx_reverse_signals_status ON reverse_signals (status)",
-            "CREATE INDEX idx_reverse_signals_bar_time_ms ON reverse_signals (bar_time_ms)",
-            "CREATE INDEX idx_reverse_signals_priority ON reverse_signals (priority)",
-            "CREATE INDEX idx_reverse_signals_source ON reverse_signals (source)"
+            "CREATE INDEX idx_order_details_order_id ON order_details (order_id)",
+            "CREATE INDEX idx_order_details_symbol ON order_details (symbol)",
+            "CREATE INDEX idx_order_details_event_type ON order_details (event_type)",
+            "CREATE INDEX idx_order_details_event_time ON order_details (event_time)"
         ],
         "system": false
     }

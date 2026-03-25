@@ -36,6 +36,7 @@ function withAuthCheck(promise, errorHandler) {
       handleAuthError();
       return;
     }
+
     // 调用自定义错误处理
     if (errorHandler) errorHandler(error);
   });

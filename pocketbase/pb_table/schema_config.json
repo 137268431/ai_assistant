@@ -1,8 +1,8 @@
 [
     {
         "id": "_pb_config_",
-        "listRule": "",
-        "viewRule": "",
+        "listRule": null,
+        "viewRule": null,
         "createRule": null,
         "updateRule": null,
         "deleteRule": null,

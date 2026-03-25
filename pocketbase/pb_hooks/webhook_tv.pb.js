@@ -137,11 +137,16 @@ routerAdd("POST", "/webhook/tv", (c) => {
     let initialStatus = "pending";  // 默认 pending（自动确认）
     try {
         const configRecord = $app.findFirstRecordByFilter("config", "key = 'signal_auto_confirm'");
-        const autoConfirm = configRecord.get("value");
-        if (autoConfirm === "false" || autoConfirm === false) {
+        const autoConfirm = configRecord ? configRecord.get("value") : null;
+        console.log(`[Webhook] signal_auto_confirm 配置值: ${autoConfirm}`);
+        if (autoConfirm && autoConfirm.toLowerCase() === "false") {
             initialStatus = "awaiting_confirm";  // 需要手动确认
+            console.log(`[Webhook] 信号 ${d.signal_id} 设置为 awaiting_confirm（需手动确认）`);
+        } else {
+            console.log(`[Webhook] 信号 ${d.signal_id} 设置为 pending（自动确认）`);
         }
     } catch (err) {
+        console.log(`[Webhook] signal_auto_confirm 配置读取失败，使用默认值 pending: ${err}`);
         // 配置不存在，使用默认值 pending
     }
     record.set("status", initialStatus)
@@ -213,8 +218,11 @@ routerAdd("POST", "/webhook/tv", (c) => {
                 let threshold = 6;
                 try {
                     const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'");
-                    threshold = parseInt(cfg.get("value")) || 6;
-                } catch (e) {}
+                    threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6;
+                    console.log(`[Webhook] reverse_signal_threshold 配置值: ${threshold}`);
+                } catch (e) {
+                    console.log(`[Webhook] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`);
+                }
                 if (revRecord.get("score") >= threshold) {
                     const dirEmoji = d.direction === "long" ? "📈" : "📉";
                     const oldDirText = orderDirection === "long" ? "多" : "空";

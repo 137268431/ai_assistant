@@ -132,8 +132,11 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
     let threshold = 6;
     try {
         const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'");
-        threshold = parseInt(cfg.get("value")) || 6;
-    } catch (e) {}
+        threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6;
+        console.log(`[ReverseSignal] reverse_signal_threshold 配置值: ${threshold}`);
+    } catch (e) {
+        console.log(`[ReverseSignal] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`);
+    }
     if (score >= threshold) {
         const dirEmoji = direction === "long" ? "📈" : "📉";
         const dirText = direction === "long" ? "多" : "空";
@@ -166,7 +169,7 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
     console.error("Error calculating reverse signal:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});
 
 // GET /api/custom/reverse/pending - 获取未处理的逆向信号
 routerAdd("GET", "/api/custom/reverse/pending", (c) => {
@@ -212,7 +215,7 @@ routerAdd("GET", "/api/custom/reverse/pending", (c) => {
     console.error("Error fetching pending reverse signals:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});
 
 // POST /api/custom/reverse/ack - 标记反转信号状态
 routerAdd("POST", "/api/custom/reverse/ack", (c) => {
@@ -248,4 +251,4 @@ routerAdd("POST", "/api/custom/reverse/ack", (c) => {
     console.error("Error acknowledging reverse signal:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});

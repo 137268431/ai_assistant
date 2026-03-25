@@ -1,11 +1,11 @@
 [
     {
         "id": "_pb_signals_",
-        "listRule": null,
-        "viewRule": null,
-        "createRule": null,
-        "updateRule": null,
-        "deleteRule": null,
+        "listRule": "",
+        "viewRule": "",
+        "createRule": "",
+        "updateRule": "",
+        "deleteRule": "",
         "name": "signals",
         "type": "base",
         "fields": [

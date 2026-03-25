@@ -3,9 +3,9 @@
         "id": "_pb_orders_",
         "listRule": "",
         "viewRule": "",
-        "createRule": null,
-        "updateRule": null,
-        "deleteRule": null,
+        "createRule": "",
+        "updateRule": "",
+        "deleteRule": "",
         "name": "orders",
         "type": "base",
         "fields": [

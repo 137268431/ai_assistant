@@ -31,7 +31,6 @@
 # 设置信号有效期为 30 分钟
 curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
     -d '{
       "key": "signal_validity_minutes",
       "value": "30"
@@ -54,7 +53,6 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 # 关闭自动确认，需要手动确认
 curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
     -d '{
       "key": "signal_auto_confirm",
       "value": "false"
@@ -75,16 +73,13 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
     -d '{
       "key": "signal_action_token",
       "value": "your_secure_token_here"
     }'
 ```
 
-- 用于验证飞书按钮链接的合法性
-- 飞书卡片按钮 URL 格式：`/webhook/signal/confirm?id=xxx&token={token}`
-- 不配置或空值表示跳过验证（不推荐）
+> 注意：当前 API 已关闭认证，此配置已废弃。
 
 ---
 
@@ -97,7 +92,6 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
     -d '{
       "key": "reverse_signal_threshold",
       "value": "6"
@@ -128,12 +122,23 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 ## 配置管理 API
 
+### 查看所有配置
+
+```bash
+curl -X GET "https://pb.lzw-glory.top/api/collections/config/records"
+```
+
+### 查看单个配置
+
+```bash
+curl -X GET "https://pb.lzw-glory.top/api/collections/config/records?filter=key='signal_auto_confirm'"
+```
+
 ### 创建配置
 
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
     -d '{
       "key": "your_key",
       "value": "your_value"
@@ -143,8 +148,7 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 ### 读取配置
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/api/collections/config/records?filter=key='your_key'" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl -X GET "https://pb.lzw-glory.top/api/collections/config/records?filter=key='your_key'"
 ```
 
 ### 更新配置
@@ -152,7 +156,6 @@ curl -X GET "https://pb.lzw-glory.top/api/collections/config/records?filter=key=
 ```bash
 curl -X PATCH "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_ID" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
     -d '{
       "value": "new_value"
     }'
@@ -161,8 +164,7 @@ curl -X PATCH "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_ID
 ### 删除配置
 
 ```bash
-curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_ID" \
-    -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_ID"
 ```
 
 ---

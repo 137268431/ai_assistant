@@ -82,8 +82,14 @@ function sendFeishuPost(title, content, type = "signal") {
 var PB_HOST = "https://pb.lzw-glory.top";
 var SIGNAL_ACTION_TOKEN = (function() {
   try {
-    return $app.findFirstRecordByFilter("config", "key = 'signal_action_token'").get("value") || ""
-  } catch(_) { return "" }
+    const cfg = $app.findFirstRecordByFilter("config", "key = 'signal_action_token'");
+    const token = cfg ? cfg.get("value") || "" : "";
+    console.log(`[Feishu] signal_action_token 配置读取结果: ${token ? '已配置' : '未配置'}`);
+    return token;
+  } catch(e) {
+    console.log(`[Feishu] signal_action_token 配置读取失败: ${e}`);
+    return "";
+  }
 })();
 
 function notifyNewSignal(signal) {

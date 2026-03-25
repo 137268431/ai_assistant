@@ -193,7 +193,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     console.error("Error upserting order:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});
 
 // GET /api/custom/orders/pending - 获取待执行操作
 routerAdd("GET", "/api/custom/orders/pending", (c) => {
@@ -227,7 +227,7 @@ routerAdd("GET", "/api/custom/orders/pending", (c) => {
     console.error("Error fetching pending order actions:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});
 
 // POST /api/custom/orders/ack - 确认操作完成
 routerAdd("POST", "/api/custom/orders/ack", (c) => {
@@ -273,4 +273,4 @@ routerAdd("POST", "/api/custom/orders/ack", (c) => {
     console.error("Error acknowledging order action:", err);
     return c.json(500, { error: err.message });
   }
-}, $apis.requireSuperuserAuth());
+});
