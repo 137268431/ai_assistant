@@ -3,81 +3,72 @@
 /**
  * signal_actions.pb.js
  * 信号确认/取消接口（供飞书按钮直接调用）
- * 通过 config 表中 signal_action_token 做简单校验
  */
 
-function _page(emoji, title, detail, color) {
-    color = color || "#333"
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f5f5f5}
-.card{background:#fff;border-radius:12px;padding:40px;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,.1);max-width:360px;width:90%}
-.emoji{font-size:48px;margin-bottom:16px}.title{font-size:22px;font-weight:600;color:${color};margin-bottom:8px}
-.detail{color:#888;font-size:14px;margin-top:8px}</style></head>
-<body><div class="card"><div class="emoji">${emoji}</div><div class="title">${title}</div><div class="detail">${detail}</div></div></body></html>`
-}
+console.log("[SignalActions] Hook 文件开始加载...");
 
 routerAdd("GET", "/webhook/signal/confirm", (c) => {
+    const { ok, warn, fail, info } = require(`${__hooks}/_page.js`)
     const signalId = c.request.url.query().get("id") || ""
     if (!signalId) {
-        return c.html(400, _page("❌", "参数错误", "缺少信号ID", "#e53e3e"))
+        return c.html(400, fail("参数错误", "缺少信号ID"))
     }
     try {
         const record = $app.findFirstRecordByFilter("signals", "id = {:id} || signal_id = {:id}", { id: signalId })
         const currentStatus = record.get("status")
         const symbol = record.get("symbol") || signalId
         const statusHints = {
-            expired:   ["⏰", "信号已过期",   "该信号超时自动失效，无法操作", "#e53e3e"],
-            rejected:  ["❌", "信号已拒绝",   "该信号已被拒绝，无法重复操作", "#e53e3e"],
-            executed:  ["✅", "信号已执行",   "该信号已执行，无需重复确认",   "#38a169"],
-            pending:   ["✅", "信号已确认",   "该信号已确认，无需重复操作",   "#38a169"],
+            expired:   { fn: fail,   title: "信号已过期",   msg: "该信号超时自动失效，无法操作" },
+            rejected:  { fn: fail,   title: "信号已拒绝",   msg: "该信号已被拒绝，无法重复操作" },
+            executed:  { fn: ok,     title: "信号已执行",   msg: "该信号已执行，无需重复确认" },
+            pending:   { fn: ok,     title: "信号已确认",   msg: "该信号已确认，无需重复操作" },
         }
         if (currentStatus !== "pending" && currentStatus !== "awaiting_confirm") {
-            const h = statusHints[currentStatus] || ["⚠️", "无法操作", "状态: " + currentStatus, "#888"]
-            return c.html(200, _page(h[0], h[1], h[2] + "<br><small>" + symbol + "</small>", h[3]))
+            const h = statusHints[currentStatus] || { fn: warn, title: "无法操作", msg: "状态: " + currentStatus }
+            return c.html(200, h.fn(h.title, h.msg, symbol))
         }
         record.set("status", "pending")
         $app.save(record)
-        return c.html(200, _page("✅", "信号已确认", symbol, "#38a169"))
+        return c.html(200, ok("信号已确认", "确认成功", symbol))
     } catch (err) {
         console.error("[SignalAction] 确认失败:", err)
-        return c.html(404, _page("🔍", "信号不存在", "找不到信号: " + signalId, "#e53e3e"))
+        return c.html(404, fail("信号不存在", "找不到信号", signalId))
     }
 })
 
 routerAdd("GET", "/webhook/signal/cancel", (c) => {
+    const { ok, warn, fail, info } = require(`${__hooks}/_page.js`)
     const signalId = c.request.url.query().get("id") || ""
     if (!signalId) {
-        return c.html(400, _page("❌", "参数错误", "缺少信号ID", "#e53e3e"))
+        return c.html(400, fail("参数错误", "缺少信号ID"))
     }
     try {
         const record = $app.findFirstRecordByFilter("signals", "id = {:id} || signal_id = {:id}", { id: signalId })
         const currentStatus = record.get("status")
         const symbol = record.get("symbol") || signalId
         const statusHints = {
-            expired:   ["⏰", "信号已过期",   "该信号超时自动失效，无法操作", "#e53e3e"],
-            rejected:  ["❌", "信号已拒绝",   "该信号已被拒绝，无法重复操作", "#e53e3e"],
-            executed:  ["✅", "信号已执行",   "信号已执行，无需重复确认",   "#38a169"],
-            pending:   ["✅", "信号已确认",   "该信号已确认，无需重复操作",   "#38a169"],
+            expired:   { fn: fail,   title: "信号已过期",   msg: "该信号超时自动失效，无法操作" },
+            rejected:  { fn: fail,   title: "信号已拒绝",   msg: "该信号已被拒绝，无法重复操作" },
+            executed:  { fn: warn,   title: "信号已执行",   msg: "信号已执行，无法取消" },
+            pending:   { fn: warn,   title: "信号已确认",   msg: "该信号已确认，无法取消" },
         }
         if (currentStatus !== "pending" && currentStatus !== "awaiting_confirm") {
-            const h = statusHints[currentStatus] || ["⚠️", "无法操作", "状态: " + currentStatus, "#888"]
-            return c.html(200, _page(h[0], h[1], h[2] + "<br><small>" + symbol + "</small>", h[3]))
+            const h = statusHints[currentStatus] || { fn: warn, title: "无法操作", msg: "状态: " + currentStatus }
+            return c.html(200, h.fn(h.title, h.msg, symbol))
         }
         record.set("status", "rejected")
         $app.save(record)
-        return c.html(200, _page("✅", "信号已拒绝", symbol, "#38a169"))
+        return c.html(200, fail("信号已拒绝", "拒绝成功", symbol))
     } catch (err) {
         console.error("[SignalAction] 取消失败:", err)
-        return c.html(404, _page("🔍", "信号不存在", "找不到信号: " + signalId, "#e53e3e"))
+        return c.html(404, fail("信号不存在", "找不到信号", signalId))
     }
 })
 
 // ── QC 信号拉取 & 确认 ──
 
-// GET /api/custom/signals/pending?date=YYYY-MM-DD - QC 拉取待执行信号（默认当天美东）
 routerAdd("GET", "/api/custom/signals/pending", (c) => {
   try {
-    // 支持 ?date= 查询指定日期，默认 UTC 转美东当天
     let dateStr = c.request.url.query().get("date") || "";
     if (!dateStr) {
       const now = new Date();
@@ -127,7 +118,6 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
   }
 });
 
-// POST /api/custom/signals/ack - QC 确认信号已处理
 routerAdd("POST", "/api/custom/signals/ack", (c) => {
   const data = c.requestInfo().body || c.requestInfo().data || {};
   const signalId = data.signal_id;
@@ -159,55 +149,69 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
 // ── 订单操作 ──
 
 routerAdd("GET", "/webhook/order/cancel", (c) => {
+    const { ok, warn, fail } = require(`${__hooks}/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
     if (!uniqueId) {
-        return c.html(400, _page("❌", "参数错误", "缺少订单ID", "#e53e3e"))
+        return c.html(400, fail("参数错误", "缺少订单ID"))
     }
     try {
         const records = $app.findRecordsByFilter("orders", "unique_id = {:id}", "", 1, 0, { id: uniqueId })
         if (!records || records.length === 0) {
-            return c.html(404, _page("🔍", "订单不存在", "找不到订单: " + uniqueId, "#e53e3e"))
+            return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
         }
         const record = records[0]
         const status = record.get("status")
         const symbol = record.get("symbol") || uniqueId
-        if (status === "Filled" || status === "Canceled" || status === "Closed") {
-            const hints = { Filled: "订单已成交，无法取消", Canceled: "订单已取消，无需重复操作", Closed: "订单已平仓，无法取消" }
-            return c.html(200, _page("⚠️", hints[status] || "无法操作", symbol, "#e53e3e"))
+        const statusHints = {
+            Filled:   { fn: warn, title: "订单已成交", msg: "订单已成交，无法取消" },
+            Canceled: { fn: warn, title: "订单已取消", msg: "无需重复操作" },
+            Closed:   { fn: warn, title: "订单已平仓", msg: "无法取消" },
+        }
+        if (statusHints[status]) {
+            const h = statusHints[status]
+            return c.html(200, h.fn(h.title, h.msg, symbol))
         }
         record.set("action", "cancel")
         $app.save(record)
         console.log("[OrderAction] 取消挂单:", uniqueId)
-        return c.html(200, _page("✅", "取消指令已发送", symbol + "<br><small>等待交易系统执行</small>", "#38a169"))
+        return c.html(200, ok("取消指令已发送", "等待交易系统执行", symbol))
     } catch (err) {
         console.error("[OrderAction] 取消失败:", err)
-        return c.html(500, _page("❌", "操作失败", String(err), "#e53e3e"))
+        return c.html(500, fail("操作失败", String(err)))
     }
 })
 
 routerAdd("GET", "/webhook/order/close", (c) => {
+    const { ok, warn, fail } = require(`${__hooks}/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
     if (!uniqueId) {
-        return c.html(400, _page("❌", "参数错误", "缺少订单ID", "#e53e3e"))
+        return c.html(400, fail("参数错误", "缺少订单ID"))
     }
     try {
         const records = $app.findRecordsByFilter("orders", "unique_id = {:id}", "", 1, 0, { id: uniqueId })
         if (!records || records.length === 0) {
-            return c.html(404, _page("🔍", "订单不存在", "找不到订单: " + uniqueId, "#e53e3e"))
+            return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
         }
         const record = records[0]
         const status = record.get("status")
         const symbol = record.get("symbol") || uniqueId
-        if (status !== "Filled") {
-            const hints = { Submitted: "订单尚未成交，请先取消挂单", Canceled: "订单已取消", Closed: "订单已平仓，无需重复操作" }
-            return c.html(200, _page("⚠️", hints[status] || "无法平仓", symbol + "<br><small>当前状态: " + status + "</small>", "#e53e3e"))
+        const statusHints = {
+            Submitted: { fn: warn, title: "订单未成交", msg: "请先取消挂单" },
+            Canceled: { fn: warn, title: "订单已取消", msg: "无法平仓" },
+            Closed:   { fn: warn, title: "订单已平仓", msg: "无需重复操作" },
+        }
+        if (statusHints[status]) {
+            const h = statusHints[status]
+            return c.html(200, h.fn(h.title, h.msg, symbol))
         }
         record.set("action", "close")
         $app.save(record)
         console.log("[OrderAction] 平仓:", uniqueId)
-        return c.html(200, _page("✅", "平仓指令已发送", symbol + "<br><small>等待交易系统执行</small>", "#38a169"))
+        return c.html(200, ok("平仓指令已发送", "等待交易系统执行", symbol))
     } catch (err) {
         console.error("[OrderAction] 平仓失败:", err)
-        return c.html(500, _page("❌", "操作失败", String(err), "#e53e3e"))
+        return c.html(500, fail("操作失败", String(err)))
     }
 })
+
+console.log('[SignalActions] Hook 文件加载完成');

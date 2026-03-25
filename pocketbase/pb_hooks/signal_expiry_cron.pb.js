@@ -7,6 +7,17 @@
  */
 
 cronAdd("signal_expiry_check", "* * * * *", () => {
+    // 检查 PB 定时调度开关
+    try {
+        const schedulerConfig = $app.findFirstRecordByFilter("config", "key = 'pb_scheduler_enabled'")
+        if (schedulerConfig && schedulerConfig.get("value") === "FALSE") {
+            console.log("[SignalExpiry] PB定时调度已关闭，跳过执行")
+            return
+        }
+    } catch (err) {
+        console.log("[SignalExpiry] pb_scheduler_enabled 配置读取失败，继续执行")
+    }
+
     // 读取有效期配置（分钟）
     let validityMinutes = 30  // 默认 30 分钟
     try {

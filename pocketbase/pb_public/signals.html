@@ -838,7 +838,7 @@
 
         // Pagination
         let currentPage = 1;
-        const itemsPerPage = 100;
+        const itemsPerPage = 10;
         let displayedSignals = [];
         let hasMore = false;
         let totalItems = 0;
@@ -890,8 +890,8 @@
                     endTime = `${currentDate} 23:59:59`;
                 }
 
-                // 构建 filter 条件
-                const conditions = [`created >= "${startTime}"`, `created <= "${endTime}"`];
+                // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
+                const conditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
 
                 // 状态筛选
                 if (currentStatus !== 'all') {
@@ -913,7 +913,7 @@
 
                 // 使用分页 API，每次请求 100 条用于统计
                 const page = currentPage;
-                const perPage = 100;
+                const perPage = 10;
 
                 showLoading('加载中...');
                 const result = await pb.collection('signals').getList(page, perPage, {
@@ -937,7 +937,7 @@
                 renderSignals();
                 updateCountdowns();
                 updateLoadMoreButton();
-                updateStatusTabCounts();
+                await updateStatusTabCounts();
             } catch (error) {
                 console.error('加载失败:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -1018,35 +1018,8 @@
                 // 处理结果
                 Object.keys(latestBySymbol).forEach(symbol => {
                     const data = latestBySymbol[symbol];
-
-                    // 解析 extra 字段
-                    let extra = data.extra;
-                    if (typeof extra === 'string') {
-                        try {
-                            extra = JSON.parse(extra);
-                        } catch (e) {
-                            extra = {};
-                        }
-                    }
-
-                    const normalized = {
-                        symbol: data.symbol,
-                        dayChangePct: extra?.day_change_pct || 0,
-                        prevCloseChangePct: extra?.prev_close_change_pct || 0,
-                        change7d: extra?.change_7d || 0,
-                        open: extra?.open,
-                        high: extra?.high,
-                        low: extra?.low,
-                        close: extra?.close,
-                        crsiBullDiv: extra?.crsi_bull_div,
-                        crsiBearDiv: extra?.crsi_bear_div,
-                        obvBullDiv: extra?.obv_bull_div,
-                        obvBearDiv: extra?.obv_bear_div,
-                        fractalBull: extra?.fractal_bull,
-                        fractalBear: extra?.fractal_bear,
-                        emaBullTouch: extra?.ema_bull_touch,
-                        emaBearTouch: extra?.ema_bear_touch,
-                    };
+                    // 复用 common.js 中的 normalizeIndicatorRecord，确保所有字段齐全
+                    const normalized = normalizeIndicatorRecord(data);
 
                     // Map 到所有使用该 symbol 的信号
                     allSignals.forEach(signal => {
@@ -1182,31 +1155,64 @@
             // 状态筛选使用 Tab，不再显示统计数字
         }
 
-        // 更新状态标签的数量显示
-        function updateStatusTabCounts() {
-            const counts = {
-                'all': allSignals.length,
-                'awaiting_confirm': 0,
-                'pending': 0,
-                'executed': 0,
-                'expired': 0,
-                'closed': 0,
-                'rejected': 0
-            };
+        // 更新状态标签的数量显示（通过API查询真实count）
+        async function updateStatusTabCounts() {
+            let startTime, endTime;
 
-            // 统计每个状态的数量
-            allSignals.forEach(signal => {
-                const status = signal.status || 'pending';
-                if (counts[status] !== undefined) {
-                    counts[status]++;
-                }
-            });
+            if (rangeStartDate && rangeEndDate) {
+                startTime = `${rangeStartDate} 00:00:00`;
+                endTime = `${rangeEndDate} 23:59:59`;
+            } else {
+                startTime = `${currentDate} 00:00:00`;
+                endTime = `${currentDate} 23:59:59`;
+            }
+
+            const baseConditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+            if (currentDirection !== 'all') {
+                baseConditions.push(`direction = "${currentDirection}"`);
+            }
+            if (currentSearch) {
+                const s = currentSearch.toUpperCase();
+                baseConditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
+            }
+
+            const baseFilter = baseConditions.join(' && ');
+            // 并行查询各状态的数量（6个并行，无 all）
+            const statuses = ['awaiting_confirm', 'pending', 'executed', 'closed', 'expired', 'rejected'];
+            const counts = {};
+
+            try {
+                const results = await Promise.all(
+                    statuses.map(status => {
+                        const filter = `${baseFilter} && status = "${status}"`;
+                        return pb.collection('signals').getList(1, 1, {
+                            filter,
+                            sort: '-created',
+                            $autoCancel: false,
+                            skipTotal: false
+                        }).then(r => ({ status, count: r.totalItems }));
+                    })
+                );
+
+                results.forEach(r => { counts[r.status] = r.count; });
+                // all 的数量直接用 loadSignals 已经返回的 totalItems
+                counts['all'] = totalItems;
+            } catch (e) {
+                console.error('updateStatusTabCounts failed:', e);
+                // 降级：显示当前已加载的
+                counts['all'] = allSignals.length;
+                statuses.forEach(s => counts[s] = 0);
+                allSignals.forEach(signal => {
+                    const st = signal.status || 'pending';
+                    if (counts[st] !== undefined) counts[st]++;
+                });
+            }
 
             // 更新每个标签的数量
-            Object.keys(counts).forEach(status => {
+            ['all', ...statuses].forEach(status => {
                 const tab = document.querySelector(`.status-tab .tab-count[data-status="${status}"] .count-value`);
                 if (tab) {
-                    tab.textContent = counts[status];
+                    tab.textContent = counts[status] || 0;
                 }
             });
         }
@@ -1350,8 +1356,8 @@
                     endTime = `${currentDate} 23:59:59`;
                 }
 
-                // 构建 filter 条件
-                const conditions = [`created >= "${startTime}"`, `created <= "${endTime}"`];
+                // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
+                const conditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
 
                 // 状态筛选
                 if (currentStatus !== 'all') {

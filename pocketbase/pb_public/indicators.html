@@ -568,7 +568,7 @@
                     <div class="indicator-card" onclick="showIndicatorDetails('${ind.id}')" style="cursor:pointer;">
                         <div class="indicator-header">
                             <div class="indicator-symbol">${ind.symbol} ${intervalText ? `<span class="indicator-interval">${intervalText}</span>` : ''}</div>
-                            <div class="indicator-time">${extra.us_time}</div>
+                            <div class="indicator-time">${ind.us_time || ''}</div>
                         </div>
                         <div class="indicator-grid">
                             <div class="indicator-section">

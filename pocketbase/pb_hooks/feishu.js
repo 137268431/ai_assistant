@@ -256,7 +256,7 @@ function notifyNewSignal(signal) {
       },
       {
         tag: "button",
-        text: { tag: "plain_text", content: "❌ 取消" },
+        text: { tag: "plain_text", content: "❌ 拒绝" },
         type: "danger",
         url: PB_HOST + "/webhook/signal/cancel?id=" + signal.signal_id + tokenParam
       }

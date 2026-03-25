@@ -31,7 +31,7 @@
 ### 请求
 
 ```
-GET /api/custom/signals/pending?date=2026-02-01
+GET /api/custom/signals/pending?date=2026-02-02
 ```
 
 | 参数 | 类型 | 说明 |
@@ -41,7 +41,7 @@ GET /api/custom/signals/pending?date=2026-02-01
 ### 请求示例
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending?date=2026-02-01"
+curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending?date=2026-02-02"
 ```
 
 ### 响应
@@ -62,11 +62,11 @@ curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending?date=2026-02-01
       "shares": 100,
       "rr": "2.5:1",
       "reason": "SD上轨→顺势做多",
-      "date": "2026-02-01",
-      "us_time": "2026-02-01 10:00:00",
+      "date": "2026-02-02",
+      "us_time": "2026-02-02 10:00:00",
       "bar_time_ms": 1738411200000,
       "extra": {},
-      "created": "2026-02-01 10:00:00"
+      "created": "2026-02-02 10:00:00"
     }
   ]
 }

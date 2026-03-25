@@ -118,7 +118,7 @@ curl -X GET "https://pb.lzw-glory.top/api/custom/reverse/pending" \
       "vwap_dist": 2.5,
       "close": 185.50,
       "bar_time_ms": 1738411200000,
-      "created": "2026-02-01 10:00:00"
+      "created": "2026-02-02 10:00:00"
     }
   ]
 }
@@ -247,7 +247,7 @@ AAPL 多头持仓，指标显示：
 方向: 多 📈
 强度: strong (score=8)
 触发: cRSI超买, 背离, 分形/SD通道
-时间: 2026-02-01 10:00:00
+时间: 2026-02-02 10:00:00
 ```
 
 ---
