@@ -53,8 +53,7 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
 ### 2. 拉取待确认信号
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending" \
-    -H "Authorization: Bearer YOUR_TOKEN"
+curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending"
 ```
 
 ### 3. 确认信号
@@ -62,7 +61,6 @@ curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending" \
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
       "signal_id": "test_001",
       "status": "executed"
@@ -77,7 +75,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 |------|-----|
 | **API 域名** | `https://pb.lzw-glory.top` |
 | **Webhook** | `/webhook/tv` |
-| **超级用户 Token** | 已配置的 JWT Token |
+| **认证** | 暂时关闭，以后可能会加 |
 
 ---
 

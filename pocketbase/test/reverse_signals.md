@@ -14,9 +14,9 @@
 
 | 方法 | 端点 | 认证 | 说明 |
 |------|------|------|------|
-| POST | `/api/custom/reverse/calculate` | 超级用户 | 从指标计算逆向信号 |
-| GET | `/api/custom/reverse/pending` | 超级用户 | 获取待处理逆向信号 |
-| POST | `/api/custom/reverse/ack` | 超级用户 | 标记处理完成 |
+| POST | `/api/custom/reverse/calculate` | - | 从指标计算逆向信号 |
+| GET | `/api/custom/reverse/pending` | - | 获取待处理逆向信号 |
+| POST | `/api/custom/reverse/ack` | - | 标记处理完成 |
 
 ---
 
@@ -35,7 +35,6 @@ POST /api/custom/reverse/calculate
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/calculate" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
       "symbol": "AAPL",
       "direction": "long"
@@ -89,8 +88,7 @@ GET /api/custom/reverse/pending
 ### 请求示例
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/reverse/pending" \
-    -H "Authorization: Bearer YOUR_TOKEN"
+curl -X GET "https://pb.lzw-glory.top/api/custom/reverse/pending"
 ```
 
 ### 响应
@@ -105,7 +103,7 @@ curl -X GET "https://pb.lzw-glory.top/api/custom/reverse/pending" \
       "source": "indicator",
       "priority": 5,
       "signal_id": "xxx",
-      "origin_signal_id": "signal_aapl_long_20260201",
+      "origin_signal_id": "signal_aapl_long_20260202",
       "order_id": "order_xxx",
       "strength": "medium",
       "score": 5,
@@ -141,13 +139,12 @@ POST /api/custom/reverse/ack
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/ack" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
       "signal_id": "reverse_signal_id_123",
       "status": "confirmed",
       "reason": "Processed by QC",
-      "order_id": "order_aapl_entry_20260201_1",
-      "signal_id_orig": "signal_aapl_long_20260201"
+      "order_id": "order_aapl_entry_20260202_1",
+      "signal_id_orig": "signal_aapl_long_20260202"
     }'
 ```
 
@@ -254,7 +251,7 @@ AAPL 多头持仓，指标显示：
 
 ## 相关文档
 
-- [Webhook 接收](./webhook.md)
-- [信号管理 API](./signals.md)
-- [订单管理 API](./orders.md)
-- [配置参考](./config.md)
+- [Webhook API](./webhook.md) - 了解信号如何产生
+- [信号管理 API](./signals.md) - 了解信号状态流转
+- [订单管理 API](./orders.md) - 了解逆向信号如何触发订单操作
+- [配置参考](./config.md) - 了解逆向信号阈值配置

@@ -798,7 +798,7 @@ function getCommonStyles() {
         --surface2:  #141C2E;
         --border:    rgba(99,179,237,0.1);
         --text:      #E2EAF4;
-        --muted:     #4A6080;
+        --muted:     #8BA4C4;
         --accent:    #63B3ED;
         --long:      #48BB78;
         --short:     #FC8181;

@@ -69,11 +69,9 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
 
 routerAdd("GET", "/api/custom/signals/pending", (c) => {
   try {
-    let dateStr = c.request.url.query().get("date") || "";
+    const dateStr = c.request.url.query().get("date") || "";
     if (!dateStr) {
-      const loc = time.LoadLocation("America/New_York");
-      const et = time.Now().In(loc);
-      dateStr = et.Year() + "-" + et.Month() + "-" + et.Day();
+      return c.json(400, { error: "缺少 date 参数" });
     }
 
     const records = $app.findRecordsByFilter(

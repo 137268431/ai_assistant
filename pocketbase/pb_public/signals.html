@@ -1321,16 +1321,14 @@
         // 计算信号倒计时（从 bar_time_ms 开始，有效期从 config 读取）
         function calculateCountdown(barTimeMs) {
             if (!barTimeMs) return '';
-            const barTime = new Date(barTimeMs);
-
-            // 使用全局配置的有效期（从 config 表读取，默认 30 分钟）
             const validityMinutes = signalValidityMinutes;
 
-            const expiryTime = new Date(barTime.getTime() + validityMinutes * 60 * 1000);
+            // bar_time_ms 是 UTC 毫秒，加上有效期得到 UTC 过期时间
+            const expiryTime = new Date(barTimeMs + validityMinutes * 60 * 1000);
 
-            // 获取美国东部时间的当前时间
+            // 获取 ET 当前时间：用 toISOString 提取 UTC 字符串，附加 ' UTC' 后缀确保 new Date 正确解析为 UTC
             const now = new Date();
-            const usEasternTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+            const usEasternTime = new Date(now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
 
             const remainingMs = expiryTime - usEasternTime;
 
@@ -1399,7 +1397,9 @@
                     'rejected': '已拒绝'
                 }[statusClass] || statusClass;
 
-                const isPending = signal.status === 'pending' || signal.status === 'awaiting_confirm';
+                const isAwaitingConfirm = signal.status === 'awaiting_confirm';
+                const isPending = signal.status === 'pending';
+                const showCountdown = isAwaitingConfirm || isPending;
 
                 // 计算开仓金额
                 const entryPrice = signal.entry || 0;
@@ -1488,6 +1488,11 @@
                             </div>
                             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                                 <div class="signal-status status-${statusClass}">${statusText}</div>
+                                ${showCountdown ? `
+                                <div class="countdown-display" data-bar-time="${signal.bar_time_ms || ''}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
+                                    ⏱️ <span class="countdown-value">${calculateCountdown(signal.bar_time_ms) || '-'}</span>
+                                </div>
+                                ` : ''}
                             </div>
                         </div>
 
@@ -1571,13 +1576,13 @@
                                     📋 订单${signalOrders.length > 0 ? `(${signalOrders.length})` : '(无)'}
                                 </button>
                             </div>
-                            ${isPending ? `
+                            ${isAwaitingConfirm ? `
                                 <div style="display:flex;gap:6px;justify-content:flex-end;">
                                     <button class="action-btn btn-confirm" onclick="confirmSignal('${signal.id}')">
                                         ✓ 确认
                                     </button>
                                     <button class="action-btn btn-cancel" onclick="cancelSignal('${signal.id}')">
-                                        ✕ 取消
+                                        ✕ 拒绝
                                     </button>
                                 </div>
                             ` : ''}
@@ -1592,10 +1597,40 @@
             const countdownElements = document.querySelectorAll('.countdown-display');
             countdownElements.forEach(el => {
                 const barTime = el.getAttribute('data-bar-time');
-                if (barTime) {
-                    el.textContent = calculateCountdown(parseInt(barTime)) || '-';
+                const valueEl = el.querySelector('.countdown-value');
+                if (valueEl && barTime) {
+                    const remainingMs = calculateRemainingMs(parseInt(barTime));
+                    valueEl.textContent = formatCountdown(remainingMs) || '-';
+
+                    // 少于5分钟时显示警告样式
+                    if (remainingMs > 0 && remainingMs < 5 * 60 * 1000) {
+                        valueEl.style.color = 'var(--short)';
+                        el.style.color = 'var(--short)';
+                    } else {
+                        valueEl.style.color = '';
+                        el.style.color = '';
+                    }
                 }
             });
+        }
+
+        // 计算剩余毫秒数
+        function calculateRemainingMs(barTimeMs) {
+            if (!barTimeMs) return 0;
+            const validityMinutes = signalValidityMinutes;
+            const expiryTime = new Date(barTimeMs + validityMinutes * 60 * 1000);
+            const now = new Date();
+            const usEasternTime = new Date(now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
+            return expiryTime - usEasternTime;
+        }
+
+        // 格式化倒计时显示
+        function formatCountdown(remainingMs) {
+            if (remainingMs <= 0) return '';
+            const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+            const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+            const seconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
         }
 
         async function confirmSignal(id) {

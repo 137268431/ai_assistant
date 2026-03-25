@@ -13,11 +13,11 @@
 
 | 方法 | 端点 | 认证 | 说明 |
 |------|------|------|------|
-| POST | `/webhook/tv` | 无 | TradingView Webhook 信号接收 |
-| GET | `/api/custom/signals/pending` | 无 | QC 拉取待执行信号 |
-| POST | `/api/custom/signals/ack` | 无 | QC 确认信号已处理 |
-| GET | `/webhook/signal/confirm` | 无 | 飞书确认按钮 |
-| GET | `/webhook/signal/cancel` | 无 | 飞书拒绝按钮 |
+| POST | `/webhook/tv` | - | TradingView Webhook 信号接收 |
+| GET | `/api/custom/signals/pending` | - | QC 拉取待执行信号 |
+| POST | `/api/custom/signals/ack` | - | QC 确认信号已处理 |
+| GET | `/webhook/signal/confirm` | - | 飞书确认按钮 |
+| GET | `/webhook/signal/cancel` | - | 飞书拒绝按钮 |
 
 > **订单操作**（取消/平仓）已移至 [订单管理 API](./orders.md)。
 > **Webhook 详细说明**请参考 [Webhook API](./webhook.md)。
@@ -42,8 +42,6 @@ GET /api/custom/signals/pending?date=2026-02-02
 
 ```bash
 curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending?date=2026-02-02"
-
-curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending"
 ```
 
 ### 响应
@@ -53,7 +51,7 @@ curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending"
   "signals": [
     {
       "id": "record_id",
-      "signal_id": "signal_aapl_long_20260201_trend_U",
+      "signal_id": "signal_aapl_long_20260202_trend_U",
       "symbol": "AAPL",
       "direction": "long",
       "signal": "trend_sdUpper",
@@ -92,7 +90,7 @@ POST /api/custom/signals/ack
 curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
     -H "Content-Type: application/json" \
     -d '{
-      "signal_id": "signal_aapl_long_20260201_trend_U",
+      "signal_id": "signal_aapl_long_20260202_trend_U",
       "status": "executed",
       "note": "Order placed successfully"
     }'
@@ -111,7 +109,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 ```json
 {
   "success": true,
-  "signal_id": "signal_aapl_long_20260201_trend_U",
+  "signal_id": "signal_aapl_long_20260202_trend_U",
   "status": "executed"
 }
 ```
@@ -125,20 +123,17 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 ### 请求
 
 ```
-GET /webhook/signal/confirm?id={signal_id}&token={token}
+GET /webhook/signal/confirm?id={signal_id}
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `id` | string | 是 | 信号ID（支持 `id` 或 `signal_id`） |
-| `token` | string | 否 | 权限验证 Token（当前未实现验证） |
-
-> **注意**：`token` 参数虽然出现在 URL 中，但后端目前**未实现验证**逻辑。实际权限控制依赖飞书机器人的安全性。
 
 ### 请求示例
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/webhook/signal/confirm?id=signal_aapl_long_20260201_trend_U&token=YOUR_TOKEN"
+curl -X GET "https://pb.lzw-glory.top/webhook/signal/confirm?id=signal_aapl_long_20260202_trend_U"
 ```
 
 ### 状态检查逻辑
@@ -179,13 +174,13 @@ curl -X GET "https://pb.lzw-glory.top/webhook/signal/confirm?id=signal_aapl_long
 ### 请求
 
 ```
-GET /webhook/signal/cancel?id={signal_id}&token={token}
+GET /webhook/signal/cancel?id={signal_id}
 ```
 
 ### 请求示例
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/webhook/signal/cancel?id=signal_aapl_long_20260201_trend_U&token=YOUR_TOKEN"
+curl -X GET "https://pb.lzw-glory.top/webhook/signal/cancel?id=signal_aapl_long_20260202_trend_U"
 ```
 
 ### 状态检查逻辑
@@ -244,7 +239,7 @@ curl -X GET "https://pb.lzw-glory.top/webhook/signal/cancel?id=signal_aapl_long_
 
 ## 相关文档
 
-- [Webhook API](./webhook.md)
-- [订单管理 API](./orders.md)
-- [逆向信号 API](./reverse_signals.md)
-- [配置参考](./config.md)
+- [Webhook API](./webhook.md) - 了解信号如何产生
+- [订单管理 API](./orders.md) - 了解信号触发后的下单流程
+- [逆向信号 API](./reverse_signals.md) - 了解信号冲突检测
+- [配置参考](./config.md) - 了解信号相关配置

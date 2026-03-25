@@ -14,9 +14,9 @@
 
 | 方法 | 端点 | 认证 | 说明 |
 |------|------|------|------|
-| POST | `/api/custom/orders/upsert` | 超级用户 | 创建/更新订单 |
-| GET | `/api/custom/orders/pending` | 超级用户 | 获取待执行操作 |
-| POST | `/api/custom/orders/ack` | 超级用户 | 确认操作完成 |
+| POST | `/api/custom/orders/upsert` | - | 创建/更新订单 |
+| GET | `/api/custom/orders/pending` | - | 获取待执行操作 |
+| POST | `/api/custom/orders/ack` | - | 确认操作完成 |
 
 ---
 
@@ -37,9 +37,8 @@ POST /api/custom/orders/upsert
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
-      "unique_id": "order_aapl_entry_20260201_1",
+      "unique_id": "order_aapl_entry_20260202_1",
       "order_type": "Entry",
       "order_id": "IB_12345",
       "symbol": "AAPL",
@@ -49,7 +48,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "status": "Submitted",
       "filled_qty": 0,
       "fill_price": 0,
-      "signal_id": "signal_aapl_long_20260201",
+      "signal_id": "signal_aapl_long_20260202",
       "extra": {
         "reason": "Test order",
         "bar_time_ms": 1738411200000
@@ -62,9 +61,8 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
-      "unique_id": "order_aapl_entry_20260201_1",
+      "unique_id": "order_aapl_entry_20260202_1",
       "order_type": "Entry",
       "order_id": "IB_12345",
       "symbol": "AAPL",
@@ -74,7 +72,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "status": "Filled",
       "filled_qty": 100,
       "fill_price": 185.20,
-      "signal_id": "signal_aapl_long_20260201",
+      "signal_id": "signal_aapl_long_20260202",
       "pnl": 0,
       "commission": 1.5,
       "rr_ratio": 2.5,
@@ -90,9 +88,8 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
-      "unique_id": "order_aapl_exit_tp_20260201_1",
+      "unique_id": "order_aapl_exit_tp_20260202_1",
       "order_type": "Exit",
       "order_id": "IB_67890",
       "symbol": "AAPL",
@@ -102,7 +99,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "status": "Filled",
       "filled_qty": 100,
       "fill_price": 190.00,
-      "signal_id": "signal_aapl_long_20260201",
+      "signal_id": "signal_aapl_long_20260202",
       "pnl": 480,
       "commission": 1.5,
       "rr_ratio": 2.5,
@@ -171,8 +168,7 @@ GET /api/custom/orders/pending
 ### 请求示例
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/orders/pending" \
-    -H "Authorization: Bearer YOUR_TOKEN"
+curl -X GET "https://pb.lzw-glory.top/api/custom/orders/pending"
 ```
 
 ### 响应
@@ -183,7 +179,7 @@ curl -X GET "https://pb.lzw-glory.top/api/custom/orders/pending" \
   "actions": [
     {
       "id": "record_id",
-      "unique_id": "order_aapl_entry_20260201_1",
+      "unique_id": "order_aapl_entry_20260202_1",
       "order_id": "IB_12345",
       "symbol": "AAPL",
       "direction": "long",
@@ -220,9 +216,8 @@ POST /api/custom/orders/ack
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/orders/ack" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer YOUR_TOKEN" \
     -d '{
-      "unique_id": "order_aapl_entry_20260201_1",
+      "unique_id": "order_aapl_entry_20260202_1",
       "result": "completed"
     }'
 ```
@@ -341,6 +336,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/ack" \
 
 ## 相关文档
 
-- [信号管理 API](./signals.md)
-- [逆向信号 API](./reverse_signals.md)
-- [配置参考](./config.md)
+- [Webhook API](./webhook.md) - 了解信号如何产生
+- [信号管理 API](./signals.md) - 了解信号状态流转
+- [逆向信号 API](./reverse_signals.md) - 了解逆向信号如何触发订单操作
+- [配置参考](./config.md) - 了解订单相关配置

@@ -208,20 +208,10 @@ cron: "* * * * *"
 
 | 端点类型 | 认证方式 |
 |----------|----------|
-| `/webhook/*` | 无认证 或 Token 验证 |
-| `/api/custom/*` | 超级用户 JWT Token |
+| `/webhook/*` | 无 |
+| `/api/custom/*` | - |
 
-### Token 获取
-
-```bash
-# 超级用户登录
-curl -X POST "https://pb.lzw-glory.top/api/collections/users/auth-with-password" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "identity": "your_email",
-      "password": "your_password"
-    }'
-```
+> 认证功能暂时关闭，以后可能会加。
 
 ---
 
@@ -241,10 +231,6 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/users/auth-with-password"
 ### Q: 信号状态为什么不变化？
 
 检查 `config.signal_auto_confirm` 配置，默认为 `true`（自动确认）。
-
-### Q: 飞书按钮提示无权限？
-
-检查 `config.signal_action_token` 配置，URL 中的 `token` 参数必须匹配。
 
 ### Q: 逆向信号没有触发？
 

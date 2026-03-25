@@ -54,7 +54,7 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
       "shares": 100,
       "us_time": "2026-02-02 10:00:00",
       "cn_time": "2026-02-02 23:00:00",
-      "signal_id": "signal_aapl_long_20260201_trend_U",
+      "signal_id": "signal_aapl_long_20260202_trend_U",
       "exchange": "NASDAQ",
       "interval": "5",
       "extra": {
@@ -225,7 +225,7 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
 
 ## 相关文档
 
-- [信号管理 API](./signals.md)
-- [订单管理 API](./orders.md)
-- [逆向信号 API](./reverse_signals.md)
-- [配置参考](./config.md)
+- [信号管理 API](./signals.md) - 了解信号接收后的处理流程
+- [订单管理 API](./orders.md) - 了解 QC 下单后的订单流程
+- [逆向信号 API](./reverse_signals.md) - 了解逆向信号检测机制
+- [配置参考](./config.md) - 了解系统配置项

@@ -244,7 +244,7 @@ function notifyNewSignal(signal) {
     elements: elements
   };
 
-  // 添加操作按钮
+  // 添加操作按钮（使用回调模式，点击后更新卡片内容）
   card.elements.push({
     tag: "action",
     actions: [
@@ -252,13 +252,17 @@ function notifyNewSignal(signal) {
         tag: "button",
         text: { tag: "plain_text", content: "✅ 确认" },
         type: "primary",
-        url: PB_HOST + "/webhook/signal/confirm?id=" + signal.signal_id + tokenParam
+        action_type: "callback",
+        url: PB_HOST + "/webhook/feishu/callback",
+        value: { action: "confirm", signal_id: signal.signal_id }
       },
       {
         tag: "button",
         text: { tag: "plain_text", content: "❌ 拒绝" },
         type: "danger",
-        url: PB_HOST + "/webhook/signal/cancel?id=" + signal.signal_id + tokenParam
+        action_type: "callback",
+        url: PB_HOST + "/webhook/feishu/callback",
+        value: { action: "reject", signal_id: signal.signal_id }
       }
     ]
   });
@@ -305,13 +309,17 @@ function notifyNewOrder(order) {
             tag: "button",
             text: { tag: "plain_text", content: "❌ 取消挂单" },
             type: "danger",
-            url: PB_HOST + "/webhook/order/cancel?id=" + order.unique_id + tokenParam
+            action_type: "callback",
+            url: PB_HOST + "/webhook/feishu/order/callback",
+            value: { action: "cancel", order_id: order.unique_id }
           },
           {
             tag: "button",
             text: { tag: "plain_text", content: "🔒 平仓" },
             type: "default",
-            url: PB_HOST + "/webhook/order/close?id=" + order.unique_id + tokenParam
+            action_type: "callback",
+            url: PB_HOST + "/webhook/feishu/order/callback",
+            value: { action: "close", order_id: order.unique_id }
           }
         ]
       }

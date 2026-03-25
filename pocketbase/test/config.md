@@ -68,7 +68,7 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 ### signal_action_token
 
-飞书按钮权限验证 Token。
+飞书按钮权限验证 Token（暂时关闭）。
 
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
@@ -79,7 +79,7 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
     }'
 ```
 
-> 注意：当前 API 已关闭认证，此配置已废弃。
+> 注意：认证功能暂时关闭，此配置暂时无效。
 
 ---
 
@@ -182,5 +182,7 @@ curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_I
 
 ## 相关文档
 
-- [信号管理 API](./signals.md)
-- [逆向信号 API](./reverse_signals.md)
+- [Webhook API](./webhook.md) - 了解配置如何影响信号处理
+- [信号管理 API](./signals.md) - 了解信号状态流转
+- [订单管理 API](./orders.md) - 了解订单相关配置
+- [逆向信号 API](./reverse_signals.md) - 了解逆向信号阈值配置
