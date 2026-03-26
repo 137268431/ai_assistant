@@ -7,7 +7,7 @@
  */
 
 routerAdd("POST", "/webhook/tv", (c) => {
-    const { notifyNewSignal, sendFeishuPost } = require(`${__hooks}/feishu.js`)
+    const { notifyNewSignal, sendFeishuPost } = require(`${__hooks}/feishu_app.js`)
 
     // ── 解析请求信息（含 body）──
     const reqInfo = c.requestInfo()

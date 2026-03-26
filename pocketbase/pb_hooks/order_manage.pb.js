@@ -7,7 +7,7 @@
 
 // POST /api/custom/orders/upsert - 订单 upsert，自动写入 order_details
 routerAdd("POST", "/api/custom/orders/upsert", (c) => {
-  const { notifyNewOrder, notifyOrder } = require(`${__hooks}/feishu.js`)
+  const { notifyNewOrder, notifyOrder } = require(`${__hooks}/feishu_app.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
 
   // 字段映射：QC 发送的字段名 -> PB schema 字段名（已统一）
