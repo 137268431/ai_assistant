@@ -369,15 +369,16 @@
         // ── 渲染导航 ──
         document.getElementById('navContainer').innerHTML = renderNav('/indicators.html');
 
-        // 初始化日期选择器
-        document.getElementById('datePicker').innerHTML = renderDatePicker();
-
+        // 日期选择回调 - 需要在 renderDatePicker 之前定义
         window.onDateChange = function(startDate, endDate) {
             currentDate = startDate;
             rangeStartDate = null;
             rangeEndDate = null;
-            document.getElementById('rangeStartDate').value = '';
-            document.getElementById('rangeEndDate').value = '';
+            // 这些元素可能不存在，需要检查
+            const rangeStartEl = document.getElementById('rangeStartDate');
+            const rangeEndEl = document.getElementById('rangeEndDate');
+            if (rangeStartEl) rangeStartEl.value = '';
+            if (rangeEndEl) rangeEndEl.value = '';
             loadIndicators();
         };
 
@@ -531,11 +532,21 @@
             displayedIndicators = getPaginatedIndicators();
         }
 
+        // 防抖搜索定时器
+        let searchDebounceTimer = null;
+
+        // 搜索输入处理（防抖）
         function onSearchChange(val) {
             currentSearch = val.trim();
-            resetPagination();
-            renderIndicators();
-            updateLoadMoreButton();
+            if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+                // 重置到第一页
+                resetPagination();
+                // 显示加载中
+                document.getElementById('indicatorsContainer').innerHTML = '<div class="loading">搜索中...</div>';
+                // 重新加载数据
+                loadIndicators();
+            }, 300);
         }
 
         function renderIndicators() {
@@ -543,7 +554,12 @@
             const filtered = displayedIndicators;
 
             if (filtered.length === 0) {
-                container.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">暂无数据</div></div>';
+                // 搜索时显示空白页，无搜索条件时显示暂无数据
+                if (currentSearch) {
+                    container.innerHTML = '';
+                } else {
+                    container.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">暂无数据</div></div>';
+                }
                 return;
             }
 
@@ -613,6 +629,7 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('datePicker').innerHTML = renderDatePicker();
             loadIndicators();
             changeRefreshInterval(30);
 

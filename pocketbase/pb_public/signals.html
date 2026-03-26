@@ -1150,49 +1150,49 @@
             const badges = [];
 
             // 趋势方向
-            if (latestIndicator?.trendDir === 1) {
+            if (latestIndicator?.trend_dir === 1) {
                 badges.push('<span class="indicator-badge bullish">📈 多头</span>');
-            } else if (latestIndicator?.trendDir === -1) {
+            } else if (latestIndicator?.trend_dir === -1) {
                 badges.push('<span class="indicator-badge bearish">📉 空头</span>');
             }
 
             // EMA 多头/空头状态
-            if (latestIndicator?.emaBullish) {
+            if (latestIndicator?.ema_bullish) {
                 badges.push('<span class="indicator-badge badge-ema">EMA 多头</span>');
             }
-            if (latestIndicator?.emaBearish) {
+            if (latestIndicator?.ema_bearish) {
                 badges.push('<span class="indicator-badge badge-ema">EMA 空头</span>');
             }
 
             // 日内涨幅（已在信号卡片标题行显示，此处不再重复）
-            // if (latestIndicator?.dayChangePct) {
-            //     const color = latestIndicator.dayChangePct > 0 ? 'var(--long)' : 'var(--short)';
-            //     badges.push(`<span class="indicator-badge" style="color:${color}">${latestIndicator.dayChangePct > 0 ? '+' : ''}${latestIndicator.dayChangePct.toFixed(2)}%</span>`);
+            // if (latestIndicator?.day_change_pct) {
+            //     const color = latestIndicator.day_change_pct > 0 ? 'var(--long)' : 'var(--short)';
+            //     badges.push(`<span class="indicator-badge" style="color:${color}">${latestIndicator.day_change_pct > 0 ? '+' : ''}${latestIndicator.day_change_pct.toFixed(2)}%</span>`);
             // }
 
             // 分形信号
-            if (latestIndicator?.fractalBull) {
+            if (latestIndicator?.fractal_bull) {
                 badges.push('<span class="indicator-badge badge-fractal">🔺 分形多</span>');
             }
-            if (latestIndicator?.fractalBear) {
+            if (latestIndicator?.fractal_bear) {
                 badges.push('<span class="indicator-badge badge-fractal">🔻 分形空</span>');
             }
 
             // EMA 触及
-            if (latestIndicator?.emaBullTouch) {
+            if (latestIndicator?.ema_bull_touch) {
                 badges.push('<span class="indicator-badge badge-ema">EMA 支撑</span>');
             }
-            if (latestIndicator?.emaBearTouch) {
+            if (latestIndicator?.ema_bear_touch) {
                 badges.push('<span class="indicator-badge badge-ema">EMA 压力</span>');
             }
 
-            // 波动率 (从 signal.extra 获取)
+            // 波动率 (从 latestIndicator 获取)
             const signalExtra = signal.extra || {};
-            const atrPct = signalExtra.atr_pct || 0;
+            const atrPct = latestIndicator?.atr_pct || signalExtra.atr_pct || 0;
             if (atrPct > 0) {
                 const atrVolLevel = atrPct >= 3 ? 'high' : atrPct >= 1.5 ? 'medium' : 'low';
                 const atrVolLabel = atrVolLevel === 'high' ? '高波动' : atrVolLevel === 'medium' ? '中波动' : '低波动';
-                const slAtrRatio = signalExtra.sl_atr_ratio || 0;
+                const slAtrRatio = latestIndicator?.sl_atr_ratio || signalExtra.sl_atr_ratio || 0;
                 const slAdequate = slAtrRatio >= 0.8;
                 badges.push(`<span class="indicator-badge badge-div">${atrVolLabel} ATR ${atrPct.toFixed(2)}%</span>`);
                 badges.push(`<span class="indicator-badge ${slAdequate ? 'badge-change-up' : 'badge-change-down'}">SL ${slAtrRatio.toFixed(2)}x ATR</span>`);
@@ -1343,14 +1343,24 @@
             return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
         }
 
-        function renderSignals() {
-            currentSearch = val.trim();
-            // 防抖：500ms 后再触发搜索
+        // 防抖搜索定时器
+        let searchDebounceTimer = null;
+
+        // 搜索输入处理（防抖）
+        function handleSearchInput(value) {
+            currentSearch = value.trim();
             if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
+                // 重置到第一页并重新加载
+                currentPage = 1;
+                // 显示加载中
+                document.getElementById('signalsContainer').innerHTML = '<div class="loading">搜索中...</div>';
                 loadSignals();
-            }, 500);
+            }, 300);
         }
+
+        // 兼容旧的函数名
+        window.onSearchChange = handleSearchInput;
 
         // 状态筛选 Tab
         window.selectStatus = function(status, btn) {
@@ -1375,12 +1385,18 @@
             const filtered = filterSignals();
 
             if (filtered.length === 0) {
-                container.innerHTML = `
-                    <div class="empty">
-                        <div class="empty-icon">📭</div>
-                        <div class="empty-text">暂无信号</div>
-                    </div>
-                `;
+                // 搜索时显示空白页，无搜索条件时显示暂无信号
+                if (currentSearch) {
+                    // 搜索结果为空，显示空白
+                    container.innerHTML = '';
+                } else {
+                    container.innerHTML = `
+                        <div class="empty">
+                            <div class="empty-icon">📭</div>
+                            <div class="empty-text">暂无信号</div>
+                        </div>
+                    `;
+                }
                 return;
             }
 
@@ -1415,20 +1431,18 @@
                 const expectedProfit = profitPerShare * shares;
                 const expectedLoss = lossPerShare * shares;
 
-                // ATR波动率数据（从信号自身extra获取，由Pine脚本传入）
+                // ATR波动率数据（优先从 latestIndicator 获取，没有则从 signal.extra 获取）
+                const latestIndicator = signalIndicatorsMap[signal.id] || null;
                 const signalExtra = signal.extra || {};
-                const atrPct = signalExtra.atr_pct || 0;
-                const slDistPct = signalExtra.sl_dist_pct || 0;
-                const slAtrRatio = signalExtra.sl_atr_ratio || 0;
+                const atrPct = latestIndicator?.atr_pct || signalExtra.atr_pct || 0;
+                const slDistPct = latestIndicator?.sl_dist_pct || signalExtra.sl_dist_pct || 0;
+                const slAtrRatio = latestIndicator?.sl_atr_ratio || signalExtra.sl_atr_ratio || 0;
                 const atrVolLevel = atrPct >= 3 ? 'high' : atrPct >= 1.5 ? 'medium' : atrPct > 0 ? 'low' : null;
                 const atrVolLabel = atrVolLevel === 'high' ? '高波动' : atrVolLevel === 'medium' ? '中波动' : '低波动';
                 const slAdequate = slAtrRatio >= 0.8;  // SL距离至少0.8个ATR才算合理
 
                 // 波动率标签（用于标题行）
                 const volBadge = atrVolLevel ? `<span class="signal-interval">${atrVolLabel} ${atrPct.toFixed(2)}%</span>` : '';
-
-                // 获取最新技术指标（从 map 中获取）
-                const latestIndicator = signalIndicatorsMap[signal.id] || null;
 
                 // 构建技术指标徽章
                 const indicatorBadges = buildIndicatorBadges(signal, latestIndicator);
@@ -1462,10 +1476,10 @@
                 // 当日 / 前一日 / 近7日涨幅
                 let dayChangePct = '';
                 let dayChangeClass = '';
-                if (latestIndicator?.dayChangePct !== undefined) {
-                    const dayPct = latestIndicator.dayChangePct;
-                    const prevClosePct = latestIndicator.prevCloseChangePct || 0;
-                    const change7d = latestIndicator.change7d || 0;
+                if (latestIndicator?.day_change_pct !== undefined) {
+                    const dayPct = latestIndicator.day_change_pct;
+                    const prevClosePct = latestIndicator.prev_close_change_pct || 0;
+                    const change7d = latestIndicator.change_7d || 0;
                     dayChangePct = `${dayPct > 0 ? '+' : ''}${dayPct.toFixed(2)}%/${prevClosePct > 0 ? '+' : ''}${prevClosePct.toFixed(2)}%/${change7d > 0 ? '+' : ''}${change7d.toFixed(2)}%`;
                     dayChangeClass = dayPct > 0 ? 'text-long' : dayPct < 0 ? 'text-short' : '';
                 }
@@ -1488,6 +1502,9 @@
                             </div>
                             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                                 <div class="signal-status status-${statusClass}">${statusText}</div>
+                                <div style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--muted);">
+                                    Bar: ${formatBarTimeMsToET(signal.bar_time_ms)}
+                                </div>
                                 ${showCountdown ? `
                                 <div class="countdown-display" data-bar-time="${signal.bar_time_ms || ''}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
                                     ⏱️ <span class="countdown-value">${calculateCountdown(signal.bar_time_ms) || '-'}</span>

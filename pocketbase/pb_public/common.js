@@ -6,6 +6,23 @@
 // ── 配置常量 ──
 const BASE_URL = 'https://pb.lzw-glory.top';
 
+// ── 时间转换 ──
+// 将 UTC 毫秒时间戳转换为美国东部时间字符串
+function formatBarTimeMsToET(barTimeMs) {
+    if (!barTimeMs) return '-';
+    // 显式转换为数字，确保按 UTC 毫秒处理
+    const date = new Date(Number(barTimeMs));
+    return date.toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    });
+}
+
 // ── Token 管理 ──
 function getToken() {
   return localStorage.getItem('pb_token') || '';
@@ -164,21 +181,21 @@ function renderDatePicker(onChange) {
   `;
 }
 
-// 日期选择回调（需要在页面中定义 onDateChange）
+// 日期选择回调（需要在页面中定义 window.onDateChange）
 window.selectDate = function(date, btn) {
   document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('customDate').value = date;
-  if (typeof onDateChange === 'function') {
-    onDateChange(date, date);
+  if (typeof window.onDateChange === 'function') {
+    window.onDateChange(date, date);
   }
 };
 
 
 window.selectCustomDate = function(date) {
   document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
-  if (typeof onDateChange === 'function') {
-    onDateChange(date, date);
+  if (typeof window.onDateChange === 'function') {
+    window.onDateChange(date, date);
   }
 };
 
@@ -294,104 +311,21 @@ function formatRelativeTime(utcTimeString) {
   return formatBeijingTime(utcTimeString, 'short');
 }
 
-// ── 标准化指标记录（snake_case extra → camelCase）──
+// ── 标准化指标记录（直接返回原生数据）──
 function normalizeIndicatorRecord(record) {
   if (!record) return null;
 
-  // 处理 extra 可能是 JSON 字符串的情况
-  let extra = record.extra;
-  if (typeof extra === 'string') {
+  // 处理 extra 可能是 JSON 字符串的情况，解析后展开到 record 中
+  if (typeof record.extra === 'string') {
     try {
-      extra = JSON.parse(extra);
+      record.extra = JSON.parse(record.extra);
     } catch (e) {
-      extra = {};
+      record.extra = {};
     }
   }
-  extra = extra || {};
 
-  return {
-    // Top-level fields
-    symbol: record.symbol,
-    exchange: record.exchange,
-    interval: record.interval,
-    scriptTag: record.script_tag,
-    usTime: record.us_time,
-    cnTime: record.cn_time,
-    barTimeMs: record.bar_time_ms,
-    barIndex: record.bar_index,
-    created: record.created,
-
-    // OHLCV
-    open: extra.open,
-    high: extra.high,
-    low: extra.low,
-    close: extra.close,
-    volume: extra.volume,
-
-    // Price changes
-    dayChangePct: extra.day_change_pct,
-    prevCloseChangePct: extra.prev_close_change_pct,
-    change7d: extra.change_7d,
-
-    // EMA
-    emaFast: extra.ema_fast,
-    emaSlow: extra.ema_slow,
-    emaTrend: extra.ema_trend,
-    emaLongest: extra.ema_longest,
-    trendDir: extra.trend_dir,
-    emaBullish: extra.ema_bullish,
-    emaBearish: extra.ema_bearish,
-    emaBullTouch: extra.ema_bull_touch,
-    emaBearTouch: extra.ema_bear_touch,
-    slopeSlow: extra.slope_slow,
-    slopeTrend: extra.slope_trend,
-    slopeLongest: extra.slope_longest,
-
-    // Divergences
-    crsiBullDiv: extra.crsi_bull_div,
-    crsiBearDiv: extra.crsi_bear_div,
-    obvBullDiv: extra.obv_bull_div,
-    obvBearDiv: extra.obv_bear_div,
-    crsiHidBull: extra.crsi_hid_bull,
-    crsiHidBear: extra.crsi_hid_bear,
-    obvHidBull: extra.obv_hid_bull,
-    obvHidBear: extra.obv_hid_bear,
-
-    // Fractals & Channels
-    fractalBull: extra.fractal_bull,
-    fractalBear: extra.fractal_bear,
-    sdLower: extra.sd_lower,
-    sdUpper: extra.sd_upper,
-    sdZone: extra.sd_zone,
-    sdTrend: extra.sd_trend,
-    sdReg: extra.sd_reg,
-    sdStdDev: extra.sd_std_dev,
-
-    // DTP & RSI
-    dtpDir: extra.dtp_dir,
-    dtpPhase: extra.dtp_phase,
-    dtpPhaseBars: extra.dtp_phase_bars,
-    dtpAvg: extra.dtp_avg,
-    dtpAtr: extra.dtp_atr,
-    crsi: extra.crsi,
-    crsiOB: extra.crsi_ob,
-    crsiOS: extra.crsi_os,
-    crsiUb: extra.crsi_ub,
-    crsiDb: extra.crsi_db,
-    obvRsi: extra.obv_rsi,
-    atr: extra.atr,
-    atrRaw: extra.atr_raw,
-    atrPct: extra.atr_pct,
-
-    // VWAP
-    vwap: extra.vwap,
-    vwapUpper1: extra.vwap_upper1,
-    vwapLower1: extra.vwap_lower1,
-    vwapUpper2: extra.vwap_upper2,
-    vwapLower2: extra.vwap_lower2,
-    vwapDist: extra.vwap_dist,
-    vwapBullish: extra.vwap_bullish
-  };
+  // 把 extra 的字段展开到 record 中（保持 snake_case）
+  return { ...record, ...record.extra };
 }
 
 // ── 构建技术指标徽章 HTML ──
@@ -423,31 +357,31 @@ function buildIndicatorBadges(signal, latestIndicator) {
   // 技术指标徽章
   if (latestIndicator) {
     // 背离信号
-    if (latestIndicator.crsiBullDiv || latestIndicator.obvBullDiv) {
+    if (latestIndicator.crsi_bull_div || latestIndicator.obv_bull_div) {
       badges.push(`<span class="indicator-badge badge-div">多头背离</span>`);
     }
-    if (latestIndicator.crsiBearDiv || latestIndicator.obvBearDiv) {
+    if (latestIndicator.crsi_bear_div || latestIndicator.obv_bear_div) {
       badges.push(`<span class="indicator-badge badge-div">空头背离</span>`);
     }
     // 分形信号
-    if (latestIndicator.fractalBull) {
+    if (latestIndicator.fractal_bull) {
       badges.push(`<span class="indicator-badge badge-fractal">分形↑</span>`);
     }
-    if (latestIndicator.fractalBear) {
+    if (latestIndicator.fractal_bear) {
       badges.push(`<span class="indicator-badge badge-fractal">分形↓</span>`);
     }
     // EMA触及
-    if (latestIndicator.emaBullTouch) {
+    if (latestIndicator.ema_bull_touch) {
       badges.push(`<span class="indicator-badge badge-ema">EMA触及↑</span>`);
     }
-    if (latestIndicator.emaBearTouch) {
+    if (latestIndicator.ema_bear_touch) {
       badges.push(`<span class="indicator-badge badge-ema">EMA触及↓</span>`);
     }
     // EMA 多头/空头状态
-    if (latestIndicator.emaBullish) {
+    if (latestIndicator.ema_bullish) {
       badges.push(`<span class="indicator-badge badge-ema">EMA 多头</span>`);
     }
-    if (latestIndicator.emaBearish) {
+    if (latestIndicator.ema_bearish) {
       badges.push(`<span class="indicator-badge badge-ema">EMA 空头</span>`);
     }
   }
@@ -466,15 +400,15 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">美国时间</div>
-          <div class="modal-value">${latestIndicator.usTime || '-'}</div>
+          <div class="modal-value">${latestIndicator.us_time || '-'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">中国时间</div>
-          <div class="modal-value">${latestIndicator.cnTime || '-'}</div>
+          <div class="modal-value">${latestIndicator.cn_time || '-'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">Bar时间戳</div>
-          <div class="modal-value" style="font-size: 11px;">${latestIndicator.barTimeMs ? new Date(latestIndicator.barTimeMs).toISOString() : '-'}</div>
+          <div class="modal-value" style="font-size: 11px;">${latestIndicator.bar_time_ms ? formatBarTimeMsToET(latestIndicator.bar_time_ms) : '-'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">创建时间</div>
@@ -507,14 +441,14 @@ function renderIndicatorModal(latestIndicator) {
         </div>
         <div class="modal-item">
           <div class="modal-label">涨幅</div>
-          <div class="modal-value" style="color: ${latestIndicator.dayChangePct > 0 ? 'var(--long)' : 'var(--short)'}">
-            ${latestIndicator.dayChangePct > 0 ? '+' : ''}${(latestIndicator.dayChangePct || 0).toFixed(2)}% / ${latestIndicator.prevCloseChangePct > 0 ? '+' : ''}${(latestIndicator.prevCloseChangePct || 0).toFixed(2)}% / ${latestIndicator.change7d > 0 ? '+' : ''}${(latestIndicator.change7d || 0).toFixed(2)}%
+          <div class="modal-value" style="color: ${latestIndicator.day_change_pct > 0 ? 'var(--long)' : 'var(--short)'}">
+            ${latestIndicator.day_change_pct > 0 ? '+' : ''}${(latestIndicator.day_change_pct || 0).toFixed(2)}% / ${latestIndicator.prev_close_change_pct > 0 ? '+' : ''}${(latestIndicator.prev_close_change_pct || 0).toFixed(2)}% / ${latestIndicator.change_7d > 0 ? '+' : ''}${(latestIndicator.change_7d || 0).toFixed(2)}%
           </div>
         </div>
         <div class="modal-item">
           <div class="modal-label">ATR波动率</div>
-          <div class="modal-value" style="color: ${latestIndicator.atrPct >= 3 ? '#e53e3e' : latestIndicator.atrPct >= 1.5 ? '#ed8936' : '#48bb78'}">
-            ${latestIndicator.atrPct >= 3 ? '⚡高' : latestIndicator.atrPct >= 1.5 ? '〜中' : '·低'} ${(latestIndicator.atrPct || 0).toFixed(2)}%
+          <div class="modal-value" style="color: ${latestIndicator.atr_pct >= 3 ? '#e53e3e' : latestIndicator.atr_pct >= 1.5 ? '#ed8936' : '#48bb78'}">
+            ${latestIndicator.atr_pct >= 3 ? '⚡高' : latestIndicator.atr_pct >= 1.5 ? '〜中' : '·低'} ${(latestIndicator.atr_pct || 0).toFixed(2)}%
           </div>
         </div>
       </div>
@@ -525,50 +459,50 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">EMA Fast (20)</div>
-          <div class="modal-value">$${(latestIndicator.emaFast || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.ema_fast || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">EMA Slow (50)</div>
-          <div class="modal-value">$${(latestIndicator.emaSlow || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.ema_slow || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">EMA Trend (100)</div>
-          <div class="modal-value">$${(latestIndicator.emaTrend || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.ema_trend || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">EMA Longest (200)</div>
-          <div class="modal-value">$${(latestIndicator.emaLongest || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.ema_longest || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">趋势方向</div>
-          <div class="modal-value">${latestIndicator.trendDir === 1 ? '📈 多头' : latestIndicator.trendDir === -1 ? '📉 空头' : '➡️ 中性'}</div>
+          <div class="modal-value">${latestIndicator.trend_dir === 1 ? '📈 多头' : latestIndicator.trend_dir === -1 ? '📉 空头' : '➡️ 中性'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">EMA状态</div>
-          <div class="modal-value">${latestIndicator.emaBullish ? '📈 多头' : latestIndicator.emaBearish ? '📉 空头' : '➡️ 中性'}</div>
+          <div class="modal-value">${latestIndicator.ema_bullish ? '📈 多头' : latestIndicator.ema_bearish ? '📉 空头' : '➡️ 中性'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">EMA触及</div>
           <div class="modal-value">
-            ${latestIndicator.emaBullTouch ? '✅ 多头触及' : latestIndicator.emaBearTouch ? '✅ 空头触及' : '❌ 无'}
+            ${latestIndicator.ema_bull_touch ? '✅ 多头触及' : latestIndicator.ema_bear_touch ? '✅ 空头触及' : '❌ 无'}
           </div>
         </div>
         <div class="modal-item">
           <div class="modal-label">Slow斜率</div>
-          <div class="modal-value" style="color: ${latestIndicator.slopeSlow > 0 ? 'var(--long)' : 'var(--short)'}">
-            ${latestIndicator.slopeSlow > 0 ? '+' : ''}${(latestIndicator.slopeSlow || 0).toFixed(4)}
+          <div class="modal-value" style="color: ${latestIndicator.slope_slow > 0 ? 'var(--long)' : 'var(--short)'}">
+            ${latestIndicator.slope_slow > 0 ? '+' : ''}${(latestIndicator.slope_slow || 0).toFixed(4)}
           </div>
         </div>
         <div class="modal-item">
           <div class="modal-label">Trend斜率</div>
-          <div class="modal-value" style="color: ${latestIndicator.slopeTrend > 0 ? 'var(--long)' : 'var(--short)'}">
-            ${latestIndicator.slopeTrend > 0 ? '+' : ''}${(latestIndicator.slopeTrend || 0).toFixed(4)}
+          <div class="modal-value" style="color: ${latestIndicator.slope_trend > 0 ? 'var(--long)' : 'var(--short)'}">
+            ${latestIndicator.slope_trend > 0 ? '+' : ''}${(latestIndicator.slope_trend || 0).toFixed(4)}
           </div>
         </div>
         <div class="modal-item">
           <div class="modal-label">Longest斜率</div>
-          <div class="modal-value" style="color: ${latestIndicator.slopeLongest > 0 ? 'var(--long)' : 'var(--short)'}">
-            ${latestIndicator.slopeLongest > 0 ? '+' : ''}${(latestIndicator.slopeLongest || 0).toFixed(4)}
+          <div class="modal-value" style="color: ${latestIndicator.slope_longest > 0 ? 'var(--long)' : 'var(--short)'}">
+            ${latestIndicator.slope_longest > 0 ? '+' : ''}${(latestIndicator.slope_longest || 0).toFixed(4)}
           </div>
         </div>
       </div>
@@ -579,35 +513,35 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">cRSI 多头背离</div>
-          <div class="modal-value">${latestIndicator.crsiBullDiv ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.crsi_bull_div ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">cRSI 空头背离</div>
-          <div class="modal-value">${latestIndicator.crsiBearDiv ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.crsi_bear_div ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">cRSI 隐藏多头</div>
-          <div class="modal-value">${latestIndicator.crsiHidBull ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.crsi_hid_bull ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">cRSI 隐藏空头</div>
-          <div class="modal-value">${latestIndicator.crsiHidBear ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.crsi_hid_bear ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">OBV 多头背离</div>
-          <div class="modal-value">${latestIndicator.obvBullDiv ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.obv_bull_div ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">OBV 空头背离</div>
-          <div class="modal-value">${latestIndicator.obvBearDiv ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.obv_bear_div ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">OBV 隐藏多头</div>
-          <div class="modal-value">${latestIndicator.obvHidBull ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.obv_hid_bull ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">OBV 隐藏空头</div>
-          <div class="modal-value">${latestIndicator.obvHidBear ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.obv_hid_bear ? '✅ 是' : '❌ 否'}</div>
         </div>
       </div>
     </div>
@@ -617,35 +551,35 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">分形多头</div>
-          <div class="modal-value">${latestIndicator.fractalBull ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.fractal_bull ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">分形空头</div>
-          <div class="modal-value">${latestIndicator.fractalBear ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.fractal_bear ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">SD 下轨触及</div>
-          <div class="modal-value">${latestIndicator.sdLower ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.sd_lower ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">SD 上轨触及</div>
-          <div class="modal-value">${latestIndicator.sdUpper ? '✅ 是' : '❌ 否'}</div>
+          <div class="modal-value">${latestIndicator.sd_upper ? '✅ 是' : '❌ 否'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">SD 区域</div>
-          <div class="modal-value">${latestIndicator.sdZone === 1 ? '超买' : latestIndicator.sdZone === -1 ? '超卖' : '正常'}</div>
+          <div class="modal-value">${latestIndicator.sd_zone === 1 ? '超买' : latestIndicator.sd_zone === -1 ? '超卖' : '正常'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">SD 趋势</div>
-          <div class="modal-value">${latestIndicator.sdTrend === 1 ? '📈 上升' : latestIndicator.sdTrend === -1 ? '📉 下降' : '➡️ 平坦'}</div>
+          <div class="modal-value">${latestIndicator.sd_trend === 1 ? '📈 上升' : latestIndicator.sd_trend === -1 ? '📉 下降' : '➡️ 平坦'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">SD 标准差</div>
-          <div class="modal-value">${(latestIndicator.sdStdDev || 0).toFixed(4)}</div>
+          <div class="modal-value">${(latestIndicator.sd_std_dev || 0).toFixed(4)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">SD 回归值</div>
-          <div class="modal-value">${(latestIndicator.sdReg || 0).toFixed(2)}</div>
+          <div class="modal-value">${(latestIndicator.sd_reg || 0).toFixed(2)}</div>
         </div>
       </div>
     </div>
@@ -655,23 +589,23 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">DTP 方向</div>
-          <div class="modal-value">${latestIndicator.dtpDir === 1 ? '📈 多头' : latestIndicator.dtpDir === -1 ? '📉 空头' : '➡️ 中性'}</div>
+          <div class="modal-value">${latestIndicator.dtp_dir === 1 ? '📈 多头' : latestIndicator.dtp_dir === -1 ? '📉 空头' : '➡️ 中性'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">DTP 阶段</div>
-          <div class="modal-value">${latestIndicator.dtpPhase || 'N/A'}</div>
+          <div class="modal-value">${latestIndicator.dtp_phase || 'N/A'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">DTP 阶段Bar数</div>
-          <div class="modal-value">${latestIndicator.dtpPhaseBars || 0}</div>
+          <div class="modal-value">${latestIndicator.dtp_phase_bars || 0}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">DTP 平均值</div>
-          <div class="modal-value">${(latestIndicator.dtpAvg || 0).toFixed(2)}</div>
+          <div class="modal-value">${(latestIndicator.dtp_avg || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">DTP ATR</div>
-          <div class="modal-value">${(latestIndicator.dtpAtr || 0).toFixed(2)}</div>
+          <div class="modal-value">${(latestIndicator.dtp_atr || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">cRSI</div>
@@ -679,19 +613,19 @@ function renderIndicatorModal(latestIndicator) {
         </div>
         <div class="modal-item">
           <div class="modal-label">cRSI 上界</div>
-          <div class="modal-value">${(latestIndicator.crsiUb || 0).toFixed(2)}</div>
+          <div class="modal-value">${(latestIndicator.crsi_ub || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">cRSI 下界</div>
-          <div class="modal-value">${(latestIndicator.crsiDb || 0).toFixed(2)}</div>
+          <div class="modal-value">${(latestIndicator.crsi_db || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">cRSI 状态</div>
-          <div class="modal-value">${latestIndicator.crsiOB ? '超买' : latestIndicator.crsiOS ? '超卖' : '正常'}</div>
+          <div class="modal-value">${latestIndicator.crsi_ob ? '超买' : latestIndicator.crsi_os ? '超卖' : '正常'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">OBV RSI</div>
-          <div class="modal-value">${(latestIndicator.obvRsi || 0).toFixed(2)}</div>
+          <div class="modal-value">${(latestIndicator.obv_rsi || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">ATR</div>
@@ -699,7 +633,7 @@ function renderIndicatorModal(latestIndicator) {
         </div>
         <div class="modal-item">
           <div class="modal-label">ATR Raw</div>
-          <div class="modal-value">${(latestIndicator.atrRaw || 0).toFixed(4)}</div>
+          <div class="modal-value">${(latestIndicator.atr_raw || 0).toFixed(4)}</div>
         </div>
       </div>
     </div>
@@ -709,12 +643,12 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">止损距离(%)</div>
-          <div class="modal-value">${(latestIndicator.slDistPct || 0).toFixed(2)}%</div>
+          <div class="modal-value">${(latestIndicator.sl_dist_pct || 0).toFixed(2)}%</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">止损ATR比率</div>
-          <div class="modal-value" style="color: ${latestIndicator.slAtrRatio >= 0.8 ? 'var(--long)' : 'var(--short)'}">
-            ${(latestIndicator.slAtrRatio || 0).toFixed(2)}x ${latestIndicator.slAtrRatio >= 0.8 ? '✅' : '⚠️'}
+          <div class="modal-value" style="color: ${latestIndicator.sl_atr_ratio >= 0.8 ? 'var(--long)' : 'var(--short)'}">
+            ${(latestIndicator.sl_atr_ratio || 0).toFixed(2)}x ${latestIndicator.sl_atr_ratio >= 0.8 ? '✅' : '⚠️'}
           </div>
         </div>
       </div>
@@ -729,29 +663,29 @@ function renderIndicatorModal(latestIndicator) {
         </div>
         <div class="modal-item">
           <div class="modal-label">VWAP 偏离</div>
-          <div class="modal-value" style="color: ${latestIndicator.vwapDist > 0 ? 'var(--long)' : 'var(--short)'}">
-            ${latestIndicator.vwapDist > 0 ? '+' : ''}${(latestIndicator.vwapDist || 0).toFixed(2)}%
+          <div class="modal-value" style="color: ${latestIndicator.vwap_dist > 0 ? 'var(--long)' : 'var(--short)'}">
+            ${latestIndicator.vwap_dist > 0 ? '+' : ''}${(latestIndicator.vwap_dist || 0).toFixed(2)}%
           </div>
         </div>
         <div class="modal-item">
           <div class="modal-label">VWAP 趋势</div>
-          <div class="modal-value">${latestIndicator.vwapBullish ? '📈 多头' : '📉 空头'}</div>
+          <div class="modal-value">${latestIndicator.vwap_bullish ? '📈 多头' : '📉 空头'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">U1 上轨</div>
-          <div class="modal-value">$${(latestIndicator.vwapUpper1 || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.vwap_upper1 || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">L1 下轨</div>
-          <div class="modal-value">$${(latestIndicator.vwapLower1 || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.vwap_lower1 || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">U2 上轨</div>
-          <div class="modal-value">$${(latestIndicator.vwapUpper2 || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.vwap_upper2 || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">L2 下轨</div>
-          <div class="modal-value">$${(latestIndicator.vwapLower2 || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(latestIndicator.vwap_lower2 || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">成交量</div>
@@ -765,15 +699,15 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">美东时间</div>
-          <div class="modal-value">${latestIndicator.usTime || 'N/A'}</div>
+          <div class="modal-value">${latestIndicator.us_time || 'N/A'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">北京时间</div>
-          <div class="modal-value">${latestIndicator.cnTime || 'N/A'}</div>
+          <div class="modal-value">${latestIndicator.cn_time || 'N/A'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">K线索引</div>
-          <div class="modal-value">${latestIndicator.barIndex || 'N/A'}</div>
+          <div class="modal-value">${latestIndicator.bar_index || 'N/A'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">时间周期</div>
