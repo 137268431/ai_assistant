@@ -28,7 +28,7 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
       { symbol: symbol }
     );
 
-    if (indicators.length === 0) {
+    if (!indicators || indicators.length === 0) {
       return c.json(404, { error: "No indicators found for symbol" });
     }
 
@@ -182,7 +182,7 @@ routerAdd("GET", "/api/custom/reverse/pending", (c) => {
       0
     );
 
-    const signals = records.map((r) => {
+    const signals = (records || []).map((r) => {
       const extra = r.get("extra") || {};
       return {
         id: r.id,

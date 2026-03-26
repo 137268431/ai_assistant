@@ -459,7 +459,33 @@ function buildIndicatorBadges(signal, latestIndicator) {
 function renderIndicatorModal(latestIndicator) {
   if (!latestIndicator) return '<div class="modal-section">暂无技术指标数据</div>';
 
+  // 时间信息 section（放在最上面）
+  const timeSection = `
+    <div class="modal-section" style="background: var(--surface2); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+      <div class="modal-section-title">⏰ 时间信息</div>
+      <div class="modal-grid">
+        <div class="modal-item">
+          <div class="modal-label">美国时间</div>
+          <div class="modal-value">${latestIndicator.usTime || '-'}</div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">中国时间</div>
+          <div class="modal-value">${latestIndicator.cnTime || '-'}</div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">Bar时间戳</div>
+          <div class="modal-value" style="font-size: 11px;">${latestIndicator.barTimeMs ? new Date(latestIndicator.barTimeMs).toISOString() : '-'}</div>
+        </div>
+        <div class="modal-item">
+          <div class="modal-label">创建时间</div>
+          <div class="modal-value" style="font-size: 11px;">${latestIndicator.created ? new Date(latestIndicator.created).toISOString() : '-'}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
   return `
+    ${timeSection}
     <div class="modal-section">
       <div class="modal-section-title">价格信息</div>
       <div class="modal-grid">

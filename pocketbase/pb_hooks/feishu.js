@@ -252,7 +252,7 @@ function notifyNewSignal(signal) {
         tag: "button",
         text: { tag: "plain_text", content: "✅ 确认" },
         type: "primary",
-        action_type: "callback",
+        action_type: "request",
         url: PB_HOST + "/webhook/feishu/callback",
         value: { action: "confirm", signal_id: signal.signal_id }
       },
@@ -260,7 +260,7 @@ function notifyNewSignal(signal) {
         tag: "button",
         text: { tag: "plain_text", content: "❌ 拒绝" },
         type: "danger",
-        action_type: "callback",
+        action_type: "request",
         url: PB_HOST + "/webhook/feishu/callback",
         value: { action: "reject", signal_id: signal.signal_id }
       }
@@ -309,7 +309,7 @@ function notifyNewOrder(order) {
             tag: "button",
             text: { tag: "plain_text", content: "❌ 取消挂单" },
             type: "danger",
-            action_type: "callback",
+            action_type: "request",
             url: PB_HOST + "/webhook/feishu/order/callback",
             value: { action: "cancel", order_id: order.unique_id }
           },
@@ -317,7 +317,7 @@ function notifyNewOrder(order) {
             tag: "button",
             text: { tag: "plain_text", content: "🔒 平仓" },
             type: "default",
-            action_type: "callback",
+            action_type: "request",
             url: PB_HOST + "/webhook/feishu/order/callback",
             value: { action: "close", order_id: order.unique_id }
           }

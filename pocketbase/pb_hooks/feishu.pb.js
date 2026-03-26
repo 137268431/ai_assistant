@@ -12,8 +12,28 @@ console.log("[FeishuPB] Hook 文件开始加载...");
 routerAdd("POST", "/webhook/feishu/callback", (c) => {
     try {
         const body = c.requestInfo().body || {}
-        const action = body.action || ""
-        const signalId = body.signal_id || ""
+
+        // 飞书 callback payload 结构（新版 schema 2.0）：
+        // {
+        //   schema: "2.0",
+        //   header: { event_type: "card.action.trigger", token: "xxx" },
+        //   event: {
+        //     operator: { open_id: "xxx" },
+        //     action: {
+        //       tag: "button",
+        //       value: { action: "confirm", signal_id: "xxx" }
+        //     }
+        //   }
+        // }
+        const event = body.event || {}
+        const actionObj = event.action || {}
+        const value = actionObj.value || body.value || {}
+        const action = value.action || body.action || ""
+        const signalId = value.signal_id || body.signal_id || ""
+
+        console.log("[FeishuCallback] 收到回调请求:")
+        console.log("[FeishuCallback] 原始 body:", JSON.stringify(body))
+        console.log("[FeishuCallback] 解析后 action:", action, "signalId:", signalId)
 
         if (!signalId) {
             return c.json(400, { error: "缺少信号ID" })
@@ -103,8 +123,17 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
 routerAdd("POST", "/webhook/feishu/order/callback", (c) => {
     try {
         const body = c.requestInfo().body || {}
-        const action = body.action || ""
-        const orderId = body.order_id || ""
+
+        // 飞书 callback payload 结构（新版 schema 2.0）
+        const event = body.event || {}
+        const actionObj = event.action || {}
+        const value = actionObj.value || body.value || {}
+        const action = value.action || body.action || ""
+        const orderId = value.order_id || body.order_id || ""
+
+        console.log("[FeishuOrderCallback] 收到回调请求:")
+        console.log("[FeishuOrderCallback] 原始 body:", JSON.stringify(body))
+        console.log("[FeishuOrderCallback] 解析后 action:", action, "orderId:", orderId)
 
         if (!orderId) {
             return c.json(400, { error: "缺少订单ID" })
