@@ -220,8 +220,8 @@ function notifyNewSignal(signal) {
 
     // 构建两列布局的字段 - 左侧
     var leftColumn = [];
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + signal.symbol } });
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } });
+    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**标的:** " + signal.symbol } });
+    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**方向:** " + directionText } });
 
     // 涨幅（当日/前收/近7日）
     var changeDisplay = "N/A";
@@ -231,43 +231,43 @@ function notifyNewSignal(signal) {
         var d7Pct = Number(extra.change_7d || 0);
         changeDisplay = (dayPct > 0 ? "+" : "") + dayPct.toFixed(2) + "%/" + (prevPct > 0 ? "+" : "") + prevPct.toFixed(2) + "%/" + (d7Pct > 0 ? "+" : "") + d7Pct.toFixed(2) + "%";
     }
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + changeDisplay } });
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**入场:** $" + signal.entry.toFixed(2) } });
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** $" + signal.take_profit.toFixed(2) } });
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** $" + signal.stop_loss.toFixed(2) } });
+    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**涨幅:** " + changeDisplay } });
+    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**入场:** $" + signal.entry.toFixed(2) } });
+    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**止盈:** $" + signal.take_profit.toFixed(2) } });
+    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**止损:** $" + signal.stop_loss.toFixed(2) } });
 
     // 构建两列布局的字段 - 右侧
     var rightColumn = [];
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**盈利:** +$" + formatAmount(tpProfit) } });
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**亏损:** -$" + formatAmount(slLoss) } });
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**风报比:** " + (signal.rr || "N/A") } });
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**股数:** " + (signal.shares || "N/A") } });
+    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**盈利:** +$" + formatAmount(tpProfit) } });
+    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**亏损:** -$" + formatAmount(slLoss) } });
+    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**风报比:** " + (signal.rr || "N/A") } });
+    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**股数:** " + (signal.shares || "N/A") } });
 
     // 波动率和 ATR 止损（股数下面）
     if (extra.atr_pct) {
         var atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低";
         var atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "〜" : "·";
-        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**波动率:** " + atrEmoji + " " + atrLevel + " " + extra.atr_pct.toFixed(2) + "%" } });
+        rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**波动率:** " + atrEmoji + " " + atrLevel + " " + extra.atr_pct.toFixed(2) + "%" } });
         if (extra.sl_atr_ratio) {
-            rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**ATR止损:** " + extra.sl_atr_ratio.toFixed(1) + "倍" } });
+            rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**ATR止损:** " + extra.sl_atr_ratio.toFixed(1) + "倍" } });
         }
     } else if (extra.atr) {
-        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**ATR:** " + extra.atr.toFixed(2) } });
+        rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**ATR:** " + extra.atr.toFixed(2) } });
     }
 
     // 添加原因（单独一行）
     var reasonColumn = null;
     if (extra.reason) {
-        reasonColumn = { tag: "div", text: { tag: "lark_md", content: "**原因:** " + extra.reason } };
+        reasonColumn = { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**原因:** " + extra.reason } };
     }
 
     // 添加信号ID（单独一行）
-    var signalIdColumn = { tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + signal.signal_id } };
+    var signalIdColumn = { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**信号ID:** " + signal.signal_id } };
 
     // 添加大盘信息
     var marketColumn = null;
     if (marketInfoText) {
-        marketColumn = { tag: "div", text: { tag: "lark_md", content: marketInfoText.replace(/^\n/, "") } };
+        marketColumn = { tag: "div", margin: "4px", text: { tag: "lark_md", content: marketInfoText.replace(/^\n/, "") } };
     }
 
     // 构建 elements 数组
@@ -408,7 +408,7 @@ function notifyNewOrder(order) {
             template: color
         },
         elements: [
-            { tag: "div", text: { tag: "lark_md", content: fields } },
+            { tag: "div", margin: "4px", text: { tag: "lark_md", content: fields } },
             {
                 tag: "action",
                 actions: [
@@ -472,20 +472,20 @@ module.exports = {
     // 回调响应辅助函数
     buildSignalCardV2: function(symbol, directionText, statusEmoji, statusText, status, color, message, extraFields) {
         var elements = [
-            { tag: "div", text: { tag: "lark_md", content: "**标的:** " + symbol } },
-            { tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } }
+            { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**标的:** " + symbol } },
+            { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**方向:** " + directionText } }
         ];
 
         // 如果有额外字段，显示完整的信号信息
         if (extraFields && extraFields.length > 0) {
-            elements.push({ tag: "hr" });
+            elements.push({ tag: "hr", margin: "4px" });
             elements = elements.concat(extraFields);
         }
 
         // 状态和消息区域
-        elements.push({ tag: "hr" });
-        elements.push({ tag: "div", text: { tag: "lark_md", content: "**状态:** " + statusText } });
-        elements.push({ tag: "div", text: { tag: "lark_md", content: message } });
+        elements.push({ tag: "hr", margin: "4px" });
+        elements.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**状态:** " + statusText } });
+        elements.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: message } });
 
         return {
             schema: "2.0",
@@ -511,11 +511,11 @@ module.exports = {
             body: {
                 direction: "vertical",
                 elements: [
-                    { tag: "div", text: { tag: "lark_md", content: "**标的:** " + symbol } },
-                    { tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } },
-                    { tag: "div", text: { tag: "lark_md", content: "**状态:** " + statusText } },
-                    { tag: "hr" },
-                    { tag: "div", text: { tag: "lark_md", content: message } }
+                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**标的:** " + symbol } },
+                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**方向:** " + directionText } },
+                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**状态:** " + statusText } },
+                    { tag: "hr", margin: "4px" },
+                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: message } }
                 ]
             }
         }
