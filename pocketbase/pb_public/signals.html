@@ -132,6 +132,12 @@
             opacity: 0.8;
         }
 
+        .dir-tab .tab-count {
+            font-size: 10px;
+            margin-left: 2px;
+            opacity: 0.8;
+        }
+
         .stat-chip {
             display: flex;
             align-items: center;
@@ -840,6 +846,7 @@
                 updateCountdowns();
                 updateLoadMoreButton();
                 await updateStatusTabCounts();
+                await updateDirectionTabCounts();
             } catch (error) {
                 console.error('加载失败:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -1115,6 +1122,68 @@
                 const tab = document.querySelector(`.status-tab .tab-count[data-status="${status}"] .count-value`);
                 if (tab) {
                     tab.textContent = counts[status] || 0;
+                }
+            });
+        }
+
+        // 更新方向标签的数量显示（通过API查询真实count）
+        async function updateDirectionTabCounts() {
+            let startTime, endTime;
+
+            if (rangeStartDate && rangeEndDate) {
+                startTime = `${rangeStartDate} 00:00:00`;
+                endTime = `${rangeEndDate} 23:59:59`;
+            } else {
+                startTime = `${currentDate} 00:00:00`;
+                endTime = `${currentDate} 23:59:59`;
+            }
+
+            const baseConditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+            if (currentStatus !== 'all') {
+                baseConditions.push(`status = "${currentStatus}"`);
+            }
+            if (currentSearch) {
+                const s = currentSearch.toUpperCase();
+                baseConditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
+            }
+
+            const baseFilter = baseConditions.join(' && ');
+            // 并行查询 long 和 short 的数量
+            const directions = ['long', 'short'];
+            const counts = {};
+
+            try {
+                const results = await Promise.all(
+                    directions.map(dir => {
+                        const filter = `${baseFilter} && direction = "${dir}"`;
+                        return pb.collection('signals').getList(1, 1, {
+                            filter,
+                            sort: '-created',
+                            $autoCancel: false,
+                            skipTotal: false
+                        }).then(r => ({ dir, count: r.totalItems }));
+                    })
+                );
+
+                results.forEach(r => { counts[r.dir] = r.count; });
+                // all 的数量直接用 totalItems
+                counts['all'] = totalItems;
+            } catch (e) {
+                console.error('updateDirectionTabCounts failed:', e);
+                // 降级：显示当前已加载的
+                counts['all'] = allSignals.length;
+                directions.forEach(d => counts[d] = 0);
+                allSignals.forEach(signal => {
+                    const dir = signal.direction || 'long';
+                    if (counts[dir] !== undefined) counts[dir]++;
+                });
+            }
+
+            // 更新每个方向标签的数量
+            ['all', ...directions].forEach(dir => {
+                const tab = document.querySelector(`.dir-tab .tab-count[data-dir="${dir}"] .count-value`);
+                if (tab) {
+                    tab.textContent = counts[dir] || 0;
                 }
             });
         }
@@ -1502,9 +1571,6 @@
                             </div>
                             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                                 <div class="signal-status status-${statusClass}">${statusText}</div>
-                                <div style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--muted);">
-                                    Bar: ${formatBarTimeMsToET(signal.bar_time_ms)}
-                                </div>
                                 ${showCountdown ? `
                                 <div class="countdown-display" data-bar-time="${signal.bar_time_ms || ''}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
                                     ⏱️ <span class="countdown-value">${calculateCountdown(signal.bar_time_ms) || '-'}</span>

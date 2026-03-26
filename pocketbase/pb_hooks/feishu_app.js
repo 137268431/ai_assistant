@@ -169,181 +169,240 @@ function sendCardToChatByType(card, type) {
 // ── 信号通知 ──
 
 /**
+ * 从 signals record 构建展示用数据（回调和通知共用）
+ * 兼容 PB record（有 get() 方法）和 plain object
+ * @param {object} recordOrData - PocketBase record 或普通对象
+ * @returns {object} 包含所有展示字段的结构化对象
+ */
+function buildSignalDisplayData(recordOrData) {
+    // 兼容 PB record 和 plain object
+    var get = (typeof recordOrData.get === "function") ? recordOrData.get.bind(recordOrData) : function(k) { return recordOrData[k] };
+
+    var symbol = get("symbol") || ""
+    var direction = get("direction") || "long"
+    var entry = Number(get("entry")) || 0
+    var take_profit = Number(get("take_profit")) || 0
+    var stop_loss = Number(get("stop_loss")) || 0
+    var shares = Number(get("shares")) || 0
+    var rr = get("rr") || "N/A"
+    var signal_id = get("signal_id") || ""
+    var us_time = get("us_time") || ""
+    // PB JSON 字段返回 raw bytes，用 getString 直接获取字符串
+    var isPBRecord = typeof recordOrData.getString === "function"
+    var extraStr = isPBRecord ? recordOrData.getString("extra") : ""
+    var extra = {}
+    if (extraStr) {
+        try { extra = JSON.parse(extraStr) } catch(e) {}
+    } else {
+        // plain object（webhook 直接传入的数据）
+        var extraRaw = get("extra")
+        if (extraRaw && typeof extraRaw === "object") {
+            extra = extraRaw
+        } else if (typeof extraRaw === "string") {
+            try { extra = JSON.parse(extraRaw) } catch(e) {}
+        }
+    }
+    var reason = extra.reason || get("reason") || ""
+
+    // 涨幅（当日/前收/近7日）
+    var changeDisplay = "N/A"
+    var dayPct = Number(extra.day_change_pct || 0)
+    var prevPct = Number(extra.prev_close_change_pct || 0)
+    var d7Pct = Number(extra.change_7d || 0)
+    if (extra.day_change_pct !== undefined) {
+        changeDisplay = (dayPct > 0 ? "+" : "") + dayPct.toFixed(2) + "%/" + (prevPct > 0 ? "+" : "") + prevPct.toFixed(2) + "%/" + (d7Pct > 0 ? "+" : "") + d7Pct.toFixed(2) + "%"
+    }
+
+    // 盈亏计算
+    var isLong = direction === "long"
+    var tpProfit = (isLong ? (take_profit - entry) : (entry - take_profit)) * shares
+    var slLoss = (isLong ? (entry - stop_loss) : (stop_loss - entry)) * shares
+    var formatAmount = function(a) {
+        if (!a || a === 0) return "0"
+        if (Math.abs(a) >= 10000) return (a / 10000).toFixed(2) + "w"
+        return a.toFixed(2)
+    }
+
+    // 波动率/ATR止损
+    var atrText = null
+    if (extra.atr_pct) {
+        var atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低"
+        var atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "〜" : "·"
+        atrText = "**波动率:** " + atrEmoji + " " + atrLevel + " " + extra.atr_pct.toFixed(2) + "%"
+        if (extra.sl_atr_ratio) {
+            atrText += "\n**ATR止损:** " + extra.sl_atr_ratio.toFixed(1) + "倍"
+        }
+    } else if (extra.atr) {
+        atrText = "**ATR:** " + extra.atr.toFixed(2)
+    }
+
+    // 大盘信息 - 先尝试从 extra.market_indexes 取，若为空则从 indicators 表查询最新数据
+    var marketIndexes = extra.market_indexes || []
+    if (marketIndexes.length === 0) {
+        try {
+            var fetched = []
+            var marketSyms = ["SPY", "QQQ", "VIX"]
+            for (var i = 0; i < marketSyms.length; i++) {
+                var msym = marketSyms[i]
+                try {
+                    var recs = $app.findRecordsByFilter("indicators", "symbol = {:sym}", "-bar_time_ms", 1, 0, { sym: msym })
+                    if (recs && recs.length > 0) {
+                        // PB record 的 extra 字段需要用 getString 获取后再 parse
+                        var indExtraStr = recs[0].getString("extra")
+                        var indExtra = {}
+                        if (indExtraStr) {
+                            try { indExtra = JSON.parse(indExtraStr) } catch(e) {}
+                        }
+                        var indChange = indExtra.day_change_pct
+                        if (indChange !== undefined) {
+                            fetched.push({ symbol: msym, change_pct: Number(indChange) })
+                        }
+                    }
+                } catch(e) {}
+            }
+            if (fetched.length > 0) {
+                marketIndexes = fetched
+                console.log("[FeishuApp] 从indicators表查询market_indexes:", JSON.stringify(fetched))
+            }
+        } catch(e) {
+            console.log("[FeishuApp] 查询indicators表失败:", e)
+        }
+    }
+
+    // 构建 marketInfoText
+    var marketInfoText = null
+    if (marketIndexes.length > 0) {
+        var spyD = marketIndexes.find(function(m) { return m.symbol === "SPY" })
+        var qqqD = marketIndexes.find(function(m) { return m.symbol === "QQQ" })
+        var vixD = marketIndexes.find(function(m) { return m.symbol === "VIX" })
+        var mParts = []
+        if (spyD) mParts.push("SPY: " + (spyD.change_pct > 0 ? "+" : "") + Number(spyD.change_pct).toFixed(2) + "%")
+        if (qqqD) mParts.push("QQQ: " + (qqqD.change_pct > 0 ? "+" : "") + Number(qqqD.change_pct).toFixed(2) + "%")
+        if (mParts.length > 0) marketInfoText = "**大盘:** " + mParts.join(" | ")
+        if (vixD) {
+            var v = Number(vixD.change_pct)
+            var vixLevel = v >= 20 ? "🔴 恐慌" : v >= 10 ? "🟡 紧张" : "🟢 平稳"
+            marketInfoText += "\n**VIX恐慌:** " + vixLevel + " " + (v > 0 ? "+" : "") + v.toFixed(1) + "%"
+        }
+    }
+
+    return {
+        symbol: symbol,
+        direction: direction,
+        entry: entry,
+        take_profit: take_profit,
+        stop_loss: stop_loss,
+        shares: shares,
+        rr: rr,
+        signal_id: signal_id,
+        us_time: us_time,
+        reason: reason,
+        changeDisplay: changeDisplay,
+        tpProfit: tpProfit,
+        slLoss: slLoss,
+        formatAmount: formatAmount,
+        atrText: atrText,
+        marketInfoText: marketInfoText,
+        marketIndexes: marketIndexes,
+        extra: extra
+    }
+}
+
+/**
  * 发送新信号通知（带确认/拒绝按钮）
  * 样式与 feishu.js 完全一致
  */
 function notifyNewSignal(signal) {
-    var directionText = signal.direction === "long" ? "做多 📈" : "做空 📉";
-    var color = signal.direction === "long" ? "green" : "red";
-    var extra = signal.extra || {};
-
-    // 大盘关联信息 - 直接显示 SPY 和 QQQ 涨跌幅
-    var marketInfoText = "";
-    if (signal.market_indexes && signal.market_indexes.length > 0) {
-        var spyData = signal.market_indexes.find(function(m) { return m.symbol === "SPY"; });
-        var qqqData = signal.market_indexes.find(function(m) { return m.symbol === "QQQ"; });
-        var vixData = signal.market_indexes.find(function(m) { return m.symbol === "VIX"; });
-
-        var parts = [];
-        if (spyData) {
-            var change = spyData.change_pct;
-            parts.push("SPY: " + (change > 0 ? "+" : "") + change.toFixed(2) + "%");
-        }
-        if (qqqData) {
-            var change = qqqData.change_pct;
-            parts.push("QQQ: " + (change > 0 ? "+" : "") + change.toFixed(2) + "%");
-        }
-        if (parts.length > 0) {
-            marketInfoText = "**大盘:** " + parts.join(" | ");
-        }
-
-        // VIX 恐慌指数单独一行
-        if (vixData) {
-            var vixLevel = vixData.change_pct >= 20 ? "🔴 恐慌" : vixData.change_pct >= 10 ? "🟡 紧张" : "🟢 平稳";
-            marketInfoText += "\n**VIX恐慌:** " + vixLevel + " " + (vixData.change_pct > 0 ? "+" : "") + vixData.change_pct.toFixed(1) + "%";
-        }
-    }
-
-    // 计算盈亏
-    var isLong = signal.direction === "long";
-    var shares = signal.shares || 0;
-    var tpProfit = (isLong ? (signal.take_profit - signal.entry) : (signal.entry - signal.take_profit)) * shares;
-    var slLoss = (isLong ? (signal.entry - signal.stop_loss) : (signal.stop_loss - signal.entry)) * shares;
-
-    function formatAmount(amount) {
-        if (!amount || amount === 0) return "0";
-        if (Math.abs(amount) >= 10000) {
-            return (amount / 10000).toFixed(2) + "w";
-        }
-        return amount.toFixed(2);
-    }
+    var d = buildSignalDisplayData(signal)
+    var directionText = d.direction === "long" ? "做多 📈" : "做空 📉"
+    var color = d.direction === "long" ? "green" : "red"
 
     // 构建两列布局的字段 - 左侧
-    var leftColumn = [];
-    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**标的:** " + signal.symbol } });
-    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**方向:** " + directionText } });
+    var leftColumn = []
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + d.symbol } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + d.changeDisplay } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**入场:** $" + d.entry.toFixed(2) } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** $" + d.take_profit.toFixed(2) } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** $" + d.stop_loss.toFixed(2) } })
 
-    // 涨幅（当日/前收/近7日）
-    var changeDisplay = "N/A";
-    if (extra.day_change_pct !== undefined) {
-        var dayPct = Number(extra.day_change_pct || 0);
-        var prevPct = Number(extra.prev_close_change_pct || 0);
-        var d7Pct = Number(extra.change_7d || 0);
-        changeDisplay = (dayPct > 0 ? "+" : "") + dayPct.toFixed(2) + "%/" + (prevPct > 0 ? "+" : "") + prevPct.toFixed(2) + "%/" + (d7Pct > 0 ? "+" : "") + d7Pct.toFixed(2) + "%";
-    }
-    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**涨幅:** " + changeDisplay } });
-    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**入场:** $" + signal.entry.toFixed(2) } });
-    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**止盈:** $" + signal.take_profit.toFixed(2) } });
-    leftColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**止损:** $" + signal.stop_loss.toFixed(2) } });
-
-    // 构建两列布局的字段 - 右侧
-    var rightColumn = [];
-    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**盈利:** +$" + formatAmount(tpProfit) } });
-    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**亏损:** -$" + formatAmount(slLoss) } });
-    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**风报比:** " + (signal.rr || "N/A") } });
-    rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**股数:** " + (signal.shares || "N/A") } });
-
-    // 波动率和 ATR 止损（股数下面）
-    if (extra.atr_pct) {
-        var atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低";
-        var atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "〜" : "·";
-        rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**波动率:** " + atrEmoji + " " + atrLevel + " " + extra.atr_pct.toFixed(2) + "%" } });
-        if (extra.sl_atr_ratio) {
-            rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**ATR止损:** " + extra.sl_atr_ratio.toFixed(1) + "倍" } });
-        }
-    } else if (extra.atr) {
-        rightColumn.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**ATR:** " + extra.atr.toFixed(2) } });
-    }
-
-    // 添加原因（单独一行）
-    var reasonColumn = null;
-    if (extra.reason) {
-        reasonColumn = { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**原因:** " + extra.reason } };
-    }
-
-    // 添加信号ID（单独一行）
-    var signalIdColumn = { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**信号ID:** " + signal.signal_id } };
-
-    // 添加大盘信息
-    var marketColumn = null;
-    if (marketInfoText) {
-        marketColumn = { tag: "div", margin: "4px", text: { tag: "lark_md", content: marketInfoText.replace(/^\n/, "") } };
+    // 右侧
+    var rightColumn = []
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**盈利:** +$" + d.formatAmount(d.tpProfit) } })
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**亏损:** -$" + d.formatAmount(d.slLoss) } })
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**风报比:** " + d.rr } })
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**股数:** " + (d.shares || "N/A") } })
+    if (d.atrText) {
+        d.atrText.split("\n").forEach(function(line) {
+            rightColumn.push({ tag: "div", text: { tag: "lark_md", content: line } })
+        })
     }
 
     // 构建 elements 数组
     var elements = [
         {
             tag: "column_set",
+            horizontal_spacing: "default",
             columns: [
-                { tag: "column", width: "weighted", weight: 1, elements: leftColumn },
-                { tag: "column", width: "weighted", weight: 1, elements: rightColumn }
+                { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: leftColumn },
+                { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: rightColumn }
             ]
         }
-    ];
+    ]
 
-    // 添加原因行（如果存在）
-    if (reasonColumn) {
-        elements.push({
-            tag: "column_set",
-            columns: [
-                { tag: "column", width: "weighted", weight: 1, elements: [reasonColumn] }
-            ]
-        });
+    if (d.reason) {
+        elements.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } })
+    }
+    elements.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } })
+    if (d.marketInfoText) {
+        elements.push({ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } })
     }
 
-    // 添加信号ID行
+    // 操作按钮（schema 2.0 用 column_set 横排）
+    elements.push({ tag: "hr" })
     elements.push({
         tag: "column_set",
+        horizontal_spacing: "default",
         columns: [
-            { tag: "column", width: "weighted", weight: 1, elements: [signalIdColumn] }
-        ]
-    });
-
-    // 添加大盘信息行（如果存在）
-    if (marketColumn) {
-        elements.push({
-            tag: "column_set",
-            columns: [
-                { tag: "column", width: "weighted", weight: 1, elements: [marketColumn] }
-            ]
-        });
-    }
-
-    var card = {
-        header: {
-            title: { tag: "plain_text", content: "🔔 新交易信号 · " + signal.symbol + " · " + (signal.us_time || "") },
-            template: color
-        },
-        elements: elements
-    };
-
-    // 添加操作按钮
-    card.elements.push({ tag: "hr" });
-    card.elements.push({
-        tag: "action",
-        actions: [
             {
-                tag: "button",
-                text: { tag: "plain_text", content: "✅ 确认" },
-                type: "primary",
-                action_type: "request",
-                url: PB_HOST + "/webhook/feishu/callback",
-                value: { action: "confirm", signal_id: signal.signal_id }
+                tag: "column", width: "weighted", weight: 1,
+                elements: [{
+                    tag: "button",
+                    text: { tag: "plain_text", content: "✅ 确认" },
+                    type: "primary",
+                    width: "fill",
+                    behaviors: [{ type: "callback", value: { action: "confirm", signal_id: d.signal_id } }]
+                }]
             },
             {
-                tag: "button",
-                text: { tag: "plain_text", content: "❌ 拒绝" },
-                type: "danger",
-                action_type: "request",
-                url: PB_HOST + "/webhook/feishu/callback",
-                value: { action: "reject", signal_id: signal.signal_id }
+                tag: "column", width: "weighted", weight: 1,
+                elements: [{
+                    tag: "button",
+                    text: { tag: "plain_text", content: "❌ 拒绝" },
+                    type: "danger",
+                    width: "fill",
+                    behaviors: [{ type: "callback", value: { action: "reject", signal_id: d.signal_id } }]
+                }]
             }
         ]
-    });
+    })
 
-    var success = sendCardToChat(card);
-    console.log("[FeishuApp] 信号通知发送:", success ? "成功" : "失败");
-    return success;
+    var card = {
+        schema: "2.0",
+        config: { update_multi: true },
+        header: {
+            title: { tag: "plain_text", content: "🔔 新交易信号 · " + d.symbol + " · " + d.us_time },
+            template: color
+        },
+        body: {
+            direction: "vertical",
+            elements: elements
+        }
+    }
+
+    var success = sendCardToChat(card)
+    console.log("[FeishuApp] 信号通知发送:", success ? "成功" : "失败")
+    return success
 }
 
 /**
@@ -469,29 +528,31 @@ module.exports = {
     notifyError: notifyError,
     sendFeishuPost: sendFeishuPost,
 
-    // 回调响应辅助函数
-    buildSignalCardV2: function(symbol, directionText, statusEmoji, statusText, status, color, message, extraFields) {
-        var elements = [
-            { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**标的:** " + symbol } },
-            { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**方向:** " + directionText } }
-        ];
+    // 公共方法
+    buildSignalDisplayData: buildSignalDisplayData,
 
-        // 如果有额外字段，显示完整的信号信息
+    // 回调响应辅助函数
+    buildSignalCardV2: function(symbol, directionText, statusEmoji, statusText, status, color, message, extraFields, us_time) {
+        var elements = [];
+
+        // 如果有完整字段（来自 buildSignalDisplayData），直接使用
         if (extraFields && extraFields.length > 0) {
-            elements.push({ tag: "hr", margin: "4px" });
-            elements = elements.concat(extraFields);
+            elements = extraFields.slice();
+        } else {
+            // 兜底：只展示标的和方向
+            elements.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + symbol } });
+            elements.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } });
         }
 
-        // 状态和消息区域
-        elements.push({ tag: "hr", margin: "4px" });
-        elements.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: "**状态:** " + statusText } });
-        elements.push({ tag: "div", margin: "4px", text: { tag: "lark_md", content: message } });
+        // 状态和消息区域（合并为一行）
+        elements.push({ tag: "hr" });
+        elements.push({ tag: "div", text: { tag: "lark_md", content: "**状态:** " + statusText + " · " + message } });
 
         return {
             schema: "2.0",
             config: { update_multi: true },
             header: {
-                title: { tag: "plain_text", content: statusEmoji + " 信号状态 · " + symbol },
+                title: { tag: "plain_text", content: statusEmoji + " " + statusText + " · " + symbol + " · " + (us_time || "") },
                 template: color
             },
             body: {
@@ -526,9 +587,6 @@ module.exports = {
         res.header["Content-Type"] = ["application/json"];
         if (updateToken) {
             res.header["update_card_token"] = [updateToken];
-            console.log("[FeishuApp] 回调响应已发送, token存在, card.data.schema:", (data.card && data.card.data && data.card.data.schema));
-        } else {
-            console.log("[FeishuApp] 回调响应已发送, 无token, data:", jsonStr.substring(0, 200));
         }
         res.write(jsonStr);
         return

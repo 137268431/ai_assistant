@@ -579,7 +579,7 @@
                         const price = data.extra?.close || data.close || 0;
                         const changePct = data.extra?.day_change_pct || 0;
                         const change7d = data.extra?.change_7d || 0;
-                        const yesterdayChangePct = data.extra?.yesterday_change_pct || 0;
+                        const yesterdayChangePct = data.extra?.prev_close_change_pct || 0;
                         const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
                         const changeText = (changePct > 0 ? '+' : '') + changePct.toFixed(2) + '%';
                         const yesterdayText = (yesterdayChangePct > 0 ? '+' : '') + yesterdayChangePct.toFixed(2) + '%';

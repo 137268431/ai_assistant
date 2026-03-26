@@ -10,10 +10,13 @@ console.log("[FeishuPB] Hook 文件开始加载...");
 // ── 飞书信号卡片回调 ──
 
 routerAdd("POST", "/webhook/feishu/callback", (c) => {
-    const { sendFeishuCallbackResponse, buildSignalCardV2 } = require(`${__hooks}/feishu_app.js`)
+    const { sendFeishuCallbackResponse, buildSignalCardV2, buildSignalDisplayData } = require(`${__hooks}/feishu_app.js`)
 
     try {
         const body = c.requestInfo().body || {}
+
+        // ── 打印回调数据日志 ──
+        console.log("[FeishuCallback] 接收回调数据:", JSON.stringify(body, null, 2))
 
         // Challenge 验证
         if (body.type === "url_verification" && body.challenge) {
@@ -36,122 +39,59 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
         }
 
         const record = $app.findFirstRecordByFilter("signals", "id = {:id} || signal_id = {:id}", { id: signalId })
+
+        // ── 打印查出的信号记录 ──
+        console.log("[FeishuCallback] 查出信号记录:", JSON.stringify(record, null, 2))
+
         if (!record) {
             return sendFeishuCallbackResponse(c, { toast: { type: "error", content: "信号不存在" }, card: { type: "raw", data: null } }, updateToken)
         }
 
+        // 使用公共方法构建展示数据（从 indicators 表补充 market_indexes）
+        const d = buildSignalDisplayData(record)
+
         const currentStatus = record.get("status")
-        const symbol = record.get("symbol") || signalId
-        const direction = record.get("direction") || "long"
-        const directionText = direction === "long" ? "做多" : "做空"
-        const color = direction === "long" ? "green" : "red"
+        const directionText = d.direction === "long" ? "做多 📈" : "做空 📉"
+        const color = d.direction === "long" ? "green" : "red"
 
-        // 获取信号完整信息
-        const entry = record.get("entry") || 0
-        const take_profit = record.get("take_profit") || 0
-        const stop_loss = record.get("stop_loss") || 0
-        const shares = record.get("shares") || 0
-        const rr = record.get("rr") || "N/A"
-        const extraStr = record.get("extra") || "{}"
-        const extra = (typeof extraStr === "string") ? JSON.parse(extraStr) : extraStr
+        // 构建展示字段（与 notifyNewSignal 完全一致的逻辑）
+        var leftColumn = [], rightColumn = [], cardElements = []
 
-        // 计算盈亏
-        const isLong = direction === "long"
-        const tpProfit = (isLong ? (take_profit - entry) : (entry - take_profit)) * shares
-        const slLoss = (isLong ? (entry - stop_loss) : (stop_loss - entry)) * shares
-        const formatAmount = function(a) {
-            if (!a || a === 0) return "0"
-            if (Math.abs(a) >= 10000) return (a / 10000).toFixed(2) + "w"
-            return a.toFixed(2)
+        leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + d.symbol } })
+        leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } })
+        leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + d.changeDisplay } })
+        leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**入场:** $" + d.entry.toFixed(2) } })
+        leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** $" + d.take_profit.toFixed(2) } })
+        leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** $" + d.stop_loss.toFixed(2) } })
+
+        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**盈利:** +$" + d.formatAmount(d.tpProfit) } })
+        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**亏损:** -$" + d.formatAmount(d.slLoss) } })
+        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**风报比:** " + d.rr } })
+        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**股数:** " + d.shares } })
+
+        if (d.atrText) {
+            d.atrText.split("\n").forEach(function(line) {
+                rightColumn.push({ tag: "div", text: { tag: "lark_md", content: line } })
+            })
         }
 
-        // 涨幅显示
-        var changeDisplay = null
-        if (extra.day_change_pct !== undefined) {
-            var dayPct = Number(extra.day_change_pct || 0)
-            var prevPct = Number(extra.prev_close_change_pct || 0)
-            var d7Pct = Number(extra.change_7d || 0)
-            changeDisplay = (dayPct > 0 ? "+" : "") + dayPct.toFixed(2) + "%/" + (prevPct > 0 ? "+" : "") + prevPct.toFixed(2) + "%/" + (d7Pct > 0 ? "+" : "") + d7Pct.toFixed(2) + "%"
-        }
+        cardElements.push({ tag: "column_set", horizontal_spacing: "default", columns: [
+            { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: leftColumn },
+            { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: rightColumn }
+        ]})
 
-        // 波动率
-        var atrLine = null
-        if (extra.atr_pct) {
-            var atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低"
-            var atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "~" : "·"
-            atrLine = "**波动率:** " + atrEmoji + " " + atrLevel + " " + extra.atr_pct.toFixed(2) + "%"
-            if (extra.sl_atr_ratio) {
-                atrLine += "\n**ATR止损:** " + extra.sl_atr_ratio.toFixed(1) + "倍"
-            }
-        }
-
-        // 大盘信息
-        var marketInfoText = null
-        if (extra.market_indexes && extra.market_indexes.length > 0) {
-            var spyData = extra.market_indexes.find(function(m) { return m.symbol === "SPY" })
-            var qqqData = extra.market_indexes.find(function(m) { return m.symbol === "QQQ" })
-            var vixData = extra.market_indexes.find(function(m) { return m.symbol === "VIX" })
-            var parts = []
-            if (spyData) parts.push("SPY: " + (spyData.change_pct > 0 ? "+" : "") + spyData.change_pct.toFixed(2) + "%")
-            if (qqqData) parts.push("QQQ: " + (qqqData.change_pct > 0 ? "+" : "") + qqqData.change_pct.toFixed(2) + "%")
-            if (parts.length > 0) marketInfoText = "**大盘:** " + parts.join(" | ")
-            if (vixData) {
-                var vixLevel = vixData.change_pct >= 20 ? "🔴 恐慌" : vixData.change_pct >= 10 ? "🟡 紧张" : "🟢 平稳"
-                marketInfoText += "\n**VIX恐慌:** " + vixLevel + " " + (vixData.change_pct > 0 ? "+" : "") + vixData.change_pct.toFixed(1) + "%"
-            }
-        }
-
-        // 构建与原始信号一致的字段布局
-        var leftFields = [], rightFields = [], allFields = []
-
-        // 涨幅（如果有）
-        if (changeDisplay) {
-            allFields.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + changeDisplay } })
-        }
-
-        // 入场/止盈/止损
-        leftFields.push({ tag: "div", text: { tag: "lark_md", content: "**入场:** $" + entry.toFixed(2) } })
-        leftFields.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** $" + take_profit.toFixed(2) } })
-        leftFields.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** $" + stop_loss.toFixed(2) } })
-
-        // 盈亏/风报比/股数
-        rightFields.push({ tag: "div", text: { tag: "lark_md", content: "**盈利:** +$" + formatAmount(tpProfit) } })
-        rightFields.push({ tag: "div", text: { tag: "lark_md", content: "**亏损:** -$" + formatAmount(slLoss) } })
-        rightFields.push({ tag: "div", text: { tag: "lark_md", content: "**风报比:** " + rr } })
-        rightFields.push({ tag: "div", text: { tag: "lark_md", content: "**股数:** " + shares } })
-
-        // 波动率（如果有）
-        if (atrLine) {
-            rightFields.push({ tag: "div", text: { tag: "lark_md", content: atrLine.replace(/\n/g, "\n") } })
-        }
-
-        // 第一行：左侧字段
-        var extraFields = []
-        if (leftFields.length > 0) {
-            allFields.push({ tag: "column_set", columns: [
-                { tag: "column", width: "weighted", weight: 1, elements: leftFields }
-            ]})
-        }
-
-        // 第二行：右侧字段（盈亏/风报比等）
-        if (rightFields.length > 0) {
-            allFields.push({ tag: "column_set", columns: [
-                { tag: "column", width: "weighted", weight: 1, elements: rightFields }
-            ]})
-        }
-
-        // 原因（如果有）
-        if (extra.reason) {
-            allFields.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + extra.reason } })
-        }
-
-        // 大盘信息（如果有）
-        if (marketInfoText) {
-            allFields.push({ tag: "div", text: { tag: "lark_md", content: marketInfoText } })
+        // 原因
+        if (d.reason) {
+            cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: [{ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } }] }] })
         }
 
         // 信号ID
-        allFields.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + signalId } })
+        cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: [{ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } }] }] })
+
+        // 大盘信息
+        if (d.marketInfoText) {
+            cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: [{ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } }] }] })
+        }
 
         var statusEmoji, statusText, msg, card
 
@@ -166,7 +106,7 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
                 statusEmoji = "✅"; statusText = "已执行"
             }
             msg = "该信号" + statusText + "，无法" + (action === "confirm" ? "确认" : "拒绝")
-            card = buildSignalCardV2(symbol, directionText, statusEmoji, statusText, currentStatus, color, msg, extraFields)
+            card = buildSignalCardV2(d.symbol, directionText, statusEmoji, statusText, currentStatus, color, msg, cardElements, d.us_time)
             return sendFeishuCallbackResponse(c, { toast: { type: "warning", content: msg }, card: { type: "raw", data: card } }, updateToken)
         }
 
@@ -174,13 +114,13 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
         if (action === "confirm") {
             if (currentStatus === "pending") {
                 msg = "⏳ 信号已确认，请勿重复操作"
-                card = buildSignalCardV2(symbol, directionText, "⏳", "待执行", "pending", color, msg, extraFields)
+                card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time)
                 return sendFeishuCallbackResponse(c, { toast: { type: "info", content: msg }, card: { type: "raw", data: card } }, updateToken)
             }
             record.set("status", "pending")
             $app.save(record)
             console.log("[FeishuCallback] 确认成功，signalId:", signalId)
-            card = buildSignalCardV2(symbol, directionText, "✅", "待执行", "pending", color, "✨ 确认成功，正在等待执行...", extraFields)
+            card = buildSignalCardV2(d.symbol, directionText, "✅", "待执行", "pending", color, "✨ 确认成功，正在等待执行...", cardElements, d.us_time)
             return sendFeishuCallbackResponse(c, { toast: { type: "success", content: "确认成功" }, card: { type: "raw", data: card } }, updateToken)
         }
 
@@ -188,13 +128,13 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
         if (action === "reject") {
             if (currentStatus === "rejected") {
                 msg = "❌ 信号已拒绝，请勿重复操作"
-                card = buildSignalCardV2(symbol, directionText, "❌", "已拒绝", "rejected", color, msg, extraFields)
+                card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, msg, cardElements, d.us_time)
                 return sendFeishuCallbackResponse(c, { toast: { type: "info", content: msg }, card: { type: "raw", data: card } }, updateToken)
             }
             record.set("status", "rejected")
             $app.save(record)
             console.log("[FeishuCallback] 拒绝成功，signalId:", signalId)
-            card = buildSignalCardV2(symbol, directionText, "❌", "已拒绝", "rejected", color, "🚫 信号已拒绝，暂不执行", extraFields)
+            card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, "🚫 信号已拒绝，暂不执行", cardElements, d.us_time)
             return sendFeishuCallbackResponse(c, { toast: { type: "success", content: "拒绝成功" }, card: { type: "raw", data: card } }, updateToken)
         }
 
@@ -214,6 +154,9 @@ routerAdd("POST", "/webhook/feishu/order/callback", (c) => {
 
     try {
         const body = c.requestInfo().body || {}
+
+        // ── 打印回调数据日志 ──
+        console.log("[FeishuOrderCallback] 接收回调数据:", JSON.stringify(body, null, 2))
 
         // Challenge 验证
         if (body.type === "url_verification" && body.challenge) {

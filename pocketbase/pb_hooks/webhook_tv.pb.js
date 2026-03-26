@@ -54,6 +54,9 @@ routerAdd("POST", "/webhook/tv", (c) => {
     // ══════════════════════════════════════
     // 信号表（type = "signal"）
     // ══════════════════════════════════════
+    // ── 打印接收到的信号数据日志 ──
+    console.log("[Webhook TV] 接收信号数据:", JSON.stringify(d, null, 2))
+
     try {
         $app.findFirstRecordByData("signals", "signal_id", d.signal_id)
         return c.json(200, { ok: true, msg: "duplicate, skipped" })

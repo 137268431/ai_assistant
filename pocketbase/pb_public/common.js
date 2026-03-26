@@ -203,9 +203,9 @@ window.selectCustomDate = function(date) {
 function renderDirectionTabs(onChange) {
   return `
     <div class="direction-tabs">
-      <button class="dir-tab active" data-dir="all" onclick="selectDirection('all', this)">全部</button>
-      <button class="dir-tab" data-dir="long" onclick="selectDirection('long', this)">做多</button>
-      <button class="dir-tab" data-dir="short" onclick="selectDirection('short', this)">做空</button>
+      <button class="dir-tab active" data-dir="all" onclick="selectDirection('all', this)">全部<span class="tab-count" data-dir="all">(<span class="count-value">0</span>)</span></button>
+      <button class="dir-tab" data-dir="long" onclick="selectDirection('long', this)">做多<span class="tab-count" data-dir="long">(<span class="count-value">0</span>)</span></button>
+      <button class="dir-tab" data-dir="short" onclick="selectDirection('short', this)">做空<span class="tab-count" data-dir="short">(<span class="count-value">0</span>)</span></button>
     </div>
   `;
 }
