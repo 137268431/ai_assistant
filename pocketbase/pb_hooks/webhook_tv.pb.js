@@ -169,7 +169,8 @@ routerAdd("POST", "/webhook/tv", (c) => {
             signal_id: d.signal_id,
             us_time: d.us_time || "",
             reason: extra.reason,
-            extra: extra
+            extra: extra,
+            status: initialStatus
         });
     } catch (err) {
         console.error("[Feishu] 发送信号通知失败:", err);

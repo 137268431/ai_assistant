@@ -91,29 +91,42 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
         }
         cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: infoElements }] })
 
-        var statusEmoji, statusText, msg, card
+        var msg, card
 
-        // 不可操作的状态
-        var invalidStatus = ["expired", "rejected", "executed"]
-        if (invalidStatus.indexOf(currentStatus) !== -1) {
-            if (currentStatus === "expired") {
-                statusEmoji = "⏰"; statusText = "已过期"
-            } else if (currentStatus === "rejected") {
-                statusEmoji = "❌"; statusText = "已拒绝"
-            } else {
-                statusEmoji = "✅"; statusText = "已执行"
+        // 根据状态获取展示信息
+        function getStatusInfo(status) {
+            var map = {
+                "expired": { emoji: "⏰", text: "已过期" },
+                "rejected": { emoji: "❌", text: "已拒绝" },
+                "executed": { emoji: "✅", text: "已执行" },
+                "pending": { emoji: "⏳", text: "待执行" },
+                "closed": { emoji: "🔒", text: "已平仓" },
+                "awaiting_confirm": { emoji: "⏳", text: "待确认" }
             }
-            msg = "该信号" + statusText + "，无法" + (action === "confirm" ? "确认" : "拒绝")
-            card = buildSignalCardV2(d.symbol, directionText, statusEmoji, statusText, currentStatus, color, msg, cardElements, d.us_time)
+            return map[status] || { emoji: "❓", text: status }
+        }
+
+        // 不可操作的状态（已最终态）
+        var finalStatus = ["expired", "rejected", "executed", "closed"]
+        if (finalStatus.indexOf(currentStatus) !== -1) {
+            var info = getStatusInfo(currentStatus)
+            msg = "该信号" + info.text + "，无法" + (action === "confirm" ? "确认" : "拒绝")
+            card = buildSignalCardV2(d.symbol, directionText, info.emoji, info.text, currentStatus, color, msg, cardElements, d.us_time)
             return sendFeishuCallbackResponse(c, { toast: { type: "warning", content: msg }, card: { type: "raw", data: card } }, updateToken)
         }
 
-        // 执行确认操作
+        // 执行确认操作（只有 awaiting_confirm 才能确认）
         if (action === "confirm") {
             if (currentStatus === "pending") {
                 msg = "⏳ 信号已确认，请勿重复操作"
                 card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time)
                 return sendFeishuCallbackResponse(c, { toast: { type: "info", content: msg }, card: { type: "raw", data: card } }, updateToken)
+            }
+            if (currentStatus !== "awaiting_confirm") {
+                var info = getStatusInfo(currentStatus)
+                msg = "该信号" + info.text + "，无法确认"
+                card = buildSignalCardV2(d.symbol, directionText, info.emoji, info.text, currentStatus, color, msg, cardElements, d.us_time)
+                return sendFeishuCallbackResponse(c, { toast: { type: "warning", content: msg }, card: { type: "raw", data: card } }, updateToken)
             }
             record.set("status", "pending")
             $app.save(record)
@@ -122,12 +135,23 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
             return sendFeishuCallbackResponse(c, { toast: { type: "success", content: "确认成功" }, card: { type: "raw", data: card } }, updateToken)
         }
 
-        // 执行拒绝操作
+        // 执行拒绝操作（只有 awaiting_confirm 才能拒绝）
         if (action === "reject") {
             if (currentStatus === "rejected") {
                 msg = "❌ 信号已拒绝，请勿重复操作"
                 card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, msg, cardElements, d.us_time)
                 return sendFeishuCallbackResponse(c, { toast: { type: "info", content: msg }, card: { type: "raw", data: card } }, updateToken)
+            }
+            if (currentStatus === "pending") {
+                msg = "⏳ 信号正在等待执行，无法拒绝"
+                card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time)
+                return sendFeishuCallbackResponse(c, { toast: { type: "warning", content: msg }, card: { type: "raw", data: card } }, updateToken)
+            }
+            if (currentStatus !== "awaiting_confirm") {
+                var info = getStatusInfo(currentStatus)
+                msg = "该信号" + info.text + "，无法拒绝"
+                card = buildSignalCardV2(d.symbol, directionText, info.emoji, info.text, currentStatus, color, msg, cardElements, d.us_time)
+                return sendFeishuCallbackResponse(c, { toast: { type: "warning", content: msg }, card: { type: "raw", data: card } }, updateToken)
             }
             record.set("status", "rejected")
             $app.save(record)

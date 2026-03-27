@@ -361,34 +361,42 @@ function notifyNewSignal(signal) {
     }
     elements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: infoElements }] })
 
-    // 操作按钮（schema 2.0 用 column_set 横排）
-    elements.push({ tag: "hr" })
-    elements.push({
-        tag: "column_set",
-        horizontal_spacing: "default",
-        columns: [
-            {
-                tag: "column", width: "weighted", weight: 1,
-                elements: [{
-                    tag: "button",
-                    text: { tag: "plain_text", content: "✅ 确认" },
-                    type: "primary",
-                    width: "fill",
-                    behaviors: [{ type: "callback", value: { action: "confirm", signal_id: d.signal_id } }]
-                }]
-            },
-            {
-                tag: "column", width: "weighted", weight: 1,
-                elements: [{
-                    tag: "button",
-                    text: { tag: "plain_text", content: "❌ 拒绝" },
-                    type: "danger",
-                    width: "fill",
-                    behaviors: [{ type: "callback", value: { action: "reject", signal_id: d.signal_id } }]
-                }]
-            }
-        ]
-    })
+    // 操作按钮（只有 awaiting_confirm 状态才显示按钮）
+    var signalStatus = d.status || "pending"
+    if (signalStatus === "awaiting_confirm") {
+        // 需要确认，显示按钮
+        elements.push({ tag: "hr" })
+        elements.push({
+            tag: "column_set",
+            horizontal_spacing: "default",
+            columns: [
+                {
+                    tag: "column", width: "weighted", weight: 1,
+                    elements: [{
+                        tag: "button",
+                        text: { tag: "plain_text", content: "✅ 确认" },
+                        type: "primary",
+                        width: "fill",
+                        behaviors: [{ type: "callback", value: { action: "confirm", signal_id: d.signal_id } }]
+                    }]
+                },
+                {
+                    tag: "column", width: "weighted", weight: 1,
+                    elements: [{
+                        tag: "button",
+                        text: { tag: "plain_text", content: "❌ 拒绝" },
+                        type: "danger",
+                        width: "fill",
+                        behaviors: [{ type: "callback", value: { action: "reject", signal_id: d.signal_id } }]
+                    }]
+                }
+            ]
+        })
+    } else {
+        // 自动通过状态，显示提示文案
+        elements.push({ tag: "hr" })
+        elements.push({ tag: "div", text: { tag: "lark_md", content: "⚙️ **自动确认** · 信号已提交，等待执行" } })
+    }
 
     var card = {
         schema: "2.0",
