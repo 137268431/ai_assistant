@@ -350,13 +350,16 @@ function notifyNewSignal(signal) {
         }
     ]
 
+    // 原因/信号ID/大盘 放入单列 column_set 控制间距
+    var infoElements = []
+    infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } })
     if (d.reason) {
-        elements.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } })
+        infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } })
     }
-    elements.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } })
     if (d.marketInfoText) {
-        elements.push({ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } })
+        infoElements.push({ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } })
     }
+    elements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: infoElements }] })
 
     // 操作按钮（schema 2.0 用 column_set 横排）
     elements.push({ tag: "hr" })
@@ -572,11 +575,11 @@ module.exports = {
             body: {
                 direction: "vertical",
                 elements: [
-                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**标的:** " + symbol } },
-                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**方向:** " + directionText } },
-                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: "**状态:** " + statusText } },
-                    { tag: "hr", margin: "4px" },
-                    { tag: "div", margin: "4px", text: { tag: "lark_md", content: message } }
+                    { tag: "div", text: { tag: "lark_md", content: "**标的:** " + symbol } },
+                    { tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } },
+                    { tag: "div", text: { tag: "lark_md", content: "**状态:** " + statusText } },
+                    { tag: "hr" },
+                    { tag: "div", text: { tag: "lark_md", content: message } }
                 ]
             }
         }

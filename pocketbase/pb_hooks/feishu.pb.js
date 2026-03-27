@@ -80,18 +80,16 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
             { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: rightColumn }
         ]})
 
-        // 原因
+        // 信号ID/原因/大盘 合并到一个 column_set 控制间距
+        var infoElements = []
+        infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } })
         if (d.reason) {
-            cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: [{ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } }] }] })
+            infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } })
         }
-
-        // 信号ID
-        cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: [{ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } }] }] })
-
-        // 大盘信息
         if (d.marketInfoText) {
-            cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: [{ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } }] }] })
+            infoElements.push({ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } })
         }
+        cardElements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: infoElements }] })
 
         var statusEmoji, statusText, msg, card
 
