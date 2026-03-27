@@ -10,6 +10,18 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const { notifyNewOrder, notifyOrder } = require(`${__hooks}/feishu_app.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
 
+  console.log(`[OrderUpsert] === 订单 Upsert 开始 ===`);
+  console.log(`[OrderUpsert] unique_id: ${data.unique_id}`);
+  console.log(`[OrderUpsert] order_type: ${data.order_type}`);
+  console.log(`[OrderUpsert] symbol: ${data.symbol}`);
+  console.log(`[OrderUpsert] direction: ${data.direction}`);
+  console.log(`[OrderUpsert] quantity: ${data.quantity}`);
+  console.log(`[OrderUpsert] limit_price: ${data.limit_price}`);
+  console.log(`[OrderUpsert] status: ${data.status}`);
+  console.log(`[OrderUpsert] signal_id: ${data.signal_id}`);
+  console.log(`[OrderUpsert] fill_price: ${data.fill_price}`);
+  console.log(`[OrderUpsert] filled_qty: ${data.filled_qty}`);
+
   // 字段映射：QC 发送的字段名 -> PB schema 字段名（已统一）
   const uniqueId = data.unique_id;
   const orderType = data.order_type;
@@ -128,6 +140,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     detailRecord.set("extra", detailExtra);
 
     $app.save(detailRecord);
+    console.log(`[OrderUpsert] order_details 已保存: order_id=${uniqueId}, event_type=${eventTypeMap[status] || status.toLowerCase()}, sequence=${sequence}`);
 
     // 发送飞书通知（仅关键状态变化）
     try {
@@ -139,18 +152,22 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
         // 首次创建 Entry 订单 - 发送交互式通知（带取消/平仓按钮）
         shouldNotify = true;
         action = "created";
+        console.log(`[OrderUpsert] 触发通知: 新的 Entry 订单已提交`);
       } else if (status === "Filled") {
         // 订单成交
         shouldNotify = true;
         action = "filled";
+        console.log(`[OrderUpsert] 触发通知: 订单已成交`);
       } else if (status === "Canceled") {
         // 订单取消
         shouldNotify = true;
         action = "canceled";
+        console.log(`[OrderUpsert] 触发通知: 订单已取消`);
       } else if (status === "Closed") {
         // 订单平仓
         shouldNotify = true;
         action = "closed";
+        console.log(`[OrderUpsert] 触发通知: 订单已平仓`);
       }
 
       if (shouldNotify) {
@@ -169,6 +186,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
 
         // Entry Submitted 发送交互式卡片，其他发送普通通知
         if (action === "created" && orderType === "Entry") {
+          console.log(`[OrderUpsert] 发送飞书交互卡片通知`);
           notifyNewOrder(orderData);
         } else {
           notifyOrder(action, orderData);
@@ -178,6 +196,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       console.error("[Feishu] 构建订单通知失败:", err);
     }
 
+    console.log(`[OrderUpsert] === 订单 Upsert 完成 === success=true, order_id=${record.id}, unique_id=${uniqueId}, status=${status}`);
     return c.json(200, {
       success: true,
       order: {
@@ -190,7 +209,8 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       }
     });
   } catch (err) {
-    console.error("Error upserting order:", err);
+    console.error(`[OrderUpsert] === 订单 Upsert 失败 === error:`, err.message);
+    console.error(`[OrderUpsert] 堆栈:`, err.stack);
     return c.json(500, { error: err.message });
   }
 });
@@ -198,6 +218,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
 // GET /api/custom/orders/pending - 获取待执行操作
 routerAdd("GET", "/api/custom/orders/pending", (c) => {
   try {
+    console.log(`[OrderPending] === 查询待执行订单操作 ===`);
     // 问题 4 修复: 使用独立的 action 字段而不是 JSON 查询
     const records = $app.findRecordsByFilter(
       "orders",
@@ -222,9 +243,10 @@ routerAdd("GET", "/api/custom/orders/pending", (c) => {
       };
     });
 
+    console.log(`[OrderPending] 找到 ${actions.length} 个待执行操作:`, JSON.stringify(actions.map(a => ({ uid: a.unique_id, action: a.action, symbol: a.symbol }))));
     return c.json(200, { status: "success", actions: actions });
   } catch (err) {
-    console.error("Error fetching pending order actions:", err);
+    console.error(`[OrderPending] 错误:`, err.message);
     return c.json(500, { error: err.message });
   }
 });
@@ -235,7 +257,10 @@ routerAdd("POST", "/api/custom/orders/ack", (c) => {
   const uniqueId = data.unique_id;
   const result = data.result || "completed";
 
+  console.log(`[OrderAck] === 订单确认开始 === unique_id=${uniqueId}, result=${result}`);
+
   if (!uniqueId) {
+    console.log(`[OrderAck] 错误: 缺少 unique_id`);
     return c.json(400, { error: "Missing unique_id" });
   }
 
@@ -250,11 +275,17 @@ routerAdd("POST", "/api/custom/orders/ack", (c) => {
     );
 
     if (records.length === 0) {
+      console.log(`[OrderAck] 错误: 订单不存在 unique_id=${uniqueId}`);
       return c.json(404, { error: "Order not found" });
     }
 
     const record = records[0];
     const extra = record.get("extra") || {};
+    const symbol = record.get("symbol");
+    const orderType = record.get("order_type");
+    const action = record.get("action");
+
+    console.log(`[OrderAck] 找到订单: symbol=${symbol}, order_type=${orderType}, 原action=${action}`);
 
     // 问题 4 修复: 清除独立的 action 字段
     record.set("action", "");
@@ -268,9 +299,10 @@ routerAdd("POST", "/api/custom/orders/ack", (c) => {
     record.set("extra", extra);
     $app.save(record);
 
+    console.log(`[OrderAck] === 订单确认完成 === unique_id=${uniqueId}, result=${result}`);
     return c.json(200, { success: true });
   } catch (err) {
-    console.error("Error acknowledging order action:", err);
+    console.error(`[OrderAck] 错误:`, err.message);
     return c.json(500, { error: err.message });
   }
 });

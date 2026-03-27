@@ -119,24 +119,132 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
   const status = data.status || "executed";
   const note = data.note || "";
 
+  // 订单字段（QC 传递）
+  const orderData = data.order || {};
+
+  console.log(`[SignalAck] === 开始处理信号确认 ===`);
+  console.log(`[SignalAck] signal_id: ${signalId}`);
+  console.log(`[SignalAck] status: ${status}`);
+  console.log(`[SignalAck] note: ${note}`);
+  console.log(`[SignalAck] 订单数据:`, JSON.stringify(orderData, null, 2));
+
   if (!signalId) {
+    console.log(`[SignalAck] 错误: 缺少 signal_id`);
     return c.json(400, { error: "Missing signal_id" });
   }
 
   try {
+    // 1. 更新信号状态
+    console.log(`[SignalAck] 查找信号记录: signal_id=${signalId}`);
     const record = $app.findFirstRecordByFilter(
       "signals",
       `signal_id = {:sid}`,
       { sid: signalId }
     );
+    const symbol = record.get("symbol");
+    const prevStatus = record.get("status");
+    console.log(`[SignalAck] 找到信号: symbol=${symbol}, 原状态=${prevStatus}`);
 
     record.set("status", status);
     record.set("note", note);
     $app.save(record);
+    console.log(`[SignalAck] 信号状态已更新: ${prevStatus} → ${status}`);
 
+    // 2. 如果 QC 传递了订单数据，则创建订单
+    if (orderData.unique_id && orderData.order_type) {
+      console.log(`[SignalAck] === 创建订单记录 ===`);
+      console.log(`[SignalAck] unique_id: ${orderData.unique_id}`);
+      console.log(`[SignalAck] order_type: ${orderData.order_type}`);
+      console.log(`[SignalAck] direction: ${orderData.direction || record.get("direction")}`);
+      console.log(`[SignalAck] quantity: ${orderData.quantity || record.get("shares")}`);
+      console.log(`[SignalAck] limit_price: ${orderData.limit_price || record.get("entry")}`);
+
+      const ordersCol = $app.findCollectionByNameOrId("orders");
+
+      // 查找是否已存在订单
+      let orderRecord = null;
+      try {
+        const existing = $app.findRecordsByFilter(
+          "orders",
+          `unique_id = {:uniqueId}`,
+          "",
+          1,
+          0,
+          { uniqueId: orderData.unique_id }
+        );
+        if (existing.length > 0) {
+          orderRecord = existing[0];
+          console.log(`[SignalAck] 订单已存在，将更新: ${orderData.unique_id}`);
+        }
+      } catch (_) {}
+
+      if (!orderRecord) {
+        orderRecord = new Record(ordersCol, {});
+        orderRecord.set("unique_id", orderData.unique_id);
+        console.log(`[SignalAck] 创建新订单: ${orderData.unique_id}`);
+      }
+
+      orderRecord.set("order_type", orderData.order_type || "Entry");
+      orderRecord.set("symbol", symbol);
+      orderRecord.set("direction", orderData.direction || record.get("direction"));
+      orderRecord.set("quantity", orderData.quantity || 0);
+      orderRecord.set("limit_price", orderData.limit_price || 0);
+      orderRecord.set("status", orderData.status || "Submitted");
+      orderRecord.set("filled_qty", orderData.filled_qty || 0);
+      orderRecord.set("fill_price", orderData.fill_price || 0);
+      orderRecord.set("stop_loss", orderData.stop_loss || 0);
+      orderRecord.set("take_profit", orderData.take_profit || 0);
+      orderRecord.set("signal_id", signalId);
+      orderRecord.set("order_time", orderData.order_time || orderData.us_time || "");
+      orderRecord.set("us_time", orderData.us_time || "");
+      orderRecord.set("cn_time", orderData.cn_time || "");
+      orderRecord.set("bar_time_ms", orderData.bar_time_ms || 0);
+
+      $app.save(orderRecord);
+      console.log(`[SignalAck] 订单已保存: id=${orderRecord.id}, status=Submitted`);
+
+      // 3. 写入 order_details
+      console.log(`[SignalAck] === 写入订单事件记录 ===`);
+      const detailsCol = $app.findCollectionByNameOrId("order_details");
+      const detailRecord = new Record(detailsCol, {});
+      detailRecord.set("order_id", orderData.unique_id);
+      detailRecord.set("symbol", symbol);
+      detailRecord.set("direction", orderData.direction || record.get("direction") || "");
+      detailRecord.set("event_type", "submitted");
+      detailRecord.set("old_value", prevStatus);
+      detailRecord.set("new_value", status);
+      detailRecord.set("reason", note);
+      detailRecord.set("signal_id", signalId);
+      // 优先使用 QC 传来的交易时间，回测时这是真实交易时间
+      const qcTime = orderData.us_time || "";
+      const qcCnTime = orderData.cn_time || "";
+      const qcBarTime = orderData.bar_time_ms || 0;
+
+      // 兜底用 PB 服务器时间（仅在 QC 未传时间时使用）
+      const pbNow = new Date();
+      const pbNowISO = pbNow.toISOString();
+      const pbNowStr = pbNowISO.replace('T', ' ').substring(0, 19);
+      const pbNowCn = new Date(pbNow.getTime() + 8*60*60*1000).toISOString().replace('T', ' ').substring(0, 19);
+
+      detailRecord.set("event_time", qcTime ? new Date(qcTime).toISOString() : pbNowISO);
+      detailRecord.set("us_time", qcTime || pbNowStr);
+      detailRecord.set("cn_time", qcCnTime || pbNowCn);
+      detailRecord.set("bar_time_ms", qcBarTime || pbNow.getTime());
+
+      // extra 存 QC 传入的扩展信息
+      if (orderData.extra) detailRecord.set("extra", orderData.extra);
+
+      $app.save(detailRecord);
+      console.log(`[SignalAck] order_details 已保存: order_id=${orderData.unique_id}, event_type=submitted`);
+    } else {
+      console.log(`[SignalAck] 未传递订单数据，跳过订单创建`);
+    }
+
+    console.log(`[SignalAck] === 信号确认处理完成 === success=true, signal_id=${signalId}, status=${status}`);
     return c.json(200, { success: true, signal_id: signalId, status: status });
   } catch (err) {
-    console.error("Error acknowledging signal:", err);
+    console.error(`[SignalAck] 错误:`, err.message);
+    console.error(`[SignalAck] 堆栈:`, err.stack);
     return c.json(500, { error: err.message });
   }
 });

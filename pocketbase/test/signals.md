@@ -95,7 +95,24 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
     -d '{
       "signal_id": "AAPL_20260202_1000_trend_U",
       "status": "executed",
-      "note": "Order placed successfully"
+      "note": "Order placed successfully",
+      "order": {
+        "unique_id": "12345",
+        "order_type": "Entry",
+        "direction": "long",
+        "quantity": 42,
+        "limit_price": 244.00,
+        "status": "Submitted",
+        "filled_qty": 0,
+        "fill_price": 0,
+        "stop_loss": 241.14,
+        "take_profit": 245.26,
+        "order_time": "2026-02-02 10:30:00",
+        "us_time": "2026-02-02 10:30:00",
+        "cn_time": "2026-02-02 18:30:00",
+        "bar_time_ms": 1770017400000,
+        "extra": {}
+      }
     }'
 ```
 
@@ -106,6 +123,27 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 | `signal_id` | string | 是 | 信号唯一ID |
 | `status` | string | 否 | 新状态，默认 `"executed"` |
 | `note` | string | 否 | 备注信息 |
+| `order` | object | 否 | 订单信息，QC 下单成功后传入，用于在 PB 中创建 `orders` 记录 |
+
+### order 对象字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `unique_id` | string | 是 | 券商订单ID，作为订单唯一标识 |
+| `order_type` | string | 是 | 订单类型，如 `"Entry"` |
+| `direction` | string | 是 | 方向，`"long"` 或 `"short"` |
+| `quantity` | number | 是 | 数量 |
+| `limit_price` | number | 是 | 限价 |
+| `status` | string | 否 | 订单状态，默认 `"Submitted"` |
+| `filled_qty` | number | 否 | 已成交数量，默认 `0` |
+| `fill_price` | number | 否 | 成交价格，默认 `0` |
+| `stop_loss` | number | 否 | 止损价格 |
+| `take_profit` | number | 否 | 止盈价格 |
+| `order_time` | string | 否 | 下单时间，格式 `YYYY-MM-DD HH:MM:SS`（美东时间） |
+| `us_time` | string | 否 | 美东时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
+| `cn_time` | string | 否 | 北京时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时自动计算） |
+| `bar_time_ms` | number | 否 | Bar 时间戳（毫秒），对应 PB orders 表的 `bar_time_ms` 字段 |
+| `extra` | object | 否 | 扩展信息（QC 可传入 signal.extra 等补充数据），会写入 `order_details.extra` |
 
 ### 响应
 
