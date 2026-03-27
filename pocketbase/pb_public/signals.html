@@ -340,6 +340,21 @@
             color: var(--muted);
         }
 
+        .signal-note-highlight {
+            background: rgba(246,173,85,0.1);
+            border-left: 3px solid var(--pending);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--text);
+        }
+
+        .signal-note-highlight strong {
+            color: var(--pending);
+        }
+
         .signal-actions {
             display: flex;
             flex-wrap: wrap;
@@ -1585,8 +1600,8 @@
                                 <div class="signal-value" style="font-size:12px;font-family:'JetBrains Mono',monospace;">${signal.signal_id || '-'}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">入场价</div>
-                                <div class="signal-value">$${(signal.entry || 0).toFixed(2)}</div>
+                                <div class="signal-label">入场价 / 当前价</div>
+                                <div class="signal-value">$${(signal.entry || 0).toFixed(2)} / ${latestIndicator?.close ? '$' + latestIndicator.close.toFixed(2) : '-'}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">止损价</div>
@@ -1618,8 +1633,8 @@
                             ` : ''}
                         </div>
 
-                        ${signal.reason ? `<div class="signal-note"><strong>原因:</strong> ${signal.reason}</div>` : ''}
-                        ${signal.note ? `<div class="signal-note"><strong>备注:</strong> ${signal.note}</div>` : ''}
+                        ${signal.note ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${signal.note}</div>` : ''}
+                        ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${signal.reason}</div>` : ''}
 
                         <div class="signal-item full-width shares-amount">
                             <div class="shares-amount-left">

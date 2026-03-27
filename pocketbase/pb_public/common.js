@@ -7,20 +7,24 @@
 const BASE_URL = 'https://pb.lzw-glory.top';
 
 // ── 时间转换 ──
-// 将 UTC 毫秒时间戳转换为美国东部时间字符串
+// 将 UTC 毫秒时间戳转换为美国东部时间字符串，格式: 2026-02-02 10:00:00
 function formatBarTimeMsToET(barTimeMs) {
     if (!barTimeMs) return '-';
-    // 显式转换为数字，确保按 UTC 毫秒处理
     const date = new Date(Number(barTimeMs));
-    return date.toLocaleString('en-US', {
+    const options = {
         timeZone: 'America/New_York',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
         hour: '2-digit',
         minute: '2-digit',
+        second: '2-digit',
         hour12: false
-    });
+    };
+    const parts = date.toLocaleString('en-US', options).split(/[\s/,:]+/);
+    // parts: [MM, DD, YYYY, HH, mm, ss]
+    const [mm, dd, yyyy, HH, MM, ss] = parts;
+    return `${yyyy}-${mm}-${dd} ${HH}:${MM}:${ss}`;
 }
 
 // ── Token 管理 ──
@@ -408,11 +412,11 @@ function renderIndicatorModal(latestIndicator) {
         </div>
         <div class="modal-item">
           <div class="modal-label">Bar时间戳</div>
-          <div class="modal-value" style="font-size: 11px;">${latestIndicator.bar_time_ms ? formatBarTimeMsToET(latestIndicator.bar_time_ms) : '-'}</div>
+          <div class="modal-value">${latestIndicator.bar_time_ms ? formatBarTimeMsToET(latestIndicator.bar_time_ms) : '-'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">创建时间</div>
-          <div class="modal-value" style="font-size: 11px;">${latestIndicator.created ? new Date(latestIndicator.created).toISOString() : '-'}</div>
+          <div class="modal-value">${latestIndicator.created ? formatBeijingTime(latestIndicator.created) : '-'}</div>
         </div>
       </div>
     </div>

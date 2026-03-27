@@ -362,7 +362,7 @@ function notifyNewSignal(signal) {
     elements.push({ tag: "column_set", columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: infoElements }] })
 
     // 操作按钮（只有 awaiting_confirm 状态才显示按钮）
-    var signalStatus = d.status || "pending"
+    var signalStatus = signal.status || "pending"
     if (signalStatus === "awaiting_confirm") {
         // 需要确认，显示按钮
         elements.push({ tag: "hr" })
@@ -402,7 +402,7 @@ function notifyNewSignal(signal) {
         schema: "2.0",
         config: { update_multi: true },
         header: {
-            title: { tag: "plain_text", content: "🔔 新交易信号 · " + d.symbol + " · " + d.us_time },
+            title: { tag: "plain_text", content: (signalStatus === "awaiting_confirm" ? "🔔 新交易信号" : "⚙️ 自动确认") + " · " + d.symbol + " · " + d.us_time },
             template: color
         },
         body: {
