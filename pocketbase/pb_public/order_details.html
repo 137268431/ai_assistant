@@ -585,7 +585,7 @@
                                         <span class="event-badge event-${ot.toLowerCase()}">${ot}</span>
                                         ${statusText ? `<span class="event-badge event-${sts}">${statusText}</span>` : ''}
                                     </div>
-                                    <span class="flow-time">${formatBeijingTime(detail.us_time || detail.created)}</span>
+                                    <span class="flow-time">${detail.us_time ? detail.us_time + ' ET' : formatTime(detail.created, 'America/New_York', 'full')}${detail.cn_time ? ' / ' + detail.cn_time + ' CN' : ''}</span>
                                 </div>
                                 <div class="flow-info">
                                     ${extra.limit_price != null ? `<div class="flow-info-item"><div class="flow-info-label">限价</div><div class="flow-info-value">$${Number(extra.limit_price).toFixed(2)}</div></div>` : ''}
@@ -622,7 +622,7 @@
                             <span class="event-badge event-${evt.toLowerCase()}">${evt}</span>
                             <span class="event-badge event-${sts}">${statusText}</span>
                         </div>
-                        <span class="detail-time">${formatBeijingTime(detail.us_time || detail.created)}</span>
+                        <span class="detail-time">${detail.us_time ? detail.us_time + ' ET' : formatTime(detail.created, 'America/New_York', 'full')}${detail.cn_time ? ' / ' + detail.cn_time + ' CN' : ''}</span>
                     </div>
                     <div class="detail-grid">
                         <div class="detail-item"><div class="detail-label">方向</div><div class="detail-value">${detail.direction || 'N/A'}</div></div>

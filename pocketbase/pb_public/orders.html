@@ -8,40 +8,106 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <style>
-        .stats-bar {
-            display: flex;
-            gap: 6px;
-            margin-bottom: 8px;
-            overflow-x: auto;
-            padding-bottom: 4px;
+        .search-row {
+            margin-bottom: 6px;
         }
 
-        .stat-chip {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 6px 12px;
-            white-space: nowrap;
-            font-family: 'JetBrains Mono', monospace;
+        .search-row > div:first-child {
+            margin-bottom: 4px;
+        }
+
+        .search-row .refresh-control {
+            gap: 4px;
+        }
+
+        .search-row .refresh-btn {
+            padding: 4px 6px;
+            font-size: 12px;
+        }
+
+        .search-row .refresh-select {
+            padding: 4px 6px;
             font-size: 11px;
         }
 
-        .stat-chip .stat-label {
-            color: var(--muted);
+        .search-input {
+            width: 100%;
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
         }
 
-        .stat-chip .stat-value {
-            color: var(--accent);
-            font-weight: 700;
+        .search-input:focus {
+            border-color: var(--accent);
+        }
+
+        /* 状态筛选 Tab */
+        .status-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+            overflow-x: auto;
+            padding: 8px 0;
+            background: var(--bg);
+            position: sticky;
+            top: 0;
+            z-index: 10;
         }
 
         .direction-tabs {
-            margin-top: 8px;
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+            overflow-x: auto;
+            padding: 8px 0;
+            background: var(--bg);
+            position: sticky;
+            top: 50px;
+            z-index: 9;
         }
 
+        .status-tab {
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: #C4D4E4;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .status-tab:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .status-tab.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+
+        .status-tab .tab-count {
+            font-size: 10px;
+            margin-left: 2px;
+            opacity: 0.8;
+        }
+
+        .dir-tab .tab-count {
+            font-size: 10px;
+            margin-left: 2px;
+            opacity: 0.8;
+        }
+
+        /* 订单卡片 */
         .order-card {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -174,15 +240,31 @@
             font-size: 14px;
             font-weight: 700;
             color: var(--text);
+            word-break: break-all;
         }
 
-        .order-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+        /* 操作区域 */
+        .signal-actions {
+            display: flex;
+            flex-wrap: wrap;
             gap: 8px;
             margin-top: 12px;
             padding-top: 12px;
             border-top: 1px solid var(--border);
+        }
+
+        .signal-actions .action-btns-row {
+            display: flex;
+            gap: 6px;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .signal-actions .action-btns-row .action-btn {
+            flex: 1;
+            padding: 8px 4px;
+            font-size: 11px;
+            white-space: nowrap;
         }
 
         .action-btn {
@@ -202,6 +284,16 @@
             cursor: not-allowed;
         }
 
+        .btn-view {
+            grid-column: 1 / -1;
+            background: var(--accent);
+            color: var(--bg);
+        }
+
+        .btn-view:active {
+            background: #4299e1;
+        }
+
         .btn-close {
             background: var(--short);
             color: var(--bg);
@@ -211,47 +303,20 @@
             background: #e53e3e;
         }
 
-        .btn-details {
-            background: var(--accent);
-            color: var(--bg);
-        }
-
-        .btn-details:active:not(:disabled) {
-            background: #2563eb;
-        }
-
         .btn-cancel {
-            background: var(--pending);
+            background: var(--short);
             color: var(--bg);
         }
 
         .btn-cancel:active:not(:disabled) {
-            background: #ed8936;
+            background: #e53e3e;
         }
 
-        .bracket-info {
-            background: rgba(99,179,237,0.05);
-            border-left: 2px solid var(--accent);
-            padding: 10px;
-            margin-bottom: 10px;
-            font-size: 11px;
-            line-height: 1.5;
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
+        /* 刷新控件 */
         .refresh-control {
             display: flex;
             gap: 6px;
             align-items: center;
-            margin-top: 0;
-        }
-
-        .header-row {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            margin-bottom: 8px;
         }
 
         .refresh-btn {
@@ -295,26 +360,15 @@
             border-color: var(--accent);
         }
 
-        .search-row {
-            margin-top: 8px;
+        .search-row .refresh-control .refresh-btn {
+            padding: 8px 10px;
+            font-size: 12px;
         }
 
-        .search-input {
-            width: 100%;
-            padding: 8px 12px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: var(--surface2);
-            color: var(--text);
-            font-size: 13px;
-            font-family: 'JetBrains Mono', monospace;
-            outline: none;
+        .search-row .refresh-control .refresh-select {
+            padding: 8px 10px;
+            font-size: 11px;
         }
-
-        .search-input:focus {
-            border-color: var(--accent);
-        }
-
 
         .signal-link {
             background: rgba(99,179,237,0.1);
@@ -388,6 +442,9 @@
                 LIVE
             </div>
         </div>
+    </div>
+
+    <div class="content">
         <div class="search-row">
             <div style="display:flex;gap:8px;align-items:center;">
                 <div id="datePicker" style="flex:1;"></div>
@@ -403,24 +460,16 @@
             </div>
             <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID/订单ID..." oninput="onSearchChange(this.value)">
         </div>
-        <div id="directionTabs"></div>
-    </div>
-
-    <div class="content">
-        <div class="stats-bar">
-            <div class="stat-chip">
-                <span class="stat-label">总计</span>
-                <span class="stat-value" id="stat-total">0</span>
-            </div>
-            <div class="stat-chip">
-                <span class="stat-label">活跃</span>
-                <span class="stat-value" id="stat-active">0</span>
-            </div>
-            <div class="stat-chip">
-                <span class="stat-label">已成交</span>
-                <span class="stat-value" id="stat-filled">0</span>
-            </div>
+        <div class="status-tabs">
+            <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Init" onclick="selectStatus('Init', this)">初始化<span class="tab-count" data-status="Init">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Submitted" onclick="selectStatus('Submitted', this)">已提交<span class="tab-count" data-status="Submitted">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Filled" onclick="selectStatus('Filled', this)">已成交<span class="tab-count" data-status="Filled">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Canceled" onclick="selectStatus('Canceled', this)">已取消<span class="tab-count" data-status="Canceled">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Closed" onclick="selectStatus('Closed', this)">已平仓<span class="tab-count" data-status="Closed">(<span class="count-value">0</span>)</span></button>
         </div>
+
+        <div id="directionTabs"></div>
 
         <div id="ordersContainer">
             <div class="loading">加载中...</div>
@@ -441,6 +490,8 @@
         let currentInterval = 30;
         let orderReverseSignalsMap = {};   // { order_id: true/false }
         let filterSignalId = null;
+        let currentStatus = 'all';
+        let orderValidityMinutes = 30;
 
         // Pagination
         let currentPage = 1;
@@ -458,6 +509,16 @@
 
         async function loadOrders() {
             try {
+                // 读取订单有效期配置
+                try {
+                    const configResult = await pb.collection('config').getFirstListItem('key = "order_validity_minutes"');
+                    if (configResult && configResult.value) {
+                        orderValidityMinutes = parseInt(configResult.value) || 30;
+                    }
+                } catch (e) {
+                    orderValidityMinutes = 30;
+                }
+
                 const currentDate_obj = new Date(currentDate + 'T00:00:00Z');
                 const nextDate_obj = new Date(currentDate_obj.getTime() + 86400000);
                 const startTimeMs = currentDate_obj.getTime();
@@ -474,9 +535,10 @@
                 await loadReverseSignalsMap();
 
                 resetPagination();
-                updateStats();
                 renderOrders();
                 updateLoadMoreButton();
+                await updateStatusTabCounts();
+                await updateDirectionTabCounts();
             } catch (error) {
                 console.error('加载失败:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -516,14 +578,14 @@
         }
 
         function updateStats() {
-            const filtered = filterOrdersAll();
-            document.getElementById('stat-total').textContent = filtered.length;
-            document.getElementById('stat-active').textContent = filtered.filter(o => o.status === 'Submitted').length;
-            document.getElementById('stat-filled').textContent = filtered.filter(o => o.status === 'Filled').length;
+            // 状态统计由 Tab count 显示，无需额外处理
         }
 
         function filterOrdersAll() {
             let filtered = allOrders;
+            if (currentStatus !== 'all') {
+                filtered = filtered.filter(o => o.status === currentStatus);
+            }
             if (currentDirection !== 'all') {
                 filtered = filtered.filter(o => o.direction === currentDirection);
             }
@@ -581,9 +643,42 @@
         function onSearchChange(val) {
             currentSearch = val.trim();
             resetPagination();
-            updateStats();
             renderOrders();
             updateLoadMoreButton();
+            updateStatusTabCounts();
+            updateDirectionTabCounts();
+        }
+
+        // 状态筛选 Tab
+        window.selectStatus = function(status, btn) {
+            document.querySelectorAll('.status-tab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentStatus = status;
+            loadOrders();
+        };
+
+        // 更新状态标签的数量显示
+        async function updateStatusTabCounts() {
+            const statuses = ['Init', 'Submitted', 'Filled', 'Canceled', 'Closed'];
+            const counts = {};
+            const total = allOrders.length;
+            counts['all'] = total;
+            statuses.forEach(s => { counts[s] = allOrders.filter(o => o.status === s).length; });
+            ['all', ...statuses].forEach(s => {
+                const tab = document.querySelector(`.status-tab .tab-count[data-status="${s}"] .count-value`);
+                if (tab) tab.textContent = counts[s] || 0;
+            });
+        }
+
+        // 更新方向标签的数量显示
+        async function updateDirectionTabCounts() {
+            const directions = ['long', 'short'];
+            const counts = {};
+            directions.forEach(d => { counts[d] = allOrders.filter(o => o.direction === d).length; });
+            ['all', ...directions].forEach(d => {
+                const tab = document.querySelector(`.dir-tab .tab-count[data-dir="${d}"] .count-value`);
+                if (tab) tab.textContent = counts[d] || 0;
+            });
         }
 
         function renderOrders() {
@@ -622,18 +717,13 @@
 
                 // 判断是否可以平仓或取消
                 const isEntry = orderType === 'Entry';
-                const isBracket = orderType === 'TakeProfit' || orderType === 'StopLoss';
                 const isSubmitted = order.status === 'Submitted';
                 const isFilled = order.status === 'Filled';
-
-                // 入场订单：已成交可平仓，已提交可取消
                 const canClose = isEntry && isFilled;
                 const canCancel = isEntry && isSubmitted;
 
-                // 止盈止损订单：不能取消（由系统管理）
-                const bracketNote = isBracket ? '⚠️ 止盈止损订单由系统管理，不可手动取消' : '';
-
-                // 用 order_id 查询反向信号
+                // 倒计时
+                const showCountdown = order.status === 'Init' || order.status === 'Submitted';
                 const orderUniqueId = order.unique_id || order.order_id;
                 const hasReverseSignal = orderReverseSignalsMap[orderUniqueId] || false;
 
@@ -646,43 +736,72 @@
                                 <span class="order-direction ${directionClass}">${order.direction.toUpperCase()}</span>
                                 <span class="order-type-badge type-${orderTypeClass}">${orderTypeText}</span>
                             </div>
-                            <div class="order-status status-${statusClass}">${statusText}</div>
+                            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+                                <div class="order-status status-${statusClass}">${statusText}</div>
+                                ${showCountdown ? `
+                                <div class="countdown-display" data-bar-time="${order.bar_time_ms || ''}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
+                                    ⏱️ <span class="countdown-value">${calculateOrderCountdown(order.bar_time_ms) || '-'}</span>
+                                </div>
+                                ` : ''}
+                            </div>
                         </div>
 
                         <div class="order-grid">
                             <div class="order-item">
+                                <div class="order-label">QC 订单ID</div>
+                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${orderUniqueId || '-'}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">IB 券商订单ID</div>
+                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${order.order_id || '-'}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">信号ID</div>
+                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${order.signal_id || '-'}</div>
+                            </div>
+                            <div class="order-item">
                                 <div class="order-label">限价</div>
-                                <div class="order-value">$${(order.limit_price || 0).toFixed(2)}</div>
+                                <div class="order-value">${order.limit_price != null ? '$' + order.limit_price.toFixed(2) : '-'}</div>
                             </div>
                             <div class="order-item">
                                 <div class="order-label">成交价</div>
-                                <div class="order-value">${order.fill_price ? '$' + order.fill_price.toFixed(2) : 'N/A'}</div>
+                                <div class="order-value">${order.fill_price != null ? '$' + order.fill_price.toFixed(2) : '-'}</div>
                             </div>
                             <div class="order-item">
                                 <div class="order-label">数量</div>
-                                <div class="order-value">${order.quantity || 0}</div>
+                                <div class="order-value">${order.quantity != null ? order.quantity : '-'}</div>
                             </div>
                             <div class="order-item">
                                 <div class="order-label">已成交</div>
-                                <div class="order-value">${order.filled_qty || 0}</div>
+                                <div class="order-value">${order.filled_qty != null ? order.filled_qty : '-'}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">止损价</div>
+                                <div class="order-value">${order.sl_price != null ? '$' + order.sl_price.toFixed(2) : '-'}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">止盈价</div>
+                                <div class="order-value">${order.tp_price != null ? '$' + order.tp_price.toFixed(2) : '-'}</div>
                             </div>
                             <div class="order-item">
                                 <div class="order-label">下单时间</div>
-                                <div class="order-value">${formatBeijingTime(order.created, 'time')}</div>
+                                <div class="order-value" style="font-size:10px;font-family:'JetBrains Mono',monospace;word-break:break-all;">
+                                    ${order.us_time ? order.us_time.replace(' ', '') + '/ET' : '-'}${order.cn_time ? ' ' + order.cn_time.replace(' ', '') + '/CN' : ''}
+                                </div>
                             </div>
                             <div class="order-item">
                                 <div class="order-label">成交时间</div>
-                                <div class="order-value">${order.updated ? formatBeijingTime(order.updated, 'time') : 'N/A'}</div>
+                                <div class="order-value" style="font-size:10px;font-family:'JetBrains Mono',monospace;word-break:break-all;">${order.fill_time ? order.fill_time.replace(' ', '') : '-'}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">PB 新建</div>
+                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${formatTime(order.created, 'America/New_York', 'short')}</div>
+                            </div>
+                            <div class="order-item">
+                                <div class="order-label">PB 更新</div>
+                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${formatTime(order.updated, 'America/New_York', 'short')}</div>
                             </div>
                         </div>
-
-                        ${order.signal_id ? `
-                            <div class="signal-link" onclick="viewSignal('${order.signal_id}')">
-                                <span class="signal-link-icon">📡</span>
-                                <span class="signal-link-text">查看关联信号</span>
-                                <span class="signal-link-arrow">→</span>
-                            </div>
-                        ` : ''}
 
                         ${hasReverseSignal ? `
                             <div class="signal-link" onclick="viewReverseSignal('${orderUniqueId}')">
@@ -692,26 +811,22 @@
                             </div>
                         ` : ''}
 
-                        ${order.tp_price || order.sl_price ? `
-                            <div class="bracket-info">
-                                ${order.tp_price ? `TP: $${order.tp_price.toFixed(2)}` : ''}
-                                ${order.tp_price && order.sl_price ? ' | ' : ''}
-                                ${order.sl_price ? `SL: $${order.sl_price.toFixed(2)}` : ''}
+                        <div class="signal-actions" style="display:flex;flex-direction:column;gap:8px;">
+                            <div class="action-btns-row">
+                                ${order.signal_id ? `
+                                <button class="action-btn btn-view" onclick="viewSignal('${order.signal_id}')">
+                                    📡 查看关联信号
+                                </button>` : ''}
+                                <button class="action-btn btn-view" onclick="viewOrderDetails('${orderUniqueId}', '${order.symbol}')">
+                                    📜 明细
+                                </button>
                             </div>
-                        ` : ''}
-
-                        ${bracketNote ? `<div class="bracket-info">${bracketNote}</div>` : ''}
-
-                        <div class="order-actions">
-                            <button class="action-btn btn-details" onclick="viewOrderDetails('${order.unique_id}', '${order.symbol}')">
-                                📜 明细
-                            </button>
-                            <button class="action-btn btn-close" onclick="closePosition('${order.unique_id}', '${order.symbol}')" ${!canClose ? 'disabled' : ''}>
-                                🔒 平仓
-                            </button>
-                            <button class="action-btn btn-cancel" onclick="cancelOrder('${order.unique_id}', '${order.symbol}')" ${!canCancel ? 'disabled' : ''}>
-                                ✕ 取消
-                            </button>
+                            ${canClose || canCancel ? `
+                            <div style="display:flex;gap:6px;justify-content:flex-end;">
+                                ${canClose ? `<button class="action-btn btn-close" onclick="closePosition('${orderUniqueId}', '${order.symbol}')">🔒 平仓</button>` : ''}
+                                ${canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${orderUniqueId}', '${order.symbol}')">✕ 取消</button>` : ''}
+                            </div>
+                            ` : ''}
                         </div>
                     </div>
                 `;
@@ -749,7 +864,14 @@
                 showToast('无法找到关联信号');
                 return;
             }
-            location.href = `/signals.html?highlight=${encodeURIComponent(signalId)}`;
+            // 从 bar_time_ms 提取 UTC 日期传给 signals.html 同步日期选择器
+            const order = allOrders.find(o => o.signal_id === signalId);
+            const dateParam = order && order.bar_time_ms
+                ? new Date(order.bar_time_ms).toISOString().split('T')[0]
+                : '';
+            const params = new URLSearchParams({ signal_id: signalId });
+            if (dateParam) params.set('date', dateParam);
+            location.href = `/signals.html?${params.toString()}`;
         }
 
         function viewReverseSignal(orderId) {
@@ -776,10 +898,45 @@
         window.onDirectionChange = function(direction) {
             currentDirection = direction;
             resetPagination();
-            updateStats();
             renderOrders();
             updateLoadMoreButton();
+            updateStatusTabCounts();
+            updateDirectionTabCounts();
         };
+
+        // 计算订单倒计时
+        function calculateOrderCountdown(barTimeMs) {
+            if (!barTimeMs) return '';
+            const expiryTime = new Date(parseInt(barTimeMs) + orderValidityMinutes * 60 * 1000);
+            const now = new Date();
+            const usEasternTime = new Date(now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
+            const remainingMs = expiryTime - usEasternTime;
+            if (remainingMs <= 0) return '';
+            const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+            const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+            const seconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        // 更新所有倒计时显示
+        function updateOrderCountdowns() {
+            const countdownElements = document.querySelectorAll('.countdown-display');
+            countdownElements.forEach(el => {
+                const barTime = el.getAttribute('data-bar-time');
+                const valueEl = el.querySelector('.countdown-value');
+                if (valueEl && barTime) {
+                    const remainingMs = parseInt(barTime) + orderValidityMinutes * 60 * 1000 - new Date().getTime();
+                    if (remainingMs > 0 && remainingMs < 5 * 60 * 1000) {
+                        valueEl.style.color = 'var(--short)';
+                        el.style.color = 'var(--short)';
+                    } else {
+                        valueEl.style.color = '';
+                        el.style.color = '';
+                    }
+                    valueEl.textContent = calculateOrderCountdown(barTime) || '-';
+                }
+            });
+        }
 
         function manualRefresh() {
             const btn = document.getElementById('refreshBtn');
@@ -862,6 +1019,9 @@
 
             // 初始化定时刷新（默认30秒）
             changeRefreshInterval(30);
+
+            // 初始化倒计时更新（每秒）
+            setInterval(updateOrderCountdowns, 1000);
         });
     </script>
 </body>

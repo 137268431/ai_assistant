@@ -39,7 +39,8 @@ const configData = [
   {"key": "clear_daily_cache", "value": "FALSE", "default_value": "FALSE", "description": "清除当天缓存模式: 手动数据恢复后打开，清除所有 daily keys，恢复正常后关闭"},
   {"key": "signal_auto_confirm", "value": "FALSE", "default_value": "FALSE", "description": "信号自动确认: TRUE时信号直接进入pending状态自动执行，FALSE时需在管理页面手动确认"},
   {"key": "market_index_symbols", "value": "SPY,QQQ,VIX", "default_value": "SPY,QQQ,VIX", "description": "大盘指数代码(逗号分隔): 用于监控和关联分析"},
-  {"key": "pb_scheduler_enabled", "value": "TRUE", "default_value": "TRUE", "description": "PB定时调度总开关: 仅控制PB前端页面的定时刷新，QC算法调度不受此开关影响"}
+  {"key": "pb_scheduler_enabled", "value": "TRUE", "default_value": "TRUE", "description": "PB定时调度总开关: 仅控制PB前端页面的定时刷新，QC算法调度不受此开关影响"},
+  {"key": "order_validity_minutes", "value": "30", "default_value": "30", "description": "订单有效期(分钟): Init/Submitted状态的订单超过此时间自动标记为Canceled"}
 ];
 
 const watchlistData = [

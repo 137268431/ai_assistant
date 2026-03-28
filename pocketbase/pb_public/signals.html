@@ -1838,6 +1838,19 @@
             document.getElementById('nav').innerHTML = renderNav('/signals.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
+
+            // 解析 URL 参数（date 和 signal_id）
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlDate = urlParams.get('date');
+            const urlSignalId = urlParams.get('signal_id');
+            if (urlDate) {
+                currentDate = urlDate;
+                // 同步日期选择器的显示
+                document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+                const dateInput = document.getElementById('customDate');
+                if (dateInput) dateInput.value = urlDate;
+            }
+
             loadSignals();
 
             // 初始化定时刷新（默认30秒）
@@ -1865,16 +1878,13 @@
             });
 
             // 处理 URL 参数（从飞书通知跳转）
-            const urlParams = new URLSearchParams(window.location.search);
-            const signalId = urlParams.get('signal_id');
-
-            if (signalId) {
+            if (urlSignalId) {
                 // 等待信号加载完成
                 setTimeout(async () => {
-                    const signal = allSignals.find(s => s.signal_id === signalId);
+                    const signal = allSignals.find(s => s.signal_id === urlSignalId);
                     if (signal) {
                         // 滚动到对应信号
-                        const signalCard = document.querySelector(`[data-signal-id="${signalId}"]`);
+                        const signalCard = document.querySelector(`[data-signal-id="${urlSignalId}"]`);
                         if (signalCard) {
                             signalCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             signalCard.style.boxShadow = '0 0 20px rgba(59, 130, 246, 0.5)';

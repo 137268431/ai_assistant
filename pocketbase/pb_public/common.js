@@ -27,6 +27,40 @@ function formatBarTimeMsToET(barTimeMs) {
     return `${yyyy}-${mm}-${dd} ${HH}:${MM}:${ss}`;
 }
 
+// ── 通用时间格式化（ISO 字符串 → 任意时区 + 格式）──
+function formatTime(utcTimeString, timezone, format) {
+    if (!utcTimeString) return '-';
+    const date = new Date(utcTimeString);
+    if (isNaN(date.getTime())) return '-';
+
+    const parseParts = () => {
+        const str = date.toLocaleString('en-US', {
+            timeZone: timezone,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+        });
+        // en-US 格式: MM/DD/YYYY HH:mm:ss
+        const m = str.match(/^(\d+)\/(\d+)\/(\d+)\s+(\d+):(\d+):(\d+)$/);
+        return m ? [m[1], m[2], m[3], m[4], m[5], m[6]] : null; // [MM, DD, YYYY, HH, mm, ss]
+    };
+
+    if (format === 'time') {
+        return date.toLocaleTimeString('en-US', {
+            timeZone: timezone,
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+        });
+    } else if (format === 'short') {
+        const p = parseParts();
+        return p ? `${p[0]}-${p[1]} ${p[3]}:${p[4]}` : '-';
+    } else if (format === 'date') {
+        const p = parseParts();
+        return p ? `${p[0]}-${p[1]}` : '-';
+    } else {
+        const p = parseParts();
+        return p ? `${p[2]}-${p[0]}-${p[1]} ${p[3]}:${p[4]}:${p[5]}` : '-';
+    }
+}
+
 // ── Token 管理 ──
 function getToken() {
   return localStorage.getItem('pb_token') || '';
@@ -1343,6 +1377,7 @@ if (typeof module !== 'undefined' && module.exports) {
     getCommonStyles,
     formatBeijingTime,
     formatRelativeTime,
+    formatTime,
     showLoading,
     hideLoading,
     withLoading
