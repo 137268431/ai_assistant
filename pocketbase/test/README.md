@@ -88,7 +88,6 @@
 | `symbol` | string | 股票代码 |
 | `direction` | string | `long` / `short` |
 | `status` | string | `Submitted` / `Filled` / `Canceled` / `Closed` |
-| `action` | string | 待执行操作（cancel/close） |
 | `signal_id` | string | 关联信号ID |
 | `pnl` | number | 盈亏 |
 | `extra` | json | 附加数据 |

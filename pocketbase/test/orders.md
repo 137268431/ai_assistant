@@ -3,8 +3,6 @@
 ## 目录
 - [端点总览](#端点总览)
 - [Upsert 订单](#upsert-订单)
-- [获取待处理订单](#获取待处理订单)
-- [确认订单操作完成](#确认订单操作完成)
 - [订单详情记录](#订单详情记录)
 - [飞书通知机制](#飞书通知机制)
 
@@ -13,10 +11,8 @@
 ## 端点总览
 
 | 方法 | 端点 | 认证 | 说明 |
-|------|------|------|------|
+|------|------|------|------|------|
 | POST | `/api/custom/orders/upsert` | - | 创建/更新订单 |
-| GET | `/api/custom/orders/pending` | - | 获取待执行操作 |
-| POST | `/api/custom/orders/ack` | - | 确认操作完成 |
 
 ---
 
@@ -48,10 +44,14 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "status": "Submitted",
       "filled_qty": 0,
       "fill_price": 0,
+      "tp_price": 192.50,
+      "sl_price": 181.00,
       "signal_id": "signal_aapl_long_20260202",
+      "us_time": "2026-02-02 10:30:00",
+      "cn_time": "2026-02-02 18:30:00",
+      "bar_time_ms": 1738411800000,
       "extra": {
-        "reason": "Test order",
-        "bar_time_ms": 1738411200000
+        "reason": "Test order"
       }
     }'
 ```
@@ -72,13 +72,17 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "status": "Filled",
       "filled_qty": 100,
       "fill_price": 185.20,
+      "tp_price": 192.50,
+      "sl_price": 181.00,
       "signal_id": "signal_aapl_long_20260202",
       "pnl": 0,
       "commission": 1.5,
       "rr_ratio": 2.5,
+      "us_time": "2026-02-02 10:35:00",
+      "cn_time": "2026-02-02 18:35:00",
+      "bar_time_ms": 1738412100000,
       "extra": {
-        "reason": "Order filled",
-        "bar_time_ms": 1738411500000
+        "reason": "Order filled"
       }
     }'
 ```
@@ -90,23 +94,24 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
     -H "Content-Type: application/json" \
     -d '{
       "unique_id": "order_aapl_exit_tp_20260202_1",
-      "order_type": "Exit",
+      "order_type": "TakeProfit",
       "order_id": "IB_67890",
       "symbol": "AAPL",
       "direction": "long",
       "quantity": 100,
-      "limit_price": 190.00,
+      "limit_price": 192.50,
       "status": "Filled",
       "filled_qty": 100,
-      "fill_price": 190.00,
+      "fill_price": 192.50,
       "signal_id": "signal_aapl_long_20260202",
       "pnl": 480,
       "commission": 1.5,
       "rr_ratio": 2.5,
+      "us_time": "2026-02-02 14:00:00",
+      "cn_time": "2026-02-02 22:00:00",
+      "bar_time_ms": 1738428000000,
       "extra": {
-        "reason": "Take profit reached",
-        "exit_type": "take_profit",
-        "bar_time_ms": 1738412400000
+        "reason": "Take profit reached"
       }
     }'
 ```
@@ -116,126 +121,52 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `unique_id` | string | 是 | 订单唯一ID（去重key） |
-| `order_type` | string | 是 | `"Entry"` 或 `"Exit"` |
+| `order_type` | string | 是 | QC 订单类型：`"Entry"` / `"TakeProfit"` / `"StopLoss"` |
 | `symbol` | string | 是 | 股票代码 |
 | `order_id` | string | 否 | 券商订单ID |
 | `direction` | string | 否 | `"long"` 或 `"short"` |
 | `quantity` | number | 否 | 数量 |
 | `limit_price` | number | 否 | 限价 |
-| `status` | string | 否 | 订单状态 |
+| `status` | string | 是 | 事件状态：`"Submitted"` / `"Filled"` / `"Canceled"` |
 | `filled_qty` | number | 否 | 成交数量 |
 | `fill_price` | number | 否 | 成交价格 |
 | `signal_id` | string | 否 | 关联信号ID |
+| `tp_price` | number | 否 | 止盈价格（由 QC 算法计算） |
+| `sl_price` | number | 否 | 止损价格（由 QC 算法计算） |
+| `us_time` | string | 否 | 美东时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
+| `cn_time` | string | 否 | 北京时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
+| `bar_time_ms` | number | 否 | Bar 时间戳（毫秒） |
 | `pnl` | number | 否 | 盈亏金额 |
 | `commission` | number | 否 | 手续费 |
 | `rr_ratio` | number | 否 | 风报比 |
 | `extra` | object | 否 | 附加数据 |
 
-### 订单状态流转
+### 事件状态流转（status）
 
 | status | 说明 |
 |--------|------|
+| `Init` | 初始化（信号确认时由 PB 创建） |
 | `Submitted` | 已提交（挂单中） |
 | `Filled` | 已成交 |
 | `Canceled` | 已取消 |
-| `Closed` | 已平仓 |
-| `Pending` | 待处理 |
-| `New` | 新订单 |
-| `PartiallyFilled` | 部分成交 |
+
+### 订单类型（order_type）
+
+| order_type | 说明 |
+|------------|------|
+| `Entry` | 入场订单 |
+| `TakeProfit` | 止盈订单 |
+| `StopLoss` | 止损订单 |
 
 ### 自动处理
 
 1. **去重**：以 `unique_id` 为 key，存在则更新
-2. **写入 order_details**：每次状态变化记录一条历史
+2. **写入 order_details**：每次状态变化记录一条历史，包含 `sequence` 序号
 3. **飞书通知**：
    - 首次 `Entry + Submitted` → 发送交互卡片（带取消/平仓按钮）
    - `Filled` → 发送成交通知
    - `Canceled` → 发送取消通知
    - `Closed` → 发送平仓通知
-
----
-
-## 获取待处理订单
-
-查询所有 `action` 字段非空的订单（待 QC 执行操作）。
-
-### 请求
-
-```
-GET /api/custom/orders/pending
-```
-
-### 请求示例
-
-```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/orders/pending"
-```
-
-### 响应
-
-```json
-{
-  "status": "success",
-  "actions": [
-    {
-      "id": "record_id",
-      "unique_id": "order_aapl_entry_20260202_1",
-      "order_id": "IB_12345",
-      "symbol": "AAPL",
-      "direction": "long",
-      "order_type": "Entry",
-      "action": "cancel",
-      "action_params": {},
-      "status": "Submitted"
-    }
-  ]
-}
-```
-
-### action 字段说明
-
-| action | 说明 | QC 应执行的操作 |
-|--------|------|----------------|
-| `cancel` | 取消订单 | 调用券商API取消 |
-| `close` | 平仓订单 | 调用券商API市价平仓 |
-
----
-
-## 确认订单操作完成
-
-QC 执行完操作后回调，清除 `action` 字段。
-
-### 请求
-
-```
-POST /api/custom/orders/ack
-```
-
-### 请求示例
-
-```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/ack" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "unique_id": "order_aapl_entry_20260202_1",
-      "result": "completed"
-    }'
-```
-
-### 请求字段
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `unique_id` | string | 是 | 订单唯一ID |
-| `result` | string | 否 | 执行结果，默认 `"completed"` |
-
-### 响应
-
-```json
-{
-  "success": true
-}
-```
 
 ---
 
@@ -250,17 +181,14 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/ack" \
 | `order_id` | 订单 unique_id |
 | `symbol` | 股票代码 |
 | `direction` | 方向 |
-| `event_type` | 事件类型（submitted/filled/canceled/closed） |
-| `old_value` | 旧值（预留） |
-| `new_value` | 新值（预留） |
+| `order_type` | QC 订单类型（Entry / TakeProfit / StopLoss） |
+| `status` | 事件状态（Init / Submitted / Filled / Canceled） |
 | `reason` | 原因 |
 | `signal_id` | 关联信号ID |
-| `event_time` | 事件时间 |
-| `us_time` | 美国时间 |
-| `cn_time` | 中国时间 |
+| `us_time` | 美东时间（回测时使用 QC 算法时间） |
+| `cn_time` | 北京时间（回测时使用 QC 算法时间） |
 | `bar_time_ms` | K线时间戳 |
-| `sequence` | 序列号（同一订单的累计事件序号） |
-| `extra` | 完整订单信息快照 |
+| `extra` | 完整订单信息快照（含 order_type / limit_price / fill_price / tp_price / sl_price / quantity 等） |
 
 ---
 
@@ -273,7 +201,6 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/ack" \
 | Entry + Submitted + 首次 | `notifyNewOrder` | 交互卡片（带按钮） |
 | Filled | `notifyOrder` | 普通通知 |
 | Canceled | `notifyOrder` | 普通通知 |
-| Closed | `notifyOrder` | 普通通知 |
 
 ### 交互卡片按钮
 
@@ -293,6 +220,12 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/ack" \
 ## 完整流程图
 
 ```
+信号确认 → orders/upsert → order_details
+                              │
+                              │ QC 订单状态变化
+                              ▼
+                         orders/upsert → order_details
+
 ┌─────────────┐
 │  TradingView │
 └──────┬──────┘
@@ -313,23 +246,27 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/ack" \
 │  QC 执行下单    │
 └────────┬────────┘
          │
-         │ orders/upsert
+         │ signals/ack
          ▼
 ┌─────────────────┐     ┌────────────────┐
 │     orders      │────▶│ order_details   │
-└────────┬────────┘     └────────────────┘
-         │
-         │ action 非空
-         ▼
-┌─────────────────┐
-│ orders/pending  │ ◀── QC 轮询
+│ order_type=Entry│     │ seq=1, status=Init│
+│ status=Init     │     └────────────────┘
 └────────┬────────┘
          │
-         │ QC 执行操作
+         │ orders/upsert (Submitted)
          ▼
-┌─────────────────┐
-│  orders/ack     │ ──▶ 清除 action
-└─────────────────┘
+┌─────────────────┐     ┌────────────────┐
+│     orders      │────▶│ order_details   │
+│ status=Submitted│     │ seq=2, status=Submitted│
+└────────┬────────┘     └────────────────┘
+         │
+         │ orders/upsert (Filled/Canceled)
+         ▼
+┌─────────────────┐     ┌────────────────┐
+│     orders      │────▶│ order_details   │
+│ status=Filled   │     │ seq=3, status=Filled │
+└─────────────────┘     └────────────────┘
 ```
 
 ---

@@ -142,13 +142,12 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       { sid: signalId }
     );
     const symbol = record.get("symbol");
-    const prevStatus = record.get("status");
-    console.log(`[SignalAck] 找到信号: symbol=${symbol}, 原状态=${prevStatus}`);
+    console.log(`[SignalAck] 找到信号: symbol=${symbol}`);
 
     record.set("status", status);
     record.set("note", note);
     $app.save(record);
-    console.log(`[SignalAck] 信号状态已更新: ${prevStatus} → ${status}`);
+    console.log(`[SignalAck] 信号状态已更新: ${status}`);
 
     // 2. 如果 QC 传递了订单数据，则创建订单
     if (orderData.unique_id && orderData.order_type) {
@@ -184,16 +183,16 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
         console.log(`[SignalAck] 创建新订单: ${orderData.unique_id}`);
       }
 
-      orderRecord.set("order_type", orderData.order_type || "Entry");
+      orderRecord.set("order_type", orderData.order_type);
       orderRecord.set("symbol", symbol);
       orderRecord.set("direction", orderData.direction || record.get("direction"));
       orderRecord.set("quantity", orderData.quantity || 0);
       orderRecord.set("limit_price", orderData.limit_price || 0);
-      orderRecord.set("status", orderData.status || "Submitted");
+      orderRecord.set("status", "Init");
       orderRecord.set("filled_qty", orderData.filled_qty || 0);
       orderRecord.set("fill_price", orderData.fill_price || 0);
-      orderRecord.set("stop_loss", orderData.stop_loss || 0);
-      orderRecord.set("take_profit", orderData.take_profit || 0);
+      orderRecord.set("sl_price", orderData.stop_loss || 0);
+      orderRecord.set("tp_price", orderData.take_profit || 0);
       orderRecord.set("signal_id", signalId);
       orderRecord.set("order_time", orderData.order_time || orderData.us_time || "");
       orderRecord.set("us_time", orderData.us_time || "");
@@ -201,7 +200,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       orderRecord.set("bar_time_ms", orderData.bar_time_ms || 0);
 
       $app.save(orderRecord);
-      console.log(`[SignalAck] 订单已保存: id=${orderRecord.id}, status=Submitted`);
+      console.log(`[SignalAck] 订单已保存: id=${orderRecord.id}, status=Init`);
 
       // 3. 写入 order_details
       console.log(`[SignalAck] === 写入订单事件记录 ===`);
@@ -210,11 +209,11 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       detailRecord.set("order_id", orderData.unique_id);
       detailRecord.set("symbol", symbol);
       detailRecord.set("direction", orderData.direction || record.get("direction") || "");
-      detailRecord.set("event_type", "submitted");
-      detailRecord.set("old_value", prevStatus);
-      detailRecord.set("new_value", status);
+      detailRecord.set("order_type", orderData.order_type);
+      detailRecord.set("status", "Init");
       detailRecord.set("reason", note);
       detailRecord.set("signal_id", signalId);
+
       // 优先使用 QC 传来的交易时间，回测时这是真实交易时间
       const qcTime = orderData.us_time || "";
       const qcCnTime = orderData.cn_time || "";
@@ -222,26 +221,28 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
 
       // 兜底用 PB 服务器时间（仅在 QC 未传时间时使用）
       const pbNow = new Date();
-      const pbNowISO = pbNow.toISOString();
-      const pbNowStr = pbNowISO.replace('T', ' ').substring(0, 19);
+      const pbNowStr = pbNow.toISOString().replace('T', ' ').substring(0, 19);
       const pbNowCn = new Date(pbNow.getTime() + 8*60*60*1000).toISOString().replace('T', ' ').substring(0, 19);
 
-      detailRecord.set("event_time", qcTime ? new Date(qcTime).toISOString() : pbNowISO);
       detailRecord.set("us_time", qcTime || pbNowStr);
       detailRecord.set("cn_time", qcCnTime || pbNowCn);
       detailRecord.set("bar_time_ms", qcBarTime || pbNow.getTime());
 
-      // extra 存 QC 传入的扩展信息
-      if (orderData.extra) detailRecord.set("extra", orderData.extra);
+      // extra 只存 QC 传入的扩展信息
+      const detailExtra = {
+        sequence: 1,
+        ...(orderData.extra || {})
+      };
+      detailRecord.set("extra", detailExtra);
 
       $app.save(detailRecord);
-      console.log(`[SignalAck] order_details 已保存: order_id=${orderData.unique_id}, event_type=submitted`);
+      console.log(`[SignalAck] order_details 已保存: order_id=${orderData.unique_id}, order_type=${orderData.order_type}, status=Init`);
     } else {
       console.log(`[SignalAck] 未传递订单数据，跳过订单创建`);
     }
 
-    console.log(`[SignalAck] === 信号确认处理完成 === success=true, signal_id=${signalId}, status=${status}`);
-    return c.json(200, { success: true, signal_id: signalId, status: status });
+    console.log(`[SignalAck] === 信号确认处理完成 === success=true, signal_id=${signalId}, status=Init`);
+    return c.json(200, { success: true, signal_id: signalId, status: "Init" });
   } catch (err) {
     console.error(`[SignalAck] 错误:`, err.message);
     console.error(`[SignalAck] 堆栈:`, err.stack);
@@ -249,7 +250,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
   }
 });
 
-// ── 订单操作 ──
+// ── 订单操作（飞书按钮直接更新状态） ──
 
 routerAdd("GET", "/webhook/order/cancel", (c) => {
     const { ok, warn, fail } = require(`${__hooks}/_page.js`)
@@ -274,10 +275,10 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
             const h = statusHints[status]
             return c.html(200, h.fn(h.title, h.msg, symbol))
         }
-        record.set("action", "cancel")
+        record.set("status", "Canceled")
         $app.save(record)
-        console.log("[OrderAction] 取消挂单:", uniqueId)
-        return c.html(200, ok("取消指令已发送", "等待交易系统执行", symbol))
+        console.log("[OrderAction] 订单已取消:", uniqueId)
+        return c.html(200, ok("订单已取消", "状态已更新", symbol))
     } catch (err) {
         console.error("[OrderAction] 取消失败:", err)
         return c.html(500, fail("操作失败", String(err)))
@@ -307,10 +308,10 @@ routerAdd("GET", "/webhook/order/close", (c) => {
             const h = statusHints[status]
             return c.html(200, h.fn(h.title, h.msg, symbol))
         }
-        record.set("action", "close")
+        record.set("status", "Closed")
         $app.save(record)
-        console.log("[OrderAction] 平仓:", uniqueId)
-        return c.html(200, ok("平仓指令已发送", "等待交易系统执行", symbol))
+        console.log("[OrderAction] 订单已平仓:", uniqueId)
+        return c.html(200, ok("订单已平仓", "状态已更新", symbol))
     } catch (err) {
         console.error("[OrderAction] 平仓失败:", err)
         return c.html(500, fail("操作失败", String(err)))

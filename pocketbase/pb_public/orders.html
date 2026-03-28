@@ -130,6 +130,11 @@
             letter-spacing: 0.5px;
         }
 
+        .status-init {
+            background: rgba(99,179,237,0.2);
+            color: var(--accent);
+        }
+
         .status-submitted {
             background: rgba(246,173,85,0.2);
             color: var(--pending);
@@ -608,9 +613,11 @@
 
                 const statusClass = (order.status || 'Submitted').toLowerCase();
                 const statusText = {
+                    'init': '初始化',
                     'submitted': '已提交',
                     'filled': '已成交',
-                    'canceled': '已取消'
+                    'canceled': '已取消',
+                    'closed': '已平仓'
                 }[statusClass] || order.status;
 
                 // 判断是否可以平仓或取消
@@ -699,10 +706,10 @@
                             <button class="action-btn btn-details" onclick="viewOrderDetails('${order.unique_id}', '${order.symbol}')">
                                 📜 明细
                             </button>
-                            <button class="action-btn btn-close" onclick="closePosition('${order.id}', '${order.symbol}')" ${!canClose ? 'disabled' : ''}>
+                            <button class="action-btn btn-close" onclick="closePosition('${order.unique_id}', '${order.symbol}')" ${!canClose ? 'disabled' : ''}>
                                 🔒 平仓
                             </button>
-                            <button class="action-btn btn-cancel" onclick="cancelOrder('${order.id}', '${order.symbol}')" ${!canCancel ? 'disabled' : ''}>
+                            <button class="action-btn btn-cancel" onclick="cancelOrder('${order.unique_id}', '${order.symbol}')" ${!canCancel ? 'disabled' : ''}>
                                 ✕ 取消
                             </button>
                         </div>
@@ -711,11 +718,11 @@
             }).join('');
         }
 
-        async function closePosition(id, symbol) {
+        async function closePosition(uniqueId, symbol) {
             if (!confirm(`确认平仓 ${symbol}？`)) return;
             try {
-                // 问题 14 修复: 只设置独立的 action 字段，不使用 extra.action
-                await pb.collection('orders').update(id, { action: 'close' });
+                const resp = await fetch(`/webhook/order/close?id=${encodeURIComponent(uniqueId)}`);
+                const text = await resp.text();
                 showToast('✓ 平仓请求已发送');
                 await loadOrders();
             } catch (error) {
@@ -724,11 +731,11 @@
             }
         }
 
-        async function cancelOrder(id, symbol) {
+        async function cancelOrder(uniqueId, symbol) {
             if (!confirm(`确认取消 ${symbol} 订单？`)) return;
             try {
-                // 问题 14 修复: 只设置独立的 action 字段，不使用 extra.action
-                await pb.collection('orders').update(id, { action: 'cancel' });
+                const resp = await fetch(`/webhook/order/cancel?id=${encodeURIComponent(uniqueId)}`);
+                const text = await resp.text();
                 showToast('✓ 取消请求已发送');
                 await loadOrders();
             } catch (error) {

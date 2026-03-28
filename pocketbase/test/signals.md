@@ -102,7 +102,6 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
         "direction": "long",
         "quantity": 42,
         "limit_price": 244.00,
-        "status": "Submitted",
         "filled_qty": 0,
         "fill_price": 0,
         "stop_loss": 241.14,
@@ -134,7 +133,6 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 | `direction` | string | 是 | 方向，`"long"` 或 `"short"` |
 | `quantity` | number | 是 | 数量 |
 | `limit_price` | number | 是 | 限价 |
-| `status` | string | 否 | 订单状态，默认 `"Submitted"` |
 | `filled_qty` | number | 否 | 已成交数量，默认 `0` |
 | `fill_price` | number | 否 | 成交价格，默认 `0` |
 | `stop_loss` | number | 否 | 止损价格 |
@@ -144,6 +142,8 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 | `cn_time` | string | 否 | 北京时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时自动计算） |
 | `bar_time_ms` | number | 否 | Bar 时间戳（毫秒），对应 PB orders 表的 `bar_time_ms` 字段 |
 | `extra` | object | 否 | 扩展信息（QC 可传入 signal.extra 等补充数据），会写入 `order_details.extra` |
+
+> **说明**：调用成功后，PB 会自动在 `orders` 表创建一条记录（`order_type=Entry`, `status=Init`），并在 `order_details` 表创建一条初始事件记录（`order_type=Entry`, `sequence=1`）。后续 QC 订单状态变化通过 `orders/upsert` 更新。
 
 ### 响应
 

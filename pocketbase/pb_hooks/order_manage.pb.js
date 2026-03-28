@@ -77,7 +77,8 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     record.set("fill_price", avgFillPrice);
     record.set("extra", extra);
     if (data.signal_id) record.set("signal_id", data.signal_id);
-    // 添加盈亏和手续费字段
+    if (data.tp_price !== undefined) record.set("tp_price", parseFloat(data.tp_price));
+    if (data.sl_price !== undefined) record.set("sl_price", parseFloat(data.sl_price));
     if (data.pnl !== undefined) record.set("pnl", parseFloat(data.pnl));
     if (data.commission !== undefined) record.set("commission", parseFloat(data.commission));
     if (data.rr_ratio !== undefined) record.set("rr_ratio", parseFloat(data.rr_ratio));
@@ -85,7 +86,6 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     $app.save(record);
 
     // 写入 order_details（用于详细日志）
-    // 问题 15 修复: 添加序列号确保每次状态变化都记录为独立事件
     const detailsCollection = $app.findCollectionByNameOrId("order_details");
 
     // 查询该订单已有的记录数，用作序列号
@@ -105,68 +105,59 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     }
 
     const detailRecord = new Record(detailsCollection, {});
-    detailRecord.set("order_id", uniqueId);  // 使用 unique_id 作为主键
+    detailRecord.set("order_id", uniqueId);
     detailRecord.set("symbol", symbol);
     detailRecord.set("direction", direction || "");
-    // 将 status 转换为 event_type (submitted/filled/canceled/closed)
-    const eventTypeMap = {
-      "Submitted": "submitted",
-      "Filled": "filled",
-      "Canceled": "canceled",
-      "Closed": "closed"
-    };
-    detailRecord.set("event_type", eventTypeMap[status] || status.toLowerCase());
-    detailRecord.set("old_value", "");
-    detailRecord.set("new_value", "");
+    detailRecord.set("order_type", orderType);
+    detailRecord.set("status", status);
     detailRecord.set("reason", extra.reason || "");
     detailRecord.set("signal_id", data.signal_id || "");
-    detailRecord.set("event_time", new Date().toISOString());
-    // 添加 us_time, cn_time, bar_time_ms
+    // 使用 QC 传来的时间，回测时这是真实交易时间
+    const qcUsTime = data.us_time || "";
+    const qcCnTime = data.cn_time || "";
+    const qcBarTime = data.bar_time_ms || 0;
     const now = new Date();
-    detailRecord.set("us_time", now.toISOString().replace('T', ' ').substring(0, 19));
-    detailRecord.set("cn_time", new Date(now.getTime() + 8*60*60*1000).toISOString().replace('T', ' ').substring(0, 19));
-    detailRecord.set("bar_time_ms", data.bar_time_ms || now.getTime());
+    detailRecord.set("us_time", qcUsTime || now.toISOString().replace('T', ' ').substring(0, 19));
+    detailRecord.set("cn_time", qcCnTime || new Date(now.getTime() + 8*60*60*1000).toISOString().replace('T', ' ').substring(0, 19));
+    detailRecord.set("bar_time_ms", qcBarTime || now.getTime());
     // 在 extra 中保存完整的订单信息和序列号
     const detailExtra = {
-      sequence: sequence,  // 添加序列号
-      order_type: orderType,
+      sequence: sequence,
+      status: status,
       original_order_id: orderId,
       quantity: quantity,
       limit_price: price,
       fill_price: avgFillPrice,
       filled_qty: filledQty,
+      tp_price: data.tp_price,
+      sl_price: data.sl_price,
       ...extra
     };
     detailRecord.set("extra", detailExtra);
 
     $app.save(detailRecord);
-    console.log(`[OrderUpsert] order_details 已保存: order_id=${uniqueId}, event_type=${eventTypeMap[status] || status.toLowerCase()}, sequence=${sequence}`);
+    console.log(`[OrderUpsert] order_details 已保存: order_id=${uniqueId}, order_type=${orderType}, status=${status}, sequence=${sequence}`);
 
     // 发送飞书通知（仅关键状态变化）
     try {
-      // 判断是否需要发送通知
       let shouldNotify = false;
-      let action = "";
+      let notifyAction = "";
 
       if (status === "Submitted" && sequence === 1 && orderType === "Entry") {
-        // 首次创建 Entry 订单 - 发送交互式通知（带取消/平仓按钮）
         shouldNotify = true;
-        action = "created";
+        notifyAction = "created";
         console.log(`[OrderUpsert] 触发通知: 新的 Entry 订单已提交`);
       } else if (status === "Filled") {
-        // 订单成交
         shouldNotify = true;
-        action = "filled";
+        notifyAction = "filled";
         console.log(`[OrderUpsert] 触发通知: 订单已成交`);
       } else if (status === "Canceled") {
-        // 订单取消
         shouldNotify = true;
-        action = "canceled";
+        notifyAction = "canceled";
         console.log(`[OrderUpsert] 触发通知: 订单已取消`);
       } else if (status === "Closed") {
-        // 订单平仓
         shouldNotify = true;
-        action = "closed";
+        notifyAction = "closed";
         console.log(`[OrderUpsert] 触发通知: 订单已平仓`);
       }
 
@@ -184,12 +175,11 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
           signal_id: data.signal_id || ""
         };
 
-        // Entry Submitted 发送交互式卡片，其他发送普通通知
-        if (action === "created" && orderType === "Entry") {
+        if (notifyAction === "created" && orderType === "Entry") {
           console.log(`[OrderUpsert] 发送飞书交互卡片通知`);
           notifyNewOrder(orderData);
         } else {
-          notifyOrder(action, orderData);
+          notifyOrder(notifyAction, orderData);
         }
       }
     } catch (err) {
@@ -211,98 +201,6 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   } catch (err) {
     console.error(`[OrderUpsert] === 订单 Upsert 失败 === error:`, err.message);
     console.error(`[OrderUpsert] 堆栈:`, err.stack);
-    return c.json(500, { error: err.message });
-  }
-});
-
-// GET /api/custom/orders/pending - 获取待执行操作
-routerAdd("GET", "/api/custom/orders/pending", (c) => {
-  try {
-    console.log(`[OrderPending] === 查询待执行订单操作 ===`);
-    // 问题 4 修复: 使用独立的 action 字段而不是 JSON 查询
-    const records = $app.findRecordsByFilter(
-      "orders",
-      "action != ''",  // 使用独立字段，有索引支持
-      "-updated",
-      100,
-      0
-    );
-
-    const actions = records.map((r) => {
-      const extra = r.get("extra") || {};
-      return {
-        id: r.id,
-        unique_id: r.get("unique_id"),
-        order_id: r.get("order_id"),
-        symbol: r.get("symbol"),
-        direction: r.get("direction"),
-        order_type: r.get("order_type"),
-        action: r.get("action"),  // 从独立字段读取
-        action_params: extra.action_params || {},
-        status: r.get("status")
-      };
-    });
-
-    console.log(`[OrderPending] 找到 ${actions.length} 个待执行操作:`, JSON.stringify(actions.map(a => ({ uid: a.unique_id, action: a.action, symbol: a.symbol }))));
-    return c.json(200, { status: "success", actions: actions });
-  } catch (err) {
-    console.error(`[OrderPending] 错误:`, err.message);
-    return c.json(500, { error: err.message });
-  }
-});
-
-// POST /api/custom/orders/ack - 确认操作完成
-routerAdd("POST", "/api/custom/orders/ack", (c) => {
-  const data = c.requestInfo().body || c.requestInfo().data || {};
-  const uniqueId = data.unique_id;
-  const result = data.result || "completed";
-
-  console.log(`[OrderAck] === 订单确认开始 === unique_id=${uniqueId}, result=${result}`);
-
-  if (!uniqueId) {
-    console.log(`[OrderAck] 错误: 缺少 unique_id`);
-    return c.json(400, { error: "Missing unique_id" });
-  }
-
-  try {
-    const records = $app.findRecordsByFilter(
-      "orders",
-      `unique_id = {:uniqueId}`,
-      "",
-      1,
-      0,
-      { uniqueId: uniqueId }
-    );
-
-    if (records.length === 0) {
-      console.log(`[OrderAck] 错误: 订单不存在 unique_id=${uniqueId}`);
-      return c.json(404, { error: "Order not found" });
-    }
-
-    const record = records[0];
-    const extra = record.get("extra") || {};
-    const symbol = record.get("symbol");
-    const orderType = record.get("order_type");
-    const action = record.get("action");
-
-    console.log(`[OrderAck] 找到订单: symbol=${symbol}, order_type=${orderType}, 原action=${action}`);
-
-    // 问题 4 修复: 清除独立的 action 字段
-    record.set("action", "");
-
-    // 同时清除 extra 中的 action（向后兼容）
-    delete extra.action;
-    delete extra.action_params;
-    extra.last_action_result = result;
-    extra.last_action_time = new Date().toISOString();
-
-    record.set("extra", extra);
-    $app.save(record);
-
-    console.log(`[OrderAck] === 订单确认完成 === unique_id=${uniqueId}, result=${result}`);
-    return c.json(200, { success: true });
-  } catch (err) {
-    console.error(`[OrderAck] 错误:`, err.message);
     return c.json(500, { error: err.message });
   }
 });

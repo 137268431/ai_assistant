@@ -111,16 +111,10 @@ TradingView
 ┌────────────────┐
 │  orders 表     │ ◀── 写入订单
 └───────┬────────┘
-        │ GET /orders/pending
+        │
+        │ 状态变化自动记录
         ▼
-   ┌─────────┐
-   │   QC    │ ──▶ 执行 action
-   └────┬────┘
-        │ POST /orders/ack
-        ▼
-   (清除 action)
-
 ┌────────────────┐
-│ reverse_signals│ ◀── 自动检测/计算
+│ order_details 表│ ◀── 写入历史
 └────────────────┘
 ```

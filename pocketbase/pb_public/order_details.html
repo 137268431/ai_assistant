@@ -159,10 +159,13 @@
             letter-spacing: 0.5px;
         }
 
-        .event-submitted { background: rgba(246,173,85,0.2);  color: var(--pending); }
-        .event-filled    { background: rgba(104,211,145,0.2); color: var(--executed); }
-        .event-canceled  { background: rgba(113,128,150,0.2); color: var(--rejected); }
-        .event-closed    { background: rgba(252,129,129,0.2); color: var(--short); }
+        .event-entry       { background: rgba(59,130,246,0.2);  color: #60a5fa; }
+        .event-takeprofit  { background: rgba(72,187,120,0.2);  color: var(--long); }
+        .event-stoploss    { background: rgba(252,129,129,0.2); color: var(--short); }
+        .event-submitted   { background: rgba(246,173,85,0.2);  color: var(--pending); }
+        .event-filled      { background: rgba(104,211,145,0.2); color: var(--executed); }
+        .event-canceled    { background: rgba(113,128,150,0.2); color: var(--rejected); }
+        .event-closed      { background: rgba(252,129,129,0.2); color: var(--short); }
 
         .flow-time {
             font-size: 11px;
@@ -552,7 +555,7 @@
             const orderId   = filterOrderId || '';
 
             const sorted = [...allDetails].sort((a, b) =>
-                new Date(a.event_time || a.created) - new Date(b.event_time || b.created)
+                new Date(a.us_time || a.created) - new Date(b.us_time || b.created)
             );
 
             container.innerHTML = `
@@ -565,21 +568,32 @@
                     ${sorted.map((detail, i) => {
                         const isLast = i === sorted.length - 1;
                         const extra  = detail.extra || {};
-                        const evt    = detail.event_type || 'submitted';
+                        const ot     = detail.order_type || 'Entry';
+                        const sts    = (detail.status || '').toLowerCase();
+                        const statusText = {
+                            'submitted': '已提交',
+                            'filled': '已成交',
+                            'canceled': '已取消',
+                            'closed': '已平仓'
+                        }[sts] || detail.status || '';
                         return `
                         <div class="flow-item ${isLast ? 'flow-last' : ''}">
-                            <div class="flow-dot flow-${evt}"></div>
+                            <div class="flow-dot flow-${sts}"></div>
                             <div class="flow-card">
                                 <div class="flow-event-row">
-                                    <span class="event-badge event-${evt}">${evt.toUpperCase()}</span>
-                                    <span class="flow-time">${formatBeijingTime(detail.event_time || detail.created)}</span>
+                                    <div style="display:flex;gap:6px;align-items:center;">
+                                        <span class="event-badge event-${ot.toLowerCase()}">${ot}</span>
+                                        ${statusText ? `<span class="event-badge event-${sts}">${statusText}</span>` : ''}
+                                    </div>
+                                    <span class="flow-time">${formatBeijingTime(detail.us_time || detail.created)}</span>
                                 </div>
                                 <div class="flow-info">
-                                    ${extra.order_type ? `<div class="flow-info-item"><div class="flow-info-label">订单类型</div><div class="flow-info-value">${extra.order_type}</div></div>` : ''}
                                     ${extra.limit_price != null ? `<div class="flow-info-item"><div class="flow-info-label">限价</div><div class="flow-info-value">$${Number(extra.limit_price).toFixed(2)}</div></div>` : ''}
                                     ${extra.fill_price  != null ? `<div class="flow-info-item"><div class="flow-info-label">成交价</div><div class="flow-info-value">$${Number(extra.fill_price).toFixed(2)}</div></div>` : ''}
                                     ${extra.quantity    != null ? `<div class="flow-info-item"><div class="flow-info-label">数量</div><div class="flow-info-value">${extra.quantity}</div></div>` : ''}
                                     ${extra.filled_qty  != null ? `<div class="flow-info-item"><div class="flow-info-label">已成交</div><div class="flow-info-value">${extra.filled_qty}</div></div>` : ''}
+                                    ${extra.tp_price   != null && extra.tp_price > 0 ? `<div class="flow-info-item"><div class="flow-info-label">止盈</div><div class="flow-info-value">$${Number(extra.tp_price).toFixed(2)}</div></div>` : ''}
+                                    ${extra.sl_price   != null && extra.sl_price > 0 ? `<div class="flow-info-item"><div class="flow-info-label">止损</div><div class="flow-info-value">$${Number(extra.sl_price).toFixed(2)}</div></div>` : ''}
                                     ${extra.sequence    != null ? `<div class="flow-info-item"><div class="flow-info-label">序号</div><div class="flow-info-value">#${extra.sequence}</div></div>` : ''}
                                 </div>
                                 ${detail.reason ? `<div class="flow-reason">${detail.reason}</div>` : ''}
@@ -592,23 +606,32 @@
 
         function renderDetailCard(detail) {
             const extra = detail.extra || {};
-            const evt   = detail.event_type || 'submitted';
+            const evt   = detail.order_type || 'Entry';
+            const sts   = (detail.status || 'Init').toLowerCase();
+            const statusText = {
+                'init': '初始化',
+                'submitted': '已提交',
+                'filled': '已成交',
+                'canceled': '已取消'
+            }[sts] || detail.status;
             return `
                 <div class="detail-card">
                     <div class="detail-header">
                         <div style="display:flex;align-items:center;gap:8px;">
                             <span class="detail-symbol">${detail.symbol || 'N/A'}</span>
-                            <span class="event-badge event-${evt}">${evt.toUpperCase()}</span>
+                            <span class="event-badge event-${evt.toLowerCase()}">${evt}</span>
+                            <span class="event-badge event-${sts}">${statusText}</span>
                         </div>
-                        <span class="detail-time">${formatBeijingTime(detail.event_time || detail.created)}</span>
+                        <span class="detail-time">${formatBeijingTime(detail.us_time || detail.created)}</span>
                     </div>
                     <div class="detail-grid">
-                        <div class="detail-item"><div class="detail-label">订单类型</div><div class="detail-value">${extra.order_type || 'N/A'}</div></div>
                         <div class="detail-item"><div class="detail-label">方向</div><div class="detail-value">${detail.direction || 'N/A'}</div></div>
                         <div class="detail-item"><div class="detail-label">限价</div><div class="detail-value">${extra.limit_price != null ? '$' + Number(extra.limit_price).toFixed(2) : 'N/A'}</div></div>
                         <div class="detail-item"><div class="detail-label">成交价</div><div class="detail-value">${extra.fill_price != null ? '$' + Number(extra.fill_price).toFixed(2) : 'N/A'}</div></div>
                         <div class="detail-item"><div class="detail-label">数量</div><div class="detail-value">${extra.quantity || 'N/A'}</div></div>
                         <div class="detail-item"><div class="detail-label">已成交</div><div class="detail-value">${extra.filled_qty || 'N/A'}</div></div>
+                        ${extra.tp_price != null && extra.tp_price > 0 ? `<div class="detail-item"><div class="detail-label">止盈</div><div class="detail-value">$${Number(extra.tp_price).toFixed(2)}</div></div>` : ''}
+                        ${extra.sl_price != null && extra.sl_price > 0 ? `<div class="detail-item"><div class="detail-label">止损</div><div class="detail-value">$${Number(extra.sl_price).toFixed(2)}</div></div>` : ''}
                         <div class="detail-item" style="grid-column:1/-1;"><div class="detail-label">订单ID</div><div class="detail-value" style="font-size:11px;word-break:break-all;">${detail.order_id || 'N/A'}</div></div>
                     </div>
                     ${detail.reason ? `<div class="flow-reason" style="margin-top:10px;">${detail.reason}</div>` : ''}

@@ -238,10 +238,10 @@ routerAdd("POST", "/webhook/feishu/order/callback", (c) => {
                 card = buildOrderCardV2(symbol, directionText, info.emoji, info.text, currentStatus, color, msg)
                 return sendFeishuCallbackResponse(c, { toast: { type: "error", content: msg }, card: { type: "raw", data: card } }, updateToken)
             }
-            record.set("action", "cancel")
+            record.set("status", "Canceled")
             $app.save(record)
-            console.log("[FeishuOrderCallback] 取消成功，orderId:", orderId)
-            card = buildOrderCardV2(symbol, directionText, "❌", "已取消", "Canceled", color, "取消指令已发送，等待执行")
+            console.log("[FeishuOrderCallback] 订单已取消，orderId:", orderId)
+            card = buildOrderCardV2(symbol, directionText, "❌", "已取消", "Canceled", color, "订单状态已更新")
             return sendFeishuCallbackResponse(c, { toast: { type: "success", content: "取消指令已发送" }, card: { type: "raw", data: card } }, updateToken)
         }
 
@@ -253,10 +253,10 @@ routerAdd("POST", "/webhook/feishu/order/callback", (c) => {
                 card = buildOrderCardV2(symbol, directionText, info.emoji, info.text, currentStatus, color, msg)
                 return sendFeishuCallbackResponse(c, { toast: { type: "error", content: msg }, card: { type: "raw", data: card } }, updateToken)
             }
-            record.set("action", "close")
+            record.set("status", "Closed")
             $app.save(record)
-            console.log("[FeishuOrderCallback] 平仓成功，orderId:", orderId)
-            card = buildOrderCardV2(symbol, directionText, "🔒", "已平仓", "Closed", color, "平仓指令已发送，等待执行")
+            console.log("[FeishuOrderCallback] 订单已平仓，orderId:", orderId)
+            card = buildOrderCardV2(symbol, directionText, "🔒", "已平仓", "Closed", color, "订单状态已更新")
             return sendFeishuCallbackResponse(c, { toast: { type: "success", content: "平仓指令已发送" }, card: { type: "raw", data: card } }, updateToken)
         }
 

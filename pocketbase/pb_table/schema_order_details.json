@@ -66,36 +66,12 @@
                 "type": "text"
             },
             {
-                "hidden": false,
-                "id": "od_event_type",
-                "maxSelect": 1,
-                "name": "event_type",
-                "presentable": false,
-                "required": true,
-                "system": false,
-                "type": "select",
-                "values": [
-                    "submitted",
-                    "filled",
-                    "canceled",
-                    "closed",
-                    "tp_price_changed",
-                    "sl_price_changed",
-                    "qty_changed",
-                    "manual_close",
-                    "manual_cancel",
-                    "tp_filled",
-                    "sl_filled",
-                    "partial_fill"
-                ]
-            },
-            {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "od_old_value",
-                "max": 2000,
+                "id": "od_order_type",
+                "max": 50,
                 "min": 0,
-                "name": "old_value",
+                "name": "order_type",
                 "pattern": "",
                 "presentable": false,
                 "primaryKey": false,
@@ -106,10 +82,10 @@
             {
                 "autogeneratePattern": "",
                 "hidden": false,
-                "id": "od_new_value",
-                "max": 2000,
+                "id": "od_status",
+                "max": 50,
                 "min": 0,
-                "name": "new_value",
+                "name": "status",
                 "pattern": "",
                 "presentable": false,
                 "primaryKey": false,
@@ -138,20 +114,6 @@
                 "max": 200,
                 "min": 0,
                 "name": "signal_id",
-                "pattern": "",
-                "presentable": false,
-                "primaryKey": false,
-                "required": false,
-                "system": false,
-                "type": "text"
-            },
-            {
-                "autogeneratePattern": "",
-                "hidden": false,
-                "id": "od_event_time",
-                "max": 50,
-                "min": 0,
-                "name": "event_time",
                 "pattern": "",
                 "presentable": false,
                 "primaryKey": false,
@@ -233,8 +195,7 @@
         "indexes": [
             "CREATE INDEX idx_order_details_order_id ON order_details (order_id)",
             "CREATE INDEX idx_order_details_symbol ON order_details (symbol)",
-            "CREATE INDEX idx_order_details_event_type ON order_details (event_type)",
-            "CREATE INDEX idx_order_details_event_time ON order_details (event_time)"
+            "CREATE INDEX idx_order_details_order_type ON order_details (order_type)"
         ],
         "system": false
     }

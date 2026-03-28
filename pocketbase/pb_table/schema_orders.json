@@ -262,38 +262,6 @@
                 "type": "number"
             },
             {
-                "autogeneratePattern": "",
-                "hidden": false,
-                "id": "ord_update_time",
-                "max": 50,
-                "min": 0,
-                "name": "update_time",
-                "pattern": "",
-                "presentable": false,
-                "primaryKey": false,
-                "required": false,
-                "system": false,
-                "type": "text"
-            },
-            {
-                "hidden": false,
-                "id": "ord_close_req",
-                "name": "close_requested",
-                "presentable": false,
-                "required": false,
-                "system": false,
-                "type": "bool"
-            },
-            {
-                "hidden": false,
-                "id": "ord_cancel_req",
-                "name": "cancel_requested",
-                "presentable": false,
-                "required": false,
-                "system": false,
-                "type": "bool"
-            },
-            {
                 "hidden": false,
                 "id": "ord_extra",
                 "maxSize": 2097152,
@@ -302,20 +270,6 @@
                 "required": false,
                 "system": false,
                 "type": "json"
-            },
-            {
-                "autogeneratePattern": "",
-                "hidden": false,
-                "id": "ord_action",
-                "max": 50,
-                "min": 0,
-                "name": "action",
-                "pattern": "",
-                "presentable": false,
-                "primaryKey": false,
-                "required": false,
-                "system": false,
-                "type": "text"
             },
             {
                 "hidden": false,
@@ -376,7 +330,6 @@
         ],
         "indexes": [
             "CREATE UNIQUE INDEX idx_orders_unique_id ON orders (unique_id)",
-            "CREATE INDEX idx_orders_action ON orders (action)",
             "CREATE INDEX idx_orders_symbol ON orders (symbol)",
             "CREATE INDEX idx_orders_status ON orders (status)",
             "CREATE INDEX idx_orders_signal_id ON orders (signal_id)",
