@@ -46,6 +46,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "fill_price": 0,
       "tp_price": 192.50,
       "sl_price": 181.00,
+      "rr_ratio": 2.5,
       "signal_id": "signal_aapl_long_20260202",
       "us_time": "2026-02-02 10:30:00",
       "cn_time": "2026-02-02 18:30:00",
@@ -78,6 +79,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "pnl": 0,
       "commission": 1.5,
       "rr_ratio": 2.5,
+      "fill_time": "2026-02-02 10:35:00",
       "us_time": "2026-02-02 10:35:00",
       "cn_time": "2026-02-02 18:35:00",
       "bar_time_ms": 1738412100000,
@@ -107,6 +109,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
       "pnl": 480,
       "commission": 1.5,
       "rr_ratio": 2.5,
+      "fill_time": "2026-02-02 14:00:00",
       "us_time": "2026-02-02 14:00:00",
       "cn_time": "2026-02-02 22:00:00",
       "bar_time_ms": 1738428000000,
@@ -133,6 +136,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
 | `signal_id` | string | 否 | 关联信号ID |
 | `tp_price` | number | 否 | 止盈价格（由 QC 算法计算） |
 | `sl_price` | number | 否 | 止损价格（由 QC 算法计算） |
+| `fill_time` | string | 否 | QC 成交时间，格式 `YYYY-MM-DD HH:MM:SS` |
 | `us_time` | string | 否 | 美东时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
 | `cn_time` | string | 否 | 北京时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
 | `bar_time_ms` | number | 否 | Bar 时间戳（毫秒） |

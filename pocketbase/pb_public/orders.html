@@ -784,6 +784,10 @@
                                 <div class="order-value">${order.tp_price != null ? '$' + order.tp_price.toFixed(2) : '-'}</div>
                             </div>
                             <div class="order-item">
+                                <div class="order-label">风报比</div>
+                                <div class="order-value">${order.rr_ratio != null ? order.rr_ratio.toFixed(2) + 'x' : '-'}</div>
+                            </div>
+                            <div class="order-item">
                                 <div class="order-label">下单时间</div>
                                 <div class="order-value" style="font-size:10px;font-family:'JetBrains Mono',monospace;word-break:break-all;">
                                     ${order.us_time ? order.us_time.replace(' ', '') + '/ET' : '-'}${order.cn_time ? ' ' + order.cn_time.replace(' ', '') + '/CN' : ''}
