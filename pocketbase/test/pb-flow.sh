@@ -14,6 +14,7 @@ BASE_URL="${PB_BASE_URL:-https://pb.lzw-glory.top}"
 TEST_SYMBOL="${TEST_SYMBOL:-AAPL}"
 TODAY=$(date +%Y-%m-%d)
 TEST_DATE="${TODAY}"
+TEST_TIME=$(date +%H:%M:%S)
 TEST_DIRECTION="long"  # 默认做多
 
 # 颜色输出
@@ -36,13 +37,13 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 show_banner() {
     echo ""
-    echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║          PocketBase API 交互式测试脚本               ║${NC}"
     echo -e "${CYAN}║          信号/订单/逆向信号 完整流程测试              ║${NC}"
-    echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${CYAN}API地址:${NC}   ${GREEN}${BASE_URL}${NC}"
-    echo -e "  ${CYAN}测试日期:${NC}   ${GREEN}${TEST_DATE}${NC}"
+    echo -e "  ${CYAN}测试时间:${NC}   ${GREEN}${TEST_DATE} ${TEST_TIME}${NC}"
     echo -e "  ${CYAN}测试标的:${NC}   ${GREEN}${TEST_SYMBOL}${NC}"
     echo -e "  ${CYAN}测试方向:${NC}   ${GREEN}${TEST_DIRECTION}${NC}"
     echo ""
@@ -77,7 +78,7 @@ show_menu() {
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        ⚙️ 设置                                      ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${GREEN}[G]${NC} 设置测试日期  ${CYAN}│${NC}  ${GREEN}[S]${NC} 设置测试标的  ${CYAN}│${NC}  ${GREEN}[T]${NC} 设置测试方向      ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${GREEN}[G]${NC} 设置测试时间  ${CYAN}│${NC}  ${GREEN}[S]${NC} 设置测试标的  ${CYAN}│${NC}  ${GREEN}[T]${NC} 设置测试方向      ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        ${RED}[Q] 退出${NC}                                    ║${NC}"
     echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════════════════╝${NC}"
@@ -87,8 +88,15 @@ show_menu() {
 
 # 生成测试数据
 generate_test_data() {
-    local timestamp_ms=$(date -j -f "%Y-%m-%d %H:%M:%S" "${TEST_DATE} 10:00:00" +%s)000 2>/dev/null || timestamp_ms=$(date +%s)000
-    local time_str=$(date +%H%M%S)
+    local datetime="${TEST_DATE} ${TEST_TIME}"
+    # 使用北京时间生成时间戳
+    local ts=$(TZ=Asia/Shanghai date -j -f "%Y-%m-%d %H:%M:%S" "${datetime}" +%s 2>/dev/null) || ts=$(date +%s)
+    local timestamp_ms=${ts}000
+    local time_str=$(date -j -f "%Y-%m-%d %H:%M:%S" "${datetime}" +%H%M%S 2>/dev/null || date +%H%M%S)
+    # cn_time = 北京时间
+    local cn_time="${TEST_DATE} ${TEST_TIME}"
+    # us_time = 美国东部时间 (自动处理夏令时/冬令时，13/12小时时差)
+    local us_time=$(TZ=America/New_York date -r ${ts} +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "${TEST_DATE} ${TEST_TIME}")
     local signal_id="${TEST_SYMBOL}_${TEST_DATE//-/}_${time_str}_sig"
 
     local base_price=100
@@ -97,7 +105,7 @@ generate_test_data() {
     local take_profit=$(echo "scale=2; $entry_price * 1.05" | bc 2>/dev/null || echo "105.00")
     local limit_price=$(echo "scale=2; $entry_price * 1.001" | bc 2>/dev/null || echo "${entry_price}")
 
-    echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}"
+    echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}"
 }
 
 # ============================================================
@@ -238,6 +246,8 @@ test_1_send_signal() {
     local take_profit=$(echo "$data" | cut -d'|' -f4)
     local timestamp_ms=$(echo "$data" | cut -d'|' -f5)
     local limit_price=$(echo "$data" | cut -d'|' -f6)
+    local us_time=$(echo "$data" | cut -d'|' -f7)
+    local cn_time=$(echo "$data" | cut -d'|' -f8)
 
     local json=$(cat <<EOF
 {
@@ -254,8 +264,8 @@ test_1_send_signal() {
   "exchange": "NASDAQ",
   "interval": "5",
   "signal_id": "${signal_id}",
-  "us_time": "${TEST_DATE} 10:00:00",
-  "cn_time": "${TEST_DATE} 18:00:00",
+  "us_time": "${us_time}",
+  "cn_time": "${cn_time}",
   "extra": {
     "reason": "测试信号",
     "bar_time_ms": ${timestamp_ms},
@@ -297,9 +307,9 @@ EOF
     if echo "$response" | jq -r '.ok' 2>/dev/null | grep -q "true"; then
         log_success "信号发送成功"
         # 保存到缓存文件
-        echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}" > /tmp/pb_sig_latest
+        echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}" > /tmp/pb_sig_latest
         echo "${signal_id}" > /tmp/pb_sig_id
-        echo "${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}" > /tmp/pb_sig_data
+        echo "${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}" > /tmp/pb_sig_data
     else
         log_error "信号发送失败"
     fi
@@ -760,12 +770,17 @@ test_d_send_indicator() {
     echo ""
     echo -e "${MAGENTA}═══ 📊 D: 发送指标数据 ═══${NC}"
 
-    local timestamp_ms=$(date -j -f "%Y-%m-%d %H:%M:%S" "${TEST_DATE} 10:00:00" +%s)000 2>/dev/null || timestamp_ms=$(date +%s)000
+    local datetime="${TEST_DATE} ${TEST_TIME}"
+    local ts=$(TZ=Asia/Shanghai date -j -f "%Y-%m-%d %H:%M:%S" "${datetime}" +%s 2>/dev/null) || ts=$(date +%s)
+    local timestamp_ms=${ts}000
+    local cn_time="${TEST_DATE} ${TEST_TIME}"
+    local us_time=$(TZ=America/New_York date -r ${ts} +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "${TEST_DATE} ${TEST_TIME}")
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
     echo -e "  symbol: ${GREEN}${TEST_SYMBOL}${NC}"
-    echo -e "  type: ${GREEN}indicator${NC}"
+    echo -e "  cn_time: ${GREEN}${cn_time}${NC}"
+    echo -e "  us_time: ${GREEN}${us_time}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     local json=$(cat <<EOF
@@ -775,8 +790,8 @@ test_d_send_indicator() {
   "exchange": "NASDAQ",
   "interval": "5",
   "script_tag": "test_script",
-  "us_time": "${TEST_DATE} 10:00:00",
-  "cn_time": "${TEST_DATE} 18:00:00",
+  "us_time": "${us_time}",
+  "cn_time": "${cn_time}",
   "bar_time_ms": ${timestamp_ms},
   "bar_index": 1000,
   "extra": {
@@ -845,17 +860,18 @@ test_f_list_orders() {
 # ⚙️ 设置
 # ============================================================
 
-# G. 设置测试日期
+# G. 设置测试日期和时间
 set_g_date() {
     echo ""
-    echo -e "${GREEN}═══ ⚙️ 设置测试日期 ═══${NC}"
-    echo -e "当前: ${TEST_DATE}"
-    echo -e "  ${YELLOW}[1]${NC} 今天           - $(date +%Y-%m-%d) ${GREEN}(默认)${NC}"
+    echo -e "${GREEN}═══ ⚙️ 设置测试日期和时间 ═══${NC}"
+    echo -e "当前: ${TEST_DATE} ${TEST_TIME}"
+    echo ""
+    echo -e "  ${YELLOW}[1]${NC} 今天           - $(date +%Y-%m-%d) ${GREEN}(默认日期)${NC}"
     echo -e "  ${YELLOW}[2]${NC} 昨天           - $(date -v-1d +%Y-%m-%d 2>/dev/null || date -d yesterday +%Y-%m-%d)"
     echo -e "  ${YELLOW}[3]${NC} 前天           - $(date -v-2d +%Y-%m-%d 2>/dev/null || date -d '2 days ago' +%Y-%m-%d)"
     echo -e "  ${YELLOW}[4]${NC} 上周一         - $(date -v-mon +%Y-%m-%d 2>/dev/null || date -d 'last monday' +%Y-%m-%d)"
-    echo -e "  ${YELLOW}[5]${NC} 自定义输入"
-    echo -n "选择 [1-5](默认1), 按 Enter 确认: "
+    echo -e "  ${YELLOW}[5]${NC} 自定义输入日期"
+    echo -n "选择日期 [1-5](默认1), 按 Enter 确认: "
     read choice
 
     case "$choice" in
@@ -866,7 +882,24 @@ set_g_date() {
         *) TEST_DATE=$(date +%Y-%m-%d) ;;
     esac
 
-    log_info "测试日期: ${TEST_DATE}"
+    echo ""
+    echo -e "  ${YELLOW}[1]${NC} 当前时间       - $(date +%H:%M:%S) ${GREEN}(默认)${NC}"
+    echo -e "  ${YELLOW}[2]${NC} 开盘时间       - 09:30:00"
+    echo -e "  ${YELLOW}[3]${NC} 盘中时间       - 13:00:00"
+    echo -e "  ${YELLOW}[4]${NC} 收盘时间       - 16:00:00"
+    echo -e "  ${YELLOW}[5]${NC} 自定义输入时间"
+    echo -n "选择时间 [1-5](默认1), 按 Enter 确认: "
+    read choice
+
+    case "$choice" in
+        2) TEST_TIME="09:30:00" ;;
+        3) TEST_TIME="13:00:00" ;;
+        4) TEST_TIME="16:00:00" ;;
+        5) echo -n "输入时间 (HH:MM:SS): " && read TEST_TIME ;;
+        *) TEST_TIME=$(date +%H:%M:%S) ;;
+    esac
+
+    log_info "测试时间: ${TEST_DATE} ${TEST_TIME}"
 }
 
 # S. 设置测试标的

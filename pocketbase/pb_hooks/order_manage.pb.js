@@ -30,7 +30,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const direction = data.direction;
   const quantity = data.quantity;
   const price = data.limit_price;
-  const status = data.status || "pending";
+  const status = data.status || "Submitted";
   const filledQty = data.filled_qty || data.quantity;
   const avgFillPrice = data.fill_price;
   const extra = data.extra || {};
@@ -82,6 +82,11 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     if (data.pnl !== undefined) record.set("pnl", parseFloat(data.pnl));
     if (data.commission !== undefined) record.set("commission", parseFloat(data.commission));
     if (data.rr_ratio !== undefined) record.set("rr_ratio", parseFloat(data.rr_ratio));
+    if (data.bar_time_ms != null) record.set("bar_time_ms", parseInt(data.bar_time_ms) || 0);
+    if (data.us_time) record.set("us_time", data.us_time);
+    if (data.cn_time) record.set("cn_time", data.cn_time);
+    if (data.order_time) record.set("order_time", data.order_time);
+    if (data.fill_time) record.set("fill_time", data.fill_time);
 
     $app.save(record);
 
