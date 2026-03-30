@@ -10,6 +10,14 @@ const ORDER_INTERNAL_EXTRA_KEYS = {
     feishu_order_card_version: true,
 }
 
+const ORDER_STATUS_TEXT_MAP = {
+    Init: "初始化",
+    Submitted: "待成交",
+    Filled: "已成交",
+    Canceled: "已取消",
+    Closed: "已平仓",
+}
+
 function pad2(value) {
     return String(value).padStart(2, "0")
 }
@@ -139,6 +147,170 @@ function stripInternalExtra(extra) {
     return safe
 }
 
+function normalizeOrderRole(role, orderType) {
+    if (role) return role
+    const type = String(orderType || "").toLowerCase()
+    if (type === "entry") return "entry"
+    if (type === "takeprofit") return "take_profit"
+    if (type === "stoploss") return "stop_loss"
+    return ""
+}
+
+function normalizeRelationStatus(relationStatus, status) {
+    if (relationStatus) return relationStatus
+    const normalizedStatus = String(status || "").toLowerCase()
+    if (normalizedStatus === "canceled" || normalizedStatus === "closed") {
+        return "closed"
+    }
+    return "active"
+}
+
+function normalizePositionSide(positionSide, direction) {
+    return firstNonEmpty(positionSide, direction, "")
+}
+
+function resolveOrderRelationship(recordOrData, fallback) {
+    const source = recordOrData || {}
+    const fallbackData = fallback || {}
+    const get = (typeof source.get === "function")
+        ? source.get.bind(source)
+        : function(fieldName) { return source[fieldName] }
+
+    const extra = getJsonField(source, "extra")
+    const fallbackExtra = (fallbackData && typeof fallbackData.get === "function")
+        ? getJsonField(fallbackData, "extra")
+        : (fallbackData.extra || {})
+
+    const uniqueId = firstNonEmpty(
+        get("unique_id"),
+        extra.unique_id,
+        fallbackData.unique_id,
+        fallbackExtra.unique_id,
+        ""
+    )
+    const orderType = firstNonEmpty(
+        get("order_type"),
+        extra.order_type,
+        fallbackData.order_type,
+        fallbackExtra.order_type,
+        ""
+    )
+    const role = normalizeOrderRole(
+        firstNonEmpty(get("role"), extra.role, fallbackData.role, fallbackExtra.role, ""),
+        orderType
+    )
+    const direction = firstNonEmpty(
+        get("direction"),
+        extra.direction,
+        fallbackData.direction,
+        fallbackExtra.direction,
+        ""
+    )
+    const positionSide = normalizePositionSide(
+        firstNonEmpty(
+            get("position_side"),
+            extra.position_side,
+            fallbackData.position_side,
+            fallbackExtra.position_side,
+            ""
+        ),
+        direction
+    )
+    const entryOrderUniqueId = firstNonEmpty(
+        get("entry_order_unique_id"),
+        extra.entry_order_unique_id,
+        fallbackData.entry_order_unique_id,
+        fallbackExtra.entry_order_unique_id,
+        role === "entry" ? uniqueId : "",
+        uniqueId
+    )
+    const tradeGroupId = firstNonEmpty(
+        get("trade_group_id"),
+        extra.trade_group_id,
+        fallbackData.trade_group_id,
+        fallbackExtra.trade_group_id,
+        entryOrderUniqueId,
+        uniqueId
+    )
+    const parentOrderUniqueId = firstNonEmpty(
+        get("parent_order_unique_id"),
+        extra.parent_order_unique_id,
+        fallbackData.parent_order_unique_id,
+        fallbackExtra.parent_order_unique_id,
+        role && role !== "entry" ? entryOrderUniqueId : "",
+        ""
+    )
+    const siblingOrderUniqueId = firstNonEmpty(
+        get("sibling_order_unique_id"),
+        extra.sibling_order_unique_id,
+        fallbackData.sibling_order_unique_id,
+        fallbackExtra.sibling_order_unique_id,
+        ""
+    )
+    const brokerOrderId = firstNonEmpty(
+        get("broker_order_id"),
+        extra.broker_order_id,
+        fallbackData.broker_order_id,
+        fallbackExtra.broker_order_id,
+        get("order_id"),
+        extra.order_id,
+        fallbackData.order_id,
+        fallbackExtra.order_id,
+        ""
+    )
+    const relationStatus = normalizeRelationStatus(
+        firstNonEmpty(
+            get("relation_status"),
+            extra.relation_status,
+            fallbackData.relation_status,
+            fallbackExtra.relation_status,
+            ""
+        ),
+        firstNonEmpty(get("status"), extra.status, fallbackData.status, fallbackExtra.status, "")
+    )
+
+    return {
+        trade_group_id: tradeGroupId,
+        entry_order_unique_id: entryOrderUniqueId,
+        parent_order_unique_id: parentOrderUniqueId,
+        sibling_order_unique_id: siblingOrderUniqueId,
+        role: role,
+        relation_status: relationStatus,
+        broker_order_id: brokerOrderId,
+        position_side: positionSide,
+    }
+}
+
+function applyOrderRelationship(record, options, saveAfterApply) {
+    const relation = resolveOrderRelationship(options, record)
+    record.set("trade_group_id", relation.trade_group_id || "")
+    record.set("entry_order_unique_id", relation.entry_order_unique_id || "")
+    record.set("parent_order_unique_id", relation.parent_order_unique_id || "")
+    record.set("sibling_order_unique_id", relation.sibling_order_unique_id || "")
+    record.set("role", relation.role || "")
+    record.set("relation_status", relation.relation_status || "")
+    record.set("broker_order_id", relation.broker_order_id || "")
+    record.set("position_side", relation.position_side || "")
+
+    mergeOrderExtra(record, relation, false)
+    if (saveAfterApply) {
+        $app.save(record)
+    }
+    return relation
+}
+
+function getOrderStatusText(status) {
+    return ORDER_STATUS_TEXT_MAP[status] || status || "未知"
+}
+
+function getOrderStatusTransitionText(previousStatus, currentStatus) {
+    const currentText = getOrderStatusText(currentStatus)
+    if (!previousStatus || previousStatus === currentStatus) {
+        return currentText
+    }
+    return getOrderStatusText(previousStatus) + " -> " + currentText
+}
+
 function resolveOrderEventTimes(options, fallback) {
     const opts = options || {}
     const fallbackData = fallback || {}
@@ -174,6 +346,109 @@ function applyOrderEventTimes(record, options, saveAfterApply) {
     return timePatch
 }
 
+function resolveOrderStatusEventTimes(record, options) {
+    const opts = options || {}
+    const extra = record ? getOrderExtra(record) : {}
+    const candidate = resolveOrderEventTimes(opts, extra)
+    const previousStatus = firstNonEmpty(opts.previous_status, record ? record.get("status") : "", extra.current_status)
+    const currentStatus = firstNonEmpty(opts.status, previousStatus)
+    const hasExplicitTimeInput = opts.us_time !== undefined || opts.usTime !== undefined ||
+        opts.cn_time !== undefined || opts.cnTime !== undefined ||
+        opts.bar_time_ms !== undefined || opts.barTimeMs !== undefined
+
+    if (!record) {
+        return candidate
+    }
+
+    const currentUsTime = firstNonEmpty(record.get("us_time"), extra.us_time)
+    const currentCnTime = firstNonEmpty(record.get("cn_time"), extra.cn_time)
+    const currentBarTimeMs = parseInt(firstNonEmpty(record.get("bar_time_ms"), extra.bar_time_ms, 0), 10) || 0
+    const unchanged = candidate.us_time === currentUsTime &&
+        candidate.cn_time === currentCnTime &&
+        candidate.bar_time_ms === currentBarTimeMs
+
+    if (previousStatus && currentStatus && previousStatus !== currentStatus && (!hasExplicitTimeInput || unchanged)) {
+        return formatNowStrings()
+    }
+
+    return candidate
+}
+
+function applyOrderStatusMeta(record, options, saveAfterApply) {
+    const opts = options || {}
+    const extra = getOrderExtra(record)
+    const currentStatus = opts.status || record.get("status") || ""
+    const previousStatus = opts.previous_status != null
+        ? opts.previous_status
+        : (extra.current_status || extra.previous_status || "")
+    const eventTimes = resolveOrderEventTimes(opts, extra)
+    const orderTime = firstNonEmpty(
+        opts.order_time,
+        record.get("order_time"),
+        extra.order_time,
+        eventTimes.us_time
+    )
+    const fillTime = currentStatus === "Filled"
+        ? firstNonEmpty(opts.fill_time, record.get("fill_time"), extra.fill_time, eventTimes.us_time)
+        : firstNonEmpty(record.get("fill_time"), extra.fill_time)
+
+    const patch = {
+        order_time: orderTime,
+        us_time: eventTimes.us_time,
+        cn_time: eventTimes.cn_time,
+        bar_time_ms: eventTimes.bar_time_ms,
+        previous_status: previousStatus || "",
+        current_status: currentStatus,
+        status_transition_text: getOrderStatusTransitionText(previousStatus, currentStatus),
+        status_updated_us_time: eventTimes.us_time,
+        status_updated_cn_time: eventTimes.cn_time,
+        status_updated_bar_time_ms: eventTimes.bar_time_ms,
+        last_status_source: opts.source || extra.last_status_source || "",
+        last_status_reason: opts.reason || extra.last_status_reason || "",
+    }
+
+    if (!extra.created_us_time && (opts.created_us_time || !previousStatus)) {
+        patch.created_us_time = firstNonEmpty(opts.created_us_time, orderTime, eventTimes.us_time)
+    }
+    if (!extra.created_cn_time && (opts.created_cn_time || !previousStatus)) {
+        patch.created_cn_time = firstNonEmpty(opts.created_cn_time, eventTimes.cn_time)
+    }
+    if (!extra.created_bar_time_ms && (opts.created_bar_time_ms || !previousStatus)) {
+        patch.created_bar_time_ms = firstNonEmpty(opts.created_bar_time_ms, eventTimes.bar_time_ms)
+    }
+
+    if (fillTime) {
+        patch.fill_time = fillTime
+    }
+    if (currentStatus === "Filled") {
+        patch.filled_us_time = firstNonEmpty(opts.fill_us_time, fillTime, eventTimes.us_time)
+        patch.filled_cn_time = firstNonEmpty(opts.fill_cn_time, eventTimes.cn_time)
+        patch.filled_bar_time_ms = firstNonEmpty(opts.fill_bar_time_ms, eventTimes.bar_time_ms)
+    } else if (extra.filled_us_time) {
+        patch.filled_us_time = extra.filled_us_time
+        patch.filled_cn_time = extra.filled_cn_time || ""
+        patch.filled_bar_time_ms = extra.filled_bar_time_ms || 0
+    }
+
+    const merged = mergeOrderExtra(record, patch, false)
+    record.set("us_time", patch.us_time)
+    record.set("cn_time", patch.cn_time)
+    record.set("bar_time_ms", patch.bar_time_ms)
+    if (patch.order_time) {
+        record.set("order_time", patch.order_time)
+    }
+    if (patch.fill_time) {
+        record.set("fill_time", patch.fill_time)
+    }
+    if (saveAfterApply) {
+        $app.save(record)
+    }
+    return {
+        extra: merged,
+        eventTimes: eventTimes,
+    }
+}
+
 function appendOrderDetail(record, options) {
     const opts = options || {}
     const status = opts.status || record.get("status") || ""
@@ -197,6 +472,16 @@ function appendOrderDetail(record, options) {
     detailRecord.set("cn_time", opts.cn_time || record.get("cn_time") || nowStrings.cnTime)
     detailRecord.set("bar_time_ms", opts.bar_time_ms || record.get("bar_time_ms") || nowStrings.barTimeMs)
 
+    const relation = resolveOrderRelationship(opts, record)
+    detailRecord.set("broker_order_id", relation.broker_order_id || "")
+    detailRecord.set("trade_group_id", relation.trade_group_id || "")
+    detailRecord.set("entry_order_unique_id", relation.entry_order_unique_id || "")
+    detailRecord.set("parent_order_unique_id", relation.parent_order_unique_id || "")
+    detailRecord.set("sibling_order_unique_id", relation.sibling_order_unique_id || "")
+    detailRecord.set("role", relation.role || "")
+    detailRecord.set("relation_status", relation.relation_status || "")
+    detailRecord.set("position_side", relation.position_side || "")
+
     const existingExtra = stripInternalExtra(getOrderExtra(record))
     detailRecord.set("extra", {
         sequence: sequence,
@@ -204,6 +489,14 @@ function appendOrderDetail(record, options) {
         status: status,
         original_order_id: record.get("order_id") || "",
         order_id: record.get("order_id") || "",
+        broker_order_id: relation.broker_order_id || "",
+        trade_group_id: relation.trade_group_id || "",
+        entry_order_unique_id: relation.entry_order_unique_id || "",
+        parent_order_unique_id: relation.parent_order_unique_id || "",
+        sibling_order_unique_id: relation.sibling_order_unique_id || "",
+        role: relation.role || "",
+        relation_status: relation.relation_status || "",
+        position_side: relation.position_side || "",
         quantity: record.get("quantity"),
         limit_price: record.get("limit_price"),
         fill_price: record.get("fill_price"),
@@ -227,7 +520,13 @@ module.exports = {
     appendOrderDetail,
     getOrderExtra,
     mergeOrderExtra,
+    getOrderStatusText,
+    getOrderStatusTransitionText,
+    resolveOrderRelationship,
+    applyOrderRelationship,
     resolveOrderEventTimes,
+    resolveOrderStatusEventTimes,
     applyOrderEventTimes,
+    applyOrderStatusMeta,
     formatNowStrings,
 }

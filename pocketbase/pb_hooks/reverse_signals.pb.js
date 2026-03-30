@@ -193,6 +193,8 @@ routerAdd("GET", "/api/custom/reverse/pending", (c) => {
         signal_id: extra.signal_id,  // QC 回写的原始信号ID（权威）
         origin_signal_id: extra.origin_signal_id,  // webhook 触发时的原始信号ID
         order_id: extra.order_id,
+        trade_group_id: extra.trade_group_id || "",
+        entry_order_unique_id: extra.entry_order_unique_id || "",
         strength: r.get("strength"),
         score: r.get("score"),
         action_type: r.get("action_type"),
@@ -238,6 +240,12 @@ routerAdd("POST", "/api/custom/reverse/ack", (c) => {
     const extra = record.get("extra") || {};
     if (data.order_id) {
       extra.order_id = data.order_id;
+    }
+    if (data.trade_group_id) {
+      extra.trade_group_id = data.trade_group_id;
+    }
+    if (data.entry_order_unique_id) {
+      extra.entry_order_unique_id = data.entry_order_unique_id;
     }
     if (data.signal_id_orig) {
       extra.signal_id = data.signal_id_orig;

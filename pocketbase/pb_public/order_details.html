@@ -4,58 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>订单明细</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <style>
-        .header-top {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
         .search-row {
-            margin-bottom: 6px;
+            margin-bottom: 12px;
         }
 
         .search-row > div:first-child {
-            margin-bottom: 4px;
-        }
-
-        .search-row .date-picker {
-            margin-bottom: 0;
-            gap: 6px;
-        }
-
-        .search-row .date-btn {
-            padding: 6px 10px;
-            font-size: 11px;
-        }
-
-        .search-row .refresh-control {
-            gap: 4px;
-        }
-
-        .search-row .refresh-btn {
-            padding: 4px 6px;
-            font-size: 12px;
-        }
-
-        .search-row .refresh-select {
-            padding: 4px 6px;
-            font-size: 11px;
-        }
-
-        /* 覆盖 date-picker 样式 */
-        .date-picker {
-            margin-bottom: 0 !important;
-            flex: 1;
+            margin-bottom: 8px;
         }
 
         .search-input {
             width: 100%;
-            padding: 8px 12px;
-            border-radius: 8px;
+            padding: 10px 12px;
+            border-radius: 10px;
             border: 1px solid var(--border);
             background: var(--surface2);
             color: var(--text);
@@ -64,185 +28,327 @@
             outline: none;
         }
 
-        .search-input:focus { border-color: var(--accent); }
+        .search-input:focus {
+            border-color: var(--accent);
+        }
 
-        /* 统一卡片（signal-* 规范） */
-        .signal-card {
-            background: var(--surface);
+        .refresh-control {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: var(--surface2);
             border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--accent);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            text-decoration: none;
+        }
+
+        .query-note {
+            margin-top: 8px;
+            padding: 10px 12px;
+            background: rgba(99,179,237,0.08);
+            border: 1px solid rgba(99,179,237,0.18);
             border-radius: 12px;
-            padding: 16px;
+            color: var(--accent);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+
+        .focus-card,
+        .event-card,
+        .snapshot-card {
+            background: linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.96));
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 14px;
+        }
+
+        .focus-card {
             margin-bottom: 12px;
         }
 
-        .signal-header {
+        .focus-head {
             display: flex;
-            flex-direction: column;
-            margin-bottom: 14px;
-        }
-
-        .signal-symbol {
-            font-size: 18px;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-        }
-
-        .signal-direction {
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            padding: 3px 8px;
-            border-radius: 6px;
-            font-weight: 700;
-        }
-
-        .signal-direction.long  { background: rgba(72,187,120,0.15); color: var(--long); }
-        .signal-direction.short { background: rgba(252,129,129,0.15); color: var(--short); }
-
-        .signal-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            justify-content: space-between;
+            align-items: flex-start;
             gap: 12px;
             margin-bottom: 12px;
         }
 
-        .signal-item { display: flex; flex-direction: column; gap: 4px; }
+        .focus-symbol {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
 
-        .signal-label {
+        .badge-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .direction-badge,
+        .status-badge,
+        .role-badge,
+        .relation-badge,
+        .type-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        .direction-badge.long {
+            background: rgba(72,187,120,0.16);
+            color: var(--long);
+        }
+
+        .direction-badge.short {
+            background: rgba(252,129,129,0.16);
+            color: var(--short);
+        }
+
+        .status-init { background: rgba(99,179,237,0.18); color: var(--accent); }
+        .status-submitted { background: rgba(246,173,85,0.18); color: var(--pending); }
+        .status-filled { background: rgba(104,211,145,0.18); color: var(--executed); }
+        .status-canceled { background: rgba(113,128,150,0.18); color: var(--rejected); }
+        .status-closed { background: rgba(252,129,129,0.18); color: var(--short); }
+
+        .role-entry { background: rgba(99,179,237,0.16); color: var(--accent); }
+        .role-take-profit,
+        .role-repair-tp { background: rgba(72,187,120,0.16); color: var(--long); }
+        .role-stop-loss,
+        .role-repair-sl { background: rgba(252,129,129,0.16); color: var(--short); }
+        .role-other { background: rgba(160,174,192,0.16); color: #CBD5E0; }
+
+        .relation-active { background: rgba(72,187,120,0.12); color: var(--long); }
+        .relation-closed { background: rgba(160,174,192,0.12); color: #CBD5E0; }
+        .relation-orphaned { background: rgba(252,129,129,0.12); color: var(--short); }
+
+        .type-entry { background: rgba(99,179,237,0.12); color: var(--accent); }
+        .type-takeprofit { background: rgba(72,187,120,0.12); color: var(--long); }
+        .type-stoploss { background: rgba(252,129,129,0.12); color: var(--short); }
+
+        .chip-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .chip {
+            padding: 5px 8px;
+            border-radius: 10px;
+            background: rgba(99,179,237,0.08);
+            border: 1px solid rgba(99,179,237,0.16);
+            color: #C4D4E4;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .metric-card,
+        .detail-item {
+            background: rgba(20,28,46,0.88);
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+
+        .metric-label,
+        .detail-label {
             font-size: 10px;
             color: var(--muted);
             font-family: 'JetBrains Mono', monospace;
-            letter-spacing: 0.5px;
         }
 
-        .signal-value {
-            font-size: 14px;
+        .metric-value,
+        .detail-value {
+            margin-top: 4px;
+            font-size: 13px;
+            color: var(--text);
+            font-weight: 700;
+            word-break: break-all;
+        }
+
+        .section-title {
+            margin: 14px 0 10px;
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .relationship-board {
+            display: grid;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .snapshot-card {
+            margin-bottom: 0;
+        }
+
+        .snapshot-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .snapshot-id {
+            font-size: 13px;
             font-weight: 700;
             color: var(--text);
+            word-break: break-all;
         }
 
-        .signal-note {
-            background: rgba(99,179,237,0.05);
-            border-left: 2px solid var(--accent);
-            padding: 10px;
-            margin-top: 10px;
-            font-size: 12px;
+        .snapshot-sub {
+            margin-top: 4px;
             color: var(--muted);
-        }
-
-        /* 事件徽章 */
-        .event-badge {
-            padding: 3px 10px;
-            border-radius: 10px;
             font-size: 10px;
             font-family: 'JetBrains Mono', monospace;
-            font-weight: 700;
-            letter-spacing: 0.5px;
+            word-break: break-all;
         }
 
-        .event-entry       { background: rgba(59,130,246,0.2);  color: #60a5fa; }
-        .event-takeprofit  { background: rgba(72,187,120,0.2);  color: var(--long); }
-        .event-stoploss    { background: rgba(252,129,129,0.2); color: var(--short); }
-        .event-init        { background: rgba(99,179,237,0.2);  color: var(--accent); }
-        .event-submitted   { background: rgba(246,173,85,0.2);  color: var(--pending); }
-        .event-filled      { background: rgba(104,211,145,0.2); color: var(--executed); }
-        .event-canceled    { background: rgba(113,128,150,0.2); color: var(--rejected); }
-        .event-closed      { background: rgba(252,129,129,0.2); color: var(--short); }
-
-        /* 时间线（flow） */
-        .flow-timeline {
+        .timeline {
             position: relative;
-            padding-left: 24px;
-            margin-top: 20px;
+            padding-left: 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
 
-        .flow-timeline::before {
+        .timeline::before {
             content: '';
             position: absolute;
             left: 8px;
             top: 0;
             bottom: 0;
             width: 2px;
-            background: var(--border);
+            background: rgba(99,179,237,0.12);
         }
 
-        .flow-item {
+        .timeline-item {
             position: relative;
-            padding-bottom: 16px;
         }
 
-        .flow-dot {
+        .timeline-dot {
             position: absolute;
-            left: -20px;
+            left: -22px;
             top: 16px;
             width: 12px;
             height: 12px;
             border-radius: 50%;
         }
 
-        .flow-init       { background: var(--accent); }
-        .flow-submitted  { background: var(--pending); }
-        .flow-filled     { background: var(--executed); }
-        .flow-canceled   { background: var(--rejected); }
-        .flow-closed     { background: var(--short); }
+        .dot-init { background: var(--accent); }
+        .dot-submitted { background: var(--pending); }
+        .dot-filled { background: var(--executed); }
+        .dot-canceled { background: var(--rejected); }
+        .dot-closed { background: var(--short); }
 
-        .flow-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 14px;
-        }
-
-        .flow-event-row {
+        .event-head {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
+            gap: 10px;
             margin-bottom: 10px;
         }
 
-        .flow-time {
-            font-size: 11px;
+        .event-time {
             color: var(--muted);
+            font-size: 10px;
             font-family: 'JetBrains Mono', monospace;
+            text-align: right;
         }
 
-        /* 按钮 */
+        .event-note {
+            margin-top: 10px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: rgba(99,179,237,0.06);
+            border: 1px solid rgba(99,179,237,0.12);
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.55;
+        }
+
+        .list-card {
+            background: linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.96));
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+
+        .list-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .list-title {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .action-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
         .action-btn {
-            padding: 10px 16px;
+            flex: 1;
+            min-width: 0;
+            padding: 10px 14px;
             border: none;
-            border-radius: 8px;
-            font-size: clamp(12px, 3vw, 14px);
+            border-radius: 10px;
+            font-size: 12px;
             font-family: 'JetBrains Mono', monospace;
             font-weight: 700;
             cursor: pointer;
-            transition: all 0.2s;
-            letter-spacing: 0.5px;
         }
 
-        .btn-view { grid-column: 1 / -1; background: var(--accent); color: var(--bg); }
-        .btn-view:active { background: #4299e1; }
-        .btn-confirm { background: var(--long); color: var(--bg); }
-        .btn-cancel { background: var(--short); color: var(--bg); }
+        .btn-view {
+            background: var(--accent);
+            color: var(--bg);
+        }
 
-        /* 返回按钮 */
-        .back-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 14px;
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 8px;
+        .btn-secondary {
+            background: rgba(99,179,237,0.12);
             color: var(--accent);
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            text-decoration: none;
-            margin-bottom: 12px;
-            transition: all 0.2s;
+            border: 1px solid rgba(99,179,237,0.18);
         }
 
-        .back-btn:active { background: var(--surface); }
-
-        /* 加载更多 */
         .load-more-btn {
             display: block;
             width: 100%;
@@ -250,51 +356,24 @@
             margin-top: 16px;
             background: var(--surface2);
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 10px;
             color: var(--accent);
             font-size: 13px;
             font-family: 'JetBrains Mono', monospace;
             cursor: pointer;
-            transition: all 0.2s;
         }
 
-        .load-more-btn:active { background: var(--surface); }
-        .load-more-btn:disabled { color: var(--muted); cursor: not-allowed; }
+        @media (max-width: 720px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
 
-        /* 刷新控件 */
-        .refresh-btn {
-            background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--muted);
-            padding: 10px 14px;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .refresh-btn:active { color: var(--accent); border-color: var(--accent); }
-        .refresh-btn.spinning { animation: spin 0.6s linear; }
-
-        .refresh-control { display: flex; gap: 6px; align-items: center; }
-
-        .refresh-select {
-            flex: 1;
-            padding: 10px 12px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: var(--surface2);
-            color: var(--text);
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            outline: none;
-            cursor: pointer;
-        }
-
-        .refresh-select:focus { border-color: var(--accent); }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+            .focus-head,
+            .snapshot-head,
+            .event-head,
+            .list-card-head {
+                flex-direction: column;
+            }
         }
     </style>
 </head>
@@ -303,7 +382,7 @@
         <div class="header-top">
             <div class="logo">
                 <div class="logo-label">TRADING</div>
-                <div class="logo-title">📜 订单明细</div>
+                <div class="logo-title">📜 订单事件关系</div>
             </div>
             <div class="live-badge">
                 <div class="live-dot"></div>
@@ -313,7 +392,7 @@
     </div>
 
     <div class="content">
-        <div class="search-row">
+        <div class="search-row" id="searchRow">
             <div style="display:flex;gap:8px;align-items:center;">
                 <div id="datePicker" style="flex:1;"></div>
                 <div class="refresh-control">
@@ -326,50 +405,116 @@
                     </select>
                 </div>
             </div>
-            <input class="search-input" id="searchInput" placeholder="🔍 搜索 标的代码 / QC订单ID / 信号ID / PB记录ID..." oninput="onSearchChange()">
+            <input class="search-input" id="searchInput" placeholder="搜索 symbol / trade_group_id / order_id / broker_order_id / signal_id" oninput="onSearchChange()">
         </div>
-        <div id="detailsContainer"><div class="loading">加载中...</div></div>
-        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreDetails()" style="display: none;">加载更多</button>
+
+        <div id="detailsContainer">
+            <div class="loading">加载中...</div>
+        </div>
+        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreDetails()" style="display:none;">加载更多</button>
     </div>
 
     <div id="nav"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
     <script>
-        const pb = new PocketBase('https://pb.lzw-glory.top');
-        let allDetails = [];
-        let currentDate = new Date().toISOString().split('T')[0];
-        let refreshTimer = null;
-        let currentInterval = 30;
+        const pb = new PocketBase(BASE_URL);
+        const ORDER_STATUS_TEXT = {
+            Init: '初始化',
+            Submitted: '已提交',
+            Filled: '已成交',
+            Canceled: '已取消',
+            Closed: '已平仓'
+        };
+        const ROLE_TEXT = {
+            entry: '主单',
+            take_profit: '止盈',
+            stop_loss: '止损',
+            repair_tp: '修复止盈',
+            repair_sl: '修复止损'
+        };
 
-        // Pagination
-        let currentPage = 1;
-        const itemsPerPage = 10;
-        let displayedDetails = [];
-        let hasMore = false;
-        let totalItems = 0;
-        let searchDebounceTimer = null;
+        const params = new URLSearchParams(window.location.search);
+        const filterDetailId = params.get('id');
+        const filterOrderId = params.get('order_id');
+        const filterSignalId = params.get('signal_id');
+        const filterTradeGroupId = params.get('trade_group_id');
 
-        async function initAuth() {
-            const token = getToken();
-            if (!token) { location.href = '/login.html?from=/order_details.html'; return; }
-            pb.authStore.save(token, null);
+        let queryMode = 'list';
+        let effectiveFilter = '';
+        if (filterDetailId) {
+            queryMode = 'id';
+            effectiveFilter = filterDetailId;
+        } else if (filterTradeGroupId) {
+            queryMode = 'trade_group_id';
+            effectiveFilter = filterTradeGroupId;
+        } else if (filterOrderId) {
+            queryMode = 'order_id';
+            effectiveFilter = filterOrderId;
+        } else if (filterSignalId) {
+            queryMode = 'signal_id';
+            effectiveFilter = filterSignalId;
         }
 
-        // ============================================================
-        // 多模式查询: id / order_id / signal_id / list
-        // ============================================================
-        const urlParams = new URLSearchParams(window.location.search);
-        const filterSignalId = urlParams.get('signal_id');
-        const filterOrderId = urlParams.get('order_id');
-        const filterDetailId = urlParams.get('id');
+        let currentDate = params.get('date') || new Date().toISOString().split('T')[0];
+        let refreshTimer = null;
+        let currentInterval = 30;
+        let currentPage = 1;
+        const itemsPerPage = 20;
+        let totalItems = 0;
+        let hasMore = false;
+        let allDetails = [];
+        let searchDebounceTimer = null;
 
-        // 优先级: id > order_id > signal_id
-        let queryMode = 'list';
-        let effectiveFilter = null;
-        if (filterDetailId) { queryMode = 'id'; effectiveFilter = filterDetailId; }
-        else if (filterOrderId) { queryMode = 'order_id'; effectiveFilter = filterOrderId; }
-        else if (filterSignalId) { queryMode = 'signal_id'; effectiveFilter = filterSignalId; }
+        function parseJsonLike(value) {
+            if (!value) return {};
+            if (typeof value === 'object') return value;
+            try {
+                return JSON.parse(value);
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function firstDefined() {
+            for (const value of arguments) {
+                if (value !== undefined && value !== null && value !== '') return value;
+            }
+            return '';
+        }
+
+        function toNumber(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function formatMoney(value) {
+            const num = toNumber(value);
+            return num === null ? '-' : `$${num.toFixed(2)}`;
+        }
+
+        function formatQty(value) {
+            const num = toNumber(value);
+            return num === null ? '-' : `${num}`;
+        }
+
+        function formatTimePair(record) {
+            const us = record.us_time || (record.bar_time_ms ? formatBarTimeMsToET(record.bar_time_ms) : '');
+            const cn = record.cn_time || '';
+            if (!us && !cn) return '-';
+            if (!cn) return `${us} ET`;
+            return `${us} ET / ${cn} CN`;
+        }
 
         function escapeFilterValue(value) {
             return String(value || '')
@@ -377,286 +522,469 @@
                 .replace(/"/g, '\\"');
         }
 
+        function initAuth() {
+            const token = getToken();
+            if (!token) {
+                location.href = '/login.html?from=/order_details.html';
+                return false;
+            }
+            pb.authStore.save(token, null);
+            return true;
+        }
+
+        function roleClass(role) {
+            if (role === 'entry') return 'role-entry';
+            if (role === 'take_profit') return 'role-take-profit';
+            if (role === 'repair_tp') return 'role-repair-tp';
+            if (role === 'stop_loss') return 'role-stop-loss';
+            if (role === 'repair_sl') return 'role-repair-sl';
+            return 'role-other';
+        }
+
+        function relationClass(status) {
+            if (status === 'active') return 'relation-active';
+            if (status === 'orphaned') return 'relation-orphaned';
+            return 'relation-closed';
+        }
+
+        function statusClass(status) {
+            return `status-${String(status || 'Init').toLowerCase()}`;
+        }
+
+        function typeClass(orderType) {
+            return `type-${String(orderType || '').toLowerCase()}`;
+        }
+
+        function getRoleText(role, orderType) {
+            return ROLE_TEXT[role] || orderType || '-';
+        }
+
+        function normalizeDetail(raw) {
+            const extra = parseJsonLike(raw.extra);
+            const orderType = firstDefined(raw.order_type, extra.order_type, 'Entry');
+            const role = firstDefined(
+                raw.role,
+                extra.role,
+                orderType === 'Entry' ? 'entry' : orderType === 'TakeProfit' ? 'take_profit' : orderType === 'StopLoss' ? 'stop_loss' : ''
+            );
+            const orderId = firstDefined(raw.order_id, extra.order_id, '');
+            const entryOrderUniqueId = firstDefined(raw.entry_order_unique_id, extra.entry_order_unique_id, role === 'entry' ? orderId : '', orderId);
+            const tradeGroupId = firstDefined(raw.trade_group_id, extra.trade_group_id, entryOrderUniqueId, orderId);
+            const barTimeMs = toNumber(firstDefined(raw.bar_time_ms, extra.bar_time_ms));
+
+            return {
+                ...raw,
+                extra,
+                order_type: orderType,
+                order_id: orderId,
+                broker_order_id: firstDefined(raw.broker_order_id, extra.broker_order_id, ''),
+                signal_id: firstDefined(raw.signal_id, extra.signal_id, ''),
+                role,
+                relation_status: firstDefined(raw.relation_status, extra.relation_status, ['Canceled', 'Closed'].includes(raw.status) ? 'closed' : 'active'),
+                direction: firstDefined(raw.position_side, raw.direction, extra.position_side, extra.direction, ''),
+                trade_group_id: tradeGroupId,
+                entry_order_unique_id: entryOrderUniqueId,
+                parent_order_unique_id: firstDefined(raw.parent_order_unique_id, extra.parent_order_unique_id, role !== 'entry' ? entryOrderUniqueId : ''),
+                sibling_order_unique_id: firstDefined(raw.sibling_order_unique_id, extra.sibling_order_unique_id, ''),
+                quantity: toNumber(firstDefined(raw.quantity, extra.quantity)),
+                filled_qty: toNumber(firstDefined(raw.filled_qty, extra.filled_qty)),
+                limit_price: toNumber(firstDefined(raw.limit_price, extra.limit_price)),
+                fill_price: toNumber(firstDefined(raw.fill_price, extra.fill_price)),
+                tp_price: toNumber(firstDefined(raw.tp_price, extra.tp_price)),
+                sl_price: toNumber(firstDefined(raw.sl_price, extra.sl_price)),
+                sequence: toNumber(firstDefined(raw.sequence, extra.sequence)),
+                reason: firstDefined(raw.reason, extra.reason, ''),
+                us_time: firstDefined(raw.us_time, extra.us_time, ''),
+                cn_time: firstDefined(raw.cn_time, extra.cn_time, ''),
+                bar_time_ms: barTimeMs,
+                created: firstDefined(raw.created, ''),
+                time_key: barTimeMs || Date.parse(firstDefined(raw.us_time, raw.created, '')) || Date.now()
+            };
+        }
+
         function getSearchTerm() {
             return (document.getElementById('searchInput')?.value || '').trim();
         }
 
         function buildDetailsFilter(searchTerm = '') {
-            const filters = [];
-
             if (queryMode === 'id') {
-                filters.push(`id = "${escapeFilterValue(effectiveFilter)}"`);
-            } else if (queryMode === 'order_id') {
-                filters.push(`order_id = "${escapeFilterValue(effectiveFilter)}"`);
-            } else if (queryMode === 'signal_id') {
-                filters.push(`signal_id = "${escapeFilterValue(effectiveFilter)}"`);
-            } else {
-                if (searchTerm) {
-                    const keyword = escapeFilterValue(searchTerm);
-                    const keywordUpper = escapeFilterValue(searchTerm.toUpperCase());
-                    const searchConditions = [
-                        `symbol = "${keyword}"`,
-                        `symbol ~ "${keyword}"`,
-                        `order_id = "${keyword}"`,
-                        `order_id ~ "${keyword}"`,
-                        `signal_id = "${keyword}"`,
-                        `signal_id ~ "${keyword}"`,
-                        `id = "${keyword}"`,
-                        `id ~ "${keyword}"`,
-                    ];
-                    if (keywordUpper !== keyword) {
-                        searchConditions.push(`symbol = "${keywordUpper}"`);
-                        searchConditions.push(`symbol ~ "${keywordUpper}"`);
-                    }
-                    filters.push(`(${searchConditions.join(' || ')})`);
-                } else {
-                    const startTime = `${currentDate} 00:00:00`;
-                    const endTime = `${currentDate} 23:59:59`;
-                    filters.push(`((us_time >= "${escapeFilterValue(startTime)}" && us_time <= "${escapeFilterValue(endTime)}") || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`);
-                }
+                return `id = "${escapeFilterValue(effectiveFilter)}"`;
+            }
+            if (queryMode === 'trade_group_id') {
+                return `trade_group_id = "${escapeFilterValue(effectiveFilter)}"`;
+            }
+            if (queryMode === 'order_id') {
+                const safe = escapeFilterValue(effectiveFilter);
+                return `(order_id = "${safe}" || broker_order_id = "${safe}")`;
+            }
+            if (queryMode === 'signal_id') {
+                return `signal_id = "${escapeFilterValue(effectiveFilter)}"`;
             }
 
-            return filters.join(' && ');
+            if (searchTerm) {
+                const safe = escapeFilterValue(searchTerm);
+                return `(
+                    symbol ~ "${safe}" ||
+                    order_id ~ "${safe}" ||
+                    broker_order_id ~ "${safe}" ||
+                    signal_id ~ "${safe}" ||
+                    trade_group_id ~ "${safe}" ||
+                    entry_order_unique_id ~ "${safe}" ||
+                    parent_order_unique_id ~ "${safe}" ||
+                    sibling_order_unique_id ~ "${safe}" ||
+                    id ~ "${safe}"
+                )`;
+            }
+
+            const startTime = `${currentDate} 00:00:00`;
+            const endTime = `${currentDate} 23:59:59`;
+            const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
+            const endTimeMs = startTimeMs + 24 * 60 * 60 * 1000;
+            return `((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`;
         }
 
         async function loadDetails() {
             try {
                 currentPage = 1;
-                const searchTerm = getSearchTerm();
-                const filter = buildDetailsFilter(searchTerm);
-                const perPage = queryMode === 'list' ? itemsPerPage : 200;
-
+                const perPage = queryMode === 'list' ? itemsPerPage : 300;
                 const result = await pb.collection('order_details').getList(1, perPage, {
-                    filter: filter,
+                    filter: buildDetailsFilter(getSearchTerm()),
                     sort: '-bar_time_ms,-created',
                     $autoCancel: false
                 });
-                allDetails = result.items || [];
+                allDetails = (result.items || []).map(normalizeDetail);
                 totalItems = result.totalItems || allDetails.length;
-                hasMore = allDetails.length < totalItems;
-                resetPagination();
-                renderDetails();
+                hasMore = queryMode === 'list' && allDetails.length < totalItems;
+                renderContent();
                 updateLoadMoreButton();
             } catch (error) {
-                console.error('加载失败:', error);
+                console.error('加载订单明细失败:', error);
                 if (error.status === 401 || error.status === 403) {
                     handleAuthError();
                     return;
                 }
-                document.getElementById('detailsContainer').innerHTML =
-                    `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${error.message}</div></div>`;
+                document.getElementById('detailsContainer').innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">⚠️</div>
+                        <div class="empty-text">加载失败: ${escapeHtml(error.message || 'unknown error')}</div>
+                    </div>
+                `;
             }
-        }
-
-        function getFilteredDetails() {
-            return allDetails;
-        }
-
-        function getPaginatedDetails() {
-            return allDetails;
-        }
-
-        function updateLoadMoreButton() {
-            const btn = document.getElementById('loadMoreBtn');
-            if (!btn) return;
-            if (queryMode !== 'list') {
-                btn.style.display = 'none';
-                btn.disabled = true;
-                return;
-            }
-            const loadedCount = allDetails.length;
-            const more = loadedCount < totalItems;
-            btn.style.display = more ? 'block' : 'none';
-            btn.textContent = more ? `加载更多 (${loadedCount}/${totalItems})` : `已加载全部 (${loadedCount}/${totalItems})`;
-            btn.disabled = !more;
         }
 
         async function loadMoreDetails() {
-            if (!hasMore) return;
+            if (!hasMore || queryMode !== 'list') return;
             try {
-                const token = getToken();
-                if (!token) return;
-
                 const nextPage = currentPage + 1;
-                const filter = buildDetailsFilter(getSearchTerm());
-
                 const result = await pb.collection('order_details').getList(nextPage, itemsPerPage, {
-                    filter: filter,
+                    filter: buildDetailsFilter(getSearchTerm()),
                     sort: '-bar_time_ms,-created',
                     $autoCancel: false
                 });
-
-                allDetails = [...allDetails, ...result.items];
+                allDetails = [...allDetails, ...(result.items || []).map(normalizeDetail)];
+                totalItems = result.totalItems || allDetails.length;
                 currentPage = nextPage;
-                totalItems = result.totalItems || 0;
                 hasMore = allDetails.length < totalItems;
-
-                displayedDetails = allDetails;
-                renderDetails();
+                renderContent();
                 updateLoadMoreButton();
             } catch (error) {
                 console.error('加载更多失败:', error);
             }
         }
 
-        function resetPagination() {
-            displayedDetails = getPaginatedDetails();
+        function updateLoadMoreButton() {
+            const btn = document.getElementById('loadMoreBtn');
+            if (queryMode !== 'list') {
+                btn.style.display = 'none';
+                btn.disabled = true;
+                return;
+            }
+            const more = allDetails.length < totalItems;
+            btn.style.display = more ? 'block' : 'none';
+            btn.textContent = more ? `加载更多 (${allDetails.length}/${totalItems})` : `已加载全部 (${allDetails.length})`;
+            btn.disabled = !more;
         }
 
-        function renderDetails() {
+        function buildSnapshots(details) {
+            const grouped = new Map();
+            details.forEach((detail) => {
+                const key = detail.order_id || detail.broker_order_id || detail.id;
+                if (!grouped.has(key)) grouped.set(key, []);
+                grouped.get(key).push(detail);
+            });
+
+            return Array.from(grouped.entries()).map(([orderId, events]) => {
+                const sorted = [...events].sort((left, right) => left.time_key - right.time_key);
+                const latest = sorted[sorted.length - 1];
+                return {
+                    order_id: orderId,
+                    events: sorted,
+                    latest,
+                    role: latest.role,
+                    status: latest.status,
+                    time_key: latest.time_key
+                };
+            }).sort((left, right) => {
+                const rolePriority = {
+                    entry: 0,
+                    take_profit: 1,
+                    repair_tp: 1,
+                    stop_loss: 2,
+                    repair_sl: 2
+                };
+                const roleDiff = (rolePriority[left.role] ?? 9) - (rolePriority[right.role] ?? 9);
+                if (roleDiff !== 0) return roleDiff;
+                return right.time_key - left.time_key;
+            });
+        }
+
+        function pickPrimarySnapshot(snapshots) {
+            return snapshots.find((snapshot) => snapshot.role === 'entry')
+                || snapshots.find((snapshot) => snapshot.order_id === snapshot.latest.entry_order_unique_id)
+                || snapshots[0]
+                || null;
+        }
+
+        function renderMetric(label, value) {
+            return `<div class="metric-card"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${value}</div></div>`;
+        }
+
+        function renderDetail(label, value) {
+            return `<div class="detail-item"><div class="detail-label">${escapeHtml(label)}</div><div class="detail-value">${value}</div></div>`;
+        }
+
+        function renderSnapshot(snapshot) {
+            const latest = snapshot.latest;
+            return `
+                <div class="snapshot-card">
+                    <div class="snapshot-head">
+                        <div>
+                            <div class="snapshot-id">${escapeHtml(snapshot.order_id || '-')}</div>
+                            <div class="snapshot-sub">broker=${escapeHtml(latest.broker_order_id || '-')}</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="type-badge ${typeClass(latest.order_type)}">${escapeHtml(latest.order_type || '-')}</span>
+                            <span class="role-badge ${roleClass(latest.role)}">${escapeHtml(getRoleText(latest.role, latest.order_type))}</span>
+                            <span class="status-badge ${statusClass(latest.status)}">${escapeHtml(ORDER_STATUS_TEXT[latest.status] || latest.status || '-')}</span>
+                            <span class="relation-badge ${relationClass(latest.relation_status)}">${escapeHtml(latest.relation_status || '-')}</span>
+                        </div>
+                    </div>
+                    <div class="grid">
+                        ${renderDetail('Qty / Filled', `${escapeHtml(formatQty(latest.quantity))} / ${escapeHtml(formatQty(latest.filled_qty))}`)}
+                        ${renderDetail('Limit / Fill', `${escapeHtml(formatMoney(latest.limit_price))} / ${escapeHtml(formatMoney(latest.fill_price))}`)}
+                        ${renderDetail('parent_order', escapeHtml(latest.parent_order_unique_id || '-'))}
+                        ${renderDetail('sibling_order', escapeHtml(latest.sibling_order_unique_id || '-'))}
+                        ${renderDetail('events', escapeHtml(snapshot.events.length))}
+                        ${renderDetail('last_time', escapeHtml(formatTimePair(latest)))}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderTimelineEvent(detail) {
+            return `
+                <div class="timeline-item">
+                    <div class="timeline-dot dot-${String(detail.status || 'Init').toLowerCase()}"></div>
+                    <div class="event-card">
+                        <div class="event-head">
+                            <div>
+                                <div class="badge-row">
+                                    <span class="type-badge ${typeClass(detail.order_type)}">${escapeHtml(detail.order_type || '-')}</span>
+                                    <span class="role-badge ${roleClass(detail.role)}">${escapeHtml(getRoleText(detail.role, detail.order_type))}</span>
+                                    <span class="status-badge ${statusClass(detail.status)}">${escapeHtml(ORDER_STATUS_TEXT[detail.status] || detail.status || '-')}</span>
+                                </div>
+                                <div class="snapshot-sub" style="margin-top:8px;">order_id=${escapeHtml(detail.order_id || '-')}</div>
+                            </div>
+                            <div class="event-time">${escapeHtml(formatTimePair(detail))}${detail.sequence !== null ? `<br>#${escapeHtml(detail.sequence)}` : ''}</div>
+                        </div>
+                        <div class="grid">
+                            ${renderDetail('trade_group_id', escapeHtml(detail.trade_group_id || '-'))}
+                            ${renderDetail('broker_order_id', escapeHtml(detail.broker_order_id || '-'))}
+                            ${renderDetail('Qty / Filled', `${escapeHtml(formatQty(detail.quantity))} / ${escapeHtml(formatQty(detail.filled_qty))}`)}
+                            ${renderDetail('Limit / Fill', `${escapeHtml(formatMoney(detail.limit_price))} / ${escapeHtml(formatMoney(detail.fill_price))}`)}
+                            ${renderDetail('entry_order', escapeHtml(detail.entry_order_unique_id || '-'))}
+                            ${renderDetail('parent / sibling', `${escapeHtml(detail.parent_order_unique_id || '-')} / ${escapeHtml(detail.sibling_order_unique_id || '-')}`)}
+                        </div>
+                        ${detail.reason ? `<div class="event-note">${escapeHtml(detail.reason)}</div>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderFocusedView() {
             const container = document.getElementById('detailsContainer');
-
-            if (queryMode !== 'list' && allDetails.length > 0) {
-                renderFlowView(container);
+            if (allDetails.length === 0) {
+                container.innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">没有匹配的订单事件</div>
+                    </div>
+                `;
                 return;
             }
 
-            const filtered = displayedDetails;
+            const snapshots = buildSnapshots(allDetails);
+            const primarySnapshot = pickPrimarySnapshot(snapshots);
+            const primary = primarySnapshot?.latest || allDetails[0];
+            const orderedTimeline = [...allDetails].sort((left, right) => left.time_key - right.time_key);
 
-            if (filtered.length === 0) {
-                container.innerHTML = `<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">暂无明细</div></div>`;
+            container.innerHTML = `
+                <div class="focus-card">
+                    <div class="focus-head">
+                        <div>
+                            <div class="focus-symbol">${escapeHtml(primary.symbol || '-')}</div>
+                            <div class="badge-row" style="margin-top:8px;">
+                                <span class="direction-badge ${escapeHtml(primary.direction || 'long')}">${escapeHtml((primary.direction || '-').toUpperCase())}</span>
+                                <span class="status-badge ${statusClass(primary.status)}">${escapeHtml(ORDER_STATUS_TEXT[primary.status] || primary.status || '-')}</span>
+                                <span class="role-badge ${roleClass(primary.role)}">${escapeHtml(getRoleText(primary.role, primary.order_type))}</span>
+                            </div>
+                        </div>
+                        <div class="event-time">${escapeHtml(formatTimePair(primary))}</div>
+                    </div>
+
+                    <div class="chip-row">
+                        <span class="chip">trade_group_id=${escapeHtml(primary.trade_group_id || '-')}</span>
+                        <span class="chip">entry=${escapeHtml(primary.entry_order_unique_id || '-')}</span>
+                        <span class="chip">signal_id=${escapeHtml(primary.signal_id || '-')}</span>
+                    </div>
+
+                    <div class="grid">
+                        ${renderMetric('Events', escapeHtml(allDetails.length))}
+                        ${renderMetric('Orders', escapeHtml(snapshots.length))}
+                        ${renderMetric('Primary QC / Broker', `${escapeHtml(primary.order_id || '-')}<br><span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;">${escapeHtml(primary.broker_order_id || '-')}</span>`)}
+                        ${renderMetric('Latest Qty / Fill', `${escapeHtml(formatQty(primary.quantity))} / ${escapeHtml(formatQty(primary.filled_qty))}`)}
+                    </div>
+                </div>
+
+                <div class="section-title">Order Relationship Tree</div>
+                <div class="relationship-board">
+                    ${snapshots.map(renderSnapshot).join('')}
+                </div>
+
+                <div class="section-title">Event Timeline</div>
+                <div class="timeline">
+                    ${orderedTimeline.map(renderTimelineEvent).join('')}
+                </div>
+
+                <div class="action-row">
+                    ${primary.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(primary.signal_id)}')">📡 查看信号</button>` : ''}
+                    ${primary.trade_group_id ? `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(primary.trade_group_id)}')">🔁 刷新本交易组</button>` : ''}
+                </div>
+            `;
+        }
+
+        function renderListCard(detail) {
+            return `
+                <div class="list-card">
+                    <div class="list-card-head">
+                        <div>
+                            <div class="list-title">${escapeHtml(detail.symbol || '-')}</div>
+                            <div class="badge-row" style="margin-top:8px;">
+                                <span class="direction-badge ${escapeHtml(detail.direction || 'long')}">${escapeHtml((detail.direction || '-').toUpperCase())}</span>
+                                <span class="type-badge ${typeClass(detail.order_type)}">${escapeHtml(detail.order_type || '-')}</span>
+                                <span class="role-badge ${roleClass(detail.role)}">${escapeHtml(getRoleText(detail.role, detail.order_type))}</span>
+                                <span class="status-badge ${statusClass(detail.status)}">${escapeHtml(ORDER_STATUS_TEXT[detail.status] || detail.status || '-')}</span>
+                            </div>
+                        </div>
+                        <div class="event-time">${escapeHtml(formatTimePair(detail))}</div>
+                    </div>
+
+                    <div class="chip-row">
+                        <span class="chip">trade_group_id=${escapeHtml(detail.trade_group_id || '-')}</span>
+                        <span class="chip">order_id=${escapeHtml(detail.order_id || '-')}</span>
+                        <span class="chip">broker=${escapeHtml(detail.broker_order_id || '-')}</span>
+                    </div>
+
+                    <div class="grid">
+                        ${renderDetail('signal_id', escapeHtml(detail.signal_id || '-'))}
+                        ${renderDetail('relation', `${escapeHtml(detail.relation_status || '-')} / ${escapeHtml(detail.parent_order_unique_id || '-')}`)}
+                        ${renderDetail('Qty / Filled', `${escapeHtml(formatQty(detail.quantity))} / ${escapeHtml(formatQty(detail.filled_qty))}`)}
+                        ${renderDetail('Limit / Fill', `${escapeHtml(formatMoney(detail.limit_price))} / ${escapeHtml(formatMoney(detail.fill_price))}`)}
+                    </div>
+
+                    ${detail.reason ? `<div class="event-note">${escapeHtml(detail.reason)}</div>` : ''}
+
+                    <div class="action-row">
+                        <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(detail.trade_group_id)}')">📜 交易组</button>
+                        <button class="action-btn btn-secondary" onclick="viewOrder('${encodeURIComponent(detail.order_id || detail.broker_order_id)}')">🔎 订单轨迹</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderContent() {
+            if (queryMode === 'list') {
+                const container = document.getElementById('detailsContainer');
+                if (allDetails.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty">
+                            <div class="empty-icon">📭</div>
+                            <div class="empty-text">暂无订单事件</div>
+                        </div>
+                    `;
+                    return;
+                }
+                container.innerHTML = allDetails.map(renderListCard).join('');
                 return;
             }
-            container.innerHTML = filtered.map(renderDetailCard).join('');
+            renderFocusedView();
         }
 
         function onSearchChange() {
             if (queryMode !== 'list') return;
             if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-            searchDebounceTimer = setTimeout(() => {
-                loadDetails();
-            }, 180);
+            searchDebounceTimer = setTimeout(loadDetails, 180);
         }
 
-        function formatBarTimeMsToET(barTimeMs) {
-            if (!barTimeMs) return '-';
-            const d = new Date(parseInt(barTimeMs));
-            const et = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-            return et.toLocaleString('en-US', {
-                timeZone: 'America/New_York',
-                month: '2-digit', day: '2-digit',
-                hour: '2-digit', minute: '2-digit', second: '2-digit',
-                hour12: false
-            });
-        }
-
-        function renderFlowView(container) {
-            const detail = allDetails[0];
-            const symbol = detail?.symbol || 'N/A';
-            const direction = detail?.direction || '';
-            const signalId = detail?.signal_id || '';
-            const orderId = detail?.order_id || '';
-
-            const sorted = [...allDetails].sort((a, b) =>
-                new Date(a.us_time || a.created) - new Date(b.us_time || b.created)
-            );
-
-            container.innerHTML = `
-                <div class="signal-card">
-                    <div class="signal-header">
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <span class="signal-symbol">${symbol}</span>
-                            <span class="signal-direction ${direction}">${direction.toUpperCase()}</span>
-                        </div>
-                        ${signalId ? `<span class="signal-label">📡 ${signalId}</span>` : ''}
+        function renderModeHeader() {
+            if (queryMode === 'list') return;
+            const row = document.getElementById('searchRow');
+            const backUrl = queryMode === 'signal_id'
+                ? `/signals.html?signal_id=${encodeURIComponent(effectiveFilter)}&date=${encodeURIComponent(currentDate)}`
+                : `/orders.html?date=${encodeURIComponent(currentDate)}`;
+            row.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <a class="back-btn" href="${backUrl}">← 返回</a>
+                    <div class="refresh-control">
+                        <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()">🔄</button>
+                        <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
+                            <option value="0">关闭</option>
+                            <option value="5">5秒</option>
+                            <option value="30" selected>30秒</option>
+                            <option value="60">1分钟</option>
+                        </select>
                     </div>
                 </div>
-                <div class="flow-timeline">
-                    ${sorted.map((detail, i) => {
-                        const extra = detail.extra || {};
-                        const evt = detail.order_type || 'Entry';
-                        const sts = (detail.status || 'Init').toLowerCase();
-                        const statusText = { 'init':'初始化','submitted':'已提交','filled':'已成交','canceled':'已取消','closed':'已平仓' }[sts] || detail.status || '';
-                        return `
-                        <div class="flow-item">
-                            <div class="flow-dot flow-${sts}"></div>
-                            <div class="flow-card">
-                                <div class="flow-event-row">
-                                    <div style="display:flex;gap:6px;align-items:center;">
-                                        <span class="event-badge event-${evt.toLowerCase()}">${evt}</span>
-                                        <span class="event-badge event-${sts}">${statusText}</span>
-                                    </div>
-                                    <span class="flow-time">
-                                        ${detail.us_time ? detail.us_time + ' ET' : '-'}
-                                        ${detail.cn_time ? ' / ' + detail.cn_time + ' CN' : ''}
-                                        ${detail.bar_time_ms ? `<br><span style="font-size:10px;opacity:0.7;">⏱ ${formatBarTimeMsToET(detail.bar_time_ms)}</span>` : ''}
-                                    </span>
-                                </div>
-                                <div class="signal-grid">
-                                    <div class="signal-item"><div class="signal-label">PB记录ID</div><div class="signal-value" style="font-size:10px;word-break:break-all;">${detail.id || '-'}</div></div>
-                                    <div class="signal-item"><div class="signal-label">限价</div><div class="signal-value">${extra.limit_price != null ? '$' + Number(extra.limit_price).toFixed(2) : '-'}</div></div>
-                                    <div class="signal-item"><div class="signal-label">成交价</div><div class="signal-value">${extra.fill_price != null ? '$' + Number(extra.fill_price).toFixed(2) : '-'}</div></div>
-                                    <div class="signal-item"><div class="signal-label">数量</div><div class="signal-value">${extra.quantity != null ? extra.quantity : '-'}</div></div>
-                                    <div class="signal-item"><div class="signal-label">已成交</div><div class="signal-value">${extra.filled_qty != null ? extra.filled_qty : '-'}</div></div>
-                                    ${extra.tp_price ? `<div class="signal-item"><div class="signal-label">止盈</div><div class="signal-value">$${Number(extra.tp_price).toFixed(2)}</div></div>` : ''}
-                                    ${extra.sl_price ? `<div class="signal-item"><div class="signal-label">止损</div><div class="signal-value">$${Number(extra.sl_price).toFixed(2)}</div></div>` : ''}
-                                    ${extra.sequence != null ? `<div class="signal-item"><div class="signal-label">序号</div><div class="signal-value">#${extra.sequence}</div></div>` : ''}
-                                </div>
-                                ${detail.reason ? `<div class="signal-note">${detail.reason}</div>` : ''}
-                            </div>
-                        </div>`;
-                    }).join('')}
-                </div>
-                ${signalId ? `
-                <div style="margin-top:12px;">
-                    <a href="/signals.html?signal_id=${signalId}&date=${currentDate}" class="action-btn btn-view" style="display:block;text-align:center;text-decoration:none;">📡 查看关联信号</a>
-                </div>` : ''}
+                <div class="query-note">当前查询: ${escapeHtml(queryMode)} = ${escapeHtml(effectiveFilter)}</div>
             `;
         }
 
-        function renderDetailCard(detail) {
-            const extra = detail.extra || {};
-            const evt = detail.order_type || 'Entry';
-            const sts = (detail.status || 'Init').toLowerCase();
-            const statusText = { 'init':'初始化','submitted':'已提交','filled':'已成交','canceled':'已取消','closed':'已平仓' }[sts] || detail.status || '';
-            const signalId = detail.signal_id || '';
-            const orderId = detail.order_id || '';
+        function viewSignal(signalId) {
+            const decoded = decodeURIComponent(signalId);
+            location.href = `/signals.html?signal_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+        }
 
-            return `
-                <div class="signal-card">
-                    <div class="signal-header">
-                        <div style="display:flex;justify-content:space-between;align-items:center;">
-                            <div style="display:flex;align-items:center;gap:8px;">
-                                <span class="signal-symbol">${detail.symbol || 'N/A'}</span>
-                                <span class="signal-direction ${detail.direction}">${(detail.direction || '').toUpperCase()}</span>
-                                <span class="event-badge event-${sts}">${statusText}</span>
-                            </div>
-                            <span class="event-badge event-${evt.toLowerCase()}">${evt}</span>
-                        </div>
-                        <div class="flow-time" style="margin-top:6px;">
-                            ${detail.us_time ? detail.us_time + ' ET' : '-'}${detail.cn_time ? ' / ' + detail.cn_time + ' CN' : ''}
-                        </div>
-                    </div>
-                    <div class="signal-grid">
-                        <div class="signal-item"><div class="signal-label">PB记录ID</div><div class="signal-value" style="font-size:10px;word-break:break-all;">${detail.id || '-'}</div></div>
-                        <div class="signal-item"><div class="signal-label">QC 订单ID</div><div class="signal-value" style="font-size:10px;word-break:break-all;">${orderId || '-'}</div></div>
-                        ${detail.order_id && detail.order_id !== orderId ? `<div class="signal-item"><div class="signal-label">IB 订单ID</div><div class="signal-value" style="font-size:10px;">${detail.order_id}</div></div>` : ''}
-                        ${signalId ? `<div class="signal-item"><div class="signal-label">信号ID</div><div class="signal-value" style="font-size:10px;">${signalId}</div></div>` : ''}
-                        <div class="signal-item"><div class="signal-label">限价</div><div class="signal-value">${extra.limit_price != null ? '$' + Number(extra.limit_price).toFixed(2) : '-'}</div></div>
-                        <div class="signal-item"><div class="signal-label">成交价</div><div class="signal-value">${extra.fill_price != null ? '$' + Number(extra.fill_price).toFixed(2) : '-'}</div></div>
-                        <div class="signal-item"><div class="signal-label">数量</div><div class="signal-value">${extra.quantity != null ? extra.quantity : '-'}</div></div>
-                        <div class="signal-item"><div class="signal-label">已成交</div><div class="signal-value">${extra.filled_qty != null ? extra.filled_qty : '-'}</div></div>
-                        ${extra.tp_price ? `<div class="signal-item"><div class="signal-label">止盈</div><div class="signal-value">$${Number(extra.tp_price).toFixed(2)}</div></div>` : ''}
-                        ${extra.sl_price ? `<div class="signal-item"><div class="signal-label">止损</div><div class="signal-value">$${Number(extra.sl_price).toFixed(2)}</div></div>` : ''}
-                    </div>
-                    ${detail.reason ? `<div class="signal-note">${detail.reason}</div>` : ''}
-                    ${signalId ? `
-                    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-                        <a href="/signals.html?signal_id=${signalId}&date=${currentDate}" class="action-btn btn-view" style="display:block;text-align:center;text-decoration:none;">📡 查看关联信号</a>
-                    </div>` : ''}
-                </div>
-            `;
+        function viewTradeGroup(groupId) {
+            const decoded = decodeURIComponent(groupId);
+            location.href = `/order_details.html?trade_group_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+        }
+
+        function viewOrder(orderId) {
+            const decoded = decodeURIComponent(orderId);
+            location.href = `/order_details.html?order_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
         }
 
         function manualRefresh() {
             const btn = document.getElementById('refreshBtn');
-            btn.classList.add('spinning');
-            setTimeout(() => btn.classList.remove('spinning'), 600);
+            if (btn) {
+                btn.classList.add('spinning');
+                setTimeout(() => btn.classList.remove('spinning'), 600);
+            }
             loadDetails();
         }
 
         function changeRefreshInterval(seconds) {
-            currentInterval = parseInt(seconds);
+            currentInterval = Number(seconds) || 0;
             if (refreshTimer) {
                 clearInterval(refreshTimer);
                 refreshTimer = null;
@@ -666,47 +994,32 @@
             }
         }
 
-        window.onDateChange = function(startDate, endDate) {
+        window.onDateChange = function(startDate) {
             currentDate = startDate;
             loadDetails();
         };
 
         document.addEventListener('DOMContentLoaded', async () => {
-            await initAuth();
+            if (!initAuth()) return;
+
             document.getElementById('nav').innerHTML = renderNav('/order_details.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
+            const dateInput = document.getElementById('customDate');
+            if (dateInput) dateInput.value = currentDate;
+            if (queryMode !== 'list') renderModeHeader();
 
-            // 非列表模式：隐藏搜索框，显示返回按钮
-            if (queryMode !== 'list') {
-                const searchRow = document.querySelector('.search-row');
-                const datePicker = searchRow?.querySelector('#datePicker');
-                const searchInput = searchRow?.querySelector('#searchInput');
-                if (datePicker) datePicker.style.display = 'none';
-                if (searchInput) searchInput.style.display = 'none';
-
-                const backUrl = queryMode === 'signal_id'
-                    ? `/signals.html?date=${currentDate}`
-                    : '/orders.html';
-                const backLabel = queryMode === 'signal_id' ? '← 返回信号' : '← 返回订单';
-                if (searchRow) {
-                    searchRow.innerHTML = `<a href="${backUrl}" class="back-btn">${backLabel}</a>`;
-                }
-            }
-
-            loadDetails();
+            await loadDetails();
             changeRefreshInterval(30);
 
-            // 向下滚动自动加载更多
             let isLoadingMore = false;
             window.addEventListener('scroll', () => {
+                if (queryMode !== 'list' || !hasMore || isLoadingMore) return;
                 const scrollTop = window.scrollY || document.documentElement.scrollTop;
                 const scrollHeight = document.documentElement.scrollHeight;
                 const clientHeight = document.documentElement.clientHeight;
                 if (scrollTop + clientHeight >= scrollHeight - 200) {
-                    if (!isLoadingMore && hasMore && queryMode === 'list') {
-                        isLoadingMore = true;
-                        loadMoreDetails().finally(() => { isLoadingMore = false; });
-                    }
+                    isLoadingMore = true;
+                    loadMoreDetails().finally(() => { isLoadingMore = false; });
                 }
             });
         });

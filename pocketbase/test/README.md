@@ -1,244 +1,156 @@
-# PocketBase API 总览
+# PocketBase 测试与订单关系总览
 
-## 系统架构
+## 核心目标
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              TradingView                                     │
-│                     (Pine Script 策略信号/指标)                             │
-└─────────────────────────────┬───────────────────────────────────────────────┘
-                              │ HTTP POST
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         PocketBase Webhook                                   │
-│                                                                            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │ webhook_tv  │  │  signals    │  │  orders     │  │  reverse_signals   │ │
-│  │             │  │             │  │             │  │                    │ │
-│  │ /webhook/tv │  │ /api/custom │  │ /api/custom │  │  /api/custom       │ │
-│  │             │  │ /signals/*  │  │ /orders/*   │  │  /reverse/*        │ │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────────┬────────┘ │
-│         │                 │                 │                     │         │
-└─────────┼─────────────────┼─────────────────┼─────────────────────┼─────────┘
-          │                 │                 │                     │
-          ▼                 ▼                 ▼                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            数据层                                            │
-│  ┌─────────┐  ┌─────────────┐  ┌─────────┐  ┌─────────────────────────┐    │
-│  │ signals │  │  indicators │  │ orders  │  │  reverse_signals        │    │
-│  └─────────┘  └─────────────┘  └─────────┘  └─────────────────────────┘    │
-│  ┌─────────────────┐                    ┌─────────────────────────────────┐ │
-│  │ order_details   │                    │  config                         │ │
-│  └─────────────────┘                    └─────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-          │                 │                 │                     │
-          │                 │                 │                     │
-          ▼                 ▼                 ▼                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         飞书通知 (Feishu)                                    │
-│                                                                            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────────────┐│
-│  │ 信号卡片     │  │ 订单卡片     │  │ 异常/逆向信号通知                    ││
-│  │ (带按钮)    │  │ (带按钮)    │  │                                     ││
-│  └─────────────┘  └─────────────┘  └─────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+当前链路的重点不再是“单条订单状态同步”，而是“一个 trade group 内主单、止盈单、止损单的完整关系与事件时间线”。
+
+这套模型同时覆盖：
+
+- `quant_trading` 内部订单生命周期
+- PocketBase 的 `orders` / `order_details`
+- `pb_public/orders.html` 与 `pb_public/order_details.html`
+- `ai_assistant/pocketbase/test/pb-flow.sh`
 
 ---
 
-## 数据表结构
+## 统一关系字段
 
-### signals（信号表）
+以下字段是正式字段，优先级高于 `extra.*` 中的兼容字段：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | PB 记录ID |
-| `signal_id` | string | 业务信号ID（唯一） |
-| `symbol` | string | 股票代码 |
-| `direction` | string | `long` / `short` |
-| `entry` | number | 入场价 |
-| `stop_loss` | number | 止损价 |
-| `take_profit` | number | 止盈价 |
-| `shares` | number | 股数 |
-| `rr` | string | 风报比 |
-| `status` | string | `pending` / `executed` / `expired` / `rejected` / `closed` / `awaiting_confirm` |
-| `extra` | json | 附加数据 |
-| `bar_time_ms` | number | K线时间戳 |
-| `us_time` | string | 美国时间 |
-| `date` | string | 日期（YYYY-MM-DD） |
-
-### indicators（指标表）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | PB 记录ID |
-| `symbol` | string | 股票代码 |
-| `interval` | string | 时间周期 |
-| `bar_time_ms` | number | K线时间戳（去重key） |
-| `extra` | json | 所有指标数据 |
-
-### orders（订单表）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | PB 记录ID |
-| `unique_id` | string | 订单唯一ID（去重key） |
-| `order_id` | string | 券商订单ID |
-| `order_type` | string | `Entry` / `Exit` |
-| `symbol` | string | 股票代码 |
-| `direction` | string | `long` / `short` |
-| `status` | string | `Submitted` / `Filled` / `Canceled` / `Closed` |
-| `signal_id` | string | 关联信号ID |
-| `pnl` | number | 盈亏 |
-| `extra` | json | 附加数据 |
-
-### reverse_signals（逆向信号表）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | PB 记录ID |
-| `symbol` | string | 股票代码 |
-| `direction` | string | 当前持仓方向 |
-| `source` | string | `signal` / `indicator` |
-| `priority` | number | 优先级（1最高） |
-| `strength` | string | `weak` / `medium` / `strong` |
-| `score` | number | 逆向信号分数 |
-| `action_type` | string | `close` / `adjust_sl` / `cancel` |
-| `status` | string | `pending` / `confirmed` / `cancelled` / `expired` |
-| `extra` | json | 包含原始信号ID等 |
+| 字段 | 说明 |
+|------|------|
+| `unique_id` | QC 侧唯一订单 ID，PocketBase 以它做单条订单主键 |
+| `broker_order_id` | 券商 / broker 原始订单 ID |
+| `trade_group_id` | 同一笔交易组 ID，当前实现中等于主入场单 `unique_id` |
+| `entry_order_unique_id` | 主入场单 `unique_id` |
+| `parent_order_unique_id` | 子单的父单，通常是主入场单 |
+| `sibling_order_unique_id` | 同级对手单，例如 TP 的 sibling 是 SL |
+| `role` | `entry` / `take_profit` / `stop_loss` / `repair_tp` / `repair_sl` |
+| `relation_status` | `active` / `closed` / `orphaned` |
+| `position_side` | `long` / `short` |
 
 ---
 
-## 完整信号流程
+## 真实执行链路
 
-```
-                              ┌──────────────────┐
-                              │  TradingView     │
-                              │  Pine Script     │
-                              └────────┬─────────┘
-                                       │ type="signal"
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  POST /webhook/tv                                                            │
-│  ┌────────────────────────────────────────────────────────────────────────┐ │
-│  │ 1. 验证必填字段                                                         │ │
-│  │ 2. 去重检查（signal_id）                                                │ │
-│  │ 3. 写入 signals 表                                                      │ │
-│  │    - 状态：pending 或 awaiting_confirm（根据 auto_confirm 配置）         │ │
-│  │ 4. 发送飞书通知（带确认/拒绝按钮）                                        │ │
-│  │ 5. 检测逆向信号（查询冲突持仓）                                            │ │
-│  │    - 有冲突 → 写入 reverse_signals 表                                    │ │
-│  └────────────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────┬───────────────────────────────────────┘
-                                     │
-                    ┌─────────────────┴─────────────────┐
-                    ▼                                   ▼
-        ┌───────────────────┐               ┌───────────────────┐
-        │  signals 表        │               │  reverse_signals   │
-        │  status=pending    │               │  (如有冲突)        │
-        └─────────┬─────────┘               └─────────┬─────────┘
-                  │                                   │
-                  │  QC 轮询                          │ QC 轮询
-                  ▼                                   ▼
-        ┌───────────────────┐               ┌───────────────────┐
-        │ GET /signals/pending│              │GET /reverse/pending│
-        └─────────┬─────────┘               └─────────┬─────────┘
-                  │                                   │
-                  │ 拉取待处理                          │ 拉取待处理
-                  ▼                                   ▼
-        ┌───────────────────┐               ┌───────────────────┐
-        │  QC 执行下单       │               │  QC 执行操作       │
-        │  - IBKR API        │               │  - cancel          │
-        └─────────┬─────────┘               │  - close           │
-                  │                         │  - adjust_sl       │
-                  │ 写入订单                               │
-                  ▼                                   ▼
-        ┌───────────────────────────────────────────────────────────┐
-        │  POST /api/custom/orders/upsert                            │
-        │  - 首次 Submitted → 发送交互式订单卡片（带取消/平仓按钮）      │
-        │  - Filled → 发送成交通知                                    │
-        │  - Canceled → 发送取消通知                                  │
-        │  - Closed → 发送平仓通知                                    │
-        └───────────────────────────────────────────────────────────┘
-```
+### 1. 信号进入 PB
 
----
+TradingView 调用 `POST /webhook/tv`：
 
-## 订单生命周期
+- 写入 `signals`
+- 如需人工确认，则飞书卡片先停在 `awaiting_confirm`
+- 如已存在反向持仓或反向挂单，可额外生成 `reverse_signals`
 
-```
-┌─────────────┐
-│  QC 下单    │
-└──────┬──────┘
-       │ POST /orders/upsert (status=Submitted)
-       ▼
-┌─────────────┐     ┌─────────────┐
-│  Submitted  │────▶│  Filled     │
-│  (挂单中)   │     │  (已成交)    │
-└──────┬──────┘     └──────┬──────┘
-       │                   │
-       │ 点击"取消挂单"      │ 点击"平仓"
-       ▼                   ▼
-┌─────────────┐     ┌─────────────┐
-│  Canceled   │     │   Closed    │
-│  (已取消)   │     │   (已平仓)  │
-└─────────────┘     └─────────────┘
-```
+### 2. QC 认领信号并创建 Init 主单
 
----
+QC 调用 `POST /api/custom/signals/ack`：
 
-## 定时任务
+- 将 `signals.status` 更新为 `executed`
+- 创建 `orders` 主单记录，状态固定初始化为 `Init`
+- 同时写入第一条 `order_details`
 
-### signal_expiry_check
+主单在这一刻就必须携带：
 
-每分钟执行一次，检查 `pending` 信号是否超时。
+- `trade_group_id`
+- `entry_order_unique_id`
+- `role=entry`
+- `relation_status=active`
+- `position_side`
+- `broker_order_id`
 
-```
-cron: "* * * * *"
-逻辑：
-1. 读取 config.signal_validity_minutes（默认30分钟）
-2. 查询 bar_time_ms <= (当前时间 - 有效期) 的 pending 信号
-3. 批量更新 status = "expired"
-```
+### 3. QC 持续同步主单状态
+
+QC 后续通过 `POST /api/custom/orders/upsert` 更新同一条主单：
+
+- `Submitted`
+- `Filled`
+- `Canceled`
+- `Closed`
+
+每次 upsert 都会追加一条 `order_details` 事件。
+
+### 4. 主单成交后创建 TP / SL 子单
+
+一旦 Entry 成交：
+
+- QC 在本地创建 TP / SL bracket orders
+- PocketBase 中每个子单都是独立 `orders` 记录
+- 两个子单共享同一个 `trade_group_id`
+- 两个子单都指向 `parent_order_unique_id = entry_order_unique_id`
+- 两个子单互相填写 `sibling_order_unique_id`
+
+### 5. 子单成交时处理对手单
+
+实际逻辑不是“只更新成交那一条单”，而是：
+
+- TP 成交：TP = `Filled`，SL = `Canceled`
+- SL 成交：SL = `Filled`，TP = `Canceled`
+
+这两个事件都要写入 `orders` 和 `order_details`，页面才能正确展示父子关系和收尾状态。
+
+### 6. 页面动作语义
+
+`/webhook/order/cancel`
+
+- 只允许取消主入场单
+- 子单不能直接取消
+
+`/webhook/order/close`
+
+- 不是只改一条记录
+- 会关闭整个 `trade_group_id`
+- 主单变为 `Closed`
+- 相关子单变为 `Canceled`
+
+### 7. 逆向信号
+
+QC 处理 `reverse_signals` 后回写 `POST /api/custom/reverse/ack`：
+
+- `order_id`
+- `signal_id_orig`
+- `trade_group_id`
+- `entry_order_unique_id`
+
+这样页面和测试数据能定位到对应交易组，而不是只看到一条孤立 reverse 记录。
 
 ---
 
-## 认证说明
+## 页面对应关系
 
-| 端点类型 | 认证方式 |
-|----------|----------|
-| `/webhook/*` | 无 |
-| `/api/custom/*` | - |
+### `pb_public/orders.html`
 
-> 认证功能暂时关闭，以后可能会加。
+- 以 `trade_group_id` 聚合展示
+- 一个卡片代表一个交易组
+- 卡片内完整展示主单、TP、SL、父子关系、sibling 关系、broker id、relation status
 
----
+### `pb_public/order_details.html`
 
-## 文档目录
-
-1. [Webhook 接收](./webhook.md) - TradingView 数据入口
-2. [信号管理 API](./signals.md) - 信号操作与飞书按钮
-3. [订单管理 API](./orders.md) - 订单 Upsert 与操作
-4. [逆向信号 API](./reverse_signals.md) - 反转信号检测与处理
-5. [配置参考](./config.md) - 系统配置项
-6. [原始 curl 测试用例](./curl.md) - 所有 API 的 curl 示例
+- 列表模式下展示事件卡片
+- 支持 `trade_group_id` / `order_id` / `signal_id` / `id` 查询
+- trade group 查询模式下展示：
+  - 订单关系树
+  - 全量事件时间线
 
 ---
 
-## 常见问题
+## `pb-flow.sh` 当前测试语义
 
-### Q: 信号状态为什么不变化？
+| 步骤 | 语义 |
+|------|------|
+| `1` | 发送测试信号 |
+| `5` | QC 确认信号，创建带正式关系字段的 Entry Init |
+| `6` | Entry 更新为 `Submitted` |
+| `7` | Entry 更新为 `Filled` |
+| `8` | TP 更新为 `Filled`，同时 SL 更新为 `Canceled` |
+| `9` | SL 更新为 `Filled`，同时 TP 更新为 `Canceled` |
+| `O` | 页面取消主入场单 |
+| `P` | 页面关闭整个交易组 |
+| `C` | reverse ack，回写交易组定位字段 |
 
-检查 `config.signal_auto_confirm` 配置，默认为 `true`（自动确认）。
+---
 
-### Q: 逆向信号没有触发？
+## 相关文档
 
-1. 检查是否有冲突持仓（方向相反的订单）
-2. 检查 `reverse_signal_threshold` 配置
-3. 查看 PocketBase 日志 `[Webhook] 逆向信号检测失败`
-
-### Q: 订单没有收到通知？
-
-1. 检查 `orders` 表是否有对应记录
-2. 检查飞书 Webhook 是否正常
-3. 查看 PocketBase 日志 `[Feishu] 订单通知失败`
+- [signals.md](./signals.md)
+- [orders.md](./orders.md)
+- [reverse_signals.md](./reverse_signals.md)

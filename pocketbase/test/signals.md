@@ -1,275 +1,116 @@
 # 信号管理 API
 
-## 目录
-- [端点总览](#端点总览)
-- [QC 拉取待确认信号](#qc-拉取待确认信号)
-- [QC 确认信号已处理](#qc-确认信号已处理)
-- [飞书按钮回调](#飞书按钮回调)
-- [状态流转图](#状态流转图)
+## 端点
 
----
-
-## 端点总览
-
-| 方法 | 端点 | 认证 | 说明 |
-|------|------|------|------|
-| POST | `/webhook/tv` | - | TradingView Webhook 信号接收 |
-| GET | `/api/custom/signals/pending` | - | QC 拉取待执行信号 |
-| POST | `/api/custom/signals/ack` | - | QC 确认信号已处理 |
-| POST | `/webhook/feishu/callback` | - | 飞书按钮回调（确认/拒绝） |
-
-> **订单操作**（取消/平仓）已移至 [订单管理 API](./orders.md)。
-> **Webhook 详细说明**请参考 [Webhook API](./webhook.md)。
-
----
-
-## QC 拉取待确认信号
-
-拉取指定日期内所有状态为 `pending` 的信号。
-
-### 请求
-
-```
-GET /api/custom/signals/pending?date=2026-02-02
-```
-
-| 参数 | 类型 | 说明 |
+| 方法 | 端点 | 说明 |
 |------|------|------|
-| `date` | string | 可选，格式 `YYYY-MM-DD`，默认当天美东时间 |
-
-### 请求示例
-
-```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/signals/pending?date=2026-02-02"
-```
-
-### 响应
-
-```json
-{
-  "signals": [
-    {
-      "id": "record_id",
-      "signal_id": "AAPL_20260202_1000_trend_U",
-      "symbol": "AAPL",
-      "direction": "long",
-      "signal": "trend_sdUpper",
-      "entry": 242.79,
-      "stop_loss": 241.14,
-      "take_profit": 245.26,
-      "limit_price": 244.00,
-      "shares": 42,
-      "rr": "1.5:1",
-      "reason": "SD上轨→顺势做多(fractal↑+EMA-touch↑[ema慢线]+div↑[cRSI+OBV])",
-      "date": "2026-02-02",
-      "us_time": "2026-02-02 10:00:00",
-      "bar_time_ms": 1770015600000,
-      "extra": {
-        "day_change_pct": 1.27,
-        "atr_pct": 0.23,
-        "sl_atr_ratio": 3.0
-      },
-      "created": "2026-02-02 10:00:00"
-    }
-  ]
-}
-```
+| `POST` | `/webhook/tv` | 接收 TradingView 信号或指标 |
+| `GET` | `/api/custom/signals/pending?date=YYYY-MM-DD` | QC 拉取待执行信号 |
+| `POST` | `/api/custom/signals/ack` | QC 确认信号并创建 Entry Init |
+| `POST` | `/webhook/feishu/callback` | 飞书确认 / 拒绝信号 |
 
 ---
 
-## QC 确认信号已处理
+## 信号状态流转
 
-QC 处理完信号后回调，更新信号状态。
+常见状态：
 
-### 请求
+- `awaiting_confirm`
+- `pending`
+- `executed`
+- `rejected`
+- `expired`
+- `closed`
 
-```
-POST /api/custom/signals/ack
-```
+其中订单链路真正开始的节点是：
 
-### 请求示例
+- 信号已进入 `pending`
+- QC 拉取后调用 `signals/ack`
+
+---
+
+## `signals/ack` 的实际作用
+
+`POST /api/custom/signals/ack` 不是只改信号状态。
+
+它会同时做两件事：
+
+1. 把 `signals.status` 改成 `executed`
+2. 在 `orders` 中创建主入场单的 `Init` 记录
+
+因此 `order` 对象必须从一开始就带正式关系字段，而不是只靠 `extra`。
+
+---
+
+## 请求示例
 
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "signal_id": "AAPL_20260202_1000_trend_U",
-      "status": "executed",
-      "note": "Order placed successfully",
-      "order": {
-        "unique_id": "12345",
-        "order_type": "Entry",
-        "direction": "long",
-        "quantity": 42,
-        "limit_price": 244.00,
-        "filled_qty": 0,
-        "fill_price": 0,
-        "stop_loss": 241.14,
-        "take_profit": 245.26,
-        "order_time": "2026-02-02 10:30:00",
-        "us_time": "2026-02-02 10:30:00",
-        "cn_time": "2026-02-02 18:30:00",
-        "bar_time_ms": 1770017400000,
-        "extra": {}
+  -H "Content-Type: application/json" \
+  -d '{
+    "signal_id": "AAPL_20260331_093000_sig",
+    "status": "executed",
+    "note": "QC ack signal and create init entry",
+    "order": {
+      "unique_id": "test_AAPL_20260331_093000_sig_entry",
+      "order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+      "broker_order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+      "order_type": "Entry",
+      "direction": "long",
+      "position_side": "long",
+      "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
+      "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+      "role": "entry",
+      "relation_status": "active",
+      "quantity": 100,
+      "limit_price": 185.00,
+      "filled_qty": 0,
+      "fill_price": 0,
+      "stop_loss": 181.00,
+      "take_profit": 192.50,
+      "order_time": "2026-03-31 09:30:00",
+      "us_time": "2026-03-31 09:30:00",
+      "cn_time": "2026-03-31 21:30:00",
+      "bar_time_ms": 1774949400000,
+      "extra": {
+        "reason": "init entry from signals/ack"
       }
-    }'
-```
-
-### 请求参数
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `signal_id` | string | 是 | 信号唯一ID |
-| `status` | string | 否 | 新状态，默认 `"executed"` |
-| `note` | string | 否 | 备注信息 |
-| `order` | object | 否 | 订单信息，QC 下单成功后传入，用于在 PB 中创建 `orders` 记录 |
-
-### order 对象字段
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `unique_id` | string | 是 | 券商订单ID，作为订单唯一标识 |
-| `order_type` | string | 是 | 订单类型，如 `"Entry"` |
-| `direction` | string | 是 | 方向，`"long"` 或 `"short"` |
-| `quantity` | number | 是 | 数量 |
-| `limit_price` | number | 是 | 限价 |
-| `filled_qty` | number | 否 | 已成交数量，默认 `0` |
-| `fill_price` | number | 否 | 成交价格，默认 `0` |
-| `stop_loss` | number | 否 | 止损价格 |
-| `take_profit` | number | 否 | 止盈价格 |
-| `order_time` | string | 否 | 下单时间，格式 `YYYY-MM-DD HH:MM:SS`（美东时间） |
-| `us_time` | string | 否 | 美东时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
-| `cn_time` | string | 否 | 北京时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时自动计算） |
-| `bar_time_ms` | number | 否 | Bar 时间戳（毫秒），对应 PB orders 表的 `bar_time_ms` 字段 |
-| `extra` | object | 否 | 扩展信息（QC 可传入 signal.extra 等补充数据），会写入 `order_details.extra` |
-
-> **说明**：调用成功后，PB 会自动在 `orders` 表创建一条记录（`order_type=Entry`, `status=Init`），并在 `order_details` 表创建一条初始事件记录（`order_type=Entry`, `sequence=1`）。后续 QC 订单状态变化通过 `orders/upsert` 更新。
-
-### 响应
-
-```json
-{
-  "success": true,
-  "signal_id": "AAPL_20260202_1000_trend_U",
-  "status": "executed"
-}
+    }
+  }'
 ```
 
 ---
 
-## 飞书按钮回调
+## `order` 对象关键字段
 
-用户在飞书消息中点击"确认"或"拒绝"按钮，调用此接口处理回调。
-
-### 请求
-
-```
-POST /webhook/feishu/callback
-```
-
-### 确认操作
-
-**状态检查逻辑：**
-
-| 当前状态 | 行为 |
-|----------|------|
-| `awaiting_confirm` | 更新为 `pending`，返回成功 |
-| `pending` | 返回"信号已确认，请勿重复操作" |
-| `expired` | 返回"该信号已过期，无法确认" |
-| `rejected` | 返回"该信号已拒绝，无法确认" |
-| `executed` | 返回"该信号已执行，无法确认" |
-| `closed` | 返回"该信号已平仓，无法确认" |
-
-### 拒绝操作
-
-**状态检查逻辑：**
-
-| 当前状态 | 行为 |
-|----------|------|
-| `awaiting_confirm` | 更新为 `rejected`，返回成功 |
-| `pending` | 返回"信号正在等待执行，无法拒绝" |
-| `rejected` | 返回"信号已拒绝，请勿重复操作" |
-| `expired` | 返回"该信号已过期，无法拒绝" |
-| `executed` | 返回"该信号已执行，无法拒绝" |
-| `closed` | 返回"该信号已平仓，无法拒绝" |
-
-### 卡片更新
-
-回调成功后，返回更新后的交互卡片：
-- **确认成功**：`✅ 待执行` 状态卡片，消息："确认成功，正在等待执行..."
-- **拒绝成功**：`❌ 已拒绝` 状态卡片，消息："信号已拒绝，暂不执行"
-- **重复操作**：显示当前状态，提示勿重复操作
-- **不可操作**：显示当前状态，提示无法操作原因
-
----
-
-## 状态流转图
-
-```
-                    ┌─────────────────────┐
-                    │ TradingView Webhook │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-              ┌────────────────────────────────┐
-              │  初始状态取决于 signal_auto_confirm  │
-              └───────────────┬────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        │                     │                     │
-        ▼                     ▼                     ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│    pending    │    │ awaiting_     │    │    pending    │
-│  (自动确认)    │    │ confirm        │    │  (手动确认)    │
-│               │    │  (需手动确认)   │    └───────┬───────┘
-└───────┬───────┘    └───────┬───────┘            │
-        │                   │                    │
-        │          ┌────────┴────────┐          │
-        │          │                 │          │
-        │          ▼                 ▼          │
-        │    ┌──────────┐      ┌──────────┐      │
-        │    │ pending  │      │ rejected │      │
-        │    │ (已确认) │      │ (已拒绝) │      │
-        │    └────┬─────┘      └──────────┘      │
-        │         │                               │
-        │         │ QC 执行/订单成交               │
-        │         ▼                               │
-        │    ┌──────────┐                        │
-        │    │executed  │                        │
-        │    │ (已执行) │                        │
-        │    └────┬─────┘                        │
-        │         │                              │
-        │         │ 订单成交/超时/手动平仓        │
-        │         ▼                              │
-        │    ┌──────────┐                        │
-        │    │  closed  │                        │
-        │    │ (已平仓) │                        │
-        │    └──────────┘                        │
-        │                                           │
-        │ 信号过期（超有效期）                       │
-        ▼                                           │
-   ┌──────────┐                                    │
-   │ expired  │                                    │
-   │ (已过期) │                                    │
-   └──────────┘                                    │
-```
-
-### 状态说明
-
-| 状态 | 说明 |
+| 字段 | 说明 |
 |------|------|
-| `awaiting_confirm` | 待确认（需手动点击飞书确认按钮） |
-| `pending` | 等待执行（已确认，等 QC 执行） |
-| `executed` | 已执行（QC 已下订单） |
-| `expired` | 已过期（超时自动失效） |
-| `rejected` | 已拒绝（手动拒绝） |
-| `closed` | 已平仓（订单已平仓） |
+| `unique_id` | 主入场单的 QC 唯一 ID |
+| `order_id` / `broker_order_id` | broker 原始订单 ID |
+| `trade_group_id` | 整个交易组 ID，当前实现等于 `entry_order_unique_id` |
+| `entry_order_unique_id` | 主入场单 ID |
+| `role` | 固定为 `entry` |
+| `relation_status` | 初始化时为 `active` |
+| `position_side` | `long` / `short` |
 
 ---
 
-## 相关文档
+## 创建后的结果
 
-- [Webhook API](./webhook.md) - 了解信号如何产生、飞书卡片逻辑
-- [订单管理 API](./orders.md) - 了解信号触发后的下单流程
-- [逆向信号 API](./reverse_signals.md) - 了解信号冲突检测
-- [配置参考](./config.md) - 了解 `signal_auto_confirm` 等配置
+调用成功后：
+
+- `signals.status = executed`
+- `orders` 新增一条 `Entry + Init`
+- `order_details` 新增第一条初始化事件
+
+后续状态更新由 `orders/upsert` 接手，不再重复调用 `signals/ack`。
+
+---
+
+## 与测试脚本的映射
+
+`pb-flow.sh` 中：
+
+- 步骤 `1` 发送信号
+- 步骤 `3` / `4` 模拟飞书确认或拒绝
+- 步骤 `5` 调用 `signals/ack` 创建带正式关系字段的 Entry Init

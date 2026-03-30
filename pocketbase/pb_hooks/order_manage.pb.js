@@ -8,7 +8,7 @@
 // POST /api/custom/orders/upsert - 订单 upsert，自动写入 order_details
 routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const { notifyNewOrder, notifyOrder, getOrderStatusInfo } = require(`${__hooks}/lib/feishu_order.js`)
-  const { appendOrderDetail, getOrderExtra, mergeOrderExtra, resolveOrderEventTimes } = require(`${__hooks}/lib/order_events.js`)
+  const { appendOrderDetail, getOrderExtra, mergeOrderExtra, resolveOrderStatusEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
 
   console.log(`[OrderUpsert] === 订单 Upsert 开始 ===`);
@@ -22,6 +22,12 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   console.log(`[OrderUpsert] signal_id: ${data.signal_id}`);
   console.log(`[OrderUpsert] fill_price: ${data.fill_price}`);
   console.log(`[OrderUpsert] filled_qty: ${data.filled_qty}`);
+  console.log(`[OrderUpsert] trade_group_id: ${data.trade_group_id}`);
+  console.log(`[OrderUpsert] entry_order_unique_id: ${data.entry_order_unique_id}`);
+  console.log(`[OrderUpsert] parent_order_unique_id: ${data.parent_order_unique_id}`);
+  console.log(`[OrderUpsert] sibling_order_unique_id: ${data.sibling_order_unique_id}`);
+  console.log(`[OrderUpsert] role: ${data.role}`);
+  console.log(`[OrderUpsert] relation_status: ${data.relation_status}`);
   console.log(`[OrderUpsert] extra: ${JSON.stringify(data.extra || {})}`);
 
   // 字段映射：QC 发送的字段名 -> PB schema 字段名（已统一）
@@ -36,11 +42,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const filledQty = data.filled_qty || data.quantity;
   const avgFillPrice = data.fill_price;
   const extra = data.extra || {};
-  const eventTimes = resolveOrderEventTimes({
-    us_time: data.us_time || extra.us_time,
-    cn_time: data.cn_time || extra.cn_time,
-    bar_time_ms: data.bar_time_ms != null ? data.bar_time_ms : extra.bar_time_ms,
-  });
+  const brokerOrderId = data.broker_order_id || orderId || "";
 
   if (!uniqueId || !orderType || !symbol) {
     return c.json(400, { error: "Missing required fields" });
@@ -74,6 +76,13 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
 
     // 更新字段
     const previousStatus = record ? record.get("status") : "";
+    const eventTimes = resolveOrderStatusEventTimes(record, {
+      status: status,
+      previous_status: previousStatus,
+      us_time: data.us_time || extra.us_time || (status === "Filled" ? (data.fill_time || extra.fill_time || "") : ""),
+      cn_time: data.cn_time || extra.cn_time,
+      bar_time_ms: data.bar_time_ms != null ? data.bar_time_ms : extra.bar_time_ms,
+    });
     const existingOrderExtra = record ? getOrderExtra(record) : {};
     const resolvedOrderTime = data.order_time || extra.order_time || record.get("order_time") || existingOrderExtra.order_time || eventTimes.us_time;
     const mergedOrderExtra = {
@@ -86,6 +95,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     };
     record.set("order_type", orderType);
     record.set("order_id", orderId || "");
+    record.set("broker_order_id", brokerOrderId);
     record.set("symbol", symbol);
     if (direction) record.set("direction", direction);
     record.set("quantity", quantity);
@@ -105,6 +115,36 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     record.set("cn_time", eventTimes.cn_time);
     if (resolvedOrderTime) record.set("order_time", resolvedOrderTime);
     if (data.fill_time) record.set("fill_time", data.fill_time);
+    applyOrderRelationship(record, {
+      broker_order_id: brokerOrderId,
+      trade_group_id: data.trade_group_id || extra.trade_group_id || existingOrderExtra.trade_group_id || "",
+      entry_order_unique_id: data.entry_order_unique_id || extra.entry_order_unique_id || existingOrderExtra.entry_order_unique_id || "",
+      parent_order_unique_id: data.parent_order_unique_id || extra.parent_order_unique_id || existingOrderExtra.parent_order_unique_id || "",
+      sibling_order_unique_id: data.sibling_order_unique_id || extra.sibling_order_unique_id || existingOrderExtra.sibling_order_unique_id || "",
+      role: data.role || extra.role || existingOrderExtra.role || "",
+      relation_status: data.relation_status || extra.relation_status || existingOrderExtra.relation_status || "",
+      position_side: data.position_side || data.direction || extra.position_side || existingOrderExtra.position_side || existingOrderExtra.direction || "",
+      status: status,
+      unique_id: uniqueId,
+      order_type: orderType,
+    }, false)
+    applyOrderStatusMeta(record, {
+      status: status,
+      previous_status: previousStatus || "",
+      source: "orders/upsert",
+      reason: extra.reason || "",
+      us_time: eventTimes.us_time,
+      cn_time: eventTimes.cn_time,
+      bar_time_ms: eventTimes.bar_time_ms,
+      order_time: resolvedOrderTime,
+      fill_time: data.fill_time || "",
+      fill_us_time: status === "Filled" ? eventTimes.us_time : "",
+      fill_cn_time: status === "Filled" ? eventTimes.cn_time : "",
+      fill_bar_time_ms: status === "Filled" ? eventTimes.bar_time_ms : 0,
+      created_us_time: !previousStatus ? eventTimes.us_time : "",
+      created_cn_time: !previousStatus ? eventTimes.cn_time : "",
+      created_bar_time_ms: !previousStatus ? eventTimes.bar_time_ms : 0,
+    }, false)
 
     $app.save(record);
     console.log(`[OrderUpsert] 状态落库: unique_id=${uniqueId}, previous_status=${previousStatus || "-"}, new_status=${status}`);

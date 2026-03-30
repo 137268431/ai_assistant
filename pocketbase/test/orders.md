@@ -1,283 +1,186 @@
 # 订单管理 API
 
-## 目录
-- [端点总览](#端点总览)
-- [Upsert 订单](#upsert-订单)
-- [订单详情记录](#订单详情记录)
-- [飞书通知机制](#飞书通知机制)
+## 端点
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| `POST` | `/api/custom/orders/upsert` | 创建或更新单条订单，并自动追加 `order_details` |
+| `GET` | `/webhook/order/cancel?id={entry_unique_id}` | 取消主入场单 |
+| `GET` | `/webhook/order/close?id={entry_unique_id}` | 关闭整个交易组 |
 
 ---
 
-## 端点总览
+## 正式字段模型
 
-| 方法 | 端点 | 认证 | 说明 |
-|------|------|------|------|------|
-| POST | `/api/custom/orders/upsert` | - | 创建/更新订单 |
-
----
-
-## Upsert 订单
-
-创建新订单或更新已有订单状态，同时自动记录 `order_details` 历史。
-
-### 请求
-
-```
-POST /api/custom/orders/upsert
-```
-
-### 请求示例
-
-**提交订单：**
-
-```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "unique_id": "order_aapl_entry_20260202_1",
-      "order_type": "Entry",
-      "order_id": "IB_12345",
-      "symbol": "AAPL",
-      "direction": "long",
-      "quantity": 100,
-      "limit_price": 185.00,
-      "status": "Submitted",
-      "filled_qty": 0,
-      "fill_price": 0,
-      "tp_price": 192.50,
-      "sl_price": 181.00,
-      "rr_ratio": 2.5,
-      "signal_id": "signal_aapl_long_20260202",
-      "us_time": "2026-02-02 10:30:00",
-      "cn_time": "2026-02-02 18:30:00",
-      "bar_time_ms": 1738411800000,
-      "extra": {
-        "reason": "Test order"
-      }
-    }'
-```
-
-**订单成交：**
-
-```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "unique_id": "order_aapl_entry_20260202_1",
-      "order_type": "Entry",
-      "order_id": "IB_12345",
-      "symbol": "AAPL",
-      "direction": "long",
-      "quantity": 100,
-      "limit_price": 185.00,
-      "status": "Filled",
-      "filled_qty": 100,
-      "fill_price": 185.20,
-      "tp_price": 192.50,
-      "sl_price": 181.00,
-      "signal_id": "signal_aapl_long_20260202",
-      "pnl": 0,
-      "commission": 1.5,
-      "rr_ratio": 2.5,
-      "fill_time": "2026-02-02 10:35:00",
-      "us_time": "2026-02-02 10:35:00",
-      "cn_time": "2026-02-02 18:35:00",
-      "bar_time_ms": 1738412100000,
-      "extra": {
-        "reason": "Order filled"
-      }
-    }'
-```
-
-**止盈成交：**
-
-```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "unique_id": "order_aapl_exit_tp_20260202_1",
-      "order_type": "TakeProfit",
-      "order_id": "IB_67890",
-      "symbol": "AAPL",
-      "direction": "long",
-      "quantity": 100,
-      "limit_price": 192.50,
-      "status": "Filled",
-      "filled_qty": 100,
-      "fill_price": 192.50,
-      "signal_id": "signal_aapl_long_20260202",
-      "pnl": 480,
-      "commission": 1.5,
-      "rr_ratio": 2.5,
-      "fill_time": "2026-02-02 14:00:00",
-      "us_time": "2026-02-02 14:00:00",
-      "cn_time": "2026-02-02 22:00:00",
-      "bar_time_ms": 1738428000000,
-      "extra": {
-        "reason": "Take profit reached"
-      }
-    }'
-```
-
-### 请求字段
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `unique_id` | string | 是 | 订单唯一ID（去重key） |
-| `order_type` | string | 是 | QC 订单类型：`"Entry"` / `"TakeProfit"` / `"StopLoss"` |
-| `symbol` | string | 是 | 股票代码 |
-| `order_id` | string | 否 | 券商订单ID |
-| `direction` | string | 否 | `"long"` 或 `"short"` |
-| `quantity` | number | 否 | 数量 |
-| `limit_price` | number | 否 | 限价 |
-| `status` | string | 是 | 事件状态：`"Submitted"` / `"Filled"` / `"Canceled"` |
-| `filled_qty` | number | 否 | 成交数量 |
-| `fill_price` | number | 否 | 成交价格 |
-| `signal_id` | string | 否 | 关联信号ID |
-| `tp_price` | number | 否 | 止盈价格（由 QC 算法计算） |
-| `sl_price` | number | 否 | 止损价格（由 QC 算法计算） |
-| `fill_time` | string | 否 | QC 成交时间，格式 `YYYY-MM-DD HH:MM:SS` |
-| `us_time` | string | 否 | 美东时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
-| `cn_time` | string | 否 | 北京时间，格式 `YYYY-MM-DD HH:MM:SS`（回测时使用 QC 算法时间） |
-| `bar_time_ms` | number | 否 | Bar 时间戳（毫秒） |
-| `pnl` | number | 否 | 盈亏金额 |
-| `commission` | number | 否 | 手续费 |
-| `rr_ratio` | number | 否 | 风报比 |
-| `extra` | object | 否 | 附加数据 |
-
-### 事件状态流转（status）
-
-| status | 说明 |
-|--------|------|
-| `Init` | 初始化（信号确认时由 PB 创建） |
-| `Submitted` | 已提交（挂单中） |
-| `Filled` | 已成交 |
-| `Canceled` | 已取消 |
-
-### 订单类型（order_type）
-
-| order_type | 说明 |
-|------------|------|
-| `Entry` | 入场订单 |
-| `TakeProfit` | 止盈订单 |
-| `StopLoss` | 止损订单 |
-
-### 自动处理
-
-1. **去重**：以 `unique_id` 为 key，存在则更新
-2. **写入 order_details**：每次状态变化记录一条历史，包含 `sequence` 序号
-3. **飞书通知**：
-   - 首次 `Entry + Submitted` → 发送交互卡片（带取消/平仓按钮）
-   - `Filled` → 发送成交通知
-   - `Canceled` → 发送取消通知
-   - `Closed` → 发送平仓通知
-
----
-
-## 订单详情记录
-
-每次 `orders` 表状态变化时，自动在 `order_details` 表记录一条历史。
-
-### order_details 字段
+订单展示和关系判断都基于以下字段：
 
 | 字段 | 说明 |
 |------|------|
-| `order_id` | 订单 unique_id |
-| `symbol` | 股票代码 |
-| `direction` | 方向 |
-| `order_type` | QC 订单类型（Entry / TakeProfit / StopLoss） |
-| `status` | 事件状态（Init / Submitted / Filled / Canceled） |
-| `reason` | 原因 |
-| `signal_id` | 关联信号ID |
-| `us_time` | 美东时间（回测时使用 QC 算法时间） |
-| `cn_time` | 北京时间（回测时使用 QC 算法时间） |
-| `bar_time_ms` | K线时间戳 |
-| `extra` | 完整订单信息快照（含 order_type / limit_price / fill_price / tp_price / sl_price / quantity 等） |
+| `unique_id` | QC 侧唯一订单 ID，`orders` 的逻辑主键 |
+| `order_id` | 兼容字段，通常与 broker id 同步 |
+| `broker_order_id` | 原始 broker 订单 ID |
+| `trade_group_id` | 交易组 ID |
+| `entry_order_unique_id` | 主入场单 `unique_id` |
+| `parent_order_unique_id` | 子单的父单 |
+| `sibling_order_unique_id` | 对手子单 |
+| `role` | `entry` / `take_profit` / `stop_loss` / `repair_tp` / `repair_sl` |
+| `relation_status` | `active` / `closed` / `orphaned` |
+| `position_side` | `long` / `short` |
 
 ---
 
-## 飞书通知机制
+## `orders/upsert` 典型请求
 
-### 通知类型
+### 1. Entry Submitted
 
-| 触发条件 | 通知类型 | 卡片样式 |
-|----------|----------|----------|
-| Entry + Submitted + 首次 | `notifyNewOrder` | 交互卡片（带按钮） |
-| Filled | `notifyOrder` | 普通通知 |
-| Canceled | `notifyOrder` | 普通通知 |
-
-### 交互卡片按钮
-
-- **取消挂单** → `GET /webhook/order/cancel?id={unique_id}`
-- **平仓** → `GET /webhook/order/close?id={unique_id}`
-
-### Webhook 分组
-
-| 类型 | Webhook URL |
-|------|-------------|
-| `signal` | `https://open.feishu.cn/open-apis/bot/v2/hook/298ce054-...` |
-| `order` | `https://open.feishu.cn/open-apis/bot/v2/hook/eee38484-...` |
-| `error` | `https://open.feishu.cn/open-apis/bot/v2/hook/98f6f9a5-...` |
-
----
-
-## 完整流程图
-
-```
-信号确认 → orders/upsert → order_details
-                              │
-                              │ QC 订单状态变化
-                              ▼
-                         orders/upsert → order_details
-
-┌─────────────┐
-│  TradingView │
-└──────┬──────┘
-       │ webhook/tv
-       ▼
-┌─────────────┐     ┌─────────────┐
-│   signals   │     │ indicators  │
-└──────┬──────┘     └─────────────┘
-       │
-       │ QC 拉取
-       ▼
-┌─────────────────┐
-│ signals/pending │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  QC 执行下单    │
-└────────┬────────┘
-         │
-         │ signals/ack
-         ▼
-┌─────────────────┐     ┌────────────────┐
-│     orders      │────▶│ order_details   │
-│ order_type=Entry│     │ seq=1, status=Init│
-│ status=Init     │     └────────────────┘
-└────────┬────────┘
-         │
-         │ orders/upsert (Submitted)
-         ▼
-┌─────────────────┐     ┌────────────────┐
-│     orders      │────▶│ order_details   │
-│ status=Submitted│     │ seq=2, status=Submitted│
-└────────┬────────┘     └────────────────┘
-         │
-         │ orders/upsert (Filled/Canceled)
-         ▼
-┌─────────────────┐     ┌────────────────┐
-│     orders      │────▶│ order_details   │
-│ status=Filled   │     │ seq=3, status=Filled │
-└─────────────────┘     └────────────────┘
+```bash
+curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+    "broker_order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+    "order_type": "Entry",
+    "symbol": "AAPL",
+    "direction": "long",
+    "position_side": "long",
+    "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
+    "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "role": "entry",
+    "relation_status": "active",
+    "quantity": 100,
+    "limit_price": 185.00,
+    "status": "Submitted",
+    "filled_qty": 0,
+    "fill_price": 0,
+    "tp_price": 192.50,
+    "sl_price": 181.00,
+    "signal_id": "AAPL_20260331_093000_sig",
+    "us_time": "2026-03-31 09:30:00",
+    "cn_time": "2026-03-31 21:30:00",
+    "bar_time_ms": 1774949400000,
+    "extra": {
+      "reason": "entry submitted"
+    }
+  }'
 ```
 
+### 2. TP Filled
+
+```bash
+curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "unique_id": "test_AAPL_20260331_093000_sig_take_profit",
+    "order_id": "IB_test_AAPL_20260331_093000_sig_take_profit",
+    "broker_order_id": "IB_test_AAPL_20260331_093000_sig_take_profit",
+    "order_type": "TakeProfit",
+    "symbol": "AAPL",
+    "direction": "long",
+    "position_side": "long",
+    "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
+    "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "parent_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "sibling_order_unique_id": "test_AAPL_20260331_093000_sig_stop_loss",
+    "role": "take_profit",
+    "relation_status": "closed",
+    "quantity": 100,
+    "limit_price": 192.50,
+    "status": "Filled",
+    "filled_qty": 100,
+    "fill_price": 192.50,
+    "pnl": 750,
+    "signal_id": "AAPL_20260331_093000_sig",
+    "fill_time": "2026-03-31 10:05:00",
+    "us_time": "2026-03-31 10:05:00",
+    "cn_time": "2026-03-31 22:05:00",
+    "bar_time_ms": 1774951500000,
+    "extra": {
+      "reason": "take profit filled"
+    }
+  }'
+```
+
+### 3. SL Counterpart Canceled
+
+```bash
+curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "unique_id": "test_AAPL_20260331_093000_sig_stop_loss",
+    "order_id": "IB_test_AAPL_20260331_093000_sig_stop_loss",
+    "broker_order_id": "IB_test_AAPL_20260331_093000_sig_stop_loss",
+    "order_type": "StopLoss",
+    "symbol": "AAPL",
+    "direction": "long",
+    "position_side": "long",
+    "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
+    "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "parent_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "sibling_order_unique_id": "test_AAPL_20260331_093000_sig_take_profit",
+    "role": "stop_loss",
+    "relation_status": "closed",
+    "quantity": 100,
+    "limit_price": 181.00,
+    "status": "Canceled",
+    "filled_qty": 0,
+    "fill_price": 0,
+    "signal_id": "AAPL_20260331_093000_sig",
+    "us_time": "2026-03-31 10:05:00",
+    "cn_time": "2026-03-31 22:05:00",
+    "bar_time_ms": 1774951500000,
+    "extra": {
+      "reason": "canceled because TP filled"
+    }
+  }'
+```
+
 ---
 
-## 相关文档
+## `orders/upsert` 行为
 
-- [Webhook API](./webhook.md) - 了解信号如何产生
-- [信号管理 API](./signals.md) - 了解信号状态流转
-- [逆向信号 API](./reverse_signals.md) - 了解逆向信号如何触发订单操作
-- [配置参考](./config.md) - 了解订单相关配置
+每次调用都会：
+
+1. 以 `unique_id` 查找现有订单，不存在则创建。
+2. 同步正式关系字段到 `orders` 顶层字段和 `extra`。
+3. 根据状态写入状态元信息。
+4. 追加一条 `order_details` 历史事件。
+5. 更新飞书订单卡片。
+
+---
+
+## 页面动作语义
+
+### 取消主单
+
+`GET /webhook/order/cancel?id={entry_unique_id}`
+
+- 只允许 `role=entry`
+- 状态改为 `Canceled`
+- `relation_status` 改为 `closed`
+- 追加一条 `order_details`
+
+### 平仓整组
+
+`GET /webhook/order/close?id={entry_unique_id}`
+
+- 按 `trade_group_id` 找到整组订单
+- 主单改为 `Closed`
+- 所有仍活跃的子单改为 `Canceled`
+- 每条记录都追加自己的 `order_details`
+
+---
+
+## `order_details` 记录规则
+
+`order_details` 是事件表，不是订单表。每个状态变化都会新增一条记录。
+
+建议把它理解为：
+
+- `orders` = 当前快照
+- `order_details` = 全量时间线
+
+页面中的：
+
+- `orders.html` 读取 `orders`，按 `trade_group_id` 聚合
+- `order_details.html` 读取 `order_details`，支持 trade group 关系树和事件时间线

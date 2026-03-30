@@ -4,36 +4,28 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>订单</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <style>
         .search-row {
-            margin-bottom: 6px;
+            margin-bottom: 10px;
         }
 
         .search-row > div:first-child {
-            margin-bottom: 4px;
+            margin-bottom: 8px;
         }
 
-        .search-row .refresh-control {
-            gap: 4px;
-        }
-
-        .search-row .refresh-btn {
-            padding: 4px 6px;
-            font-size: 12px;
-        }
-
-        .search-row .refresh-select {
-            padding: 4px 6px;
-            font-size: 11px;
+        .refresh-control {
+            display: flex;
+            gap: 6px;
+            align-items: center;
         }
 
         .search-input {
             width: 100%;
-            padding: 6px 10px;
-            border-radius: 8px;
+            padding: 10px 12px;
+            border-radius: 10px;
             border: 1px solid var(--border);
             background: var(--surface2);
             color: var(--text);
@@ -46,13 +38,40 @@
             border-color: var(--accent);
         }
 
-        /* 状态筛选 Tab */
+        .summary-bar {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .summary-card {
+            background: linear-gradient(180deg, rgba(99,179,237,0.10), rgba(20,28,46,0.95));
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+
+        .summary-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.4px;
+        }
+
+        .summary-value {
+            margin-top: 4px;
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
         .status-tabs {
             display: flex;
             gap: 6px;
             margin-bottom: 12px;
             overflow-x: auto;
-            padding: 8px 0;
+            padding: 8px 0 2px;
             background: var(--bg);
             position: sticky;
             top: 0;
@@ -64,16 +83,17 @@
             gap: 6px;
             margin-bottom: 12px;
             overflow-x: auto;
-            padding: 8px 0;
+            padding: 6px 0 2px;
             background: var(--bg);
             position: sticky;
             top: 50px;
             z-index: 9;
         }
 
-        .status-tab {
-            padding: 8px 14px;
-            border-radius: 8px;
+        .status-tab,
+        .dir-tab {
+            padding: 8px 12px;
+            border-radius: 10px;
             border: 1px solid var(--border);
             background: var(--surface2);
             color: #C4D4E4;
@@ -84,223 +104,315 @@
             transition: all 0.2s;
         }
 
-        .status-tab:hover {
-            border-color: var(--accent);
-            color: var(--accent);
-        }
-
-        .status-tab.active {
+        .status-tab.active,
+        .dir-tab.active {
             background: var(--accent);
             border-color: var(--accent);
             color: #fff;
         }
 
-        .status-tab .tab-count {
-            font-size: 10px;
+        .tab-count {
             margin-left: 2px;
-            opacity: 0.8;
+            font-size: 10px;
+            opacity: 0.85;
         }
 
-        .dir-tab .tab-count {
-            font-size: 10px;
-            margin-left: 2px;
-            opacity: 0.8;
-        }
-
-        /* 订单卡片 */
-        .order-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 16px;
+        .filter-note {
             margin-bottom: 12px;
-            transition: all 0.2s;
+            padding: 10px 12px;
+            background: rgba(99,179,237,0.08);
+            border: 1px solid rgba(99,179,237,0.18);
+            border-radius: 12px;
+            color: var(--accent);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
         }
 
-        .order-card:active {
-            transform: scale(0.98);
+        .group-card {
+            background: linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.96));
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 16px;
+            margin-bottom: 14px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
         }
 
-        .order-header {
+        .group-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 14px;
-        }
-
-        .order-title {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .order-icon {
-            font-size: 20px;
-        }
-
-        .order-symbol {
-            font-size: 18px;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-        }
-
-        .order-direction {
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            padding: 3px 8px;
-            border-radius: 6px;
-            font-weight: 700;
-        }
-
-        .order-direction.long {
-            background: rgba(72,187,120,0.15);
-            color: var(--long);
-        }
-
-        .order-direction.short {
-            background: rgba(252,129,129,0.15);
-            color: var(--short);
-        }
-
-        .order-type-badge {
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            margin-left: 6px;
-        }
-
-        .type-entry {
-            background: rgba(59,130,246,0.2);
-            color: #60a5fa;
-        }
-
-        .type-takeprofit {
-            background: rgba(72,187,120,0.2);
-            color: var(--long);
-        }
-
-        .type-stoploss {
-            background: rgba(252,129,129,0.2);
-            color: var(--short);
-        }
-
-        .order-status {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-        }
-
-        .status-init {
-            background: rgba(99,179,237,0.2);
-            color: var(--accent);
-        }
-
-        .status-submitted {
-            background: rgba(246,173,85,0.2);
-            color: var(--pending);
-        }
-
-        .status-filled {
-            background: rgba(104,211,145,0.2);
-            color: var(--executed);
-        }
-
-        .status-canceled {
-            background: rgba(113,128,150,0.2);
-            color: var(--rejected);
-        }
-
-        .order-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            align-items: flex-start;
             gap: 12px;
             margin-bottom: 12px;
         }
 
-        .order-item {
+        .group-symbol-row {
             display: flex;
-            flex-direction: column;
-            gap: 4px;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
-        .order-label {
+        .group-symbol {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .direction-badge,
+        .status-badge,
+        .role-badge,
+        .relation-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        .direction-badge.long {
+            background: rgba(72,187,120,0.16);
+            color: var(--long);
+        }
+
+        .direction-badge.short {
+            background: rgba(252,129,129,0.16);
+            color: var(--short);
+        }
+
+        .status-init { background: rgba(99,179,237,0.18); color: var(--accent); }
+        .status-submitted { background: rgba(246,173,85,0.18); color: var(--pending); }
+        .status-filled { background: rgba(104,211,145,0.18); color: var(--executed); }
+        .status-canceled { background: rgba(113,128,150,0.18); color: var(--rejected); }
+        .status-closed { background: rgba(252,129,129,0.18); color: var(--short); }
+
+        .role-entry { background: rgba(99,179,237,0.16); color: var(--accent); }
+        .role-take-profit,
+        .role-repair-tp { background: rgba(72,187,120,0.16); color: var(--long); }
+        .role-stop-loss,
+        .role-repair-sl { background: rgba(252,129,129,0.16); color: var(--short); }
+        .role-other { background: rgba(160,174,192,0.16); color: #CBD5E0; }
+
+        .relation-active { background: rgba(72,187,120,0.12); color: var(--long); }
+        .relation-closed { background: rgba(160,174,192,0.12); color: #CBD5E0; }
+        .relation-orphaned { background: rgba(252,129,129,0.12); color: var(--short); }
+
+        .group-subtitle {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.5;
+            word-break: break-all;
+        }
+
+        .chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .chip {
+            padding: 5px 8px;
+            border-radius: 10px;
+            background: rgba(99,179,237,0.08);
+            border: 1px solid rgba(99,179,237,0.15);
+            color: #C4D4E4;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+
+        .highlight-chip {
+            background: rgba(72,187,120,0.10);
+            border-color: rgba(72,187,120,0.18);
+            color: var(--long);
+        }
+
+        .warn-chip {
+            background: rgba(252,129,129,0.10);
+            border-color: rgba(252,129,129,0.18);
+            color: var(--short);
+        }
+
+        .group-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .metric-card {
+            background: rgba(20,28,46,0.92);
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 14px;
+            padding: 10px 12px;
+        }
+
+        .metric-label {
             font-size: 10px;
             color: var(--muted);
             font-family: 'JetBrains Mono', monospace;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.4px;
         }
 
-        .order-value {
-            font-size: 14px;
+        .metric-value {
+            margin-top: 5px;
+            font-size: 13px;
             font-weight: 700;
             color: var(--text);
             word-break: break-all;
         }
 
-        /* 操作区域 */
-        .signal-actions {
+        .relationship-strip {
             display: flex;
-            flex-wrap: wrap;
             gap: 8px;
-            margin-top: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(99,179,237,0.06);
+            border: 1px solid rgba(99,179,237,0.14);
+            margin-bottom: 12px;
+        }
+
+        .relationship-node {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(20,28,46,0.92);
+            border: 1px solid rgba(99,179,237,0.10);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+
+        .relationship-arrow {
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+
+        .section-title {
+            margin-bottom: 10px;
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .order-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .order-item-card {
+            background: rgba(20,28,46,0.86);
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 14px;
+            padding: 12px;
+        }
+
+        .order-item-card.primary {
+            border-color: rgba(99,179,237,0.20);
+            box-shadow: inset 0 0 0 1px rgba(99,179,237,0.10);
+        }
+
+        .order-item-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .order-item-id {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text);
+            word-break: break-all;
+        }
+
+        .order-item-sub {
+            margin-top: 4px;
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+
+        .mini-chip-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px 10px;
+        }
+
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .detail-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .detail-value {
+            font-size: 12px;
+            color: var(--text);
+            font-weight: 600;
+            word-break: break-all;
+        }
+
+        .action-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
             padding-top: 12px;
             border-top: 1px solid var(--border);
         }
 
-        .signal-actions .action-btns-row {
+        .action-row {
             display: flex;
-            gap: 6px;
-            flex: 1;
-            min-width: 0;
-        }
-
-        .signal-actions .action-btns-row .action-btn {
-            flex: 1;
-            padding: 8px 4px;
-            font-size: 11px;
-            white-space: nowrap;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         .action-btn {
-            padding: 10px 16px;
+            flex: 1;
+            min-width: 0;
+            padding: 10px 14px;
             border: none;
-            border-radius: 8px;
-            font-size: clamp(12px, 3vw, 14px);
+            border-radius: 10px;
+            font-size: 12px;
             font-family: 'JetBrains Mono', monospace;
             font-weight: 700;
             cursor: pointer;
             transition: all 0.2s;
-            letter-spacing: 0.5px;
-        }
-
-        .action-btn:disabled {
-            opacity: 0.3;
-            cursor: not-allowed;
         }
 
         .btn-view {
-            grid-column: 1 / -1;
             background: var(--accent);
             color: var(--bg);
-        }
-
-        .btn-view:active {
-            background: #4299e1;
-        }
-
-        .btn-close {
-            background: var(--short);
-            color: var(--bg);
-        }
-
-        .btn-close:active:not(:disabled) {
-            background: #e53e3e;
         }
 
         .btn-cancel {
@@ -308,101 +420,20 @@
             color: var(--bg);
         }
 
-        .btn-cancel:active:not(:disabled) {
-            background: #e53e3e;
+        .btn-close {
+            background: var(--short);
+            color: var(--bg);
         }
 
-        /* 刷新控件 */
-        .refresh-control {
-            display: flex;
-            gap: 6px;
-            align-items: center;
-        }
-
-        .refresh-btn {
-            background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--muted);
-            padding: 10px 14px;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .refresh-btn:active {
+        .btn-secondary {
+            background: rgba(99,179,237,0.12);
             color: var(--accent);
-            border-color: var(--accent);
+            border: 1px solid rgba(99,179,237,0.18);
         }
 
-        .refresh-btn.spinning {
-            animation: spin 0.6s linear;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .refresh-select {
-            flex: 1;
-            padding: 10px 12px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: var(--surface2);
-            color: var(--text);
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            outline: none;
-            cursor: pointer;
-        }
-
-        .refresh-select:focus {
-            border-color: var(--accent);
-        }
-
-        .search-row .refresh-control .refresh-btn {
-            padding: 8px 10px;
-            font-size: 12px;
-        }
-
-        .search-row .refresh-control .refresh-select {
-            padding: 8px 10px;
-            font-size: 11px;
-        }
-
-        .signal-link {
-            background: rgba(99,179,237,0.1);
-            border: 1px solid rgba(99,179,237,0.2);
-            border-radius: 8px;
-            padding: 10px;
-            margin-top: 10px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .signal-link:active {
-            background: rgba(99,179,237,0.2);
-            transform: scale(0.98);
-        }
-
-        .signal-link-icon {
-            font-size: 16px;
-        }
-
-        .signal-link-text {
-            flex: 1;
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--accent);
-            font-weight: 700;
-        }
-
-        .signal-link-arrow {
-            font-size: 14px;
-            color: var(--accent);
+        .action-btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
         }
 
         .load-more-btn {
@@ -412,21 +443,28 @@
             margin-top: 16px;
             background: var(--surface2);
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 10px;
             color: var(--accent);
             font-size: 13px;
             font-family: 'JetBrains Mono', monospace;
             cursor: pointer;
-            transition: all 0.2s;
         }
 
-        .load-more-btn:active {
-            background: var(--surface);
-        }
+        @media (max-width: 720px) {
+            .summary-bar,
+            .group-grid,
+            .detail-grid {
+                grid-template-columns: 1fr;
+            }
 
-        .load-more-btn:disabled {
-            color: var(--muted);
-            cursor: not-allowed;
+            .group-header,
+            .order-item-head {
+                flex-direction: column;
+            }
+
+            .mini-chip-row {
+                justify-content: flex-start;
+            }
         }
     </style>
 </head>
@@ -435,7 +473,7 @@
         <div class="header-top">
             <div class="logo">
                 <div class="logo-label">TRADING</div>
-                <div class="logo-title">📋 订单</div>
+                <div class="logo-title">📋 订单关系视图</div>
             </div>
             <div class="live-badge">
                 <div class="live-dot"></div>
@@ -458,15 +496,24 @@
                     </select>
                 </div>
             </div>
-            <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID/订单ID..." oninput="onSearchChange(this.value)">
+            <input class="search-input" id="searchInput" placeholder="搜索 标的 / signal_id / trade_group_id / unique_id / broker_order_id" oninput="onSearchChange(this.value)">
         </div>
+
+        <div class="summary-bar" id="summaryBar">
+            <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">0</div></div>
+            <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">0</div></div>
+            <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">0</div></div>
+        </div>
+
+        <div id="filterNote"></div>
+
         <div class="status-tabs">
-            <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="Init" onclick="selectStatus('Init', this)">初始化<span class="tab-count" data-status="Init">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="Submitted" onclick="selectStatus('Submitted', this)">已提交<span class="tab-count" data-status="Submitted">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="Filled" onclick="selectStatus('Filled', this)">已成交<span class="tab-count" data-status="Filled">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="Canceled" onclick="selectStatus('Canceled', this)">已取消<span class="tab-count" data-status="Canceled">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="Closed" onclick="selectStatus('Closed', this)">已平仓<span class="tab-count" data-status="Closed">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Init" onclick="selectStatus('Init', this)">Init<span class="tab-count">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Submitted" onclick="selectStatus('Submitted', this)">Submitted<span class="tab-count">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Filled" onclick="selectStatus('Filled', this)">Filled<span class="tab-count">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Canceled" onclick="selectStatus('Canceled', this)">Canceled<span class="tab-count">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="Closed" onclick="selectStatus('Closed', this)">Closed<span class="tab-count">(<span class="count-value">0</span>)</span></button>
         </div>
 
         <div id="directionTabs"></div>
@@ -474,473 +521,566 @@
         <div id="ordersContainer">
             <div class="loading">加载中...</div>
         </div>
-        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreOrders()" style="display: none;">加载更多</button>
+        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreGroups()" style="display:none;">加载更多</button>
     </div>
 
     <div id="nav"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
     <script>
-        const pb = new PocketBase('https://pb.lzw-glory.top');
+        const pb = new PocketBase(BASE_URL);
+        const ORDER_STATUS_TEXT = {
+            Init: '初始化',
+            Submitted: '已提交',
+            Filled: '已成交',
+            Canceled: '已取消',
+            Closed: '已平仓'
+        };
+        const ROLE_TEXT = {
+            entry: '主单',
+            take_profit: '止盈',
+            stop_loss: '止损',
+            repair_tp: '修复止盈',
+            repair_sl: '修复止损'
+        };
+
         let allOrders = [];
+        let allGroups = [];
+        let displayedGroups = [];
         let currentDate = new Date().toISOString().split('T')[0];
+        let currentStatus = 'all';
         let currentDirection = 'all';
         let currentSearch = '';
         let refreshTimer = null;
         let currentInterval = 30;
-        let orderReverseSignalsMap = {};   // { order_id: true/false }
-        let filterSignalId = null;
-        let currentStatus = 'all';
-        let orderValidityMinutes = 30;
-
-        // Pagination
         let currentPage = 1;
-        const itemsPerPage = 10;
-        let displayedOrders = [];
+        const itemsPerPage = 6;
+        let filterSignalId = '';
+        let filterTradeGroupId = '';
 
-        async function initAuth() {
+        function parseJsonLike(value) {
+            if (!value) return {};
+            if (typeof value === 'object') return value;
+            try {
+                return JSON.parse(value);
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function firstDefined() {
+            for (const value of arguments) {
+                if (value !== undefined && value !== null && value !== '') return value;
+            }
+            return '';
+        }
+
+        function toNumber(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function formatMoney(value) {
+            const num = toNumber(value);
+            return num === null ? '-' : `$${num.toFixed(2)}`;
+        }
+
+        function formatQty(value) {
+            const num = toNumber(value);
+            return num === null ? '-' : `${num}`;
+        }
+
+        function formatTimePair(record) {
+            const us = record.us_time || (record.bar_time_ms ? formatBarTimeMsToET(record.bar_time_ms) : '');
+            const cn = record.cn_time || '';
+            if (!us && !cn) return '-';
+            if (!cn) return `${us} ET`;
+            return `${us} ET / ${cn} CN`;
+        }
+
+        function initAuth() {
             const token = getToken();
             if (!token) {
                 location.href = '/login.html?from=/orders.html';
-                return;
+                return false;
             }
             pb.authStore.save(token, null);
+            return true;
         }
 
-        async function loadOrders() {
-            try {
-                // 读取订单有效期配置
-                try {
-                    const configResult = await pb.collection('config').getFirstListItem('key = "order_validity_minutes"');
-                    if (configResult && configResult.value) {
-                        orderValidityMinutes = parseInt(configResult.value) || 30;
-                    }
-                } catch (e) {
-                    orderValidityMinutes = 30;
-                }
-
-                const currentDate_obj = new Date(currentDate + 'T00:00:00Z');
-                const nextDate_obj = new Date(currentDate_obj.getTime() + 86400000);
-                const startTimeMs = currentDate_obj.getTime();
-                const endTimeMs = nextDate_obj.getTime();
-
-                allOrders = await pb.collection('orders').getFullList({
-                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-created',
-                    expand: 'indicators_via_signal_id',
-                    $autoCancel: false
-                });
-
-                // 加载反向信号映射
-                await loadReverseSignalsMap();
-
-                resetPagination();
-                renderOrders();
-                updateLoadMoreButton();
-                await updateStatusTabCounts();
-                await updateDirectionTabCounts();
-            } catch (error) {
-                console.error('加载失败:', error);
-                if (error.status === 401 || error.status === 403) {
-                    handleAuthError();
-                    return;
-                }
-                showToast('加载失败: ' + error.message);
-            }
+        function roleClass(role) {
+            if (role === 'entry') return 'role-entry';
+            if (role === 'take_profit') return 'role-take-profit';
+            if (role === 'repair_tp') return 'role-repair-tp';
+            if (role === 'stop_loss') return 'role-stop-loss';
+            if (role === 'repair_sl') return 'role-repair-sl';
+            return 'role-other';
         }
 
-        // 加载反向信号映射（按 symbol 分组）
-        async function loadReverseSignalsMap() {
-            orderReverseSignalsMap = {};
-            try {
-                const startTime = `${currentDate} 00:00:00`;
-                const endTime = `${currentDate} 23:59:59`;
-
-                // 查询今日所有已确认的反向信号
-                const reverseSignals = await pb.collection('reverse_signals').getFullList({
-                    filter: `created >= "${startTime}" && created <= "${endTime}" && status = "confirmed"`,
-                    $autoCancel: false
-                });
-
-                // 按 order_id 建立映射（从 extra 中获取）
-                reverseSignals.forEach(rs => {
-                    const rsExtra = rs.extra || {};
-                    const orderId = rsExtra.order_id;
-                    if (orderId) {
-                        orderReverseSignalsMap[orderId] = true;
-                    }
-                });
-
-                console.log('[ReverseSignals] 加载完成:', orderReverseSignalsMap);
-            } catch (error) {
-                console.error('加载反向信号失败:', error);
-            }
+        function relationClass(status) {
+            if (status === 'active') return 'relation-active';
+            if (status === 'orphaned') return 'relation-orphaned';
+            return 'relation-closed';
         }
 
-        function updateStats() {
-            // 状态统计由 Tab count 显示，无需额外处理
+        function statusClass(status) {
+            return `status-${String(status || 'Init').toLowerCase()}`;
         }
 
-        function filterOrdersAll() {
-            let filtered = allOrders;
-            if (currentStatus !== 'all') {
-                filtered = filtered.filter(o => o.status === currentStatus);
-            }
-            if (currentDirection !== 'all') {
-                filtered = filtered.filter(o => o.direction === currentDirection);
-            }
-            if (filterSignalId) {
-                filtered = filtered.filter(o => o.signal_id === filterSignalId);
-            }
-            if (currentSearch) {
-                const s = currentSearch.toUpperCase();
-                filtered = filtered.filter(o =>
-                    (o.symbol || '').toUpperCase().includes(s) ||
-                    (o.signal_id || '').toUpperCase().includes(s) ||
-                    (o.order_id || '').toUpperCase().includes(s) ||
-                    (o.unique_id || '').toUpperCase().includes(s) ||
-                    (o.order_type || '').toUpperCase().includes(s)
-                );
-            }
-            return filtered;
+        function getOrderTypeText(orderType) {
+            return {
+                Entry: 'Entry',
+                TakeProfit: 'TakeProfit',
+                StopLoss: 'StopLoss'
+            }[orderType] || orderType || '-';
         }
 
-        function getFilteredOrders() {
-            return filterOrdersAll();
+        function getRoleText(role, orderType) {
+            return ROLE_TEXT[role] || getOrderTypeText(orderType);
         }
 
-        function getPaginatedOrders() {
-            const filtered = getFilteredOrders();
-            const start = (currentPage - 1) * itemsPerPage;
-            return filtered.slice(0, start + itemsPerPage);
+        function normalizeOrder(raw) {
+            const extra = parseJsonLike(raw.extra);
+            const orderType = firstDefined(raw.order_type, extra.order_type, 'Entry');
+            const role = firstDefined(
+                raw.role,
+                extra.role,
+                orderType === 'Entry' ? 'entry' : orderType === 'TakeProfit' ? 'take_profit' : orderType === 'StopLoss' ? 'stop_loss' : ''
+            );
+            const uniqueId = firstDefined(raw.unique_id, extra.unique_id, raw.order_id, raw.id);
+            const entryOrderUniqueId = firstDefined(raw.entry_order_unique_id, extra.entry_order_unique_id, role === 'entry' ? uniqueId : '', uniqueId);
+            const tradeGroupId = firstDefined(raw.trade_group_id, extra.trade_group_id, entryOrderUniqueId, uniqueId);
+            const brokerOrderId = firstDefined(raw.broker_order_id, extra.broker_order_id, raw.order_id, '');
+            const direction = firstDefined(raw.position_side, raw.direction, extra.position_side, extra.direction, '');
+            const barTimeMs = toNumber(firstDefined(raw.bar_time_ms, extra.bar_time_ms));
+            const timeKey = barTimeMs || Date.parse(firstDefined(raw.us_time, raw.created, '')) || Date.now();
+
+            return {
+                ...raw,
+                extra,
+                order_type: orderType,
+                role,
+                unique_id: uniqueId,
+                entry_order_unique_id: entryOrderUniqueId,
+                trade_group_id: tradeGroupId,
+                parent_order_unique_id: firstDefined(raw.parent_order_unique_id, extra.parent_order_unique_id, role !== 'entry' ? entryOrderUniqueId : ''),
+                sibling_order_unique_id: firstDefined(raw.sibling_order_unique_id, extra.sibling_order_unique_id, ''),
+                relation_status: firstDefined(raw.relation_status, extra.relation_status, ['Canceled', 'Closed'].includes(raw.status) ? 'closed' : 'active'),
+                broker_order_id: brokerOrderId,
+                direction,
+                position_side: direction,
+                quantity: toNumber(firstDefined(raw.quantity, extra.quantity)),
+                filled_qty: toNumber(firstDefined(raw.filled_qty, extra.filled_qty)),
+                limit_price: toNumber(firstDefined(raw.limit_price, extra.limit_price)),
+                fill_price: toNumber(firstDefined(raw.fill_price, extra.fill_price)),
+                tp_price: toNumber(firstDefined(raw.tp_price, extra.tp_price)),
+                sl_price: toNumber(firstDefined(raw.sl_price, extra.sl_price)),
+                signal_id: firstDefined(raw.signal_id, extra.signal_id, ''),
+                bar_time_ms: barTimeMs,
+                time_key: timeKey,
+                order_time: firstDefined(raw.order_time, extra.order_time, raw.us_time, ''),
+                us_time: firstDefined(raw.us_time, extra.us_time, ''),
+                cn_time: firstDefined(raw.cn_time, extra.cn_time, ''),
+                fill_time: firstDefined(raw.fill_time, extra.fill_time, '')
+            };
         }
 
-        function updateLoadMoreButton() {
-            const btn = document.getElementById('loadMoreBtn');
-            const filtered = getFilteredOrders();
-            const hasMore = displayedOrders.length < filtered.length;
-            btn.style.display = hasMore ? 'block' : 'none';
-            btn.textContent = hasMore ? `加载更多 (${displayedOrders.length}/${filtered.length})` : '没有更多了';
-            btn.disabled = !hasMore;
+        function roleRank(role) {
+            return {
+                entry: 0,
+                take_profit: 1,
+                repair_tp: 1,
+                stop_loss: 2,
+                repair_sl: 2
+            }[role] ?? 9;
         }
 
-        function loadMoreOrders() {
-            currentPage++;
-            displayedOrders = getPaginatedOrders();
-            renderOrders();
-            updateLoadMoreButton();
+        function sortOrdersInGroup(left, right) {
+            const roleDiff = roleRank(left.role) - roleRank(right.role);
+            if (roleDiff !== 0) return roleDiff;
+            const timeDiff = (right.time_key || 0) - (left.time_key || 0);
+            if (timeDiff !== 0) return timeDiff;
+            return String(left.unique_id || '').localeCompare(String(right.unique_id || ''));
+        }
+
+        function pickPrimaryOrder(orders) {
+            return orders.find((order) => order.role === 'entry')
+                || orders.find((order) => order.unique_id === order.entry_order_unique_id)
+                || [...orders].sort((a, b) => a.time_key - b.time_key)[0]
+                || orders[0];
+        }
+
+        function buildTradeGroups(orders) {
+            const grouped = new Map();
+            orders.forEach((order) => {
+                const key = order.trade_group_id || order.entry_order_unique_id || order.unique_id || order.id;
+                if (!grouped.has(key)) grouped.set(key, []);
+                grouped.get(key).push(order);
+            });
+
+            return Array.from(grouped.entries()).map(([groupId, ordersInGroup]) => {
+                const ordersSorted = [...ordersInGroup].sort(sortOrdersInGroup);
+                const primaryOrder = pickPrimaryOrder(ordersSorted);
+                const latestEvent = [...ordersInGroup].sort((a, b) => b.time_key - a.time_key)[0];
+                const exitOrder = ordersSorted.find((order) => order.role !== 'entry' && order.status === 'Filled') || null;
+                const relationAlert = ordersSorted.find((order) => order.relation_status === 'orphaned') || null;
+                return {
+                    group_id: groupId,
+                    trade_group_id: groupId,
+                    orders: ordersSorted,
+                    primaryOrder,
+                    latestEvent,
+                    exitOrder,
+                    relationAlert,
+                    symbol: primaryOrder?.symbol || latestEvent?.symbol || '-',
+                    direction: primaryOrder?.position_side || primaryOrder?.direction || latestEvent?.direction || '',
+                    signal_id: primaryOrder?.signal_id || latestEvent?.signal_id || '',
+                    status: primaryOrder?.status || latestEvent?.status || 'Init',
+                    latest_time: Math.max(...ordersInGroup.map((order) => order.time_key || 0)),
+                    activeChildCount: ordersInGroup.filter((order) => order.role !== 'entry' && order.relation_status === 'active').length
+                };
+            }).sort((left, right) => right.latest_time - left.latest_time);
+        }
+
+        function matchesSearch(group, keyword) {
+            if (!keyword) return true;
+            const search = keyword.toUpperCase();
+            const fields = [
+                group.symbol,
+                group.signal_id,
+                group.trade_group_id,
+                group.primaryOrder?.entry_order_unique_id,
+                group.primaryOrder?.broker_order_id,
+                ...group.orders.flatMap((order) => [
+                    order.unique_id,
+                    order.broker_order_id,
+                    order.parent_order_unique_id,
+                    order.sibling_order_unique_id,
+                    order.role,
+                    order.order_type,
+                    order.signal_id
+                ])
+            ];
+            return fields.some((field) => String(field || '').toUpperCase().includes(search));
+        }
+
+        function filterGroups(groups) {
+            return groups.filter((group) => {
+                if (currentStatus !== 'all' && group.status !== currentStatus) return false;
+                if (currentDirection !== 'all' && group.direction !== currentDirection) return false;
+                if (filterSignalId && !group.orders.some((order) => order.signal_id === filterSignalId)) return false;
+                if (filterTradeGroupId && group.trade_group_id !== filterTradeGroupId) return false;
+                if (!matchesSearch(group, currentSearch)) return false;
+                return true;
+            });
         }
 
         function resetPagination() {
             currentPage = 1;
-            displayedOrders = getPaginatedOrders();
+            displayedGroups = filterGroups(allGroups).slice(0, itemsPerPage);
         }
 
-        function filterOrders() {
-            return displayedOrders;
-        }
-
-        function onSearchChange(val) {
-            currentSearch = val.trim();
-            resetPagination();
-            renderOrders();
+        function loadMoreGroups() {
+            currentPage += 1;
+            displayedGroups = filterGroups(allGroups).slice(0, currentPage * itemsPerPage);
+            renderGroups();
             updateLoadMoreButton();
-            updateStatusTabCounts();
-            updateDirectionTabCounts();
         }
 
-        // 状态筛选 Tab
-        window.selectStatus = function(status, btn) {
-            document.querySelectorAll('.status-tab').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            currentStatus = status;
-            loadOrders();
-        };
+        function updateLoadMoreButton() {
+            const btn = document.getElementById('loadMoreBtn');
+            const filtered = filterGroups(allGroups);
+            const hasMore = displayedGroups.length < filtered.length;
+            btn.style.display = hasMore ? 'block' : 'none';
+            btn.textContent = hasMore ? `加载更多 (${displayedGroups.length}/${filtered.length})` : `已加载全部 (${filtered.length})`;
+            btn.disabled = !hasMore;
+        }
 
-        // 更新状态标签的数量显示
-        async function updateStatusTabCounts() {
+        function updateSummaryBar() {
+            const filtered = filterGroups(allGroups);
+            const summary = document.getElementById('summaryBar');
+            const openGroups = filtered.filter((group) => !group.exitOrder && group.status !== 'Canceled' && group.status !== 'Closed').length;
+            summary.innerHTML = `
+                <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${filtered.length}</div></div>
+                <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">${filtered.reduce((sum, group) => sum + group.orders.length, 0)}</div></div>
+                <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">${openGroups}</div></div>
+            `;
+        }
+
+        function updateStatusTabCounts() {
             const statuses = ['Init', 'Submitted', 'Filled', 'Canceled', 'Closed'];
-            const counts = {};
-            const total = allOrders.length;
-            counts['all'] = total;
-            statuses.forEach(s => { counts[s] = allOrders.filter(o => o.status === s).length; });
-            ['all', ...statuses].forEach(s => {
-                const tab = document.querySelector(`.status-tab .tab-count[data-status="${s}"] .count-value`);
-                if (tab) tab.textContent = counts[s] || 0;
+            const counts = { all: allGroups.length };
+            statuses.forEach((status) => {
+                counts[status] = allGroups.filter((group) => group.status === status).length;
+            });
+            document.querySelectorAll('.status-tab').forEach((button) => {
+                const status = button.dataset.status;
+                const valueNode = button.querySelector('.count-value');
+                if (valueNode) valueNode.textContent = counts[status] || 0;
             });
         }
 
-        // 更新方向标签的数量显示
-        async function updateDirectionTabCounts() {
+        function updateDirectionTabCounts() {
             const directions = ['long', 'short'];
-            const counts = {};
-            directions.forEach(d => { counts[d] = allOrders.filter(o => o.direction === d).length; });
-            ['all', ...directions].forEach(d => {
-                const tab = document.querySelector(`.dir-tab .tab-count[data-dir="${d}"] .count-value`);
-                if (tab) tab.textContent = counts[d] || 0;
+            const counts = { all: allGroups.length };
+            directions.forEach((direction) => {
+                counts[direction] = allGroups.filter((group) => group.direction === direction).length;
+            });
+            document.querySelectorAll('.dir-tab').forEach((button) => {
+                const direction = button.dataset.dir;
+                const valueNode = button.querySelector('.count-value');
+                if (valueNode) valueNode.textContent = counts[direction] || 0;
             });
         }
 
-        function renderOrders() {
-            const container = document.getElementById('ordersContainer');
-            const filtered = filterOrders();
+        function renderFilterNote() {
+            const notes = [];
+            if (filterSignalId) notes.push(`signal_id=${filterSignalId}`);
+            if (filterTradeGroupId) notes.push(`trade_group_id=${filterTradeGroupId}`);
+            if (currentSearch) notes.push(`search=${currentSearch}`);
+            document.getElementById('filterNote').innerHTML = notes.length
+                ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
+                : '';
+        }
 
-            if (filtered.length === 0) {
+        function renderRelationshipStrip(group) {
+            const nodes = group.orders.map((order) => `
+                <span class="relationship-node">
+                    <span>${escapeHtml(getRoleText(order.role, order.order_type))}</span>
+                    <span class="${statusClass(order.status)} status-badge">${escapeHtml(order.status)}</span>
+                </span>
+            `);
+            return `
+                <div class="relationship-strip">
+                    ${nodes.map((node, index) => `${index > 0 ? '<span class="relationship-arrow">→</span>' : ''}${node}`).join('')}
+                </div>
+            `;
+        }
+
+        function renderMetric(label, value) {
+            return `<div class="metric-card"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${value}</div></div>`;
+        }
+
+        function renderDetail(label, value) {
+            return `
+                <div class="detail-item">
+                    <div class="detail-label">${escapeHtml(label)}</div>
+                    <div class="detail-value">${value}</div>
+                </div>
+            `;
+        }
+
+        function renderOrderCard(order, isPrimary) {
+            return `
+                <div class="order-item-card ${isPrimary ? 'primary' : ''}">
+                    <div class="order-item-head">
+                        <div>
+                            <div class="order-item-id">${escapeHtml(order.unique_id || '-')}</div>
+                            <div class="order-item-sub">broker=${escapeHtml(order.broker_order_id || '-')}</div>
+                        </div>
+                        <div class="mini-chip-row">
+                            <span class="role-badge ${roleClass(order.role)}">${escapeHtml(getRoleText(order.role, order.order_type))}</span>
+                            <span class="status-badge ${statusClass(order.status)}">${escapeHtml(ORDER_STATUS_TEXT[order.status] || order.status || '-')}</span>
+                            <span class="relation-badge ${relationClass(order.relation_status)}">${escapeHtml(order.relation_status || '-')}</span>
+                        </div>
+                    </div>
+                    <div class="detail-grid">
+                        ${renderDetail('order_type', escapeHtml(getOrderTypeText(order.order_type)))}
+                        ${renderDetail('signal_id', escapeHtml(order.signal_id || '-'))}
+                        ${renderDetail('数量 / 已成交', `${escapeHtml(formatQty(order.quantity))} / ${escapeHtml(formatQty(order.filled_qty))}`)}
+                        ${renderDetail('限价 / 成交价', `${escapeHtml(formatMoney(order.limit_price))} / ${escapeHtml(formatMoney(order.fill_price))}`)}
+                        ${renderDetail('parent_order', escapeHtml(order.parent_order_unique_id || '-'))}
+                        ${renderDetail('sibling_order', escapeHtml(order.sibling_order_unique_id || '-'))}
+                        ${renderDetail('entry_order', escapeHtml(order.entry_order_unique_id || '-'))}
+                        ${renderDetail('time', escapeHtml(formatTimePair(order)))}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderGroupCard(group) {
+            const primary = group.primaryOrder;
+            const tpOrder = group.orders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
+            const slOrder = group.orders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
+            const exitText = group.exitOrder
+                ? `已由 ${getRoleText(group.exitOrder.role, group.exitOrder.order_type)} 成交退出`
+                : group.activeChildCount > 0
+                    ? `保护单激活中 (${group.activeChildCount})`
+                    : '等待后续状态';
+            const actionTargetId = primary?.entry_order_unique_id || primary?.unique_id || group.trade_group_id;
+            const canCancel = primary?.role === 'entry' && (primary?.status === 'Init' || primary?.status === 'Submitted');
+            const canClose = primary?.role === 'entry' && primary?.status === 'Filled';
+
+            return `
+                <div class="group-card">
+                    <div class="group-header">
+                        <div>
+                            <div class="group-symbol-row">
+                                <span class="group-symbol">${escapeHtml(group.symbol)}</span>
+                                <span class="direction-badge ${escapeHtml(group.direction || 'long')}">${escapeHtml((group.direction || '-').toUpperCase())}</span>
+                                <span class="status-badge ${statusClass(group.status)}">${escapeHtml(ORDER_STATUS_TEXT[group.status] || group.status || '-')}</span>
+                                ${group.exitOrder ? `<span class="chip highlight-chip">${escapeHtml(getRoleText(group.exitOrder.role, group.exitOrder.order_type))} 成交</span>` : ''}
+                                ${group.relationAlert ? `<span class="chip warn-chip">存在孤儿单</span>` : ''}
+                            </div>
+                            <div class="group-subtitle">${escapeHtml(exitText)}</div>
+                        </div>
+                        <div class="group-subtitle">${escapeHtml(formatTimePair(group.latestEvent || primary || {}))}</div>
+                    </div>
+
+                    <div class="chip-row">
+                        <span class="chip">trade_group_id=${escapeHtml(group.trade_group_id)}</span>
+                        <span class="chip">entry=${escapeHtml(primary?.entry_order_unique_id || '-')}</span>
+                        <span class="chip">signal_id=${escapeHtml(group.signal_id || '-')}</span>
+                    </div>
+
+                    <div class="group-grid">
+                        ${renderMetric('Entry QC / Broker', `${escapeHtml(primary?.unique_id || '-')}<br><span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;">${escapeHtml(primary?.broker_order_id || '-')}</span>`)}
+                        ${renderMetric('Qty / Filled', `${escapeHtml(formatQty(primary?.quantity))} / ${escapeHtml(formatQty(primary?.filled_qty))}`)}
+                        ${renderMetric('Entry Limit / Fill', `${escapeHtml(formatMoney(primary?.limit_price))} / ${escapeHtml(formatMoney(primary?.fill_price))}`)}
+                        ${renderMetric('TP / SL', `${escapeHtml(formatMoney(tpOrder?.limit_price ?? primary?.tp_price))} / ${escapeHtml(formatMoney(slOrder?.limit_price ?? primary?.sl_price))}`)}
+                    </div>
+
+                    ${renderRelationshipStrip(group)}
+
+                    <div class="section-title">Orders In Group</div>
+                    <div class="order-list">
+                        ${group.orders.map((order) => renderOrderCard(order, order.unique_id === primary?.unique_id)).join('')}
+                    </div>
+
+                    <div class="action-panel">
+                        <div class="action-row">
+                            ${group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : ''}
+                            <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}')">📜 交易组明细</button>
+                        </div>
+                        <div class="action-row">
+                            ${canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
+                            ${canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓整组</button>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderGroups() {
+            const container = document.getElementById('ordersContainer');
+            if (displayedGroups.length === 0) {
                 container.innerHTML = `
                     <div class="empty">
                         <div class="empty-icon">📭</div>
-                        <div class="empty-text">暂无订单</div>
+                        <div class="empty-text">没有符合条件的交易组</div>
                     </div>
                 `;
                 return;
             }
+            container.innerHTML = displayedGroups.map(renderGroupCard).join('');
+        }
 
-            container.innerHTML = filtered.map(order => {
-                const directionIcon = order.direction === 'long' ? '📈' : '📉';
-                const directionClass = order.direction === 'long' ? 'long' : 'short';
-                const orderType = order.order_type || 'Entry';
-                const orderTypeClass = orderType.toLowerCase().replace(/\s/g, '');
-                const orderTypeText = {
-                    'Entry': '入场',
-                    'TakeProfit': '止盈',
-                    'StopLoss': '止损'
-                }[orderType] || orderType;
+        async function loadOrders() {
+            try {
+                const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
+                const endTimeMs = startTimeMs + 24 * 60 * 60 * 1000;
+                const records = await pb.collection('orders').getFullList({
+                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    sort: '-bar_time_ms,-created',
+                    $autoCancel: false
+                });
 
-                const statusClass = (order.status || 'Submitted').toLowerCase();
-                const statusText = {
-                    'init': '初始化',
-                    'submitted': '已提交',
-                    'filled': '已成交',
-                    'canceled': '已取消',
-                    'closed': '已平仓'
-                }[statusClass] || order.status;
-
-                // 判断是否可以平仓或取消
-                const isEntry = orderType === 'Entry';
-                const isInit = order.status === 'Init';
-                const isSubmitted = order.status === 'Submitted';
-                const isFilled = order.status === 'Filled';
-                const canClose = isEntry && isFilled;
-                const canCancel = isEntry && (isInit || isSubmitted);
-
-                // 倒计时
-                const showCountdown = order.status === 'Init' || order.status === 'Submitted';
-                const orderUniqueId = order.unique_id || order.order_id;
-                const hasReverseSignal = orderReverseSignalsMap[orderUniqueId] || false;
-
-                return `
-                    <div class="order-card">
-                        <div class="order-header">
-                            <div class="order-title">
-                                <span class="order-icon">${directionIcon}</span>
-                                <span class="order-symbol">${order.symbol}</span>
-                                <span class="order-direction ${directionClass}">${order.direction.toUpperCase()}</span>
-                                <span class="order-type-badge type-${orderTypeClass}">${orderTypeText}</span>
-                            </div>
-                            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
-                                <div class="order-status status-${statusClass}">${statusText}</div>
-                                ${showCountdown ? `
-                                <div class="countdown-display" data-bar-time="${order.bar_time_ms || ''}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
-                                    ⏱️ <span class="countdown-value">${calculateOrderCountdown(order.bar_time_ms) || '-'}</span>
-                                </div>
-                                ` : ''}
-                            </div>
-                        </div>
-
-                        <div class="order-grid">
-                            <div class="order-item">
-                                <div class="order-label">QC 订单ID</div>
-                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${orderUniqueId || '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">IB 券商订单ID</div>
-                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${order.order_id || '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">信号ID</div>
-                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${order.signal_id || '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">限价</div>
-                                <div class="order-value">${order.limit_price != null ? '$' + order.limit_price.toFixed(2) : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">成交价</div>
-                                <div class="order-value">${order.fill_price != null ? '$' + order.fill_price.toFixed(2) : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">数量</div>
-                                <div class="order-value">${order.quantity != null ? order.quantity : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">已成交</div>
-                                <div class="order-value">${order.filled_qty != null ? order.filled_qty : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">止损价</div>
-                                <div class="order-value">${order.sl_price != null ? '$' + order.sl_price.toFixed(2) : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">止盈价</div>
-                                <div class="order-value">${order.tp_price != null ? '$' + order.tp_price.toFixed(2) : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">风报比</div>
-                                <div class="order-value">${order.rr_ratio != null ? order.rr_ratio.toFixed(2) + 'x' : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">下单时间</div>
-                                <div class="order-value" style="font-size:10px;font-family:'JetBrains Mono',monospace;word-break:break-all;">
-                                    ${order.us_time ? order.us_time.replace(' ', '') + '/ET' : '-'}${order.cn_time ? ' ' + order.cn_time.replace(' ', '') + '/CN' : ''}
-                                </div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">成交时间</div>
-                                <div class="order-value" style="font-size:10px;font-family:'JetBrains Mono',monospace;word-break:break-all;">${order.fill_time ? order.fill_time.replace(' ', '') : '-'}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">PB 新建</div>
-                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${formatTime(order.created, 'America/New_York', 'short')}</div>
-                            </div>
-                            <div class="order-item">
-                                <div class="order-label">PB 更新</div>
-                                <div class="order-value" style="font-size:11px;font-family:'JetBrains Mono',monospace;">${formatTime(order.updated, 'America/New_York', 'short')}</div>
-                            </div>
-                        </div>
-
-                        ${hasReverseSignal ? `
-                            <div class="signal-link" onclick="viewReverseSignal('${orderUniqueId}')">
-                                <span class="signal-link-icon">🔄</span>
-                                <span class="signal-link-text">反向信号</span>
-                                <span class="signal-link-arrow">→</span>
-                            </div>
-                        ` : ''}
-
-                        <div class="signal-actions" style="display:flex;flex-direction:column;gap:8px;">
-                            <div class="action-btns-row">
-                                ${order.signal_id ? `
-                                <button class="action-btn btn-view" onclick="viewSignal('${order.signal_id}')">
-                                    📡 查看关联信号
-                                </button>` : ''}
-                                <button class="action-btn btn-view" onclick="viewOrderDetails('${order.id}', '${order.symbol}')">
-                                    📜 明细
-                                </button>
-                            </div>
-                            ${canClose || canCancel ? `
-                            <div style="display:flex;gap:6px;justify-content:flex-end;">
-                                ${canClose ? `<button class="action-btn btn-close" onclick="closePosition('${orderUniqueId}', '${order.symbol}')">🔒 平仓</button>` : ''}
-                                ${canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${orderUniqueId}', '${order.symbol}')">✕ 取消</button>` : ''}
-                            </div>
-                            ` : ''}
-                        </div>
+                allOrders = records.map(normalizeOrder);
+                allGroups = buildTradeGroups(allOrders);
+                resetPagination();
+                renderFilterNote();
+                updateSummaryBar();
+                updateStatusTabCounts();
+                updateDirectionTabCounts();
+                renderGroups();
+                updateLoadMoreButton();
+            } catch (error) {
+                console.error('加载订单失败:', error);
+                if (error.status === 401 || error.status === 403) {
+                    handleAuthError();
+                    return;
+                }
+                document.getElementById('ordersContainer').innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">⚠️</div>
+                        <div class="empty-text">加载失败: ${escapeHtml(error.message || 'unknown error')}</div>
                     </div>
                 `;
-            }).join('');
-        }
-
-        async function closePosition(uniqueId, symbol) {
-            if (!confirm(`确认平仓 ${symbol}？`)) return;
-            try {
-                const resp = await fetch(`/webhook/order/close?id=${encodeURIComponent(uniqueId)}`);
-                const text = await resp.text();
-                showToast('✓ 平仓请求已发送');
-                await loadOrders();
-            } catch (error) {
-                console.error('平仓失败:', error);
-                showToast('✗ 平仓失败: ' + error.message);
             }
         }
 
-        async function cancelOrder(uniqueId, symbol) {
-            if (!confirm(`确认取消 ${symbol} 订单？`)) return;
-            try {
-                const resp = await fetch(`/webhook/order/cancel?id=${encodeURIComponent(uniqueId)}`);
-                const text = await resp.text();
-                showToast('✓ 取消请求已发送');
-                await loadOrders();
-            } catch (error) {
-                console.error('取消失败:', error);
-                showToast('✗ 取消失败: ' + error.message);
-            }
+        function onSearchChange(value) {
+            currentSearch = value.trim();
+            resetPagination();
+            renderFilterNote();
+            updateSummaryBar();
+            renderGroups();
+            updateLoadMoreButton();
         }
 
-        function viewSignal(signalId) {
-            if (!signalId) {
-                showToast('无法找到关联信号');
-                return;
-            }
-            // 从 bar_time_ms 提取 UTC 日期传给 signals.html 同步日期选择器
-            const order = allOrders.find(o => o.signal_id === signalId);
-            const dateParam = order && order.bar_time_ms
-                ? new Date(order.bar_time_ms).toISOString().split('T')[0]
-                : '';
-            const params = new URLSearchParams({ signal_id: signalId });
-            if (dateParam) params.set('date', dateParam);
-            location.href = `/signals.html?${params.toString()}`;
-        }
-
-        function viewReverseSignal(orderId) {
-            if (!orderId) {
-                showToast('无法找到反向信号');
-                return;
-            }
-            location.href = `/reverse_signals.html?order_id=${encodeURIComponent(orderId)}`;
-        }
-
-        function viewOrderDetails(uniqueId, symbol) {
-            if (!uniqueId) {
-                showToast('无法找到订单明细');
-                return;
-            }
-            location.href = `/order_details.html?order_id=${encodeURIComponent(uniqueId)}`;
-        }
-
-        window.onDateChange = function(startDate, endDate) {
-            currentDate = startDate;
-            loadOrders();
+        window.selectStatus = function(status, button) {
+            document.querySelectorAll('.status-tab').forEach((node) => node.classList.remove('active'));
+            button.classList.add('active');
+            currentStatus = status;
+            resetPagination();
+            updateSummaryBar();
+            renderGroups();
+            updateLoadMoreButton();
         };
 
         window.onDirectionChange = function(direction) {
             currentDirection = direction;
             resetPagination();
-            renderOrders();
+            updateSummaryBar();
+            renderGroups();
             updateLoadMoreButton();
-            updateStatusTabCounts();
-            updateDirectionTabCounts();
         };
 
-        // 计算订单倒计时
-        function calculateOrderCountdown(barTimeMs) {
-            if (!barTimeMs) return '';
-            const expiryTime = new Date(parseInt(barTimeMs) + orderValidityMinutes * 60 * 1000);
-            const now = new Date();
-            const usEasternTime = new Date(now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
-            const remainingMs = expiryTime - usEasternTime;
-            if (remainingMs <= 0) return '';
-            const hours = Math.floor(remainingMs / (60 * 60 * 1000));
-            const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
-            const seconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
-            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        window.onDateChange = function(startDate) {
+            currentDate = startDate;
+            loadOrders();
+        };
+
+        async function closePosition(uniqueId, symbol) {
+            if (!confirm(`确认平仓 ${symbol} 的整组订单？`)) return;
+            try {
+                await fetch(`/webhook/order/close?id=${decodeURIComponent(uniqueId)}`);
+                showToast('已发送平仓整组请求');
+                loadOrders();
+            } catch (error) {
+                showToast(`平仓失败: ${error.message}`);
+            }
         }
 
-        // 更新所有倒计时显示
-        function updateOrderCountdowns() {
-            const countdownElements = document.querySelectorAll('.countdown-display');
-            countdownElements.forEach(el => {
-                const barTime = el.getAttribute('data-bar-time');
-                const valueEl = el.querySelector('.countdown-value');
-                if (valueEl && barTime) {
-                    const remainingMs = parseInt(barTime) + orderValidityMinutes * 60 * 1000 - new Date().getTime();
-                    if (remainingMs > 0 && remainingMs < 5 * 60 * 1000) {
-                        valueEl.style.color = 'var(--short)';
-                        el.style.color = 'var(--short)';
-                    } else {
-                        valueEl.style.color = '';
-                        el.style.color = '';
-                    }
-                    valueEl.textContent = calculateOrderCountdown(barTime) || '-';
-                }
-            });
+        async function cancelOrder(uniqueId, symbol) {
+            if (!confirm(`确认取消 ${symbol} 的主入场单？`)) return;
+            try {
+                await fetch(`/webhook/order/cancel?id=${decodeURIComponent(uniqueId)}`);
+                showToast('已发送取消主单请求');
+                loadOrders();
+            } catch (error) {
+                showToast(`取消失败: ${error.message}`);
+            }
+        }
+
+        function viewSignal(signalId) {
+            const decoded = decodeURIComponent(signalId);
+            location.href = `/signals.html?signal_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+        }
+
+        function viewTradeGroup(groupId) {
+            const decoded = decodeURIComponent(groupId);
+            location.href = `/order_details.html?trade_group_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
         }
 
         function manualRefresh() {
@@ -951,82 +1091,35 @@
         }
 
         function changeRefreshInterval(seconds) {
-            currentInterval = parseInt(seconds);
-            if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+            currentInterval = Number(seconds) || 0;
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
             if (currentInterval > 0) {
                 refreshTimer = setInterval(loadOrders, currentInterval * 1000);
             }
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
-            await initAuth();
+            if (!initAuth()) return;
+
             document.getElementById('nav').innerHTML = renderNav('/orders.html');
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
-
-            // 检查 URL 参数
-            const urlParams = new URLSearchParams(window.location.search);
-            const signalId = urlParams.get('signal_id');
-            const orderId = urlParams.get('order_id');
-            const action = urlParams.get('action');
-            const urlDate = urlParams.get('date');
-            const searchParam = urlParams.get('search');
-
-            // 优先使用 URL 参数中的日期
-            if (urlDate) {
-                currentDate = urlDate;
-            }
-
             document.getElementById('datePicker').innerHTML = renderDatePicker();
 
-            // 如果是 URL 参数的日期，更新日期选择器的显示
-            if (urlDate) {
-                const dateInput = document.getElementById('customDate');
-                if (dateInput) dateInput.value = urlDate;
-            }
+            const params = new URLSearchParams(window.location.search);
+            filterSignalId = params.get('signal_id') || '';
+            filterTradeGroupId = params.get('trade_group_id') || '';
+            currentSearch = params.get('search') || '';
+            currentDate = params.get('date') || currentDate;
 
-            if (signalId) {
-                filterSignalId = signalId;
-                showToast(`📡 筛选信号: ${signalId.substring(0, 20)}...`);
-            }
+            document.getElementById('searchInput').value = currentSearch;
+            const dateInput = document.getElementById('customDate');
+            if (dateInput) dateInput.value = currentDate;
 
-            // 如果有搜索参数，填充搜索框
-            if (searchParam) {
-                const searchInput = document.getElementById('searchInput');
-                if (searchInput) {
-                    searchInput.value = searchParam;
-                    currentSearch = searchParam;
-                }
-            }
-
-            loadOrders();
-
-            // 处理飞书通知的操作请求
-            if (orderId && action) {
-                setTimeout(async () => {
-                    const order = allOrders.find(o => o.unique_id === orderId);
-                    if (order) {
-                        if (action === 'cancel') {
-                            if (confirm(`确认取消 ${order.symbol} 订单？`)) {
-                                await cancelOrder(order.id, order.symbol);
-                            }
-                        } else if (action === 'close') {
-                            if (confirm(`确认平仓 ${order.symbol}？`)) {
-                                await closePosition(order.id, order.symbol);
-                            }
-                        }
-                        // 清除 URL 参数
-                        window.history.replaceState({}, '', '/orders.html');
-                    } else {
-                        showToast('未找到指定订单');
-                    }
-                }, 1500);
-            }
-
-            // 初始化定时刷新（默认30秒）
+            await loadOrders();
             changeRefreshInterval(30);
-
-            // 初始化倒计时更新（每秒）
-            setInterval(updateOrderCountdowns, 1000);
         });
     </script>
 </body>

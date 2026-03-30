@@ -6,7 +6,7 @@
  * 读取 config 表中 order_validity_minutes 配置（默认 30 分钟）
  */
 
-const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderEventTimes } = require(`${__hooks}/lib/order_events.js`)
+const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta } = require(`${__hooks}/lib/order_events.js`)
 const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
 
 cronAdd("order_expiry_check", "* * * * *", () => {
@@ -70,8 +70,14 @@ cronAdd("order_expiry_check", "* * * * *", () => {
             const oldStatus = record.get("status")
             const uniqueId = record.get("unique_id")
             console.log(`[OrderScheduler] 命中过期订单: unique_id=${uniqueId}, status=${oldStatus}, validity_minutes=${validityMinutes}, cutoff_ms=${cutoffMs}, bar_time_ms=${record.get("bar_time_ms")}`)
-            const eventTimes = applyOrderEventTimes(record)
             record.set("status", "Canceled")
+            const metaResult = applyOrderStatusMeta(record, {
+                status: "Canceled",
+                previous_status: oldStatus,
+                source: "order_scheduler",
+                reason: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
+            }, false)
+            const eventTimes = metaResult.eventTimes
             $app.save(record)
             appendOrderDetail(record, {
                 status: "Canceled",

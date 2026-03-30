@@ -35,6 +35,49 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+cache_set() {
+    local key=$1
+    local value=$2
+    printf "%s" "$value" > "/tmp/${key}"
+}
+
+cache_get() {
+    local key=$1
+    cat "/tmp/${key}" 2>/dev/null || true
+}
+
+clear_order_relation_cache() {
+    rm -f /tmp/pb_trade_group_id /tmp/pb_entry_* /tmp/pb_tp_* /tmp/pb_sl_* 2>/dev/null || true
+}
+
+seed_order_relation_cache() {
+    local sig_id=$1
+    local base="test_${sig_id}"
+    local entry_unique_id="${base}_entry"
+    cache_set "pb_trade_group_id" "${entry_unique_id}"
+    cache_set "pb_entry_unique_id" "${entry_unique_id}"
+    cache_set "pb_entry_broker_id" "IB_${base}_entry"
+    cache_set "pb_tp_unique_id" "${base}_take_profit"
+    cache_set "pb_tp_broker_id" "IB_${base}_take_profit"
+    cache_set "pb_sl_unique_id" "${base}_stop_loss"
+    cache_set "pb_sl_broker_id" "IB_${base}_stop_loss"
+    cache_set "pb_ord_id" "${entry_unique_id}"
+    cache_set "pb_ord_latest" "${entry_unique_id}"
+}
+
+ensure_order_relation_cache() {
+    local sig_id
+    sig_id=$(cache_get "pb_sig_latest")
+    [ -z "$sig_id" ] && sig_id=$(cache_get "pb_sig_id")
+    [ -z "$sig_id" ] && return 1
+
+    local entry_unique_id
+    entry_unique_id=$(cache_get "pb_entry_unique_id")
+    if [ -z "$entry_unique_id" ]; then
+        seed_order_relation_cache "$sig_id"
+    fi
+}
+
 # 将北京时间转换为美国东部时间日期
 get_us_date() {
     local cn_datetime="${TEST_DATE} ${TEST_TIME}"
@@ -95,12 +138,13 @@ show_menu() {
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[1]${NC} 发送信号到PB      ${CYAN}│${NC}  ${MAGENTA}[2]${NC} 查询信号状态(pending)         ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[3]${NC} 飞书-确认信号    ${CYAN}│${NC}  ${MAGENTA}[4]${NC} 飞书-拒绝信号             ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[5]${NC} QC确认信号→创建订单Init(signs/ack)                             ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[5]${NC} QC确认信号→创建订单Init(signals/ack)                           ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        📦 订单流程                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[6]${NC} QC同步订单Submitted ${CYAN}│${NC}  ${MAGENTA}[7]${NC} QC同步订单Filled           ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[8]${NC} 飞书-取消订单    ${CYAN}│${NC}  ${MAGENTA}[9]${NC} 飞书-平仓订单           ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[8]${NC} TP成交+SL取消     ${CYAN}│${NC}  ${MAGENTA}[9]${NC} SL成交+TP取消          ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[O]${NC} 飞书-取消订单    ${CYAN}│${NC}  ${MAGENTA}[P]${NC} 飞书-平仓订单           ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        ⚡ 逆向信号                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
@@ -140,9 +184,18 @@ generate_test_data() {
 
     local base_price=100
     local entry_price=$(echo "scale=2; $base_price + $RANDOM % 50" | bc 2>/dev/null || echo "100.00")
-    local stop_loss=$(echo "scale=2; $entry_price * 0.98" | bc 2>/dev/null || echo "98.00")
-    local take_profit=$(echo "scale=2; $entry_price * 1.05" | bc 2>/dev/null || echo "105.00")
-    local limit_price=$(echo "scale=2; $entry_price * 1.001" | bc 2>/dev/null || echo "${entry_price}")
+    local stop_loss
+    local take_profit
+    local limit_price
+    if [ "${TEST_DIRECTION}" = "short" ]; then
+        stop_loss=$(echo "scale=2; $entry_price * 1.02" | bc 2>/dev/null || echo "102.00")
+        take_profit=$(echo "scale=2; $entry_price * 0.95" | bc 2>/dev/null || echo "95.00")
+        limit_price=$(echo "scale=2; $entry_price * 0.999" | bc 2>/dev/null || echo "${entry_price}")
+    else
+        stop_loss=$(echo "scale=2; $entry_price * 0.98" | bc 2>/dev/null || echo "98.00")
+        take_profit=$(echo "scale=2; $entry_price * 1.05" | bc 2>/dev/null || echo "105.00")
+        limit_price=$(echo "scale=2; $entry_price * 1.001" | bc 2>/dev/null || echo "${entry_price}")
+    fi
 
     echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}"
 }
@@ -163,15 +216,20 @@ check_today_test_data() {
     local ord_response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100" "" "检查-查询订单")
     local ord_count=$(echo "$ord_response" | jq '.items | length' 2>/dev/null || echo "0")
 
+    # 查询订单详情
+    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=100" "" "检查-查询订单详情")
+    local det_count=$(echo "$det_response" | jq '.items | length' 2>/dev/null || echo "0")
+
     # 查询反转信号
     local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/reverse_signals/records?filter=date='${us_date}'&perPage=100" "" "检查-查询反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
 
-    if [ "$sig_count" -gt 0 ] || [ "$ord_count" -gt 0 ] || [ "$rev_count" -gt 0 ]; then
+    if [ "$sig_count" -gt 0 ] || [ "$ord_count" -gt 0 ] || [ "$det_count" -gt 0 ] || [ "$rev_count" -gt 0 ]; then
         echo ""
         echo -e "${YELLOW}发现 ${TEST_SYMBOL} 今日测试数据 (US日期: ${us_date}):${NC}"
         [ "$sig_count" -gt 0 ] && echo -e "  ${YELLOW}信号:${NC} $sig_count 条"
         [ "$ord_count" -gt 0 ] && echo -e "  ${YELLOW}订单:${NC} $ord_count 条"
+        [ "$det_count" -gt 0 ] && echo -e "  ${YELLOW}订单详情:${NC} $det_count 条"
         [ "$rev_count" -gt 0 ] && echo -e "  ${YELLOW}反转信号:${NC} $rev_count 条"
         return 1
     fi
@@ -264,7 +322,7 @@ cleanup_today_data() {
     fi
 
     # 清理缓存
-    rm -f /tmp/pb_sig_* /tmp/pb_ord_* /tmp/pb_rev_* 2>/dev/null
+    rm -f /tmp/pb_sig_* /tmp/pb_ord_* /tmp/pb_rev_* /tmp/pb_trade_group_id /tmp/pb_entry_* /tmp/pb_tp_* /tmp/pb_sl_* 2>/dev/null
 
     echo ""
     echo -e "${GREEN}✓ 清理完成（所有日期）${NC}"
@@ -374,10 +432,11 @@ EOF
     local ok_val=$(echo "$response" | jq -r '.ok' 2>/dev/null)
     if [ "$ok_val" = "true" ] || [ "$ok_val" = "1" ]; then
         log_success "信号发送成功"
+        clear_order_relation_cache
         # 保存到缓存文件
-        echo "${signal_id}" > /tmp/pb_sig_id
-        echo "${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}" > /tmp/pb_sig_data
-        echo "${signal_id}" > /tmp/pb_sig_latest
+        cache_set "pb_sig_id" "${signal_id}"
+        cache_set "pb_sig_data" "${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}"
+        cache_set "pb_sig_latest" "${signal_id}"
     else
         log_error "信号发送失败"
     fi
@@ -395,10 +454,10 @@ test_2_query_signals() {
     echo -e "${CYAN}📤 当前操作信号:${NC} ${GREEN}${cur_sig}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    log_info "查询 ${TEST_DATE} (US: ${us_date}) 的信号..."
+    log_info "查询 ${TEST_DATE} (US: ${us_date}) 的测试信号..."
 
-    # 使用 collection API 直接查询
-    response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=date='${us_date}'&perPage=100" "" "查询信号")
+    # 使用 collection API 直接查询（只查询测试信号）
+    response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询测试信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -408,10 +467,10 @@ test_2_query_signals() {
     # 保存最新信号ID
     if [ "$count" -gt 0 ]; then
         local latest_sig=$(echo "$response" | jq -r '.items[0].signal_id' 2>/dev/null)
-        echo "$latest_sig" > /tmp/pb_sig_latest
-        echo "$latest_sig" > /tmp/pb_sig_id
-        local latest_data=$(echo "$response" | jq -r '.items[0] | "\(.entry)|\(.stop_loss)|\(.take_profit)|\(.bar_time_ms)"' 2>/dev/null)
-        echo "$latest_data" > /tmp/pb_sig_data
+        cache_set "pb_sig_latest" "$latest_sig"
+        cache_set "pb_sig_id" "$latest_sig"
+        local latest_data=$(echo "$response" | jq -r '.items[0] | "\(.entry)|\(.stop_loss)|\(.take_profit)|\(.bar_time_ms)|\(.limit_price)|\(.us_time)|\(.cn_time)"' 2>/dev/null)
+        cache_set "pb_sig_data" "$latest_data"
     fi
 }
 
@@ -475,14 +534,16 @@ test_5_qc_ack_signal() {
     echo ""
     echo -e "${MAGENTA}═══ 📡 步骤5: QC确认信号 → 创建订单Init ═══${NC}"
 
-    local sig_id=$(cat /tmp/pb_sig_id 2>/dev/null || echo "")
-    if [ -z "$sig_id" ] || [ ! -f /tmp/pb_sig_latest ]; then
+    local sig_id
+    sig_id=$(cache_get "pb_sig_latest")
+    [ -z "$sig_id" ] && sig_id=$(cache_get "pb_sig_id")
+    if [ -z "$sig_id" ]; then
         log_error "没有信号ID，请先发送信号"
         return 1
     fi
 
-    sig_id=$(cat /tmp/pb_sig_latest)
-    local sig_data=$(cat /tmp/pb_sig_data 2>/dev/null || echo "")
+    local sig_data
+    sig_data=$(cache_get "pb_sig_data")
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
@@ -491,13 +552,21 @@ test_5_qc_ack_signal() {
     local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
     local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
+    seed_order_relation_cache "$sig_id"
 
-    local order_id="ord_${sig_id}_entry"
+    local entry_unique_id
+    local trade_group_id
+    local entry_broker_id
+    entry_unique_id=$(cache_get "pb_entry_unique_id")
+    trade_group_id=$(cache_get "pb_trade_group_id")
+    entry_broker_id=$(cache_get "pb_entry_broker_id")
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
     echo -e "  signal_id: ${GREEN}${sig_id}${NC}"
-    echo -e "  → 订单: ${GREEN}${order_id}${NC}"
+    echo -e "  → trade_group_id: ${GREEN}${trade_group_id}${NC}"
+    echo -e "  → entry_unique_id: ${GREEN}${entry_unique_id}${NC}"
+    echo -e "  → broker_order_id: ${GREEN}${entry_broker_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     local json=$(cat <<EOF
@@ -506,11 +575,19 @@ test_5_qc_ack_signal() {
   "status": "executed",
   "note": "QC确认测试信号",
   "order": {
-    "unique_id": "${order_id}",
+    "unique_id": "${entry_unique_id}",
+    "order_id": "${entry_broker_id}",
+    "broker_order_id": "${entry_broker_id}",
     "order_type": "Entry",
     "direction": "${TEST_DIRECTION}",
+    "position_side": "${TEST_DIRECTION}",
+    "role": "entry",
+    "relation_status": "active",
+    "trade_group_id": "${trade_group_id}",
+    "entry_order_unique_id": "${entry_unique_id}",
     "quantity": 100,
     "limit_price": ${limit_price},
+    "status": "Init",
     "filled_qty": 0,
     "fill_price": 0,
     "stop_loss": ${stop_loss},
@@ -519,7 +596,11 @@ test_5_qc_ack_signal() {
     "us_time": "${sig_us_time}",
     "cn_time": "${sig_cn_time}",
     "bar_time_ms": ${timestamp_ms},
-    "extra": {}
+    "extra": {
+      "reason": "QC确认测试信号",
+      "created_via": "pb-flow.sh",
+      "scenario": "signal_ack_init"
+    }
   }
 }
 EOF
@@ -533,8 +614,8 @@ EOF
     local success_val=$(echo "$response" | jq -r '.success' 2>/dev/null)
     if [ "$success_val" = "true" ]; then
         log_success "信号确认成功，订单已创建(Init)"
-        echo "$order_id" > /tmp/pb_ord_latest
-        echo "$order_id" > /tmp/pb_ord_id
+        cache_set "pb_ord_latest" "${entry_unique_id}"
+        cache_set "pb_ord_id" "${entry_unique_id}"
     fi
 }
 
@@ -547,15 +628,17 @@ test_6_qc_order_submitted() {
     echo ""
     echo -e "${MAGENTA}═══ 📦 步骤6: QC同步订单 Submitted ═══${NC}"
 
-    prompt_cleanup || true
+    ensure_order_relation_cache || { log_error "没有信号缓存，请先执行步骤1和5"; return 1; }
 
-    local order_id=$(cat /tmp/pb_ord_id 2>/dev/null || echo "")
-    if [ -z "$order_id" ]; then
-        local sig_id=$(cat /tmp/pb_sig_id 2>/dev/null || echo "test")
-        order_id="ord_${sig_id}_submitted"
-    fi
+    local order_id
+    local trade_group_id
+    local entry_broker_id
+    order_id=$(cache_get "pb_entry_unique_id")
+    trade_group_id=$(cache_get "pb_trade_group_id")
+    entry_broker_id=$(cache_get "pb_entry_broker_id")
 
-    local sig_data=$(cat /tmp/pb_sig_data 2>/dev/null || echo "")
+    local sig_data
+    sig_data=$(cache_get "pb_sig_data")
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
@@ -575,9 +658,15 @@ test_6_qc_order_submitted() {
 {
   "unique_id": "${order_id}",
   "order_type": "Entry",
-  "order_id": "IB_${order_id}",
+  "order_id": "${entry_broker_id}",
+  "broker_order_id": "${entry_broker_id}",
   "symbol": "${TEST_SYMBOL}",
   "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "role": "entry",
+  "relation_status": "active",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
   "quantity": 100,
   "limit_price": ${limit_price},
   "status": "Submitted",
@@ -586,11 +675,14 @@ test_6_qc_order_submitted() {
   "tp_price": ${take_profit},
   "sl_price": ${stop_loss},
   "rr_ratio": 1.5,
-  "signal_id": "$(cat /tmp/pb_sig_id 2>/dev/null || echo "")",
+  "signal_id": "$(cache_get "pb_sig_id")",
   "us_time": "${sig_us_time}",
   "cn_time": "${sig_cn_time}",
   "bar_time_ms": ${timestamp_ms},
-  "extra": {"reason": "QC同步Submitted"}
+  "extra": {
+    "reason": "QC同步Submitted",
+    "scenario": "entry_submitted"
+  }
 }
 EOF
 )
@@ -600,8 +692,8 @@ EOF
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
     if echo "$response" | jq -r '.ok // .success // .error' 2>/dev/null | grep -qv "false\|error"; then
-        echo "$order_id" > /tmp/pb_ord_latest
-        echo "$order_id" > /tmp/pb_ord_id
+        cache_set "pb_ord_latest" "${order_id}"
+        cache_set "pb_ord_id" "${order_id}"
     fi
 }
 
@@ -610,14 +702,17 @@ test_7_qc_order_filled() {
     echo ""
     echo -e "${MAGENTA}═══ 📦 步骤7: QC同步订单 Filled ═══${NC}"
 
-    local order_id=$(cat /tmp/pb_ord_id 2>/dev/null || echo "")
-    if [ -z "$order_id" ] || [ ! -f /tmp/pb_ord_latest ]; then
-        log_error "没有订单ID，请先执行步骤6"
-        return 1
-    fi
-    order_id=$(cat /tmp/pb_ord_latest)
+    ensure_order_relation_cache || { log_error "没有信号缓存，请先执行步骤1和5"; return 1; }
 
-    local sig_data=$(cat /tmp/pb_sig_data 2>/dev/null || echo "")
+    local order_id
+    local trade_group_id
+    local entry_broker_id
+    order_id=$(cache_get "pb_entry_unique_id")
+    trade_group_id=$(cache_get "pb_trade_group_id")
+    entry_broker_id=$(cache_get "pb_entry_broker_id")
+
+    local sig_data
+    sig_data=$(cache_get "pb_sig_data")
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
@@ -626,7 +721,12 @@ test_7_qc_order_filled() {
     local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
     local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
-    local fill_price=$(echo "scale=2; ${entry_price} * 1.001" | bc 2>/dev/null || echo "${entry_price}")
+    local fill_price
+    if [ "${TEST_DIRECTION}" = "short" ]; then
+        fill_price=$(echo "scale=2; ${entry_price} * 0.999" | bc 2>/dev/null || echo "${entry_price}")
+    else
+        fill_price=$(echo "scale=2; ${entry_price} * 1.001" | bc 2>/dev/null || echo "${entry_price}")
+    fi
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
@@ -639,9 +739,15 @@ test_7_qc_order_filled() {
 {
   "unique_id": "${order_id}",
   "order_type": "Entry",
-  "order_id": "IB_${order_id}",
+  "order_id": "${entry_broker_id}",
+  "broker_order_id": "${entry_broker_id}",
   "symbol": "${TEST_SYMBOL}",
   "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "role": "entry",
+  "relation_status": "active",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
   "quantity": 100,
   "limit_price": ${limit_price},
   "status": "Filled",
@@ -652,12 +758,15 @@ test_7_qc_order_filled() {
   "pnl": 0,
   "commission": 1.0,
   "rr_ratio": 1.5,
-  "signal_id": "$(cat /tmp/pb_sig_id 2>/dev/null || echo "")",
+  "signal_id": "$(cache_get "pb_sig_id")",
   "fill_time": "${sig_us_time}",
   "us_time": "${sig_us_time}",
   "cn_time": "${sig_cn_time}",
   "bar_time_ms": ${timestamp_ms},
-  "extra": {"reason": "QC同步Filled"}
+  "extra": {
+    "reason": "QC同步Filled",
+    "scenario": "entry_filled"
+  }
 }
 EOF
 )
@@ -667,17 +776,269 @@ EOF
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
-# 8. 飞书-取消订单
-test_8_feishu_cancel_order() {
+# 8. 同步订单止盈 TP
+test_8_qc_order_takeprofit() {
     echo ""
-    echo -e "${MAGENTA}═══ 📦 步骤8: 飞书-取消订单 ═══${NC}"
+    echo -e "${MAGENTA}═══ 📦 步骤8: 同步 TP 成交 + SL 对手单取消 ═══${NC}"
 
-    local order_id=$(cat /tmp/pb_ord_id 2>/dev/null || echo "")
-    if [ -z "$order_id" ] || [ ! -f /tmp/pb_ord_latest ]; then
+    ensure_order_relation_cache || { log_error "没有信号缓存，请先执行步骤1和5"; return 1; }
+
+    local order_id
+    local trade_group_id
+    local tp_order_id
+    local sl_order_id
+    local tp_broker_id
+    local sl_broker_id
+    order_id=$(cache_get "pb_entry_unique_id")
+    trade_group_id=$(cache_get "pb_trade_group_id")
+    tp_order_id=$(cache_get "pb_tp_unique_id")
+    sl_order_id=$(cache_get "pb_sl_unique_id")
+    tp_broker_id=$(cache_get "pb_tp_broker_id")
+    sl_broker_id=$(cache_get "pb_sl_broker_id")
+
+    local sig_data
+    sig_data=$(cache_get "pb_sig_data")
+    local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
+    local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
+    local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
+    local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
+    local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
+    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
+    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
+    [ -z "$limit_price" ] && limit_price="$entry_price"
+    local tp_fill_price=${take_profit}
+    local tp_pnl
+    if [ "${TEST_DIRECTION}" = "short" ]; then
+        tp_pnl=$(echo "scale=2; (${entry_price} - ${tp_fill_price}) * 100" | bc 2>/dev/null || echo "500")
+    else
+        tp_pnl=$(echo "scale=2; (${tp_fill_price} - ${entry_price}) * 100" | bc 2>/dev/null || echo "500")
+    fi
+
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}📤 当前操作:${NC}"
+    echo -e "  原始订单: ${GREEN}${order_id}${NC}"
+    echo -e "  TP订单: ${GREEN}${tp_order_id}${NC}"
+    echo -e "  SL对手单: ${GREEN}${sl_order_id}${NC}"
+    echo -e "  order_type: ${GREEN}TakeProfit${NC}"
+    echo -e "  status: ${GREEN}Filled${NC}"
+    echo -e "  tp_fill_price: ${GREEN}${tp_fill_price}${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    local json=$(cat <<EOF
+{
+  "unique_id": "${tp_order_id}",
+  "order_type": "TakeProfit",
+  "order_id": "${tp_broker_id}",
+  "broker_order_id": "${tp_broker_id}",
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
+  "parent_order_unique_id": "${order_id}",
+  "sibling_order_unique_id": "${sl_order_id}",
+  "role": "take_profit",
+  "relation_status": "closed",
+  "quantity": 100,
+  "limit_price": ${tp_fill_price},
+  "status": "Filled",
+  "filled_qty": 100,
+  "fill_price": ${tp_fill_price},
+  "pnl": ${tp_pnl},
+  "commission": 1.0,
+  "signal_id": "$(cache_get "pb_sig_id")",
+  "fill_time": "${sig_us_time}",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
+  "bar_time_ms": ${timestamp_ms},
+  "extra": {
+    "reason": "TP止盈触发，SL 对手单将取消",
+    "entry_price": ${entry_price},
+    "scenario": "take_profit_filled"
+  }
+}
+EOF
+)
+
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "同步订单止盈TP")
+
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+
+    local sl_cancel_json=$(cat <<EOF
+{
+  "unique_id": "${sl_order_id}",
+  "order_type": "StopLoss",
+  "order_id": "${sl_broker_id}",
+  "broker_order_id": "${sl_broker_id}",
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
+  "parent_order_unique_id": "${order_id}",
+  "sibling_order_unique_id": "${tp_order_id}",
+  "role": "stop_loss",
+  "relation_status": "closed",
+  "quantity": 100,
+  "limit_price": ${stop_loss},
+  "status": "Canceled",
+  "filled_qty": 0,
+  "fill_price": 0,
+  "signal_id": "$(cache_get "pb_sig_id")",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
+  "bar_time_ms": ${timestamp_ms},
+  "extra": {
+    "reason": "TP 成交后取消对手 SL",
+    "entry_price": ${entry_price},
+    "scenario": "tp_counterpart_cancel"
+  }
+}
+EOF
+)
+
+    local sl_cancel_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$sl_cancel_json" "同步对手SL取消")
+    echo "$sl_cancel_response" | jq '.' 2>/dev/null || echo "$sl_cancel_response"
+}
+
+# 9. 同步订单止损 SL
+test_9_qc_order_stoploss() {
+    echo ""
+    echo -e "${MAGENTA}═══ 📦 步骤9: 同步 SL 成交 + TP 对手单取消 ═══${NC}"
+
+    ensure_order_relation_cache || { log_error "没有信号缓存，请先执行步骤1和5"; return 1; }
+
+    local order_id
+    local trade_group_id
+    local tp_order_id
+    local sl_order_id
+    local tp_broker_id
+    local sl_broker_id
+    order_id=$(cache_get "pb_entry_unique_id")
+    trade_group_id=$(cache_get "pb_trade_group_id")
+    tp_order_id=$(cache_get "pb_tp_unique_id")
+    sl_order_id=$(cache_get "pb_sl_unique_id")
+    tp_broker_id=$(cache_get "pb_tp_broker_id")
+    sl_broker_id=$(cache_get "pb_sl_broker_id")
+
+    local sig_data
+    sig_data=$(cache_get "pb_sig_data")
+    local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
+    local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
+    local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
+    local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
+    local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
+    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
+    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
+    [ -z "$limit_price" ] && limit_price="$entry_price"
+    local sl_fill_price=${stop_loss}
+    local sl_pnl
+    if [ "${TEST_DIRECTION}" = "short" ]; then
+        sl_pnl=$(echo "scale=2; (${entry_price} - ${sl_fill_price}) * 100" | bc 2>/dev/null || echo "-200")
+    else
+        sl_pnl=$(echo "scale=2; (${sl_fill_price} - ${entry_price}) * 100" | bc 2>/dev/null || echo "-200")
+    fi
+
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}📤 当前操作:${NC}"
+    echo -e "  原始订单: ${GREEN}${order_id}${NC}"
+    echo -e "  SL订单: ${GREEN}${sl_order_id}${NC}"
+    echo -e "  TP对手单: ${GREEN}${tp_order_id}${NC}"
+    echo -e "  order_type: ${GREEN}StopLoss${NC}"
+    echo -e "  status: ${GREEN}Filled${NC}"
+    echo -e "  sl_fill_price: ${GREEN}${sl_fill_price}${NC}"
+    echo -e "  pnl: ${RED}${sl_pnl}${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    local json=$(cat <<EOF
+{
+  "unique_id": "${sl_order_id}",
+  "order_type": "StopLoss",
+  "order_id": "${sl_broker_id}",
+  "broker_order_id": "${sl_broker_id}",
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
+  "parent_order_unique_id": "${order_id}",
+  "sibling_order_unique_id": "${tp_order_id}",
+  "role": "stop_loss",
+  "relation_status": "closed",
+  "quantity": 100,
+  "limit_price": ${sl_fill_price},
+  "status": "Filled",
+  "filled_qty": 100,
+  "fill_price": ${sl_fill_price},
+  "pnl": ${sl_pnl},
+  "commission": 1.0,
+  "signal_id": "$(cache_get "pb_sig_id")",
+  "fill_time": "${sig_us_time}",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
+  "bar_time_ms": ${timestamp_ms},
+  "extra": {
+    "reason": "SL止损触发，TP 对手单将取消",
+    "entry_price": ${entry_price},
+    "sl_price": ${stop_loss},
+    "scenario": "stop_loss_filled"
+  }
+}
+EOF
+)
+
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "同步订单止损SL")
+
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+
+    local tp_cancel_json=$(cat <<EOF
+{
+  "unique_id": "${tp_order_id}",
+  "order_type": "TakeProfit",
+  "order_id": "${tp_broker_id}",
+  "broker_order_id": "${tp_broker_id}",
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
+  "parent_order_unique_id": "${order_id}",
+  "sibling_order_unique_id": "${sl_order_id}",
+  "role": "take_profit",
+  "relation_status": "closed",
+  "quantity": 100,
+  "limit_price": ${take_profit},
+  "status": "Canceled",
+  "filled_qty": 0,
+  "fill_price": 0,
+  "signal_id": "$(cache_get "pb_sig_id")",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
+  "bar_time_ms": ${timestamp_ms},
+  "extra": {
+    "reason": "SL 成交后取消对手 TP",
+    "entry_price": ${entry_price},
+    "scenario": "sl_counterpart_cancel"
+  }
+}
+EOF
+)
+
+    local tp_cancel_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$tp_cancel_json" "同步对手TP取消")
+    echo "$tp_cancel_response" | jq '.' 2>/dev/null || echo "$tp_cancel_response"
+}
+
+# O. 飞书-取消订单
+test_o_cancel_order() {
+    echo ""
+    echo -e "${MAGENTA}═══ 📦 O: 飞书-取消订单 ═══${NC}"
+
+    local order_id
+    order_id=$(cache_get "pb_entry_unique_id")
+    if [ -z "$order_id" ]; then
         log_error "没有订单ID"
         return 1
     fi
-    order_id=$(cat /tmp/pb_ord_latest)
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
@@ -695,17 +1056,17 @@ test_8_feishu_cancel_order() {
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
-# 9. 飞书-平仓订单
-test_9_feishu_close_order() {
+# P. 飞书-平仓订单
+test_p_close_order() {
     echo ""
-    echo -e "${MAGENTA}═══ 📦 步骤9: 飞书-平仓订单 ═══${NC}"
+    echo -e "${MAGENTA}═══ 📦 P: 飞书-平仓订单 ═══${NC}"
 
-    local order_id=$(cat /tmp/pb_ord_id 2>/dev/null || echo "")
-    if [ -z "$order_id" ] || [ ! -f /tmp/pb_ord_latest ]; then
+    local order_id
+    order_id=$(cache_get "pb_entry_unique_id")
+    if [ -z "$order_id" ]; then
         log_error "没有订单ID"
         return 1
     fi
-    order_id=$(cat /tmp/pb_ord_latest)
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
@@ -732,8 +1093,8 @@ test_a_calc_reverse() {
     echo ""
     echo -e "${MAGENTA}═══ ⚡ A: 计算逆向信号 ═══${NC}"
 
-    local sig_id=$(cat /tmp/pb_sig_id 2>/dev/null || echo "N/A")
-    local ord_id=$(cat /tmp/pb_ord_id 2>/dev/null || echo "N/A")
+    local sig_id=$(cache_get "pb_sig_id")
+    local ord_id=$(cache_get "pb_entry_unique_id")
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
@@ -754,8 +1115,8 @@ EOF
 
     local rev_id=$(echo "$response" | jq -r '.signal.id' 2>/dev/null)
     if [ -n "$rev_id" ] && [ "$rev_id" != "null" ]; then
-        echo "$rev_id" > /tmp/pb_rev_latest
-        echo "$rev_id" > /tmp/pb_rev_id
+        cache_set "pb_rev_latest" "$rev_id"
+        cache_set "pb_rev_id" "$rev_id"
     fi
 }
 
@@ -764,7 +1125,8 @@ test_b_query_reverse() {
     echo ""
     echo -e "${MAGENTA}═══ ⚡ B: 查询逆向信号 ═══${NC}"
 
-    local rev_id=$(cat /tmp/pb_rev_id 2>/dev/null || echo "未设置")
+    local rev_id=$(cache_get "pb_rev_id")
+    [ -z "$rev_id" ] && rev_id="未设置"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前逆向信号:${NC} ${GREEN}${rev_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -779,8 +1141,8 @@ test_b_query_reverse() {
     # 保存最新的
     if [ "$count" -gt 0 ]; then
         local latest_rev=$(echo "$response" | jq -r '.signals[0].id' 2>/dev/null)
-        echo "$latest_rev" > /tmp/pb_rev_latest
-        echo "$latest_rev" > /tmp/pb_rev_id
+        cache_set "pb_rev_latest" "$latest_rev"
+        cache_set "pb_rev_id" "$latest_rev"
     fi
 }
 
@@ -789,8 +1151,8 @@ test_c_ack_reverse() {
     echo ""
     echo -e "${MAGENTA}═══ ⚡ C: 确认逆向信号 ═══${NC}"
 
-    local rev_id=$(cat /tmp/pb_rev_id 2>/dev/null || echo "")
-    if [ -z "$rev_id" ] || [ ! -f /tmp/pb_rev_latest ]; then
+    local rev_id=$(cache_get "pb_rev_id")
+    if [ -z "$rev_id" ]; then
         local rev_pending=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/pending" "" "获取逆向信号ID")
         rev_id=$(echo "$rev_pending" | jq -r '.signals[0].id' 2>/dev/null)
     fi
@@ -799,11 +1161,13 @@ test_c_ack_reverse() {
         log_error "没有逆向信号"
         return 1
     fi
-    echo "$rev_id" > /tmp/pb_rev_latest
-    echo "$rev_id" > /tmp/pb_rev_id
+    cache_set "pb_rev_latest" "$rev_id"
+    cache_set "pb_rev_id" "$rev_id"
 
-    local sig_id=$(cat /tmp/pb_sig_id 2>/dev/null || echo "")
-    local ord_id=$(cat /tmp/pb_ord_id 2>/dev/null || echo "")
+    local sig_id=$(cache_get "pb_sig_id")
+    local ord_id=$(cache_get "pb_entry_broker_id")
+    local trade_group_id=$(cache_get "pb_trade_group_id")
+    local entry_unique_id=$(cache_get "pb_entry_unique_id")
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
@@ -818,7 +1182,9 @@ test_c_ack_reverse() {
   "status": "confirmed",
   "reason": "测试确认",
   "order_id": "${ord_id}",
-  "signal_id_orig": "${sig_id}"
+  "signal_id_orig": "${sig_id}",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${entry_unique_id}"
 }
 EOF
 )
@@ -912,13 +1278,14 @@ test_f_list_orders() {
     echo ""
     echo -e "${CYAN}═══ 🔧 F: 查询测试订单 ═══${NC}"
 
-    local ord_id=$(cat /tmp/pb_ord_id 2>/dev/null || echo "未设置")
+    local ord_id=$(cache_get "pb_entry_unique_id")
+    [ -z "$ord_id" ] && ord_id="未设置"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前订单ID:${NC} ${GREEN}${ord_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     # 过滤：unique_id 包含 _sig 或 symbol = TEST_SYMBOL
-    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?sort=-created&filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100" "" "查询测试订单")
+    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?sort=-created&filter=((unique_id~'_sig'||unique_id~'_test'||trade_group_id~'_sig'||entry_order_unique_id~'_sig')&&symbol='${TEST_SYMBOL}')&perPage=100" "" "查询测试订单")
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
@@ -1050,8 +1417,10 @@ main() {
             5) echo -e "${MAGENTA}QC确认信号 → 创建订单Init${NC}" ;;
             6) echo -e "${MAGENTA}QC同步订单 Submitted${NC}" ;;
             7) echo -e "${MAGENTA}QC同步订单 Filled${NC}" ;;
-            8) echo -e "${MAGENTA}飞书-取消订单${NC}" ;;
-            9) echo -e "${MAGENTA}飞书-平仓订单${NC}" ;;
+            8) echo -e "${MAGENTA}同步 TP 成交 + SL 对手单取消${NC}" ;;
+            9) echo -e "${MAGENTA}同步 SL 成交 + TP 对手单取消${NC}" ;;
+            O|o) echo -e "${MAGENTA}飞书-取消订单${NC}" ;;
+            P|p) echo -e "${MAGENTA}飞书-平仓订单${NC}" ;;
             A|a) echo -e "${MAGENTA}计算逆向信号${NC}" ;;
             B|b) echo -e "${MAGENTA}查询逆向信号${NC}" ;;
             C|c) echo -e "${MAGENTA}确认逆向信号${NC}" ;;
@@ -1087,8 +1456,10 @@ main() {
             5) test_5_qc_ack_signal ;;
             6) test_6_qc_order_submitted ;;
             7) test_7_qc_order_filled ;;
-            8) test_8_feishu_cancel_order ;;
-            9) test_9_feishu_close_order ;;
+            8) test_8_qc_order_takeprofit ;;
+            9) test_9_qc_order_stoploss ;;
+            O|o) test_o_cancel_order ;;
+            P|p) test_p_close_order ;;
             A|a) test_a_calc_reverse ;;
             B|b) test_b_query_reverse ;;
             C|c) test_c_ack_reverse ;;

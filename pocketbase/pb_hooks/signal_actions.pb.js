@@ -170,7 +170,7 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
 });
 
 routerAdd("POST", "/api/custom/signals/ack", (c) => {
-  const { appendOrderDetail, mergeOrderExtra, resolveOrderEventTimes } = require(`${__hooks}/lib/order_events.js`)
+  const { appendOrderDetail, mergeOrderExtra, resolveOrderEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
   const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
   const { notifyNewOrder } = require(`${__hooks}/lib/feishu_order.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
@@ -236,6 +236,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
 
       // 查找是否已存在订单
       let orderRecord = null;
+      let previousOrderStatus = ""
       try {
         const existing = $app.findRecordsByFilter(
           "orders",
@@ -247,6 +248,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
         );
         if (existing.length > 0) {
           orderRecord = existing[0];
+          previousOrderStatus = orderRecord.get("status") || ""
           console.log(`[SignalAck] 订单已存在，将更新: ${orderData.unique_id}`);
         }
       } catch (_) {}
@@ -257,6 +259,10 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       const resolvedLimitPrice = orderData.limit_price != null ? orderData.limit_price : (record.get("entry") || orderExtraData.limit_price || 0)
       const resolvedStopLoss = orderData.stop_loss != null ? orderData.stop_loss : (record.get("stop_loss") || orderExtraData.sl_price || 0)
       const resolvedTakeProfit = orderData.take_profit != null ? orderData.take_profit : (record.get("take_profit") || orderExtraData.tp_price || 0)
+      const tradeGroupId = orderData.trade_group_id || orderExtraData.trade_group_id || orderData.entry_order_unique_id || orderData.unique_id
+      const entryOrderUniqueId = orderData.entry_order_unique_id || orderExtraData.entry_order_unique_id || orderData.unique_id
+      const brokerOrderId = orderData.broker_order_id || orderData.order_id || ""
+      const positionSide = orderData.position_side || orderData.direction || record.get("direction") || ""
       const eventTimes = resolveOrderEventTimes({
         us_time: orderData.us_time || orderExtraData.us_time,
         cn_time: orderData.cn_time || orderExtraData.cn_time,
@@ -284,6 +290,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       orderRecord.set("sl_price", resolvedStopLoss);
       orderRecord.set("tp_price", resolvedTakeProfit);
       orderRecord.set("signal_id", signalId);
+      orderRecord.set("broker_order_id", brokerOrderId);
       orderRecord.set("order_time", resolvedOrderTime);
       orderRecord.set("us_time", eventTimes.us_time);
       orderRecord.set("cn_time", eventTimes.cn_time);
@@ -298,6 +305,32 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
         bar_time_ms: eventTimes.bar_time_ms,
         created_via: "signals/ack",
       }, true);
+      applyOrderRelationship(orderRecord, {
+        broker_order_id: brokerOrderId,
+        trade_group_id: tradeGroupId,
+        entry_order_unique_id: entryOrderUniqueId,
+        parent_order_unique_id: orderData.parent_order_unique_id || orderExtraData.parent_order_unique_id || "",
+        sibling_order_unique_id: orderData.sibling_order_unique_id || orderExtraData.sibling_order_unique_id || "",
+        role: orderData.role || orderExtraData.role || "entry",
+        relation_status: orderData.relation_status || orderExtraData.relation_status || "active",
+        position_side: positionSide,
+        order_type: orderData.order_type,
+        unique_id: orderData.unique_id,
+        status: "Init",
+      }, true)
+      applyOrderStatusMeta(orderRecord, {
+        status: "Init",
+        previous_status: previousOrderStatus,
+        source: "signal_ack_init",
+        reason: note,
+        us_time: eventTimes.us_time,
+        cn_time: eventTimes.cn_time,
+        bar_time_ms: eventTimes.bar_time_ms,
+        order_time: resolvedOrderTime,
+        created_us_time: eventTimes.us_time,
+        created_cn_time: eventTimes.cn_time,
+        created_bar_time_ms: eventTimes.bar_time_ms,
+      }, true)
       console.log(`[SignalAck] 订单已保存: id=${orderRecord.id}, status=Init`);
 
       // 3. 写入 order_details
@@ -350,7 +383,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
 // ── 订单操作（飞书按钮直接更新状态） ──
 
 routerAdd("GET", "/webhook/order/cancel", (c) => {
-    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderEventTimes } = require(`${__hooks}/lib/order_events.js`)
+    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
@@ -365,7 +398,11 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
         const record = records[0]
         const status = record.get("status")
         const symbol = record.get("symbol") || uniqueId
+        const role = record.get("role") || ((record.get("extra") || {}).role) || ""
         console.log(`[OrderAction] 收到取消请求: unique_id=${uniqueId}, symbol=${symbol}, current_status=${status}`)
+        if (role && role !== "entry") {
+            return c.html(200, warn("只能取消主单", "止盈/止损等子单不能直接取消，请操作主入场单", symbol))
+        }
         const statusHints = {
             Filled:   { fn: warn, title: "订单已成交", msg: "订单已成交，无法取消" },
             Canceled: { fn: warn, title: "订单已取消", msg: "无需重复操作" },
@@ -376,8 +413,18 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
             return c.html(200, h.fn(h.title, h.msg, symbol))
         }
         const oldStatus = status
-        const eventTimes = applyOrderEventTimes(record)
         record.set("status", "Canceled")
+        applyOrderRelationship(record, {
+            relation_status: "closed",
+            status: "Canceled",
+        }, false)
+        const metaResult = applyOrderStatusMeta(record, {
+            status: "Canceled",
+            previous_status: oldStatus,
+            source: "webhook/order/cancel",
+            reason: "页面取消挂单",
+        }, false)
+        const eventTimes = metaResult.eventTimes
         $app.save(record)
         try {
             appendOrderDetail(record, {
@@ -415,7 +462,7 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
 })
 
 routerAdd("GET", "/webhook/order/close", (c) => {
-    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderEventTimes } = require(`${__hooks}/lib/order_events.js`)
+    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
@@ -430,6 +477,8 @@ routerAdd("GET", "/webhook/order/close", (c) => {
         const record = records[0]
         const status = record.get("status")
         const symbol = record.get("symbol") || uniqueId
+        const tradeGroupId = record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id")
+        const entryOrderUniqueId = record.get("entry_order_unique_id") || record.get("unique_id")
         const statusHints = {
             Init:      { fn: warn, title: "订单未成交", msg: "只有成交的订单才能平仓" },
             Submitted: { fn: warn, title: "订单未成交", msg: "请先取消挂单" },
@@ -443,29 +492,55 @@ routerAdd("GET", "/webhook/order/close", (c) => {
         if (status !== "Filled") {
             return c.html(200, warn("订单未成交", "只有成交的订单才能平仓", symbol))
         }
-        const eventTimes = applyOrderEventTimes(record)
-        record.set("status", "Closed")
-        $app.save(record)
-        try {
-            appendOrderDetail(record, {
-                status: "Closed",
+        const relatedRecords = $app.findRecordsByFilter(
+            "orders",
+            "trade_group_id = {:gid}",
+            "-created",
+            100,
+            0,
+            { gid: tradeGroupId }
+        ) || []
+        relatedRecords.forEach((groupRecord) => {
+            const currentGroupStatus = groupRecord.get("status")
+            if (currentGroupStatus === "Canceled" || currentGroupStatus === "Closed") {
+                return
+            }
+            const nextStatus = groupRecord.get("unique_id") === entryOrderUniqueId ? "Closed" : "Canceled"
+            groupRecord.set("status", nextStatus)
+            applyOrderRelationship(groupRecord, {
+                relation_status: "closed",
+                status: nextStatus,
+            }, false)
+            const metaResult = applyOrderStatusMeta(groupRecord, {
+                status: nextStatus,
+                previous_status: currentGroupStatus,
                 source: "webhook/order/close",
-                reason: "页面平仓",
-                us_time: eventTimes.us_time,
-                cn_time: eventTimes.cn_time,
-                bar_time_ms: eventTimes.bar_time_ms,
-                extra: {
-                    action: "close",
-                    previous_status: status,
-                },
-            })
-        } catch (detailErr) {
-            console.error("[OrderAction] 平仓写入 order_details 失败:", detailErr)
-        }
+                reason: `页面平仓交易组 ${tradeGroupId}`,
+            }, false)
+            const eventTimes = metaResult.eventTimes
+            $app.save(groupRecord)
+            try {
+                appendOrderDetail(groupRecord, {
+                    status: nextStatus,
+                    source: "webhook/order/close",
+                    reason: `页面平仓交易组 ${tradeGroupId}`,
+                    us_time: eventTimes.us_time,
+                    cn_time: eventTimes.cn_time,
+                    bar_time_ms: eventTimes.bar_time_ms,
+                    extra: {
+                        action: "close_group",
+                        previous_status: currentGroupStatus,
+                        trade_group_id: tradeGroupId,
+                    },
+                })
+            } catch (detailErr) {
+                console.error("[OrderAction] 平仓写入 order_details 失败:", detailErr)
+            }
+        })
         const orderExtra = getOrderExtra(record)
         const syncResult = notifyOrder("closed", record, {
             messageId: orderExtra.feishu_order_message_id || "",
-            message: "订单已平仓",
+            message: `交易组已平仓 (${tradeGroupId})`,
         })
         if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
             mergeOrderExtra(record, {
@@ -473,8 +548,8 @@ routerAdd("GET", "/webhook/order/close", (c) => {
                 feishu_order_card_version: 1,
             }, true)
         }
-        console.log("[OrderAction] 订单已平仓:", uniqueId)
-        return c.html(200, ok("订单已平仓", "状态已更新", symbol))
+        console.log("[OrderAction] 交易组已平仓:", tradeGroupId)
+        return c.html(200, ok("交易组已平仓", "状态已更新", symbol))
     } catch (err) {
         console.error("[OrderAction] 平仓失败:", err)
         return c.html(500, fail("操作失败", String(err)))
