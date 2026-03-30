@@ -326,7 +326,7 @@
                     </select>
                 </div>
             </div>
-            <input class="search-input" id="searchInput" placeholder="🔍 搜索 股票代码 / QC订单ID / 信号ID / PB记录ID..." oninput="onSearchChange()">
+            <input class="search-input" id="searchInput" placeholder="🔍 搜索 标的代码 / QC订单ID / 信号ID / PB记录ID..." oninput="onSearchChange()">
         </div>
         <div id="detailsContainer"><div class="loading">加载中...</div></div>
         <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreDetails()" style="display: none;">加载更多</button>
@@ -348,6 +348,7 @@
         let displayedDetails = [];
         let hasMore = false;
         let totalItems = 0;
+        let searchDebounceTimer = null;
 
         async function initAuth() {
             const token = getToken();
@@ -370,30 +371,69 @@
         else if (filterOrderId) { queryMode = 'order_id'; effectiveFilter = filterOrderId; }
         else if (filterSignalId) { queryMode = 'signal_id'; effectiveFilter = filterSignalId; }
 
-        async function loadDetails() {
-            try {
-                let filters = [];
-                if (queryMode === 'id') {
-                    filters.push(`id = "${effectiveFilter}"`);
-                } else if (queryMode === 'order_id') {
-                    filters.push(`order_id = "${effectiveFilter}"`);
-                } else if (queryMode === 'signal_id') {
-                    filters.push(`signal_id = "${effectiveFilter}"`);
+        function escapeFilterValue(value) {
+            return String(value || '')
+                .replace(/\\/g, '\\\\')
+                .replace(/"/g, '\\"');
+        }
+
+        function getSearchTerm() {
+            return (document.getElementById('searchInput')?.value || '').trim();
+        }
+
+        function buildDetailsFilter(searchTerm = '') {
+            const filters = [];
+
+            if (queryMode === 'id') {
+                filters.push(`id = "${escapeFilterValue(effectiveFilter)}"`);
+            } else if (queryMode === 'order_id') {
+                filters.push(`order_id = "${escapeFilterValue(effectiveFilter)}"`);
+            } else if (queryMode === 'signal_id') {
+                filters.push(`signal_id = "${escapeFilterValue(effectiveFilter)}"`);
+            } else {
+                if (searchTerm) {
+                    const keyword = escapeFilterValue(searchTerm);
+                    const keywordUpper = escapeFilterValue(searchTerm.toUpperCase());
+                    const searchConditions = [
+                        `symbol = "${keyword}"`,
+                        `symbol ~ "${keyword}"`,
+                        `order_id = "${keyword}"`,
+                        `order_id ~ "${keyword}"`,
+                        `signal_id = "${keyword}"`,
+                        `signal_id ~ "${keyword}"`,
+                        `id = "${keyword}"`,
+                        `id ~ "${keyword}"`,
+                    ];
+                    if (keywordUpper !== keyword) {
+                        searchConditions.push(`symbol = "${keywordUpper}"`);
+                        searchConditions.push(`symbol ~ "${keywordUpper}"`);
+                    }
+                    filters.push(`(${searchConditions.join(' || ')})`);
                 } else {
                     const startTime = `${currentDate} 00:00:00`;
                     const endTime = `${currentDate} 23:59:59`;
-                    filters.push(`created >= "${startTime}" && created <= "${endTime}"`);
+                    filters.push(`((us_time >= "${escapeFilterValue(startTime)}" && us_time <= "${escapeFilterValue(endTime)}") || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`);
                 }
-                const filter = filters.join(' && ');
+            }
 
-                const result = await pb.collection('order_details').getList(currentPage, itemsPerPage, {
+            return filters.join(' && ');
+        }
+
+        async function loadDetails() {
+            try {
+                currentPage = 1;
+                const searchTerm = getSearchTerm();
+                const filter = buildDetailsFilter(searchTerm);
+                const perPage = queryMode === 'list' ? itemsPerPage : 200;
+
+                const result = await pb.collection('order_details').getList(1, perPage, {
                     filter: filter,
-                    sort: 'created',
+                    sort: '-bar_time_ms,-created',
                     $autoCancel: false
                 });
                 allDetails = result.items || [];
-                hasMore = result.items.length === itemsPerPage;
-                totalItems = result.totalItems || 0;
+                totalItems = result.totalItems || allDetails.length;
+                hasMore = allDetails.length < totalItems;
                 resetPagination();
                 renderDetails();
                 updateLoadMoreButton();
@@ -409,29 +449,26 @@
         }
 
         function getFilteredDetails() {
-            const searchTerm = (document.getElementById('searchInput')?.value || '').toLowerCase();
-            return searchTerm ? allDetails.filter(d =>
-                (d.symbol || '').toLowerCase().includes(searchTerm) ||
-                (d.id || '').toLowerCase().includes(searchTerm) ||
-                (d.order_id || '').toLowerCase().includes(searchTerm) ||
-                (d.signal_id || '').toLowerCase().includes(searchTerm)
-            ) : allDetails;
+            return allDetails;
         }
 
         function getPaginatedDetails() {
-            const filtered = getFilteredDetails();
-            const start = (currentPage - 1) * itemsPerPage;
-            return filtered.slice(0, start + itemsPerPage);
+            return allDetails;
         }
 
         function updateLoadMoreButton() {
             const btn = document.getElementById('loadMoreBtn');
             if (!btn) return;
-            const filtered = getFilteredDetails();
-            const hasMore = displayedDetails.length < filtered.length;
-            btn.style.display = hasMore ? 'block' : 'none';
-            btn.textContent = hasMore ? `加载更多 (${displayedDetails.length}/${filtered.length})` : '没有更多了';
-            btn.disabled = !hasMore;
+            if (queryMode !== 'list') {
+                btn.style.display = 'none';
+                btn.disabled = true;
+                return;
+            }
+            const loadedCount = allDetails.length;
+            const more = loadedCount < totalItems;
+            btn.style.display = more ? 'block' : 'none';
+            btn.textContent = more ? `加载更多 (${loadedCount}/${totalItems})` : `已加载全部 (${loadedCount}/${totalItems})`;
+            btn.disabled = !more;
         }
 
         async function loadMoreDetails() {
@@ -440,43 +477,29 @@
                 const token = getToken();
                 if (!token) return;
 
-                currentPage++;
+                const nextPage = currentPage + 1;
+                const filter = buildDetailsFilter(getSearchTerm());
 
-                let filters = [];
-                if (queryMode === 'id') {
-                    filters.push(`id = "${effectiveFilter}"`);
-                } else if (queryMode === 'order_id') {
-                    filters.push(`order_id = "${effectiveFilter}"`);
-                } else if (queryMode === 'signal_id') {
-                    filters.push(`signal_id = "${effectiveFilter}"`);
-                } else {
-                    const startTime = `${currentDate} 00:00:00`;
-                    const endTime = `${currentDate} 23:59:59`;
-                    filters.push(`created >= "${startTime}" && created <= "${endTime}"`);
-                }
-                const filter = filters.join(' && ');
-
-                const result = await pb.collection('order_details').getList(currentPage, itemsPerPage, {
+                const result = await pb.collection('order_details').getList(nextPage, itemsPerPage, {
                     filter: filter,
-                    sort: 'created',
+                    sort: '-bar_time_ms,-created',
                     $autoCancel: false
                 });
 
                 allDetails = [...allDetails, ...result.items];
-                hasMore = result.items.length === itemsPerPage;
+                currentPage = nextPage;
                 totalItems = result.totalItems || 0;
+                hasMore = allDetails.length < totalItems;
 
                 displayedDetails = allDetails;
                 renderDetails();
                 updateLoadMoreButton();
             } catch (error) {
                 console.error('加载更多失败:', error);
-                currentPage--;
             }
         }
 
         function resetPagination() {
-            currentPage = 1;
             displayedDetails = getPaginatedDetails();
         }
 
@@ -498,9 +521,11 @@
         }
 
         function onSearchChange() {
-            resetPagination();
-            renderDetails();
-            updateLoadMoreButton();
+            if (queryMode !== 'list') return;
+            if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+                loadDetails();
+            }, 180);
         }
 
         function formatBarTimeMsToET(barTimeMs) {
@@ -558,6 +583,7 @@
                                     </span>
                                 </div>
                                 <div class="signal-grid">
+                                    <div class="signal-item"><div class="signal-label">PB记录ID</div><div class="signal-value" style="font-size:10px;word-break:break-all;">${detail.id || '-'}</div></div>
                                     <div class="signal-item"><div class="signal-label">限价</div><div class="signal-value">${extra.limit_price != null ? '$' + Number(extra.limit_price).toFixed(2) : '-'}</div></div>
                                     <div class="signal-item"><div class="signal-label">成交价</div><div class="signal-value">${extra.fill_price != null ? '$' + Number(extra.fill_price).toFixed(2) : '-'}</div></div>
                                     <div class="signal-item"><div class="signal-label">数量</div><div class="signal-value">${extra.quantity != null ? extra.quantity : '-'}</div></div>
@@ -602,6 +628,7 @@
                         </div>
                     </div>
                     <div class="signal-grid">
+                        <div class="signal-item"><div class="signal-label">PB记录ID</div><div class="signal-value" style="font-size:10px;word-break:break-all;">${detail.id || '-'}</div></div>
                         <div class="signal-item"><div class="signal-label">QC 订单ID</div><div class="signal-value" style="font-size:10px;word-break:break-all;">${orderId || '-'}</div></div>
                         ${detail.order_id && detail.order_id !== orderId ? `<div class="signal-item"><div class="signal-label">IB 订单ID</div><div class="signal-value" style="font-size:10px;">${detail.order_id}</div></div>` : ''}
                         ${signalId ? `<div class="signal-item"><div class="signal-label">信号ID</div><div class="signal-value" style="font-size:10px;">${signalId}</div></div>` : ''}
