@@ -6,12 +6,17 @@
  * 读取 config 表中 order_validity_minutes 配置（默认 30 分钟）
  */
 
+const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderEventTimes } = require(`${__hooks}/lib/order_events.js`)
+const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
+
 cronAdd("order_expiry_check", "* * * * *", () => {
     // 检查 PB 定时调度开关
     try {
         const schedulerConfig = $app.findFirstRecordByFilter("config", "key = 'pb_scheduler_enabled'")
-        if (schedulerConfig && schedulerConfig.get("value") === "FALSE") {
-            console.log("[OrderScheduler] PB定时调度已关闭，跳过执行")
+        const rawValue = schedulerConfig ? schedulerConfig.get("value") : ""
+        const normalizedValue = String(rawValue || "").trim().toUpperCase()
+        if (normalizedValue === "FALSE" || normalizedValue === "0" || normalizedValue === "OFF") {
+            console.log(`[OrderScheduler] pb_scheduler_enabled="${normalizedValue}", 跳过执行`)
             return
         }
     } catch (err) {
@@ -63,8 +68,35 @@ cronAdd("order_expiry_check", "* * * * *", () => {
     for (const record of expiredOrders) {
         try {
             const oldStatus = record.get("status")
+            const uniqueId = record.get("unique_id")
+            console.log(`[OrderScheduler] 命中过期订单: unique_id=${uniqueId}, status=${oldStatus}, validity_minutes=${validityMinutes}, cutoff_ms=${cutoffMs}, bar_time_ms=${record.get("bar_time_ms")}`)
+            const eventTimes = applyOrderEventTimes(record)
             record.set("status", "Canceled")
             $app.save(record)
+            appendOrderDetail(record, {
+                status: "Canceled",
+                source: "order_scheduler",
+                reason: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
+                us_time: eventTimes.us_time,
+                cn_time: eventTimes.cn_time,
+                bar_time_ms: eventTimes.bar_time_ms,
+                extra: {
+                    previous_status: oldStatus,
+                    validity_minutes: validityMinutes,
+                    cutoff_ms: cutoffMs,
+                },
+            })
+            const orderExtra = getOrderExtra(record)
+            const syncResult = notifyOrder("canceled", record, {
+                messageId: orderExtra.feishu_order_message_id || "",
+                message: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
+            })
+            if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
+                mergeOrderExtra(record, {
+                    feishu_order_message_id: syncResult.message_id,
+                    feishu_order_card_version: 1,
+                }, true)
+            }
             console.log(`[OrderScheduler] 订单已取消: ${record.get("unique_id")}, 原状态: ${oldStatus}`)
             count++
         } catch (err) {

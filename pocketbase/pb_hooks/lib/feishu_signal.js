@@ -1,0 +1,494 @@
+/**
+ * feishu_signal.js
+ * 飞书信号卡片构建、通知与回调处理
+ */
+
+var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
+
+function getSignalExtra(recordOrData) {
+    if (!recordOrData) return {}
+
+    if (typeof recordOrData.getString === "function") {
+        var raw = recordOrData.getString("extra") || ""
+        if (raw) {
+            try {
+                var parsed = JSON.parse(raw)
+                return parsed && typeof parsed === "object" ? parsed : {}
+            } catch (e) {
+                console.error("[FeishuSignal] 解析 extra JSON 失败:", e)
+            }
+        }
+    }
+
+    var value = (typeof recordOrData.get === "function") ? recordOrData.get("extra") : recordOrData.extra
+    if (value && typeof value === "object") return value
+    if (typeof value === "string" && value) {
+        try {
+            var parsedValue = JSON.parse(value)
+            return parsedValue && typeof parsedValue === "object" ? parsedValue : {}
+        } catch (e) {
+            console.error("[FeishuSignal] 解析 extra 字符串失败:", e)
+        }
+    }
+
+    return {}
+}
+
+function mergeSignalExtra(record, patch, saveAfterMerge) {
+    var merged = {
+        ...getSignalExtra(record),
+        ...(patch || {}),
+    }
+    record.set("extra", merged)
+    if (saveAfterMerge) {
+        $app.save(record)
+    }
+    return merged
+}
+
+function getSignalStatusInfo(status) {
+    var map = {
+        expired: { emoji: "⏰", text: "已过期" },
+        rejected: { emoji: "❌", text: "已拒绝" },
+        executed: { emoji: "✅", text: "已执行" },
+        pending: { emoji: "⏳", text: "待执行" },
+        closed: { emoji: "🔒", text: "已平仓" },
+        awaiting_confirm: { emoji: "⏳", text: "待确认" }
+    }
+    return map[status] || { emoji: "❓", text: status || "未知" }
+}
+
+/**
+ * 从 signals record 构建展示用数据（回调和通知共用）
+ * 兼容 PB record（有 get() 方法）和 plain object
+ */
+function buildSignalDisplayData(recordOrData) {
+    var get = (typeof recordOrData.get === "function") ? recordOrData.get.bind(recordOrData) : function(k) { return recordOrData[k] }
+
+    var symbol = get("symbol") || ""
+    var direction = get("direction") || "long"
+    var entry = Number(get("entry")) || 0
+    var take_profit = Number(get("take_profit")) || 0
+    var stop_loss = Number(get("stop_loss")) || 0
+    var shares = Number(get("shares")) || 0
+    var rr = get("rr") || "N/A"
+    var signal_id = get("signal_id") || ""
+    var us_time = get("us_time") || ""
+    var extra = getSignalExtra(recordOrData)
+
+    var reason = extra.reason || get("reason") || ""
+    var changeDisplay = "N/A"
+    var dayPct = Number(extra.day_change_pct || 0)
+    var prevPct = Number(extra.prev_close_change_pct || 0)
+    var d7Pct = Number(extra.change_7d || 0)
+    if (extra.day_change_pct !== undefined) {
+        changeDisplay = (dayPct > 0 ? "+" : "") + dayPct.toFixed(2) + "%/" + (prevPct > 0 ? "+" : "") + prevPct.toFixed(2) + "%/" + (d7Pct > 0 ? "+" : "") + d7Pct.toFixed(2) + "%"
+    }
+
+    var isLong = direction === "long"
+    var tpProfit = (isLong ? (take_profit - entry) : (entry - take_profit)) * shares
+    var slLoss = (isLong ? (entry - stop_loss) : (stop_loss - entry)) * shares
+    var formatAmount = function(a) {
+        if (!a || a === 0) return "0"
+        if (Math.abs(a) >= 10000) return (a / 10000).toFixed(2) + "w"
+        return a.toFixed(2)
+    }
+
+    var atrText = null
+    if (extra.atr_pct) {
+        var atrLevel = extra.atr_pct >= 3 ? "高" : extra.atr_pct >= 1.5 ? "中" : "低"
+        var atrEmoji = extra.atr_pct >= 3 ? "⚡" : extra.atr_pct >= 1.5 ? "〜" : "·"
+        atrText = "**波动率:** " + atrEmoji + " " + atrLevel + " " + extra.atr_pct.toFixed(2) + "%"
+        if (extra.sl_atr_ratio) {
+            atrText += "\n**ATR止损:** " + extra.sl_atr_ratio.toFixed(1) + "倍"
+        }
+    } else if (extra.atr) {
+        atrText = "**ATR:** " + extra.atr.toFixed(2)
+    }
+
+    var marketIndexes = extra.market_indexes || []
+    if (marketIndexes.length === 0) {
+        try {
+            var fetched = []
+            var marketSyms = ["SPY", "QQQ", "VIX"]
+            for (var i = 0; i < marketSyms.length; i++) {
+                var msym = marketSyms[i]
+                try {
+                    var recs = $app.findRecordsByFilter("indicators", "symbol = {:sym}", "-bar_time_ms", 1, 0, { sym: msym })
+                    if (recs && recs.length > 0) {
+                        var indExtraStr = recs[0].getString("extra")
+                        var indExtra = {}
+                        if (indExtraStr) {
+                            try { indExtra = JSON.parse(indExtraStr) } catch (e) {}
+                        }
+                        var indChange = indExtra.day_change_pct
+                        if (indChange !== undefined) {
+                            fetched.push({ symbol: msym, change_pct: Number(indChange) })
+                        }
+                    }
+                } catch (e) {}
+            }
+            if (fetched.length > 0) {
+                marketIndexes = fetched
+                console.log("[FeishuSignal] 从 indicators 表查询 market_indexes:", JSON.stringify(fetched))
+            }
+        } catch (e) {
+            console.log("[FeishuSignal] 查询 indicators 表失败:", e)
+        }
+    }
+
+    var marketInfoText = null
+    if (marketIndexes.length > 0) {
+        var spyD = marketIndexes.find(function(m) { return m.symbol === "SPY" })
+        var qqqD = marketIndexes.find(function(m) { return m.symbol === "QQQ" })
+        var vixD = marketIndexes.find(function(m) { return m.symbol === "VIX" })
+        var mParts = []
+        if (spyD) mParts.push("SPY: " + (spyD.change_pct > 0 ? "+" : "") + Number(spyD.change_pct).toFixed(2) + "%")
+        if (qqqD) mParts.push("QQQ: " + (qqqD.change_pct > 0 ? "+" : "") + Number(qqqD.change_pct).toFixed(2) + "%")
+        if (mParts.length > 0) marketInfoText = "**大盘:** " + mParts.join(" | ")
+        if (vixD) {
+            var v = Number(vixD.change_pct)
+            var vixLevel = v >= 20 ? "🔴 恐慌" : v >= 10 ? "🟡 紧张" : "🟢 平稳"
+            marketInfoText = marketInfoText ? (marketInfoText + "\n") : ""
+            marketInfoText += "**VIX恐慌:** " + vixLevel + " " + (v > 0 ? "+" : "") + v.toFixed(1) + "%"
+        }
+    }
+
+    return {
+        symbol: symbol,
+        direction: direction,
+        entry: entry,
+        take_profit: take_profit,
+        stop_loss: stop_loss,
+        shares: shares,
+        rr: rr,
+        signal_id: signal_id,
+        us_time: us_time,
+        reason: reason,
+        changeDisplay: changeDisplay,
+        tpProfit: tpProfit,
+        slLoss: slLoss,
+        formatAmount: formatAmount,
+        atrText: atrText,
+        marketInfoText: marketInfoText,
+        marketIndexes: marketIndexes,
+        extra: extra
+    }
+}
+
+function buildSignalInfoElements(d) {
+    var leftColumn = []
+    var rightColumn = []
+    var elements = []
+    var directionText = d.direction === "long" ? "做多 📈" : "做空 📉"
+
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + d.symbol } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + d.changeDisplay } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**入场:** $" + d.entry.toFixed(2) } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** $" + d.take_profit.toFixed(2) } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** $" + d.stop_loss.toFixed(2) } })
+
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**盈利:** +$" + d.formatAmount(d.tpProfit) } })
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**亏损:** -$" + d.formatAmount(d.slLoss) } })
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**风报比:** " + d.rr } })
+    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**股数:** " + (d.shares || "N/A") } })
+    if (d.atrText) {
+        d.atrText.split("\n").forEach(function(line) {
+            rightColumn.push({ tag: "div", text: { tag: "lark_md", content: line } })
+        })
+    }
+
+    elements.push({
+        tag: "column_set",
+        horizontal_spacing: "default",
+        columns: [
+            { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: leftColumn },
+            { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: rightColumn }
+        ]
+    })
+
+    var infoElements = []
+    infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } })
+    if (d.reason) {
+        infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } })
+    }
+    if (d.marketInfoText) {
+        infoElements.push({ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } })
+    }
+    elements.push({
+        tag: "column_set",
+        columns: [{ tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: infoElements }]
+    })
+
+    return elements
+}
+
+function buildSignalCardV2(symbol, directionText, statusEmoji, statusText, status, color, message, extraFields, us_time) {
+    var elements = []
+
+    if (extraFields && extraFields.length > 0) {
+        elements = extraFields.slice()
+    } else {
+        elements.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + symbol } })
+        elements.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } })
+    }
+
+    elements.push({ tag: "hr" })
+    elements.push({ tag: "div", text: { tag: "lark_md", content: "**状态:** " + statusText + " · " + message } })
+
+    return {
+        schema: "2.0",
+        config: { update_multi: true },
+        header: {
+            title: { tag: "plain_text", content: statusEmoji + " " + statusText + " · " + symbol + " · " + (us_time || "") },
+            template: color
+        },
+        body: {
+            direction: "vertical",
+            elements: elements
+        }
+    }
+}
+
+function buildSignalNotificationCard(signal) {
+    var d = buildSignalDisplayData(signal)
+    var directionText = d.direction === "long" ? "做多 📈" : "做空 📉"
+    var color = d.direction === "long" ? "green" : "red"
+    var signalStatus = (typeof signal.get === "function") ? signal.get("status") : (signal.status || "pending")
+    var elements = buildSignalInfoElements(d)
+
+    elements.push({ tag: "hr" })
+
+    if (signalStatus === "awaiting_confirm") {
+        elements.push({
+            tag: "column_set",
+            horizontal_spacing: "default",
+            columns: [
+                {
+                    tag: "column",
+                    width: "weighted",
+                    weight: 1,
+                    elements: [{
+                        tag: "button",
+                        text: { tag: "plain_text", content: "✅ 确认" },
+                        type: "primary",
+                        width: "fill",
+                        behaviors: [{ type: "callback", value: { action: "confirm", signal_id: d.signal_id } }]
+                    }]
+                },
+                {
+                    tag: "column",
+                    width: "weighted",
+                    weight: 1,
+                    elements: [{
+                        tag: "button",
+                        text: { tag: "plain_text", content: "❌ 拒绝" },
+                        type: "danger",
+                        width: "fill",
+                        behaviors: [{ type: "callback", value: { action: "reject", signal_id: d.signal_id } }]
+                    }]
+                }
+            ]
+        })
+    } else {
+        elements.push({ tag: "div", text: { tag: "lark_md", content: "⚙️ **自动确认** · 信号已提交，等待执行" } })
+    }
+
+    return {
+        schema: "2.0",
+        config: { update_multi: true },
+        header: {
+            title: { tag: "plain_text", content: (signalStatus === "awaiting_confirm" ? "🔔 新交易信号" : "⚙️ 自动确认") + " · " + d.symbol + " · " + d.us_time },
+            template: color
+        },
+        body: {
+            direction: "vertical",
+            elements: elements
+        }
+    }
+}
+
+function getSignalStatusMessage(status) {
+    var map = {
+        awaiting_confirm: "等待人工确认",
+        pending: "信号已确认，等待执行",
+        executed: "信号已执行",
+        rejected: "信号已拒绝",
+        expired: "信号已过期",
+        closed: "信号已平仓"
+    }
+    return map[status] || ("信号状态已更新为 " + (status || "未知"))
+}
+
+function buildSignalStatusCard(signalOrRecord, options) {
+    var opts = options || {}
+    var get = (typeof signalOrRecord.get === "function") ? signalOrRecord.get.bind(signalOrRecord) : function(k) { return signalOrRecord[k] }
+    var d = buildSignalDisplayData(signalOrRecord)
+    var directionText = d.direction === "long" ? "做多 📈" : "做空 📉"
+    var color = d.direction === "long" ? "green" : "red"
+    var currentStatus = get("status") || opts.status || "pending"
+    var info = getSignalStatusInfo(currentStatus)
+    var message = opts.message || getSignalStatusMessage(currentStatus)
+
+    return buildSignalCardV2(
+        d.symbol,
+        directionText,
+        info.emoji,
+        info.text,
+        currentStatus,
+        color,
+        message,
+        buildSignalInfoElements(d),
+        d.us_time
+    )
+}
+
+function notifyNewSignal(signal) {
+    var card = buildSignalNotificationCard(signal)
+    var result = feishuApp.sendCardToChatDetailed(card)
+    console.log("[FeishuSignal] 信号通知发送:", result.success ? "成功" : "失败", "message_id:", result.message_id || "-")
+    return result
+}
+
+function notifySignalStatus(action, signal, options) {
+    var opts = options || {}
+    var card = buildSignalStatusCard(signal, { message: opts.message })
+    var messageId = opts.messageId || ""
+    var result = messageId ? feishuApp.updateMessageCard(messageId, card) : feishuApp.sendCardToChatDetailed(card)
+    console.log("[FeishuSignal] 信号卡片同步:", result.success ? "成功" : "失败", "action:", action, "message_id:", result.message_id || messageId || "-")
+    return result
+}
+
+function handleSignalCardCallback(c, options) {
+    var opts = options || {}
+    var action = opts.action || ""
+    var signalId = opts.signalId || ""
+    var updateToken = opts.updateToken || null
+
+    if (!signalId) {
+        return feishuApp.sendFeishuCallbackResponse(c, {
+            toast: { type: "error", content: "缺少信号ID" },
+            card: { type: "raw", data: null }
+        }, updateToken)
+    }
+
+    var record
+    try {
+        record = $app.findFirstRecordByFilter("signals", "id = {:id} || signal_id = {:id}", { id: signalId })
+    } catch (err) {
+        console.error("[FeishuSignalCallback] 查询信号失败:", err)
+    }
+
+    if (!record) {
+        return feishuApp.sendFeishuCallbackResponse(c, {
+            toast: { type: "error", content: "信号不存在" },
+            card: { type: "raw", data: null }
+        }, updateToken)
+    }
+
+    var d = buildSignalDisplayData(record)
+    var currentStatus = record.get("status")
+    var directionText = d.direction === "long" ? "做多 📈" : "做空 📉"
+    var color = d.direction === "long" ? "green" : "red"
+    var cardElements = buildSignalInfoElements(d)
+    var msg
+    var card
+
+    console.log("[FeishuSignalCallback] 处理信号回调:", "signal_id=", signalId, "action=", action, "current_status=", currentStatus)
+
+    var finalStatus = ["expired", "rejected", "executed", "closed"]
+    if (finalStatus.indexOf(currentStatus) !== -1) {
+        var finalInfo = getSignalStatusInfo(currentStatus)
+        msg = "该信号" + finalInfo.text + "，无法" + (action === "confirm" ? "确认" : "拒绝")
+        card = buildSignalCardV2(d.symbol, directionText, finalInfo.emoji, finalInfo.text, currentStatus, color, msg, cardElements, d.us_time)
+        return feishuApp.sendFeishuCallbackResponse(c, {
+            toast: { type: "warning", content: msg },
+            card: { type: "raw", data: card }
+        }, updateToken)
+    }
+
+    if (action === "confirm") {
+        if (currentStatus === "pending") {
+            msg = "⏳ 信号已确认，请勿重复操作"
+            card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time)
+            return feishuApp.sendFeishuCallbackResponse(c, {
+                toast: { type: "info", content: msg },
+                card: { type: "raw", data: card }
+            }, updateToken)
+        }
+        if (currentStatus !== "awaiting_confirm") {
+            var confirmInfo = getSignalStatusInfo(currentStatus)
+            msg = "该信号" + confirmInfo.text + "，无法确认"
+            card = buildSignalCardV2(d.symbol, directionText, confirmInfo.emoji, confirmInfo.text, currentStatus, color, msg, cardElements, d.us_time)
+            return feishuApp.sendFeishuCallbackResponse(c, {
+                toast: { type: "warning", content: msg },
+                card: { type: "raw", data: card }
+            }, updateToken)
+        }
+
+        record.set("status", "pending")
+        $app.save(record)
+        console.log("[FeishuSignalCallback] 确认成功，signal_id:", signalId)
+        card = buildSignalCardV2(d.symbol, directionText, "✅", "待执行", "pending", color, "✨ 确认成功，正在等待执行...", cardElements, d.us_time)
+        return feishuApp.sendFeishuCallbackResponse(c, {
+            toast: { type: "success", content: "确认成功" },
+            card: { type: "raw", data: card }
+        }, updateToken)
+    }
+
+    if (action === "reject") {
+        if (currentStatus === "rejected") {
+            msg = "❌ 信号已拒绝，请勿重复操作"
+            card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, msg, cardElements, d.us_time)
+            return feishuApp.sendFeishuCallbackResponse(c, {
+                toast: { type: "info", content: msg },
+                card: { type: "raw", data: card }
+            }, updateToken)
+        }
+        if (currentStatus === "pending") {
+            msg = "⏳ 信号正在等待执行，无法拒绝"
+            card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time)
+            return feishuApp.sendFeishuCallbackResponse(c, {
+                toast: { type: "warning", content: msg },
+                card: { type: "raw", data: card }
+            }, updateToken)
+        }
+        if (currentStatus !== "awaiting_confirm") {
+            var rejectInfo = getSignalStatusInfo(currentStatus)
+            msg = "该信号" + rejectInfo.text + "，无法拒绝"
+            card = buildSignalCardV2(d.symbol, directionText, rejectInfo.emoji, rejectInfo.text, currentStatus, color, msg, cardElements, d.us_time)
+            return feishuApp.sendFeishuCallbackResponse(c, {
+                toast: { type: "warning", content: msg },
+                card: { type: "raw", data: card }
+            }, updateToken)
+        }
+
+        record.set("status", "rejected")
+        $app.save(record)
+        console.log("[FeishuSignalCallback] 拒绝成功，signal_id:", signalId)
+        card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, "🚫 信号已拒绝，暂不执行", cardElements, d.us_time)
+        return feishuApp.sendFeishuCallbackResponse(c, {
+            toast: { type: "success", content: "拒绝成功" },
+            card: { type: "raw", data: card }
+        }, updateToken)
+    }
+
+    return feishuApp.sendFeishuCallbackResponse(c, {
+        toast: { type: "error", content: "未知操作: " + action }
+    }, updateToken)
+}
+
+module.exports = {
+    getSignalExtra: getSignalExtra,
+    mergeSignalExtra: mergeSignalExtra,
+    getSignalStatusInfo: getSignalStatusInfo,
+    getSignalStatusMessage: getSignalStatusMessage,
+    buildSignalDisplayData: buildSignalDisplayData,
+    buildSignalCardV2: buildSignalCardV2,
+    buildSignalNotificationCard: buildSignalNotificationCard,
+    buildSignalStatusCard: buildSignalStatusCard,
+    notifyNewSignal: notifyNewSignal,
+    notifySignalStatus: notifySignalStatus,
+    handleSignalCardCallback: handleSignalCardCallback
+}

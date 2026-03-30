@@ -717,10 +717,11 @@
 
                 // 判断是否可以平仓或取消
                 const isEntry = orderType === 'Entry';
+                const isInit = order.status === 'Init';
                 const isSubmitted = order.status === 'Submitted';
                 const isFilled = order.status === 'Filled';
                 const canClose = isEntry && isFilled;
-                const canCancel = isEntry && isSubmitted;
+                const canCancel = isEntry && (isInit || isSubmitted);
 
                 // 倒计时
                 const showCountdown = order.status === 'Init' || order.status === 'Submitted';

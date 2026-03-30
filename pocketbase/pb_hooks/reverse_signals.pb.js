@@ -1,6 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-const { sendFeishuPost } = require(`${__hooks}/feishu_app.js`);
+const { sendFeishuPost } = require(`${__hooks}/lib/feishu_app.js`);
 
 /**
  * reverse_signals.pb.js

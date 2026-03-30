@@ -35,6 +35,45 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# 将北京时间转换为美国东部时间日期
+get_us_date() {
+    local cn_datetime="${TEST_DATE} ${TEST_TIME}"
+    local ts=$(TZ=Asia/Shanghai date -j -f "%Y-%m-%d %H:%M:%S" "${cn_datetime}" +%s 2>/dev/null) || ts=$(date +%s)
+    TZ=America/New_York date -r ${ts} +%Y-%m-%d 2>/dev/null || echo "${TEST_DATE}"
+}
+
+# 执行 curl 请求（仅执行，返回结果）
+do_curl() {
+    local method=$1
+    local url=$2
+    local data=$3
+
+    if [ -n "$data" ]; then
+        curl -s -X ${method} "${url}" -H "Content-Type: application/json" -d "${data}"
+    else
+        curl -s -X ${method} "${url}"
+    fi
+}
+
+# 打印并执行 curl
+curl_exec() {
+    local method=$1
+    local url=$2
+    local data=$3
+    local label=${4:-""}
+
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    [ -n "$label" ] && echo -e "${MAGENTA}📤 ${label}${NC}" >&2 || echo -e "${MAGENTA}📤 CURL 请求:${NC}" >&2
+    echo -e "  ${CYAN}curl -X ${method} ${url}${NC}" >&2
+    if [ -n "$data" ]; then
+        echo -e "  ${CYAN}Body:${NC}" >&2
+        echo "$data" | jq '.' 2>/dev/null >&2 || echo "$data" >&2
+    fi
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+
+    do_curl "$method" "$url" "$data"
+}
+
 show_banner() {
     echo ""
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -114,21 +153,23 @@ generate_test_data() {
 
 # 按日期检查是否存在测试数据
 check_today_test_data() {
+    local us_date=$(get_us_date)
+
     # 查询信号
-    local sig_response=$(curl -s -X GET "${BASE_URL}/api/collections/signals/records?filter=(script_tag~'test'||signal_id~'_sig')&&date='${TEST_DATE}'&perPage=100")
+    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "检查-查询信号")
     local sig_count=$(echo "$sig_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询订单
-    local ord_response=$(curl -s -X GET "${BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100")
+    local ord_response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100" "" "检查-查询订单")
     local ord_count=$(echo "$ord_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询反转信号
-    local rev_response=$(curl -s -X GET "${BASE_URL}/api/collections/reverse_signals/records?filter=date='${TEST_DATE}'&perPage=100")
+    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/reverse_signals/records?filter=date='${us_date}'&perPage=100" "" "检查-查询反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     if [ "$sig_count" -gt 0 ] || [ "$ord_count" -gt 0 ] || [ "$rev_count" -gt 0 ]; then
         echo ""
-        echo -e "${YELLOW}发现 ${TEST_SYMBOL} 今日测试数据:${NC}"
+        echo -e "${YELLOW}发现 ${TEST_SYMBOL} 今日测试数据 (US日期: ${us_date}):${NC}"
         [ "$sig_count" -gt 0 ] && echo -e "  ${YELLOW}信号:${NC} $sig_count 条"
         [ "$ord_count" -gt 0 ] && echo -e "  ${YELLOW}订单:${NC} $ord_count 条"
         [ "$rev_count" -gt 0 ] && echo -e "  ${YELLOW}反转信号:${NC} $rev_count 条"
@@ -137,13 +178,13 @@ check_today_test_data() {
     return 0
 }
 
-# 清理今日测试数据
+# 清理所有测试数据（不限日期）
 cleanup_today_data() {
     echo ""
-    echo -e "${YELLOW}═══ 清理今日测试数据 ═══${NC}"
+    echo -e "${YELLOW}═══ 清理所有测试数据（不限日期）══════${NC}"
 
     # ── 信号 ──
-    local sig_response=$(curl -s -X GET "${BASE_URL}/api/collections/signals/records?filter=(script_tag~'test'||signal_id~'_sig')&&date='${TEST_DATE}'&perPage=100")
+    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?filter=(script_tag~'test'||signal_id~'_sig')&perPage=200" "" "清理-查询所有信号")
     local sig_count=$(echo "$sig_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_sig=0
 
@@ -152,18 +193,18 @@ cleanup_today_data() {
         [ -n "$deleted_sig_ids" ] && deleted_sig=$(echo "$deleted_sig_ids" | wc -l | tr -d ' ')
         if [ "$deleted_sig" -gt 0 ]; then
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo -e "${CYAN}🗑️  信号 ($deleted_sig 条):${NC}"
+            echo -e "${CYAN}🗑️  删除信号 ($deleted_sig 条):${NC}"
             echo "$sig_response" | jq -r '.items[].signal_id' 2>/dev/null | while read sid; do
                 [ -n "$sid" ] && echo -e "    ${RED}✗${NC} $sid"
             done
             for sig_id in $deleted_sig_ids; do
-                curl -s -X DELETE "${BASE_URL}/api/collections/signals/records/${sig_id}" > /dev/null 2>&1
+                curl_exec "DELETE" "${BASE_URL}/api/collections/signals/records/${sig_id}" "" "删除信号" > /dev/null 2>&1
             done
         fi
     fi
 
     # ── 订单 ──
-    local ord_response=$(curl -s -X GET "${BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100")
+    local ord_response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&perPage=200" "" "清理-查询所有订单")
     local ord_count=$(echo "$ord_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_ord=0
 
@@ -172,18 +213,38 @@ cleanup_today_data() {
         [ -n "$deleted_ord_ids" ] && deleted_ord=$(echo "$deleted_ord_ids" | wc -l | tr -d ' ')
         if [ "$deleted_ord" -gt 0 ]; then
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo -e "${CYAN}🗑️  订单 ($deleted_ord 条):${NC}"
+            echo -e "${CYAN}🗑️  删除订单 ($deleted_ord 条):${NC}"
             echo "$ord_response" | jq -r '.items[].unique_id' 2>/dev/null | while read uid; do
                 [ -n "$uid" ] && echo -e "    ${RED}✗${NC} $uid"
             done
             for ord_id in $deleted_ord_ids; do
-                curl -s -X DELETE "${BASE_URL}/api/collections/orders/records/${ord_id}" > /dev/null 2>&1
+                curl_exec "DELETE" "${BASE_URL}/api/collections/orders/records/${ord_id}" "" "删除订单" > /dev/null 2>&1
+            done
+        fi
+    fi
+
+    # ── 订单详情（order_details）──
+    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=200" "" "清理-查询所有订单详情")
+    local det_count=$(echo "$det_response" | jq '.items | length' 2>/dev/null || echo "0")
+    local deleted_det=0
+
+    if [ "$det_count" -gt 0 ]; then
+        local deleted_det_ids=$(echo "$det_response" | jq -r '.items[].id' 2>/dev/null)
+        [ -n "$deleted_det_ids" ] && deleted_det=$(echo "$deleted_det_ids" | wc -l | tr -d ' ')
+        if [ "$deleted_det" -gt 0 ]; then
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${CYAN}🗑️  删除订单详情 ($deleted_det 条):${NC}"
+            echo "$det_response" | jq -r '.items[].order_id' 2>/dev/null | while read oid; do
+                [ -n "$oid" ] && echo -e "    ${RED}✗${NC} $oid"
+            done
+            for det_id in $deleted_det_ids; do
+                curl_exec "DELETE" "${BASE_URL}/api/collections/order_details/records/${det_id}" "" "删除订单详情" > /dev/null 2>&1
             done
         fi
     fi
 
     # ── 反转信号 ──
-    local rev_response=$(curl -s -X GET "${BASE_URL}/api/collections/reverse_signals/records?filter=date='${TEST_DATE}'&perPage=100")
+    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/reverse_signals/records?perPage=200" "" "清理-查询所有反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_rev=0
 
@@ -192,12 +253,12 @@ cleanup_today_data() {
         [ -n "$deleted_rev_ids" ] && deleted_rev=$(echo "$deleted_rev_ids" | wc -l | tr -d ' ')
         if [ "$deleted_rev" -gt 0 ]; then
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo -e "${CYAN}🗑️  反转信号 ($deleted_rev 条):${NC}"
+            echo -e "${CYAN}🗑️  删除反转信号 ($deleted_rev 条):${NC}"
             echo "$rev_response" | jq -r '.items[].id' 2>/dev/null | while read rid; do
                 [ -n "$rid" ] && echo -e "    ${RED}✗${NC} $rid"
             done
             for rev_id in $deleted_rev_ids; do
-                curl -s -X DELETE "${BASE_URL}/api/collections/reverse_signals/records/${rev_id}" > /dev/null 2>&1
+                curl_exec "DELETE" "${BASE_URL}/api/collections/reverse_signals/records/${rev_id}" "" "删除反转信号" > /dev/null 2>&1
             done
         fi
     fi
@@ -206,8 +267,8 @@ cleanup_today_data() {
     rm -f /tmp/pb_sig_* /tmp/pb_ord_* /tmp/pb_rev_* 2>/dev/null
 
     echo ""
-    echo -e "${GREEN}✓ 清理完成${NC}"
-    echo -e "  信号: ${GREEN}${deleted_sig:-0}${NC} | 订单: ${GREEN}${deleted_ord:-0}${NC} | 反转信号: ${GREEN}${deleted_rev:-0}${NC}"
+    echo -e "${GREEN}✓ 清理完成（所有日期）${NC}"
+    echo -e "  信号: ${GREEN}${deleted_sig:-0}${NC} | 订单: ${GREEN}${deleted_ord:-0}${NC} | 订单详情: ${GREEN}${deleted_det:-0}${NC} | 反转信号: ${GREEN}${deleted_rev:-0}${NC}"
 }
 
 # 提示并清理
@@ -298,18 +359,25 @@ EOF
     echo -e "  SL: ${GREEN}${stop_loss}${NC}, TP: ${GREEN}${take_profit}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    response=$(curl -s -X POST "${BASE_URL}/webhook/tv" \
-        -H "Content-Type: application/json" \
-        -d "$json")
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${MAGENTA}📤 发送信号${NC}"
+    echo -e "  ${CYAN}curl -X POST ${BASE_URL}/webhook/tv${NC}"
+    echo -e "  ${CYAN}Body:${NC}"
+    echo "$json" | jq '.' 2>/dev/null || echo "$json"
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    response=$(do_curl "POST" "${BASE_URL}/webhook/tv" "$json")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
-    if echo "$response" | jq -r '.ok' 2>/dev/null | grep -q "true"; then
+    # 检查响应中的 ok 字段
+    local ok_val=$(echo "$response" | jq -r '.ok' 2>/dev/null)
+    if [ "$ok_val" = "true" ] || [ "$ok_val" = "1" ]; then
         log_success "信号发送成功"
         # 保存到缓存文件
-        echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}" > /tmp/pb_sig_latest
         echo "${signal_id}" > /tmp/pb_sig_id
         echo "${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}" > /tmp/pb_sig_data
+        echo "${signal_id}" > /tmp/pb_sig_latest
     else
         log_error "信号发送失败"
     fi
@@ -322,25 +390,27 @@ test_2_query_signals() {
 
     # 显示当前操作目标
     local cur_sig=$(cat /tmp/pb_sig_id 2>/dev/null || echo "未设置")
+    local us_date=$(get_us_date)
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作信号:${NC} ${GREEN}${cur_sig}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    log_info "查询 ${TEST_DATE} 的信号..."
+    log_info "查询 ${TEST_DATE} (US: ${us_date}) 的信号..."
 
-    response=$(curl -s -X GET "${BASE_URL}/api/custom/signals/pending?date=${TEST_DATE}")
+    # 使用 collection API 直接查询
+    response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=date='${us_date}'&perPage=100" "" "查询信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
-    local count=$(echo "$response" | jq '.signals | length' 2>/dev/null || echo "0")
+    local count=$(echo "$response" | jq '.items | length' 2>/dev/null || echo "0")
     log_info "共 $count 条信号"
 
     # 保存最新信号ID
     if [ "$count" -gt 0 ]; then
-        local latest_sig=$(echo "$response" | jq -r '.signals[0].signal_id' 2>/dev/null)
+        local latest_sig=$(echo "$response" | jq -r '.items[0].signal_id' 2>/dev/null)
         echo "$latest_sig" > /tmp/pb_sig_latest
         echo "$latest_sig" > /tmp/pb_sig_id
-        local latest_data=$(echo "$response" | jq -r '.signals[0] | "\(.entry)|\(.stop_loss)|\(.take_profit)|\(.bar_time_ms)"' 2>/dev/null)
+        local latest_data=$(echo "$response" | jq -r '.items[0] | "\(.entry)|\(.stop_loss)|\(.take_profit)|\(.bar_time_ms)"' 2>/dev/null)
         echo "$latest_data" > /tmp/pb_sig_data
     fi
 }
@@ -364,9 +434,8 @@ test_3_feishu_confirm() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}注意: 需要飞书机器人配置 callback_url${NC}"
 
-    response=$(curl -s -X POST "${BASE_URL}/webhook/feishu/callback" \
-        -H "Content-Type: application/json" \
-        -d "{\"action\": \"confirm\", \"signal_id\": \"${sig_id}\"}")
+    local confirm_json="{\"action\": \"confirm\", \"signal_id\": \"${sig_id}\"}"
+    response=$(curl_exec "POST" "${BASE_URL}/webhook/feishu/callback" "${confirm_json}" "飞书-确认信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -395,9 +464,8 @@ test_4_feishu_reject() {
 
     log_info "拒绝信号: ${sig_id}"
 
-    response=$(curl -s -X POST "${BASE_URL}/webhook/feishu/callback" \
-        -H "Content-Type: application/json" \
-        -d "{\"action\": \"reject\", \"signal_id\": \"${sig_id}\"}")
+    local reject_json="{\"action\": \"reject\", \"signal_id\": \"${sig_id}\"}"
+    response=$(curl_exec "POST" "${BASE_URL}/webhook/feishu/callback" "${reject_json}" "飞书-拒绝信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -420,6 +488,8 @@ test_5_qc_ack_signal() {
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
     local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
+    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
+    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
 
     local order_id="ord_${sig_id}_entry"
@@ -445,9 +515,9 @@ test_5_qc_ack_signal() {
     "fill_price": 0,
     "stop_loss": ${stop_loss},
     "take_profit": ${take_profit},
-    "order_time": "${TEST_DATE} 10:30:00",
-    "us_time": "${TEST_DATE} 10:30:00",
-    "cn_time": "${TEST_DATE} 18:30:00",
+    "order_time": "${sig_us_time}",
+    "us_time": "${sig_us_time}",
+    "cn_time": "${sig_cn_time}",
     "bar_time_ms": ${timestamp_ms},
     "extra": {}
   }
@@ -455,13 +525,13 @@ test_5_qc_ack_signal() {
 EOF
 )
 
-    response=$(curl -s -X POST "${BASE_URL}/api/custom/signals/ack" \
-        -H "Content-Type: application/json" \
-        -d "$json")
+    # 通过 signals/ack hook 处理状态流转
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/signals/ack" "$json" "QC确认信号→创建订单")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
-    if echo "$response" | jq -r '.success' 2>/dev/null | grep -q "true"; then
+    local success_val=$(echo "$response" | jq -r '.success' 2>/dev/null)
+    if [ "$success_val" = "true" ]; then
         log_success "信号确认成功，订单已创建(Init)"
         echo "$order_id" > /tmp/pb_ord_latest
         echo "$order_id" > /tmp/pb_ord_id
@@ -491,6 +561,8 @@ test_6_qc_order_submitted() {
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
     local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
+    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
+    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -515,17 +587,15 @@ test_6_qc_order_submitted() {
   "sl_price": ${stop_loss},
   "rr_ratio": 1.5,
   "signal_id": "$(cat /tmp/pb_sig_id 2>/dev/null || echo "")",
-  "us_time": "${TEST_DATE} 10:30:00",
-  "cn_time": "${TEST_DATE} 18:30:00",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
   "bar_time_ms": ${timestamp_ms},
   "extra": {"reason": "QC同步Submitted"}
 }
 EOF
 )
 
-    response=$(curl -s -X POST "${BASE_URL}/api/custom/orders/upsert" \
-        -H "Content-Type: application/json" \
-        -d "$json")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "QC同步订单Submitted")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -553,6 +623,8 @@ test_7_qc_order_filled() {
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
     local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
+    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
+    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
     local fill_price=$(echo "scale=2; ${entry_price} * 1.001" | bc 2>/dev/null || echo "${entry_price}")
 
@@ -581,18 +653,16 @@ test_7_qc_order_filled() {
   "commission": 1.0,
   "rr_ratio": 1.5,
   "signal_id": "$(cat /tmp/pb_sig_id 2>/dev/null || echo "")",
-  "fill_time": "${TEST_DATE} 10:35:00",
-  "us_time": "${TEST_DATE} 10:35:00",
-  "cn_time": "${TEST_DATE} 18:35:00",
+  "fill_time": "${sig_us_time}",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
   "bar_time_ms": ${timestamp_ms},
   "extra": {"reason": "QC同步Filled"}
 }
 EOF
 )
 
-    response=$(curl -s -X POST "${BASE_URL}/api/custom/orders/upsert" \
-        -H "Content-Type: application/json" \
-        -d "$json")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "QC同步订单Filled")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -620,7 +690,7 @@ test_8_feishu_cancel_order() {
 
     log_info "取消订单: ${order_id}"
 
-    response=$(curl -s -X GET "${BASE_URL}/webhook/order/cancel?id=${order_id}")
+    response=$(curl_exec "GET" "${BASE_URL}/webhook/order/cancel?id=${order_id}" "" "飞书-取消订单")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -648,7 +718,7 @@ test_9_feishu_close_order() {
 
     log_info "平仓订单: ${order_id}"
 
-    response=$(curl -s -X GET "${BASE_URL}/webhook/order/close?id=${order_id}")
+    response=$(curl_exec "GET" "${BASE_URL}/webhook/order/close?id=${order_id}" "" "飞书-平仓订单")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -678,9 +748,7 @@ test_a_calc_reverse() {
 EOF
 )
 
-    response=$(curl -s -X POST "${BASE_URL}/api/custom/reverse/calculate" \
-        -H "Content-Type: application/json" \
-        -d "$json")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/reverse/calculate" "$json" "计算逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -701,7 +769,7 @@ test_b_query_reverse() {
     echo -e "${CYAN}📤 当前逆向信号:${NC} ${GREEN}${rev_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    response=$(curl -s -X GET "${BASE_URL}/api/custom/reverse/pending")
+    response=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/pending" "" "查询逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -723,7 +791,8 @@ test_c_ack_reverse() {
 
     local rev_id=$(cat /tmp/pb_rev_id 2>/dev/null || echo "")
     if [ -z "$rev_id" ] || [ ! -f /tmp/pb_rev_latest ]; then
-        rev_id=$(curl -s -X GET "${BASE_URL}/api/custom/reverse/pending" | jq -r '.signals[0].id' 2>/dev/null)
+        local rev_pending=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/pending" "" "获取逆向信号ID")
+        rev_id=$(echo "$rev_pending" | jq -r '.signals[0].id' 2>/dev/null)
     fi
 
     if [ -z "$rev_id" ] || [ "$rev_id" = "null" ]; then
@@ -754,9 +823,7 @@ test_c_ack_reverse() {
 EOF
 )
 
-    response=$(curl -s -X POST "${BASE_URL}/api/custom/reverse/ack" \
-        -H "Content-Type: application/json" \
-        -d "$json")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/reverse/ack" "$json" "确认逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -814,9 +881,7 @@ test_d_send_indicator() {
 EOF
 )
 
-    response=$(curl -s -X POST "${BASE_URL}/webhook/tv" \
-        -H "Content-Type: application/json" \
-        -d "$json")
+    response=$(curl_exec "POST" "${BASE_URL}/webhook/tv" "$json" "发送指标数据")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -835,9 +900,10 @@ test_e_list_signals() {
     echo -e "${CYAN}📤 当前信号ID:${NC} ${GREEN}${sig_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    log_info "查询 ${TEST_DATE} 测试信号（script_tag~test 或 signal_id~_sig）"
+    local us_date=$(get_us_date)
+    log_info "查询 ${TEST_DATE} (US: ${us_date}) 测试信号（script_tag~test 或 signal_id~_sig）"
     # 过滤：script_tag 包含 test 或 signal_id 包含 _sig
-    local response=$(curl -s -X GET "${BASE_URL}/api/collections/signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${TEST_DATE}'&perPage=100")
+    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询测试信号")
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
@@ -852,7 +918,7 @@ test_f_list_orders() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     # 过滤：unique_id 包含 _sig 或 symbol = TEST_SYMBOL
-    local response=$(curl -s -X GET "${BASE_URL}/api/collections/orders/records?sort=-created&filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100")
+    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?sort=-created&filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100" "" "查询测试订单")
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
@@ -992,7 +1058,7 @@ main() {
             D|d) echo -e "${MAGENTA}发送指标数据${NC}" ;;
             E|e) echo -e "${CYAN}查询所有信号${NC}" ;;
             F|f) echo -e "${CYAN}查询所有订单${NC}" ;;
-            X|x) echo -e "${YELLOW}清理今日测试数据${NC}" ;;
+            X|x) echo -e "${YELLOW}清理所有测试数据${NC}" ;;
             G|g) echo -e "${GREEN}设置测试日期${NC}" ;;
             S|s) echo -e "${GREEN}设置测试标的${NC}" ;;
             T|t) echo -e "${GREEN}设置测试方向${NC}" ;;

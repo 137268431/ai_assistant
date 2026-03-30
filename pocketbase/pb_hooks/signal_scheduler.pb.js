@@ -7,11 +7,15 @@
  */
 
 cronAdd("signal_expiry_check", "* * * * *", () => {
+    const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
+
     // 检查 PB 定时调度开关
     try {
         const schedulerConfig = $app.findFirstRecordByFilter("config", "key = 'pb_scheduler_enabled'")
-        if (schedulerConfig && schedulerConfig.get("value") === "FALSE") {
-            console.log("[SignalExpiry] PB定时调度已关闭，跳过执行")
+        const rawValue = schedulerConfig ? schedulerConfig.get("value") : ""
+        const normalizedValue = String(rawValue || "").trim().toUpperCase()
+        if (normalizedValue === "FALSE" || normalizedValue === "0" || normalizedValue === "OFF") {
+            console.log(`[SignalExpiry] pb_scheduler_enabled="${normalizedValue}", 跳过执行`)
             return
         }
     } catch (err) {
@@ -61,8 +65,21 @@ cronAdd("signal_expiry_check", "* * * * *", () => {
     let count = 0
     for (const record of expired) {
         try {
+            const oldStatus = record.get("status")
             record.set("status", "expired")
             $app.save(record)
+            const signalExtra = getSignalExtra(record)
+            const syncResult = notifySignalStatus("expired", record, {
+                messageId: signalExtra.feishu_signal_message_id || "",
+                message: `信号超时自动失效（有效期 ${validityMinutes} 分钟）`,
+            })
+            if (syncResult.success && syncResult.message_id && syncResult.message_id !== signalExtra.feishu_signal_message_id) {
+                mergeSignalExtra(record, {
+                    feishu_signal_message_id: syncResult.message_id,
+                    feishu_signal_card_version: 1,
+                }, true)
+            }
+            console.log(`[SignalExpiry] 信号已过期: signal_id=${record.get("signal_id")}, previous_status=${oldStatus}, message_id=${signalExtra.feishu_signal_message_id || "-"}`)
             count++
         } catch (err) {
             console.error("[SignalExpiry] 更新信号失败:", record.id, err)

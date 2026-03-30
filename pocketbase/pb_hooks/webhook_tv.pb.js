@@ -7,7 +7,8 @@
  */
 
 routerAdd("POST", "/webhook/tv", (c) => {
-    const { notifyNewSignal, sendFeishuPost } = require(`${__hooks}/feishu_app.js`)
+    const { notifyNewSignal, mergeSignalExtra } = require(`${__hooks}/lib/feishu_signal.js`)
+    const { sendFeishuPost } = require(`${__hooks}/lib/feishu_app.js`)
 
     // ── 解析请求信息（含 body）──
     const reqInfo = c.requestInfo()
@@ -158,20 +159,13 @@ routerAdd("POST", "/webhook/tv", (c) => {
 
     // 发送飞书通知
     try {
-        notifyNewSignal({
-            symbol: d.symbol,
-            direction: d.direction,
-            entry: d.entry,
-            take_profit: d.take_profit,
-            stop_loss: d.stop_loss,
-            rr: d.rr,
-            shares: d.shares,
-            signal_id: d.signal_id,
-            us_time: d.us_time || "",
-            reason: extra.reason,
-            extra: extra,
-            status: initialStatus
-        });
+        const notifyResult = notifyNewSignal(record);
+        if (notifyResult && notifyResult.success && notifyResult.message_id) {
+            mergeSignalExtra(record, {
+                feishu_signal_message_id: notifyResult.message_id,
+                feishu_signal_card_version: 1,
+            }, true);
+        }
     } catch (err) {
         console.error("[Feishu] 发送信号通知失败:", err);
     }

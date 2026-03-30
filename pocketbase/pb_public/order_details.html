@@ -77,8 +77,7 @@
 
         .signal-header {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-direction: column;
             margin-bottom: 14px;
         }
 
@@ -327,7 +326,7 @@
                     </select>
                 </div>
             </div>
-            <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/订单ID..." oninput="onSearchChange()">
+            <input class="search-input" id="searchInput" placeholder="🔍 搜索 股票代码 / QC订单ID / 信号ID / PB记录ID..." oninput="onSearchChange()">
         </div>
         <div id="detailsContainer"><div class="loading">加载中...</div></div>
         <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreDetails()" style="display: none;">加载更多</button>
@@ -339,7 +338,6 @@
     <script>
         const pb = new PocketBase('https://pb.lzw-glory.top');
         let allDetails = [];
-        let filterDetailId = null;
         let currentDate = new Date().toISOString().split('T')[0];
         let refreshTimer = null;
         let currentInterval = 30;
@@ -566,8 +564,6 @@
                                     <div class="signal-item"><div class="signal-label">已成交</div><div class="signal-value">${extra.filled_qty != null ? extra.filled_qty : '-'}</div></div>
                                     ${extra.tp_price ? `<div class="signal-item"><div class="signal-label">止盈</div><div class="signal-value">$${Number(extra.tp_price).toFixed(2)}</div></div>` : ''}
                                     ${extra.sl_price ? `<div class="signal-item"><div class="signal-label">止损</div><div class="signal-value">$${Number(extra.sl_price).toFixed(2)}</div></div>` : ''}
-                                    <div class="signal-item"><div class="signal-label">PB 新建</div><div class="signal-value" style="font-size:11px;">${formatTime(detail.created, 'America/New_York', 'short')}</div></div>
-                                    <div class="signal-item"><div class="signal-label">PB 更新</div><div class="signal-value" style="font-size:11px;">${formatTime(detail.updated, 'America/New_York', 'short')}</div></div>
                                     ${extra.sequence != null ? `<div class="signal-item"><div class="signal-label">序号</div><div class="signal-value">#${extra.sequence}</div></div>` : ''}
                                 </div>
                                 ${detail.reason ? `<div class="signal-note">${detail.reason}</div>` : ''}
@@ -593,15 +589,17 @@
             return `
                 <div class="signal-card">
                     <div class="signal-header">
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <span class="signal-symbol">${detail.symbol || 'N/A'}</span>
-                            <span class="signal-direction ${detail.direction}">${(detail.direction || '').toUpperCase()}</span>
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div style="display:flex;align-items:center;gap:8px;">
+                                <span class="signal-symbol">${detail.symbol || 'N/A'}</span>
+                                <span class="signal-direction ${detail.direction}">${(detail.direction || '').toUpperCase()}</span>
+                                <span class="event-badge event-${sts}">${statusText}</span>
+                            </div>
                             <span class="event-badge event-${evt.toLowerCase()}">${evt}</span>
-                            <span class="event-badge event-${sts}">${statusText}</span>
                         </div>
-                        <span class="flow-time">
+                        <div class="flow-time" style="margin-top:6px;">
                             ${detail.us_time ? detail.us_time + ' ET' : '-'}${detail.cn_time ? ' / ' + detail.cn_time + ' CN' : ''}
-                        </span>
+                        </div>
                     </div>
                     <div class="signal-grid">
                         <div class="signal-item"><div class="signal-label">QC 订单ID</div><div class="signal-value" style="font-size:10px;word-break:break-all;">${orderId || '-'}</div></div>
@@ -613,8 +611,6 @@
                         <div class="signal-item"><div class="signal-label">已成交</div><div class="signal-value">${extra.filled_qty != null ? extra.filled_qty : '-'}</div></div>
                         ${extra.tp_price ? `<div class="signal-item"><div class="signal-label">止盈</div><div class="signal-value">$${Number(extra.tp_price).toFixed(2)}</div></div>` : ''}
                         ${extra.sl_price ? `<div class="signal-item"><div class="signal-label">止损</div><div class="signal-value">$${Number(extra.sl_price).toFixed(2)}</div></div>` : ''}
-                        <div class="signal-item"><div class="signal-label">PB 新建</div><div class="signal-value" style="font-size:11px;">${formatTime(detail.created, 'America/New_York', 'short')}</div></div>
-                        <div class="signal-item"><div class="signal-label">PB 更新</div><div class="signal-value" style="font-size:11px;">${formatTime(detail.updated, 'America/New_York', 'short')}</div></div>
                     </div>
                     ${detail.reason ? `<div class="signal-note">${detail.reason}</div>` : ''}
                     ${signalId ? `
