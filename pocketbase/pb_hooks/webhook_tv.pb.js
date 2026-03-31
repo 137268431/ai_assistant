@@ -8,7 +8,8 @@
 
 routerAdd("POST", "/webhook/tv", (c) => {
     const { notifyNewSignal, mergeSignalExtra } = require(`${__hooks}/lib/feishu_signal.js`)
-    const { sendFeishuPost } = require(`${__hooks}/lib/feishu_app.js`)
+    const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
+    const { notifyReverseSignal } = require(`${__hooks}/lib/feishu_reverse.js`)
 
     // ── 解析请求信息（含 body）──
     const reqInfo = c.requestInfo()
@@ -21,35 +22,115 @@ routerAdd("POST", "/webhook/tv", (c) => {
     // 技术指标表（type = "indicator"）
     // ══════════════════════════════════════
     if (dataType === "indicator") {
-        // 以 bar_time_ms + symbol + interval 作为去重 key
-        const dedupKey = String(d.bar_time_ms) + "_" + d.symbol + "_" + d.interval
+        function parseObject(value) {
+            if (!value) return {}
+            if (typeof value === "string") {
+                try {
+                    const parsed = JSON.parse(value)
+                    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+                } catch (_) {
+                    return {}
+                }
+            }
+            return (typeof value === "object" && !Array.isArray(value)) ? value : {}
+        }
+
+        function coerceScalar(value) {
+            if (typeof value !== "string") return value
+            const text = value.trim()
+            if (text === "") return ""
+            if (text === "true") return true
+            if (text === "false") return false
+            if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text)
+            return value
+        }
+
+        const aliasMap = {
+            dayChangePct: "day_change_pct",
+            prevCloseChangePct: "prev_close_change_pct",
+            change7d: "change_7d",
+            obvRsi: "obv_rsi",
+            emaBullTouch: "ema_bull_touch",
+            emaBearTouch: "ema_bear_touch",
+            emaBullish: "ema_bullish",
+            emaBearish: "ema_bearish",
+            vwapUpper1: "vwap_upper1",
+            vwapLower1: "vwap_lower1",
+            vwapUpper2: "vwap_upper2",
+            vwapLower2: "vwap_lower2",
+            vwapDist: "vwap_dist",
+            sdStdDev: "sd_std_dev",
+            dtpPhaseBars: "dtp_phase_bars",
+        }
+
+        const rawExtra = parseObject(d.extra)
+        const extra = {}
+        Object.keys(rawExtra).forEach((key) => {
+            extra[key] = coerceScalar(rawExtra[key])
+        })
+        Object.keys(aliasMap).forEach((fromKey) => {
+            const toKey = aliasMap[fromKey]
+            if (extra[fromKey] != null && extra[toKey] == null) {
+                extra[toKey] = extra[fromKey]
+            }
+        })
+
+        const symbol = String(d.symbol || extra.symbol || "").trim().toUpperCase()
+        const interval = String(d.interval || extra.interval || "").trim()
+        const exchange = String(d.exchange || extra.exchange || "").trim().toUpperCase()
+        const scriptTag = String(d.script_tag || extra.script_tag || "").trim()
+        const usTime = String(d.us_time || extra.us_time || "").trim()
+        const cnTime = String(d.cn_time || extra.cn_time || "").trim()
+        const barTimeMs = Number(d.bar_time_ms != null ? d.bar_time_ms : extra.bar_time_ms)
+        const rawBarIndex = d.bar_index != null ? d.bar_index : extra.bar_index
+        const barIndex = rawBarIndex == null || rawBarIndex === "" ? null : Number(rawBarIndex)
+
+        if (!symbol) {
+            return c.json(400, { ok: false, error: "Missing required field: symbol", type: "indicator" })
+        }
+        if (!interval) {
+            return c.json(400, { ok: false, error: "Missing required field: interval", type: "indicator", symbol })
+        }
+        if (!Number.isFinite(barTimeMs) || barTimeMs <= 0) {
+            return c.json(400, { ok: false, error: "Invalid bar_time_ms", type: "indicator", symbol, interval })
+        }
+
+        extra.symbol = symbol
+        extra.interval = interval
+        extra.bar_time_ms = Math.trunc(barTimeMs)
+        if (exchange) extra.exchange = exchange
+        if (scriptTag) extra.script_tag = scriptTag
+        if (usTime) extra.us_time = usTime
+        if (cnTime) extra.cn_time = cnTime
+        if (Number.isFinite(barIndex)) extra.bar_index = Math.trunc(barIndex)
+
+        const dedupKey = `${Math.trunc(barTimeMs)}_${symbol}_${interval}`
+        console.log(`[Webhook TV] 接收指标数据: symbol=${symbol}, interval=${interval}, bar_time_ms=${Math.trunc(barTimeMs)}, fields=${Object.keys(extra).sort().join(",")}`)
+
         try {
-            $app.findFirstRecordByFilter("indicators",
+            $app.findFirstRecordByFilter(
+                "indicators",
                 "bar_time_ms = {:ms} && symbol = {:sym} && interval = {:tf}",
-                { ms: d.bar_time_ms, sym: d.symbol, tf: d.interval }
+                { ms: Math.trunc(barTimeMs), sym: symbol, tf: interval }
             )
             return c.json(200, { ok: true, msg: "duplicate indicator, skipped", key: dedupKey })
-        } catch(_) {}
+        } catch (_) {}
 
         const col = $app.findCollectionByNameOrId("indicators")
         const rec = new Record(col, {})
 
-        // 固定字段（用于查询、去重、筛选）
-        rec.set("symbol",      d.symbol)
-        rec.set("exchange",    d.exchange   || "")
-        rec.set("interval",    d.interval   || "")
-        rec.set("script_tag",  d.script_tag || "")
-        rec.set("us_time",     d.us_time    || "")
-        rec.set("cn_time",     d.cn_time    || "")
-        rec.set("bar_time_ms", d.bar_time_ms)
-        rec.set("bar_index",   d.bar_index)
-
-        // 所有指标值统一放入 extra JSON 字段
-        const extra = d.extra || {}
+        rec.set("symbol", symbol)
+        rec.set("exchange", exchange)
+        rec.set("interval", interval)
+        rec.set("script_tag", scriptTag)
+        rec.set("us_time", usTime)
+        rec.set("cn_time", cnTime)
+        rec.set("bar_time_ms", Math.trunc(barTimeMs))
+        rec.set("bar_index", Number.isFinite(barIndex) ? Math.trunc(barIndex) : null)
         rec.set("extra", extra)
 
         $app.save(rec)
-        return c.json(200, { ok: true, type: "indicator" })
+        return c.json(200, { ok: true, type: "indicator", key: dedupKey, id: rec.id })
     }
 
     // ══════════════════════════════════════
@@ -172,6 +253,17 @@ routerAdd("POST", "/webhook/tv", (c) => {
 
     // ── 逆向信号自动检测：查询该 symbol 是否有活跃订单与新信号方向冲突 ──
     try {
+        function getThreshold() {
+            let threshold = 6
+            try {
+                const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'")
+                threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6
+            } catch (e) {
+                console.log(`[Webhook] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`)
+            }
+            return threshold
+        }
+
         const activeOrders = $app.findRecordsByFilter(
             "orders",
             `symbol = {:symbol} && order_type = 'Entry' && (status = 'Submitted' || status = 'Filled')`,
@@ -179,8 +271,8 @@ routerAdd("POST", "/webhook/tv", (c) => {
             { symbol: d.symbol }
         );
 
-        const reverseCol = $app.findCollectionByNameOrId("reverse_signals");
         let reverseCount = 0;
+        const threshold = getThreshold()
 
         for (const order of activeOrders) {
             const orderDirection = order.get("direction");
@@ -188,55 +280,57 @@ routerAdd("POST", "/webhook/tv", (c) => {
             if (orderDirection && orderDirection !== d.direction) {
                 const orderStatus = order.get("status");
                 const actionType = orderStatus === "Filled" ? "close" : "cancel";
-                const actionLabel = actionType === "close" ? "平仓" : "取消挂单";
+                const orderContext = reverseUtils.buildOrderContext(order);
 
-                const revRecord = new Record(reverseCol, {});
-                revRecord.set("symbol", d.symbol);
-                revRecord.set("direction", orderDirection);  // 当前持仓/挂单方向
-                revRecord.set("source", "signal");
-                revRecord.set("priority", 1);
-                revRecord.set("strength", "strong");
-                revRecord.set("action_type", actionType);
-                revRecord.set("triggered_signals", ["信号反转"]);
-                revRecord.set("score", 10);
-                revRecord.set("status", "pending");
-                revRecord.set("bar_time_ms", extra.bar_time_ms || 0);
-                revRecord.set("us_time", d.us_time || "");
-                revRecord.set("cn_time", d.cn_time || "");
-                // 原始信号ID存为 origin_signal_id，与QC回写的 signal_id 区分
-                revRecord.set("extra", {
-                    origin_signal_id: d.signal_id,
-                    signal_id: ""  // QC 回写后填充
-                });
+                const upsertResult = reverseUtils.upsertReverseRecord({
+                    symbol: d.symbol,
+                    direction: orderDirection,
+                    source: "signal",
+                    priority: 1,
+                    strength: "strong",
+                    action_type: actionType,
+                    triggered_signals: ["信号反转"],
+                    score: 10,
+                    status: "pending",
+                    bar_time_ms: extra.bar_time_ms || 0,
+                    us_time: d.us_time || "",
+                    cn_time: d.cn_time || "",
+                    extra: {
+                        reverse_kind: "signal_conflict",
+                        target_state: orderContext ? orderContext.target_state : (orderStatus === "Filled" ? "filled_position" : "pending_entry"),
+                        order_status: orderStatus,
+                        relation_status: orderContext ? orderContext.relation_status : "",
+                        position_side: orderContext ? orderContext.position_side : orderDirection,
+                        current_direction: orderDirection,
+                        new_direction: d.direction,
+                        origin_signal_id: d.signal_id,
+                        signal_id: orderContext ? orderContext.signal_id : "",
+                        order_unique_id: orderContext ? orderContext.order_unique_id : "",
+                        broker_order_id: orderContext ? orderContext.broker_order_id : "",
+                        order_id: orderContext ? orderContext.broker_order_id : "",
+                        trade_group_id: orderContext ? orderContext.trade_group_id : "",
+                        entry_order_unique_id: orderContext ? orderContext.entry_order_unique_id : "",
+                        entry_price: orderContext ? orderContext.entry_price : d.entry,
+                        quantity: orderContext ? orderContext.quantity : d.shares,
+                        take_profit: orderContext ? orderContext.take_profit : d.take_profit,
+                        stop_loss: orderContext ? orderContext.stop_loss : d.stop_loss,
+                    },
+                })
 
-                $app.save(revRecord);
-                reverseCount++;
-
-                // 发送飞书逆向信号通知（score >= 配置的阈值时，默认6）
-                let threshold = 6;
-                try {
-                    const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'");
-                    threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6;
-                    console.log(`[Webhook] reverse_signal_threshold 配置值: ${threshold}`);
-                } catch (e) {
-                    console.log(`[Webhook] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`);
+                if (upsertResult.created) {
+                    reverseCount++
                 }
-                if (revRecord.get("score") >= threshold) {
-                    const dirEmoji = d.direction === "long" ? "📈" : "📉";
-                    const oldDirText = orderDirection === "long" ? "多" : "空";
-                    const newDirText = d.direction === "long" ? "多" : "空";
-                    sendFeishuPost(
-                        `⚠️ 逆向信号 - ${d.symbol}`,
-                        [
-                            [{ tag: "text", text: `标的: ${d.symbol}` }],
-                            [{ tag: "text", text: `当前方向: ${oldDirText} → 新信号: ${newDirText} ${dirEmoji}` }],
-                            [{ tag: "text", text: `操作: ${actionLabel}` }],
-                            [{ tag: "text", text: `订单状态: ${orderStatus}` }],
-                            [{ tag: "text", text: `信号ID: ${d.signal_id}` }],
-                            [{ tag: "text", text: `时间: ${d.us_time || ''}` }]
-                        ],
-                        "error"
-                    );
+
+                if (upsertResult.created && 10 >= threshold) {
+                    try {
+                        notifyReverseSignal(upsertResult.record, {
+                            message: orderStatus === "Filled"
+                                ? "检测到反向新信号，QC 将先平旧仓再评估新方向"
+                                : "检测到反向新信号，QC 将先撤销旧挂单再评估新方向"
+                        })
+                    } catch (notifyErr) {
+                        console.error("[Webhook] 逆向飞书通知失败:", notifyErr)
+                    }
                 }
             }
         }

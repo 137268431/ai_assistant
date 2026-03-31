@@ -10,6 +10,7 @@ var FEISHU_APP_SECRET = "ZZySOkZPaKBVkNhhk4upvfROPnXcSsry"
 var FEISHU_CHAT_ID_SIGNAL = "oc_edb26dcc52938b7833ac9f32ae6b1620"
 var FEISHU_CHAT_ID_ORDER = "oc_5ca4585e1fd108c2c662dfc358684945"
 var FEISHU_CHAT_ID_ERROR = "oc_b7b52fc28816d90e27ce50ca7922a9ac"
+var FEISHU_CHAT_ID_REVERSE = "oc_2931e2b8501df3a9d869d7aebceb8fe2"
 
 var _cachedToken = null
 var _tokenExpireTime = 0
@@ -149,6 +150,7 @@ function updateMessageCard(messageId, card) {
 
 function getChatIdByType(type) {
     if (type === "order") return FEISHU_CHAT_ID_ORDER
+    if (type === "reverse") return FEISHU_CHAT_ID_REVERSE
     if (type === "error") return FEISHU_CHAT_ID_ERROR
     return FEISHU_CHAT_ID_SIGNAL
 }

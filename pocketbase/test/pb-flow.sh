@@ -11,11 +11,54 @@ set -e
 # 配置
 # ============================================================
 BASE_URL="${PB_BASE_URL:-https://pb.lzw-glory.top}"
-TEST_SYMBOL="${TEST_SYMBOL:-AAPL}"
+
+# 配置缓存文件
+CONFIG_CACHE="/tmp/pb_flow_config.sh"
+
+# 尝试加载缓存的配置
+load_config() {
+    if [ -f "${CONFIG_CACHE}" ]; then
+        source "${CONFIG_CACHE}"
+    fi
+    # 设置默认值（如果没有加载到）
+    TEST_SYMBOL="${TEST_SYMBOL:-AAPL}"
+    TEST_DIRECTION="${TEST_DIRECTION:-long}"
+    # 如果没有加载到时间，使用当前时间
+    if [ -z "${TEST_DATE}" ]; then
+        TEST_DATE=$(date +%Y-%m-%d)
+    fi
+    if [ -z "${TEST_TIME}" ]; then
+        TEST_TIME=$(date +%H:%M:%S)
+    fi
+}
+
+# 保存当前配置到缓存
+save_config() {
+    cat > "${CONFIG_CACHE}" << EOF
+TEST_SYMBOL="${TEST_SYMBOL}"
+TEST_DATE="${TEST_DATE}"
+TEST_TIME="${TEST_TIME}"
+TEST_DIRECTION="${TEST_DIRECTION}"
+EOF
+}
+
+# 重置为默认值
+reset_config() {
+    TEST_SYMBOL="AAPL"
+    TEST_DATE=$(date +%Y-%m-%d)
+    TEST_TIME=$(date +%H:%M:%S)
+    TEST_DIRECTION="long"
+    save_config
+    clear_order_relation_cache
+    rm -f /tmp/pb_sig_* /tmp/pb_ord_* /tmp/pb_rev_* 2>/dev/null || true
+    log_success "已重置为默认值"
+    log_info "TEST_SYMBOL=${TEST_SYMBOL}, TEST_DATE=${TEST_DATE}, TEST_DIRECTION=${TEST_DIRECTION}"
+}
+
+# 立即加载配置
+load_config
+
 TODAY=$(date +%Y-%m-%d)
-TEST_DATE="${TODAY}"
-TEST_TIME=$(date +%H:%M:%S)
-TEST_DIRECTION="long"  # 默认做多
 
 # 颜色输出
 RED='\033[0;31m'
@@ -94,7 +137,9 @@ do_curl() {
     if [ -n "$data" ]; then
         curl -s -X ${method} "${url}" -H "Content-Type: application/json" -d "${data}"
     else
-        curl -s -X ${method} "${url}"
+        # 对 URL 中的特殊字符进行编码，避免 & 和 || 被错误解析
+        local encoded_url=$(echo "${url}" | sed 's/&&/%26%26/g' | sed 's/||/%7C%7C/g')
+        curl -s -X ${method} "${encoded_url}"
     fi
 }
 
@@ -148,8 +193,8 @@ show_menu() {
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        ⚡ 逆向信号                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[A]${NC} 计算逆向信号    ${CYAN}│${NC}  ${MAGENTA}[B]${NC} 查询逆向信号               ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[C]${NC} 确认逆向信号                                                      ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[A]${NC} 生成逆向信号    ${CYAN}│${NC}  ${MAGENTA}[B]${NC} 查询逆向信号               ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[H]${NC} 发送反向新信号  ${CYAN}│${NC}  ${MAGENTA}[C]${NC} 请求执行+模拟QC回写        ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        📊 指标数据                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
@@ -158,6 +203,7 @@ show_menu() {
     echo -e "${CYAN}║                        🔧 工具                                      ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${NC}  ${CYAN}[E]${NC} 查询测试信号  ${CYAN}│${NC}  ${CYAN}[F]${NC} 查询测试订单  ${CYAN}│${NC}  ${YELLOW}[X]${NC} 清理测试数据    ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${YELLOW}[R]${NC} 重置初始值    ${CYAN}│${NC}  ${CYAN}[V]${NC} 显示当前缓存                 ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        ⚙️ 设置                                      ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
@@ -170,24 +216,24 @@ show_menu() {
 }
 
 # 生成测试数据
-generate_test_data() {
-    local datetime="${TEST_DATE} ${TEST_TIME}"
-    # 使用北京时间生成时间戳
-    local ts=$(TZ=Asia/Shanghai date -j -f "%Y-%m-%d %H:%M:%S" "${datetime}" +%s 2>/dev/null) || ts=$(date +%s)
-    local timestamp_ms=${ts}000
-    local time_str=$(date -j -f "%Y-%m-%d %H:%M:%S" "${datetime}" +%H%M%S 2>/dev/null || date +%H%M%S)
-    # cn_time = 北京时间
-    local cn_time="${TEST_DATE} ${TEST_TIME}"
-    # us_time = 美国东部时间 (自动处理夏令时/冬令时，13/12小时时差)
-    local us_time=$(TZ=America/New_York date -r ${ts} +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "${TEST_DATE} ${TEST_TIME}")
-    local signal_id="${TEST_SYMBOL}_${TEST_DATE//-/}_${time_str}_sig"
+generate_test_data_ext() {
+    local direction="${1:-${TEST_DIRECTION}}"
+    local offset_min="${2:-0}"
+    local signal_suffix="${3:-}"
+    local phase_data=$(build_phase_time "${offset_min}")
+    local timestamp_ms=$(echo "$phase_data" | cut -d'|' -f1)
+    local us_time=$(echo "$phase_data" | cut -d'|' -f2)
+    local cn_time=$(echo "$phase_data" | cut -d'|' -f3)
+    local time_str=$(echo "$cn_time" | awk '{print $2}' | tr -d ':')
+    [ -z "$time_str" ] && time_str=$(date +%H%M%S)
+    local signal_id="${TEST_SYMBOL}_${TEST_DATE//-/}_${time_str}${signal_suffix}_sig"
 
     local base_price=100
     local entry_price=$(echo "scale=2; $base_price + $RANDOM % 50" | bc 2>/dev/null || echo "100.00")
     local stop_loss
     local take_profit
     local limit_price
-    if [ "${TEST_DIRECTION}" = "short" ]; then
+    if [ "${direction}" = "short" ]; then
         stop_loss=$(echo "scale=2; $entry_price * 1.02" | bc 2>/dev/null || echo "102.00")
         take_profit=$(echo "scale=2; $entry_price * 0.95" | bc 2>/dev/null || echo "95.00")
         limit_price=$(echo "scale=2; $entry_price * 0.999" | bc 2>/dev/null || echo "${entry_price}")
@@ -198,6 +244,10 @@ generate_test_data() {
     fi
 
     echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}"
+}
+
+generate_test_data() {
+    generate_test_data_ext "${TEST_DIRECTION}" 0 ""
 }
 
 build_phase_time() {
@@ -348,9 +398,9 @@ prompt_cleanup() {
         return 0
     fi
 
-    echo -n "是否清理 ${TEST_SYMBOL} 今日测试数据? [y/N], 按 Enter 确认: "
+    echo -n "是否清理 ${TEST_SYMBOL} 今日测试数据? [Y/n], 按 Enter 确认: "
     read confirm
-    if [[ "$confirm" =~ ^[yY]$ ]]; then
+    if [[ -z "$confirm" ]] || [[ "$confirm" =~ ^[yY]$ ]]; then
         cleanup_today_data
         return 0
     fi
@@ -448,8 +498,97 @@ EOF
         cache_set "pb_sig_id" "${signal_id}"
         cache_set "pb_sig_data" "${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}"
         cache_set "pb_sig_latest" "${signal_id}"
+        cache_set "pb_sig_direction" "${TEST_DIRECTION}"
     else
         log_error "信号发送失败"
+    fi
+}
+
+# H. 发送反向新信号（触发 signal_conflict）
+test_h_send_conflict_signal() {
+    echo ""
+    echo -e "${MAGENTA}═══ ⚡ H: 发送反向新信号(触发 signal_conflict) ═══${NC}"
+
+    local base_direction=$(cache_get "pb_sig_direction")
+    [ -z "$base_direction" ] && base_direction="${TEST_DIRECTION}"
+    local conflict_direction="short"
+    [ "$base_direction" = "short" ] && conflict_direction="long"
+    local entry_unique_id=$(cache_get "pb_entry_unique_id")
+
+    if [ -z "$entry_unique_id" ]; then
+        log_warn "未检测到当前交易组缓存，仍会发送反向信号，但未必能生成 signal_conflict"
+    fi
+
+    local data=$(generate_test_data_ext "${conflict_direction}" 1 "_conflict")
+    local signal_id=$(echo "$data" | cut -d'|' -f1)
+    local entry_price=$(echo "$data" | cut -d'|' -f2)
+    local stop_loss=$(echo "$data" | cut -d'|' -f3)
+    local take_profit=$(echo "$data" | cut -d'|' -f4)
+    local timestamp_ms=$(echo "$data" | cut -d'|' -f5)
+    local limit_price=$(echo "$data" | cut -d'|' -f6)
+    local us_time=$(echo "$data" | cut -d'|' -f7)
+    local cn_time=$(echo "$data" | cut -d'|' -f8)
+
+    local json=$(cat <<EOF
+{
+  "type": "signal",
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${conflict_direction}",
+  "entry": ${entry_price},
+  "stop_loss": ${stop_loss},
+  "take_profit": ${take_profit},
+  "limit_price": ${limit_price},
+  "shares": 100,
+  "rr": "1.5:1",
+  "signal": "test_signal_conflict",
+  "exchange": "NASDAQ",
+  "interval": "5",
+  "signal_id": "${signal_id}",
+  "us_time": "${us_time}",
+  "cn_time": "${cn_time}",
+  "extra": {
+    "reason": "测试反向新信号",
+    "bar_time_ms": ${timestamp_ms},
+    "bar_index": 1001,
+    "chart_tf": "5",
+    "script_tag": "test_signal_conflict",
+    "atr": 0.5,
+    "atr_pct": 0.25,
+    "day_change_pct": -1.2,
+    "prev_close_change_pct": -0.6,
+    "change_7d": 0.9,
+    "sd_zone": "reverse",
+    "sd_trend": "flip",
+    "dtp_dir": "conflict",
+    "dtp_phase": "triggered",
+    "crsi_state": "reverse",
+    "sl_atr_ratio": 2.0,
+    "sl_dist_pct": 0.68
+  }
+}
+EOF
+)
+
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}📤 当前操作:${NC}"
+    echo -e "  当前交易方向: ${GREEN}${base_direction}${NC}"
+    echo -e "  反向新信号方向: ${GREEN}${conflict_direction}${NC}"
+    echo -e "  signal_id: ${GREEN}${signal_id}${NC}"
+    [ -n "$entry_unique_id" ] && echo -e "  当前交易组: ${GREEN}${entry_unique_id}${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    response=$(curl_exec "POST" "${BASE_URL}/webhook/tv" "$json" "发送反向新信号")
+
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+
+    local ok_val=$(echo "$response" | jq -r '.ok' 2>/dev/null)
+    if [ "$ok_val" = "true" ] || [ "$ok_val" = "1" ]; then
+        log_success "反向新信号发送成功"
+        cache_set "pb_sig_conflict_id" "${signal_id}"
+        cache_set "pb_sig_conflict_data" "${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}"
+        cache_set "pb_rev_origin_sig_id" "${signal_id}"
+    else
+        log_error "反向新信号发送失败"
     fi
 }
 
@@ -465,10 +604,10 @@ test_2_query_signals() {
     echo -e "${CYAN}📤 当前操作信号:${NC} ${GREEN}${cur_sig}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    log_info "查询 ${TEST_DATE} (US: ${us_date}) 的测试信号..."
+    log_info "查询 ${TEST_DATE} (US: ${us_date}) 的待确认/等待执行测试信号..."
 
-    # 使用 collection API 直接查询（只查询测试信号）
-    response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询测试信号")
+    # 使用 collection API 直接查询（只查询 pending 或 awaiting_confirm 状态的测试信号）
+    response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=(status='pending'||status='awaiting_confirm')&&(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询待确认/等待执行测试信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -478,10 +617,19 @@ test_2_query_signals() {
     # 保存最新信号ID
     if [ "$count" -gt 0 ]; then
         local latest_sig=$(echo "$response" | jq -r '.items[0].signal_id' 2>/dev/null)
-        cache_set "pb_sig_latest" "$latest_sig"
-        cache_set "pb_sig_id" "$latest_sig"
         local latest_data=$(echo "$response" | jq -r '.items[0] | "\(.entry)|\(.stop_loss)|\(.take_profit)|\(.bar_time_ms)|\(.limit_price)|\(.us_time)|\(.cn_time)"' 2>/dev/null)
-        cache_set "pb_sig_data" "$latest_data"
+        local primary_sig=$(cache_get "pb_sig_id")
+        local entry_unique_id=$(cache_get "pb_entry_unique_id")
+        if [ -n "$entry_unique_id" ] && [ -n "$primary_sig" ] && [ "$latest_sig" != "$primary_sig" ]; then
+            cache_set "pb_sig_conflict_id" "$latest_sig"
+            cache_set "pb_sig_conflict_data" "$latest_data"
+            cache_set "pb_rev_origin_sig_id" "$latest_sig"
+            log_info "检测到新的待处理信号，已写入 conflict 缓存: ${latest_sig}"
+        else
+            cache_set "pb_sig_latest" "$latest_sig"
+            cache_set "pb_sig_id" "$latest_sig"
+            cache_set "pb_sig_data" "$latest_data"
+        fi
     fi
 }
 
@@ -1200,9 +1348,9 @@ test_o_cancel_order() {
     echo -e "  订单: ${GREEN}${order_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${RED}⚠️ 警告: 取消操作不可逆!${NC}"
-    echo -n "确认取消? [y/N], 按 Enter 确认: "
+    echo -n "确认取消? [Y/n], 按 Enter 确认: "
     read confirm
-    [[ ! "$confirm" =~ ^[yY]$ ]] && { log_info "已取消"; return 0; }
+    [[ "$confirm" =~ ^[nN]$ ]] && { log_info "已取消"; return 0; }
 
     log_info "取消订单: ${order_id}"
 
@@ -1228,9 +1376,9 @@ test_p_close_order() {
     echo -e "  订单: ${GREEN}${order_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${RED}⚠️ 警告: 平仓操作不可逆!${NC}"
-    echo -n "确认平仓? [y/N], 按 Enter 确认: "
+    echo -n "确认平仓? [Y/n], 按 Enter 确认: "
     read confirm
-    [[ ! "$confirm" =~ ^[yY]$ ]] && { log_info "已取消"; return 0; }
+    [[ "$confirm" =~ ^[nN]$ ]] && { log_info "已取消"; return 0; }
 
     log_info "平仓订单: ${order_id}"
 
@@ -1242,6 +1390,46 @@ test_p_close_order() {
 # ============================================================
 # ⚡ 逆向信号测试
 # ============================================================
+
+build_reverse_ack_prices() {
+    local action_type=$1
+    local direction=$2
+    local entry_price=$3
+    local old_sl=$4
+    local old_tp=$5
+
+    local new_sl="${old_sl}"
+    local new_tp="${old_tp}"
+    local result_status="executed"
+
+    case "${action_type}" in
+        adjust_sl)
+            result_status="updated"
+            if [ "${direction}" = "short" ]; then
+                new_sl=$(echo "scale=2; ${old_sl} - 0.25" | bc 2>/dev/null || echo "${old_sl}")
+            else
+                new_sl=$(echo "scale=2; ${old_sl} + 0.25" | bc 2>/dev/null || echo "${old_sl}")
+            fi
+            ;;
+        adjust_tp)
+            result_status="updated"
+            if [ "${direction}" = "short" ]; then
+                new_tp=$(echo "scale=2; ${old_tp} + 0.30" | bc 2>/dev/null || echo "${old_tp}")
+            else
+                new_tp=$(echo "scale=2; ${old_tp} - 0.30" | bc 2>/dev/null || echo "${old_tp}")
+            fi
+            ;;
+    esac
+
+    printf "%s|%s|%s" "${new_sl}" "${new_tp}" "${result_status}"
+}
+
+fetch_reverse_detail_json() {
+    local rev_id=$1
+    local query
+    query=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/list?date=${TEST_DATE}&limit=200" "" "查询reverse详情")
+    echo "$query" | jq -c --arg id "$rev_id" '.signals[] | select(.id == $id)' 2>/dev/null | head -n1
+}
 
 # A. 计算逆向信号
 test_a_calc_reverse() {
@@ -1259,14 +1447,56 @@ test_a_calc_reverse() {
     echo -e "  关联订单: ${GREEN}${ord_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
+    local force_action="${PB_REVERSE_FORCE_ACTION:-}"
+    if [ -z "${force_action}" ]; then
+        echo -n "指定动作 [Enter=自动 / cancel / close / adjust_sl / adjust_tp]: "
+        read force_action
+    fi
+
+    local score_override=""
+    local triggered_signals=""
+    if [ -n "${force_action}" ]; then
+        case "${force_action}" in
+            close)
+                score_override="8"
+                ;;
+            adjust_sl|adjust_tp)
+                score_override="4"
+                ;;
+            cancel)
+                score_override="2"
+                ;;
+            *)
+                log_warn "未知 force_action=${force_action}，改为自动"
+                force_action=""
+                ;;
+        esac
+        triggered_signals='["pb-flow-manual"]'
+    fi
+
     local json=$(cat <<EOF
-{"symbol": "${TEST_SYMBOL}", "direction": "${TEST_DIRECTION}"}
+{
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${TEST_DIRECTION}",
+  "origin_signal_id": "${sig_id}",
+  "force_action_type": "${force_action}",
+  "score_override": ${score_override:-null},
+  "triggered_signals": ${triggered_signals:-[]}
+}
 EOF
 )
 
     response=$(curl_exec "POST" "${BASE_URL}/api/custom/reverse/calculate" "$json" "计算逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
+
+    local created=$(echo "$response" | jq -r '.created // empty' 2>/dev/null)
+    if [ "$created" = "false" ]; then
+        local no_op_reason=$(echo "$response" | jq -r '.reason // "no_reverse_conditions"' 2>/dev/null)
+        local no_op_score=$(echo "$response" | jq -r '.analysis.score // 0' 2>/dev/null)
+        log_info "本次未生成 reverse signal: reason=${no_op_reason}, score=${no_op_score}"
+        return 0
+    fi
 
     local rev_id=$(echo "$response" | jq -r '.signal.id' 2>/dev/null)
     if [ -n "$rev_id" ] && [ "$rev_id" != "null" ]; then
@@ -1286,7 +1516,7 @@ test_b_query_reverse() {
     echo -e "${CYAN}📤 当前逆向信号:${NC} ${GREEN}${rev_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    response=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/pending" "" "查询逆向信号")
+    response=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/list?date=${TEST_DATE}&limit=200" "" "查询逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -1301,10 +1531,10 @@ test_b_query_reverse() {
     fi
 }
 
-# C. 确认逆向信号
+# C. 请求执行并模拟 QC 回写
 test_c_ack_reverse() {
     echo ""
-    echo -e "${MAGENTA}═══ ⚡ C: 确认逆向信号 ═══${NC}"
+    echo -e "${MAGENTA}═══ ⚡ C: 请求执行+模拟QC回写 ═══${NC}"
 
     local rev_id=$(cache_get "pb_rev_id")
     if [ -z "$rev_id" ]; then
@@ -1323,6 +1553,14 @@ test_c_ack_reverse() {
     local ord_id=$(cache_get "pb_entry_broker_id")
     local trade_group_id=$(cache_get "pb_trade_group_id")
     local entry_unique_id=$(cache_get "pb_entry_unique_id")
+    local dispatch_json=$(cat <<EOF
+{
+  "reverse_id": "${rev_id}",
+  "action": "execute",
+  "reason": "pb-flow 请求执行 reverse"
+}
+EOF
+)
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
@@ -1331,15 +1569,66 @@ test_c_ack_reverse() {
     echo -e "  关联订单: ${GREEN}${ord_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
+    local dispatch_response
+    dispatch_response=$(curl_exec "POST" "${BASE_URL}/api/custom/reverse/dispatch" "$dispatch_json" "请求执行 reverse")
+    echo "$dispatch_response" | jq '.' 2>/dev/null || echo "$dispatch_response"
+
+    local rev_detail
+    rev_detail=$(fetch_reverse_detail_json "$rev_id")
+    if [ -z "$rev_detail" ]; then
+        log_error "未找到 reverse 详情"
+        return 1
+    fi
+
+    local action_type=$(echo "$rev_detail" | jq -r '.action_type // "close"' 2>/dev/null)
+    local target_state=$(echo "$rev_detail" | jq -r '.target_state // empty' 2>/dev/null)
+    local current_direction=$(echo "$rev_detail" | jq -r '.current_direction // .direction // empty' 2>/dev/null)
+    local origin_signal_id=$(echo "$rev_detail" | jq -r '.origin_signal_id // .signal_id // empty' 2>/dev/null)
+    local broker_order_id=$(echo "$rev_detail" | jq -r '.broker_order_id // empty' 2>/dev/null)
+    local detail_trade_group_id=$(echo "$rev_detail" | jq -r '.trade_group_id // empty' 2>/dev/null)
+    local detail_entry_unique_id=$(echo "$rev_detail" | jq -r '.entry_order_unique_id // empty' 2>/dev/null)
+    local detail_order_unique_id=$(echo "$rev_detail" | jq -r '.order_unique_id // empty' 2>/dev/null)
+    [ -z "$current_direction" ] && current_direction="${TEST_DIRECTION}"
+    [ -z "$broker_order_id" ] && broker_order_id="${ord_id}"
+    [ -z "$detail_trade_group_id" ] && detail_trade_group_id="${trade_group_id}"
+    [ -z "$detail_entry_unique_id" ] && detail_entry_unique_id="${entry_unique_id}"
+    [ -z "$detail_order_unique_id" ] && detail_order_unique_id="${detail_entry_unique_id}"
+    local entry_price=$(echo "$rev_detail" | jq -r '.entry_price // 100.10' 2>/dev/null)
+    local quantity=$(echo "$rev_detail" | jq -r '.quantity // 100' 2>/dev/null)
+    local old_sl=$(echo "$rev_detail" | jq -r '.stop_loss // 98.00' 2>/dev/null)
+    local old_tp=$(echo "$rev_detail" | jq -r '.take_profit // 105.00' 2>/dev/null)
+    local price_result
+    price_result=$(build_reverse_ack_prices "$action_type" "$current_direction" "$entry_price" "$old_sl" "$old_tp")
+    local new_sl=$(echo "$price_result" | cut -d'|' -f1)
+    local new_tp=$(echo "$price_result" | cut -d'|' -f2)
+    local result_status=$(echo "$price_result" | cut -d'|' -f3)
+    local target_order_status="Filled"
+    [ "$action_type" = "cancel" ] && target_order_status="Submitted"
+
     local json=$(cat <<EOF
 {
   "signal_id": "${rev_id}",
   "status": "confirmed",
-  "reason": "测试确认",
-  "order_id": "${ord_id}",
-  "signal_id_orig": "${sig_id}",
-  "trade_group_id": "${trade_group_id}",
-  "entry_order_unique_id": "${entry_unique_id}"
+  "reason": "pb-flow 模拟 QC ${action_type}",
+  "order_id": "${broker_order_id}",
+  "broker_order_id": "${broker_order_id}",
+  "order_unique_id": "${detail_order_unique_id}",
+  "signal_id_orig": "${origin_signal_id:-${sig_id}}",
+  "trade_group_id": "${detail_trade_group_id}",
+  "entry_order_unique_id": "${detail_entry_unique_id}",
+  "executed_action": "${action_type}",
+  "result_status": "${result_status}",
+  "target_state": "${target_state}",
+  "target_order_status": "${target_order_status}",
+  "current_direction": "${current_direction}",
+  "entry_price": ${entry_price},
+  "quantity": ${quantity},
+  "old_sl": ${old_sl},
+  "new_sl": ${new_sl},
+  "old_tp": ${old_tp},
+  "new_tp": ${new_tp},
+  "stop_loss": ${new_sl},
+  "take_profit": ${new_tp}
 }
 EOF
 )
@@ -1363,12 +1652,81 @@ test_d_send_indicator() {
     local timestamp_ms=${ts}000
     local cn_time="${TEST_DATE} ${TEST_TIME}"
     local us_time=$(TZ=America/New_York date -r ${ts} +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "${TEST_DATE} ${TEST_TIME}")
+    local script_tag="pb_flow_indicator_${TEST_DIRECTION}"
+    local trend_dir=1
+    local dtp_dir=1
+    local sd_zone=1
+    local sd_trend=1
+    local day_change_pct="1.25"
+    local prev_close_change_pct="0.86"
+    local change_7d="3.40"
+    local vwap_dist="0.38"
+    local vwap_bullish="true"
+    local ema_bullish="true"
+    local ema_bearish="false"
+    local crsi="66.40"
+    local obv_rsi="62.80"
+    local crsi_bull_div="true"
+    local crsi_bear_div="false"
+    local obv_bull_div="true"
+    local obv_bear_div="false"
+    local fractal_bull="true"
+    local fractal_bear="false"
+    local sd_lower="false"
+    local sd_upper="true"
+    local ema_bull_touch="true"
+    local ema_bear_touch="false"
+    local close_price="150.50"
+    local open_price="149.80"
+    local high_price="151.20"
+    local low_price="149.10"
+    local vwap_price="150.12"
+    local ema_fast="150.05"
+    local ema_slow="149.66"
+    local ema_trend="148.92"
+    local ema_longest="147.35"
+
+    if [ "${TEST_DIRECTION}" = "short" ]; then
+        trend_dir=-1
+        dtp_dir=-1
+        sd_zone=-1
+        sd_trend=-1
+        day_change_pct="-1.18"
+        prev_close_change_pct="-0.74"
+        change_7d="-2.90"
+        vwap_dist="-0.42"
+        vwap_bullish="false"
+        ema_bullish="false"
+        ema_bearish="true"
+        crsi="34.80"
+        obv_rsi="39.10"
+        crsi_bull_div="false"
+        crsi_bear_div="true"
+        obv_bull_div="false"
+        obv_bear_div="true"
+        fractal_bull="false"
+        fractal_bear="true"
+        sd_lower="true"
+        sd_upper="false"
+        ema_bull_touch="false"
+        ema_bear_touch="true"
+        close_price="149.20"
+        open_price="150.10"
+        high_price="150.60"
+        low_price="148.70"
+        vwap_price="149.75"
+        ema_fast="149.58"
+        ema_slow="149.92"
+        ema_trend="150.40"
+        ema_longest="151.86"
+    fi
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
     echo -e "  symbol: ${GREEN}${TEST_SYMBOL}${NC}"
     echo -e "  cn_time: ${GREEN}${cn_time}${NC}"
     echo -e "  us_time: ${GREEN}${us_time}${NC}"
+    echo -e "  script_tag: ${GREEN}${script_tag}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     local json=$(cat <<EOF
@@ -1377,26 +1735,71 @@ test_d_send_indicator() {
   "symbol": "${TEST_SYMBOL}",
   "exchange": "NASDAQ",
   "interval": "5",
-  "script_tag": "test_script",
+  "script_tag": "${script_tag}",
   "us_time": "${us_time}",
   "cn_time": "${cn_time}",
   "bar_time_ms": ${timestamp_ms},
   "bar_index": 1000,
   "extra": {
-    "close": 150.50,
-    "high": 151.00,
-    "low": 149.50,
-    "open": 150.00,
+    "close": ${close_price},
+    "high": ${high_price},
+    "low": ${low_price},
+    "open": ${open_price},
     "volume": 50000000,
-    "day_change_pct": 1.25,
+    "day_change_pct": ${day_change_pct},
+    "prev_close_change_pct": ${prev_close_change_pct},
+    "change_7d": ${change_7d},
+    "vwap": ${vwap_price},
+    "vwap_upper1": 151.30,
+    "vwap_lower1": 148.95,
+    "vwap_upper2": 152.05,
+    "vwap_lower2": 148.10,
+    "vwap_dist": ${vwap_dist},
+    "vwap_bullish": ${vwap_bullish},
+    "ema_fast": ${ema_fast},
+    "ema_slow": ${ema_slow},
+    "ema_trend": ${ema_trend},
+    "ema_longest": ${ema_longest},
+    "slope_slow": 0.2145,
+    "slope_trend": 0.1642,
+    "slope_longest": 0.0921,
+    "ema_bullish": ${ema_bullish},
+    "ema_bearish": ${ema_bearish},
+    "trend_dir": ${trend_dir},
+    "sd_reg": 149.62,
+    "sd_std_dev": 1.4281,
+    "sd_zone": ${sd_zone},
+    "sd_trend": ${sd_trend},
+    "dtp_avg": 0.56,
+    "dtp_atr": 0.74,
+    "dtp_dir": ${dtp_dir},
+    "dtp_phase": "confirmed",
+    "dtp_phase_bars": 8,
     "atr": 0.85,
-    "crsi": 65.0,
-    "crsi_ob": true,
+    "atr_raw": 0.8472,
+    "atr_pct": 0.57,
+    "sl_dist_pct": 0.92,
+    "sl_atr_ratio": 1.61,
+    "crsi": ${crsi},
+    "crsi_ub": 80.0,
+    "crsi_db": 20.0,
+    "crsi_ob": false,
     "crsi_os": false,
-    "fractal_bull": true,
-    "fractal_bear": false,
-    "ema_bull_touch": true,
-    "ema_bear_touch": false
+    "obv_rsi": ${obv_rsi},
+    "crsi_bull_div": ${crsi_bull_div},
+    "crsi_bear_div": ${crsi_bear_div},
+    "crsi_hid_bull": false,
+    "crsi_hid_bear": false,
+    "obv_bull_div": ${obv_bull_div},
+    "obv_bear_div": ${obv_bear_div},
+    "obv_hid_bull": false,
+    "obv_hid_bear": false,
+    "fractal_bull": ${fractal_bull},
+    "fractal_bear": ${fractal_bear},
+    "sd_lower": ${sd_lower},
+    "sd_upper": ${sd_upper},
+    "ema_bull_touch": ${ema_bull_touch},
+    "ema_bear_touch": ${ema_bear_touch}
   }
 }
 EOF
@@ -1448,6 +1851,55 @@ test_f_list_orders() {
 # ⚙️ 设置
 # ============================================================
 
+# R. 重置为默认值
+reset_config() {
+    echo ""
+    echo -e "${YELLOW}═══ 🔧 重置为默认值 ═══${NC}"
+    echo -e "  当前: TEST_DATE=${TEST_DATE}, TEST_TIME=${TEST_TIME}"
+    echo -e "  当前: TEST_SYMBOL=${TEST_SYMBOL}, TEST_DIRECTION=${TEST_DIRECTION}"
+    echo ""
+    echo -e "${RED}⚠️ 警告: 将清除所有缓存并恢复默认值!${NC}"
+    echo -n "确认重置? [Y/n], 按 Enter 确认: "
+    read confirm
+    [[ "$confirm" =~ ^[nN]$ ]] && { log_info "已取消"; return 0; }
+
+    TEST_SYMBOL="AAPL"
+    TEST_DATE=$(date +%Y-%m-%d)
+    TEST_TIME=$(date +%H:%M:%S)
+    TEST_DIRECTION="long"
+    save_config
+    clear_order_relation_cache
+    rm -f /tmp/pb_sig_* /tmp/pb_ord_* /tmp/pb_rev_* 2>/dev/null || true
+
+    echo ""
+    log_success "已重置为默认值"
+    echo -e "  ${GREEN}TEST_SYMBOL=${TEST_SYMBOL}${NC}"
+    echo -e "  ${GREEN}TEST_DATE=${TEST_DATE} ${TEST_TIME}${NC}"
+    echo -e "  ${GREEN}TEST_DIRECTION=${TEST_DIRECTION}${NC}"
+}
+
+# V. 显示当前缓存
+show_cache() {
+    echo ""
+    echo -e "${CYAN}═══ 🔧 显示当前缓存 ═══${NC}"
+    echo ""
+    echo -e "${CYAN}━━━ 配置缓存 (${CONFIG_CACHE}) ━━━${NC}"
+    if [ -f "${CONFIG_CACHE}" ]; then
+        cat "${CONFIG_CACHE}"
+    else
+        echo -e "  ${YELLOW}无缓存文件${NC}"
+    fi
+    echo ""
+    echo -e "${CYAN}━━━ 运行时缓存 (/tmp/pb_*) ━━━${NC}"
+    ls -la /tmp/pb_* 2>/dev/null || echo -e "  ${YELLOW}无缓存文件${NC}"
+    echo ""
+    echo -e "${CYAN}━━━ 当前配置 ━━━${NC}"
+    echo -e "  ${CYAN}TEST_DATE=${TEST_DATE}${NC}"
+    echo -e "  ${CYAN}TEST_TIME=${TEST_TIME}${NC}"
+    echo -e "  ${CYAN}TEST_SYMBOL=${TEST_SYMBOL}${NC}"
+    echo -e "  ${CYAN}TEST_DIRECTION=${TEST_DIRECTION}${NC}"
+}
+
 # G. 设置测试日期和时间
 set_g_date() {
     echo ""
@@ -1488,6 +1940,7 @@ set_g_date() {
     esac
 
     log_info "测试时间: ${TEST_DATE} ${TEST_TIME}"
+    save_config
 }
 
 # S. 设置测试标的
@@ -1520,6 +1973,7 @@ set_s_symbol() {
     esac
 
     log_info "测试标的: ${TEST_SYMBOL}"
+    save_config
 }
 
 # T. 设置测试方向
@@ -1538,6 +1992,7 @@ set_t_direction() {
     esac
 
     log_info "测试方向: ${TEST_DIRECTION}"
+    save_config
 }
 
 # ============================================================
@@ -1579,10 +2034,13 @@ main() {
             A|a) echo -e "${MAGENTA}计算逆向信号${NC}" ;;
             B|b) echo -e "${MAGENTA}查询逆向信号${NC}" ;;
             C|c) echo -e "${MAGENTA}确认逆向信号${NC}" ;;
+            H|h) echo -e "${MAGENTA}发送反向新信号${NC}" ;;
             D|d) echo -e "${MAGENTA}发送指标数据${NC}" ;;
             E|e) echo -e "${CYAN}查询所有信号${NC}" ;;
             F|f) echo -e "${CYAN}查询所有订单${NC}" ;;
             X|x) echo -e "${YELLOW}清理所有测试数据${NC}" ;;
+            R|r) echo -e "${YELLOW}重置为默认值${NC}" ;;
+            V|v) echo -e "${CYAN}显示当前缓存${NC}" ;;
             G|g) echo -e "${GREEN}设置测试日期${NC}" ;;
             S|s) echo -e "${GREEN}设置测试标的${NC}" ;;
             T|t) echo -e "${GREEN}设置测试方向${NC}" ;;
@@ -1618,10 +2076,13 @@ main() {
             A|a) test_a_calc_reverse ;;
             B|b) test_b_query_reverse ;;
             C|c) test_c_ack_reverse ;;
+            H|h) test_h_send_conflict_signal ;;
             D|d) test_d_send_indicator ;;
             E|e) test_e_list_signals ;;
             F|f) test_f_list_orders ;;
             X|x) cleanup_today_data ;;
+            R|r) reset_config ;;
+            V|v) show_cache ;;
             G|g) set_g_date ;;
             S|s) set_s_symbol ;;
             T|t) set_t_direction ;;

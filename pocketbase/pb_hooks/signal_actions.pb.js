@@ -103,11 +103,132 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
 routerAdd("GET", "/api/custom/signals/pending", (c) => {
   try {
     const dateStr = c.request.url.query().get("date") || "";
+    const indicatorCache = {}
     console.log(`[SignalsPending] === 查询待执行信号 ===`);
     console.log(`[SignalsPending] date 参数: "${dateStr}"`);
 
     if (!dateStr) {
       return c.json(400, { error: "缺少 date 参数" });
+    }
+
+    function parseObject(value) {
+      if (!value) return {}
+      if (typeof value === "string") {
+        try {
+          const parsed = JSON.parse(value)
+          return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+        } catch (_) {
+          return {}
+        }
+      }
+      return (typeof value === "object" && !Array.isArray(value)) ? value : {}
+    }
+
+    function normalizeIndicatorRecord(record) {
+      if (!record) return null
+      const extra = parseObject(record.get("extra"))
+      return {
+        id: record.id,
+        symbol: record.get("symbol"),
+        exchange: record.get("exchange"),
+        interval: record.get("interval"),
+        script_tag: record.get("script_tag"),
+        us_time: record.get("us_time"),
+        cn_time: record.get("cn_time"),
+        bar_time_ms: record.get("bar_time_ms"),
+        bar_index: record.get("bar_index"),
+        created: record.get("created"),
+        updated: record.get("updated"),
+        ...extra,
+      }
+    }
+
+    function findLatestIndicator(signalRecord) {
+      const symbol = String(signalRecord.get("symbol") || "").trim().toUpperCase()
+      const preferredInterval = String(signalRecord.get("chart_tf") || signalRecord.get("interval") || "").trim()
+      const signalBarTimeMs = Number(signalRecord.get("bar_time_ms") || 0)
+      const cacheKey = `${symbol}|${preferredInterval}|${signalBarTimeMs || 0}`
+
+      if (Object.prototype.hasOwnProperty.call(indicatorCache, cacheKey)) {
+        return indicatorCache[cacheKey]
+      }
+
+      function query(filter, params) {
+        const rows = $app.findRecordsByFilter("indicators", filter, "-bar_time_ms", 1, 0, params)
+        return rows && rows.length ? rows[0] : null
+      }
+
+      let indicatorRecord = null
+      if (symbol && preferredInterval && signalBarTimeMs > 0) {
+        indicatorRecord = query(
+          "symbol = {:sym} && interval = {:tf} && bar_time_ms <= {:ms}",
+          { sym: symbol, tf: preferredInterval, ms: signalBarTimeMs }
+        )
+      }
+      if (!indicatorRecord && symbol && preferredInterval) {
+        indicatorRecord = query(
+          "symbol = {:sym} && interval = {:tf}",
+          { sym: symbol, tf: preferredInterval }
+        )
+      }
+      if (!indicatorRecord && symbol && signalBarTimeMs > 0) {
+        indicatorRecord = query(
+          "symbol = {:sym} && bar_time_ms <= {:ms}",
+          { sym: symbol, ms: signalBarTimeMs }
+        )
+      }
+      if (!indicatorRecord && symbol) {
+        indicatorRecord = query(
+          "symbol = {:sym}",
+          { sym: symbol }
+        )
+      }
+
+      const normalized = normalizeIndicatorRecord(indicatorRecord)
+      indicatorCache[cacheKey] = normalized
+      return normalized
+    }
+
+    function enrichSignalExtra(extra, indicator) {
+      const merged = { ...extra }
+      if (!indicator) return merged
+
+      const indicatorKeys = [
+        "close",
+        "day_change_pct",
+        "prev_close_change_pct",
+        "change_7d",
+        "atr",
+        "atr_pct",
+        "sl_dist_pct",
+        "sl_atr_ratio",
+        "trend_dir",
+        "ema_bullish",
+        "ema_bearish",
+        "ema_bull_touch",
+        "ema_bear_touch",
+        "fractal_bull",
+        "fractal_bear",
+        "crsi",
+        "obv_rsi",
+        "dtp_dir",
+        "dtp_phase",
+        "dtp_phase_bars",
+        "sd_zone",
+        "sd_trend",
+        "vwap",
+        "vwap_dist",
+        "vwap_bullish",
+      ]
+
+      indicatorKeys.forEach((key) => {
+        if ((merged[key] == null || merged[key] === "") && indicator[key] != null) {
+          merged[key] = indicator[key]
+        }
+      })
+
+      merged.latest_indicator_id = indicator.id
+      return merged
     }
 
     // 先查所有 pending 状态的信号（不看 date），看数据库里有什么
@@ -138,7 +259,9 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
     console.log(`[SignalsPending] date="${dateStr}" 过滤后命中数: ${records.length}`);
 
     const signals = records.map((r) => {
-      const extra = r.get("extra") || {};
+      const signalExtra = parseObject(r.get("extra"))
+      const latestIndicator = findLatestIndicator(r)
+      const extra = enrichSignalExtra(signalExtra, latestIndicator)
       return {
         id: r.id,
         signal_id: r.get("signal_id"),
@@ -152,15 +275,22 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
         shares: r.get("shares"),
         rr: r.get("rr"),
         reason: r.get("reason"),
+        exchange: r.get("exchange"),
+        interval: r.get("interval"),
+        chart_tf: r.get("chart_tf"),
         date: r.get("date"),
         us_time: r.get("us_time"),
+        cn_time: r.get("cn_time"),
         bar_time_ms: r.get("bar_time_ms"),
+        latest_indicator: latestIndicator,
         extra: extra,
         created: r.get("created")
       };
     });
 
+    const matchedIndicators = signals.filter((s) => !!s.latest_indicator).length
     console.log(`[SignalsPending] 返回 signals 数组长度: ${signals.length}`);
+    console.log(`[SignalsPending] 已关联指标快照: ${matchedIndicators}/${signals.length}`);
     console.log(`[SignalsPending] === 查询完成 ===`);
     return c.json(200, { signals: signals });
   } catch (err) {

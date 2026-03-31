@@ -95,6 +95,35 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
+        .indicator-time-stack {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 4px;
+        }
+
+        .indicator-subtime {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .indicator-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .indicator-meta-chip {
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: var(--surface2);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
         .indicator-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -131,6 +160,13 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
+        .indicator-badge-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 0 0 12px;
+        }
+
         .indicator-interval {
             font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
@@ -138,6 +174,18 @@
             border-radius: 4px;
             background: var(--surface2);
             color: var(--accent);
+        }
+
+        .indicator-footer {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
         }
 
         .load-more-btn {
@@ -335,7 +383,7 @@
                     </select>
                 </div>
             </div>
-            <input type="text" class="search-input" id="searchBox" placeholder="🔍 搜索股票代码..." oninput="onSearchChange(this.value)">
+            <input type="text" class="search-input" id="searchBox" placeholder="🔍 搜索标的 / 交易所 / 脚本 / PB记录ID..." oninput="onSearchChange(this.value)">
         </div>
 
         <div id="indicatorsContainer"><div class="loading">加载中...</div></div>
@@ -352,37 +400,159 @@
     <script>
         const PB_URL = window.location.origin;
         let allIndicators = [];
-        let currentDate = new Date().toISOString().split('T')[0];
+        let currentDate = getCurrentEtDateString();
         let rangeStartDate = null;
         let rangeEndDate = null;
         let currentSearch = '';
         let refreshTimer = null;
         let currentInterval = 30;
-
-        // Pagination
         let currentPage = 1;
         const itemsPerPage = 10;
-        let displayedIndicators = [];
         let hasMore = false;
         let totalItems = 0;
 
-        // ── 渲染导航 ──
         document.getElementById('navContainer').innerHTML = renderNav('/indicators.html');
 
-        // 日期选择回调 - 需要在 renderDatePicker 之前定义
-        window.onDateChange = function(startDate, endDate) {
+        function getCurrentEtDateString() {
+            return new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/New_York',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(new Date());
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function escapeFilterValue(value) {
+            return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        }
+
+        function formatNumber(value, digits = 2) {
+            const num = Number(value);
+            return Number.isFinite(num) ? num.toFixed(digits) : '-';
+        }
+
+        function formatPrice(value) {
+            const num = Number(value);
+            return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
+        }
+
+        function formatVolume(value) {
+            const num = Number(value);
+            return Number.isFinite(num) ? num.toLocaleString() : '-';
+        }
+
+        function formatSignedPercent(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '-';
+            return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
+        }
+
+        function getSignedColor(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num === 0) return 'var(--text)';
+            return num > 0 ? 'var(--long)' : 'var(--short)';
+        }
+
+        function getIntervalLabel(interval) {
+            const intervalMap = { '5': '5m', '15': '15m', '30': '30m', '60': '1H', '240': '4H', 'D': '日' };
+            return intervalMap[interval] || interval || '';
+        }
+
+        function getTrendText(value) {
+            const num = Number(value);
+            if (num === 1) return '📈 多头';
+            if (num === -1) return '📉 空头';
+            return '➡️ 中性';
+        }
+
+        function getAtrSummary(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '-';
+            if (num >= 3) return `${num.toFixed(2)}% ⚡高`;
+            if (num >= 1.5) return `${num.toFixed(2)}% 〜中`;
+            return `${num.toFixed(2)}% ·低`;
+        }
+
+        function getDateRange() {
+            if (rangeStartDate && rangeEndDate) {
+                return { startDate: rangeStartDate, endDate: rangeEndDate };
+            }
+            return { startDate: currentDate, endDate: currentDate };
+        }
+
+        function syncDatePickerUI(selectedDate) {
+            const input = document.getElementById('customDate');
+            if (input) input.value = selectedDate;
+            document.querySelectorAll('.date-btn').forEach((btn) => {
+                btn.classList.toggle('active', btn.dataset.date === selectedDate && !rangeStartDate && !rangeEndDate);
+            });
+        }
+
+        function buildIndicatorFilter() {
+            const { startDate, endDate } = getDateRange();
+            const conditions = [
+                `us_time >= "${escapeFilterValue(startDate)} 00:00"`,
+                `us_time <= "${escapeFilterValue(endDate)} 23:59:59"`,
+            ];
+
+            const intervalFilter = document.getElementById('intervalFilter')?.value || '';
+            if (intervalFilter) {
+                conditions.push(`interval = "${escapeFilterValue(intervalFilter)}"`);
+            }
+
+            if (currentSearch) {
+                const term = escapeFilterValue(currentSearch.toUpperCase());
+                conditions.push(`(symbol ~ "${term}" || exchange ~ "${term}" || script_tag ~ "${term}" || id ~ "${term}")`);
+            }
+
+            return conditions.join(' && ');
+        }
+
+        async function fetchIndicatorsPage(page) {
+            const token = getToken();
+            if (!token) {
+                window.location.href = '/login.html?from=/indicators.html';
+                return null;
+            }
+
+            const filter = buildIndicatorFilter();
+            const response = await fetch(
+                `${PB_URL}/api/collections/indicators/records?perPage=${itemsPerPage}&page=${page}&sort=-bar_time_ms,-created&filter=${encodeURIComponent(filter)}`,
+                { headers: { 'Authorization': token } }
+            );
+
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                return null;
+            }
+            if (!response.ok) {
+                throw new Error(`加载失败 (${response.status})`);
+            }
+
+            return response.json();
+        }
+
+        window.onDateChange = function(startDate) {
             currentDate = startDate;
             rangeStartDate = null;
             rangeEndDate = null;
-            // 这些元素可能不存在，需要检查
             const rangeStartEl = document.getElementById('rangeStartDate');
             const rangeEndEl = document.getElementById('rangeEndDate');
             if (rangeStartEl) rangeStartEl.value = '';
             if (rangeEndEl) rangeEndEl.value = '';
+            syncDatePickerUI(startDate);
             loadIndicators();
         };
 
-        // 日期范围筛选函数
         function applyDateRange() {
             const startInput = document.getElementById('rangeStartDate').value;
             const endInput = document.getElementById('rangeEndDate').value;
@@ -397,7 +567,7 @@
                 return;
             }
 
-            document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.date-btn').forEach((b) => b.classList.remove('active'));
             rangeStartDate = startInput;
             rangeEndDate = endInput;
             loadIndicators();
@@ -405,194 +575,132 @@
 
         async function loadIndicators() {
             try {
-                const token = getToken();
-                if (!token) { window.location.href = '/login.html?from=/indicators.html'; return; }
-
                 document.getElementById('indicatorsContainer').innerHTML = '<div class="loading">加载中...</div>';
                 currentPage = 1;
 
-                let startTime, endTime;
-                if (rangeStartDate && rangeEndDate) {
-                    startTime = `${rangeStartDate} 00:00:00`;
-                    endTime = `${rangeEndDate} 23:59:59`;
-                } else {
-                    startTime = `${currentDate} 00:00:00`;
-                    endTime = `${currentDate} 23:59:59`;
-                }
+                const data = await fetchIndicatorsPage(1);
+                if (!data) return;
 
-                const conditions = [`created >= "${startTime}"`, `created <= "${endTime}"`];
-                const searchTerm = document.getElementById('searchBox').value.toLowerCase();
-                if (searchTerm) {
-                    conditions.push(`symbol ~ "${searchTerm.toUpperCase()}"`);
-                }
+                allIndicators = (data.items || []).map((item) => normalizeIndicatorRecord(item)).filter(Boolean);
+                totalItems = data.totalItems || allIndicators.length;
+                hasMore = allIndicators.length < totalItems;
 
-                const filter = conditions.join(' && ');
-                const response = await fetch(`${PB_URL}/api/collections/indicators/records?perPage=${itemsPerPage}&page=1&sort=-created&filter=${encodeURIComponent(filter)}`, {
-                    headers: { 'Authorization': token }
-                });
-
-                if (response.status === 401 || response.status === 403) {
-                    handleAuthError();
-                    return;
-                }
-                if (!response.ok) throw new Error('加载失败');
-
-                const data = await response.json();
-                allIndicators = data.items || [];
-                hasMore = data.items.length === itemsPerPage;
-                totalItems = data.totalItems || 0;
-
-                resetPagination();
                 renderIndicators();
                 updateLoadMoreButton();
             } catch (error) {
                 console.error('加载失败:', error);
-                document.getElementById('indicatorsContainer').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${error.message}</div></div>`;
+                document.getElementById('indicatorsContainer').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${escapeHtml(error.message)}</div></div>`;
             }
-        }
-
-        function getFilteredIndicators() {
-            const intervalFilter = document.getElementById('intervalFilter').value;
-            let filtered = allIndicators;
-
-            if (intervalFilter) {
-                filtered = filtered.filter(i => (i.interval || '') === intervalFilter);
-            }
-
-            return filtered;
         }
 
         function onIntervalChange() {
-            resetPagination();
-            renderIndicators();
-            updateLoadMoreButton();
-        }
-
-        function getPaginatedIndicators() {
-            const filtered = getFilteredIndicators();
-            const start = (currentPage - 1) * itemsPerPage;
-            return filtered.slice(0, start + itemsPerPage);
+            loadIndicators();
         }
 
         function updateLoadMoreButton() {
             const btn = document.getElementById('loadMoreBtn');
-            const filtered = getFilteredIndicators();
-            const hasMoreData = displayedIndicators.length < filtered.length;
-            btn.style.display = hasMoreData ? 'block' : 'none';
-            btn.textContent = hasMoreData ? `加载更多 (${displayedIndicators.length}/${filtered.length})` : '没有更多了';
-            btn.disabled = !hasMoreData;
+            const loaded = allIndicators.length;
+            btn.style.display = loaded > 0 && hasMore ? 'block' : 'none';
+            btn.textContent = hasMore ? `加载更多 (${loaded}/${totalItems})` : `已加载全部 (${loaded}/${totalItems || loaded})`;
+            btn.disabled = !hasMore;
         }
 
         async function loadMoreIndicators() {
             if (!hasMore) return;
             try {
-                const token = getToken();
-                if (!token) return;
+                const nextPage = currentPage + 1;
+                const data = await fetchIndicatorsPage(nextPage);
+                if (!data) return;
 
-                currentPage++;
+                currentPage = nextPage;
+                const appended = (data.items || []).map((item) => normalizeIndicatorRecord(item)).filter(Boolean);
+                allIndicators = [...allIndicators, ...appended];
+                totalItems = data.totalItems || totalItems;
+                hasMore = allIndicators.length < totalItems;
 
-                let startTime, endTime;
-                if (rangeStartDate && rangeEndDate) {
-                    startTime = `${rangeStartDate} 00:00:00`;
-                    endTime = `${rangeEndDate} 23:59:59`;
-                } else {
-                    startTime = `${currentDate} 00:00:00`;
-                    endTime = `${currentDate} 23:59:59`;
-                }
-
-                const conditions = [`created >= \"${startTime}\"`, `created <= \"${endTime}\"`];
-                const searchTerm = document.getElementById('searchBox').value.toLowerCase();
-                if (searchTerm) {
-                    conditions.push(`symbol ~ \"${searchTerm.toUpperCase()}\"`);
-                }
-
-                const filter = conditions.join(' && ');
-                const response = await fetch(`${PB_URL}/api/collections/indicators/records?perPage=${itemsPerPage}&page=${currentPage}&sort=-created&filter=${encodeURIComponent(filter)}`, {
-                    headers: { 'Authorization': token }
-                });
-
-                if (!response.ok) throw new Error('加载失败');
-
-                const data = await response.json();
-                allIndicators = [...allIndicators, ...data.items];
-                hasMore = data.items.length === itemsPerPage;
-                totalItems = data.totalItems || 0;
-
-                displayedIndicators = allIndicators;
                 renderIndicators();
                 updateLoadMoreButton();
             } catch (error) {
                 console.error('加载更多失败:', error);
-                currentPage--;
             }
         }
 
-        function resetPagination() {
-            currentPage = 1;
-            displayedIndicators = getPaginatedIndicators();
-        }
-
-        // 防抖搜索定时器
         let searchDebounceTimer = null;
 
-        // 搜索输入处理（防抖）
         function onSearchChange(val) {
             currentSearch = val.trim();
             if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
-                // 重置到第一页
-                resetPagination();
-                // 显示加载中
                 document.getElementById('indicatorsContainer').innerHTML = '<div class="loading">搜索中...</div>';
-                // 重新加载数据
                 loadIndicators();
             }, 300);
         }
 
         function renderIndicators() {
             const container = document.getElementById('indicatorsContainer');
-            const filtered = displayedIndicators;
 
-            if (filtered.length === 0) {
-                // 搜索时显示空白页，无搜索条件时显示暂无数据
-                if (currentSearch) {
-                    container.innerHTML = '';
-                } else {
-                    container.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">暂无数据</div></div>';
-                }
+            if (!allIndicators.length) {
+                container.innerHTML = `<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">${currentSearch ? '未找到匹配指标' : '暂无指标数据'}</div></div>`;
                 return;
             }
 
-            container.innerHTML = filtered.map(ind => {
-                let extra = ind.extra;
-                if (typeof extra === 'string') {
-                    try { extra = JSON.parse(extra); } catch (e) { extra = {}; }
-                }
-                extra = extra || {};
-
-                const intervalMap = { '5': '5m', '15': '15m', '30': '30m', '60': '1H', '240': '4H', 'D': '日' };
-                const intervalText = intervalMap[ind.interval] || ind.interval || '';
+            container.innerHTML = allIndicators.map((indicator) => {
+                const badgesHtml = buildIndicatorBadges(null, indicator);
+                const dayChange = Number(indicator.day_change_pct);
+                const prevCloseChange = Number(indicator.prev_close_change_pct);
+                const vwapDist = Number(indicator.vwap_dist);
+                const createdText = indicator.created ? formatBeijingTime(indicator.created, 'short') : '-';
 
                 return `
-                    <div class="indicator-card" onclick="showIndicatorDetails('${ind.id}')" style="cursor:pointer;">
+                    <div class="indicator-card" onclick="showIndicatorDetails('${escapeHtml(indicator.id)}')" style="cursor:pointer;">
                         <div class="indicator-header">
-                            <div class="indicator-symbol">${ind.symbol} ${intervalText ? `<span class="indicator-interval">${intervalText}</span>` : ''}</div>
-                            <div class="indicator-time">${ind.us_time || ''}</div>
+                            <div>
+                                <div class="indicator-symbol">${escapeHtml(indicator.symbol)} ${getIntervalLabel(indicator.interval) ? `<span class="indicator-interval">${escapeHtml(getIntervalLabel(indicator.interval))}</span>` : ''}</div>
+                                <div class="indicator-meta">
+                                    ${indicator.exchange ? `<span class="indicator-meta-chip">${escapeHtml(indicator.exchange)}</span>` : ''}
+                                    ${indicator.script_tag ? `<span class="indicator-meta-chip">${escapeHtml(indicator.script_tag)}</span>` : ''}
+                                    <span class="indicator-meta-chip">PB ${escapeHtml(indicator.id)}</span>
+                                </div>
+                            </div>
+                            <div class="indicator-time-stack">
+                                <div class="indicator-time">${escapeHtml(indicator.us_time || '-')}</div>
+                                <div class="indicator-subtime">${escapeHtml(indicator.cn_time || '-')}</div>
+                            </div>
                         </div>
+                        ${badgesHtml ? `<div class="indicator-badge-row">${badgesHtml}</div>` : ''}
                         <div class="indicator-grid">
                             <div class="indicator-section">
-                                <div class="section-title">价格信息</div>
-                                <div class="indicator-row"><span class="indicator-label">收盘价</span><span class="indicator-value">$${(extra.close || 0).toFixed(2)}</span></div>
-                                <div class="indicator-row"><span class="indicator-label">日内涨幅</span><span class="indicator-value" style="color: ${(extra.day_change_pct || 0) >= 0 ? 'var(--long)' : 'var(--short)'}\">${(extra.day_change_pct || 0) >= 0 ? '+' : ''}${(extra.day_change_pct || 0).toFixed(2)}%</span></div>
-                                <div class="indicator-row"><span class="indicator-label">较昨收</span><span class="indicator-value" style="color: ${(extra.prev_close_change_pct || 0) >= 0 ? 'var(--long)' : 'var(--short)'}\">${(extra.prev_close_change_pct || 0) >= 0 ? '+' : ''}${(extra.prev_close_change_pct || 0).toFixed(2)}%</span></div>
-                                ${extra.atr_pct ? `<div class="indicator-row"><span class="indicator-label">ATR波动率</span><span class="indicator-value" style="color: ${extra.atr_pct >= 3 ? '#e53e3e' : extra.atr_pct >= 1.5 ? '#ed8936' : '#48bb78'}\">${extra.atr_pct.toFixed(2)}% ${extra.atr_pct >= 3 ? '⚡高' : extra.atr_pct >= 1.5 ? '〜中' : '·低'}</span></div>` : ''}
+                                <div class="section-title">价格波动</div>
+                                <div class="indicator-row"><span class="indicator-label">收盘 / 开盘</span><span class="indicator-value">${formatPrice(indicator.close)} / ${formatPrice(indicator.open)}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">最高 / 最低</span><span class="indicator-value">${formatPrice(indicator.high)} / ${formatPrice(indicator.low)}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">日内 / 较昨</span><span class="indicator-value" style="color:${getSignedColor(dayChange)}">${formatSignedPercent(dayChange)} / <span style="color:${getSignedColor(prevCloseChange)}">${formatSignedPercent(prevCloseChange)}</span></span></div>
+                                <div class="indicator-row"><span class="indicator-label">ATR / 波动率</span><span class="indicator-value">${formatPrice(indicator.atr)} / ${getAtrSummary(indicator.atr_pct)}</span></div>
                             </div>
                             <div class="indicator-section">
-                                <div class="section-title">趋势信号</div>
-                                <div class="indicator-row"><span class="indicator-label">趋势方向</span><span class="indicator-value">${extra.trend_dir === 1 ? '📈 多头' : extra.trend_dir === -1 ? '📉 空头' : '➡️ 中性'}</span></div>
-                                <div class="indicator-row"><span class="indicator-label">多头背离</span><span class="indicator-value">${extra.crsi_bull_div || extra.obv_bull_div ? '✅' : '❌'}</span></div>
-                                <div class="indicator-row"><span class="indicator-label">空头背离</span><span class="indicator-value">${extra.crsi_bear_div || extra.obv_bear_div ? '✅' : '❌'}</span></div>
+                                <div class="section-title">趋势结构</div>
+                                <div class="indicator-row"><span class="indicator-label">趋势 / EMA</span><span class="indicator-value">${getTrendText(indicator.trend_dir)} / ${indicator.ema_bullish ? '📈 多头' : indicator.ema_bearish ? '📉 空头' : '➡️ 中性'}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">VWAP / 偏离</span><span class="indicator-value">${formatPrice(indicator.vwap)} / <span style="color:${getSignedColor(vwapDist)}">${formatSignedPercent(vwapDist)}</span></span></div>
+                                <div class="indicator-row"><span class="indicator-label">DTP / SD</span><span class="indicator-value">${escapeHtml(indicator.dtp_phase || 'N/A')} / ${Number(indicator.sd_zone) === 1 ? '超买' : Number(indicator.sd_zone) === -1 ? '超卖' : '正常'}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">触及 / 分形</span><span class="indicator-value">${indicator.ema_bull_touch ? 'EMA↑' : indicator.ema_bear_touch ? 'EMA↓' : '无'} / ${indicator.fractal_bull ? '分形↑' : indicator.fractal_bear ? '分形↓' : '无'}</span></div>
                             </div>
+                            <div class="indicator-section">
+                                <div class="section-title">动量背离</div>
+                                <div class="indicator-row"><span class="indicator-label">CRSI / OBV RSI</span><span class="indicator-value">${formatNumber(indicator.crsi)} / ${formatNumber(indicator.obv_rsi)}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">CRSI 背离</span><span class="indicator-value">${indicator.crsi_bull_div ? '✅ 多' : indicator.crsi_bear_div ? '✅ 空' : '❌ 无'}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">OBV 背离</span><span class="indicator-value">${indicator.obv_bull_div ? '✅ 多' : indicator.obv_bear_div ? '✅ 空' : '❌ 无'}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">7日涨跌</span><span class="indicator-value" style="color:${getSignedColor(indicator.change_7d)}">${formatSignedPercent(indicator.change_7d)}</span></div>
+                            </div>
+                            <div class="indicator-section">
+                                <div class="section-title">补充信息</div>
+                                <div class="indicator-row"><span class="indicator-label">成交量</span><span class="indicator-value">${formatVolume(indicator.volume)}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">bar_index</span><span class="indicator-value">${escapeHtml(indicator.bar_index ?? '-')}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">bar_time_ms</span><span class="indicator-value">${escapeHtml(indicator.bar_time_ms ?? '-')}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">创建时间</span><span class="indicator-value">${escapeHtml(createdText)}</span></div>
+                            </div>
+                        </div>
+                        <div class="indicator-footer">
+                            <span>Interval ${escapeHtml(getIntervalLabel(indicator.interval) || '-')}</span>
+                            <span>${escapeHtml(indicator.script_tag || '无脚本标记')}</span>
                         </div>
                     </div>
                 `;
@@ -600,12 +708,9 @@
         }
 
         function showIndicatorDetails(indicatorId) {
-            const indicator = allIndicators.find(i => i.id === indicatorId);
+            const indicator = allIndicators.find((item) => item.id === indicatorId);
             if (!indicator) return;
-
-            const normalized = normalizeIndicatorRecord(indicator);
-            // 调用 common.js 公用弹窗
-            showIndicatorModal(normalized);
+            showIndicatorModal(indicator);
         }
 
         function manualRefresh() {
@@ -616,7 +721,7 @@
         }
 
         function changeRefreshInterval(seconds) {
-            currentInterval = parseInt(seconds);
+            currentInterval = parseInt(seconds, 10);
 
             if (refreshTimer) {
                 clearInterval(refreshTimer);
@@ -630,17 +735,16 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('datePicker').innerHTML = renderDatePicker();
+            syncDatePickerUI(currentDate);
             loadIndicators();
             changeRefreshInterval(30);
 
-            // 向下滚动自动加载更多
             let isLoadingMore = false;
             window.addEventListener('scroll', () => {
                 const scrollTop = window.scrollY || document.documentElement.scrollTop;
                 const scrollHeight = document.documentElement.scrollHeight;
                 const clientHeight = document.documentElement.clientHeight;
 
-                // 距离底部 200px 时触发加载
                 if (scrollTop + clientHeight >= scrollHeight - 200) {
                     if (!isLoadingMore && hasMore) {
                         isLoadingMore = true;

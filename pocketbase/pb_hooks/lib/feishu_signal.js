@@ -4,6 +4,99 @@
  */
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
+var PB_HOST = "https://pb.lzw-glory.top"
+
+function formatDateToken(dateToken) {
+    if (!dateToken || !/^\d{8}$/.test(String(dateToken))) return ""
+    var text = String(dateToken)
+    return text.slice(0, 4) + "-" + text.slice(4, 6) + "-" + text.slice(6, 8)
+}
+
+function extractDateFromIdentifier(value) {
+    var match = String(value || "").match(/(?:^|_)(20\d{6})(?:_|$)/)
+    return match ? formatDateToken(match[1]) : ""
+}
+
+function extractDateFromBarTimeMs(barTimeMs) {
+    var numeric = Number(barTimeMs)
+    if (!numeric) return ""
+    try {
+        return new Date(numeric).toISOString().slice(0, 10)
+    } catch (e) {
+        return ""
+    }
+}
+
+function resolveSignalPageDate(signalId, barTimeMs, usTime, cnTime) {
+    return extractDateFromBarTimeMs(barTimeMs)
+        || extractDateFromIdentifier(signalId)
+        || extractDateFromIdentifier(usTime)
+        || extractDateFromIdentifier(cnTime)
+        || ""
+}
+
+function buildOpenLinkButton(label, url) {
+    return {
+        tag: "button",
+        text: { tag: "plain_text", content: label },
+        type: "default",
+        width: "fill",
+        multi_url: {
+            url: url,
+            pc_url: url,
+            ios_url: url,
+            android_url: url
+        }
+    }
+}
+
+function buildSignalPageUrl(d) {
+    if (!d || !d.signal_id) return ""
+    var url = PB_HOST + "/signals.html?signal_id=" + encodeURIComponent(d.signal_id)
+    if (d.page_date) {
+        url += "&date=" + encodeURIComponent(d.page_date)
+    }
+    return url
+}
+
+function buildSignalOrdersPageUrl(d) {
+    if (!d || !d.signal_id) return ""
+    var url = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(d.signal_id)
+    if (d.page_date) {
+        url += "&date=" + encodeURIComponent(d.page_date)
+    }
+    return url
+}
+
+function buildSignalViewElements(d) {
+    var columns = []
+    var signalUrl = buildSignalPageUrl(d)
+    var ordersUrl = buildSignalOrdersPageUrl(d)
+
+    if (signalUrl) {
+        columns.push({
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            elements: [buildOpenLinkButton("📡 查看信号", signalUrl)]
+        })
+    }
+    if (ordersUrl) {
+        columns.push({
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            elements: [buildOpenLinkButton("📋 查看订单", ordersUrl)]
+        })
+    }
+
+    if (columns.length === 0) return []
+    return [{
+        tag: "column_set",
+        horizontal_spacing: "default",
+        columns: columns
+    }]
+}
 
 function getSignalExtra(recordOrData) {
     if (!recordOrData) return {}
@@ -74,7 +167,9 @@ function buildSignalDisplayData(recordOrData) {
     var rr = get("rr") || "N/A"
     var signal_id = get("signal_id") || ""
     var us_time = get("us_time") || ""
+    var cn_time = get("cn_time") || ""
     var extra = getSignalExtra(recordOrData)
+    var bar_time_ms = Number(get("bar_time_ms") || extra.bar_time_ms || 0) || 0
 
     var reason = extra.reason || get("reason") || ""
     var changeDisplay = "N/A"
@@ -164,6 +259,9 @@ function buildSignalDisplayData(recordOrData) {
         rr: rr,
         signal_id: signal_id,
         us_time: us_time,
+        cn_time: cn_time,
+        bar_time_ms: bar_time_ms,
+        page_date: resolveSignalPageDate(signal_id, bar_time_ms, us_time, cn_time),
         reason: reason,
         changeDisplay: changeDisplay,
         tpProfit: tpProfit,
@@ -226,6 +324,7 @@ function buildSignalInfoElements(d) {
 
 function buildSignalCardV2(symbol, directionText, statusEmoji, statusText, status, color, message, extraFields, us_time) {
     var elements = []
+    var displayData = arguments.length > 9 ? arguments[9] : null
 
     if (extraFields && extraFields.length > 0) {
         elements = extraFields.slice()
@@ -236,6 +335,11 @@ function buildSignalCardV2(symbol, directionText, statusEmoji, statusText, statu
 
     elements.push({ tag: "hr" })
     elements.push({ tag: "div", text: { tag: "lark_md", content: "**状态:** " + statusText + " · " + message } })
+    var viewElements = buildSignalViewElements(displayData)
+    if (viewElements.length > 0) {
+        elements.push({ tag: "hr" })
+        viewElements.forEach(function(element) { elements.push(element) })
+    }
 
     return {
         schema: "2.0",
@@ -295,6 +399,12 @@ function buildSignalNotificationCard(signal) {
         elements.push({ tag: "div", text: { tag: "lark_md", content: "⚙️ **自动确认** · 信号已提交，等待执行" } })
     }
 
+    var viewElements = buildSignalViewElements(d)
+    if (viewElements.length > 0) {
+        elements.push({ tag: "hr" })
+        viewElements.forEach(function(element) { elements.push(element) })
+    }
+
     return {
         schema: "2.0",
         config: { update_multi: true },
@@ -340,7 +450,8 @@ function buildSignalStatusCard(signalOrRecord, options) {
         color,
         message,
         buildSignalInfoElements(d),
-        d.us_time
+        d.us_time,
+        d
     )
 }
 
@@ -401,7 +512,7 @@ function handleSignalCardCallback(c, options) {
     if (finalStatus.indexOf(currentStatus) !== -1) {
         var finalInfo = getSignalStatusInfo(currentStatus)
         msg = "该信号" + finalInfo.text + "，无法" + (action === "confirm" ? "确认" : "拒绝")
-        card = buildSignalCardV2(d.symbol, directionText, finalInfo.emoji, finalInfo.text, currentStatus, color, msg, cardElements, d.us_time)
+        card = buildSignalCardV2(d.symbol, directionText, finalInfo.emoji, finalInfo.text, currentStatus, color, msg, cardElements, d.us_time, d)
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "warning", content: msg },
             card: { type: "raw", data: card }
@@ -411,7 +522,7 @@ function handleSignalCardCallback(c, options) {
     if (action === "confirm") {
         if (currentStatus === "pending") {
             msg = "⏳ 信号已确认，请勿重复操作"
-            card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time)
+            card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time, d)
             return feishuApp.sendFeishuCallbackResponse(c, {
                 toast: { type: "info", content: msg },
                 card: { type: "raw", data: card }
@@ -420,7 +531,7 @@ function handleSignalCardCallback(c, options) {
         if (currentStatus !== "awaiting_confirm") {
             var confirmInfo = getSignalStatusInfo(currentStatus)
             msg = "该信号" + confirmInfo.text + "，无法确认"
-            card = buildSignalCardV2(d.symbol, directionText, confirmInfo.emoji, confirmInfo.text, currentStatus, color, msg, cardElements, d.us_time)
+            card = buildSignalCardV2(d.symbol, directionText, confirmInfo.emoji, confirmInfo.text, currentStatus, color, msg, cardElements, d.us_time, d)
             return feishuApp.sendFeishuCallbackResponse(c, {
                 toast: { type: "warning", content: msg },
                 card: { type: "raw", data: card }
@@ -430,7 +541,7 @@ function handleSignalCardCallback(c, options) {
         record.set("status", "pending")
         $app.save(record)
         console.log("[FeishuSignalCallback] 确认成功，signal_id:", signalId)
-        card = buildSignalCardV2(d.symbol, directionText, "✅", "待执行", "pending", color, "✨ 确认成功，正在等待执行...", cardElements, d.us_time)
+        card = buildSignalCardV2(d.symbol, directionText, "✅", "待执行", "pending", color, "✨ 确认成功，正在等待执行...", cardElements, d.us_time, d)
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "success", content: "确认成功" },
             card: { type: "raw", data: card }
@@ -440,7 +551,7 @@ function handleSignalCardCallback(c, options) {
     if (action === "reject") {
         if (currentStatus === "rejected") {
             msg = "❌ 信号已拒绝，请勿重复操作"
-            card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, msg, cardElements, d.us_time)
+            card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, msg, cardElements, d.us_time, d)
             return feishuApp.sendFeishuCallbackResponse(c, {
                 toast: { type: "info", content: msg },
                 card: { type: "raw", data: card }
@@ -448,7 +559,7 @@ function handleSignalCardCallback(c, options) {
         }
         if (currentStatus === "pending") {
             msg = "⏳ 信号正在等待执行，无法拒绝"
-            card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time)
+            card = buildSignalCardV2(d.symbol, directionText, "⏳", "待执行", "pending", color, msg, cardElements, d.us_time, d)
             return feishuApp.sendFeishuCallbackResponse(c, {
                 toast: { type: "warning", content: msg },
                 card: { type: "raw", data: card }
@@ -457,7 +568,7 @@ function handleSignalCardCallback(c, options) {
         if (currentStatus !== "awaiting_confirm") {
             var rejectInfo = getSignalStatusInfo(currentStatus)
             msg = "该信号" + rejectInfo.text + "，无法拒绝"
-            card = buildSignalCardV2(d.symbol, directionText, rejectInfo.emoji, rejectInfo.text, currentStatus, color, msg, cardElements, d.us_time)
+            card = buildSignalCardV2(d.symbol, directionText, rejectInfo.emoji, rejectInfo.text, currentStatus, color, msg, cardElements, d.us_time, d)
             return feishuApp.sendFeishuCallbackResponse(c, {
                 toast: { type: "warning", content: msg },
                 card: { type: "raw", data: card }
@@ -467,7 +578,7 @@ function handleSignalCardCallback(c, options) {
         record.set("status", "rejected")
         $app.save(record)
         console.log("[FeishuSignalCallback] 拒绝成功，signal_id:", signalId)
-        card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, "🚫 信号已拒绝，暂不执行", cardElements, d.us_time)
+        card = buildSignalCardV2(d.symbol, directionText, "❌", "已拒绝", "rejected", color, "🚫 信号已拒绝，暂不执行", cardElements, d.us_time, d)
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "success", content: "拒绝成功" },
             card: { type: "raw", data: card }

@@ -85,6 +85,13 @@
             margin-bottom: 12px;
         }
 
+        .focus-head-side {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+        }
+
         .focus-symbol {
             font-size: 22px;
             font-weight: 700;
@@ -162,6 +169,44 @@
             font-size: 10px;
             font-family: 'JetBrains Mono', monospace;
             word-break: break-all;
+        }
+
+        .focus-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .focus-summary-card {
+            background: rgba(20,28,46,0.88);
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .focus-summary-title {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .focus-summary-value {
+            margin-top: 6px;
+            font-size: 15px;
+            color: var(--text);
+            font-weight: 700;
+        }
+
+        .focus-summary-sub {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.55;
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-word;
         }
 
         .grid {
@@ -365,6 +410,7 @@
         }
 
         @media (max-width: 720px) {
+            .focus-summary-grid,
             .grid {
                 grid-template-columns: 1fr;
             }
@@ -374,6 +420,10 @@
             .event-head,
             .list-card-head {
                 flex-direction: column;
+            }
+
+            .focus-head-side {
+                align-items: flex-start;
             }
         }
     </style>
@@ -753,6 +803,80 @@
                 || null;
         }
 
+        function buildFocusedSummary(snapshots, orderedTimeline) {
+            const primarySnapshot = pickPrimarySnapshot(snapshots);
+            const primary = primarySnapshot?.latest || orderedTimeline[orderedTimeline.length - 1] || allDetails[0];
+            const latestEvent = orderedTimeline[orderedTimeline.length - 1] || primary;
+            const latestSnapshots = snapshots.map((snapshot) => snapshot.latest);
+            const activeChildren = latestSnapshots.filter((detail) => detail.role !== 'entry' && detail.relation_status === 'active');
+            const plannedChildren = latestSnapshots.filter((detail) => detail.role !== 'entry' && detail.relation_status === 'planned');
+            const exitDetail = latestSnapshots.find((detail) => detail.role !== 'entry' && detail.status === 'Filled') || null;
+            const primaryFilledQty = Number(primary?.filled_qty || 0);
+
+            let currentStateText = '交易组初始化';
+            let currentStateTone = 'Init';
+            let currentStateDetail = plannedChildren.length > 0
+                ? `主单与保护单已初始化，待激活保护单 ${plannedChildren.length} 个`
+                : '主单与保护单已初始化';
+
+            if (primary?.status === 'Canceled') {
+                currentStateText = '交易组已取消';
+                currentStateTone = 'Canceled';
+                currentStateDetail = '主单已取消，保护单已收尾';
+            } else if (primary?.status === 'Closed') {
+                currentStateText = '交易组已平仓';
+                currentStateTone = 'Closed';
+                currentStateDetail = '交易组已平仓';
+            } else if (exitDetail) {
+                const exitedByTp = ['take_profit', 'repair_tp'].includes(exitDetail.role);
+                currentStateText = exitedByTp ? '止盈成交退出' : '止损成交退出';
+                currentStateTone = 'Filled';
+                currentStateDetail = `交易组已由${getRoleText(exitDetail.role, exitDetail.order_type)}成交退出`;
+            } else if (primary?.status === 'Filled') {
+                currentStateText = '持仓中';
+                currentStateTone = 'Filled';
+                currentStateDetail = activeChildren.length > 0
+                    ? `主单已成交，保护单已激活 ${activeChildren.length} 个`
+                    : plannedChildren.length > 0
+                        ? `主单已成交，保护单待激活 ${plannedChildren.length} 个`
+                        : '主单已成交';
+            } else if (primary?.status === 'Submitted' && (primaryFilledQty > 0 || activeChildren.length > 0)) {
+                currentStateText = '部分成交';
+                currentStateTone = 'Submitted';
+                currentStateDetail = `主单已部分成交，保护单已激活 ${activeChildren.length} 个`;
+            } else if (primary?.status === 'Submitted') {
+                currentStateText = '主单待成交';
+                currentStateTone = 'Submitted';
+                currentStateDetail = plannedChildren.length > 0
+                    ? `主单已提交，保护单已预创建 ${plannedChildren.length} 个`
+                    : '主单已提交，等待成交';
+            }
+
+            const latestEventText = latestEvent
+                ? `${getRoleText(latestEvent.role, latestEvent.order_type)} · ${ORDER_STATUS_TEXT[latestEvent.status] || latestEvent.status || '-'}`
+                : '-';
+            const latestEventDetail = latestEvent
+                ? `${latestEvent.order_id || '-'} · ${formatTimePair(latestEvent)}${latestEvent.reason ? ` · ${latestEvent.reason}` : ''}`
+                : '-';
+            const protectionText = exitDetail
+                ? `${getRoleText(exitDetail.role, exitDetail.order_type)} 已成交`
+                : `active=${activeChildren.length} / planned=${plannedChildren.length}`;
+
+            return {
+                primary,
+                latestEvent,
+                currentStateText,
+                currentStateTone,
+                currentStateDetail,
+                latestEventText,
+                latestEventDetail,
+                protectionText,
+                activeChildCount: activeChildren.length,
+                plannedChildCount: plannedChildren.length,
+                exitDetail
+            };
+        }
+
         function renderMetric(label, value) {
             return `<div class="metric-card"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${value}</div></div>`;
         }
@@ -832,9 +956,10 @@
             }
 
             const snapshots = buildSnapshots(allDetails);
-            const primarySnapshot = pickPrimarySnapshot(snapshots);
-            const primary = primarySnapshot?.latest || allDetails[0];
             const orderedTimeline = [...allDetails].sort((left, right) => left.time_key - right.time_key);
+            const summary = buildFocusedSummary(snapshots, orderedTimeline);
+            const primary = summary.primary;
+            const latestEvent = summary.latestEvent || primary;
 
             container.innerHTML = `
                 <div class="focus-card">
@@ -843,11 +968,28 @@
                             <div class="focus-symbol">${escapeHtml(primary.symbol || '-')}</div>
                             <div class="badge-row" style="margin-top:8px;">
                                 <span class="direction-badge ${escapeHtml(primary.direction || 'long')}">${escapeHtml((primary.direction || '-').toUpperCase())}</span>
-                                <span class="status-badge ${statusClass(primary.status)}">${escapeHtml(ORDER_STATUS_TEXT[primary.status] || primary.status || '-')}</span>
+                                <span class="status-badge ${statusClass(summary.currentStateTone)}">${escapeHtml(summary.currentStateText)}</span>
                                 <span class="role-badge ${roleClass(primary.role)}">${escapeHtml(getRoleText(primary.role, primary.order_type))}</span>
+                                <span class="type-badge ${typeClass(latestEvent.order_type)}">最新事件</span>
                             </div>
                         </div>
-                        <div class="event-time">${escapeHtml(formatTimePair(primary))}</div>
+                        <div class="focus-head-side">
+                            <div class="event-time">当前组最近事件<br>${escapeHtml(formatTimePair(latestEvent))}</div>
+                            <div class="snapshot-sub">主单状态=${escapeHtml(ORDER_STATUS_TEXT[primary.status] || primary.status || '-')}</div>
+                        </div>
+                    </div>
+
+                    <div class="focus-summary-grid">
+                        <div class="focus-summary-card">
+                            <div class="focus-summary-title">当前组状态</div>
+                            <div class="focus-summary-value">${escapeHtml(summary.currentStateText)}</div>
+                            <div class="focus-summary-sub">${escapeHtml(summary.currentStateDetail)}</div>
+                        </div>
+                        <div class="focus-summary-card">
+                            <div class="focus-summary-title">最新事件</div>
+                            <div class="focus-summary-value">${escapeHtml(summary.latestEventText)}</div>
+                            <div class="focus-summary-sub">${escapeHtml(summary.latestEventDetail)}</div>
+                        </div>
                     </div>
 
                     <div class="chip-row">
@@ -860,7 +1002,9 @@
                         ${renderMetric('Events', escapeHtml(allDetails.length))}
                         ${renderMetric('Orders', escapeHtml(snapshots.length))}
                         ${renderMetric('Primary QC / Broker', `${escapeHtml(primary.order_id || '-')}<br><span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;">${escapeHtml(primary.broker_order_id || '-')}</span>`)}
-                        ${renderMetric('Latest Qty / Fill', `${escapeHtml(formatQty(primary.quantity))} / ${escapeHtml(formatQty(primary.filled_qty))}`)}
+                        ${renderMetric('Protection', escapeHtml(summary.protectionText))}
+                        ${renderMetric('Primary Qty / Fill', `${escapeHtml(formatQty(primary.quantity))} / ${escapeHtml(formatQty(primary.filled_qty))}`)}
+                        ${renderMetric('Latest Qty / Fill', `${escapeHtml(formatQty(latestEvent.quantity))} / ${escapeHtml(formatQty(latestEvent.filled_qty))}`)}
                     </div>
                 </div>
 

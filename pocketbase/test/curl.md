@@ -26,7 +26,9 @@
 | 飞书取消订单 | `GET /webhook/order/cancel` | [signals.md](./signals.md#飞书按钮---取消订单) |
 | 飞书平仓订单 | `GET /webhook/order/close` | [signals.md](./signals.md#飞书按钮---平仓订单) |
 | 计算逆向信号 | `POST /api/custom/reverse/calculate` | [reverse_signals.md](./reverse_signals.md#计算逆向信号) |
+| 查询逆向信号列表 | `GET /api/custom/reverse/list` | [reverse_signals.md](./reverse_signals.md#reverselist--reversepending-响应关键字段) |
 | 获取逆向信号 | `GET /api/custom/reverse/pending` | [reverse_signals.md](./reverse_signals.md#获取待处理逆向信号) |
+| 请求执行逆向信号 | `POST /api/custom/reverse/dispatch` | [reverse_signals.md](./reverse_signals.md#reversedispatch) |
 | 确认逆向信号 | `POST /api/custom/reverse/ack` | [reverse_signals.md](./reverse_signals.md#确认逆向信号处理) |
 | 配置信号有效期 | `POST /api/collections/config/records` | [config.md](./config.md#signal_validity_minutes) |
 

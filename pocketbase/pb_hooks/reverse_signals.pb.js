@@ -1,175 +1,304 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-const { sendFeishuPost } = require(`${__hooks}/lib/feishu_app.js`);
+const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
+const { notifyReverseSignal, notifyReverseStatus } = require(`${__hooks}/lib/feishu_reverse.js`)
 
 /**
  * reverse_signals.pb.js
- * 逆向信号计算、查询、确认 API
+ * 逆向信号计算、查询、调度、回写 API
  */
+
+function parseTriggeredSignals(value) {
+  if (Array.isArray(value)) return value
+  if (typeof value === "string" && value) {
+    try {
+      const parsed = JSON.parse(value)
+      if (Array.isArray(parsed)) return parsed
+    } catch (_) {}
+    return value.split(",").map((item) => String(item || "").trim()).filter(Boolean)
+  }
+  return []
+}
+
+function getThreshold() {
+  let threshold = 6
+  try {
+    const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'")
+    threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6
+  } catch (e) {
+    console.log(`[ReverseSignal] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`)
+  }
+  return threshold
+}
+
+function mapStrength(score) {
+  if (score >= 6) return "strong"
+  if (score >= 3) return "medium"
+  return "weak"
+}
+
+function resolveIndicatorAction(score, targetState, forcedActionType) {
+  if (forcedActionType) return forcedActionType
+  if (targetState === "pending_entry") return "cancel"
+  if (score >= 6) return "close"
+  if (score >= 3) return "adjust_sl"
+  return "cancel"
+}
+
+function loadIndicators(symbol) {
+  const records = $app.findRecordsByFilter(
+    "indicators",
+    "symbol = {:symbol}",
+    "-bar_time_ms",
+    1,
+    0,
+    { symbol: symbol }
+  )
+  return records && records.length > 0 ? records[0] : null
+}
+
+function buildIndicatorAnalysis(symbol, direction, indicatorRecord) {
+  const extra = reverseUtils.parseJsonObject(indicatorRecord.get("extra"))
+  const crsi = Number(extra.crsi)
+  const obvRsi = Number(extra.obv_rsi)
+  const vwapDist = Number(extra.vwap_dist)
+  const close = Number(extra.close)
+
+  let score = 0
+  const triggeredSignals = []
+
+  if (direction === "long" && crsi > 70) {
+    score += 2
+    triggeredSignals.push("cRSI超买")
+  } else if (direction === "short" && crsi < 30) {
+    score += 2
+    triggeredSignals.push("cRSI超卖")
+  }
+
+  const isBearSignal = direction === "long"
+  const crsiReverseDiv = isBearSignal ? extra.crsi_bear_div : extra.crsi_bull_div
+  const obvReverseDiv = isBearSignal ? extra.obv_bear_div : extra.obv_bull_div
+  const fractalReverse = isBearSignal ? extra.fractal_bear : extra.fractal_bull
+  const sdChannelReverse = isBearSignal ? extra.sd_upper : extra.sd_lower
+  const emaTouchReverse = isBearSignal ? extra.ema_bear_touch : extra.ema_bull_touch
+
+  if (crsiReverseDiv || obvReverseDiv) {
+    score += 3
+    triggeredSignals.push("背离")
+  }
+
+  if (fractalReverse || sdChannelReverse) {
+    score += 2
+    triggeredSignals.push("分形/SD通道")
+  }
+
+  if ((vwapDist || vwapDist === 0) && Math.abs(vwapDist) > 2 || emaTouchReverse) {
+    score += 1
+    triggeredSignals.push("VWAP偏离/EMA触碰")
+  }
+
+  return {
+    score: score,
+    triggered_signals: triggeredSignals,
+    indicator_extra: extra,
+    crsi: crsi,
+    obv_rsi: obvRsi,
+    vwap_dist: vwapDist,
+    close: close,
+  }
+}
+
+function buildReverseResponse(record, created, duplicate) {
+  return {
+    success: true,
+    created: !!created,
+    duplicate: !!duplicate,
+    signal: reverseUtils.normalizeReverseRecord(record),
+  }
+}
+
+function listReverseRecords(dateText, maxItems) {
+  const limit = Math.max(1, Math.min(Number(maxItems) || 200, 500))
+  if (dateText) {
+    const range = reverseUtils.buildDateRange(dateText)
+    if (range) {
+      return $app.findRecordsByFilter(
+        "reverse_signals",
+        "bar_time_ms >= {:start} && bar_time_ms <= {:end}",
+        "-created",
+        limit,
+        0,
+        { start: range.start_ms, end: range.end_ms }
+      ) || []
+    }
+  }
+  return $app.findRecordsByFilter("reverse_signals", "", "-created", limit, 0) || []
+}
+
+// GET /api/custom/reverse/list - 获取某日反转信号列表
+routerAdd("GET", "/api/custom/reverse/list", (c) => {
+  try {
+    const dateText = c.request.url.query().get("date") || ""
+    const symbol = String(c.request.url.query().get("symbol") || "").toUpperCase()
+    const statusFilter = String(c.request.url.query().get("status") || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+    const signals = listReverseRecords(dateText, c.request.url.query().get("limit"))
+      .map((record) => reverseUtils.normalizeReverseRecord(record))
+      .filter((signal) => !symbol || signal.symbol === symbol)
+      .filter((signal) => statusFilter.length === 0 || statusFilter.includes(signal.status))
+
+    return c.json(200, { signals: signals })
+  } catch (err) {
+    console.error("Error listing reverse signals:", err)
+    return c.json(500, { error: err.message })
+  }
+})
 
 // POST /api/custom/reverse/calculate - 从 indicators 计算逆向信号并写入
 routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
-  const data = c.requestInfo().body || c.requestInfo().data || {};
-  const symbol = data.symbol;
-  const direction = data.direction; // 'long' or 'short'
+  const data = c.requestInfo().body || c.requestInfo().data || {}
+  const symbol = String(data.symbol || "").trim().toUpperCase()
+  const direction = String(data.direction || "").trim().toLowerCase()
+  const forcedActionType = String(data.force_action_type || data.action_type || "").trim()
+  const allowedActionTypes = ["cancel", "close", "adjust_sl", "adjust_tp"]
 
   if (!symbol || !direction) {
-    return c.json(400, { error: "Missing symbol or direction" });
+    return c.json(400, { error: "Missing symbol or direction" })
+  }
+
+  if (!["long", "short"].includes(direction)) {
+    return c.json(400, { error: "Invalid direction" })
+  }
+
+  if (forcedActionType && !allowedActionTypes.includes(forcedActionType)) {
+    return c.json(400, { error: `Invalid force_action_type: ${forcedActionType}` })
   }
 
   try {
-    // 获取最新的 indicators 数据
-    const indicators = $app.findRecordsByFilter(
-      "indicators",
-      `symbol = {:symbol}`,
-      "-bar_time_ms",
-      1,
-      0,
-      { symbol: symbol }
-    );
+    const activeOrder = reverseUtils.findLatestActiveEntryOrder(symbol, direction)
+    const orderContext = reverseUtils.buildOrderContext(activeOrder)
 
-    if (!indicators || indicators.length === 0) {
-      return c.json(404, { error: "No indicators found for symbol" });
+    if (!orderContext || (orderContext.direction && orderContext.direction !== direction)) {
+      return c.json(200, {
+        success: true,
+        created: false,
+        reason: "no_conflict_target",
+        signal: null,
+        analysis: {
+          symbol: symbol,
+          direction: direction,
+          source: "indicator",
+          target_state: "",
+          strength: "weak",
+          score: 0,
+          action_type: forcedActionType || "cancel",
+          triggered_signals: [],
+        }
+      })
     }
 
-    const ind = indicators[0];
-    // C1 修复: 所有指标数据存在 extra JSON 内，不是顶层字段
-    const extra = ind.get("extra") || {};
-    const crsi = extra.crsi;
-    const obvRsi = extra.obv_rsi;
-    const vwapDist = extra.vwap_dist;
-    const close = extra.close;
-
-    // 计算逆向信号分数
-    let score = 0;
-    const triggeredSignals = [];
-
-    // cRSI 超买超卖 (+2分)
-    if (direction === "long" && crsi > 70) {
-      score += 2;
-      triggeredSignals.push("cRSI超买");
-    } else if (direction === "short" && crsi < 30) {
-      score += 2;
-      triggeredSignals.push("cRSI超卖");
+    if ((forcedActionType === "adjust_sl" || forcedActionType === "adjust_tp" || forcedActionType === "close") && orderContext.target_state !== "filled_position") {
+      return c.json(400, { error: `Action ${forcedActionType} requires filled_position` })
+    }
+    if (forcedActionType === "cancel" && orderContext.target_state !== "pending_entry") {
+      return c.json(400, { error: "Action cancel requires pending_entry" })
     }
 
-    // C2 修复: 字段名与 webhook 存储的实际 key 对齐，且需区分方向
-    // long 持仓找反转 → 看看空信号（bear 背离/熊信号）
-    // short 持仓找反转 → 看看多信号（bull 背离/牛信号）
-    const isBearSignal = direction === "long";
-    const crsiBearDiv = isBearSignal ? extra.crsi_bear_div : extra.crsi_bull_div;
-    const obvBearDiv  = isBearSignal ? extra.obv_bear_div  : extra.obv_bull_div;
-    const fractalRev  = isBearSignal ? extra.fractal_bear  : extra.fractal_bull;
-    const sdChannelRev = isBearSignal ? extra.sd_upper     : extra.sd_lower;
-    const emaTouchRev  = isBearSignal ? extra.ema_bear_touch : extra.ema_bull_touch;
-
-    // cRSI/OBV 背离 (+3分)
-    if (crsiBearDiv || obvBearDiv) {
-      score += 3;
-      triggeredSignals.push("背离");
+    const indicatorRecord = loadIndicators(symbol)
+    if (!indicatorRecord) {
+      return c.json(404, { error: "No indicators found for symbol" })
     }
 
-    // 分形/SD通道 (+2分)
-    if (fractalRev || sdChannelRev) {
-      score += 2;
-      triggeredSignals.push("分形/SD通道");
+    const analysis = buildIndicatorAnalysis(symbol, direction, indicatorRecord)
+    const scoreOverride = data.score_override != null ? Number(data.score_override) : null
+    const score = scoreOverride != null && !isNaN(scoreOverride) ? scoreOverride : analysis.score
+    const triggeredSignals = parseTriggeredSignals(data.triggered_signals)
+    const effectiveTriggeredSignals = triggeredSignals.length > 0
+      ? triggeredSignals
+      : (analysis.triggered_signals.length > 0 ? analysis.triggered_signals : (forcedActionType ? [forcedActionType] : []))
+    const strength = mapStrength(score)
+    const actionType = resolveIndicatorAction(score, orderContext.target_state, forcedActionType)
+
+    if ((!forcedActionType && score <= 0) || effectiveTriggeredSignals.length === 0) {
+      return c.json(200, {
+        success: true,
+        created: false,
+        reason: "no_reverse_conditions",
+        signal: null,
+        analysis: {
+          symbol: symbol,
+          direction: direction,
+          source: "indicator",
+          target_state: orderContext.target_state,
+          strength: strength,
+          score: score,
+          action_type: actionType,
+          triggered_signals: effectiveTriggeredSignals,
+        }
+      })
     }
 
-    // VWAP偏离/EMA触碰 (+1分)
-    if ((vwapDist != null && Math.abs(vwapDist) > 2) || emaTouchRev) {
-      score += 1;
-      triggeredSignals.push("VWAP偏离/EMA触碰");
-    }
-
-    // 确定强度
-    let strength = "weak";
-    if (score >= 6) {
-      strength = "strong";
-    } else if (score >= 3) {
-      strength = "medium";
-    }
-
-    // 确定操作类型
-    let actionType = "close";
-    if (strength === "strong") {
-      actionType = "close";
-    } else if (strength === "medium") {
-      actionType = "adjust_sl";
-    } else {
-      actionType = "cancel";
-    }
-
-    // 写入 reverse_signals 表
-    const collection = $app.findCollectionByNameOrId("reverse_signals");
-    const record = new Record(collection, {});
-    record.set("symbol", symbol);
-    record.set("direction", direction);
-    record.set("source", "indicator");  // 来源：技术指标
-    record.set("priority", 5);  // 技术指标优先级为 5（低于 signal 的 1）
-    record.set("strength", strength);
-    record.set("score", score);
-    record.set("triggered_signals", triggeredSignals);
-    record.set("action_type", actionType);
-    record.set("status", "pending");
-    // 技术指标和 origin_signal_id 都放到 extra
     const extraData = {
-      crsi: crsi,
-      obv_rsi: obvRsi,
-      vwap_dist: vwapDist,
-      close: close,
-      origin_signal_id: "",
-      signal_id: "",  // QC 回写后填充
-      ...extra  // 合并其他指标数据
-    };
-    record.set("extra", extraData);
-    record.set("bar_time_ms", ind.get("bar_time_ms"));
-    record.set("us_time", ind.get("us_time") || "");
-    record.set("cn_time", ind.get("cn_time") || "");
-
-    $app.save(record);
-
-    // 发送飞书逆向信号通知（score >= 配置的阈值时，默认6）
-    let threshold = 6;
-    try {
-        const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'");
-        threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6;
-        console.log(`[ReverseSignal] reverse_signal_threshold 配置值: ${threshold}`);
-    } catch (e) {
-        console.log(`[ReverseSignal] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`);
+      ...analysis.indicator_extra,
+      current_direction: direction,
+      reverse_kind: "indicator_conflict",
+      target_state: orderContext.target_state,
+      order_status: orderContext.order_status,
+      relation_status: orderContext.relation_status,
+      position_side: orderContext.position_side,
+      origin_signal_id: String(data.origin_signal_id || data.signal_id || "").trim(),
+      signal_id: orderContext.signal_id || "",
+      order_unique_id: orderContext.order_unique_id || "",
+      broker_order_id: orderContext.broker_order_id || "",
+      order_id: orderContext.broker_order_id || "",
+      trade_group_id: orderContext.trade_group_id || "",
+      entry_order_unique_id: orderContext.entry_order_unique_id || "",
+      entry_price: orderContext.entry_price || analysis.close || 0,
+      quantity: orderContext.quantity || 0,
+      take_profit: orderContext.take_profit || 0,
+      stop_loss: orderContext.stop_loss || 0,
+      crsi: analysis.crsi,
+      obv_rsi: analysis.obv_rsi,
+      vwap_dist: analysis.vwap_dist,
+      close: analysis.close,
+      manual_override: !!forcedActionType,
     }
+
+    const upsertResult = reverseUtils.upsertReverseRecord({
+      symbol: symbol,
+      direction: direction,
+      source: "indicator",
+      priority: data.priority != null ? Number(data.priority) : 5,
+      strength: strength,
+      score: score,
+      triggered_signals: effectiveTriggeredSignals,
+      action_type: actionType,
+      status: "pending",
+      extra: extraData,
+      bar_time_ms: indicatorRecord.get("bar_time_ms"),
+      us_time: indicatorRecord.get("us_time") || "",
+      cn_time: indicatorRecord.get("cn_time") || "",
+    })
+
+    const threshold = getThreshold()
     if (score >= threshold) {
-        const dirEmoji = direction === "long" ? "📈" : "📉";
-        const dirText = direction === "long" ? "多" : "空";
-        sendFeishuPost(
-            `⚠️ 指标逆向信号 - ${symbol}`,
-            [
-                [{ tag: "text", text: `标的: ${symbol}` }],
-                [{ tag: "text", text: `方向: ${dirText} ${dirEmoji}` }],
-                [{ tag: "text", text: `强度: ${strength} (score=${score})` }],
-                [{ tag: "text", text: `触发: ${triggeredSignals.join(', ')}` }],
-                [{ tag: "text", text: `时间: ${ind.get("us_time") || ''}` }]
-            ],
-            "error"
-        );
+      try {
+        notifyReverseSignal(upsertResult.record, {
+          message: upsertResult.created ? "检测到指标反转信号，等待 QC 执行" : "检测到重复指标反转信号，已刷新现有记录"
+        })
+      } catch (notifyErr) {
+        console.error("[ReverseSignal] 飞书通知失败:", notifyErr)
+      }
     }
 
-    return c.json(200, {
-      success: true,
-      signal: {
-        id: record.id,
-        symbol: symbol,
-        direction: direction,
-        strength: strength,
-        score: score,
-        action_type: actionType,
-        triggered_signals: triggeredSignals
-      }
-    });
+    return c.json(200, buildReverseResponse(upsertResult.record, upsertResult.created, !upsertResult.created))
   } catch (err) {
-    console.error("Error calculating reverse signal:", err);
-    return c.json(500, { error: err.message });
+    console.error("Error calculating reverse signal:", err)
+    return c.json(500, { error: err.message })
   }
-});
+})
 
 // GET /api/custom/reverse/pending - 获取未处理的逆向信号
 routerAdd("GET", "/api/custom/reverse/pending", (c) => {
@@ -177,86 +306,163 @@ routerAdd("GET", "/api/custom/reverse/pending", (c) => {
     const records = $app.findRecordsByFilter(
       "reverse_signals",
       "status = 'pending'",
-      "-bar_time_ms",
-      100,
+      "-priority,-bar_time_ms",
+      200,
       0
-    );
+    ) || []
 
-    const signals = (records || []).map((r) => {
-      const extra = r.get("extra") || {};
-      return {
-        id: r.id,
-        symbol: r.get("symbol"),
-        direction: r.get("direction"),
-        source: r.get("source"),
-        priority: r.get("priority"),
-        signal_id: extra.signal_id,  // QC 回写的原始信号ID（权威）
-        origin_signal_id: extra.origin_signal_id,  // webhook 触发时的原始信号ID
-        order_id: extra.order_id,
-        trade_group_id: extra.trade_group_id || "",
-        entry_order_unique_id: extra.entry_order_unique_id || "",
-        strength: r.get("strength"),
-        score: r.get("score"),
-        action_type: r.get("action_type"),
-        status: r.get("status"),
-        reason: r.get("reason"),
-        triggered_signals: r.get("triggered_signals"),
-        // 技术指标从 extra 中获取
-        crsi: extra.crsi,
-        obv_rsi: extra.obv_rsi,
-        vwap_dist: extra.vwap_dist,
-        close: extra.close,
-        extra: extra,
-        bar_time_ms: r.get("bar_time_ms"),
-        created: r.get("created")
-      };
-    });
-
-    return c.json(200, { signals: signals });
+    return c.json(200, {
+      signals: records.map((record) => reverseUtils.normalizeReverseRecord(record))
+    })
   } catch (err) {
-    console.error("Error fetching pending reverse signals:", err);
-    return c.json(500, { error: err.message });
+    console.error("Error fetching pending reverse signals:", err)
+    return c.json(500, { error: err.message })
   }
-});
+})
 
-// POST /api/custom/reverse/ack - 标记反转信号状态
-routerAdd("POST", "/api/custom/reverse/ack", (c) => {
-  const data = c.requestInfo().body || c.requestInfo().data || {};
-  const signalId = data.signal_id;
-  const status = data.status || 'confirmed';  // pending/confirmed/cancelled/expired
-  const reason = data.reason || '';
+// POST /api/custom/reverse/dispatch - 页面触发执行/取消
+routerAdd("POST", "/api/custom/reverse/dispatch", (c) => {
+  const data = c.requestInfo().body || c.requestInfo().data || {}
+  const reverseId = String(data.reverse_id || data.signal_id || "").trim()
+  const action = String(data.action || "").trim()
+  const reason = String(data.reason || "").trim()
 
-  if (!signalId) {
-    return c.json(400, { error: "Missing signal_id" });
+  if (!reverseId) {
+    return c.json(400, { error: "Missing reverse_id" })
+  }
+  if (!["execute", "cancel"].includes(action)) {
+    return c.json(400, { error: "Invalid action" })
   }
 
   try {
-    const record = $app.findRecordById("reverse_signals", signalId);
-    record.set("status", status);
-    record.set("reason", reason);
-    record.set("processed_time", new Date().toISOString());
+    const record = $app.findRecordById("reverse_signals", reverseId)
+    if (!record) {
+      return c.json(404, { error: "Reverse signal not found" })
+    }
 
-    // 保存 order_id 和 signal_id 到 extra
-    const extra = record.get("extra") || {};
-    if (data.order_id) {
-      extra.order_id = data.order_id;
+    const currentStatus = String(record.get("status") || "")
+    if (currentStatus !== "pending") {
+      return c.json(200, { success: true, signal: reverseUtils.normalizeReverseRecord(record) })
     }
-    if (data.trade_group_id) {
-      extra.trade_group_id = data.trade_group_id;
-    }
-    if (data.entry_order_unique_id) {
-      extra.entry_order_unique_id = data.entry_order_unique_id;
-    }
-    if (data.signal_id_orig) {
-      extra.signal_id = data.signal_id_orig;
-    }
-    record.set("extra", extra);
 
-    $app.save(record);
+    const extra = reverseUtils.getReverseExtra(record)
+    const now = new Date().toISOString()
 
-    return c.json(200, { success: true });
+    if (action === "cancel") {
+      record.set("status", "cancelled")
+      record.set("reason", reason || "页面取消反转信号")
+      record.set("processed_time", now)
+      record.set("extra", {
+        ...extra,
+        dispatch_action: "cancel",
+        dispatch_source: "page",
+        result_status: "cancelled_by_page",
+      })
+      $app.save(record)
+      try {
+        notifyReverseStatus("cancel", record, {
+          message: reason || "页面已取消该反转信号"
+        })
+      } catch (notifyErr) {
+        console.error("[ReverseDispatch] 取消卡片同步失败:", notifyErr)
+      }
+      return c.json(200, { success: true, signal: reverseUtils.normalizeReverseRecord(record) })
+    }
+
+    record.set("priority", Math.min(Number(record.get("priority") || 5), 1))
+    record.set("extra", {
+      ...extra,
+      manual_requested: true,
+      manual_requested_at: now,
+      manual_requested_source: "page",
+      manual_requested_reason: reason || "",
+      dispatch_action: "execute",
+      dispatch_source: "page",
+    })
+    if (reason) {
+      record.set("reason", reason)
+    }
+    $app.save(record)
+
+    try {
+      notifyReverseStatus("execute_request", record, {
+        message: reason || "已请求 QC 优先执行该反转动作"
+      })
+    } catch (notifyErr) {
+      console.error("[ReverseDispatch] 执行请求卡片同步失败:", notifyErr)
+    }
+
+    return c.json(200, { success: true, signal: reverseUtils.normalizeReverseRecord(record) })
   } catch (err) {
-    console.error("Error acknowledging reverse signal:", err);
-    return c.json(500, { error: err.message });
+    console.error("Error dispatching reverse signal:", err)
+    return c.json(500, { error: err.message })
   }
-});
+})
+
+// POST /api/custom/reverse/ack - QC 回写处理结果
+routerAdd("POST", "/api/custom/reverse/ack", (c) => {
+  const data = c.requestInfo().body || c.requestInfo().data || {}
+  const reverseId = String(data.signal_id || data.reverse_id || "").trim()
+  const status = String(data.status || "confirmed").trim()
+  const reason = String(data.reason || "").trim()
+
+  if (!reverseId) {
+    return c.json(400, { error: "Missing signal_id" })
+  }
+
+  try {
+    const record = $app.findRecordById("reverse_signals", reverseId)
+    const extra = reverseUtils.getReverseExtra(record)
+    const mergedExtra = {
+      ...extra,
+      broker_order_id: data.broker_order_id || data.order_id || extra.broker_order_id || extra.order_id || "",
+      order_id: data.order_id || data.broker_order_id || extra.order_id || extra.broker_order_id || "",
+      order_unique_id: data.order_unique_id || extra.order_unique_id || "",
+      trade_group_id: data.trade_group_id || extra.trade_group_id || "",
+      entry_order_unique_id: data.entry_order_unique_id || extra.entry_order_unique_id || "",
+      signal_id: data.signal_id_orig || data.origin_signal_id || extra.signal_id || "",
+      origin_signal_id: data.origin_signal_id || extra.origin_signal_id || "",
+      current_direction: data.current_direction || extra.current_direction || "",
+      new_direction: data.new_direction || extra.new_direction || "",
+      executed_action: data.executed_action || data.action_type || extra.executed_action || "",
+      result_status: data.result_status || extra.result_status || "",
+      old_sl: data.old_sl != null ? Number(data.old_sl) : extra.old_sl,
+      new_sl: data.new_sl != null ? Number(data.new_sl) : extra.new_sl,
+      old_tp: data.old_tp != null ? Number(data.old_tp) : extra.old_tp,
+      new_tp: data.new_tp != null ? Number(data.new_tp) : extra.new_tp,
+      entry_price: data.entry_price != null ? Number(data.entry_price) : extra.entry_price,
+      quantity: data.quantity != null ? Number(data.quantity) : extra.quantity,
+      take_profit: data.take_profit != null ? Number(data.take_profit) : extra.take_profit,
+      stop_loss: data.stop_loss != null ? Number(data.stop_loss) : extra.stop_loss,
+      target_state: data.target_state || extra.target_state || "",
+      target_order_status: data.target_order_status || data.order_status || extra.target_order_status || extra.order_status || "",
+      relation_status: data.relation_status || extra.relation_status || "",
+      position_side: data.position_side || extra.position_side || "",
+      manual_requested: false,
+      manual_requested_at: extra.manual_requested_at || "",
+    }
+
+    record.set("status", status)
+    record.set("reason", reason)
+    record.set("processed_time", new Date().toISOString())
+    record.set("extra", mergedExtra)
+
+    $app.save(record)
+
+    try {
+      notifyReverseStatus("ack", record, {
+        message: reason || `QC 已回写 ${status}`
+      })
+    } catch (notifyErr) {
+      console.error("[ReverseAck] 卡片同步失败:", notifyErr)
+    }
+
+    return c.json(200, {
+      success: true,
+      signal: reverseUtils.normalizeReverseRecord(record),
+    })
+  } catch (err) {
+    console.error("Error acknowledging reverse signal:", err)
+    return c.json(500, { error: err.message })
+  }
+})

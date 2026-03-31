@@ -109,14 +109,59 @@ QC 后续通过 `POST /api/custom/orders/upsert` 更新同一条主单：
 
 ### 7. 逆向信号
 
-QC 处理 `reverse_signals` 后回写 `POST /api/custom/reverse/ack`：
+反转链路现在拆成 4 个明确阶段：
 
-- `order_id`
-- `signal_id_orig`
+### 7.1 创建
+
+- `webhook/tv` 检测到 `signal_conflict` 时自动写入 `reverse_signals`
+- `POST /api/custom/reverse/calculate` 计算 `indicator_conflict`
+- `pb-flow.sh` 的 `H` 会在保留现有交易组的前提下发送一个反向新信号，用于直接验证 `signal_conflict`
+
+两种来源都会在创建时直接补齐：
+
 - `trade_group_id`
 - `entry_order_unique_id`
+- `order_unique_id`
+- `broker_order_id`
+- `signal_id`
+- `origin_signal_id`
+- `target_state`
+- `reverse_kind`
 
-这样页面和测试数据能定位到对应交易组，而不是只看到一条孤立 reverse 记录。
+### 7.2 页面调度
+
+`pb_public/reverse_signals.html` 不再直接改表，而是统一走：
+
+- `POST /api/custom/reverse/dispatch`
+
+语义：
+
+- `execute`：请求 QC 优先处理
+- `cancel`：取消该 reverse
+
+### 7.3 QC 执行
+
+QC 扫描 `GET /api/custom/reverse/pending`，执行：
+
+- `cancel`
+- `close`
+- `adjust_sl`
+- `adjust_tp`
+
+### 7.4 QC 回写
+
+QC 完成后回写 `POST /api/custom/reverse/ack`：
+
+- `executed_action`
+- `result_status`
+- `trade_group_id`
+- `entry_order_unique_id`
+- `order_unique_id`
+- `broker_order_id`
+- `old_sl/new_sl`
+- `old_tp/new_tp`
+
+这样页面、飞书卡片、测试数据都能定位到完整交易组，而不是孤立 reverse 记录。
 
 ---
 
@@ -150,7 +195,10 @@ QC 处理 `reverse_signals` 后回写 `POST /api/custom/reverse/ack`：
 | `9` | SL 更新为 `Filled`，同时 TP 更新为 `Canceled` |
 | `O` | 页面取消主入场单 |
 | `P` | 页面关闭整个交易组 |
-| `C` | reverse ack，回写交易组定位字段 |
+| `A` | 生成 reverse signal；支持 `force_action_type` 测试 `cancel/close/adjust_sl/adjust_tp` |
+| `B` | 查询 `reverse/list`，查看归一化后的 reverse 关系字段 |
+| `C` | 先 `dispatch execute`，再模拟 QC `reverse/ack` |
+| `H` | 发送反向新信号，验证 `webhook/tv -> reverse_signals(signal_conflict)` 自动链路 |
 
 ---
 

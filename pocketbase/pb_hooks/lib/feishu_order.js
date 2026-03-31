@@ -8,6 +8,53 @@ var orderEvents = require(`${__hooks}/lib/order_events.js`)
 
 var PB_HOST = "https://pb.lzw-glory.top"
 
+function formatDateToken(dateToken) {
+    if (!dateToken || !/^\d{8}$/.test(String(dateToken))) return ""
+    var text = String(dateToken)
+    return text.slice(0, 4) + "-" + text.slice(4, 6) + "-" + text.slice(6, 8)
+}
+
+function extractDateFromIdentifier(value) {
+    var match = String(value || "").match(/(?:^|_)(20\d{6})(?:_|$)/)
+    return match ? formatDateToken(match[1]) : ""
+}
+
+function extractDateFromBarTimeMs(barTimeMs) {
+    var numeric = Number(barTimeMs)
+    if (!numeric) return ""
+    try {
+        return new Date(numeric).toISOString().slice(0, 10)
+    } catch (e) {
+        return ""
+    }
+}
+
+function resolvePageDate() {
+    for (var i = 0; i < arguments.length; i++) {
+        var value = arguments[i]
+        var fromMs = extractDateFromBarTimeMs(value)
+        if (fromMs) return fromMs
+        var fromId = extractDateFromIdentifier(value)
+        if (fromId) return fromId
+    }
+    return ""
+}
+
+function buildOpenLinkButton(label, url) {
+    return {
+        tag: "button",
+        text: { tag: "plain_text", content: label },
+        type: "default",
+        width: "fill",
+        multi_url: {
+            url: url,
+            pc_url: url,
+            ios_url: url,
+            android_url: url
+        }
+    }
+}
+
 function getJsonField(recordOrData, fieldName) {
     if (!recordOrData) return {}
 
@@ -53,6 +100,12 @@ function toNumber(value) {
 function formatMoney(value) {
     var amount = toNumber(value)
     return amount ? "$" + amount.toFixed(2) : "N/A"
+}
+
+function formatSignedMoney(value, sign) {
+    var amount = toNumber(value)
+    if (!amount) return "N/A"
+    return (sign || "") + "$" + amount.toFixed(2)
 }
 
 function formatQty(value) {
@@ -251,6 +304,130 @@ function resolveTradeGroup(orderOrRecord) {
     }
 }
 
+function getProtectionOrder(group, roles) {
+    var list = Array.isArray(roles) ? roles : [roles]
+    for (var i = 0; i < group.orders.length; i++) {
+        if (list.indexOf(group.orders[i].role) !== -1) return group.orders[i]
+    }
+    return null
+}
+
+function getEntryReferencePrice(order) {
+    return toNumber(firstNonEmpty(order.fill_price, order.limit_price, 0))
+}
+
+function getEntryReferenceQty(order) {
+    var filledQty = toNumber(order.filled_qty || 0)
+    return filledQty > 0 ? filledQty : toNumber(order.quantity || 0)
+}
+
+function calculateTargetAmount(entryPrice, targetPrice, qty) {
+    var basePrice = toNumber(entryPrice)
+    var target = toNumber(targetPrice)
+    var quantity = toNumber(qty)
+    if (!basePrice || !target || !quantity) return 0
+    return Math.abs(target - basePrice) * quantity
+}
+
+function buildRiskRewardSummary(group) {
+    var primary = group.primary || {}
+    var tpOrder = getProtectionOrder(group, ["take_profit", "repair_tp"]) || {}
+    var slOrder = getProtectionOrder(group, ["stop_loss", "repair_sl"]) || {}
+    var entryPrice = getEntryReferencePrice(primary)
+    var qty = getEntryReferenceQty(primary)
+    var tpPrice = toNumber(firstNonEmpty(tpOrder.limit_price, primary.tp_price, 0))
+    var slPrice = toNumber(firstNonEmpty(slOrder.limit_price, primary.sl_price, 0))
+    var tpAmount = calculateTargetAmount(entryPrice, tpPrice, qty)
+    var slAmount = calculateTargetAmount(entryPrice, slPrice, qty)
+
+    return {
+        entryPrice: entryPrice,
+        qty: qty,
+        tpPrice: tpPrice,
+        slPrice: slPrice,
+        tpAmount: tpAmount,
+        slAmount: slAmount
+    }
+}
+
+function getTradeGroupPageDate(group) {
+    var primary = group.primary || {}
+    var latest = group.latest || primary
+    return resolvePageDate(
+        primary.created_bar_time_ms,
+        primary.updated_bar_time_ms,
+        latest.updated_bar_time_ms,
+        primary.signal_id,
+        group.trade_group_id,
+        primary.us_time,
+        latest.us_time
+    )
+}
+
+function buildSignalPageUrl(signalId, pageDate) {
+    if (!signalId) return ""
+    var url = PB_HOST + "/signals.html?signal_id=" + encodeURIComponent(signalId)
+    if (pageDate) {
+        url += "&date=" + encodeURIComponent(pageDate)
+    }
+    return url
+}
+
+function buildOrderPageUrl(group, pageDate) {
+    if (!group) return ""
+    var signalId = group.primary && group.primary.signal_id ? group.primary.signal_id : ""
+    if (group.trade_group_id) {
+        var detailUrl = PB_HOST + "/order_details.html?trade_group_id=" + encodeURIComponent(group.trade_group_id)
+        if (signalId) {
+            detailUrl += "&signal_id=" + encodeURIComponent(signalId)
+        }
+        if (pageDate) {
+            detailUrl += "&date=" + encodeURIComponent(pageDate)
+        }
+        return detailUrl
+    }
+    if (signalId) {
+        var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(signalId)
+        if (pageDate) {
+            listUrl += "&date=" + encodeURIComponent(pageDate)
+        }
+        return listUrl
+    }
+    return ""
+}
+
+function buildOrderViewElements(group) {
+    var primary = group.primary || {}
+    var pageDate = getTradeGroupPageDate(group)
+    var signalUrl = buildSignalPageUrl(primary.signal_id || "", pageDate)
+    var orderUrl = buildOrderPageUrl(group, pageDate)
+    var columns = []
+
+    if (signalUrl) {
+        columns.push({
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            elements: [buildOpenLinkButton("📡 查看信号", signalUrl)]
+        })
+    }
+    if (orderUrl) {
+        columns.push({
+            tag: "column",
+            width: "weighted",
+            weight: 1,
+            elements: [buildOpenLinkButton("📋 查看订单", orderUrl)]
+        })
+    }
+
+    if (columns.length === 0) return []
+    return [{
+        tag: "column_set",
+        horizontal_spacing: "default",
+        columns: columns
+    }]
+}
+
 function getTradeGroupStatusInfo(group) {
     var primary = group.primary || {}
     var primaryFilledQty = toNumber(primary.filled_qty || 0)
@@ -308,6 +485,7 @@ function buildGroupSummaryElements(group) {
     var primary = group.primary || {}
     var latest = group.latest || primary
     var info = getTradeGroupStatusInfo(group)
+    var rr = buildRiskRewardSummary(group)
     var protectionText = group.activeChildren.length > 0
         ? "active=" + group.activeChildren.length
         : group.plannedChildren.length > 0
@@ -326,6 +504,8 @@ function buildGroupSummaryElements(group) {
                 elements: [
                     { tag: "div", text: { tag: "lark_md", content: "**标的:** " + (primary.symbol || latest.symbol || "N/A") } },
                     { tag: "div", text: { tag: "lark_md", content: "**方向:** " + (primary.directionText || latest.directionText || "N/A") } },
+                    { tag: "div", text: { tag: "lark_md", content: "**止盈 / 预估盈利:** " + formatMoney(rr.tpPrice) + " / " + formatSignedMoney(rr.tpAmount, "+") } },
+                    { tag: "div", text: { tag: "lark_md", content: "**止损 / 预估亏损:** " + formatMoney(rr.slPrice) + " / " + formatSignedMoney(rr.slAmount, "-") } },
                     { tag: "div", text: { tag: "lark_md", content: "**组状态:** " + info.text } },
                     { tag: "div", text: { tag: "lark_md", content: "**保护单:** " + protectionText } },
                     { tag: "div", text: { tag: "lark_md", content: "**SignalID:** " + (primary.signal_id || latest.signal_id || "N/A") } }
@@ -473,6 +653,12 @@ function buildOrderCard(orderOrRecord, options) {
             ].filter(Boolean)
         }]
     })
+
+    var viewElements = buildOrderViewElements(group)
+    if (viewElements.length > 0) {
+        elements.push({ tag: "hr" })
+        viewElements.forEach(function(element) { elements.push(element) })
+    }
 
     var actionElements = buildOrderActionElements(group)
     if (actionElements.length > 0) {

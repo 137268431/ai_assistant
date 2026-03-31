@@ -4,27 +4,37 @@
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| `POST` | `/api/custom/reverse/calculate` | 根据最新指标生成逆向信号 |
-| `GET` | `/api/custom/reverse/pending` | 拉取待处理逆向信号 |
-| `POST` | `/api/custom/reverse/ack` | QC 回写处理结果 |
+| `POST` | `/api/custom/reverse/calculate` | 基于最新指标计算并写入反转信号 |
+| `GET` | `/api/custom/reverse/list` | 获取某日反转信号列表（页面使用） |
+| `GET` | `/api/custom/reverse/pending` | 拉取待处理反转信号（QC 使用） |
+| `POST` | `/api/custom/reverse/dispatch` | 页面请求执行或取消反转信号 |
+| `POST` | `/api/custom/reverse/ack` | QC 回写执行结果 |
 
 ---
 
-## 逆向信号和交易组的关系
+## 统一关系字段
 
-逆向信号不应该只指向“某一条订单字符串”，而应该能落回整笔交易。
+反转信号必须定位到整笔交易，而不是孤立的一条字符串订单。
 
-因此：
+关键字段：
 
-- `reverse/pending` 会返回 `trade_group_id`
-- `reverse/pending` 会返回 `entry_order_unique_id`
-- `reverse/ack` 也支持把这两个字段写回 `reverse_signals.extra`
+- `trade_group_id`
+- `entry_order_unique_id`
+- `order_unique_id`
+- `broker_order_id`
+- `signal_id`
+- `origin_signal_id`
+- `target_state`
+- `reverse_kind`
 
-这样页面和测试脚本才能把 reverse signal 和对应主单 / 子单链路连起来。
+其中：
+
+- `reverse_kind` = `signal_conflict` / `indicator_conflict`
+- `target_state` = `pending_entry` / `filled_position`
 
 ---
 
-## `reverse/pending` 响应关键字段
+## `reverse/list` / `reverse/pending` 响应关键字段
 
 ```json
 {
@@ -33,16 +43,28 @@
       "id": "reverse_record_id",
       "symbol": "AAPL",
       "direction": "long",
-      "source": "indicator",
-      "priority": 5,
+      "current_direction": "long",
+      "new_direction": "short",
+      "source": "signal",
+      "reverse_kind": "signal_conflict",
+      "target_state": "filled_position",
+      "target_order_status": "Filled",
+      "priority": 1,
+      "strength": "strong",
+      "score": 10,
+      "action_type": "close",
+      "status": "pending",
       "signal_id": "AAPL_20260331_093000_sig",
-      "order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+      "origin_signal_id": "AAPL_20260331_094500_sig",
       "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
       "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
-      "strength": "strong",
-      "score": 8,
-      "action_type": "close",
-      "status": "pending"
+      "order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+      "broker_order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+      "entry_price": 100.1,
+      "quantity": 100,
+      "take_profit": 105.0,
+      "stop_loss": 98.0,
+      "triggered_signals": ["信号反转"]
     }
   ]
 }
@@ -50,7 +72,65 @@
 
 ---
 
-## `reverse/ack` 请求示例
+## `reverse/calculate`
+
+### 入参
+
+必填：
+
+- `symbol`
+- `direction`
+
+可选：
+
+- `origin_signal_id`
+- `force_action_type`
+- `score_override`
+- `triggered_signals`
+
+`force_action_type` 主要用于测试或手动场景，允许显式生成：
+
+- `cancel`
+- `close`
+- `adjust_sl`
+- `adjust_tp`
+
+### 关键语义
+
+- 若当前 `symbol + direction` 找不到对应活跃交易目标，则返回 `created=false, reason=no_conflict_target`
+- 若未命中任何反转条件，则返回 `created=false, reason=no_reverse_conditions`
+- `pending_entry` 默认只会落 `cancel`
+- `filled_position` 默认按分数映射：
+  - `strong -> close`
+  - `medium -> adjust_sl`
+  - `weak -> cancel`
+
+---
+
+## `reverse/dispatch`
+
+页面不再直接更新 `reverse_signals` 表，而是统一走：
+
+```bash
+curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/dispatch" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "reverse_id": "reverse_record_id",
+    "action": "execute",
+    "reason": "page requested"
+  }'
+```
+
+### `action`
+
+- `execute`：保留 `pending`，写入 `manual_requested`，由 QC 尽快处理
+- `cancel`：直接将该 reverse 置为 `cancelled`
+
+---
+
+## `reverse/ack`
+
+QC 完成后统一回写：
 
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/ack" \
@@ -60,41 +140,57 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/ack" \
     "status": "confirmed",
     "reason": "processed by QC",
     "order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+    "broker_order_id": "IB_test_AAPL_20260331_093000_sig_entry",
+    "order_unique_id": "test_AAPL_20260331_093000_sig_entry",
     "signal_id_orig": "AAPL_20260331_093000_sig",
     "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
-    "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry"
+    "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "executed_action": "adjust_sl",
+    "result_status": "updated",
+    "target_state": "filled_position",
+    "target_order_status": "Filled",
+    "current_direction": "long",
+    "old_sl": 98.0,
+    "new_sl": 99.2,
+    "old_tp": 105.0,
+    "new_tp": 105.0,
+    "entry_price": 100.1,
+    "quantity": 100,
+    "stop_loss": 99.2,
+    "take_profit": 105.0
   }'
 ```
 
-### 字段说明
-
-| 字段 | 说明 |
-|------|------|
-| `signal_id` | `reverse_signals.id` |
-| `status` | `confirmed` / `cancelled` / `expired` |
-| `reason` | 处理说明 |
-| `order_id` | 对应主单的 broker 订单 ID |
-| `signal_id_orig` | 原始交易信号 ID |
-| `trade_group_id` | 交易组 ID |
-| `entry_order_unique_id` | 主入场单 unique id |
-
 ---
 
-## 触发来源
+## 场景覆盖
 
-### 1. 指标型 reverse signal
+### 1. 信号反转
 
-`POST /api/custom/reverse/calculate`
+`webhook/tv` 写入新信号时，若发现同标的存在反方向 `Entry Submitted/Filled`：
 
-- 从 `indicators.extra` 读取技术指标
-- 计算 `score`
-- 根据分数映射 `action_type`
+- 自动写入 `reverse_signals`
+- 自动补齐交易组 / 主单 / broker id
+- 发送 reverse 飞书卡片到独立群组
 
-### 2. 交易信号冲突
+### 2. 指标反转
 
-当新信号方向与当前持仓 / 挂单冲突时，也可能生成 reverse signal。
+`reverse/calculate` 会先定位当前活跃交易目标，再决定是否写入 reverse。
 
-这时 QC 在处理完成后，应把交易组定位字段带回 `reverse/ack`。
+### 3. 页面请求执行
+
+页面点击“执行”只会写 `manual_requested`，不会伪造 QC 已执行状态。
+
+### 4. QC 执行结果
+
+QC 会根据 `action_type` 执行：
+
+- `cancel`
+- `close`
+- `adjust_sl`
+- `adjust_tp`
+
+并在 `reverse/ack` 中回写 old/new 价格和最终结果。
 
 ---
 
@@ -102,6 +198,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/ack" \
 
 `pb-flow.sh` 中：
 
-- `A` 生成 reverse signal
-- `B` 查询 pending reverse signal
-- `C` 用 `order_id + trade_group_id + entry_order_unique_id` 回写 ack
+- `A` 生成 reverse signal，可选强制 `force_action_type`
+- `B` 查询 `reverse/list`
+- `C` 先 `dispatch execute`，再模拟 QC `reverse/ack`
+- `H` 在保留当前交易组的情况下发送反向新信号，直接触发 `signal_conflict`
