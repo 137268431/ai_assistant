@@ -26,7 +26,7 @@
 | `parent_order_unique_id` | 子单的父单，通常是主入场单 |
 | `sibling_order_unique_id` | 同级对手单，例如 TP 的 sibling 是 SL |
 | `role` | `entry` / `take_profit` / `stop_loss` / `repair_tp` / `repair_sl` |
-| `relation_status` | `active` / `closed` / `orphaned` |
+| `relation_status` | `planned` / `active` / `closed` / `orphaned` |
 | `position_side` | `long` / `short` |
 
 ---
@@ -41,20 +41,25 @@ TradingView 调用 `POST /webhook/tv`：
 - 如需人工确认，则飞书卡片先停在 `awaiting_confirm`
 - 如已存在反向持仓或反向挂单，可额外生成 `reverse_signals`
 
-### 2. QC 认领信号并创建 Init 主单
+### 2. QC 认领信号并创建 Init 交易组
 
 QC 调用 `POST /api/custom/signals/ack`：
 
 - 将 `signals.status` 更新为 `executed`
-- 创建 `orders` 主单记录，状态固定初始化为 `Init`
-- 同时写入第一条 `order_details`
+- 创建 `orders` 交易组骨架：
+  - Entry = `Init + active`
+  - TP = `Init + planned`
+  - SL = `Init + planned`
+- 三条记录都各自写入第一条 `order_details`
 
-主单在这一刻就必须携带：
+主单与子单在这一刻就必须携带：
 
 - `trade_group_id`
 - `entry_order_unique_id`
-- `role=entry`
-- `relation_status=active`
+- `parent_order_unique_id`
+- `sibling_order_unique_id`
+- `role`
+- `relation_status`
 - `position_side`
 - `broker_order_id`
 
@@ -69,15 +74,15 @@ QC 后续通过 `POST /api/custom/orders/upsert` 更新同一条主单：
 
 每次 upsert 都会追加一条 `order_details` 事件。
 
-### 4. 主单成交后创建 TP / SL 子单
+### 4. 主单成交后激活 TP / SL 子单
 
 一旦 Entry 成交：
 
-- QC 在本地创建 TP / SL bracket orders
-- PocketBase 中每个子单都是独立 `orders` 记录
-- 两个子单共享同一个 `trade_group_id`
-- 两个子单都指向 `parent_order_unique_id = entry_order_unique_id`
-- 两个子单互相填写 `sibling_order_unique_id`
+- QC 在本地创建真实 broker bracket orders
+- PocketBase 不再首次创建子单，而是更新已存在的两条子单：
+  - TP: `Init + planned` -> `Submitted + active`
+  - SL: `Init + planned` -> `Submitted + active`
+- 同时回写真实 `broker_order_id`
 
 ### 5. 子单成交时处理对手单
 
@@ -138,9 +143,9 @@ QC 处理 `reverse_signals` 后回写 `POST /api/custom/reverse/ack`：
 | 步骤 | 语义 |
 |------|------|
 | `1` | 发送测试信号 |
-| `5` | QC 确认信号，创建带正式关系字段的 Entry Init |
+| `5` | QC 确认信号，创建带正式关系字段的 Entry / TP / SL = Init |
 | `6` | Entry 更新为 `Submitted` |
-| `7` | Entry 更新为 `Filled` |
+| `7` | Entry 更新为 `Filled`，同时 TP / SL 更新为 `Submitted` |
 | `8` | TP 更新为 `Filled`，同时 SL 更新为 `Canceled` |
 | `9` | SL 更新为 `Filled`，同时 TP 更新为 `Canceled` |
 | `O` | 页面取消主入场单 |

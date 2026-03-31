@@ -138,11 +138,11 @@ show_menu() {
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[1]${NC} 发送信号到PB      ${CYAN}│${NC}  ${MAGENTA}[2]${NC} 查询信号状态(pending)         ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[3]${NC} 飞书-确认信号    ${CYAN}│${NC}  ${MAGENTA}[4]${NC} 飞书-拒绝信号             ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[5]${NC} QC确认信号→创建订单Init(signals/ack)                           ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[5]${NC} QC确认信号→创建交易组Init(signals/ack)                         ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        📦 订单流程                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[6]${NC} QC同步订单Submitted ${CYAN}│${NC}  ${MAGENTA}[7]${NC} QC同步订单Filled           ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[6]${NC} QC同步Entry Submitted ${CYAN}│${NC}  ${MAGENTA}[7]${NC} Entry Filled+激活TP/SL    ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[8]${NC} TP成交+SL取消     ${CYAN}│${NC}  ${MAGENTA}[9]${NC} SL成交+TP取消          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[O]${NC} 飞书-取消订单    ${CYAN}│${NC}  ${MAGENTA}[P]${NC} 飞书-平仓订单           ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
@@ -198,6 +198,17 @@ generate_test_data() {
     fi
 
     echo "${signal_id}|${entry_price}|${stop_loss}|${take_profit}|${timestamp_ms}|${limit_price}|${us_time}|${cn_time}"
+}
+
+build_phase_time() {
+    local offset_min=${1:-0}
+    local datetime="${TEST_DATE} ${TEST_TIME}"
+    local base_ts=$(TZ=Asia/Shanghai date -j -f "%Y-%m-%d %H:%M:%S" "${datetime}" +%s 2>/dev/null || date -d "${datetime}" +%s 2>/dev/null || date +%s)
+    local phase_ts=$((base_ts + offset_min * 60))
+    local timestamp_ms=$((phase_ts * 1000))
+    local cn_time=$(TZ=Asia/Shanghai date -r ${phase_ts} +"%Y-%m-%d %H:%M:%S" 2>/dev/null || TZ=Asia/Shanghai date -d "@${phase_ts}" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "${TEST_DATE} ${TEST_TIME}")
+    local us_time=$(TZ=America/New_York date -r ${phase_ts} +"%Y-%m-%d %H:%M:%S" 2>/dev/null || TZ=America/New_York date -d "@${phase_ts}" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "${TEST_DATE} ${TEST_TIME}")
+    echo "${timestamp_ms}|${us_time}|${cn_time}"
 }
 
 # ============================================================
@@ -532,7 +543,7 @@ test_4_feishu_reject() {
 # 5. QC确认信号 (signals/ack)
 test_5_qc_ack_signal() {
     echo ""
-    echo -e "${MAGENTA}═══ 📡 步骤5: QC确认信号 → 创建订单Init ═══${NC}"
+    echo -e "${MAGENTA}═══ 📡 步骤5: QC确认信号 → 创建交易组 Init ═══${NC}"
 
     local sig_id
     sig_id=$(cache_get "pb_sig_latest")
@@ -547,25 +558,32 @@ test_5_qc_ack_signal() {
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
-    local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
-    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
-    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
     seed_order_relation_cache "$sig_id"
+    local phase_data=$(build_phase_time 0)
+    local timestamp_ms=$(echo "$phase_data" | cut -d'|' -f1)
+    local sig_us_time=$(echo "$phase_data" | cut -d'|' -f2)
+    local sig_cn_time=$(echo "$phase_data" | cut -d'|' -f3)
 
     local entry_unique_id
     local trade_group_id
     local entry_broker_id
+    local tp_unique_id
+    local sl_unique_id
     entry_unique_id=$(cache_get "pb_entry_unique_id")
     trade_group_id=$(cache_get "pb_trade_group_id")
     entry_broker_id=$(cache_get "pb_entry_broker_id")
+    tp_unique_id=$(cache_get "pb_tp_unique_id")
+    sl_unique_id=$(cache_get "pb_sl_unique_id")
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
     echo -e "  signal_id: ${GREEN}${sig_id}${NC}"
     echo -e "  → trade_group_id: ${GREEN}${trade_group_id}${NC}"
     echo -e "  → entry_unique_id: ${GREEN}${entry_unique_id}${NC}"
+    echo -e "  → tp_unique_id: ${GREEN}${tp_unique_id}${NC}"
+    echo -e "  → sl_unique_id: ${GREEN}${sl_unique_id}${NC}"
     echo -e "  → broker_order_id: ${GREEN}${entry_broker_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
@@ -601,19 +619,73 @@ test_5_qc_ack_signal() {
       "created_via": "pb-flow.sh",
       "scenario": "signal_ack_init"
     }
-  }
+  },
+  "child_orders": [
+    {
+      "unique_id": "${tp_unique_id}",
+      "order_type": "TakeProfit",
+      "direction": "${TEST_DIRECTION}",
+      "position_side": "${TEST_DIRECTION}",
+      "role": "take_profit",
+      "relation_status": "planned",
+      "trade_group_id": "${trade_group_id}",
+      "entry_order_unique_id": "${entry_unique_id}",
+      "parent_order_unique_id": "${entry_unique_id}",
+      "sibling_order_unique_id": "${sl_unique_id}",
+      "quantity": 100,
+      "limit_price": ${take_profit},
+      "status": "Init",
+      "filled_qty": 0,
+      "fill_price": 0,
+      "order_time": "${sig_us_time}",
+      "us_time": "${sig_us_time}",
+      "cn_time": "${sig_cn_time}",
+      "bar_time_ms": ${timestamp_ms},
+      "extra": {
+        "reason": "预创建止盈单",
+        "created_via": "pb-flow.sh",
+        "scenario": "signal_ack_init_tp"
+      }
+    },
+    {
+      "unique_id": "${sl_unique_id}",
+      "order_type": "StopLoss",
+      "direction": "${TEST_DIRECTION}",
+      "position_side": "${TEST_DIRECTION}",
+      "role": "stop_loss",
+      "relation_status": "planned",
+      "trade_group_id": "${trade_group_id}",
+      "entry_order_unique_id": "${entry_unique_id}",
+      "parent_order_unique_id": "${entry_unique_id}",
+      "sibling_order_unique_id": "${tp_unique_id}",
+      "quantity": 100,
+      "limit_price": ${stop_loss},
+      "status": "Init",
+      "filled_qty": 0,
+      "fill_price": 0,
+      "order_time": "${sig_us_time}",
+      "us_time": "${sig_us_time}",
+      "cn_time": "${sig_cn_time}",
+      "bar_time_ms": ${timestamp_ms},
+      "extra": {
+        "reason": "预创建止损单",
+        "created_via": "pb-flow.sh",
+        "scenario": "signal_ack_init_sl"
+      }
+    }
+  ]
 }
 EOF
 )
 
     # 通过 signals/ack hook 处理状态流转
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/signals/ack" "$json" "QC确认信号→创建订单")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/signals/ack" "$json" "QC确认信号→创建交易组")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
     local success_val=$(echo "$response" | jq -r '.success' 2>/dev/null)
     if [ "$success_val" = "true" ]; then
-        log_success "信号确认成功，订单已创建(Init)"
+        log_success "信号确认成功，交易组已创建(Entry/TP/SL = Init)"
         cache_set "pb_ord_latest" "${entry_unique_id}"
         cache_set "pb_ord_id" "${entry_unique_id}"
     fi
@@ -642,11 +714,12 @@ test_6_qc_order_submitted() {
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
-    local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
-    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
-    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
+    local phase_data=$(build_phase_time 1)
+    local timestamp_ms=$(echo "$phase_data" | cut -d'|' -f1)
+    local sig_us_time=$(echo "$phase_data" | cut -d'|' -f2)
+    local sig_cn_time=$(echo "$phase_data" | cut -d'|' -f3)
 
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}📤 当前操作:${NC}"
@@ -700,27 +773,36 @@ EOF
 # 7. QC同步订单 Filled
 test_7_qc_order_filled() {
     echo ""
-    echo -e "${MAGENTA}═══ 📦 步骤7: QC同步订单 Filled ═══${NC}"
+    echo -e "${MAGENTA}═══ 📦 步骤7: Entry Filled + 激活 TP/SL ═══${NC}"
 
     ensure_order_relation_cache || { log_error "没有信号缓存，请先执行步骤1和5"; return 1; }
 
     local order_id
     local trade_group_id
     local entry_broker_id
+    local tp_order_id
+    local sl_order_id
+    local tp_broker_id
+    local sl_broker_id
     order_id=$(cache_get "pb_entry_unique_id")
     trade_group_id=$(cache_get "pb_trade_group_id")
     entry_broker_id=$(cache_get "pb_entry_broker_id")
+    tp_order_id=$(cache_get "pb_tp_unique_id")
+    sl_order_id=$(cache_get "pb_sl_unique_id")
+    tp_broker_id=$(cache_get "pb_tp_broker_id")
+    sl_broker_id=$(cache_get "pb_sl_broker_id")
 
     local sig_data
     sig_data=$(cache_get "pb_sig_data")
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
-    local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
-    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
-    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
+    local phase_data=$(build_phase_time 2)
+    local timestamp_ms=$(echo "$phase_data" | cut -d'|' -f1)
+    local sig_us_time=$(echo "$phase_data" | cut -d'|' -f2)
+    local sig_cn_time=$(echo "$phase_data" | cut -d'|' -f3)
     local fill_price
     if [ "${TEST_DIRECTION}" = "short" ]; then
         fill_price=$(echo "scale=2; ${entry_price} * 0.999" | bc 2>/dev/null || echo "${entry_price}")
@@ -733,6 +815,7 @@ test_7_qc_order_filled() {
     echo -e "  订单: ${GREEN}${order_id}${NC}"
     echo -e "  status: ${GREEN}Filled${NC}"
     echo -e "  fill_price: ${GREEN}${fill_price}${NC}"
+    echo -e "  TP/SL: ${GREEN}${tp_order_id}${NC} / ${GREEN}${sl_order_id}${NC} -> Submitted"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     local json=$(cat <<EOF
@@ -774,6 +857,76 @@ EOF
     response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "QC同步订单Filled")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
+
+    local tp_submit_json=$(cat <<EOF
+{
+  "unique_id": "${tp_order_id}",
+  "order_type": "TakeProfit",
+  "order_id": "${tp_broker_id}",
+  "broker_order_id": "${tp_broker_id}",
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
+  "parent_order_unique_id": "${order_id}",
+  "sibling_order_unique_id": "${sl_order_id}",
+  "role": "take_profit",
+  "relation_status": "active",
+  "quantity": 100,
+  "limit_price": ${take_profit},
+  "status": "Submitted",
+  "filled_qty": 0,
+  "fill_price": 0,
+  "signal_id": "$(cache_get "pb_sig_id")",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
+  "bar_time_ms": ${timestamp_ms},
+  "extra": {
+    "reason": "Entry Filled 后激活 TP",
+    "scenario": "tp_activated"
+  }
+}
+EOF
+)
+
+    local sl_submit_json=$(cat <<EOF
+{
+  "unique_id": "${sl_order_id}",
+  "order_type": "StopLoss",
+  "order_id": "${sl_broker_id}",
+  "broker_order_id": "${sl_broker_id}",
+  "symbol": "${TEST_SYMBOL}",
+  "direction": "${TEST_DIRECTION}",
+  "position_side": "${TEST_DIRECTION}",
+  "trade_group_id": "${trade_group_id}",
+  "entry_order_unique_id": "${order_id}",
+  "parent_order_unique_id": "${order_id}",
+  "sibling_order_unique_id": "${tp_order_id}",
+  "role": "stop_loss",
+  "relation_status": "active",
+  "quantity": 100,
+  "limit_price": ${stop_loss},
+  "status": "Submitted",
+  "filled_qty": 0,
+  "fill_price": 0,
+  "signal_id": "$(cache_get "pb_sig_id")",
+  "us_time": "${sig_us_time}",
+  "cn_time": "${sig_cn_time}",
+  "bar_time_ms": ${timestamp_ms},
+  "extra": {
+    "reason": "Entry Filled 后激活 SL",
+    "scenario": "sl_activated"
+  }
+}
+EOF
+)
+
+    local tp_submit_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$tp_submit_json" "激活止盈TP")
+    echo "$tp_submit_response" | jq '.' 2>/dev/null || echo "$tp_submit_response"
+
+    local sl_submit_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$sl_submit_json" "激活止损SL")
+    echo "$sl_submit_response" | jq '.' 2>/dev/null || echo "$sl_submit_response"
 }
 
 # 8. 同步订单止盈 TP
@@ -801,11 +954,12 @@ test_8_qc_order_takeprofit() {
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
-    local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
-    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
-    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
+    local phase_data=$(build_phase_time 5)
+    local timestamp_ms=$(echo "$phase_data" | cut -d'|' -f1)
+    local sig_us_time=$(echo "$phase_data" | cut -d'|' -f2)
+    local sig_cn_time=$(echo "$phase_data" | cut -d'|' -f3)
     local tp_fill_price=${take_profit}
     local tp_pnl
     if [ "${TEST_DIRECTION}" = "short" ]; then
@@ -926,11 +1080,12 @@ test_9_qc_order_stoploss() {
     local entry_price=$(echo "$sig_data" | cut -d'|' -f1)
     local stop_loss=$(echo "$sig_data" | cut -d'|' -f2)
     local take_profit=$(echo "$sig_data" | cut -d'|' -f3)
-    local timestamp_ms=$(echo "$sig_data" | cut -d'|' -f4)
     local limit_price=$(echo "$sig_data" | cut -d'|' -f5)
-    local sig_us_time=$(echo "$sig_data" | cut -d'|' -f6)
-    local sig_cn_time=$(echo "$sig_data" | cut -d'|' -f7)
     [ -z "$limit_price" ] && limit_price="$entry_price"
+    local phase_data=$(build_phase_time 6)
+    local timestamp_ms=$(echo "$phase_data" | cut -d'|' -f1)
+    local sig_us_time=$(echo "$phase_data" | cut -d'|' -f2)
+    local sig_cn_time=$(echo "$phase_data" | cut -d'|' -f3)
     local sl_fill_price=${stop_loss}
     local sl_pnl
     if [ "${TEST_DIRECTION}" = "short" ]; then
@@ -1414,9 +1569,9 @@ main() {
             2) echo -e "${MAGENTA}查询信号状态${NC}" ;;
             3) echo -e "${MAGENTA}飞书-确认信号${NC}" ;;
             4) echo -e "${MAGENTA}飞书-拒绝信号${NC}" ;;
-            5) echo -e "${MAGENTA}QC确认信号 → 创建订单Init${NC}" ;;
-            6) echo -e "${MAGENTA}QC同步订单 Submitted${NC}" ;;
-            7) echo -e "${MAGENTA}QC同步订单 Filled${NC}" ;;
+            5) echo -e "${MAGENTA}QC确认信号 → 创建交易组Init${NC}" ;;
+            6) echo -e "${MAGENTA}QC同步 Entry Submitted${NC}" ;;
+            7) echo -e "${MAGENTA}Entry Filled + 激活 TP/SL${NC}" ;;
             8) echo -e "${MAGENTA}同步 TP 成交 + SL 对手单取消${NC}" ;;
             9) echo -e "${MAGENTA}同步 SL 成交 + TP 对手单取消${NC}" ;;
             O|o) echo -e "${MAGENTA}飞书-取消订单${NC}" ;;

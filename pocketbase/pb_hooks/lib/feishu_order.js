@@ -1,6 +1,6 @@
 /**
  * feishu_order.js
- * 飞书订单卡片构建、通知与回调处理
+ * 飞书交易组订单卡片构建、通知与回调处理
  */
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
@@ -23,7 +23,7 @@ function getJsonField(recordOrData, fieldName) {
         }
     }
 
-    var value = (typeof recordOrData.get === "function") ? recordOrData.get(fieldName) : recordOrData[fieldName]
+    var value = typeof recordOrData.get === "function" ? recordOrData.get(fieldName) : recordOrData[fieldName]
     if (value && typeof value === "object") return value
     if (typeof value === "string" && value) {
         try {
@@ -37,57 +37,89 @@ function getJsonField(recordOrData, fieldName) {
     return {}
 }
 
+function firstNonEmpty() {
+    for (var i = 0; i < arguments.length; i++) {
+        var value = arguments[i]
+        if (value !== undefined && value !== null && value !== "") return value
+    }
+    return ""
+}
+
+function toNumber(value) {
+    var num = Number(value)
+    return isNaN(num) ? 0 : num
+}
+
+function formatMoney(value) {
+    var amount = toNumber(value)
+    return amount ? "$" + amount.toFixed(2) : "N/A"
+}
+
+function formatQty(value) {
+    var qty = toNumber(value)
+    if (!qty) return "0"
+    return String(qty % 1 === 0 ? qty.toFixed(0) : qty)
+}
+
+function formatTimePair(usTime, cnTime, fallbackText) {
+    if (!usTime && !cnTime) return fallbackText || "N/A"
+    if (usTime && cnTime) return usTime + " ET / " + cnTime + " CN"
+    if (usTime) return usTime + " ET"
+    return cnTime + " CN"
+}
+
 function buildOrderDisplayData(orderOrRecord) {
-    var get = (typeof orderOrRecord.get === "function") ? orderOrRecord.get.bind(orderOrRecord) : function(k) { return orderOrRecord[k] }
+    var get = typeof orderOrRecord.get === "function"
+        ? orderOrRecord.get.bind(orderOrRecord)
+        : function(k) { return orderOrRecord[k] }
     var extra = getJsonField(orderOrRecord, "extra")
     var status = get("status") || "Init"
-    var direction = get("direction") || "long"
-    var unique_id = get("unique_id") || get("order_id") || ""
-    var us_time = get("us_time") || ""
-    var symbol = get("symbol") || ""
-    var directionText = direction === "long" ? "做多 📈" : "做空 📉"
-    var color = direction === "long" ? "green" : "red"
+    var direction = get("direction") || extra.direction || "long"
+    var uniqueId = get("unique_id") || get("order_id") || extra.unique_id || ""
+    var usTime = get("us_time") || extra.us_time || ""
+    var cnTime = get("cn_time") || extra.cn_time || ""
     var previousStatus = extra.previous_status || ""
     var currentStatus = extra.current_status || status
     var statusTransitionText = extra.status_transition_text || orderEvents.getOrderStatusTransitionText(previousStatus, status)
+    var directionText = direction === "short" ? "做空 📉" : "做多 📈"
+    var color = direction === "short" ? "red" : "green"
 
     return {
-        symbol: symbol,
+        symbol: get("symbol") || extra.symbol || "",
         direction: direction,
-        position_side: get("position_side") || extra.position_side || direction,
         directionText: directionText,
         color: color,
         status: status,
         order_type: get("order_type") || extra.order_type || "Entry",
         role: get("role") || extra.role || "",
         relation_status: get("relation_status") || extra.relation_status || "",
-        trade_group_id: get("trade_group_id") || extra.trade_group_id || unique_id,
-        entry_order_unique_id: get("entry_order_unique_id") || extra.entry_order_unique_id || unique_id,
+        trade_group_id: get("trade_group_id") || extra.trade_group_id || uniqueId,
+        entry_order_unique_id: get("entry_order_unique_id") || extra.entry_order_unique_id || uniqueId,
         parent_order_unique_id: get("parent_order_unique_id") || extra.parent_order_unique_id || "",
         sibling_order_unique_id: get("sibling_order_unique_id") || extra.sibling_order_unique_id || "",
-        quantity: Number(get("quantity") != null ? get("quantity") : extra.quantity || 0),
-        limit_price: Number(get("limit_price") != null ? get("limit_price") : extra.limit_price || 0),
-        fill_price: Number(get("fill_price") != null ? get("fill_price") : extra.fill_price || 0),
-        filled_qty: Number(get("filled_qty") != null ? get("filled_qty") : extra.filled_qty || 0),
-        tp_price: Number(get("tp_price") != null ? get("tp_price") : extra.tp_price || 0),
-        sl_price: Number(get("sl_price") != null ? get("sl_price") : extra.sl_price || 0),
-        signal_id: get("signal_id") || "",
+        quantity: toNumber(firstNonEmpty(get("quantity"), extra.quantity, 0)),
+        filled_qty: toNumber(firstNonEmpty(get("filled_qty"), extra.filled_qty, 0)),
+        limit_price: toNumber(firstNonEmpty(get("limit_price"), extra.limit_price, 0)),
+        fill_price: toNumber(firstNonEmpty(get("fill_price"), extra.fill_price, 0)),
+        tp_price: toNumber(firstNonEmpty(get("tp_price"), extra.tp_price, 0)),
+        sl_price: toNumber(firstNonEmpty(get("sl_price"), extra.sl_price, 0)),
+        signal_id: get("signal_id") || extra.signal_id || "",
         order_id: get("order_id") || "",
         broker_order_id: get("broker_order_id") || extra.broker_order_id || get("order_id") || "",
-        unique_id: unique_id,
-        order_time: get("order_time") || extra.order_time || "",
+        unique_id: uniqueId,
+        order_time: get("order_time") || extra.order_time || usTime || "",
         fill_time: get("fill_time") || extra.fill_time || "",
-        us_time: us_time,
-        cn_time: get("cn_time") || "",
-        created_us_time: extra.created_us_time || get("order_time") || extra.order_time || "",
-        created_cn_time: extra.created_cn_time || "",
-        created_bar_time_ms: Number(extra.created_bar_time_ms || 0),
-        updated_us_time: extra.status_updated_us_time || us_time || "",
-        updated_cn_time: extra.status_updated_cn_time || get("cn_time") || "",
-        updated_bar_time_ms: Number(extra.status_updated_bar_time_ms || get("bar_time_ms") || 0),
+        us_time: usTime,
+        cn_time: cnTime,
+        created_us_time: extra.created_us_time || get("order_time") || extra.order_time || usTime || "",
+        created_cn_time: extra.created_cn_time || cnTime || "",
+        created_bar_time_ms: toNumber(extra.created_bar_time_ms || 0),
+        updated_us_time: extra.status_updated_us_time || usTime || extra.created_us_time || "",
+        updated_cn_time: extra.status_updated_cn_time || cnTime || extra.created_cn_time || "",
+        updated_bar_time_ms: toNumber(extra.status_updated_bar_time_ms || get("bar_time_ms") || extra.bar_time_ms || 0),
         filled_us_time: extra.filled_us_time || get("fill_time") || extra.fill_time || "",
         filled_cn_time: extra.filled_cn_time || "",
-        filled_bar_time_ms: Number(extra.filled_bar_time_ms || 0),
+        filled_bar_time_ms: toNumber(extra.filled_bar_time_ms || 0),
         previous_status: previousStatus,
         current_status: currentStatus,
         status_transition_text: statusTransitionText,
@@ -108,16 +140,259 @@ function getOrderStatusInfo(status) {
     return map[status] || { emoji: "❓", text: status || "未知", message: "订单状态未知", action: "" }
 }
 
-function buildOrderActionElements(d) {
-    var info = getOrderStatusInfo(d.status)
-    if (!info.action) return []
-    var actionTargetId = d.entry_order_unique_id || d.unique_id
+function roleRank(role) {
+    return {
+        entry: 0,
+        take_profit: 1,
+        repair_tp: 2,
+        stop_loss: 3,
+        repair_sl: 4
+    }[role] || 9
+}
 
-    if (d.role && d.role !== "entry") {
+function getRoleText(role, orderType) {
+    return {
+        entry: "主单",
+        take_profit: "止盈单",
+        repair_tp: "修复止盈单",
+        stop_loss: "止损单",
+        repair_sl: "修复止损单"
+    }[role] || orderType || "-"
+}
+
+function getTradeGroupId(orderOrRecord) {
+    if (!orderOrRecord) return ""
+    var get = typeof orderOrRecord.get === "function"
+        ? orderOrRecord.get.bind(orderOrRecord)
+        : function(k) { return orderOrRecord[k] }
+    var extra = getJsonField(orderOrRecord, "extra")
+    return firstNonEmpty(
+        get("trade_group_id"),
+        extra.trade_group_id,
+        get("entry_order_unique_id"),
+        extra.entry_order_unique_id,
+        get("unique_id"),
+        get("order_id"),
+        extra.unique_id
+    )
+}
+
+function fetchTradeGroupRecords(orderOrRecord) {
+    var tradeGroupId = getTradeGroupId(orderOrRecord)
+    if (!tradeGroupId) return []
+    try {
+        return $app.findRecordsByFilter(
+            "orders",
+            "trade_group_id = {:gid}",
+            "-created",
+            100,
+            0,
+            { gid: tradeGroupId }
+        ) || []
+    } catch (err) {
+        console.error("[FeishuOrder] 查询交易组失败:", tradeGroupId, err)
         return []
     }
+}
 
-    if (info.action === "cancel") {
+function sortGroupOrders(left, right) {
+    var roleDiff = roleRank(left.role) - roleRank(right.role)
+    if (roleDiff !== 0) return roleDiff
+    var timeDiff = toNumber(right.updated_bar_time_ms || right.created_bar_time_ms || 0) - toNumber(left.updated_bar_time_ms || left.created_bar_time_ms || 0)
+    if (timeDiff !== 0) return timeDiff
+    return String(left.unique_id || "").localeCompare(String(right.unique_id || ""))
+}
+
+function pickPrimaryOrder(orders) {
+    for (var i = 0; i < orders.length; i++) {
+        if (orders[i].role === "entry") return orders[i]
+    }
+    return orders[0] || null
+}
+
+function resolveTradeGroup(orderOrRecord) {
+    var records = fetchTradeGroupRecords(orderOrRecord)
+    if (records.length === 0 && orderOrRecord) {
+        records = [orderOrRecord]
+    }
+
+    var orders = records.map(buildOrderDisplayData).sort(sortGroupOrders)
+    var primary = pickPrimaryOrder(orders)
+    var latest = orders.slice().sort(function(left, right) {
+        return toNumber(right.updated_bar_time_ms || right.created_bar_time_ms || 0) - toNumber(left.updated_bar_time_ms || left.created_bar_time_ms || 0)
+    })[0] || primary
+    var exitOrder = null
+    for (var i = 0; i < orders.length; i++) {
+        var order = orders[i]
+        if (order.role !== "entry" && order.status === "Filled") {
+            exitOrder = order
+            break
+        }
+    }
+    var activeChildren = orders.filter(function(order) {
+        return order.role !== "entry" && order.relation_status === "active"
+    })
+    var plannedChildren = orders.filter(function(order) {
+        return order.role !== "entry" && order.relation_status === "planned"
+    })
+    var orphanedChildren = orders.filter(function(order) {
+        return order.role !== "entry" && order.relation_status === "orphaned"
+    })
+
+    return {
+        trade_group_id: getTradeGroupId(primary || orderOrRecord),
+        orders: orders,
+        primary: primary,
+        latest: latest,
+        exitOrder: exitOrder,
+        activeChildren: activeChildren,
+        plannedChildren: plannedChildren,
+        orphanedChildren: orphanedChildren
+    }
+}
+
+function getTradeGroupStatusInfo(group) {
+    var primary = group.primary || {}
+    var primaryFilledQty = toNumber(primary.filled_qty || 0)
+    if (primary.status === "Canceled") {
+        return { emoji: "❌", text: "交易组已取消", message: "主单已取消，保护单已收尾", action: "" }
+    }
+    if (primary.status === "Closed") {
+        return { emoji: "🔒", text: "交易组已平仓", message: "交易组已平仓", action: "" }
+    }
+    if (group.exitOrder) {
+        var exitText = group.exitOrder.role === "take_profit" || group.exitOrder.role === "repair_tp" ? "止盈成交" : "止损成交"
+        return { emoji: group.exitOrder.role.indexOf("tp") !== -1 ? "🎯" : "🛑", text: exitText, message: "保护单已成交，交易组已退出", action: "" }
+    }
+    if (primary.status === "Filled") {
+        return { emoji: "📦", text: "持仓中", message: "主单已成交，保护单已激活", action: "close" }
+    }
+    if (primary.status === "Submitted" && (primaryFilledQty > 0 || group.activeChildren.length > 0)) {
+        return { emoji: "🧩", text: "部分成交", message: "主单已部分成交，保护单已激活", action: "" }
+    }
+    if (primary.status === "Submitted") {
+        return { emoji: "⏳", text: "主单待成交", message: "主单已提交，保护单已预创建", action: "cancel" }
+    }
+    return { emoji: "🆕", text: "交易组初始化", message: "主单与保护单已初始化", action: "cancel" }
+}
+
+function getTradeGroupCardMessageId(orderOrRecord) {
+    var records = fetchTradeGroupRecords(orderOrRecord)
+    if (!records || records.length === 0) return ""
+
+    records.sort(function(left, right) {
+        return roleRank(left.get("role") || "") - roleRank(right.get("role") || "")
+    })
+
+    for (var i = 0; i < records.length; i++) {
+        var extra = getJsonField(records[i], "extra")
+        if (extra.feishu_order_message_id) return extra.feishu_order_message_id
+    }
+    return ""
+}
+
+function persistTradeGroupCardMessageId(orderOrRecord, messageId) {
+    if (!messageId) return
+    var records = fetchTradeGroupRecords(orderOrRecord)
+    if (!records || records.length === 0) return
+
+    records.forEach(function(record) {
+        orderEvents.mergeOrderExtra(record, {
+            feishu_order_message_id: messageId,
+            feishu_order_card_version: 2
+        }, true)
+    })
+}
+
+function buildGroupSummaryElements(group) {
+    var primary = group.primary || {}
+    var latest = group.latest || primary
+    var info = getTradeGroupStatusInfo(group)
+    var protectionText = group.activeChildren.length > 0
+        ? "active=" + group.activeChildren.length
+        : group.plannedChildren.length > 0
+            ? "planned=" + group.plannedChildren.length
+            : "none"
+
+    return [{
+        tag: "column_set",
+        horizontal_spacing: "default",
+        columns: [
+            {
+                tag: "column",
+                width: "weighted",
+                weight: 1,
+                vertical_spacing: "2px",
+                elements: [
+                    { tag: "div", text: { tag: "lark_md", content: "**标的:** " + (primary.symbol || latest.symbol || "N/A") } },
+                    { tag: "div", text: { tag: "lark_md", content: "**方向:** " + (primary.directionText || latest.directionText || "N/A") } },
+                    { tag: "div", text: { tag: "lark_md", content: "**组状态:** " + info.text } },
+                    { tag: "div", text: { tag: "lark_md", content: "**保护单:** " + protectionText } },
+                    { tag: "div", text: { tag: "lark_md", content: "**SignalID:** " + (primary.signal_id || latest.signal_id || "N/A") } }
+                ]
+            },
+            {
+                tag: "column",
+                width: "weighted",
+                weight: 1,
+                vertical_spacing: "2px",
+                elements: [
+                    { tag: "div", text: { tag: "lark_md", content: "**交易组:** " + (group.trade_group_id || "N/A") } },
+                    { tag: "div", text: { tag: "lark_md", content: "**主单ID:** " + (primary.entry_order_unique_id || primary.unique_id || "N/A") } },
+                    { tag: "div", text: { tag: "lark_md", content: "**主单状态流转:** " + (primary.status_transition_text || "N/A") } },
+                    { tag: "div", text: { tag: "lark_md", content: "**最近更新时间:** " + formatTimePair(latest.updated_us_time, latest.updated_cn_time, "N/A") } },
+                    group.orphanedChildren.length > 0
+                        ? { tag: "div", text: { tag: "lark_md", content: "**告警:** 存在 orphaned 子单" } }
+                        : null
+                ].filter(Boolean)
+            }
+        ]
+    }]
+}
+
+function buildOrderSection(order) {
+    var info = getOrderStatusInfo(order.status)
+    var leftColumn = [
+        { tag: "div", text: { tag: "lark_md", content: "**类型:** " + (order.order_type || "N/A") } },
+        { tag: "div", text: { tag: "lark_md", content: "**角色:** " + getRoleText(order.role, order.order_type) } },
+        { tag: "div", text: { tag: "lark_md", content: "**状态:** " + info.text } },
+        { tag: "div", text: { tag: "lark_md", content: "**关系状态:** " + (order.relation_status || "N/A") } },
+        { tag: "div", text: { tag: "lark_md", content: "**数量 / 已成交:** " + formatQty(order.quantity) + " / " + formatQty(order.filled_qty) } },
+        { tag: "div", text: { tag: "lark_md", content: "**限价 / 成交价:** " + formatMoney(order.limit_price) + " / " + formatMoney(order.fill_price) } }
+    ]
+
+    var rightColumn = [
+        { tag: "div", text: { tag: "lark_md", content: "**订单ID:** " + (order.unique_id || "N/A") } },
+        { tag: "div", text: { tag: "lark_md", content: "**原始OrderID:** " + (order.broker_order_id || "N/A") } },
+        { tag: "div", text: { tag: "lark_md", content: "**父单:** " + (order.parent_order_unique_id || "-") } },
+        { tag: "div", text: { tag: "lark_md", content: "**兄弟单:** " + (order.sibling_order_unique_id || "-") } },
+        { tag: "div", text: { tag: "lark_md", content: "**创建时间:** " + formatTimePair(order.created_us_time, order.created_cn_time, "N/A") } },
+        { tag: "div", text: { tag: "lark_md", content: "**成交时间:** " + formatTimePair(order.filled_us_time, order.filled_cn_time, "未成交") } },
+        { tag: "div", text: { tag: "lark_md", content: "**更新时间:** " + formatTimePair(order.updated_us_time, order.updated_cn_time, "N/A") } }
+    ]
+
+    return [
+        { tag: "div", text: { tag: "lark_md", content: "### " + getRoleText(order.role, order.order_type) } },
+        {
+            tag: "column_set",
+            horizontal_spacing: "default",
+            columns: [
+                { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: leftColumn },
+                { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: rightColumn }
+            ]
+        }
+    ]
+}
+
+function buildOrderActionElements(group) {
+    var primary = group.primary || {}
+    var info = getTradeGroupStatusInfo(group)
+    var actionTargetId = primary.entry_order_unique_id || primary.unique_id
+    var primaryFilledQty = toNumber(primary.filled_qty || 0)
+    var hasActivatedChild = group.activeChildren.length > 0 || !!group.exitOrder
+
+    if (!actionTargetId) return []
+    if (info.action === "cancel" && primaryFilledQty === 0 && !hasActivatedChild) {
         return [{
             tag: "column_set",
             horizontal_spacing: "default",
@@ -127,7 +402,7 @@ function buildOrderActionElements(d) {
                 weight: 1,
                 elements: [{
                     tag: "button",
-                    text: { tag: "plain_text", content: "❌ 取消挂单" },
+                    text: { tag: "plain_text", content: "❌ 取消主单" },
                     type: "danger",
                     width: "fill",
                     action_type: "request",
@@ -138,7 +413,7 @@ function buildOrderActionElements(d) {
         }]
     }
 
-    if (info.action === "close") {
+    if (info.action === "close" && !group.exitOrder) {
         return [{
             tag: "column_set",
             horizontal_spacing: "default",
@@ -148,7 +423,7 @@ function buildOrderActionElements(d) {
                 weight: 1,
                 elements: [{
                     tag: "button",
-                    text: { tag: "plain_text", content: "🔒 平仓" },
+                    text: { tag: "plain_text", content: "🔒 平仓整组" },
                     type: "primary",
                     width: "fill",
                     action_type: "request",
@@ -164,55 +439,24 @@ function buildOrderActionElements(d) {
 
 function buildOrderCard(orderOrRecord, options) {
     var opts = options || {}
-    var d = buildOrderDisplayData(orderOrRecord)
-    var info = getOrderStatusInfo(d.status)
-    var headerTime = d.us_time || d.order_time || ""
-    var title = info.emoji + " " + info.text + " · " + d.symbol + (headerTime ? " · " + headerTime : "")
+    var group = resolveTradeGroup(orderOrRecord)
+    var primary = group.primary || buildOrderDisplayData(orderOrRecord || {})
+    var latest = group.latest || primary
+    var info = getTradeGroupStatusInfo(group)
+    var titleTime = latest.updated_us_time || latest.us_time || latest.order_time || ""
+    var title = info.emoji + " " + info.text + " · " + (primary.symbol || latest.symbol || "-") + (titleTime ? " · " + titleTime : "")
     var statusMessage = opts.message || info.message
-    var createTimeText = (d.created_us_time || d.order_time ? (d.created_us_time || d.order_time) + " ET" : "N/A") + (d.created_cn_time ? " / " + d.created_cn_time + " CN" : "")
-    var fillTimeText = d.filled_us_time
-        ? (d.filled_us_time + " ET" + (d.filled_cn_time ? " / " + d.filled_cn_time + " CN" : ""))
-        : (d.fill_time ? d.fill_time + " ET" : "未成交")
-    var updateTimeText = d.updated_us_time
-        ? (d.updated_us_time + " ET" + (d.updated_cn_time ? " / " + d.updated_cn_time + " CN" : ""))
-        : "N/A"
+    var elements = []
 
-    var leftColumn = []
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + d.symbol } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + d.directionText } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**类型:** " + d.order_type } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**角色:** " + (d.role || "N/A") } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**状态:** " + info.text } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**状态流转:** " + d.status_transition_text } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**关系状态:** " + (d.relation_status || "N/A") } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**限价:** " + (d.limit_price ? "$" + d.limit_price.toFixed(2) : "N/A") } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** " + (d.tp_price ? "$" + d.tp_price.toFixed(2) : "N/A") } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** " + (d.sl_price ? "$" + d.sl_price.toFixed(2) : "N/A") } })
+    buildGroupSummaryElements(group).forEach(function(element) { elements.push(element) })
+    elements.push({ tag: "hr" })
 
-    var rightColumn = []
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**数量:** " + (d.quantity || "N/A") } })
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**已成交:** " + (d.filled_qty || 0) } })
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**成交价:** " + (d.fill_price ? "$" + d.fill_price.toFixed(2) : "N/A") } })
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + (d.signal_id || "N/A") } })
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**订单ID:** " + d.unique_id } })
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**原始OrderID:** " + (d.broker_order_id || "N/A") } })
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**交易组:** " + (d.trade_group_id || "N/A") } })
-    rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**主单ID:** " + (d.entry_order_unique_id || "N/A") } })
-    if (d.parent_order_unique_id) {
-        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**父单:** " + d.parent_order_unique_id } })
-    }
-    if (d.sibling_order_unique_id) {
-        rightColumn.push({ tag: "div", text: { tag: "lark_md", content: "**兄弟单:** " + d.sibling_order_unique_id } })
-    }
-
-    var elements = [{
-        tag: "column_set",
-        horizontal_spacing: "default",
-        columns: [
-            { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: leftColumn },
-            { tag: "column", width: "weighted", weight: 1, vertical_spacing: "2px", elements: rightColumn }
-        ]
-    }]
+    group.orders.forEach(function(order, index) {
+        if (index > 0) {
+            elements.push({ tag: "hr" })
+        }
+        buildOrderSection(order).forEach(function(element) { elements.push(element) })
+    })
 
     elements.push({ tag: "hr" })
     elements.push({
@@ -223,19 +467,17 @@ function buildOrderCard(orderOrRecord, options) {
             weight: 1,
             vertical_spacing: "2px",
             elements: [
-                { tag: "div", text: { tag: "lark_md", content: "**创建时间:** " + createTimeText } },
-                { tag: "div", text: { tag: "lark_md", content: "**成交时间:** " + fillTimeText } },
-                { tag: "div", text: { tag: "lark_md", content: "**更新时间:** " + updateTimeText } },
                 { tag: "div", text: { tag: "lark_md", content: "**状态说明:** " + statusMessage } },
-                d.last_status_reason ? { tag: "div", text: { tag: "lark_md", content: "**变更原因:** " + d.last_status_reason } } : null
+                latest.last_status_reason ? { tag: "div", text: { tag: "lark_md", content: "**变更原因:** " + latest.last_status_reason } } : null,
+                latest.last_status_source ? { tag: "div", text: { tag: "lark_md", content: "**变更来源:** " + latest.last_status_source } } : null
             ].filter(Boolean)
         }]
     })
 
-    var actionElements = buildOrderActionElements(d)
+    var actionElements = buildOrderActionElements(group)
     if (actionElements.length > 0) {
         elements.push({ tag: "hr" })
-        actionElements.forEach(function(el) { elements.push(el) })
+        actionElements.forEach(function(element) { elements.push(element) })
     }
 
     return {
@@ -243,7 +485,7 @@ function buildOrderCard(orderOrRecord, options) {
         config: { update_multi: true },
         header: {
             title: { tag: "plain_text", content: title },
-            template: d.color
+            template: primary.color || "green"
         },
         body: {
             direction: "vertical",
@@ -254,20 +496,35 @@ function buildOrderCard(orderOrRecord, options) {
 
 function notifyOrder(action, order, options) {
     var opts = options || {}
-    var status = (typeof order.get === "function") ? order.get("status") : order.status
+    var status = typeof order.get === "function" ? order.get("status") : order.status
+    var messageId = opts.messageId || getTradeGroupCardMessageId(order)
     var card = buildOrderCard(order, {
         message: opts.message || getOrderStatusInfo(status || "").message
     })
-    var messageId = opts.messageId || ""
     var result = messageId ? feishuApp.updateMessageCard(messageId, card) : feishuApp.sendCardToChatByTypeDetailed(card, "order")
-    console.log("[FeishuOrder] 订单卡片同步:", result.success ? "成功" : "失败", "action:", action, "message_id:", result.message_id || messageId || "-")
+    var effectiveMessageId = result.message_id || messageId || ""
+    if (result.success && effectiveMessageId) {
+        persistTradeGroupCardMessageId(order, effectiveMessageId)
+    }
+    console.log("[FeishuOrder] 订单卡片同步:", result.success ? "成功" : "失败", "action:", action, "message_id:", effectiveMessageId || "-")
     return result
 }
 
 function notifyNewOrder(order, options) {
     var opts = options || {}
+    var existingMessageId = opts.messageId || getTradeGroupCardMessageId(order)
+    if (existingMessageId) {
+        return notifyOrder("create", order, {
+            messageId: existingMessageId,
+            message: opts.message
+        })
+    }
+
     var card = buildOrderCard(order, { message: opts.message })
     var result = feishuApp.sendCardToChatByTypeDetailed(card, "order")
+    if (result.success && result.message_id) {
+        persistTradeGroupCardMessageId(order, result.message_id)
+    }
     console.log("[FeishuOrder] 新订单卡片发送:", result.success ? "成功" : "失败", "message_id:", result.message_id || "-")
     return result
 }
@@ -298,138 +555,127 @@ function handleOrderCardCallback(c, options) {
     var record = records[0]
     var currentStatus = record.get("status")
     var currentRole = record.get("role") || ""
-    var orderMsg
-    var orderCard
-
-    console.log("[FeishuOrderCallback] 处理订单回调:", "order_id=", orderId, "action=", action, "current_status=", currentStatus)
+    var tradeGroupId = record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id")
+    var relatedRecords = fetchTradeGroupRecords(record)
+    var primaryRecord = relatedRecords.filter(function(item) {
+        return (item.get("role") || "") === "entry"
+    })[0] || record
+    var primaryFilledQty = toNumber(primaryRecord.get("filled_qty") || 0)
+    var hasActiveChild = relatedRecords.some(function(item) {
+        return (item.get("role") || "") !== "entry" && (item.get("relation_status") || "") === "active"
+    })
 
     if (currentStatus === "Canceled" || currentStatus === "Closed") {
-        orderMsg = currentStatus === "Canceled" ? "订单已取消，无法操作" : "订单已平仓，无法操作"
-        orderCard = buildOrderCard(record, { message: orderMsg })
+        var lockedMsg = currentStatus === "Canceled" ? "订单已取消，无法操作" : "订单已平仓，无法操作"
         return feishuApp.sendFeishuCallbackResponse(c, {
-            toast: { type: "warning", content: orderMsg },
-            card: { type: "raw", data: orderCard }
+            toast: { type: "warning", content: lockedMsg },
+            card: { type: "raw", data: buildOrderCard(primaryRecord, { message: lockedMsg }) }
         }, updateToken)
     }
 
     if (action === "cancel") {
         if (currentRole && currentRole !== "entry") {
-            orderMsg = "只能取消主入场挂单"
-            orderCard = buildOrderCard(record, { message: orderMsg })
             return feishuApp.sendFeishuCallbackResponse(c, {
-                toast: { type: "warning", content: orderMsg },
-                card: { type: "raw", data: orderCard }
+                toast: { type: "warning", content: "只能取消主入场挂单" },
+                card: { type: "raw", data: buildOrderCard(primaryRecord, { message: "只能取消主入场挂单" }) }
+            }, updateToken)
+        }
+        if (primaryFilledQty > 0 || hasActiveChild) {
+            return feishuApp.sendFeishuCallbackResponse(c, {
+                toast: { type: "warning", content: "主单已部分成交或保护单已激活，请改用平仓" },
+                card: { type: "raw", data: buildOrderCard(primaryRecord, { message: "主单已部分成交或保护单已激活，请改用平仓" }) }
             }, updateToken)
         }
         if (currentStatus !== "Init" && currentStatus !== "Submitted") {
-            orderMsg = currentStatus === "Filled" ? "订单已成交，无法取消" : "无法取消"
-            orderCard = buildOrderCard(record, { message: orderMsg })
+            var cancelBlocked = currentStatus === "Filled" ? "订单已成交，无法取消" : "无法取消"
             return feishuApp.sendFeishuCallbackResponse(c, {
-                toast: { type: "error", content: orderMsg },
-                card: { type: "raw", data: orderCard }
+                toast: { type: "error", content: cancelBlocked },
+                card: { type: "raw", data: buildOrderCard(primaryRecord, { message: cancelBlocked }) }
             }, updateToken)
         }
 
-        console.log("[FeishuOrderCallback] 执行取消:", "order_id=", orderId, "previous_status=", currentStatus, "update_token_present=", !!updateToken)
-        record.set("status", "Canceled")
-        orderEvents.applyOrderRelationship(record, {
-            relation_status: "closed",
-            status: "Canceled",
-        }, false)
-        var cancelMeta = orderEvents.applyOrderStatusMeta(record, {
-            status: "Canceled",
-            previous_status: currentStatus,
-            source: "feishu_order_callback",
-            reason: "飞书卡片取消挂单",
-        }, false)
-        var cancelEventTimes = cancelMeta.eventTimes
-        $app.save(record)
-        try {
-            orderEvents.appendOrderDetail(record, {
+        relatedRecords.forEach(function(groupRecord) {
+            var status = groupRecord.get("status")
+            if (status === "Canceled" || status === "Closed" || status === "Filled") {
+                return
+            }
+            groupRecord.set("status", "Canceled")
+            orderEvents.applyOrderRelationship(groupRecord, {
+                relation_status: "closed",
+                status: "Canceled"
+            }, false)
+            var cancelMeta = orderEvents.applyOrderStatusMeta(groupRecord, {
+                status: "Canceled",
+                previous_status: status,
+                source: "feishu_order_callback",
+                reason: "飞书卡片取消主单"
+            }, false)
+            $app.save(groupRecord)
+            orderEvents.appendOrderDetail(groupRecord, {
                 status: "Canceled",
                 source: "feishu_order_callback",
-                reason: "飞书卡片取消挂单",
-                us_time: cancelEventTimes.us_time,
-                cn_time: cancelEventTimes.cn_time,
-                bar_time_ms: cancelEventTimes.bar_time_ms,
+                reason: "飞书卡片取消主单",
+                us_time: cancelMeta.eventTimes.us_time,
+                cn_time: cancelMeta.eventTimes.cn_time,
+                bar_time_ms: cancelMeta.eventTimes.bar_time_ms,
                 extra: {
-                    previous_status: currentStatus,
+                    previous_status: status,
                     action: "cancel",
-                    update_token_present: !!updateToken
+                    trade_group_id: tradeGroupId
                 }
             })
-        } catch (detailErr) {
-            console.error("[FeishuOrderCallback] 写入取消 order_details 失败:", detailErr)
-        }
-        orderCard = buildOrderCard(record, { message: "订单已取消" })
+        })
+
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "success", content: "取消指令已发送" },
-            card: { type: "raw", data: orderCard }
+            card: { type: "raw", data: buildOrderCard(primaryRecord, { message: "主单已取消，保护单已收尾" }) }
         }, updateToken)
     }
 
     if (action === "close") {
-        var tradeGroupId = record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id")
-        var entryOrderUniqueId = record.get("entry_order_unique_id") || record.get("unique_id")
-        if (currentStatus !== "Filled") {
-            orderMsg = "只有成交的订单才能平仓"
-            orderCard = buildOrderCard(record, { message: orderMsg })
+        if ((primaryRecord.get("status") || "") !== "Filled") {
             return feishuApp.sendFeishuCallbackResponse(c, {
-                toast: { type: "error", content: orderMsg },
-                card: { type: "raw", data: orderCard }
+                toast: { type: "error", content: "只有成交的主单才能平仓" },
+                card: { type: "raw", data: buildOrderCard(primaryRecord, { message: "只有成交的主单才能平仓" }) }
             }, updateToken)
         }
 
-        var relatedRecords = $app.findRecordsByFilter(
-            "orders",
-            "trade_group_id = {:gid}",
-            "-created",
-            100,
-            0,
-            { gid: tradeGroupId }
-        ) || []
         relatedRecords.forEach(function(groupRecord) {
             var groupStatus = groupRecord.get("status")
-            if (groupStatus === "Canceled" || groupStatus === "Closed") {
-                return
-            }
-            var nextStatus = groupRecord.get("unique_id") === entryOrderUniqueId ? "Closed" : "Canceled"
+            if (groupStatus === "Canceled" || groupStatus === "Closed") return
+            var nextStatus = groupRecord.get("unique_id") === (primaryRecord.get("entry_order_unique_id") || primaryRecord.get("unique_id"))
+                ? "Closed"
+                : "Canceled"
             groupRecord.set("status", nextStatus)
             orderEvents.applyOrderRelationship(groupRecord, {
                 relation_status: "closed",
-                status: nextStatus,
+                status: nextStatus
             }, false)
             var closeMeta = orderEvents.applyOrderStatusMeta(groupRecord, {
                 status: nextStatus,
                 previous_status: groupStatus,
                 source: "feishu_order_callback",
-                reason: "飞书卡片平仓交易组",
+                reason: "飞书卡片平仓交易组"
             }, false)
-            var closeEventTimes = closeMeta.eventTimes
             $app.save(groupRecord)
-            try {
-                orderEvents.appendOrderDetail(groupRecord, {
-                    status: nextStatus,
-                    source: "feishu_order_callback",
-                    reason: "飞书卡片平仓交易组",
-                    us_time: closeEventTimes.us_time,
-                    cn_time: closeEventTimes.cn_time,
-                    bar_time_ms: closeEventTimes.bar_time_ms,
-                    extra: {
-                        previous_status: groupStatus,
-                        action: "close_group",
-                        trade_group_id: tradeGroupId,
-                        update_token_present: !!updateToken
-                    }
-                })
-            } catch (detailErr) {
-                console.error("[FeishuOrderCallback] 写入平仓 order_details 失败:", detailErr)
-            }
+            orderEvents.appendOrderDetail(groupRecord, {
+                status: nextStatus,
+                source: "feishu_order_callback",
+                reason: "飞书卡片平仓交易组",
+                us_time: closeMeta.eventTimes.us_time,
+                cn_time: closeMeta.eventTimes.cn_time,
+                bar_time_ms: closeMeta.eventTimes.bar_time_ms,
+                extra: {
+                    previous_status: groupStatus,
+                    action: "close_group",
+                    trade_group_id: tradeGroupId
+                }
+            })
         })
-        orderCard = buildOrderCard(record, { message: "交易组已平仓" })
+
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "success", content: "交易组平仓指令已发送" },
-            card: { type: "raw", data: orderCard }
+            card: { type: "raw", data: buildOrderCard(primaryRecord, { message: "交易组已平仓" }) }
         }, updateToken)
     }
 
@@ -441,6 +687,8 @@ function handleOrderCardCallback(c, options) {
 module.exports = {
     buildOrderDisplayData: buildOrderDisplayData,
     getOrderStatusInfo: getOrderStatusInfo,
+    getTradeGroupCardMessageId: getTradeGroupCardMessageId,
+    persistTradeGroupCardMessageId: persistTradeGroupCardMessageId,
     buildOrderCard: buildOrderCard,
     buildOrderCardV2: buildOrderCardV2,
     notifyOrder: notifyOrder,

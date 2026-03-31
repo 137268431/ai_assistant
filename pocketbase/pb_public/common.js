@@ -1002,13 +1002,15 @@ function getCommonStyles() {
 
       .refresh-btn.spinning {
         animation: spin 0.6s linear;
+        border-color: transparent !important;
       }
 
       @keyframes spin {
         to { transform: rotate(360deg); }
       }
 
-      .interval-select {
+      .interval-select,
+      .refresh-select {
         padding: 4px 8px;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -1020,7 +1022,8 @@ function getCommonStyles() {
         cursor: pointer;
       }
 
-      .interval-select:focus {
+      .interval-select:focus,
+      .refresh-select:focus {
         border-color: var(--accent);
       }
 
@@ -1360,6 +1363,26 @@ function hideLoading() {
 function withLoading(promise, text = '加载中...') {
   showLoading(text);
   return promise.finally(() => hideLoading());
+}
+
+/**
+ * 创建带防重入 guard 的加载函数
+ * 用法：const loadFn = guardedLoader(async () => { ... }, '加载中...')
+ * 之后用 loadFn() 替代原始调用，重复调用会被忽略
+ */
+function guardedLoader(asyncFn, loadingText) {
+  let isRunning = false;
+  return async function() {
+    if (isRunning) return;
+    isRunning = true;
+    showLoading(loadingText || '加载中...');
+    try {
+      await asyncFn();
+    } finally {
+      isRunning = false;
+      hideLoading();
+    }
+  };
 }
 
 // ── 导出（如果使用模块化）──

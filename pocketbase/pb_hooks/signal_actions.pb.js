@@ -172,7 +172,7 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
 routerAdd("POST", "/api/custom/signals/ack", (c) => {
   const { appendOrderDetail, mergeOrderExtra, resolveOrderEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
   const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
-  const { notifyNewOrder } = require(`${__hooks}/lib/feishu_order.js`)
+  const { notifyNewOrder, notifyOrder, getOrderStatusInfo, getTradeGroupCardMessageId } = require(`${__hooks}/lib/feishu_order.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
   const signalId = data.signal_id;
   const status = data.status || "executed";
@@ -223,19 +223,105 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       console.error("[SignalAck] 同步信号卡片失败:", syncErr);
     }
 
-    // 2. 如果 QC 传递了订单数据，则创建订单
-    if (orderData.unique_id && orderData.order_type) {
-      console.log(`[SignalAck] === 创建订单记录 ===`);
-      console.log(`[SignalAck] unique_id: ${orderData.unique_id}`);
-      console.log(`[SignalAck] order_type: ${orderData.order_type}`);
-      console.log(`[SignalAck] direction: ${orderData.direction || record.get("direction")}`);
-      console.log(`[SignalAck] quantity: ${orderData.quantity || record.get("shares")}`);
-      console.log(`[SignalAck] limit_price: ${orderData.limit_price || record.get("entry")}`);
+    function deriveProtectionUniqueIds(entryUniqueId) {
+      const base = String(entryUniqueId || "").endsWith("_entry")
+        ? String(entryUniqueId || "").slice(0, -6)
+        : String(entryUniqueId || "")
+      return {
+        tp: base ? `${base}_take_profit` : "",
+        sl: base ? `${base}_stop_loss` : "",
+      }
+    }
 
-      const ordersCol = $app.findCollectionByNameOrId("orders");
+    function buildAckOrders() {
+      if (!(orderData.unique_id && orderData.order_type)) return []
 
-      // 查找是否已存在订单
-      let orderRecord = null;
+      const orderExtraData = orderData.extra && typeof orderData.extra === "object" ? orderData.extra : {}
+      const resolvedQuantity = orderData.quantity != null ? orderData.quantity : (record.get("shares") || orderExtraData.quantity || 0)
+      const resolvedLimitPrice = orderData.limit_price != null ? orderData.limit_price : (record.get("entry") || orderExtraData.limit_price || 0)
+      const resolvedStopLoss = orderData.stop_loss != null ? orderData.stop_loss : (record.get("stop_loss") || orderExtraData.sl_price || 0)
+      const resolvedTakeProfit = orderData.take_profit != null ? orderData.take_profit : (record.get("take_profit") || orderExtraData.tp_price || 0)
+      const entryOrderUniqueId = orderData.entry_order_unique_id || orderExtraData.entry_order_unique_id || orderData.unique_id
+      const tradeGroupId = orderData.trade_group_id || orderExtraData.trade_group_id || entryOrderUniqueId
+      const protectionIds = deriveProtectionUniqueIds(entryOrderUniqueId)
+      const childOrdersInput = Array.isArray(data.child_orders)
+        ? data.child_orders
+        : (Array.isArray(orderData.child_orders) ? orderData.child_orders : [])
+      const sharedFields = {
+        symbol: symbol,
+        direction: orderData.direction || record.get("direction"),
+        position_side: orderData.position_side || orderData.direction || record.get("direction") || "",
+        quantity: resolvedQuantity,
+        trade_group_id: tradeGroupId,
+        entry_order_unique_id: entryOrderUniqueId,
+        signal_id: signalId,
+        order_time: orderData.order_time || orderExtraData.order_time || orderData.us_time || record.get("us_time") || "",
+        us_time: orderData.us_time || orderExtraData.us_time || record.get("us_time") || "",
+        cn_time: orderData.cn_time || orderExtraData.cn_time || record.get("cn_time") || "",
+        bar_time_ms: orderData.bar_time_ms || orderExtraData.bar_time_ms || record.get("bar_time_ms") || 0,
+      }
+
+      const entryOrder = {
+        ...orderData,
+        ...sharedFields,
+        unique_id: orderData.unique_id,
+        order_type: orderData.order_type || "Entry",
+        role: orderData.role || orderExtraData.role || "entry",
+        relation_status: orderData.relation_status || orderExtraData.relation_status || "active",
+        limit_price: resolvedLimitPrice,
+        status: orderData.status || "Init",
+        filled_qty: orderData.filled_qty != null ? orderData.filled_qty : 0,
+        fill_price: orderData.fill_price != null ? orderData.fill_price : 0,
+        stop_loss: resolvedStopLoss,
+        take_profit: resolvedTakeProfit,
+      }
+
+      function resolveChildInput(kind) {
+        for (let i = 0; i < childOrdersInput.length; i++) {
+          const child = childOrdersInput[i] || {}
+          const role = child.role || ""
+          const type = child.order_type || ""
+          if (kind === "take_profit" && (role === "take_profit" || role === "repair_tp" || type === "TakeProfit")) return child
+          if (kind === "stop_loss" && (role === "stop_loss" || role === "repair_sl" || type === "StopLoss")) return child
+        }
+        return {}
+      }
+
+      function buildChildOrder(kind, defaultPrice, defaultUniqueId, siblingUniqueId) {
+        const childInput = resolveChildInput(kind)
+        const childExtra = childInput.extra && typeof childInput.extra === "object" ? childInput.extra : {}
+        const childPrice = childInput.limit_price != null ? childInput.limit_price : (childExtra.limit_price != null ? childExtra.limit_price : defaultPrice)
+        if (!childPrice) return null
+        const isTakeProfit = kind === "take_profit"
+        return {
+          ...childInput,
+          ...sharedFields,
+          unique_id: childInput.unique_id || childExtra.unique_id || defaultUniqueId,
+          order_type: childInput.order_type || (isTakeProfit ? "TakeProfit" : "StopLoss"),
+          role: childInput.role || childExtra.role || kind,
+          relation_status: childInput.relation_status || childExtra.relation_status || "planned",
+          parent_order_unique_id: childInput.parent_order_unique_id || childExtra.parent_order_unique_id || entryOrderUniqueId,
+          sibling_order_unique_id: childInput.sibling_order_unique_id || childExtra.sibling_order_unique_id || siblingUniqueId,
+          limit_price: childPrice,
+          status: childInput.status || childExtra.status || "Init",
+          filled_qty: childInput.filled_qty != null ? childInput.filled_qty : 0,
+          fill_price: childInput.fill_price != null ? childInput.fill_price : 0,
+          broker_order_id: childInput.broker_order_id || childInput.order_id || "",
+        }
+      }
+
+      const orders = [entryOrder]
+      const tpOrder = buildChildOrder("take_profit", resolvedTakeProfit, protectionIds.tp, protectionIds.sl)
+      const slOrder = buildChildOrder("stop_loss", resolvedStopLoss, protectionIds.sl, protectionIds.tp)
+      if (tpOrder) orders.push(tpOrder)
+      if (slOrder) orders.push(slOrder)
+      return orders
+    }
+
+    function upsertAckOrder(orderPayload) {
+      console.log(`[SignalAck] === 创建订单记录 === ${orderPayload.unique_id} / ${orderPayload.order_type}`)
+      const ordersCol = $app.findCollectionByNameOrId("orders")
+      let orderRecord = null
       let previousOrderStatus = ""
       try {
         const existing = $app.findRecordsByFilter(
@@ -244,59 +330,59 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
           "",
           1,
           0,
-          { uniqueId: orderData.unique_id }
-        );
+          { uniqueId: orderPayload.unique_id }
+        )
         if (existing.length > 0) {
-          orderRecord = existing[0];
+          orderRecord = existing[0]
           previousOrderStatus = orderRecord.get("status") || ""
-          console.log(`[SignalAck] 订单已存在，将更新: ${orderData.unique_id}`);
         }
       } catch (_) {}
 
-      const isNewOrder = !orderRecord
-      const orderExtraData = orderData.extra && typeof orderData.extra === "object" ? orderData.extra : {}
-      const resolvedQuantity = orderData.quantity != null ? orderData.quantity : (record.get("shares") || orderExtraData.quantity || 0)
-      const resolvedLimitPrice = orderData.limit_price != null ? orderData.limit_price : (record.get("entry") || orderExtraData.limit_price || 0)
-      const resolvedStopLoss = orderData.stop_loss != null ? orderData.stop_loss : (record.get("stop_loss") || orderExtraData.sl_price || 0)
-      const resolvedTakeProfit = orderData.take_profit != null ? orderData.take_profit : (record.get("take_profit") || orderExtraData.tp_price || 0)
-      const tradeGroupId = orderData.trade_group_id || orderExtraData.trade_group_id || orderData.entry_order_unique_id || orderData.unique_id
-      const entryOrderUniqueId = orderData.entry_order_unique_id || orderExtraData.entry_order_unique_id || orderData.unique_id
-      const brokerOrderId = orderData.broker_order_id || orderData.order_id || ""
-      const positionSide = orderData.position_side || orderData.direction || record.get("direction") || ""
+      const orderExtraData = orderPayload.extra && typeof orderPayload.extra === "object" ? orderPayload.extra : {}
+      const resolvedStatus = orderPayload.status || "Init"
+      const resolvedQuantity = orderPayload.quantity != null ? orderPayload.quantity : (record.get("shares") || orderExtraData.quantity || 0)
+      const resolvedLimitPrice = orderPayload.limit_price != null ? orderPayload.limit_price : (record.get("entry") || orderExtraData.limit_price || 0)
+      const resolvedStopLoss = orderPayload.stop_loss != null ? orderPayload.stop_loss : (record.get("stop_loss") || orderExtraData.sl_price || 0)
+      const resolvedTakeProfit = orderPayload.take_profit != null ? orderPayload.take_profit : (record.get("take_profit") || orderExtraData.tp_price || 0)
+      const brokerOrderId = orderPayload.broker_order_id || orderPayload.order_id || ""
       const eventTimes = resolveOrderEventTimes({
-        us_time: orderData.us_time || orderExtraData.us_time,
-        cn_time: orderData.cn_time || orderExtraData.cn_time,
-        bar_time_ms: orderData.bar_time_ms || orderExtraData.bar_time_ms,
+        us_time: orderPayload.us_time || orderExtraData.us_time,
+        cn_time: orderPayload.cn_time || orderExtraData.cn_time,
+        bar_time_ms: orderPayload.bar_time_ms || orderExtraData.bar_time_ms,
       }, {
         us_time: record.get("us_time") || "",
         cn_time: record.get("cn_time") || "",
         bar_time_ms: record.get("bar_time_ms") || 0,
       })
-      const resolvedOrderTime = orderData.order_time || orderExtraData.order_time || eventTimes.us_time
+      const resolvedOrderTime = orderPayload.order_time || orderExtraData.order_time || eventTimes.us_time
+
       if (!orderRecord) {
-        orderRecord = new Record(ordersCol, {});
-        orderRecord.set("unique_id", orderData.unique_id);
-        console.log(`[SignalAck] 创建新订单: ${orderData.unique_id}`);
+        orderRecord = new Record(ordersCol, {})
+        orderRecord.set("unique_id", orderPayload.unique_id)
       }
 
-      orderRecord.set("order_type", orderData.order_type);
-      orderRecord.set("symbol", symbol);
-      orderRecord.set("direction", orderData.direction || record.get("direction"));
-      orderRecord.set("quantity", resolvedQuantity);
-      orderRecord.set("limit_price", resolvedLimitPrice);
-      orderRecord.set("status", "Init");
-      orderRecord.set("filled_qty", orderData.filled_qty || 0);
-      orderRecord.set("fill_price", orderData.fill_price || 0);
-      orderRecord.set("sl_price", resolvedStopLoss);
-      orderRecord.set("tp_price", resolvedTakeProfit);
-      orderRecord.set("signal_id", signalId);
-      orderRecord.set("broker_order_id", brokerOrderId);
-      orderRecord.set("order_time", resolvedOrderTime);
-      orderRecord.set("us_time", eventTimes.us_time);
-      orderRecord.set("cn_time", eventTimes.cn_time);
-      orderRecord.set("bar_time_ms", eventTimes.bar_time_ms);
+      orderRecord.set("order_type", orderPayload.order_type)
+      orderRecord.set("order_id", orderPayload.order_id || "")
+      orderRecord.set("symbol", symbol)
+      orderRecord.set("direction", orderPayload.direction || record.get("direction"))
+      orderRecord.set("quantity", resolvedQuantity)
+      orderRecord.set("limit_price", resolvedLimitPrice)
+      orderRecord.set("status", resolvedStatus)
+      orderRecord.set("filled_qty", orderPayload.filled_qty != null ? orderPayload.filled_qty : 0)
+      orderRecord.set("fill_price", orderPayload.fill_price != null ? orderPayload.fill_price : 0)
+      orderRecord.set("sl_price", resolvedStopLoss)
+      orderRecord.set("tp_price", resolvedTakeProfit)
+      orderRecord.set("signal_id", signalId)
+      orderRecord.set("broker_order_id", brokerOrderId)
+      orderRecord.set("order_time", resolvedOrderTime)
+      orderRecord.set("us_time", eventTimes.us_time)
+      orderRecord.set("cn_time", eventTimes.cn_time)
+      orderRecord.set("bar_time_ms", eventTimes.bar_time_ms)
+      if (orderPayload.fill_time) {
+        orderRecord.set("fill_time", orderPayload.fill_time)
+      }
 
-      $app.save(orderRecord);
+      $app.save(orderRecord)
       mergeOrderExtra(orderRecord, {
         ...orderExtraData,
         order_time: resolvedOrderTime,
@@ -304,75 +390,100 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
         cn_time: eventTimes.cn_time,
         bar_time_ms: eventTimes.bar_time_ms,
         created_via: "signals/ack",
-      }, true);
+      }, true)
       applyOrderRelationship(orderRecord, {
         broker_order_id: brokerOrderId,
-        trade_group_id: tradeGroupId,
-        entry_order_unique_id: entryOrderUniqueId,
-        parent_order_unique_id: orderData.parent_order_unique_id || orderExtraData.parent_order_unique_id || "",
-        sibling_order_unique_id: orderData.sibling_order_unique_id || orderExtraData.sibling_order_unique_id || "",
-        role: orderData.role || orderExtraData.role || "entry",
-        relation_status: orderData.relation_status || orderExtraData.relation_status || "active",
-        position_side: positionSide,
-        order_type: orderData.order_type,
-        unique_id: orderData.unique_id,
-        status: "Init",
+        trade_group_id: orderPayload.trade_group_id || orderExtraData.trade_group_id || orderPayload.entry_order_unique_id || orderPayload.unique_id,
+        entry_order_unique_id: orderPayload.entry_order_unique_id || orderExtraData.entry_order_unique_id || orderPayload.unique_id,
+        parent_order_unique_id: orderPayload.parent_order_unique_id || orderExtraData.parent_order_unique_id || "",
+        sibling_order_unique_id: orderPayload.sibling_order_unique_id || orderExtraData.sibling_order_unique_id || "",
+        role: orderPayload.role || orderExtraData.role || (orderPayload.order_type === "Entry" ? "entry" : ""),
+        relation_status: orderPayload.relation_status || orderExtraData.relation_status || (orderPayload.order_type === "Entry" ? "active" : "planned"),
+        position_side: orderPayload.position_side || orderPayload.direction || record.get("direction") || "",
+        order_type: orderPayload.order_type,
+        unique_id: orderPayload.unique_id,
+        status: resolvedStatus,
       }, true)
       applyOrderStatusMeta(orderRecord, {
-        status: "Init",
+        status: resolvedStatus,
         previous_status: previousOrderStatus,
-        source: "signal_ack_init",
-        reason: note,
+        source: "signal_ack",
+        reason: orderExtraData.reason || note,
         us_time: eventTimes.us_time,
         cn_time: eventTimes.cn_time,
         bar_time_ms: eventTimes.bar_time_ms,
         order_time: resolvedOrderTime,
-        created_us_time: eventTimes.us_time,
-        created_cn_time: eventTimes.cn_time,
-        created_bar_time_ms: eventTimes.bar_time_ms,
+        fill_time: orderPayload.fill_time || "",
+        fill_us_time: resolvedStatus === "Filled" ? eventTimes.us_time : "",
+        fill_cn_time: resolvedStatus === "Filled" ? eventTimes.cn_time : "",
+        fill_bar_time_ms: resolvedStatus === "Filled" ? eventTimes.bar_time_ms : 0,
+        created_us_time: !previousOrderStatus ? eventTimes.us_time : "",
+        created_cn_time: !previousOrderStatus ? eventTimes.cn_time : "",
+        created_bar_time_ms: !previousOrderStatus ? eventTimes.bar_time_ms : 0,
       }, true)
-      console.log(`[SignalAck] 订单已保存: id=${orderRecord.id}, status=Init`);
-
-      // 3. 写入 order_details
-      console.log(`[SignalAck] === 写入订单事件记录 ===`);
       appendOrderDetail(orderRecord, {
-        status: "Init",
-        source: "signal_ack_init",
-        reason: note,
+        status: resolvedStatus,
+        source: "signal_ack",
+        reason: orderExtraData.reason || note,
         us_time: eventTimes.us_time,
         cn_time: eventTimes.cn_time,
         bar_time_ms: eventTimes.bar_time_ms,
         order_time: resolvedOrderTime,
         extra: {
-          order_type: orderData.order_type,
-          direction: orderData.direction || record.get("direction") || "",
+          order_type: orderPayload.order_type,
+          direction: orderPayload.direction || record.get("direction") || "",
           quantity: resolvedQuantity,
           limit_price: resolvedLimitPrice,
-          fill_price: orderData.fill_price || 0,
-          filled_qty: orderData.filled_qty || 0,
+          fill_price: orderPayload.fill_price || 0,
+          filled_qty: orderPayload.filled_qty || 0,
           sl_price: resolvedStopLoss,
           tp_price: resolvedTakeProfit,
           created_via: "signals/ack",
           ...orderExtraData
         }
-      });
-      console.log(`[SignalAck] order_details 已保存: order_id=${orderData.unique_id}, order_type=${orderData.order_type}, status=Init`);
-      if (isNewOrder && orderData.order_type === "Entry") {
-        console.log(`[SignalAck] 发送 Init 新订单飞书通知: unique_id=${orderData.unique_id}`);
-        const notifyResult = notifyNewOrder(orderRecord, { message: "订单已初始化，等待提交" });
-        if (notifyResult.success && notifyResult.message_id) {
-          mergeOrderExtra(orderRecord, {
-            feishu_order_message_id: notifyResult.message_id,
-            feishu_order_card_version: 1,
-          }, true);
+      })
+
+      return {
+        record: orderRecord,
+        previous_status: previousOrderStatus,
+        status: resolvedStatus,
+      }
+    }
+
+    const ackOrders = buildAckOrders()
+    let primaryOrderRecord = null
+    let primaryStatus = "Init"
+
+    if (ackOrders.length > 0) {
+      console.log(`[SignalAck] 本次将创建/更新 ${ackOrders.length} 条订单记录`)
+      const results = ackOrders.map(upsertAckOrder)
+      const primaryResult = results.find((item) => (item.record.get("role") || "") === "entry") || results[0]
+      primaryOrderRecord = primaryResult ? primaryResult.record : null
+      primaryStatus = primaryResult ? primaryResult.status : "Init"
+
+      if (primaryOrderRecord) {
+        const messageId = getTradeGroupCardMessageId(primaryOrderRecord)
+        const statusInfo = getOrderStatusInfo(primaryStatus)
+        const defaultMessage = primaryStatus === "Submitted"
+          ? "主单已提交，止盈止损子单已预创建"
+          : "主单与止盈止损子单已初始化"
+        if (messageId) {
+          notifyOrder("signal_ack", primaryOrderRecord, {
+            messageId: messageId,
+            message: statusInfo.message || defaultMessage,
+          })
+        } else {
+          notifyNewOrder(primaryOrderRecord, {
+            message: primaryStatus === "Submitted" ? defaultMessage : "订单组已初始化，等待提交",
+          })
         }
       }
     } else {
-      console.log(`[SignalAck] 未传递订单数据，跳过订单创建`);
+      console.log(`[SignalAck] 未传递订单数据，跳过订单创建`)
     }
 
-    console.log(`[SignalAck] === 信号确认处理完成 === success=true, signal_id=${signalId}, status=Init`);
-    return c.json(200, { success: true, signal_id: signalId, status: "Init" });
+    console.log(`[SignalAck] === 信号确认处理完成 === success=true, signal_id=${signalId}, status=${primaryStatus}`);
+    return c.json(200, { success: true, signal_id: signalId, status: primaryStatus });
   } catch (err) {
     console.error(`[SignalAck] 错误:`, err.message);
     console.error(`[SignalAck] 堆栈:`, err.stack);
@@ -398,10 +509,15 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
         const record = records[0]
         const status = record.get("status")
         const symbol = record.get("symbol") || uniqueId
+        const filledQty = Number(record.get("filled_qty") || 0)
+        const tradeGroupId = record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id")
         const role = record.get("role") || ((record.get("extra") || {}).role) || ""
         console.log(`[OrderAction] 收到取消请求: unique_id=${uniqueId}, symbol=${symbol}, current_status=${status}`)
         if (role && role !== "entry") {
             return c.html(200, warn("只能取消主单", "止盈/止损等子单不能直接取消，请操作主入场单", symbol))
+        }
+        if (filledQty > 0) {
+            return c.html(200, warn("主单已部分成交", "主单已部分成交，不能直接取消，请改用平仓整组", symbol))
         }
         const statusHints = {
             Filled:   { fn: warn, title: "订单已成交", msg: "订单已成交，无法取消" },
@@ -412,48 +528,62 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
             const h = statusHints[status]
             return c.html(200, h.fn(h.title, h.msg, symbol))
         }
-        const oldStatus = status
-        record.set("status", "Canceled")
-        applyOrderRelationship(record, {
-            relation_status: "closed",
-            status: "Canceled",
-        }, false)
-        const metaResult = applyOrderStatusMeta(record, {
-            status: "Canceled",
-            previous_status: oldStatus,
-            source: "webhook/order/cancel",
-            reason: "页面取消挂单",
-        }, false)
-        const eventTimes = metaResult.eventTimes
-        $app.save(record)
-        try {
-            appendOrderDetail(record, {
+        const relatedRecords = $app.findRecordsByFilter(
+            "orders",
+            "trade_group_id = {:gid}",
+            "-created",
+            100,
+            0,
+            { gid: tradeGroupId }
+        ) || [record]
+        relatedRecords.forEach((groupRecord) => {
+            const currentStatus = groupRecord.get("status")
+            if (currentStatus === "Canceled" || currentStatus === "Closed" || currentStatus === "Filled") {
+                return
+            }
+            groupRecord.set("status", "Canceled")
+            applyOrderRelationship(groupRecord, {
+                relation_status: "closed",
                 status: "Canceled",
+            }, false)
+            const metaResult = applyOrderStatusMeta(groupRecord, {
+                status: "Canceled",
+                previous_status: currentStatus,
                 source: "webhook/order/cancel",
-                reason: "页面取消挂单",
-                us_time: eventTimes.us_time,
-                cn_time: eventTimes.cn_time,
-                bar_time_ms: eventTimes.bar_time_ms,
-                extra: {
-                    previous_status: oldStatus,
-                    action: "cancel",
-                },
-            })
-        } catch (detailErr) {
-            console.error("[OrderAction] 写入 order_details 失败:", detailErr)
-        }
+                reason: "页面取消主单",
+            }, false)
+            const eventTimes = metaResult.eventTimes
+            $app.save(groupRecord)
+            try {
+                appendOrderDetail(groupRecord, {
+                    status: "Canceled",
+                    source: "webhook/order/cancel",
+                    reason: "页面取消主单",
+                    us_time: eventTimes.us_time,
+                    cn_time: eventTimes.cn_time,
+                    bar_time_ms: eventTimes.bar_time_ms,
+                    extra: {
+                        previous_status: currentStatus,
+                        action: "cancel",
+                        trade_group_id: tradeGroupId,
+                    },
+                })
+            } catch (detailErr) {
+                console.error("[OrderAction] 写入 order_details 失败:", detailErr)
+            }
+        })
         const orderExtra = getOrderExtra(record)
         const syncResult = notifyOrder("canceled", record, {
             messageId: orderExtra.feishu_order_message_id || "",
-            message: "订单已取消",
+            message: "主单已取消，保护单已收尾",
         })
         if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
             mergeOrderExtra(record, {
                 feishu_order_message_id: syncResult.message_id,
-                feishu_order_card_version: 1,
+                feishu_order_card_version: 2,
             }, true)
         }
-        console.log("[OrderAction] 订单已取消:", uniqueId)
+        console.log("[OrderAction] 交易组已取消:", tradeGroupId)
         return c.html(200, ok("订单已取消", "状态已更新", symbol))
     } catch (err) {
         console.error("[OrderAction] 取消失败:", err)
@@ -545,7 +675,7 @@ routerAdd("GET", "/webhook/order/close", (c) => {
         if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
             mergeOrderExtra(record, {
                 feishu_order_message_id: syncResult.message_id,
-                feishu_order_card_version: 1,
+                feishu_order_card_version: 2,
             }, true)
         }
         console.log("[OrderAction] 交易组已平仓:", tradeGroupId)

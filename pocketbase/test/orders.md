@@ -24,12 +24,17 @@
 | `parent_order_unique_id` | 子单的父单 |
 | `sibling_order_unique_id` | 对手子单 |
 | `role` | `entry` / `take_profit` / `stop_loss` / `repair_tp` / `repair_sl` |
-| `relation_status` | `active` / `closed` / `orphaned` |
+| `relation_status` | `planned` / `active` / `closed` / `orphaned` |
 | `position_side` | `long` / `short` |
 
 ---
 
 ## `orders/upsert` 典型请求
+
+说明：
+
+- `signals/ack` 负责预创建 `Entry / TP / SL`
+- `orders/upsert` 负责把已有记录从 `Init` 推进到 `Submitted / Filled / Canceled / Closed`
 
 ### 1. Entry Submitted
 
@@ -65,7 +70,41 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
   }'
 ```
 
-### 2. TP Filled
+### 2. TP Submitted（由 Entry Filled 激活）
+
+```bash
+curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "unique_id": "test_AAPL_20260331_093000_sig_take_profit",
+    "order_id": "IB_test_AAPL_20260331_093000_sig_take_profit",
+    "broker_order_id": "IB_test_AAPL_20260331_093000_sig_take_profit",
+    "order_type": "TakeProfit",
+    "symbol": "AAPL",
+    "direction": "long",
+    "position_side": "long",
+    "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
+    "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "parent_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+    "sibling_order_unique_id": "test_AAPL_20260331_093000_sig_stop_loss",
+    "role": "take_profit",
+    "relation_status": "active",
+    "quantity": 100,
+    "limit_price": 192.50,
+    "status": "Submitted",
+    "filled_qty": 0,
+    "fill_price": 0,
+    "signal_id": "AAPL_20260331_093000_sig",
+    "us_time": "2026-03-31 09:32:00",
+    "cn_time": "2026-03-31 21:32:00",
+    "bar_time_ms": 1774949520000,
+    "extra": {
+      "reason": "tp activated after entry filled"
+    }
+  }'
+```
+
+### 3. TP Filled
 
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
@@ -101,7 +140,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
   }'
 ```
 
-### 3. SL Counterpart Canceled
+### 4. SL Counterpart Canceled
 
 ```bash
 curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \

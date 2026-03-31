@@ -138,6 +138,7 @@
         .role-other { background: rgba(160,174,192,0.16); color: #CBD5E0; }
 
         .relation-active { background: rgba(72,187,120,0.12); color: var(--long); }
+        .relation-planned { background: rgba(236,201,75,0.14); color: #ECC94B; }
         .relation-closed { background: rgba(160,174,192,0.12); color: #CBD5E0; }
         .relation-orphaned { background: rgba(252,129,129,0.12); color: var(--short); }
 
@@ -439,6 +440,7 @@
         const filterOrderId = params.get('order_id');
         const filterSignalId = params.get('signal_id');
         const filterTradeGroupId = params.get('trade_group_id');
+        const contextSignalId = filterSignalId || '';
 
         let queryMode = 'list';
         let effectiveFilter = '';
@@ -543,6 +545,7 @@
 
         function relationClass(status) {
             if (status === 'active') return 'relation-active';
+            if (status === 'planned') return 'relation-planned';
             if (status === 'orphaned') return 'relation-orphaned';
             return 'relation-closed';
         }
@@ -580,7 +583,12 @@
                 broker_order_id: firstDefined(raw.broker_order_id, extra.broker_order_id, ''),
                 signal_id: firstDefined(raw.signal_id, extra.signal_id, ''),
                 role,
-                relation_status: firstDefined(raw.relation_status, extra.relation_status, ['Canceled', 'Closed'].includes(raw.status) ? 'closed' : 'active'),
+                relation_status: firstDefined(
+                    raw.relation_status,
+                    extra.relation_status,
+                    role !== 'entry' && raw.status === 'Init' ? 'planned' : '',
+                    ['Canceled', 'Closed'].includes(raw.status) ? 'closed' : 'active'
+                ),
                 direction: firstDefined(raw.position_side, raw.direction, extra.position_side, extra.direction, ''),
                 trade_group_id: tradeGroupId,
                 entry_order_unique_id: entryOrderUniqueId,
@@ -643,7 +651,7 @@
             return `((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`;
         }
 
-        async function loadDetails() {
+        const loadDetails = guardedLoader(async function() {
             try {
                 currentPage = 1;
                 const perPage = queryMode === 'list' ? itemsPerPage : 300;
@@ -670,7 +678,7 @@
                     </div>
                 `;
             }
-        }
+        }, '加载中...');
 
         async function loadMoreDetails() {
             if (!hasMore || queryMode !== 'list') return;
@@ -868,7 +876,7 @@
 
                 <div class="action-row">
                     ${primary.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(primary.signal_id)}')">📡 查看信号</button>` : ''}
-                    ${primary.trade_group_id ? `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(primary.trade_group_id)}')">🔁 刷新本交易组</button>` : ''}
+                    ${primary.trade_group_id ? `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(primary.trade_group_id)}', '${encodeURIComponent(primary.signal_id || contextSignalId)}')">🔁 刷新本交易组</button>` : ''}
                 </div>
             `;
         }
@@ -905,8 +913,8 @@
                     ${detail.reason ? `<div class="event-note">${escapeHtml(detail.reason)}</div>` : ''}
 
                     <div class="action-row">
-                        <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(detail.trade_group_id)}')">📜 交易组</button>
-                        <button class="action-btn btn-secondary" onclick="viewOrder('${encodeURIComponent(detail.order_id || detail.broker_order_id)}')">🔎 订单轨迹</button>
+                        <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(detail.trade_group_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">📜 交易组</button>
+                        <button class="action-btn btn-secondary" onclick="viewOrder('${encodeURIComponent(detail.order_id || detail.broker_order_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">🔎 订单轨迹</button>
                     </div>
                 </div>
             `;
@@ -939,9 +947,12 @@
         function renderModeHeader() {
             if (queryMode === 'list') return;
             const row = document.getElementById('searchRow');
+            const signalContext = contextSignalId || '';
             const backUrl = queryMode === 'signal_id'
                 ? `/signals.html?signal_id=${encodeURIComponent(effectiveFilter)}&date=${encodeURIComponent(currentDate)}`
-                : `/orders.html?date=${encodeURIComponent(currentDate)}`;
+                : signalContext
+                    ? `/orders.html?signal_id=${encodeURIComponent(signalContext)}&date=${encodeURIComponent(currentDate)}`
+                    : `/orders.html?date=${encodeURIComponent(currentDate)}`;
             row.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                     <a class="back-btn" href="${backUrl}">← 返回</a>
@@ -964,14 +975,18 @@
             location.href = `/signals.html?signal_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
         }
 
-        function viewTradeGroup(groupId) {
+        function viewTradeGroup(groupId, signalId = '') {
             const decoded = decodeURIComponent(groupId);
-            location.href = `/order_details.html?trade_group_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+            const decodedSignalId = signalId ? decodeURIComponent(signalId) : contextSignalId;
+            const signalQuery = decodedSignalId ? `&signal_id=${encodeURIComponent(decodedSignalId)}` : '';
+            location.href = `/order_details.html?trade_group_id=${encodeURIComponent(decoded)}${signalQuery}&date=${encodeURIComponent(currentDate)}`;
         }
 
-        function viewOrder(orderId) {
+        function viewOrder(orderId, signalId = '') {
             const decoded = decodeURIComponent(orderId);
-            location.href = `/order_details.html?order_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+            const decodedSignalId = signalId ? decodeURIComponent(signalId) : contextSignalId;
+            const signalQuery = decodedSignalId ? `&signal_id=${encodeURIComponent(decodedSignalId)}` : '';
+            location.href = `/order_details.html?order_id=${encodeURIComponent(decoded)}${signalQuery}&date=${encodeURIComponent(currentDate)}`;
         }
 
         function manualRefresh() {

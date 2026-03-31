@@ -8,8 +8,18 @@
 // POST /api/custom/orders/upsert - 订单 upsert，自动写入 order_details
 routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const { notifyNewOrder, notifyOrder, getOrderStatusInfo } = require(`${__hooks}/lib/feishu_order.js`)
-  const { appendOrderDetail, getOrderExtra, mergeOrderExtra, resolveOrderStatusEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
+  const { appendOrderDetail, getOrderExtra, mergeOrderExtra, resolveOrderRelationship, resolveOrderStatusEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
+
+  function firstDefined() {
+    for (let i = 0; i < arguments.length; i++) {
+      const value = arguments[i]
+      if (value !== undefined && value !== null && value !== "") {
+        return value
+      }
+    }
+    return undefined
+  }
 
   console.log(`[OrderUpsert] === 订单 Upsert 开始 ===`);
   console.log(`[OrderUpsert] unique_id: ${data.unique_id}`);
@@ -39,10 +49,9 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const quantity = data.quantity;
   const price = data.limit_price;
   const status = data.status || "Submitted";
-  const filledQty = data.filled_qty || data.quantity;
   const avgFillPrice = data.fill_price;
   const extra = data.extra || {};
-  const brokerOrderId = data.broker_order_id || orderId || "";
+  const reason = extra.reason || "";
 
   if (!uniqueId || !orderType || !symbol) {
     return c.json(400, { error: "Missing required fields" });
@@ -74,8 +83,68 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       record.set("unique_id", uniqueId);
     }
 
-    // 更新字段
     const previousStatus = record ? record.get("status") : "";
+    const existingOrderExtra = record ? getOrderExtra(record) : {};
+    const resolvedOrderId = firstDefined(orderId, record.get("order_id"), existingOrderExtra.order_id, "");
+    const resolvedBrokerOrderId = firstDefined(
+      data.broker_order_id,
+      orderId,
+      record.get("broker_order_id"),
+      existingOrderExtra.broker_order_id,
+      resolvedOrderId,
+      ""
+    );
+    const resolvedDirection = firstDefined(direction, record.get("direction"), existingOrderExtra.direction, "");
+    const resolvedQuantity = firstDefined(quantity, record.get("quantity"), existingOrderExtra.quantity, 0);
+    const resolvedLimitPrice = firstDefined(price, record.get("limit_price"), existingOrderExtra.limit_price, 0);
+    const resolvedFilledQty = firstDefined(
+      data.filled_qty,
+      status === "Filled" ? quantity : undefined,
+      record.get("filled_qty"),
+      existingOrderExtra.filled_qty,
+      quantity,
+      0
+    );
+    const resolvedFillPrice = firstDefined(avgFillPrice, record.get("fill_price"), existingOrderExtra.fill_price, 0);
+    const resolvedSignalId = firstDefined(data.signal_id, record.get("signal_id"), existingOrderExtra.signal_id, "");
+    const resolvedTpPrice = firstDefined(
+      data.tp_price !== undefined ? parseFloat(data.tp_price) : undefined,
+      record.get("tp_price"),
+      existingOrderExtra.tp_price
+    );
+    const resolvedSlPrice = firstDefined(
+      data.sl_price !== undefined ? parseFloat(data.sl_price) : undefined,
+      record.get("sl_price"),
+      existingOrderExtra.sl_price
+    );
+    const resolvedPnl = firstDefined(
+      data.pnl !== undefined ? parseFloat(data.pnl) : undefined,
+      record.get("pnl"),
+      existingOrderExtra.pnl
+    );
+    const resolvedCommission = firstDefined(
+      data.commission !== undefined ? parseFloat(data.commission) : undefined,
+      record.get("commission"),
+      existingOrderExtra.commission
+    );
+    const resolvedRrRatio = firstDefined(
+      data.rr_ratio !== undefined ? parseFloat(data.rr_ratio) : undefined,
+      record.get("rr_ratio"),
+      existingOrderExtra.rr_ratio
+    );
+    const incomingRelation = resolveOrderRelationship({
+      broker_order_id: resolvedBrokerOrderId,
+      trade_group_id: data.trade_group_id || extra.trade_group_id || existingOrderExtra.trade_group_id || "",
+      entry_order_unique_id: data.entry_order_unique_id || extra.entry_order_unique_id || existingOrderExtra.entry_order_unique_id || "",
+      parent_order_unique_id: data.parent_order_unique_id || extra.parent_order_unique_id || existingOrderExtra.parent_order_unique_id || "",
+      sibling_order_unique_id: data.sibling_order_unique_id || extra.sibling_order_unique_id || existingOrderExtra.sibling_order_unique_id || "",
+      role: data.role || extra.role || existingOrderExtra.role || "",
+      relation_status: data.relation_status || extra.relation_status || existingOrderExtra.relation_status || "",
+      position_side: data.position_side || resolvedDirection || extra.position_side || existingOrderExtra.position_side || existingOrderExtra.direction || "",
+      status: status,
+      unique_id: uniqueId,
+      order_type: orderType,
+    }, record);
     const eventTimes = resolveOrderStatusEventTimes(record, {
       status: status,
       previous_status: previousStatus,
@@ -83,87 +152,110 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       cn_time: data.cn_time || extra.cn_time,
       bar_time_ms: data.bar_time_ms != null ? data.bar_time_ms : extra.bar_time_ms,
     });
-    const existingOrderExtra = record ? getOrderExtra(record) : {};
     const resolvedOrderTime = data.order_time || extra.order_time || record.get("order_time") || existingOrderExtra.order_time || eventTimes.us_time;
-    const mergedOrderExtra = {
-      ...existingOrderExtra,
-      ...extra,
-      order_time: resolvedOrderTime || existingOrderExtra.order_time || "",
-      us_time: eventTimes.us_time,
-      cn_time: eventTimes.cn_time,
-      bar_time_ms: eventTimes.bar_time_ms,
-    };
-    record.set("order_type", orderType);
-    record.set("order_id", orderId || "");
-    record.set("broker_order_id", brokerOrderId);
-    record.set("symbol", symbol);
-    if (direction) record.set("direction", direction);
-    record.set("quantity", quantity);
-    record.set("limit_price", price);
-    record.set("status", status);
-    record.set("filled_qty", filledQty);
-    record.set("fill_price", avgFillPrice);
-    record.set("extra", mergedOrderExtra);
-    if (data.signal_id) record.set("signal_id", data.signal_id);
-    if (data.tp_price !== undefined) record.set("tp_price", parseFloat(data.tp_price));
-    if (data.sl_price !== undefined) record.set("sl_price", parseFloat(data.sl_price));
-    if (data.pnl !== undefined) record.set("pnl", parseFloat(data.pnl));
-    if (data.commission !== undefined) record.set("commission", parseFloat(data.commission));
-    if (data.rr_ratio !== undefined) record.set("rr_ratio", parseFloat(data.rr_ratio));
-    record.set("bar_time_ms", eventTimes.bar_time_ms);
-    record.set("us_time", eventTimes.us_time);
-    record.set("cn_time", eventTimes.cn_time);
-    if (resolvedOrderTime) record.set("order_time", resolvedOrderTime);
-    if (data.fill_time) record.set("fill_time", data.fill_time);
-    applyOrderRelationship(record, {
-      broker_order_id: brokerOrderId,
-      trade_group_id: data.trade_group_id || extra.trade_group_id || existingOrderExtra.trade_group_id || "",
-      entry_order_unique_id: data.entry_order_unique_id || extra.entry_order_unique_id || existingOrderExtra.entry_order_unique_id || "",
-      parent_order_unique_id: data.parent_order_unique_id || extra.parent_order_unique_id || existingOrderExtra.parent_order_unique_id || "",
-      sibling_order_unique_id: data.sibling_order_unique_id || extra.sibling_order_unique_id || existingOrderExtra.sibling_order_unique_id || "",
-      role: data.role || extra.role || existingOrderExtra.role || "",
-      relation_status: data.relation_status || extra.relation_status || existingOrderExtra.relation_status || "",
-      position_side: data.position_side || data.direction || extra.position_side || existingOrderExtra.position_side || existingOrderExtra.direction || "",
-      status: status,
-      unique_id: uniqueId,
-      order_type: orderType,
-    }, false)
-    applyOrderStatusMeta(record, {
-      status: status,
-      previous_status: previousStatus || "",
-      source: "orders/upsert",
-      reason: extra.reason || "",
-      us_time: eventTimes.us_time,
-      cn_time: eventTimes.cn_time,
-      bar_time_ms: eventTimes.bar_time_ms,
-      order_time: resolvedOrderTime,
-      fill_time: data.fill_time || "",
-      fill_us_time: status === "Filled" ? eventTimes.us_time : "",
-      fill_cn_time: status === "Filled" ? eventTimes.cn_time : "",
-      fill_bar_time_ms: status === "Filled" ? eventTimes.bar_time_ms : 0,
-      created_us_time: !previousStatus ? eventTimes.us_time : "",
-      created_cn_time: !previousStatus ? eventTimes.cn_time : "",
-      created_bar_time_ms: !previousStatus ? eventTimes.bar_time_ms : 0,
-    }, false)
+    const resolvedFillTime = firstDefined(data.fill_time, record.get("fill_time"), existingOrderExtra.fill_time, "");
+    const hasExtraDelta = Object.keys(extra).some((key) => JSON.stringify(existingOrderExtra[key]) !== JSON.stringify(extra[key]));
+    const isIdempotentUpsert = !!record.id &&
+      previousStatus === status &&
+      !hasExtraDelta &&
+      String(record.get("order_id") || "") === String(resolvedOrderId || "") &&
+      String(record.get("symbol") || "") === String(symbol || "") &&
+      String(record.get("direction") || "") === String(resolvedDirection || "") &&
+      Number(record.get("quantity") || 0) === Number(resolvedQuantity || 0) &&
+      Number(record.get("limit_price") || 0) === Number(resolvedLimitPrice || 0) &&
+      Number(record.get("filled_qty") || 0) === Number(resolvedFilledQty || 0) &&
+      Number(record.get("fill_price") || 0) === Number(resolvedFillPrice || 0) &&
+      Number(record.get("tp_price") || 0) === Number(resolvedTpPrice || 0) &&
+      Number(record.get("sl_price") || 0) === Number(resolvedSlPrice || 0) &&
+      Number(record.get("pnl") || 0) === Number(resolvedPnl || 0) &&
+      Number(record.get("commission") || 0) === Number(resolvedCommission || 0) &&
+      Number(record.get("rr_ratio") || 0) === Number(resolvedRrRatio || 0) &&
+      String(record.get("signal_id") || "") === String(resolvedSignalId || "") &&
+      String(record.get("broker_order_id") || "") === String(resolvedBrokerOrderId || "") &&
+      String(record.get("order_time") || "") === String(resolvedOrderTime || "") &&
+      String(record.get("fill_time") || "") === String(resolvedFillTime || "") &&
+      String(record.get("trade_group_id") || "") === String(incomingRelation.trade_group_id || "") &&
+      String(record.get("entry_order_unique_id") || "") === String(incomingRelation.entry_order_unique_id || "") &&
+      String(record.get("parent_order_unique_id") || "") === String(incomingRelation.parent_order_unique_id || "") &&
+      String(record.get("sibling_order_unique_id") || "") === String(incomingRelation.sibling_order_unique_id || "") &&
+      String(record.get("role") || "") === String(incomingRelation.role || "") &&
+      String(record.get("relation_status") || "") === String(incomingRelation.relation_status || "") &&
+      String(record.get("position_side") || "") === String(incomingRelation.position_side || "") &&
+      String(existingOrderExtra.last_status_reason || "") === String(reason || "");
 
-    $app.save(record);
-    console.log(`[OrderUpsert] 状态落库: unique_id=${uniqueId}, previous_status=${previousStatus || "-"}, new_status=${status}`);
-
-    // 写入 order_details（通过 appendOrderDetail 写入完整 order 镜像）
-    appendOrderDetail(record, {
-      status: status,
-      source: "orders/upsert",
-      reason: extra.reason || "",
-      us_time: eventTimes.us_time,
-      cn_time: eventTimes.cn_time,
-      bar_time_ms: eventTimes.bar_time_ms,
-      order_time: resolvedOrderTime,
-      extra: {
-        fill_time: data.fill_time,
+    if (isIdempotentUpsert) {
+      console.log(`[OrderUpsert] 幂等跳过重复事件: unique_id=${uniqueId}, status=${status}`);
+    } else {
+      const mergedOrderExtra = {
+        ...existingOrderExtra,
         ...extra,
-      },
-    });
-    console.log(`[OrderUpsert] order_details 已保存: order_id=${uniqueId}, order_type=${orderType}, status=${status}`);
+        order_id: resolvedOrderId || existingOrderExtra.order_id || "",
+        broker_order_id: resolvedBrokerOrderId || existingOrderExtra.broker_order_id || "",
+        order_time: resolvedOrderTime || existingOrderExtra.order_time || "",
+        us_time: eventTimes.us_time,
+        cn_time: eventTimes.cn_time,
+        bar_time_ms: eventTimes.bar_time_ms,
+      };
+      record.set("order_type", orderType);
+      record.set("order_id", resolvedOrderId || "");
+      record.set("broker_order_id", resolvedBrokerOrderId || "");
+      record.set("symbol", symbol);
+      if (resolvedDirection) record.set("direction", resolvedDirection);
+      record.set("quantity", resolvedQuantity);
+      record.set("limit_price", resolvedLimitPrice);
+      record.set("status", status);
+      record.set("filled_qty", resolvedFilledQty);
+      record.set("fill_price", resolvedFillPrice);
+      record.set("extra", mergedOrderExtra);
+      if (resolvedSignalId) record.set("signal_id", resolvedSignalId);
+      if (resolvedTpPrice !== undefined) record.set("tp_price", resolvedTpPrice);
+      if (resolvedSlPrice !== undefined) record.set("sl_price", resolvedSlPrice);
+      if (resolvedPnl !== undefined) record.set("pnl", resolvedPnl);
+      if (resolvedCommission !== undefined) record.set("commission", resolvedCommission);
+      if (resolvedRrRatio !== undefined) record.set("rr_ratio", resolvedRrRatio);
+      record.set("bar_time_ms", eventTimes.bar_time_ms);
+      record.set("us_time", eventTimes.us_time);
+      record.set("cn_time", eventTimes.cn_time);
+      if (resolvedOrderTime) record.set("order_time", resolvedOrderTime);
+      if (resolvedFillTime) record.set("fill_time", resolvedFillTime);
+      applyOrderRelationship(record, incomingRelation, false)
+      applyOrderStatusMeta(record, {
+        status: status,
+        previous_status: previousStatus || "",
+        source: "orders/upsert",
+        reason: reason,
+        us_time: eventTimes.us_time,
+        cn_time: eventTimes.cn_time,
+        bar_time_ms: eventTimes.bar_time_ms,
+        order_time: resolvedOrderTime,
+        fill_time: resolvedFillTime || "",
+        fill_us_time: status === "Filled" ? eventTimes.us_time : "",
+        fill_cn_time: status === "Filled" ? eventTimes.cn_time : "",
+        fill_bar_time_ms: status === "Filled" ? eventTimes.bar_time_ms : 0,
+        created_us_time: !previousStatus ? eventTimes.us_time : "",
+        created_cn_time: !previousStatus ? eventTimes.cn_time : "",
+        created_bar_time_ms: !previousStatus ? eventTimes.bar_time_ms : 0,
+      }, false)
+
+      $app.save(record);
+      console.log(`[OrderUpsert] 状态落库: unique_id=${uniqueId}, previous_status=${previousStatus || "-"}, new_status=${status}`);
+
+      // 写入 order_details（通过 appendOrderDetail 写入完整 order 镜像）
+      appendOrderDetail(record, {
+        status: status,
+        source: "orders/upsert",
+        reason: reason,
+        us_time: eventTimes.us_time,
+        cn_time: eventTimes.cn_time,
+        bar_time_ms: eventTimes.bar_time_ms,
+        order_time: resolvedOrderTime,
+        extra: {
+          fill_time: resolvedFillTime,
+          ...extra,
+        },
+      });
+      console.log(`[OrderUpsert] order_details 已保存: order_id=${uniqueId}, order_type=${orderType}, status=${status}`);
+    }
 
     // 同步飞书订单卡片
     try {
@@ -171,10 +263,10 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       const statusInfo = getOrderStatusInfo(status);
       let notifyResult = null;
 
-      if (status === "Submitted" && !orderExtra.feishu_order_message_id) {
+      if (!orderExtra.feishu_order_message_id && (status === "Submitted" || status === "Filled" || status === "Canceled" || status === "Closed")) {
         console.log(`[OrderUpsert] 首次发送订单卡片: unique_id=${uniqueId}, status=${status}`);
         notifyResult = notifyNewOrder(record, { message: statusInfo.message });
-      } else if (status === "Submitted" || status === "Filled" || status === "Canceled" || status === "Closed") {
+      } else if (!isIdempotentUpsert && (status === "Submitted" || status === "Filled" || status === "Canceled" || status === "Closed")) {
         console.log(`[OrderUpsert] 同步订单卡片: unique_id=${uniqueId}, previous_status=${previousStatus || "-"}, status=${status}`);
         notifyResult = notifyOrder(status.toLowerCase(), record, {
           messageId: orderExtra.feishu_order_message_id || "",
@@ -185,7 +277,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       if (notifyResult && notifyResult.success && notifyResult.message_id && notifyResult.message_id !== orderExtra.feishu_order_message_id) {
         mergeOrderExtra(record, {
           feishu_order_message_id: notifyResult.message_id,
-          feishu_order_card_version: 1,
+          feishu_order_card_version: 2,
         }, true);
       }
     } catch (err) {

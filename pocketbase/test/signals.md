@@ -6,7 +6,7 @@
 |------|------|------|
 | `POST` | `/webhook/tv` | 接收 TradingView 信号或指标 |
 | `GET` | `/api/custom/signals/pending?date=YYYY-MM-DD` | QC 拉取待执行信号 |
-| `POST` | `/api/custom/signals/ack` | QC 确认信号并创建 Entry Init |
+| `POST` | `/api/custom/signals/ack` | QC 确认信号并创建交易组骨架 |
 | `POST` | `/webhook/feishu/callback` | 飞书确认 / 拒绝信号 |
 
 ---
@@ -36,9 +36,12 @@
 它会同时做两件事：
 
 1. 把 `signals.status` 改成 `executed`
-2. 在 `orders` 中创建主入场单的 `Init` 记录
+2. 在 `orders` 中创建交易组骨架：
+   - `Entry + Init + active`
+   - `TakeProfit + Init + planned`
+   - `StopLoss + Init + planned`
 
-因此 `order` 对象必须从一开始就带正式关系字段，而不是只靠 `extra`。
+因此 `order` 和 `child_orders` 必须从一开始就带正式关系字段，而不是只靠 `extra`。
 
 ---
 
@@ -75,7 +78,35 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
       "extra": {
         "reason": "init entry from signals/ack"
       }
-    }
+    },
+    "child_orders": [
+      {
+        "unique_id": "test_AAPL_20260331_093000_sig_take_profit",
+        "order_type": "TakeProfit",
+        "role": "take_profit",
+        "relation_status": "planned",
+        "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
+        "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+        "parent_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+        "sibling_order_unique_id": "test_AAPL_20260331_093000_sig_stop_loss",
+        "quantity": 100,
+        "limit_price": 192.50,
+        "status": "Init"
+      },
+      {
+        "unique_id": "test_AAPL_20260331_093000_sig_stop_loss",
+        "order_type": "StopLoss",
+        "role": "stop_loss",
+        "relation_status": "planned",
+        "trade_group_id": "test_AAPL_20260331_093000_sig_entry",
+        "entry_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+        "parent_order_unique_id": "test_AAPL_20260331_093000_sig_entry",
+        "sibling_order_unique_id": "test_AAPL_20260331_093000_sig_take_profit",
+        "quantity": 100,
+        "limit_price": 181.00,
+        "status": "Init"
+      }
+    ]
   }'
 ```
 
@@ -89,8 +120,8 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 | `order_id` / `broker_order_id` | broker 原始订单 ID |
 | `trade_group_id` | 整个交易组 ID，当前实现等于 `entry_order_unique_id` |
 | `entry_order_unique_id` | 主入场单 ID |
-| `role` | 固定为 `entry` |
-| `relation_status` | 初始化时为 `active` |
+| `role` | 主单为 `entry`，子单分别是 `take_profit` / `stop_loss` |
+| `relation_status` | Entry 初始为 `active`，TP / SL 初始为 `planned` |
 | `position_side` | `long` / `short` |
 
 ---
@@ -100,8 +131,8 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 调用成功后：
 
 - `signals.status = executed`
-- `orders` 新增一条 `Entry + Init`
-- `order_details` 新增第一条初始化事件
+- `orders` 新增三条交易组记录：`Entry + Init`、`TP + Init`、`SL + Init`
+- `order_details` 为三条记录分别新增第一条初始化事件
 
 后续状态更新由 `orders/upsert` 接手，不再重复调用 `signals/ack`。
 
@@ -113,4 +144,4 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 
 - 步骤 `1` 发送信号
 - 步骤 `3` / `4` 模拟飞书确认或拒绝
-- 步骤 `5` 调用 `signals/ack` 创建带正式关系字段的 Entry Init
+- 步骤 `5` 调用 `signals/ack` 创建带正式关系字段的 Entry / TP / SL Init

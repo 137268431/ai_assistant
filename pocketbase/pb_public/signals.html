@@ -57,6 +57,17 @@
             border-color: var(--accent);
         }
 
+        .filter-note {
+            margin-bottom: 12px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--muted);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
         .stats-bar {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -720,6 +731,7 @@
             </div>
             <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
         </div>
+        <div id="filterNote"></div>
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
@@ -756,6 +768,7 @@
         let currentDirection = 'all';
         let currentStatus = 'all';
         let currentSearch = '';
+        let filterSignalId = '';
         let refreshTimer = null;
         let currentInterval = 30;
 
@@ -773,9 +786,58 @@
             const token = getToken();
             if (!token) {
                 location.href = '/login.html?from=/signals.html';
-                return;
+                return false;
             }
             pb.authStore.save(token, null);
+            return true;
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function escapeFilterValue(value) {
+            return String(value || '')
+                .replace(/\\/g, '\\\\')
+                .replace(/"/g, '\\"');
+        }
+
+        function renderFilterNote() {
+            const notes = [];
+            if (filterSignalId) notes.push(`signal_id=${filterSignalId}`);
+            if (currentSearch) notes.push(`search=${currentSearch}`);
+            document.getElementById('filterNote').innerHTML = notes.length
+                ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
+                : '';
+        }
+
+        function getSignalOrderStatusBadge(orders) {
+            if (!orders || orders.length === 0) return '';
+
+            const getRole = (order) => order.role || order.extra?.role || '';
+            const hasExitFill = orders.some(order => getRole(order) !== 'entry' && order.status === 'Filled');
+            const hasEntryFill = orders.some(order => getRole(order) === 'entry' && order.status === 'Filled');
+            const hasWorkingOrder = orders.some(order => order.status === 'Init' || order.status === 'Submitted');
+            const allEnded = orders.every(order => order.status === 'Canceled' || order.status === 'Closed');
+
+            if (hasExitFill) {
+                return '<span class="indicator-badge badge-long">✅ 已退出</span>';
+            }
+            if (hasEntryFill) {
+                return '<span class="indicator-badge" style="background:rgba(72,187,120,0.18);color:var(--long);">📦 持仓中</span>';
+            }
+            if (hasWorkingOrder) {
+                return '<span class="indicator-badge" style="background:rgba(246,173,85,0.2);color:var(--pending);">⏳ 挂单中</span>';
+            }
+            if (allEnded) {
+                return '<span class="indicator-badge" style="background:rgba(113,128,150,0.2);color:var(--rejected);">🔒 已结束</span>';
+            }
+            return '<span class="indicator-badge" style="background:rgba(246,173,85,0.2);color:var(--pending);">📋 有订单</span>';
         }
 
         // 防止重复加载的标志
@@ -816,6 +878,10 @@
                 // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
                 const conditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
 
+                if (filterSignalId) {
+                    conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
+                }
+
                 // 状态筛选
                 if (currentStatus !== 'all') {
                     conditions.push(`status = "${currentStatus}"`);
@@ -828,7 +894,7 @@
 
                 // 搜索筛选（symbol 或 signal_id）
                 if (currentSearch) {
-                    const s = currentSearch.toUpperCase();
+                    const s = escapeFilterValue(currentSearch);
                     conditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
                 }
 
@@ -857,6 +923,7 @@
                 await loadSignalIndicators();
                 await loadOrdersMap();
 
+                renderFilterNote();
                 renderSignals();
                 updateCountdowns();
                 updateLoadMoreButton();
@@ -1052,15 +1119,15 @@
 
             try {
                 // 一次性请求所有 signal_id 的订单（用 || 连接）
-                const idFilter = signalIds.map(id => `signal_id = "${id}"`).join(' || ');
-                const result = await pb.collection('orders').getList(1, signalIds.length * 3, {
+                const idFilter = signalIds.map(id => `signal_id = "${escapeFilterValue(id)}"`).join(' || ');
+                const result = await pb.collection('orders').getFullList({
                     filter: `(${idFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-created',
+                    sort: '-bar_time_ms,-created',
                     $autoCancel: false
                 });
 
                 // 按 signal_id 建立映射
-                result.items.forEach(order => {
+                result.forEach(order => {
                     if (order.signal_id) {
                         if (!ordersMap[order.signal_id]) {
                             ordersMap[order.signal_id] = [];
@@ -1092,11 +1159,14 @@
             }
 
             const baseConditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+            if (filterSignalId) {
+                baseConditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
+            }
             if (currentDirection !== 'all') {
                 baseConditions.push(`direction = "${currentDirection}"`);
             }
             if (currentSearch) {
-                const s = currentSearch.toUpperCase();
+                const s = escapeFilterValue(currentSearch);
                 baseConditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
             }
 
@@ -1106,21 +1176,29 @@
             const counts = {};
 
             try {
-                const results = await Promise.all(
-                    statuses.map(status => {
-                        const filter = `${baseFilter} && status = "${status}"`;
-                        return pb.collection('signals').getList(1, 1, {
+                const requests = [
+                    pb.collection('signals').getList(1, 1, {
+                        filter: baseFilter,
+                        sort: '-created',
+                        $autoCancel: false,
+                        skipTotal: false
+                    })
+                ];
+                statuses.forEach(status => {
+                    const filter = `${baseFilter} && status = "${status}"`;
+                    requests.push(
+                        pb.collection('signals').getList(1, 1, {
                             filter,
                             sort: '-created',
                             $autoCancel: false,
                             skipTotal: false
-                        }).then(r => ({ status, count: r.totalItems }));
-                    })
-                );
+                        }).then(r => ({ status, count: r.totalItems }))
+                    );
+                });
+                const [allResult, ...results] = await Promise.all(requests);
 
                 results.forEach(r => { counts[r.status] = r.count; });
-                // all 的数量直接用 loadSignals 已经返回的 totalItems
-                counts['all'] = totalItems;
+                counts['all'] = allResult.totalItems;
             } catch (e) {
                 console.error('updateStatusTabCounts failed:', e);
                 // 降级：显示当前已加载的
@@ -1154,11 +1232,14 @@
             }
 
             const baseConditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+            if (filterSignalId) {
+                baseConditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
+            }
             if (currentStatus !== 'all') {
                 baseConditions.push(`status = "${currentStatus}"`);
             }
             if (currentSearch) {
-                const s = currentSearch.toUpperCase();
+                const s = escapeFilterValue(currentSearch);
                 baseConditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
             }
 
@@ -1168,21 +1249,29 @@
             const counts = {};
 
             try {
-                const results = await Promise.all(
-                    directions.map(dir => {
-                        const filter = `${baseFilter} && direction = "${dir}"`;
-                        return pb.collection('signals').getList(1, 1, {
+                const requests = [
+                    pb.collection('signals').getList(1, 1, {
+                        filter: baseFilter,
+                        sort: '-created',
+                        $autoCancel: false,
+                        skipTotal: false
+                    })
+                ];
+                directions.forEach(dir => {
+                    const filter = `${baseFilter} && direction = "${dir}"`;
+                    requests.push(
+                        pb.collection('signals').getList(1, 1, {
                             filter,
                             sort: '-created',
                             $autoCancel: false,
                             skipTotal: false
-                        }).then(r => ({ dir, count: r.totalItems }));
-                    })
-                );
+                        }).then(r => ({ dir, count: r.totalItems }))
+                    );
+                });
+                const [allResult, ...results] = await Promise.all(requests);
 
                 results.forEach(r => { counts[r.dir] = r.count; });
-                // all 的数量直接用 totalItems
-                counts['all'] = totalItems;
+                counts['all'] = allResult.totalItems;
             } catch (e) {
                 console.error('updateDirectionTabCounts failed:', e);
                 // 降级：显示当前已加载的
@@ -1210,6 +1299,9 @@
             }
             if (currentDirection !== 'all') {
                 filtered = filtered.filter(s => s.direction === currentDirection);
+            }
+            if (filterSignalId) {
+                filtered = filtered.filter(s => s.signal_id === filterSignalId);
             }
             if (currentSearch) {
                 const s = currentSearch.toUpperCase();
@@ -1353,6 +1445,10 @@
                 // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
                 const conditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
 
+                if (filterSignalId) {
+                    conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
+                }
+
                 // 状态筛选
                 if (currentStatus !== 'all') {
                     conditions.push(`status = "${currentStatus}"`);
@@ -1365,7 +1461,7 @@
 
                 // 搜索筛选
                 if (currentSearch) {
-                    const s = currentSearch.toUpperCase();
+                    const s = escapeFilterValue(currentSearch);
                     conditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
                 }
 
@@ -1382,6 +1478,10 @@
                 totalItems = result.totalItems;
 
                 displayedSignals = allSignals;
+                await loadReverseSignalsMap();
+                await loadSignalIndicators();
+                await loadOrdersMap();
+                renderFilterNote();
                 renderSignals();
                 updateLoadMoreButton();
             } catch (error) {
@@ -1469,18 +1569,13 @@
             const filtered = filterSignals();
 
             if (filtered.length === 0) {
-                // 搜索时显示空白页，无搜索条件时显示暂无信号
-                if (currentSearch) {
-                    // 搜索结果为空，显示空白
-                    container.innerHTML = '';
-                } else {
-                    container.innerHTML = `
-                        <div class="empty">
-                            <div class="empty-icon">📭</div>
-                            <div class="empty-text">暂无信号</div>
-                        </div>
-                    `;
-                }
+                const emptyText = filterSignalId || currentSearch ? '没有符合条件的信号' : '暂无信号';
+                container.innerHTML = `
+                    <div class="empty">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">${emptyText}</div>
+                    </div>
+                `;
                 return;
             }
 
@@ -1541,21 +1636,7 @@
 
                 // 构建订单关联徽章 - 根据 signal_id 查找
                 const signalOrders = ordersMap[signal.signal_id] || [];
-                let orderBadge = '';
-                if (signalOrders.length > 0) {
-                    // 检查是否有已成交的订单
-                    const filledOrders = signalOrders.filter(o => o.status === 'Filled');
-                    const pendingOrders = signalOrders.filter(o => o.status === 'Pending' || o.status === 'New' || o.status === 'PartiallyFilled');
-                    const canceledOrders = signalOrders.filter(o => o.status === 'Canceled');
-
-                    if (filledOrders.length > 0) {
-                        orderBadge = `<span class="indicator-badge badge-long">✅ 已成交</span>`;
-                    } else if (pendingOrders.length > 0) {
-                        orderBadge = `<span class="indicator-badge" style="background:rgba(246,173,85,0.2);color:var(--pending);">⏳ 待成交</span>`;
-                    } else if (canceledOrders.length > 0) {
-                        orderBadge = `<span class="indicator-badge" style="background:rgba(113,128,150,0.2);color:var(--rejected);">❌ 已取消</span>`;
-                    }
-                }
+                const orderBadge = getSignalOrderStatusBadge(signalOrders);
 
                 // 当日 / 前一日 / 近7日涨幅
                 let dayChangePct = '';
@@ -1764,7 +1845,6 @@
                 showToast('无法找到关联订单');
                 return;
             }
-            const signal = allSignals.find(s => s.signal_id === signalId);
             const orders = ordersMap[signalId] || [];
 
             if (orders.length === 0) {
@@ -1772,9 +1852,7 @@
                 return;
             }
 
-            // 把第一个订单号作为搜索参数
-            const firstOrderId = orders[0].unique_id || orders[0].order_id;
-            location.href = `/orders.html?search=${encodeURIComponent(firstOrderId)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = `/orders.html?signal_id=${encodeURIComponent(signalId)}&date=${encodeURIComponent(currentDate)}`;
         }
 
         function viewReverseSignal(signalId) {
@@ -1834,15 +1912,16 @@
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
-            await initAuth();
+            if (!await initAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/signals.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
 
-            // 解析 URL 参数（date 和 signal_id）
+            // 解析 URL 参数（date / signal_id / search）
             const urlParams = new URLSearchParams(window.location.search);
             const urlDate = urlParams.get('date');
             const urlSignalId = urlParams.get('signal_id');
+            const urlSearch = urlParams.get('search') || '';
             if (urlDate) {
                 currentDate = urlDate;
                 // 同步日期选择器的显示
@@ -1850,8 +1929,11 @@
                 const dateInput = document.getElementById('customDate');
                 if (dateInput) dateInput.value = urlDate;
             }
+            filterSignalId = urlSignalId || '';
+            currentSearch = urlSearch;
+            document.getElementById('searchInput').value = currentSearch;
 
-            loadSignals();
+            await loadSignals();
 
             // 初始化定时刷新（默认30秒）
             changeRefreshInterval(30);
@@ -1877,26 +1959,14 @@
                 }
             });
 
-            // 处理 URL 参数（从飞书通知跳转）
-            if (urlSignalId) {
-                // 等待信号加载完成
-                setTimeout(async () => {
-                    const signal = allSignals.find(s => s.signal_id === urlSignalId);
-                    if (signal) {
-                        // 滚动到对应信号
-                        const signalCard = document.querySelector(`[data-signal-id="${urlSignalId}"]`);
-                        if (signalCard) {
-                            signalCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            signalCard.style.boxShadow = '0 0 20px rgba(59, 130, 246, 0.5)';
-                            setTimeout(() => {
-                                signalCard.style.boxShadow = '';
-                            }, 2000);
-                        }
-                        showToast(`已定位到信号: ${signal.symbol}`);
-                    } else {
-                        showToast('未找到指定信号');
-                    }
-                }, 1000);
+            if (filterSignalId && allSignals.length > 0) {
+                const signalCard = document.querySelector(`[data-signal-id="${filterSignalId}"]`);
+                if (signalCard) {
+                    signalCard.style.boxShadow = '0 0 20px rgba(59, 130, 246, 0.35)';
+                    setTimeout(() => {
+                        signalCard.style.boxShadow = '';
+                    }, 1500);
+                }
             }
         });
     </script>
