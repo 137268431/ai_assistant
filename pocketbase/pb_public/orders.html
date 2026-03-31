@@ -211,6 +211,54 @@
             word-break: break-all;
         }
 
+        .header-side {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+        }
+
+        .countdown-display {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 10px;
+            background: rgba(246,173,85,0.12);
+            border: 1px solid rgba(246,173,85,0.20);
+            color: var(--pending);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+        }
+
+        .countdown-display.countdown-critical {
+            background: rgba(252,129,129,0.10);
+            border-color: rgba(252,129,129,0.24);
+            color: var(--short);
+        }
+
+        .countdown-display.countdown-expired {
+            background: rgba(113,128,150,0.12);
+            border-color: rgba(113,128,150,0.18);
+            color: var(--rejected);
+        }
+
+        .countdown-display.countdown-inline {
+            margin-top: 8px;
+            width: fit-content;
+        }
+
+        .countdown-label {
+            opacity: 0.88;
+        }
+
+        .countdown-value {
+            min-width: 62px;
+            text-align: right;
+        }
+
         .chip-row {
             display: flex;
             flex-wrap: wrap;
@@ -464,6 +512,10 @@
                 flex-direction: column;
             }
 
+            .header-side {
+                align-items: flex-start;
+            }
+
             .mini-chip-row {
                 justify-content: flex-start;
             }
@@ -559,6 +611,9 @@
         const itemsPerPage = 6;
         let filterSignalId = '';
         let filterTradeGroupId = '';
+        let resolvedLegacySearch = '';
+        let pendingLegacySearchResolution = false;
+        let signalValidityMinutes = 30;
 
         function parseJsonLike(value) {
             if (!value) return {};
@@ -608,6 +663,209 @@
             if (!us && !cn) return '-';
             if (!cn) return `${us} ET`;
             return `${us} ET / ${cn} CN`;
+        }
+
+        async function loadSignalValidityConfig() {
+            try {
+                const configResult = await pb.collection('config').getFirstListItem('key = "signal_validity_minutes"');
+                if (configResult && configResult.value) {
+                    signalValidityMinutes = parseInt(configResult.value, 10) || 30;
+                }
+            } catch (error) {
+                console.warn('[Orders] 加载 signal_validity_minutes 失败，使用默认值 30:', error);
+                if (error.status === 401 || error.status === 403) {
+                    handleAuthError();
+                    return;
+                }
+                signalValidityMinutes = 30;
+            }
+        }
+
+        function shouldShowEntryCountdown(order) {
+            return Boolean(
+                order
+                && order.role === 'entry'
+                && ['Init', 'Submitted'].includes(order.status)
+                && order.bar_time_ms
+            );
+        }
+
+        function calculateRemainingMs(barTimeMs) {
+            if (!barTimeMs) return 0;
+            const expiryTime = new Date(Number(barTimeMs) + signalValidityMinutes * 60 * 1000);
+            const now = new Date();
+            const usEasternTime = new Date(now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
+            return expiryTime - usEasternTime;
+        }
+
+        function formatCountdown(remainingMs) {
+            if (remainingMs <= 0) return '';
+            const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+            const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+            const seconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        function renderCountdown(order, compact = false) {
+            if (!shouldShowEntryCountdown(order)) return '';
+            const remainingMs = calculateRemainingMs(order.bar_time_ms);
+            const label = order.status === 'Submitted' ? '挂单剩余' : '初始化剩余';
+            const value = formatCountdown(remainingMs) || '已过期';
+            const toneClass = remainingMs <= 0
+                ? ' countdown-expired'
+                : remainingMs < 5 * 60 * 1000
+                    ? ' countdown-critical'
+                    : '';
+            const compactClass = compact ? ' countdown-inline' : '';
+
+            return `
+                <div class="countdown-display${toneClass}${compactClass}" data-bar-time="${escapeHtml(order.bar_time_ms)}">
+                    <span class="countdown-label">${escapeHtml(label)}</span>
+                    <span class="countdown-value">${escapeHtml(value)}</span>
+                </div>
+            `;
+        }
+
+        function updateCountdowns() {
+            const countdownElements = document.querySelectorAll('.countdown-display[data-bar-time]');
+            countdownElements.forEach((element) => {
+                const barTime = parseInt(element.getAttribute('data-bar-time') || '0', 10);
+                const valueNode = element.querySelector('.countdown-value');
+                if (!barTime || !valueNode) return;
+
+                const remainingMs = calculateRemainingMs(barTime);
+                valueNode.textContent = formatCountdown(remainingMs) || '已过期';
+                element.classList.toggle('countdown-critical', remainingMs > 0 && remainingMs < 5 * 60 * 1000);
+                element.classList.toggle('countdown-expired', remainingMs <= 0);
+            });
+        }
+
+        function normalizeExactMatchValue(value) {
+            return String(value || '').trim().toUpperCase();
+        }
+
+        function parseStructuredSearch(value) {
+            const keyword = String(value || '').trim();
+            if (!keyword) {
+                return { signalId: '', tradeGroupId: '', plainSearch: '' };
+            }
+
+            const signalMatch = keyword.match(/^signal_id\s*=\s*(.+)$/i);
+            if (signalMatch) {
+                return { signalId: signalMatch[1].trim(), tradeGroupId: '', plainSearch: '' };
+            }
+
+            const tradeGroupMatch = keyword.match(/^trade_group_id\s*=\s*(.+)$/i);
+            if (tradeGroupMatch) {
+                return { signalId: '', tradeGroupId: tradeGroupMatch[1].trim(), plainSearch: '' };
+            }
+
+            return { signalId: '', tradeGroupId: '', plainSearch: keyword };
+        }
+
+        function reconcileSearchAndFilters() {
+            const parsed = parseStructuredSearch(currentSearch);
+            let changed = false;
+
+            if (parsed.signalId) {
+                if (!filterSignalId) {
+                    filterSignalId = parsed.signalId;
+                }
+                currentSearch = '';
+                changed = true;
+            } else if (parsed.tradeGroupId) {
+                if (!filterTradeGroupId) {
+                    filterTradeGroupId = parsed.tradeGroupId;
+                }
+                currentSearch = '';
+                changed = true;
+            } else if (filterSignalId) {
+                const normalizedSearch = normalizeExactMatchValue(parsed.plainSearch);
+                if (
+                    normalizedSearch === normalizeExactMatchValue(filterSignalId) ||
+                    normalizedSearch === normalizeExactMatchValue(`signal_id=${filterSignalId}`)
+                ) {
+                    currentSearch = '';
+                    changed = Boolean(parsed.plainSearch);
+                }
+            } else if (filterTradeGroupId) {
+                const normalizedSearch = normalizeExactMatchValue(parsed.plainSearch);
+                if (
+                    normalizedSearch === normalizeExactMatchValue(filterTradeGroupId) ||
+                    normalizedSearch === normalizeExactMatchValue(`trade_group_id=${filterTradeGroupId}`)
+                ) {
+                    currentSearch = '';
+                    changed = Boolean(parsed.plainSearch);
+                }
+            }
+
+            if (changed) {
+                const searchInput = document.getElementById('searchInput');
+                if (searchInput) searchInput.value = currentSearch;
+            }
+
+            return changed;
+        }
+
+        function buildOrdersPageUrl() {
+            const params = new URLSearchParams();
+            if (filterSignalId) params.set('signal_id', filterSignalId);
+            if (filterTradeGroupId) params.set('trade_group_id', filterTradeGroupId);
+            if (currentSearch) params.set('search', currentSearch);
+            if (currentDate) params.set('date', currentDate);
+            const query = params.toString();
+            return query ? `/orders.html?${query}` : '/orders.html';
+        }
+
+        function syncOrdersPageUrl() {
+            const nextUrl = buildOrdersPageUrl();
+            const currentUrl = `${window.location.pathname}${window.location.search}`;
+            if (currentUrl !== nextUrl) {
+                history.replaceState(null, '', nextUrl);
+            }
+        }
+
+        function resolveLegacySearchContext(orders, keyword) {
+            if (!keyword || filterSignalId || filterTradeGroupId) return null;
+            const exact = normalizeExactMatchValue(keyword);
+            if (!exact) return null;
+
+            const matchedOrders = orders.filter((order) => {
+                const fields = [
+                    order.unique_id,
+                    order.broker_order_id,
+                    order.order_id,
+                    order.entry_order_unique_id,
+                    order.parent_order_unique_id,
+                    order.sibling_order_unique_id,
+                    order.trade_group_id,
+                    order.signal_id
+                ];
+                return fields.some((field) => normalizeExactMatchValue(field) === exact);
+            });
+
+            if (matchedOrders.length === 0) return null;
+
+            const signalIds = [...new Set(matchedOrders.map((order) => order.signal_id).filter(Boolean))];
+            const tradeGroupIds = [...new Set(matchedOrders.map((order) => order.trade_group_id).filter(Boolean))];
+
+            return {
+                signalId: signalIds.length === 1 ? signalIds[0] : '',
+                tradeGroupId: tradeGroupIds.length === 1 ? tradeGroupIds[0] : '',
+                source: keyword
+            };
+        }
+
+        function applyResolvedSearchContext(context) {
+            if (!context || (!context.signalId && !context.tradeGroupId)) return false;
+            filterSignalId = context.signalId || filterSignalId;
+            filterTradeGroupId = context.tradeGroupId || filterTradeGroupId;
+            resolvedLegacySearch = context.source || '';
+            currentSearch = '';
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) searchInput.value = '';
+            syncOrdersPageUrl();
+            return true;
         }
 
         function initAuth() {
@@ -857,6 +1115,7 @@
             if (filterSignalId) notes.push(`signal_id=${filterSignalId}`);
             if (filterTradeGroupId) notes.push(`trade_group_id=${filterTradeGroupId}`);
             if (currentSearch) notes.push(`search=${currentSearch}`);
+            if (resolvedLegacySearch) notes.push(`resolved_from=${resolvedLegacySearch}`);
             document.getElementById('filterNote').innerHTML = notes.length
                 ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
                 : '';
@@ -903,6 +1162,7 @@
                             <span class="relation-badge ${relationClass(order.relation_status)}">${escapeHtml(order.relation_status || '-')}</span>
                         </div>
                     </div>
+                    ${isPrimary ? renderCountdown(order, true) : ''}
                     <div class="detail-grid">
                         ${renderDetail('order_type', escapeHtml(getOrderTypeText(order.order_type)))}
                         ${renderDetail('signal_id', escapeHtml(order.signal_id || '-'))}
@@ -948,7 +1208,10 @@
                             </div>
                             <div class="group-subtitle">${escapeHtml(exitText)}</div>
                         </div>
-                        <div class="group-subtitle">${escapeHtml(formatTimePair(group.latestEvent || primary || {}))}</div>
+                        <div class="header-side">
+                            <div class="group-subtitle">${escapeHtml(formatTimePair(group.latestEvent || primary || {}))}</div>
+                            ${renderCountdown(primary)}
+                        </div>
                     </div>
 
                     <div class="chip-row">
@@ -997,6 +1260,7 @@
                 return;
             }
             container.innerHTML = displayedGroups.map(renderGroupCard).join('');
+            updateCountdowns();
         }
 
         const loadOrders = guardedLoader(async function() {
@@ -1011,6 +1275,10 @@
 
                 allOrders = records.map(normalizeOrder);
                 allGroups = buildTradeGroups(allOrders);
+                if (pendingLegacySearchResolution) {
+                    applyResolvedSearchContext(resolveLegacySearchContext(allOrders, currentSearch));
+                    pendingLegacySearchResolution = false;
+                }
                 resetPagination();
                 renderFilterNote();
                 updateSummaryBar();
@@ -1035,6 +1303,10 @@
 
         function onSearchChange(value) {
             currentSearch = value.trim();
+            resolvedLegacySearch = '';
+            pendingLegacySearchResolution = false;
+            reconcileSearchAndFilters();
+            syncOrdersPageUrl();
             resetPagination();
             renderFilterNote();
             updateSummaryBar();
@@ -1062,6 +1334,7 @@
 
         window.onDateChange = function(startDate) {
             currentDate = startDate;
+            syncOrdersPageUrl();
             loadOrders();
         };
 
@@ -1129,13 +1402,21 @@
             filterTradeGroupId = params.get('trade_group_id') || '';
             currentSearch = params.get('search') || '';
             currentDate = params.get('date') || currentDate;
+            if ((filterSignalId || filterTradeGroupId) && currentSearch) {
+                currentSearch = '';
+            }
+            reconcileSearchAndFilters();
+            pendingLegacySearchResolution = Boolean(currentSearch) && !filterSignalId && !filterTradeGroupId;
 
             document.getElementById('searchInput').value = currentSearch;
             const dateInput = document.getElementById('customDate');
             if (dateInput) dateInput.value = currentDate;
+            syncOrdersPageUrl();
 
+            await loadSignalValidityConfig();
             await loadOrders();
             changeRefreshInterval(30);
+            setInterval(updateCountdowns, 1000);
         });
     </script>
 </body>
