@@ -11,6 +11,17 @@ routerAdd("POST", "/webhook/tv", (c) => {
     const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
     const { notifyReverseSignal } = require(`${__hooks}/lib/feishu_reverse.js`)
 
+    // ── 写入模式检查: primary/settled 模式下 TV 停写 ──
+    let _qcWriteMode = "shadow"
+    try {
+        const _cfg = $app.findFirstRecordByFilter("config", "key = {:k}", { k: "qc_write_mode" })
+        _qcWriteMode = _cfg ? String(_cfg.get("value") || "shadow").trim() : "shadow"
+    } catch (_) {}
+    if (_qcWriteMode === "primary" || _qcWriteMode === "settled") {
+        console.log(`[Webhook TV] qc_write_mode=${_qcWriteMode}, TV写入已停用`)
+        return c.json(200, { ok: true, skipped: true, reason: "qc_" + _qcWriteMode + "_mode" })
+    }
+
     // ── 解析请求信息（含 body）──
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}

@@ -40,7 +40,12 @@ const configData = [
   {"key": "signal_auto_confirm", "value": "FALSE", "default_value": "FALSE", "description": "信号自动确认: TRUE时信号直接进入pending状态自动执行，FALSE时需在管理页面手动确认"},
   {"key": "market_index_symbols", "value": "SPY,QQQ,VIX", "default_value": "SPY,QQQ,VIX", "description": "大盘指数代码(逗号分隔): 用于监控和关联分析"},
   {"key": "pb_scheduler_enabled", "value": "TRUE", "default_value": "TRUE", "description": "PB定时调度总开关: 仅控制PB前端页面的定时刷新，QC算法调度不受此开关影响"},
-  {"key": "order_validity_minutes", "value": "30", "default_value": "30", "description": "订单有效期(分钟): Init/Submitted状态的订单超过此时间自动标记为Canceled"}
+  {"key": "order_validity_minutes", "value": "30", "default_value": "30", "description": "订单有效期(分钟): Init/Submitted状态的订单超过此时间自动标记为Canceled"},
+  {"key": "qc_write_mode", "value": "shadow", "default_value": "shadow", "description": "QC写入模式: shadow(仅写新表) / primary(双写新旧表) / settled(仅写旧表,TV停写)"},
+  {"key": "qc_compute_enabled", "value": "TRUE", "default_value": "TRUE", "description": "QC Compute服务开关: 控制定时指标计算和盘前扫描"},
+  {"key": "qc_bar_publish_enabled", "value": "TRUE", "default_value": "TRUE", "description": "QC OHLCV数据发布开关: 控制BarPublisher是否向PB推送K线数据"},
+  {"key": "daily_target_filter_on", "value": "FALSE", "default_value": "FALSE", "description": "每日标的过滤开关: 开启后信号需经daily_targets筛选才进入执行流程"},
+  {"key": "atr_multiplier", "value": "1.5", "default_value": "1.5", "description": "ATR倍数: 用于GetCurrentATR计算动态止盈止损距离"}
 ];
 
 const watchlistData = [

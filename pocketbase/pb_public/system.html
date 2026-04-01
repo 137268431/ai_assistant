@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>系统监控 - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .page-header {
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .page-title {
+            font-size: 20px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .refresh-info {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Status bar */
+        .status-bar {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            padding: 0 16px 12px;
+        }
+        .status-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px;
+            text-align: center;
+        }
+        .status-label {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .status-value {
+            font-size: 13px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .dot-green { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+        .dot-yellow { background: #eab308; box-shadow: 0 0 6px #eab308; }
+        .dot-red { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+        .dot-gray { background: #64748b; }
+
+        /* Section */
+        .section {
+            margin: 0 16px 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 12px 14px 8px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .section-body { padding: 10px 14px; }
+
+        /* Stats grid */
+        .stats-mini {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        .stat-mini {
+            text-align: center;
+            padding: 8px 4px;
+            background: var(--surface2);
+            border-radius: 8px;
+        }
+        .stat-mini-label {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 2px;
+        }
+        .stat-mini-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        /* Data table */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .data-table th {
+            text-align: left;
+            padding: 6px 4px;
+            color: var(--muted);
+            font-weight: 400;
+            font-size: 9px;
+            border-bottom: 1px solid var(--border);
+        }
+        .data-table td {
+            padding: 6px 4px;
+            color: var(--text);
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+
+        /* Freshness bar */
+        .freshness-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+        }
+        .freshness-label {
+            width: 32px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--muted);
+            flex-shrink: 0;
+        }
+        .freshness-bar-bg {
+            flex: 1;
+            height: 6px;
+            background: var(--surface2);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .freshness-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s;
+        }
+        .freshness-age {
+            width: 40px;
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        /* Event list */
+        .event-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .event-item:last-child { border-bottom: none; }
+        .event-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            margin-top: 5px;
+            flex-shrink: 0;
+        }
+        .event-content { flex: 1; min-width: 0; }
+        .event-title {
+            font-size: 11px;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .event-meta {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            margin-top: 1px;
+        }
+
+        /* Config item */
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 6px;
+        }
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 8px;
+            background: var(--surface2);
+            border-radius: 6px;
+        }
+        .config-key {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .config-val {
+            font-size: 11px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .val-on { color: #22c55e; }
+        .val-off { color: #ef4444; }
+        .val-neutral { color: var(--accent); }
+
+        .loading-text {
+            text-align: center;
+            padding: 20px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .content-area {
+            padding-bottom: 80px;
+        }
+    </style>
+</head>
+<body>
+    <div id="nav"></div>
+
+    <div class="content-area">
+        <div class="page-header">
+            <div class="page-title">🖥️ 系统监控</div>
+            <div class="refresh-info" id="refreshInfo">加载中...</div>
+        </div>
+
+        <!-- 模块1: 系统总览 -->
+        <div class="status-bar" id="statusBar">
+            <div class="status-card">
+                <div class="status-label">QUANTCONNECT</div>
+                <div class="status-value" id="qcStatus"><span class="status-dot dot-gray"></span>--</div>
+            </div>
+            <div class="status-card">
+                <div class="status-label">QC COMPUTE</div>
+                <div class="status-value" id="computeStatus"><span class="status-dot dot-gray"></span>--</div>
+            </div>
+            <div class="status-card">
+                <div class="status-label">WRITE MODE</div>
+                <div class="status-value" id="writeMode" style="color:var(--accent)">--</div>
+            </div>
+        </div>
+
+        <!-- 模块2: 今日统计 -->
+        <div class="section">
+            <div class="section-header">📊 今日统计</div>
+            <div class="section-body">
+                <div class="stats-mini" id="todayStats">
+                    <div class="stat-mini"><div class="stat-mini-label">SIGNALS</div><div class="stat-mini-value">-</div></div>
+                    <div class="stat-mini"><div class="stat-mini-label">ORDERS</div><div class="stat-mini-value">-</div></div>
+                    <div class="stat-mini"><div class="stat-mini-label">QC BARS</div><div class="stat-mini-value">-</div></div>
+                    <div class="stat-mini"><div class="stat-mini-label">QC SIGNALS</div><div class="stat-mini-value">-</div></div>
+                    <div class="stat-mini"><div class="stat-mini-label">TARGETS</div><div class="stat-mini-value">-</div></div>
+                    <div class="stat-mini"><div class="stat-mini-label">EVENTS</div><div class="stat-mini-value">-</div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模块3: 数据延迟 -->
+        <div class="section">
+            <div class="section-header">📡 数据延迟</div>
+            <div class="section-body" id="freshnessArea">
+                <div class="loading-text">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 模块4: qc_compute 引擎 -->
+        <div class="section">
+            <div class="section-header">
+                <span>⚙️ 计算引擎</span>
+                <span id="engineCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
+            </div>
+            <div class="section-body" id="engineArea" style="overflow-x:auto">
+                <div class="loading-text">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 模块5: 配置一览 -->
+        <div class="section">
+            <div class="section-header">
+                <span>🔧 配置</span>
+                <a href="/config.html" style="font-size:10px;color:var(--accent);text-decoration:none;font-family:'JetBrains Mono',monospace">编辑 →</a>
+            </div>
+            <div class="section-body" id="configArea">
+                <div class="loading-text">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 模块6: 最近事件 -->
+        <div class="section">
+            <div class="section-header">
+                <span>📋 最近事件</span>
+                <span id="eventCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
+            </div>
+            <div class="section-body" id="eventArea">
+                <div class="loading-text">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let refreshTimer = null;
+
+        async function loadSystemData() {
+            try {
+                const token = localStorage.getItem('pb_token');
+                const headers = token ? { 'Authorization': token } : {};
+
+                // 1) health
+                const healthResp = await fetch('/api/custom/system/health', { headers });
+                const health = await healthResp.json();
+
+                // 2) summary
+                const summaryResp = await fetch('/api/custom/system/summary', { headers });
+                const summary = await summaryResp.json();
+
+                renderStatus(health);
+                renderTodayStats(summary.today);
+                renderFreshness(summary.data_freshness);
+                renderEngines(summary.qc_compute);
+                renderConfig(summary);
+                renderEvents(summary.recent_events);
+
+                document.getElementById('refreshInfo').textContent = '更新: ' + new Date().toLocaleTimeString();
+            } catch (err) {
+                console.error('加载失败:', err);
+                document.getElementById('refreshInfo').textContent = '加载失败';
+            }
+        }
+
+        function renderStatus(health) {
+            // QC
+            const qc = health.qc || {};
+            const qcEl = document.getElementById('qcStatus');
+            if (qc.status === 'online') {
+                qcEl.innerHTML = '<span class="status-dot dot-green"></span>在线';
+            } else if (qc.status === 'delayed') {
+                qcEl.innerHTML = '<span class="status-dot dot-yellow"></span>延迟 ' + (qc.last_bar_age_min || '?') + 'm';
+            } else if (qc.status === 'offline') {
+                qcEl.innerHTML = '<span class="status-dot dot-red"></span>离线';
+            } else {
+                qcEl.innerHTML = '<span class="status-dot dot-gray"></span>' + (qc.status || '无数据');
+            }
+
+            // qc_compute
+            const comp = health.qc_compute || {};
+            const compEl = document.getElementById('computeStatus');
+            if (comp.status === 'running') {
+                compEl.innerHTML = '<span class="status-dot dot-green"></span>运行';
+            } else if (comp.status === 'offline') {
+                compEl.innerHTML = '<span class="status-dot dot-red"></span>离线';
+            } else {
+                compEl.innerHTML = '<span class="status-dot dot-' + (comp.status === 'error' ? 'red' : 'gray') + '"></span>' + (comp.status || '--');
+            }
+
+            // write mode
+            document.getElementById('writeMode').textContent = health.write_mode || '--';
+        }
+
+        function renderTodayStats(today) {
+            if (!today) return;
+            const stats = [
+                { label: 'SIGNALS', value: today.signals },
+                { label: 'ORDERS', value: today.orders },
+                { label: 'QC BARS', value: today.qc_bars },
+                { label: 'QC SIGNALS', value: today.qc_signals },
+                { label: 'TARGETS', value: today.daily_targets },
+                { label: 'EVENTS', value: today.events }
+            ];
+            document.getElementById('todayStats').innerHTML = stats.map(s =>
+                `<div class="stat-mini"><div class="stat-mini-label">${s.label}</div><div class="stat-mini-value">${s.value || 0}</div></div>`
+            ).join('');
+        }
+
+        function renderFreshness(data) {
+            const el = document.getElementById('freshnessArea');
+            if (!data || Object.keys(data).length === 0) {
+                el.innerHTML = '<div class="loading-text">暂无数据</div>';
+                return;
+            }
+            const tfs = ['5m', '15m', '30m', '1H', '4H', '1D', '1W'];
+            let html = '';
+            tfs.forEach(tf => {
+                const item = data[tf];
+                if (!item) {
+                    html += `<div class="freshness-row">
+                        <span class="freshness-label">${tf}</span>
+                        <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:0;background:#64748b"></div></div>
+                        <span class="freshness-age" style="color:var(--muted)">--</span>
+                    </div>`;
+                    return;
+                }
+                const age = item.age_min || 0;
+                let color, pct;
+                if (age <= 2) { color = '#22c55e'; pct = 100; }
+                else if (age <= 5) { color = '#eab308'; pct = 70; }
+                else if (age <= 15) { color = '#f97316'; pct = 40; }
+                else { color = '#ef4444'; pct = 15; }
+
+                html += `<div class="freshness-row">
+                    <span class="freshness-label">${tf}</span>
+                    <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+                    <span class="freshness-age" style="color:${color}">${age}m</span>
+                </div>`;
+            });
+            el.innerHTML = html;
+        }
+
+        function renderEngines(computeData) {
+            const el = document.getElementById('engineArea');
+            const countEl = document.getElementById('engineCount');
+
+            if (!computeData || !computeData.engines || typeof computeData.engines !== 'object') {
+                el.innerHTML = '<div class="loading-text">无引擎数据</div>';
+                countEl.textContent = '0 engines';
+                return;
+            }
+
+            const engines = computeData.engines;
+            const keys = Object.keys(engines);
+            countEl.textContent = (computeData.ready_engines || 0) + '/' + (computeData.total_engines || keys.length) + ' ready';
+
+            if (keys.length === 0) {
+                el.innerHTML = '<div class="loading-text">无引擎数据</div>';
+                return;
+            }
+
+            let html = '<table class="data-table"><thead><tr><th>SYMBOL/TF</th><th>BARS</th><th>READY</th><th>LAST</th></tr></thead><tbody>';
+            keys.sort().forEach(key => {
+                const eng = engines[key];
+                const readyIcon = eng.is_ready ? '✅' : '⏳';
+                const lastClose = eng.last_close ? '$' + Number(eng.last_close).toFixed(2) : '--';
+                html += `<tr>
+                    <td>${key}</td>
+                    <td>${eng.bar_count || 0}</td>
+                    <td>${readyIcon}</td>
+                    <td>${lastClose}</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            el.innerHTML = html;
+        }
+
+        function renderConfig(summary) {
+            const el = document.getElementById('configArea');
+            const items = [
+                { key: 'trading_enabled', label: 'TRADING', val: summary.trading_enabled },
+                { key: 'qc_write_mode', label: 'WRITE MODE', val: summary.write_mode },
+                { key: 'compute_enabled', label: 'COMPUTE', val: summary.compute_enabled },
+                { key: 'daily_target_filter', label: 'TARGET FILTER', val: summary.daily_target_filter },
+                { key: 'max_positions', label: 'MAX POS', val: summary.max_positions },
+            ];
+
+            // 额外添加config中的关键项
+            const extraKeys = ['sl_atr_mult', 'tp_atr_mult', 'max_loss_per_trade', 'signal_interval_min'];
+            extraKeys.forEach(k => {
+                if (summary.config && summary.config[k]) {
+                    items.push({ key: k, label: k.toUpperCase().replace(/_/g, ' '), val: summary.config[k] });
+                }
+            });
+
+            el.innerHTML = '<div class="config-grid">' + items.map(item => {
+                let valClass = 'val-neutral';
+                let display = String(item.val);
+                if (item.val === true || item.val === 'true') { valClass = 'val-on'; display = 'ON'; }
+                else if (item.val === false || item.val === 'false') { valClass = 'val-off'; display = 'OFF'; }
+                return `<div class="config-item">
+                    <span class="config-key">${item.label}</span>
+                    <span class="config-val ${valClass}">${display}</span>
+                </div>`;
+            }).join('') + '</div>';
+        }
+
+        function renderEvents(events) {
+            const el = document.getElementById('eventArea');
+            const countEl = document.getElementById('eventCount');
+
+            if (!events || events.length === 0) {
+                el.innerHTML = '<div class="loading-text">暂无事件</div>';
+                countEl.textContent = '0';
+                return;
+            }
+
+            countEl.textContent = events.length;
+            const levelColors = { info: '#64748b', warning: '#eab308', error: '#ef4444' };
+            const sourceLabels = { qc: 'QC', qc_compute: 'COMP', pb: 'PB', manual: 'MANUAL' };
+
+            el.innerHTML = events.map(ev => {
+                const dotColor = levelColors[ev.level] || '#64748b';
+                const src = sourceLabels[ev.source] || ev.source;
+                const time = ev.us_time ? ev.us_time.slice(11, 16) : '';
+                return `<div class="event-item">
+                    <div class="event-dot" style="background:${dotColor}"></div>
+                    <div class="event-content">
+                        <div class="event-title">${ev.title || '--'}</div>
+                        <div class="event-meta">${time} · ${src} · ${ev.event_type || ''}</div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initAuth();
+            document.getElementById('nav').innerHTML = renderNav('/system.html');
+            loadSystemData();
+            refreshTimer = setInterval(loadSystemData, 30000);
+        });
+    </script>
+</body>
+</html>

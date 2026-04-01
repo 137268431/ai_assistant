@@ -177,7 +177,8 @@ function renderNav(activePage) {
     { path: '/orders.html', icon: '📋', label: '订单' },
     { path: '/order_details.html', icon: '📜', label: '明细' },
     { path: '/indicators.html', icon: '📈', label: '指标' },
-    { path: '/stats.html', icon: '📊', label: '统计' }
+    { path: '/stats.html', icon: '📊', label: '统计' },
+    { path: '/system.html', icon: '🖥️', label: '监控' }
   ];
 
   return `
@@ -864,12 +865,15 @@ function getCommonStyles() {
         background: rgba(8,11,16,0.96);
         backdrop-filter: blur(16px);
         border-top: 1px solid var(--border);
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
+        display: flex;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
         padding: 10px 0 max(20px, env(safe-area-inset-bottom));
         z-index: 50;
         gap: 0;
       }
+      .nav::-webkit-scrollbar { display: none; }
 
       .nav-item {
         display: flex;
@@ -884,6 +888,7 @@ function getCommonStyles() {
         transition: color 0.2s;
         min-width: 0;
         padding: 0 2px;
+        flex: 1 0 calc(100% / 8);
       }
 
       .nav-item.active { color: var(--accent); }

@@ -335,6 +335,7 @@ const CONFIG_GROUPS = {
   '定时调度': ['signal_interval_min','config_interval_min', 'watchlist_interval_min', 'health_check_trading_interval_min', 'health_check_nontrading_interval_hours'],
   '日志监控': ['log_level', 'health_check_enabled', 'health_check_email', 'alert_email'],
   '大盘监控': ['market_index_symbols'],
+  'QC Compute': ['qc_write_mode', 'qc_compute_enabled', 'qc_bar_publish_enabled', 'daily_target_filter_on', 'atr_multiplier'],
   '其他': ['eod_keep_symbols', 'clear_daily_cache']
 }
 
@@ -416,13 +417,24 @@ function renderControl(config) {
   const value = config.value || config.default_value || ''
 
   // 布尔值 - Toggle
-  if (value === 'TRUE' || value === 'FALSE' || key.includes('enabled') || key.includes('email') || key.includes('_auto_') || key === 'clear_daily_cache') {
+  if (value === 'TRUE' || value === 'FALSE' || key.includes('enabled') || key.includes('email') || key.includes('_auto_') || key === 'clear_daily_cache' || key === 'daily_target_filter_on') {
     const isActive = value === 'TRUE'
     return `
       <div class="toggle-container">
         <div class="toggle ${isActive ? 'active' : ''}" onclick="toggleBool('${key}', this)"></div>
         <span class="toggle-label">${isActive ? '开启' : '关闭'}</span>
       </div>
+    `
+  }
+
+  // QC写入模式 - Select
+  if (key === 'qc_write_mode') {
+    return `
+      <select class="config-select" onchange="updateValue('${key}', this.value)">
+        <option value="shadow" ${value === 'shadow' ? 'selected' : ''}>shadow (仅写新表)</option>
+        <option value="primary" ${value === 'primary' ? 'selected' : ''}>primary (双写新旧表)</option>
+        <option value="settled" ${value === 'settled' ? 'selected' : ''}>settled (仅写旧表)</option>
+      </select>
     `
   }
 
