@@ -2,6 +2,7 @@
 
 const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
 const { notifyReverseSignal, notifyReverseStatus } = require(`${__hooks}/lib/feishu_reverse.js`)
+const envUtils = require(`${__hooks}/lib/environment.js`)
 
 /**
  * reverse_signals.pb.js
@@ -20,11 +21,10 @@ function parseTriggeredSignals(value) {
   return []
 }
 
-function getThreshold() {
+function getThreshold(environment) {
   let threshold = 6
   try {
-    const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'")
-    threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6
+    threshold = parseInt(envUtils.getConfigValue("reverse_signal_threshold", "6", environment)) || 6
   } catch (e) {
     console.log(`[ReverseSignal] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`)
   }
@@ -45,14 +45,15 @@ function resolveIndicatorAction(score, targetState, forcedActionType) {
   return "cancel"
 }
 
-function loadIndicators(symbol) {
+function loadIndicators(symbol, environment) {
+  const runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
   const records = $app.findRecordsByFilter(
     "indicators",
-    "symbol = {:symbol}",
+    "(environment = {:env} || environment = '') && symbol = {:symbol}",
     "-bar_time_ms",
     1,
     0,
-    { symbol: symbol }
+    { env: runtimeEnvironment, symbol: symbol }
   )
   return records && records.length > 0 ? records[0] : null
 }
@@ -117,34 +118,36 @@ function buildReverseResponse(record, created, duplicate) {
   }
 }
 
-function listReverseRecords(dateText, maxItems) {
+function listReverseRecords(dateText, maxItems, environment) {
   const limit = Math.max(1, Math.min(Number(maxItems) || 200, 500))
+  const runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
   if (dateText) {
     const range = reverseUtils.buildDateRange(dateText)
     if (range) {
       return $app.findRecordsByFilter(
         "reverse_signals",
-        "bar_time_ms >= {:start} && bar_time_ms <= {:end}",
+        "environment = {:env} && bar_time_ms >= {:start} && bar_time_ms <= {:end}",
         "-created",
         limit,
         0,
-        { start: range.start_ms, end: range.end_ms }
+        { env: runtimeEnvironment, start: range.start_ms, end: range.end_ms }
       ) || []
     }
   }
-  return $app.findRecordsByFilter("reverse_signals", "", "-created", limit, 0) || []
+  return $app.findRecordsByFilter("reverse_signals", "environment = {:env}", "-created", limit, 0, { env: runtimeEnvironment }) || []
 }
 
 // GET /api/custom/reverse/list - 获取某日反转信号列表
 routerAdd("GET", "/api/custom/reverse/list", (c) => {
   try {
     const dateText = c.request.url.query().get("date") || ""
+    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
     const symbol = String(c.request.url.query().get("symbol") || "").toUpperCase()
     const statusFilter = String(c.request.url.query().get("status") || "")
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean)
-    const signals = listReverseRecords(dateText, c.request.url.query().get("limit"))
+    const signals = listReverseRecords(dateText, c.request.url.query().get("limit"), environment)
       .map((record) => reverseUtils.normalizeReverseRecord(record))
       .filter((signal) => !symbol || signal.symbol === symbol)
       .filter((signal) => statusFilter.length === 0 || statusFilter.includes(signal.status))
@@ -159,6 +162,7 @@ routerAdd("GET", "/api/custom/reverse/list", (c) => {
 // POST /api/custom/reverse/calculate - 从 indicators 计算逆向信号并写入
 routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
   const data = c.requestInfo().body || c.requestInfo().data || {}
+  const environment = envUtils.getRuntimeEnvironmentFromData(data, envUtils.LIVE_ENVIRONMENT)
   const symbol = String(data.symbol || "").trim().toUpperCase()
   const direction = String(data.direction || "").trim().toLowerCase()
   const forcedActionType = String(data.force_action_type || data.action_type || "").trim()
@@ -177,7 +181,7 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
   }
 
   try {
-    const activeOrder = reverseUtils.findLatestActiveEntryOrder(symbol, direction)
+    const activeOrder = reverseUtils.findLatestActiveEntryOrder(symbol, direction, environment)
     const orderContext = reverseUtils.buildOrderContext(activeOrder)
 
     if (!orderContext || (orderContext.direction && orderContext.direction !== direction)) {
@@ -206,7 +210,7 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
       return c.json(400, { error: "Action cancel requires pending_entry" })
     }
 
-    const indicatorRecord = loadIndicators(symbol)
+    const indicatorRecord = loadIndicators(symbol, environment)
     if (!indicatorRecord) {
       return c.json(404, { error: "No indicators found for symbol" })
     }
@@ -267,6 +271,7 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
     }
 
     const upsertResult = reverseUtils.upsertReverseRecord({
+      environment: environment,
       symbol: symbol,
       direction: direction,
       source: "indicator",
@@ -282,7 +287,7 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
       cn_time: indicatorRecord.get("cn_time") || "",
     })
 
-    const threshold = getThreshold()
+    const threshold = getThreshold(environment)
     if (score >= threshold) {
       try {
         notifyReverseSignal(upsertResult.record, {
@@ -303,12 +308,14 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
 // GET /api/custom/reverse/pending - 获取未处理的逆向信号
 routerAdd("GET", "/api/custom/reverse/pending", (c) => {
   try {
+    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
     const records = $app.findRecordsByFilter(
       "reverse_signals",
-      "status = 'pending'",
+      "status = 'pending' && environment = {:env}",
       "-priority,-bar_time_ms",
       200,
-      0
+      0,
+      { env: environment }
     ) || []
 
     return c.json(200, {

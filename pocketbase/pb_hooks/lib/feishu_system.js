@@ -5,6 +5,7 @@
  */
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
+var envUtils = require(`${__hooks}/lib/environment.js`)
 
 var PB_HOST = "https://pb.lzw-glory.top"
 var SYSTEM_CHAT_ID = "oc_b7b52fc28816d90e27ce50ca7922a9ac"
@@ -34,10 +35,11 @@ function getTimeStrings() {
     }
 }
 
-function buildSystemCard(level, source, title, detailFields) {
+function buildSystemCard(level, source, title, detailFields, environment) {
     var cfg = LEVEL_CONFIG[level] || LEVEL_CONFIG.info
     var srcLabel = SOURCE_LABELS[source] || source
     var times = getTimeStrings()
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
 
     var elements = []
 
@@ -69,7 +71,7 @@ function buildSystemCard(level, source, title, detailFields) {
             tag: "button",
             text: { tag: "plain_text", content: "📊 查看系统状态" },
             type: "default",
-            multi_url: { url: PB_HOST + "/system.html" }
+            multi_url: { url: PB_HOST + "/system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
         }]
     })
 
@@ -78,11 +80,11 @@ function buildSystemCard(level, source, title, detailFields) {
         data: {
             template_id: "ctp_AA0vSwsFswsr",
             template_variable: {
-                title: cfg.emoji + " " + title,
+                title: cfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment),
                 content: JSON.stringify({
                     config: { wide_screen_mode: true },
                     header: {
-                        title: { tag: "plain_text", content: cfg.emoji + " " + title },
+                        title: { tag: "plain_text", content: cfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment) },
                         template: cfg.template
                     },
                     elements: elements
@@ -92,10 +94,11 @@ function buildSystemCard(level, source, title, detailFields) {
     }
 }
 
-function buildSimpleCard(level, source, title, detailFields) {
+function buildSimpleCard(level, source, title, detailFields, environment) {
     var cfg = LEVEL_CONFIG[level] || LEVEL_CONFIG.info
     var srcLabel = SOURCE_LABELS[source] || source
     var times = getTimeStrings()
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
 
     var elements = []
 
@@ -127,14 +130,14 @@ function buildSimpleCard(level, source, title, detailFields) {
             tag: "button",
             text: { tag: "plain_text", content: "📊 查看系统状态" },
             type: "default",
-            multi_url: { url: PB_HOST + "/system.html" }
+            multi_url: { url: PB_HOST + "/system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
         }]
     })
 
     var card = {
         config: { wide_screen_mode: true },
         header: {
-            title: { tag: "plain_text", content: cfg.emoji + " " + title },
+            title: { tag: "plain_text", content: cfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment) },
             template: cfg.template
         },
         elements: elements
@@ -143,7 +146,8 @@ function buildSimpleCard(level, source, title, detailFields) {
     return card
 }
 
-function notifySystemEvent(eventType, level, source, title, detail) {
+function notifySystemEvent(eventType, level, source, title, detail, environment) {
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var detailFields = []
     if (detail && typeof detail === "object") {
         var keys = Object.keys(detail)
@@ -154,7 +158,7 @@ function notifySystemEvent(eventType, level, source, title, detail) {
         detailFields.push({ label: "详情", value: detail })
     }
 
-    var card = buildSimpleCard(level, source, title, detailFields)
+    var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment)
     var success = feishuApp.sendMessage("interactive", card, SYSTEM_CHAT_ID, "chat_id")
     if (!success) {
         console.error("[FeishuSystem] 发送失败: " + title)
@@ -163,6 +167,7 @@ function notifySystemEvent(eventType, level, source, title, detail) {
 }
 
 function notifyHeartbeat(source, status, extra) {
+    var runtimeEnvironment = extra && extra.environment ? extra.environment : envUtils.LIVE_ENVIRONMENT
     var detail = { "状态": status }
     if (extra) {
         var keys = Object.keys(extra)
@@ -171,27 +176,27 @@ function notifyHeartbeat(source, status, extra) {
         }
     }
     var level = status === "ok" || status === "running" ? "info" : "error"
-    return notifySystemEvent("heartbeat", level, source, source + " 心跳 - " + status, detail)
+    return notifySystemEvent("heartbeat", level, source, source + " 心跳 - " + status, detail, runtimeEnvironment)
 }
 
-function notifyAlert(source, title, detail) {
-    return notifySystemEvent("alert", "error", source, title, detail)
+function notifyAlert(source, title, detail, environment) {
+    return notifySystemEvent("alert", "error", source, title, detail, environment)
 }
 
-function notifyWarning(source, title, detail) {
-    return notifySystemEvent("alert", "warning", source, title, detail)
+function notifyWarning(source, title, detail, environment) {
+    return notifySystemEvent("alert", "warning", source, title, detail, environment)
 }
 
-function notifyStatusChange(source, title, detail) {
-    return notifySystemEvent("status_change", "info", source, title, detail)
+function notifyStatusChange(source, title, detail, environment) {
+    return notifySystemEvent("status_change", "info", source, title, detail, environment)
 }
 
-function notifyComputeStats(stats) {
-    return notifySystemEvent("compute_stats", "info", "qc_compute", "计算完成", stats)
+function notifyComputeStats(stats, environment) {
+    return notifySystemEvent("compute_stats", "info", "qc_compute", "计算完成", stats, environment)
 }
 
-function notifyDailyReport(report) {
-    return notifySystemEvent("daily_report", "info", "pb", "每日汇总", report)
+function notifyDailyReport(report, environment) {
+    return notifySystemEvent("daily_report", "info", "pb", "每日汇总", report, environment)
 }
 
 module.exports = {

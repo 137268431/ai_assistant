@@ -8,44 +8,73 @@ if (!token) {
 
 console.log('✓ Token:', token.slice(0, 30) + '...');
 
+function cfg(key, value, defaultValue, displayName, groupName, sortOrder, description) {
+  return {
+    key,
+    value,
+    default_value: defaultValue,
+    display_name: displayName,
+    group_name: groupName,
+    sort_order: sortOrder,
+    description
+  };
+}
+
 const configData = [
-  {"key": "trading_enabled", "value": "TRUE", "default_value": "TRUE", "description": "总开关: OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步"},
-  {"key": "max_positions", "value": "3", "default_value": "3", "description": "最大同时持仓数"},
-  {"key": "max_daily_sl", "value": "3", "default_value": "3", "description": "每日止损熔断次数"},
-  {"key": "max_loss_per_trade", "value": "150", "default_value": "150", "description": "单笔最大亏损($)"},
-  {"key": "risk_reward_ratio", "value": "1.5", "default_value": "1.5", "description": "盈亏比"},
-  {"key": "sl_atr_mult", "value": "2.0", "default_value": "2.0", "description": "止损ATR倍数"},
-  {"key": "tp_atr_mult", "value": "3.0", "default_value": "3.0", "description": "止盈ATR倍数"},
-  {"key": "atr_deviation", "value": "0.30", "default_value": "0.30", "description": "ATR偏离阈值(触发调整)"},
-  {"key": "eod_keep_symbols", "value": "BOXX,IBKR", "default_value": "BOXX,IBKR", "description": "EOD不平仓标的(逗号分隔)"},
-  {"key": "day_start_time", "value": "09:20", "default_value": "09:20", "description": "层级2 生命周期: 每日开盘前重置日内状态(不负责配置/标的同步)"},
-  {"key": "eod_close_time", "value": "15:55", "default_value": "15:55", "description": "层级2 生命周期: EOD 执行平仓/撤单收尾"},
-  {"key": "trading_start_time", "value": "09:30", "default_value": "09:30", "description": "层级3 执行窗口开始: 与 trading_end_time 共同定义信号执行窗口"},
-  {"key": "trading_end_time", "value": "16:00", "default_value": "16:00", "description": "层级3 执行窗口结束: signal_interval_min 仅在该窗口内生效"},
-  {"key": "order_start_time", "value": "09:30", "default_value": "09:30", "description": "层级4 下单窗口开始: 仅在 [order_start_time, order_end_time] 允许新开仓"},
-  {"key": "order_end_time", "value": "15:30", "default_value": "15:30", "description": "层级4 下单窗口结束: 超过该时间仍执行逻辑但不再新开仓"},
-  {"key": "sync_start_time", "value": "04:00", "default_value": "04:00", "description": "层级3.5 同步窗口开始: 配置刷新与Watchlist同步独立时间范围"},
-  {"key": "sync_end_time", "value": "20:00", "default_value": "20:00", "description": "层级3.5 同步窗口结束: config/watchlist 间隔任务在该窗口内生效"},
-  {"key": "signal_interval_min", "value": "2", "default_value": "2", "description": "信号获取间隔(分钟)"},
-  {"key": "config_interval_min", "value": "5", "default_value": "5", "description": "联动 sync_*: 仅在同步窗口 [sync_start_time, sync_end_time] 内按该间隔刷新配置"},
-  {"key": "watchlist_interval_min", "value": "5", "default_value": "5", "description": "联动 sync_*: 仅在同步窗口 [sync_start_time, sync_end_time] 内按该间隔同步标的"},
-  {"key": "health_check_trading_interval_min", "value": "30", "default_value": "30", "description": "健康检查间隔(盘中): 交易时段内每N分钟执行一次全量检查"},
-  {"key": "health_check_nontrading_interval_hours", "value": "2", "default_value": "2", "description": "健康检查间隔(盘前盘后): 非交易时段内每N小时执行一次全量检查"},
-  {"key": "log_level", "value": "INFO", "default_value": "INFO", "description": "日志级别：DEBUG(详细)/INFO(重要)/WARN(仅告警)/ERROR(错误)"},
-  {"key": "signal_validity_minutes", "value": "30", "default_value": "30", "description": "信号有效期(分钟): 超过此时间的信号将被忽略"},
-  {"key": "health_check_enabled", "value": "TRUE", "default_value": "TRUE", "description": "健康检查开关: 定期检查服务运行状态"},
-  {"key": "health_check_email", "value": "TRUE", "default_value": "TRUE", "description": "健康检查邮件: 实盘模式下是否发送检查报告邮件"},
-  {"key": "alert_email", "value": "137268431@qq.com", "default_value": "137268431@qq.com", "description": "邮件通知收件人: 状态/订单/健康检查/巡检统一收件邮箱"},
-  {"key": "clear_daily_cache", "value": "FALSE", "default_value": "FALSE", "description": "清除当天缓存模式: 手动数据恢复后打开，清除所有 daily keys，恢复正常后关闭"},
-  {"key": "signal_auto_confirm", "value": "FALSE", "default_value": "FALSE", "description": "信号自动确认: TRUE时信号直接进入pending状态自动执行，FALSE时需在管理页面手动确认"},
-  {"key": "market_index_symbols", "value": "SPY,QQQ,VIX", "default_value": "SPY,QQQ,VIX", "description": "大盘指数代码(逗号分隔): 用于监控和关联分析"},
-  {"key": "pb_scheduler_enabled", "value": "TRUE", "default_value": "TRUE", "description": "PB定时调度总开关: 仅控制PB前端页面的定时刷新，QC算法调度不受此开关影响"},
-  {"key": "order_validity_minutes", "value": "30", "default_value": "30", "description": "订单有效期(分钟): Init/Submitted状态的订单超过此时间自动标记为Canceled"},
-  {"key": "qc_write_mode", "value": "shadow", "default_value": "shadow", "description": "QC写入模式: shadow(仅写新表) / primary(双写新旧表) / settled(仅写旧表,TV停写)"},
-  {"key": "qc_compute_enabled", "value": "TRUE", "default_value": "TRUE", "description": "QC Compute服务开关: 控制定时指标计算和盘前扫描"},
-  {"key": "qc_bar_publish_enabled", "value": "TRUE", "default_value": "TRUE", "description": "QC OHLCV数据发布开关: 控制BarPublisher是否向PB推送K线数据"},
-  {"key": "daily_target_filter_on", "value": "FALSE", "default_value": "FALSE", "description": "每日标的过滤开关: 开启后信号需经daily_targets筛选才进入执行流程"},
-  {"key": "atr_multiplier", "value": "1.5", "default_value": "1.5", "description": "ATR倍数: 用于GetCurrentATR计算动态止盈止损距离"}
+  cfg('trading_enabled', 'TRUE', 'TRUE', '交易总开关', '核心交易', 100, 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
+  cfg('signal_auto_confirm', 'FALSE', 'FALSE', '信号自动确认', '核心交易', 110, 'TRUE 时信号直接进入 pending 状态自动执行，FALSE 时需在管理页面手动确认'),
+  cfg('max_positions', '3', '3', '最大持仓数', '核心交易', 120, '最大同时持仓数'),
+  cfg('max_daily_sl', '3', '3', '每日止损熔断次数', '核心交易', 130, '达到次数上限后停止当日新增交易'),
+  cfg('max_loss_per_trade', '150', '150', '单笔最大亏损', '核心交易', 140, '单笔最大亏损上限($)'),
+
+  cfg('risk_reward_ratio', '1.5', '1.5', '盈亏比', '风险参数', 200, '策略目标盈亏比'),
+  cfg('sl_atr_mult', '2.0', '2.0', '止损 ATR 倍数', '风险参数', 210, '止损价距离 ATR 倍数'),
+  cfg('tp_atr_mult', '3.0', '3.0', '止盈 ATR 倍数', '风险参数', 220, '止盈价距离 ATR 倍数'),
+  cfg('atr_deviation', '0.30', '0.30', 'ATR 偏离阈值', '风险参数', 230, '触发 ATR 动态调整的偏离阈值'),
+  cfg('atr_multiplier', '1.5', '1.5', 'ATR 计算倍数', '风险参数', 240, '用于 GetCurrentATR 计算动态止盈止损距离'),
+  cfg('eod_keep_symbols', 'BOXX,IBKR', 'BOXX,IBKR', 'EOD 保留标的', '风险参数', 250, '收盘不平仓的标的，逗号分隔'),
+
+  cfg('day_start_time', '09:20', '09:20', '日内开始时间', '执行时间', 300, '层级2 生命周期: 每日开盘前重置日内状态'),
+  cfg('trading_start_time', '09:30', '09:30', '交易执行开始', '执行时间', 310, '层级3 执行窗口开始'),
+  cfg('trading_end_time', '16:00', '16:00', '交易执行结束', '执行时间', 320, '层级3 执行窗口结束'),
+  cfg('order_start_time', '09:30', '09:30', '下单窗口开始', '执行时间', 330, '层级4 下单窗口开始，仅允许新开仓'),
+  cfg('order_end_time', '15:30', '15:30', '下单窗口结束', '执行时间', 340, '层级4 下单窗口结束，超过时间不再新开仓'),
+  cfg('eod_close_time', '15:55', '15:55', '收盘清理时间', '执行时间', 350, 'EOD 执行平仓、撤单和收尾'),
+
+  cfg('sync_start_time', '04:00', '04:00', '同步窗口开始', '任务调度', 400, '配置刷新与 Watchlist 同步的开始时间'),
+  cfg('sync_end_time', '20:00', '20:00', '同步窗口结束', '任务调度', 410, '配置刷新与 Watchlist 同步的结束时间'),
+  cfg('signal_interval_min', '2', '2', '信号拉取间隔', '任务调度', 420, '信号获取间隔(分钟)'),
+  cfg('config_interval_min', '5', '5', '配置刷新间隔', '任务调度', 430, '联动 sync_*: 同步窗口内按该间隔刷新配置'),
+  cfg('watchlist_interval_min', '5', '5', '标的同步间隔', '任务调度', 440, '联动 sync_*: 同步窗口内按该间隔同步标的'),
+  cfg('signal_validity_minutes', '30', '30', '信号有效期', '任务调度', 450, '超过此时间的信号将被忽略'),
+  cfg('order_validity_minutes', '30', '30', '订单有效期', '任务调度', 460, 'Init/Submitted 状态的订单超过此时间自动标记为 Canceled'),
+  cfg('pb_scheduler_enabled', 'TRUE', 'TRUE', 'PB 前端定时刷新', '任务调度', 470, '仅控制 PB 前端页面的定时刷新，QC 算法调度不受此开关影响'),
+
+  cfg('notification_channel', 'feishu', 'feishu', '通知渠道', '通知中心', 500, 'feishu=默认飞书，email=仅邮件，all=飞书+邮件；订单飞书由 PB 订单卡片触发'),
+  cfg('alert_email', '137268431@qq.com', '137268431@qq.com', '邮件收件人', '通知中心', 510, '仅在通知渠道包含 email 时生效'),
+  cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态通知', '通知中心', 520, '开盘、重启等状态通知开关'),
+  cfg('order_notify_enabled', 'TRUE', 'TRUE', '订单邮件补充通知', '通知中心', 530, '控制 QC 侧订单邮件补充通知；飞书订单卡片由 PB 同步触发'),
+  cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '通知中心', 540, '收盘后发送当日交易汇总'),
+  cfg('manual_stop_notify_enabled', 'TRUE', 'TRUE', '手动停止通知', '通知中心', 550, '手动停止算法时发送通知'),
+  cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '健康检查通知', '通知中心', 560, '盘前、盘中、盘后健康状态汇报'),
+  cfg('inspection_notify_enabled', 'TRUE', 'TRUE', '巡检告警', '通知中心', 570, '孤立持仓、恢复异常等巡检告警'),
+  cfg('order_validation_notify_enabled', 'TRUE', 'TRUE', '订单校验异常告警', '通知中心', 580, '实际订单与缓存状态不一致时的异常告警'),
+  cfg('atr_stop_adjust_notify_enabled', 'TRUE', 'TRUE', 'ATR 止损调整通知', '通知中心', 590, 'ATR 波动引发止损位调整时发送通知'),
+
+  cfg('health_check_enabled', 'TRUE', 'TRUE', '健康检查总开关', '健康巡检', 700, '定期执行服务运行状态与持仓检查'),
+  cfg('health_check_trading_interval_min', '30', '30', '盘中健康检查间隔', '健康巡检', 710, '交易时段内每 N 分钟执行一次全量检查'),
+  cfg('health_check_nontrading_interval_hours', '2', '2', '非交易时段健康检查间隔', '健康巡检', 720, '盘前盘后每 N 小时执行一次全量检查'),
+  cfg('clear_daily_cache', 'FALSE', 'FALSE', '清除当日缓存', '健康巡检', 730, '手动数据恢复后打开，清除所有 daily keys，恢复正常后关闭'),
+
+  cfg('log_level', 'INFO', 'INFO', '日志级别', '运行模式', 800, 'DEBUG(详细) / INFO(重要) / WARN(告警) / ERROR(错误)'),
+  cfg('deployment_mode', 'live', 'live', '部署模式', '运行模式', 810, 'live=实盘，paper=模拟盘；用于统一标记数据来源'),
+
+  cfg('qc_write_mode', 'shadow', 'shadow', 'QC 写入模式', 'PB / QC 服务', 900, 'shadow(仅写新表) / primary(双写新旧表) / settled(仅写旧表, TV停写)'),
+  cfg('qc_compute_enabled', 'TRUE', 'TRUE', 'QC Compute 服务开关', 'PB / QC 服务', 910, '控制定时指标计算和盘前扫描'),
+  cfg('qc_bar_publish_enabled', 'TRUE', 'TRUE', 'QC K线发布开关', 'PB / QC 服务', 920, '控制 BarPublisher 是否向 PB 推送 OHLCV 数据'),
+
+  cfg('market_index_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '大盘指数标的', '市场分析', 1000, '用于监控和关联分析的大盘指数代码，逗号分隔'),
+  cfg('daily_target_filter_on', 'FALSE', 'FALSE', '每日目标筛选', '市场分析', 1010, '开启后信号需经 daily_targets 筛选才进入执行流程')
 ];
 
 const watchlistData = [
@@ -170,28 +199,84 @@ const watchlistData = [
   {"ticker": "VZ", "exchange": "BATS", "industry": "Wireless Telecommunications", "created_us": "2026-02-25 11:57", "created_cn": "2026-02-26 00:57", "updated_us": "2026-03-03 09:57", "updated_cn": "2026-03-03 22:57"}
 ];
 
-async function importData(collection, data) {
+function escapeFilterValue(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+async function findExistingRecord(collection, uniqueField, uniqueValue) {
+  if (!uniqueField) return null;
+
+  let filter = `${uniqueField} = "${escapeFilterValue(uniqueValue)}"`;
+  if (collection === 'config' || collection === 'watchlist') {
+    filter += ' && environment = "global"';
+  }
+
+  const res = await fetch(`${BASE_URL}/api/collections/${collection}/records?filter=${encodeURIComponent(filter)}&perPage=1`, {
+    headers: { 'Authorization': token }
+  });
+
+  if (!res.ok) return null;
+
+  const data = await res.json();
+  return data?.items?.[0] || null;
+}
+
+function normalizeImportItem(collection, item) {
+  if (collection === 'config') {
+    return {
+      ...item,
+      environment: item.environment || 'global'
+    };
+  }
+
+  if (collection === 'watchlist') {
+    return {
+      symbol: item.symbol || item.ticker,
+      exchange: item.exchange || '',
+      industry: item.industry || '',
+      created_us: item.created_us || '',
+      created_cn: item.created_cn || '',
+      updated_us: item.updated_us || '',
+      updated_cn: item.updated_cn || '',
+      note: item.note || '',
+      environment: item.environment || 'global'
+    };
+  }
+
+  return item;
+}
+
+async function importData(collection, data, uniqueField = null) {
   console.log(`\n开始导入 ${collection}...`);
   let success = 0, failed = 0;
 
   for (const item of data) {
     try {
-      const res = await fetch(`${BASE_URL}/api/collections/${collection}/records`, {
-        method: 'POST',
+      const payload = normalizeImportItem(collection, item);
+      const resolvedUniqueField = collection === 'watchlist' && uniqueField === 'ticker' ? 'symbol' : uniqueField;
+      const uniqueValue = resolvedUniqueField ? payload[resolvedUniqueField] : null;
+      const existing = resolvedUniqueField ? await findExistingRecord(collection, resolvedUniqueField, uniqueValue) : null;
+      const method = existing ? 'PATCH' : 'POST';
+      const endpoint = existing
+        ? `${BASE_URL}/api/collections/${collection}/records/${existing.id}`
+        : `${BASE_URL}/api/collections/${collection}/records`;
+
+      const res = await fetch(endpoint, {
+        method,
         headers: { 'Content-Type': 'application/json', 'Authorization': token },
-        body: JSON.stringify(item)
+        body: JSON.stringify(payload)
       });
 
       if (res.ok) {
-        console.log(`✓ ${item.key || item.ticker}`);
+        console.log(`${existing ? '↺' : '✓'} ${payload.key || payload.symbol || item.ticker}`);
         success++;
       } else {
         const err = await res.json();
-        console.error(`✗ ${item.key || item.ticker}:`, err.message);
+        console.error(`✗ ${payload.key || payload.symbol || item.ticker}:`, err.message);
         failed++;
       }
     } catch (e) {
-      console.error(`✗ ${item.key || item.ticker}:`, e.message);
+      console.error(`✗ ${item.key || item.symbol || item.ticker}:`, e.message);
       failed++;
     }
     await new Promise(r => setTimeout(r, 100));
@@ -202,7 +287,7 @@ async function importData(collection, data) {
 
 (async () => {
   console.log('🚀 开始导入...\n');
-  await importData('config', configData);
-  await importData('watchlist', watchlistData);
+  await importData('config', configData, 'key');
+  await importData('watchlist', watchlistData, 'ticker');
   console.log('\n🎉 完成！刷新页面查看');
 })();

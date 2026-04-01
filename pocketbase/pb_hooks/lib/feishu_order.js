@@ -5,6 +5,7 @@
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var orderEvents = require(`${__hooks}/lib/order_events.js`)
+var envUtils = require(`${__hooks}/lib/environment.js`)
 
 var PB_HOST = "https://pb.lzw-glory.top"
 
@@ -139,6 +140,7 @@ function buildOrderDisplayData(orderOrRecord) {
 
     return {
         symbol: get("symbol") || extra.symbol || "",
+        environment: get("environment") || extra.environment || envUtils.LIVE_ENVIRONMENT,
         direction: direction,
         directionText: directionText,
         color: color,
@@ -232,15 +234,16 @@ function getTradeGroupId(orderOrRecord) {
 
 function fetchTradeGroupRecords(orderOrRecord) {
     var tradeGroupId = getTradeGroupId(orderOrRecord)
+    var environment = envUtils.getRecordEnvironment(orderOrRecord, envUtils.LIVE_ENVIRONMENT)
     if (!tradeGroupId) return []
     try {
         return $app.findRecordsByFilter(
             "orders",
-            "trade_group_id = {:gid}",
+            "trade_group_id = {:gid} && environment = {:env}",
             "-created",
             100,
             0,
-            { gid: tradeGroupId }
+            { gid: tradeGroupId, env: environment }
         ) || []
     } catch (err) {
         console.error("[FeishuOrder] 查询交易组失败:", tradeGroupId, err)
@@ -364,9 +367,12 @@ function getTradeGroupPageDate(group) {
     )
 }
 
-function buildSignalPageUrl(signalId, pageDate) {
+function buildSignalPageUrl(signalId, pageDate, environment) {
     if (!signalId) return ""
     var url = PB_HOST + "/signals.html?signal_id=" + encodeURIComponent(signalId)
+    if (environment) {
+        url += "&environment=" + encodeURIComponent(environment)
+    }
     if (pageDate) {
         url += "&date=" + encodeURIComponent(pageDate)
     }
@@ -381,6 +387,9 @@ function buildOrderPageUrl(group, pageDate) {
         if (signalId) {
             detailUrl += "&signal_id=" + encodeURIComponent(signalId)
         }
+        if (group.primary && group.primary.environment) {
+            detailUrl += "&environment=" + encodeURIComponent(group.primary.environment)
+        }
         if (pageDate) {
             detailUrl += "&date=" + encodeURIComponent(pageDate)
         }
@@ -388,6 +397,9 @@ function buildOrderPageUrl(group, pageDate) {
     }
     if (signalId) {
         var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(signalId)
+        if (group.primary && group.primary.environment) {
+            listUrl += "&environment=" + encodeURIComponent(group.primary.environment)
+        }
         if (pageDate) {
             listUrl += "&date=" + encodeURIComponent(pageDate)
         }
@@ -399,7 +411,7 @@ function buildOrderPageUrl(group, pageDate) {
 function buildOrderViewElements(group) {
     var primary = group.primary || {}
     var pageDate = getTradeGroupPageDate(group)
-    var signalUrl = buildSignalPageUrl(primary.signal_id || "", pageDate)
+    var signalUrl = buildSignalPageUrl(primary.signal_id || "", pageDate, primary.environment || "")
     var orderUrl = buildOrderPageUrl(group, pageDate)
     var columns = []
 
@@ -587,7 +599,7 @@ function buildOrderActionElements(group) {
                     width: "fill",
                     action_type: "request",
                     url: PB_HOST + "/webhook/feishu/callback",
-                    value: { action: "cancel", order_id: actionTargetId }
+                    value: { action: "cancel", order_id: actionTargetId, environment: primary.environment || envUtils.LIVE_ENVIRONMENT }
                 }]
             }]
         }]
@@ -608,7 +620,7 @@ function buildOrderActionElements(group) {
                     width: "fill",
                     action_type: "request",
                     url: PB_HOST + "/webhook/feishu/callback",
-                    value: { action: "close", order_id: actionTargetId }
+                    value: { action: "close", order_id: actionTargetId, environment: primary.environment || envUtils.LIVE_ENVIRONMENT }
                 }]
             }]
         }]
@@ -624,7 +636,10 @@ function buildOrderCard(orderOrRecord, options) {
     var latest = group.latest || primary
     var info = getTradeGroupStatusInfo(group)
     var titleTime = latest.updated_us_time || latest.us_time || latest.order_time || ""
-    var title = info.emoji + " " + info.text + " · " + (primary.symbol || latest.symbol || "-") + (titleTime ? " · " + titleTime : "")
+    var title = envUtils.labelTitleWithEnvironment(
+        info.emoji + " " + info.text + " · " + (primary.symbol || latest.symbol || "-") + (titleTime ? " · " + titleTime : ""),
+        primary.environment || latest.environment || envUtils.LIVE_ENVIRONMENT
+    )
     var statusMessage = opts.message || info.message
     var elements = []
 
@@ -728,9 +743,10 @@ function handleOrderCardCallback(c, options) {
     var opts = options || {}
     var action = opts.action || ""
     var orderId = opts.orderId || ""
+    var environment = envUtils.normalizeRuntimeEnvironment(opts.environment || "", envUtils.LIVE_ENVIRONMENT)
     var updateToken = opts.updateToken || null
 
-    var records = $app.findRecordsByFilter("orders", "unique_id = {:id}", "", 1, 0, { id: orderId })
+    var records = $app.findRecordsByFilter("orders", "unique_id = {:id} && environment = {:env}", "", 1, 0, { id: orderId, env: environment })
     if (!records || records.length === 0) {
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "error", content: "订单不存在" },
@@ -798,6 +814,7 @@ function handleOrderCardCallback(c, options) {
             }, false)
             $app.save(groupRecord)
             orderEvents.appendOrderDetail(groupRecord, {
+                environment: environment,
                 status: "Canceled",
                 source: "feishu_order_callback",
                 reason: "飞书卡片取消主单",
@@ -845,6 +862,7 @@ function handleOrderCardCallback(c, options) {
             }, false)
             $app.save(groupRecord)
             orderEvents.appendOrderDetail(groupRecord, {
+                environment: environment,
                 status: nextStatus,
                 source: "feishu_order_callback",
                 reason: "飞书卡片平仓交易组",

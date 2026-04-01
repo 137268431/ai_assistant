@@ -29,6 +29,7 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
         const action = value.action || body.action || ""
         const signalId = value.signal_id || body.signal_id || ""
         const orderId = value.order_id || body.order_id || ""
+        const environment = value.environment || body.environment || ""
 
         console.log("[FeishuCallback] 收到回调请求, action:", action, "signalId:", signalId, "orderId:", orderId, "updateToken:", updateToken ? "存在" : "无")
 
@@ -36,6 +37,7 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
             return handleOrderCardCallback(c, {
                 action: action,
                 orderId: orderId,
+                environment: environment,
                 updateToken: updateToken
             })
         }
@@ -44,6 +46,7 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
             return handleSignalCardCallback(c, {
                 action: action,
                 signalId: signalId,
+                environment: environment,
                 updateToken: updateToken
             })
         }

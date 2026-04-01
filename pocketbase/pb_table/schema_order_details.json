@@ -285,6 +285,21 @@
             },
             {
                 "hidden": false,
+                "id": "od_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -309,7 +324,9 @@
             "CREATE INDEX idx_order_details_symbol ON order_details (symbol)",
             "CREATE INDEX idx_order_details_order_type ON order_details (order_type)",
             "CREATE INDEX idx_order_details_trade_group_id ON order_details (trade_group_id)",
-            "CREATE INDEX idx_order_details_entry_order_unique_id ON order_details (entry_order_unique_id)"
+            "CREATE INDEX idx_order_details_entry_order_unique_id ON order_details (entry_order_unique_id)",
+            "CREATE INDEX idx_order_details_environment ON order_details (environment)",
+            "CREATE INDEX idx_order_details_signal_environment ON order_details (signal_id, environment)"
         ],
         "system": false
     }

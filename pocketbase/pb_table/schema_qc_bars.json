@@ -191,6 +191,21 @@
             },
             {
                 "hidden": false,
+                "id": "qcb_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -211,10 +226,11 @@
             }
         ],
         "indexes": [
-            "CREATE UNIQUE INDEX idx_qc_bars_sym_tf_ms ON qc_bars (symbol, interval, bar_time_ms)",
+            "CREATE UNIQUE INDEX idx_qc_bars_sym_tf_ms_environment ON qc_bars (symbol, interval, bar_time_ms, environment)",
             "CREATE INDEX idx_qc_bars_symbol ON qc_bars (symbol)",
             "CREATE INDEX idx_qc_bars_created ON qc_bars (created)",
-            "CREATE INDEX idx_qc_bars_symbol_interval_created ON qc_bars (symbol, interval, created)"
+            "CREATE INDEX idx_qc_bars_symbol_interval_created ON qc_bars (symbol, interval, created)",
+            "CREATE INDEX idx_qc_bars_environment ON qc_bars (environment)"
         ],
         "system": false
     }

@@ -5,6 +5,146 @@
 
 // ── 配置常量 ──
 const BASE_URL = 'https://pb.lzw-glory.top';
+const ENVIRONMENT_STORAGE_KEY = 'pb_environment';
+const PENDING_ENVIRONMENT_WINDOW_KEY = '__pb_pending_environment';
+const RUNTIME_ENVIRONMENTS = ['live', 'paper', 'backtest'];
+const CONFIG_ENVIRONMENTS = ['global', 'live', 'paper', 'backtest'];
+const ENVIRONMENT_LABELS = {
+  live: 'LIVE',
+  paper: 'PAPER',
+  backtest: 'BACKTEST',
+  global: 'GLOBAL'
+};
+
+function escapeQueryValue(value) {
+  return String(value ?? '');
+}
+
+function normalizeRuntimeEnvironment(value, fallback = 'live') {
+  const text = String(value || '').trim().toLowerCase();
+  const aliases = {
+    prod: 'live',
+    production: 'live',
+    sim: 'paper',
+    simulated: 'paper',
+    simulation: 'paper',
+    test: 'backtest'
+  };
+  const normalized = aliases[text] || text;
+  return RUNTIME_ENVIRONMENTS.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeConfigEnvironment(value, fallback = 'global') {
+  const text = String(value || '').trim().toLowerCase();
+  if (text === 'global') return 'global';
+  return normalizeRuntimeEnvironment(text, fallback === 'global' ? 'live' : fallback);
+}
+
+function getStoredEnvironment() {
+  return localStorage.getItem(ENVIRONMENT_STORAGE_KEY) || '';
+}
+
+function setStoredEnvironment(environment) {
+  localStorage.setItem(ENVIRONMENT_STORAGE_KEY, environment);
+}
+
+function getCurrentRuntimeEnvironment() {
+  const fromUrl = new URLSearchParams(window.location.search).get('environment') || '';
+  const runtimeEnvironment = normalizeRuntimeEnvironment(fromUrl || getStoredEnvironment() || 'live', 'live');
+  setStoredEnvironment(runtimeEnvironment);
+  return runtimeEnvironment;
+}
+
+function getCurrentConfigEnvironment() {
+  const fromUrl = new URLSearchParams(window.location.search).get('environment') || '';
+  const configEnvironment = normalizeConfigEnvironment(fromUrl || getStoredEnvironment() || 'global', 'global');
+  setStoredEnvironment(configEnvironment);
+  return configEnvironment;
+}
+
+function getEnvironmentLabel(environment, allowGlobal = false) {
+  const normalized = allowGlobal
+    ? normalizeConfigEnvironment(environment, 'global')
+    : normalizeRuntimeEnvironment(environment, 'live');
+  return ENVIRONMENT_LABELS[normalized] || normalized.toUpperCase();
+}
+
+function getPendingEnvironment(allowGlobal = false) {
+  const pending = typeof window !== 'undefined' ? String(window[PENDING_ENVIRONMENT_WINDOW_KEY] || '').trim() : '';
+  if (!pending) return '';
+  return allowGlobal
+    ? normalizeConfigEnvironment(pending, 'global')
+    : normalizeRuntimeEnvironment(pending, 'live');
+}
+
+function buildPageUrl(path, params = {}, options = {}) {
+  const {
+    allowGlobal = false,
+    includeEnvironment = true,
+    environment: explicitEnvironment = ''
+  } = options;
+  const url = new URL(path, window.location.origin);
+  const currentEnvironment = allowGlobal ? getCurrentConfigEnvironment() : getCurrentRuntimeEnvironment();
+  const normalizedExplicitEnvironment = explicitEnvironment
+    ? (allowGlobal
+        ? normalizeConfigEnvironment(explicitEnvironment, 'global')
+        : normalizeRuntimeEnvironment(explicitEnvironment, 'live'))
+    : '';
+  const environment = normalizedExplicitEnvironment || getPendingEnvironment(allowGlobal) || currentEnvironment;
+
+  if (includeEnvironment && environment) {
+    url.searchParams.set('environment', environment);
+  }
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, escapeQueryValue(value));
+    }
+  });
+
+  return `${url.pathname}${url.search}`;
+}
+
+function renderEnvironmentSwitcher(options = {}) {
+  const allowGlobal = Boolean(options.allowGlobal);
+  const selected = allowGlobal ? getCurrentConfigEnvironment() : getCurrentRuntimeEnvironment();
+  const environments = allowGlobal ? CONFIG_ENVIRONMENTS : RUNTIME_ENVIRONMENTS;
+
+  return `
+    <div class="env-switcher">
+      <span class="env-switcher-label">ENV</span>
+      <select class="env-switcher-select" onchange="handleEnvironmentChange(this.value, ${allowGlobal ? 'true' : 'false'})">
+        ${environments.map((environment) => `
+          <option value="${environment}" ${environment === selected ? 'selected' : ''}>${getEnvironmentLabel(environment, allowGlobal)}</option>
+        `).join('')}
+      </select>
+    </div>
+  `;
+}
+
+function renderEnvironmentBadge(options = {}) {
+  const allowGlobal = Boolean(options.allowGlobal);
+  const environment = allowGlobal ? getCurrentConfigEnvironment() : getCurrentRuntimeEnvironment();
+  return `<span class="env-badge env-${environment}">${getEnvironmentLabel(environment, allowGlobal)}</span>`;
+}
+
+window.handleEnvironmentChange = function(value, allowGlobal = false) {
+  const normalized = allowGlobal
+    ? normalizeConfigEnvironment(value, getCurrentConfigEnvironment())
+    : normalizeRuntimeEnvironment(value, getCurrentRuntimeEnvironment());
+
+  setStoredEnvironment(normalized);
+  window[PENDING_ENVIRONMENT_WINDOW_KEY] = normalized;
+
+  if (typeof window.onEnvironmentChange === 'function') {
+    window.onEnvironmentChange(normalized, allowGlobal);
+    return;
+  }
+
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.set('environment', normalized);
+  window.location.href = nextUrl.toString();
+};
 
 // ── 时间转换 ──
 // 将 UTC 毫秒时间戳转换为美国东部时间字符串，格式: 2026-02-02 10:00:00
@@ -72,12 +212,12 @@ function clearToken() {
 
 function redirectToLogin(fromPage) {
   clearToken();
-  const target = fromPage || location.pathname;
-  location.href = `/login.html?from=${target}`;
+  const target = fromPage || `${location.pathname}${location.search}`;
+  location.href = `/login.html?from=${encodeURIComponent(target)}`;
 }
 
 function handleAuthError() {
-  redirectToLogin(location.pathname);
+  redirectToLogin(`${location.pathname}${location.search}`);
 }
 
 // 通用错误处理包装器 - 自动处理认证错误
@@ -99,7 +239,7 @@ function withAuthCheck(promise, errorHandler) {
 
 function requireAuth(fromPage) {
   if (!getToken()) {
-    location.href = `/login.html?from=${fromPage}`;
+    location.href = `/login.html?from=${encodeURIComponent(fromPage || `${location.pathname}${location.search}`)}`;
     throw new Error('Not authenticated');
   }
 }
@@ -142,7 +282,7 @@ async function apiFetch(collection, params = {}) {
   // 401/403 自动跳转登录
   if (res.status === 401 || res.status === 403) {
     localStorage.removeItem('pb_token');
-    location.href = `/login.html?from=${location.pathname}`;
+    location.href = `/login.html?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`;
     throw new Error('Authentication failed');
   }
 
@@ -184,7 +324,7 @@ function renderNav(activePage) {
   return `
     <div class="nav">
       ${pages.map(p => `
-        <a href="${p.path}" class="nav-item ${p.path === activePage ? 'active' : ''}">
+        <a href="${buildPageUrl(p.path)}" class="nav-item ${p.path === activePage ? 'active' : ''}">
           <span class="nav-icon">${p.icon}</span>${p.label}
         </a>
       `).join('')}
@@ -197,7 +337,7 @@ window.handleLogout = function(event) {
   event.preventDefault();
   if (confirm('确定要登出吗？')) {
     localStorage.removeItem('pb_token');
-    location.href = '/login.html';
+    location.href = buildPageUrl('/login.html', {}, { includeEnvironment: false });
   }
 };
 
@@ -787,6 +927,21 @@ window.handleIntervalChange = function(seconds) {
   }
 };
 
+function renderPageContextBar(title, options = {}) {
+  const allowGlobal = Boolean(options.allowGlobal);
+  const description = options.description || '';
+  return `
+    <div class="page-context-bar">
+      <div class="page-context-title">
+        ${title ? `<span>${title}</span>` : ''}
+        ${renderEnvironmentBadge({ allowGlobal })}
+        ${description ? `<span>${description}</span>` : ''}
+      </div>
+      ${renderEnvironmentSwitcher({ allowGlobal })}
+    </div>
+  `;
+}
+
 // ── 通用 CSS 样式 ──
 function getCommonStyles() {
   return `
@@ -855,6 +1010,108 @@ function getCommonStyles() {
 
       .toast.show {
         transform: translateX(-50%) translateY(0);
+      }
+
+      .page-context-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 16px 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(20,28,46,0.9);
+        position: relative;
+        z-index: 1;
+      }
+
+      .page-context-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        font-size: 12px;
+        color: var(--muted);
+        font-family: 'JetBrains Mono', monospace;
+      }
+
+      .env-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(99,179,237,0.24);
+        background: rgba(99,179,237,0.12);
+        color: var(--accent);
+        font-size: 11px;
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+      }
+
+      .env-badge.env-live {
+        border-color: rgba(72,187,120,0.28);
+        background: rgba(72,187,120,0.14);
+        color: var(--long);
+      }
+
+      .env-badge.env-paper {
+        border-color: rgba(246,173,85,0.28);
+        background: rgba(246,173,85,0.14);
+        color: var(--pending);
+      }
+
+      .env-badge.env-backtest {
+        border-color: rgba(99,179,237,0.28);
+        background: rgba(99,179,237,0.14);
+        color: var(--accent);
+      }
+
+      .env-badge.env-global {
+        border-color: rgba(226,232,240,0.22);
+        background: rgba(148,163,184,0.14);
+        color: #E2E8F0;
+      }
+
+      .env-switcher {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--surface2);
+        min-width: 0;
+      }
+
+      .env-switcher-label {
+        color: var(--muted);
+        font-size: 10px;
+        font-family: 'JetBrains Mono', monospace;
+        letter-spacing: 1px;
+      }
+
+      .env-switcher-select {
+        min-width: 104px;
+        border: none;
+        background: transparent;
+        color: var(--text);
+        font-size: 12px;
+        font-family: 'JetBrains Mono', monospace;
+        outline: none;
+      }
+
+      .filter-note {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--surface2);
+        color: var(--muted);
+        font-size: 12px;
+        font-family: 'JetBrains Mono', monospace;
       }
 
       /* ── Bottom Nav ── */

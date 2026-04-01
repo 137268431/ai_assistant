@@ -227,6 +227,21 @@
             },
             {
                 "hidden": false,
+                "id": "rs_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -251,7 +266,8 @@
             "CREATE INDEX idx_reverse_signals_status ON reverse_signals (status)",
             "CREATE INDEX idx_reverse_signals_bar_time_ms ON reverse_signals (bar_time_ms)",
             "CREATE INDEX idx_reverse_signals_priority ON reverse_signals (priority)",
-            "CREATE INDEX idx_reverse_signals_source ON reverse_signals (source)"
+            "CREATE INDEX idx_reverse_signals_source ON reverse_signals (source)",
+            "CREATE INDEX idx_reverse_signals_environment ON reverse_signals (environment)"
         ],
         "system": false
     }

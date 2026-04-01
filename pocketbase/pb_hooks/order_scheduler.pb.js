@@ -8,109 +8,99 @@
 
 const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta } = require(`${__hooks}/lib/order_events.js`)
 const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
+const envUtils = require(`${__hooks}/lib/environment.js`)
+const SCHEDULE_ENVIRONMENTS = [envUtils.LIVE_ENVIRONMENT, envUtils.PAPER_ENVIRONMENT, envUtils.BACKTEST_ENVIRONMENT]
 
 cronAdd("order_expiry_check", "* * * * *", () => {
-    // 检查 PB 定时调度开关
-    try {
-        const schedulerConfig = $app.findFirstRecordByFilter("config", "key = 'pb_scheduler_enabled'")
-        const rawValue = schedulerConfig ? schedulerConfig.get("value") : ""
-        const normalizedValue = String(rawValue || "").trim().toUpperCase()
-        if (normalizedValue === "FALSE" || normalizedValue === "0" || normalizedValue === "OFF") {
-            console.log(`[OrderScheduler] pb_scheduler_enabled="${normalizedValue}", 跳过执行`)
-            return
+    let totalCount = 0
+
+    for (const environment of SCHEDULE_ENVIRONMENTS) {
+        const schedulerEnabled = String(envUtils.getConfigValue("pb_scheduler_enabled", "true", environment) || "").trim().toUpperCase()
+        if (schedulerEnabled === "FALSE" || schedulerEnabled === "0" || schedulerEnabled === "OFF") {
+            console.log(`[OrderScheduler] ${environment}: pb_scheduler_enabled="${schedulerEnabled}", 跳过执行`)
+            continue
         }
-    } catch (err) {
-        console.log("[OrderScheduler] pb_scheduler_enabled 配置读取失败，继续执行")
-    }
 
-    // 读取订单有效期配置（分钟）
-    let validityMinutes = 30
-    try {
-        const configRecord = $app.findFirstRecordByFilter("config", "key = 'order_validity_minutes'")
-        if (configRecord) {
-            const val = parseInt(configRecord.get("value"))
-            if (!isNaN(val) && val > 0) {
-                validityMinutes = val
-                console.log(`[OrderScheduler] order_validity_minutes 配置值: ${validityMinutes}`)
-            }
-        } else {
-            console.log(`[OrderScheduler] order_validity_minutes 配置不存在，使用默认值: ${validityMinutes}`)
+        let validityMinutes = parseInt(envUtils.getConfigValue("order_validity_minutes", "30", environment), 10)
+        if (!Number.isFinite(validityMinutes) || validityMinutes <= 0) {
+            validityMinutes = 30
         }
-    } catch (err) {
-        console.log(`[OrderScheduler] order_validity_minutes 配置读取失败: ${err}`)
-    }
 
-    // 计算截止时间（毫秒时间戳）
-    const cutoffMs = Date.now() - validityMinutes * 60 * 1000
+        const cutoffMs = Date.now() - validityMinutes * 60 * 1000
 
-    // 查找所有超时的 Init / Submitted 订单（仅 Entry 类型）
-    let expiredOrders
-    try {
-        expiredOrders = $app.findRecordsByFilter(
-            "orders",
-            `(status = 'Init' || status = 'Submitted') && bar_time_ms <= {:cutoffMs}`,
-            "-created",
-            100,
-            0,
-            { cutoffMs: cutoffMs }
-        )
-    } catch (err) {
-        console.error("[OrderScheduler] 查询订单失败:", err)
-        return
-    }
-
-    if (!expiredOrders || expiredOrders.length === 0) {
-        console.log(`[OrderScheduler] 无过期订单（有效期 ${validityMinutes} 分钟）`)
-        return
-    }
-
-    let count = 0
-    for (const record of expiredOrders) {
+        let expiredOrders
         try {
-            const oldStatus = record.get("status")
-            const uniqueId = record.get("unique_id")
-            console.log(`[OrderScheduler] 命中过期订单: unique_id=${uniqueId}, status=${oldStatus}, validity_minutes=${validityMinutes}, cutoff_ms=${cutoffMs}, bar_time_ms=${record.get("bar_time_ms")}`)
-            record.set("status", "Canceled")
-            const metaResult = applyOrderStatusMeta(record, {
-                status: "Canceled",
-                previous_status: oldStatus,
-                source: "order_scheduler",
-                reason: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
-            }, false)
-            const eventTimes = metaResult.eventTimes
-            $app.save(record)
-            appendOrderDetail(record, {
-                status: "Canceled",
-                source: "order_scheduler",
-                reason: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
-                us_time: eventTimes.us_time,
-                cn_time: eventTimes.cn_time,
-                bar_time_ms: eventTimes.bar_time_ms,
-                extra: {
-                    previous_status: oldStatus,
-                    validity_minutes: validityMinutes,
-                    cutoff_ms: cutoffMs,
-                },
-            })
-            const orderExtra = getOrderExtra(record)
-            const syncResult = notifyOrder("canceled", record, {
-                messageId: orderExtra.feishu_order_message_id || "",
-                message: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
-            })
-            if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
-                mergeOrderExtra(record, {
-                    feishu_order_message_id: syncResult.message_id,
-                    feishu_order_card_version: 1,
-                }, true)
-            }
-            console.log(`[OrderScheduler] 订单已取消: ${record.get("unique_id")}, 原状态: ${oldStatus}`)
-            count++
+            expiredOrders = $app.findRecordsByFilter(
+                "orders",
+                `(status = 'Init' || status = 'Submitted') && environment = {:env} && bar_time_ms <= {:cutoffMs}`,
+                "-created",
+                100,
+                0,
+                { env: environment, cutoffMs: cutoffMs }
+            )
         } catch (err) {
-            console.error("[OrderScheduler] 更新订单失败:", record.id, err)
+            console.error(`[OrderScheduler] ${environment}: 查询订单失败:`, err)
+            continue
+        }
+
+        if (!expiredOrders || expiredOrders.length === 0) {
+            console.log(`[OrderScheduler] ${environment}: 无过期订单（有效期 ${validityMinutes} 分钟）`)
+            continue
+        }
+
+        let environmentCount = 0
+        for (const record of expiredOrders) {
+            try {
+                const oldStatus = record.get("status")
+                const uniqueId = record.get("unique_id")
+                console.log(`[OrderScheduler] ${environment}: 命中过期订单: unique_id=${uniqueId}, status=${oldStatus}, validity_minutes=${validityMinutes}, cutoff_ms=${cutoffMs}, bar_time_ms=${record.get("bar_time_ms")}`)
+                record.set("status", "Canceled")
+                const metaResult = applyOrderStatusMeta(record, {
+                    status: "Canceled",
+                    previous_status: oldStatus,
+                    source: "order_scheduler",
+                    reason: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
+                }, false)
+                const eventTimes = metaResult.eventTimes
+                $app.save(record)
+                appendOrderDetail(record, {
+                    status: "Canceled",
+                    source: "order_scheduler",
+                    reason: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
+                    us_time: eventTimes.us_time,
+                    cn_time: eventTimes.cn_time,
+                    bar_time_ms: eventTimes.bar_time_ms,
+                    extra: {
+                        previous_status: oldStatus,
+                        validity_minutes: validityMinutes,
+                        cutoff_ms: cutoffMs,
+                    },
+                })
+                const orderExtra = getOrderExtra(record)
+                const syncResult = notifyOrder("canceled", record, {
+                    messageId: orderExtra.feishu_order_message_id || "",
+                    message: `订单超时自动取消（有效期 ${validityMinutes} 分钟）`,
+                })
+                if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
+                    mergeOrderExtra(record, {
+                        feishu_order_message_id: syncResult.message_id,
+                        feishu_order_card_version: 1,
+                    }, true)
+                }
+                console.log(`[OrderScheduler] ${environment}: 订单已取消: ${record.get("unique_id")}, 原状态: ${oldStatus}`)
+                environmentCount++
+                totalCount++
+            } catch (err) {
+                console.error(`[OrderScheduler] ${environment}: 更新订单失败:`, record.id, err)
+            }
+        }
+
+        if (environmentCount > 0) {
+            console.log(`[OrderScheduler] ${environment}: 已将 ${environmentCount} 条订单标记为 Canceled（有效期 ${validityMinutes} 分钟）`)
         }
     }
 
-    if (count > 0) {
-        console.log(`[OrderScheduler] 已将 ${count} 条订单标记为 Canceled（有效期 ${validityMinutes} 分钟）`)
+    if (totalCount > 0) {
+        console.log(`[OrderScheduler] 全环境共处理 ${totalCount} 条过期订单`)
     }
 })

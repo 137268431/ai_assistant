@@ -80,6 +80,62 @@
                 "type": "text"
             },
             {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "cfg_display",
+                "max": 100,
+                "min": 0,
+                "name": "display_name",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "cfg_group",
+                "max": 100,
+                "min": 0,
+                "name": "group_name",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": false,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "hidden": false,
+                "id": "cfg_sort",
+                "max": null,
+                "min": null,
+                "name": "sort_order",
+                "onlyInt": true,
+                "presentable": false,
+                "required": false,
+                "system": false,
+                "type": "number"
+            },
+            {
+                "hidden": false,
+                "id": "cfg_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "global",
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
                 "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
@@ -101,7 +157,8 @@
             }
         ],
         "indexes": [
-            "CREATE UNIQUE INDEX idx_config_key ON config (key)"
+            "CREATE UNIQUE INDEX idx_config_key_environment ON config (key, environment)",
+            "CREATE INDEX idx_config_environment ON config (environment)"
         ],
         "system": false
     }

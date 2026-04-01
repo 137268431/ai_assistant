@@ -131,6 +131,22 @@
             },
             {
                 "hidden": false,
+                "id": "se_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "global",
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -154,7 +170,8 @@
             "CREATE INDEX idx_se_event_type ON system_events (event_type)",
             "CREATE INDEX idx_se_level ON system_events (level)",
             "CREATE INDEX idx_se_source ON system_events (source)",
-            "CREATE INDEX idx_se_created ON system_events (created DESC)"
+            "CREATE INDEX idx_se_created ON system_events (created DESC)",
+            "CREATE INDEX idx_se_environment ON system_events (environment)"
         ]
     }
 ]

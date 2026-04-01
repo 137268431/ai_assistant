@@ -143,6 +143,21 @@
             },
             {
                 "hidden": false,
+                "id": "ind_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -163,10 +178,12 @@
             }
         ],
         "indexes": [
+            "CREATE UNIQUE INDEX idx_indicators_sym_tf_ms_environment ON indicators (symbol, interval, bar_time_ms, environment)",
             "CREATE INDEX idx_indicators_symbol ON indicators (symbol)",
             "CREATE INDEX idx_indicators_bartimems ON indicators (bar_time_ms)",
             "CREATE INDEX idx_indicators_created ON indicators (created)",
-            "CREATE INDEX idx_indicators_symbol_created ON indicators (symbol, created)"
+            "CREATE INDEX idx_indicators_symbol_created ON indicators (symbol, created)",
+            "CREATE INDEX idx_indicators_environment ON indicators (environment)"
         ],
         "system": false
     }

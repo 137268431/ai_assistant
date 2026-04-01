@@ -343,6 +343,7 @@
     <div class="header">
         <h1>📈 统计分析</h1>
         <div class="header-controls">
+            <div id="environmentHeader"></div>
             <div class="date-range-selector">
                 <button class="date-range-btn" data-range="7days">近7天</button>
                 <button class="date-range-btn active" data-range="30days">近30天</button>
@@ -457,6 +458,7 @@
         let currentRange = '30days';
         let customStartDate = null;
         let customEndDate = null;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
         let pnlChart = null;
         let dailyChart = null;
         let signalChart = null;
@@ -489,7 +491,7 @@
         async function initAuth() {
             const token = getToken();
             if (!token) {
-                location.href = '/login.html?from=/stats.html';
+                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
                 return;
             }
             pb.authStore.save(token, null);
@@ -520,13 +522,13 @@
 
                 // 使用 bar_time_ms 过滤（美国时间）
                 const orders = await pb.collection('orders').getFullList({
-                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created'
                 });
 
                 // 加载信号数据
                 const signals = await pb.collection('signals').getFullList({
-                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created'
                 });
 
@@ -1025,6 +1027,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/stats.html');
             setCanvasHeights();
             loadStats();
@@ -1042,6 +1045,11 @@
                 }
             });
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildPageUrl('/stats.html');
+        };
     </script>
 </body>
 </html>

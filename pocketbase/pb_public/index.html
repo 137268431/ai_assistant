@@ -338,11 +338,12 @@
 <body>
     <div class="hero">
         <div class="hero-actions">
-            <a href="/config.html" class="hero-btn">⚙️ 设置</a>
+            <a id="configLink" href="/config.html" class="hero-btn">⚙️ 设置</a>
             <button class="hero-btn hero-btn-logout" onclick="handleLogout(event)">🚪 退出</button>
         </div>
         <div class="hero-title">Trading Flight</div>
         <div class="hero-subtitle">智能交易管理系统</div>
+        <div id="environmentHeader" style="margin-top:14px;"></div>
     </div>
 
     <div class="market-index-section">
@@ -354,7 +355,7 @@
 
     <div class="content">
         <div class="quick-stats">
-            <a href="/signals.html" class="stat-card">
+            <a id="signalsLink" href="/signals.html" class="stat-card">
                 <div class="stat-icon">📡</div>
                 <div class="stat-number-row" id="todaySignalsRow">
                     <span class="stat-number long" id="todaySignalsLong">-</span>
@@ -362,14 +363,14 @@
                 </div>
                 <div class="stat-label">今日信号 📈/📉</div>
             </a>
-            <a href="/reverse_signals.html" class="stat-card">
+            <a id="reverseSignalsLink" href="/reverse_signals.html" class="stat-card">
                 <div class="stat-icon">🔄</div>
                 <div class="stat-number-row" id="reverseSignalsRow">
                     <span class="stat-number" id="reverseSignalsPending">-</span>
                 </div>
                 <div class="stat-label">反转信号</div>
             </a>
-            <a href="/orders.html" class="stat-card">
+            <a id="ordersLink" href="/orders.html" class="stat-card">
                 <div class="stat-icon">📋</div>
                 <div class="stat-number-row" id="todayOrdersRow">
                     <span class="stat-number long" id="todayOrdersLong">-</span>
@@ -377,7 +378,7 @@
                 </div>
                 <div class="stat-label">今日订单 📈/📉</div>
             </a>
-            <a href="/orders.html?status=filled&type=entry" class="stat-card">
+            <a id="positionsLink" href="/orders.html?status=filled&type=entry" class="stat-card">
                 <div class="stat-icon">📈</div>
                 <div class="stat-number-row" id="activePositionsRow">
                     <span class="stat-number long" id="activePositionsLong">-</span>
@@ -395,22 +396,22 @@
         <div class="quick-actions">
             <div class="section-title">快捷入口</div>
             <div class="action-grid">
-                <a href="/signals.html" class="action-card">
+                <a id="actionSignalsLink" href="/signals.html" class="action-card">
                     <div class="action-icon">📡</div>
                     <div class="action-label">信号管理</div>
                     <div class="action-desc">查看和确认交易信号</div>
                 </a>
-                <a href="/reverse_signals.html" class="action-card">
+                <a id="actionReverseSignalsLink" href="/reverse_signals.html" class="action-card">
                     <div class="action-icon">🔄</div>
                     <div class="action-label">反转信号</div>
                     <div class="action-desc">处理平仓/取消/调整信号</div>
                 </a>
-                <a href="/orders.html" class="action-card">
+                <a id="actionOrdersLink" href="/orders.html" class="action-card">
                     <div class="action-icon">📋</div>
                     <div class="action-label">订单管理</div>
                     <div class="action-desc">管理和平仓订单</div>
                 </a>
-                <a href="/indicators.html" class="action-card">
+                <a id="actionIndicatorsLink" href="/indicators.html" class="action-card">
                     <div class="action-icon">📈</div>
                     <div class="action-label">指标监控</div>
                     <div class="action-desc">查看技术指标</div>
@@ -431,11 +432,50 @@
     <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
     <script>
         const pb = new PocketBase('https://pb.lzw-glory.top');
+        let currentEnvironment = getCurrentRuntimeEnvironment();
+
+        function pickConfigValue(records, fallbackValue) {
+            const priority = { '': 0, global: 1, [currentEnvironment]: 2 };
+            let bestRecord = null;
+            let bestPriority = -1;
+
+            records.forEach((record) => {
+                const recordEnvironment = String(record.environment || '').trim().toLowerCase();
+                const recordPriority = priority[recordEnvironment] ?? -1;
+                if (recordPriority > bestPriority) {
+                    bestPriority = recordPriority;
+                    bestRecord = record;
+                }
+            });
+
+            return bestRecord?.value ?? fallbackValue;
+        }
+
+        async function loadConfigValue(key, fallbackValue) {
+            const result = await pb.collection('config').getFullList({
+                filter: `key = "${key}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
+                sort: '-updated',
+                $autoCancel: false
+            });
+            return pickConfigValue(result, fallbackValue);
+        }
+
+        function bindEnvironmentLinks() {
+            document.getElementById('configLink').href = buildPageUrl('/config.html', { environment: currentEnvironment }, { allowGlobal: true });
+            document.getElementById('signalsLink').href = buildPageUrl('/signals.html');
+            document.getElementById('reverseSignalsLink').href = buildPageUrl('/reverse_signals.html');
+            document.getElementById('ordersLink').href = buildPageUrl('/orders.html');
+            document.getElementById('positionsLink').href = buildPageUrl('/orders.html', { status: 'filled', type: 'entry' });
+            document.getElementById('actionSignalsLink').href = buildPageUrl('/signals.html');
+            document.getElementById('actionReverseSignalsLink').href = buildPageUrl('/reverse_signals.html');
+            document.getElementById('actionOrdersLink').href = buildPageUrl('/orders.html');
+            document.getElementById('actionIndicatorsLink').href = buildPageUrl('/indicators.html');
+        }
 
         async function initAuth() {
             const token = getToken();
             if (!token) {
-                location.href = '/login.html?from=/index.html';
+                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
                 return;
             }
             pb.authStore.save(token, null);
@@ -452,28 +492,28 @@
 
                 // 加载今日信号
                 const signals = await pb.collection('signals').getFullList({
-                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created',
                     $autoCancel: false
                 });
 
                 // 加载今日反向信号
                 const reverseSignals = await pb.collection('reverse_signals').getFullList({
-                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created',
                     $autoCancel: false
                 });
 
                 // 加载今日订单
                 const orders = await pb.collection('orders').getFullList({
-                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created',
                     $autoCancel: false
                 });
 
                 // 加载活跃持仓
                 const activePositions = await pb.collection('orders').getFullList({
-                    filter: `status = "Filled" && order_type = "Entry"`,
+                    filter: `environment = "${currentEnvironment}" && status = "Filled" && order_type = "Entry"`,
                     sort: '-created',
                     $autoCancel: false
                 });
@@ -535,9 +575,9 @@
                 // 先获取配置的大盘指数代码
                 let symbols = ['SPY', 'QQQ', 'VIX'];
                 try {
-                    const config = await pb.collection('config').getFirstListItem(`key = "market_index_symbols"`);
-                    if (config && config.value) {
-                        symbols = config.value.split(',').map(s => s.trim());
+                    const configValue = await loadConfigValue('market_index_symbols', 'SPY,QQQ,VIX');
+                    if (configValue) {
+                        symbols = configValue.split(',').map(s => s.trim());
                     }
                 } catch(_) {
                     // 使用默认值
@@ -554,7 +594,7 @@
                 const promises = symbols.map(async (symbol) => {
                     try {
                         const records = await pb.collection('indicators').getList(1, 1, {
-                            filter: `symbol = "${symbol}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                            filter: `environment = "${currentEnvironment}" && symbol = "${symbol}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                             sort: '-bar_time_ms',
                             $autoCancel: false
                         });
@@ -714,20 +754,27 @@
 
         function navigateToActivity(type, id) {
             if (type === 'signal') {
-                location.href = '/signals.html';
+                location.href = buildPageUrl('/signals.html');
             } else if (type === 'order') {
-                location.href = '/orders.html';
+                location.href = buildPageUrl('/orders.html');
             }
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            bindEnvironmentLinks();
             document.getElementById('nav').innerHTML = renderNav('/index.html');
             loadDashboard();
             loadMarketIndex();
             setInterval(loadDashboard, 30000);
             setInterval(loadMarketIndex, 30000);
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildPageUrl('/index.html');
+        };
     </script>
 </body>
 </html>

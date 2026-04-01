@@ -477,10 +477,7 @@
                 <div class="logo-label">TRADING</div>
                 <div class="logo-title">🔄 反向信号</div>
             </div>
-            <div class="live-badge">
-                <div class="live-dot"></div>
-                LIVE
-            </div>
+            <div id="environmentHeader"></div>
         </div>
     </div>
 
@@ -500,6 +497,7 @@
             </div>
             <input class="search-input" id="searchInput" placeholder="🔍 搜索 symbol / signal_id / trade_group_id / entry_order_unique_id / reverse_id" oninput="onSearchChange(this.value)">
         </div>
+        <div id="filterNote"></div>
 
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
@@ -545,6 +543,7 @@
         let currentSearch = '';
         let refreshTimer = null;
         let currentInterval = 30;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
 
         let currentPage = 1;
         const itemsPerPage = 10;
@@ -597,12 +596,21 @@
 
         function buildApiUrl(path, params = {}) {
             const url = new URL(path, location.origin);
+            if (currentEnvironment && !Object.prototype.hasOwnProperty.call(params, 'environment')) {
+                url.searchParams.set('environment', currentEnvironment);
+            }
             Object.entries(params).forEach(([key, value]) => {
                 if (value !== undefined && value !== null && value !== '') {
                     url.searchParams.set(key, value);
                 }
             });
             return url.toString();
+        }
+
+        function renderFilterNote() {
+            const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
+            if (currentSearch) notes.push(`search=${currentSearch}`);
+            document.getElementById('filterNote').innerHTML = `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`;
         }
 
         async function reverseRequest(path, options = {}) {
@@ -681,7 +689,7 @@
         async function initAuth() {
             const token = getToken();
             if (!token) {
-                location.href = '/login.html?from=/reverse_signals.html';
+                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
                 return;
             }
             pb.authStore.save(token, null);
@@ -690,12 +698,13 @@
         async function loadSignals() {
             try {
                 const result = await reverseRequest('/api/custom/reverse/list', {
-                    params: { date: currentDate, limit: 300 }
+                    params: { date: currentDate, limit: 300, environment: currentEnvironment }
                 });
                 allSignals = (result.signals || []).map(normalizeSignal);
                 resetPagination();
                 updateStats();
                 updateDirectionCounts();
+                renderFilterNote();
                 renderSignals();
                 updateLoadMoreButton();
             } catch (error) {
@@ -802,6 +811,7 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            renderFilterNote();
             renderSignals();
             updateLoadMoreButton();
         }
@@ -1064,6 +1074,7 @@
                         reverse_id: id,
                         action,
                         reason,
+                        environment: currentEnvironment
                     }
                 });
                 showToast(action === 'cancel' ? '✓ 已取消反转信号' : '✓ 已提交执行请求');
@@ -1076,24 +1087,27 @@
 
         function viewReverse(reverseId) {
             const decoded = decodeURIComponent(reverseId);
-            location.href = `/reverse_signals.html?reverse_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/reverse_signals.html', { reverse_id: decoded, date: currentDate });
         }
 
         function viewSignal(signalId) {
             const decoded = decodeURIComponent(signalId);
-            location.href = `/signals.html?signal_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/signals.html', { signal_id: decoded, date: currentDate });
         }
 
         function viewOrders(signalId) {
             const decoded = decodeURIComponent(signalId);
-            location.href = `/orders.html?signal_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/orders.html', { signal_id: decoded, date: currentDate });
         }
 
         function viewTradeGroup(tradeGroupId, signalId) {
             const decodedTradeGroup = decodeURIComponent(tradeGroupId);
             const decodedSignal = signalId ? decodeURIComponent(signalId) : '';
-            const signalQuery = decodedSignal ? `&signal_id=${encodeURIComponent(decodedSignal)}` : '';
-            location.href = `/order_details.html?trade_group_id=${encodeURIComponent(decodedTradeGroup)}${signalQuery}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/order_details.html', {
+                trade_group_id: decodedTradeGroup,
+                signal_id: decodedSignal,
+                date: currentDate
+            });
         }
 
         window.onDateChange = function(startDate) {
@@ -1130,6 +1144,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/reverse_signals.html');
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
 
@@ -1162,6 +1177,11 @@
             await loadSignals();
             changeRefreshInterval(30);
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildPageUrl('/reverse_signals.html', { date: currentDate });
+        };
     </script>
 </body>
 </html>

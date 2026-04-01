@@ -10,24 +10,19 @@ routerAdd("POST", "/webhook/tv", (c) => {
     const { notifyNewSignal, mergeSignalExtra } = require(`${__hooks}/lib/feishu_signal.js`)
     const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
     const { notifyReverseSignal } = require(`${__hooks}/lib/feishu_reverse.js`)
+    const envUtils = require(`${__hooks}/lib/environment.js`)
 
-    // ── 写入模式检查: primary/settled 模式下 TV 停写 ──
-    let _qcWriteMode = "shadow"
-    try {
-        const _cfg = $app.findFirstRecordByFilter("config", "key = {:k}", { k: "qc_write_mode" })
-        _qcWriteMode = _cfg ? String(_cfg.get("value") || "shadow").trim() : "shadow"
-    } catch (_) {}
-    if (_qcWriteMode === "primary" || _qcWriteMode === "settled") {
-        console.log(`[Webhook TV] qc_write_mode=${_qcWriteMode}, TV写入已停用`)
-        return c.json(200, { ok: true, skipped: true, reason: "qc_" + _qcWriteMode + "_mode" })
-    }
-
-    // ── 解析请求信息（含 body）──
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-
-    // ── 路由：根据 type 字段区分写入信号表还是技术指标表 ──
     const dataType = d.type || "signal"
+
+    function getWriteMode(environment) {
+        try {
+            return String(envUtils.getConfigValue("qc_write_mode", "shadow", environment) || "shadow").trim().toLowerCase()
+        } catch (_) {
+            return "shadow"
+        }
+    }
 
     // ══════════════════════════════════════
     // 技术指标表（type = "indicator"）
@@ -114,6 +109,13 @@ routerAdd("POST", "/webhook/tv", (c) => {
         if (usTime) extra.us_time = usTime
         if (cnTime) extra.cn_time = cnTime
         if (Number.isFinite(barIndex)) extra.bar_index = Math.trunc(barIndex)
+        const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
+        const writeMode = getWriteMode(environment)
+        if (writeMode === "primary" || writeMode === "settled") {
+            console.log(`[Webhook TV] ${environment}: qc_write_mode=${writeMode}, TV指标写入已停用`)
+            return c.json(200, { ok: true, skipped: true, reason: "qc_" + writeMode + "_mode", type: "indicator", environment })
+        }
+        extra.environment = environment
 
         const dedupKey = `${Math.trunc(barTimeMs)}_${symbol}_${interval}`
         console.log(`[Webhook TV] 接收指标数据: symbol=${symbol}, interval=${interval}, bar_time_ms=${Math.trunc(barTimeMs)}, fields=${Object.keys(extra).sort().join(",")}`)
@@ -121,8 +123,8 @@ routerAdd("POST", "/webhook/tv", (c) => {
         try {
             $app.findFirstRecordByFilter(
                 "indicators",
-                "bar_time_ms = {:ms} && symbol = {:sym} && interval = {:tf}",
-                { ms: Math.trunc(barTimeMs), sym: symbol, tf: interval }
+                "bar_time_ms = {:ms} && symbol = {:sym} && interval = {:tf} && environment = {:env}",
+                { ms: Math.trunc(barTimeMs), sym: symbol, tf: interval, env: environment }
             )
             return c.json(200, { ok: true, msg: "duplicate indicator, skipped", key: dedupKey })
         } catch (_) {}
@@ -131,6 +133,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
         const rec = new Record(col, {})
 
         rec.set("symbol", symbol)
+        rec.set("environment", environment)
         rec.set("exchange", exchange)
         rec.set("interval", interval)
         rec.set("script_tag", scriptTag)
@@ -149,11 +152,6 @@ routerAdd("POST", "/webhook/tv", (c) => {
     // ══════════════════════════════════════
     // ── 打印接收到的信号数据日志 ──
     console.log("[Webhook TV] 接收信号数据:", JSON.stringify(d, null, 2))
-
-    try {
-        $app.findFirstRecordByData("signals", "signal_id", d.signal_id)
-        return c.json(200, { ok: true, msg: "duplicate, skipped" })
-    } catch(_) {}
 
     // 必需字段验证
     const requiredFields = ['symbol', 'direction', 'entry', 'stop_loss', 'take_profit', 'signal_id'];
@@ -189,10 +187,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
     }
 
     // extra 直接使用请求中的 extra
-    const extra = d.extra || {}
-
-    const col = $app.findCollectionByNameOrId("signals")
-    const record = new Record(col, {})
+    const baseExtra = d.extra && typeof d.extra === "object" ? d.extra : {}
 
     // date 字段提取
     let dateStr = ""
@@ -207,151 +202,197 @@ routerAdd("POST", "/webhook/tv", (c) => {
         dateStr = new Date().toISOString().substring(0, 10);
     }
 
-    record.set("symbol",      d.symbol)
-    record.set("direction",   d.direction)
-    record.set("signal",      d.signal)
-    record.set("limit_price", d.limit_price)
-    record.set("entry",       d.entry)
-    record.set("stop_loss",   d.stop_loss)
-    record.set("take_profit", d.take_profit)
-    record.set("rr",          d.rr)
-    record.set("shares",      d.shares)
-    record.set("signal_id",   d.signal_id)
-    record.set("exchange",    d.exchange)
-    record.set("interval",    d.interval)
-    record.set("reason",      extra.reason)
-    record.set("us_time",     d.us_time || "")
-    record.set("cn_time",     d.cn_time || "")
-    record.set("date",        dateStr)
-    record.set("bar_time_ms", extra.bar_time_ms)
-    record.set("bar_index",   extra.bar_index)
-    record.set("script_tag",  extra.script_tag)
-    record.set("chart_tf",    extra.chart_tf)
-    record.set("extra",       extra)
-
-    // 根据配置决定初始状态
-    let initialStatus = "pending";  // 默认 pending（自动确认）
-    try {
-        const configRecord = $app.findFirstRecordByFilter("config", "key = 'signal_auto_confirm'");
-        const autoConfirm = configRecord ? configRecord.get("value") : null;
-        console.log(`[Webhook] signal_auto_confirm 配置值: ${autoConfirm}`);
-        if (autoConfirm && autoConfirm.toLowerCase() === "false") {
-            initialStatus = "awaiting_confirm";  // 需要手动确认
-            console.log(`[Webhook] 信号 ${d.signal_id} 设置为 awaiting_confirm（需手动确认）`);
-        } else {
-            console.log(`[Webhook] 信号 ${d.signal_id} 设置为 pending（自动确认）`);
+    const requestedEnvironment = String(d.environment || "").trim().toLowerCase()
+    const targetEnvironments = requestedEnvironment
+        ? [envUtils.normalizeRuntimeEnvironment(requestedEnvironment, envUtils.LIVE_ENVIRONMENT)]
+        : [envUtils.LIVE_ENVIRONMENT, envUtils.PAPER_ENVIRONMENT]
+    const modeSkippedEnvironments = []
+    const writableEnvironments = targetEnvironments.filter((environment) => {
+        const writeMode = getWriteMode(environment)
+        if (writeMode === "primary" || writeMode === "settled") {
+            console.log(`[Webhook TV] ${environment}: qc_write_mode=${writeMode}, TV信号写入已停用`)
+            modeSkippedEnvironments.push({ environment, mode: writeMode })
+            return false
         }
-    } catch (err) {
-        console.log(`[Webhook] signal_auto_confirm 配置读取失败，使用默认值 pending: ${err}`);
-        // 配置不存在，使用默认值 pending
-    }
-    record.set("status", initialStatus)
+        return true
+    })
 
-    $app.save(record)
-
-    // 发送飞书通知
-    try {
-        const notifyResult = notifyNewSignal(record);
-        if (notifyResult && notifyResult.success && notifyResult.message_id) {
-            mergeSignalExtra(record, {
-                feishu_signal_message_id: notifyResult.message_id,
-                feishu_signal_card_version: 1,
-            }, true);
+    function getThreshold(environment) {
+        try {
+            return parseInt(envUtils.getConfigValue("reverse_signal_threshold", "6", environment)) || 6
+        } catch (e) {
+            console.log(`[Webhook] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`)
+            return 6
         }
-    } catch (err) {
-        console.error("[Feishu] 发送信号通知失败:", err);
     }
 
-    // ── 逆向信号自动检测：查询该 symbol 是否有活跃订单与新信号方向冲突 ──
-    try {
-        function getThreshold() {
-            let threshold = 6
-            try {
-                const cfg = $app.findFirstRecordByFilter("config", "key = 'reverse_signal_threshold'")
-                threshold = cfg ? (parseInt(cfg.get("value")) || 6) : 6
-            } catch (e) {
-                console.log(`[Webhook] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`)
+    function getInitialStatus(environment) {
+        try {
+            const autoConfirm = envUtils.getConfigValue("signal_auto_confirm", "true", environment)
+            console.log(`[Webhook] signal_auto_confirm(${environment}) 配置值: ${autoConfirm}`);
+            if (autoConfirm && String(autoConfirm).toLowerCase() === "false") {
+                return "awaiting_confirm"
             }
-            return threshold
+        } catch (err) {
+            console.log(`[Webhook] signal_auto_confirm 配置读取失败，使用默认值 pending: ${err}`);
+        }
+        return "pending"
+    }
+
+    if (writableEnvironments.length === 0) {
+        return c.json(200, {
+            ok: true,
+            type: "signal",
+            skipped: true,
+            reason: "all_target_environments_tv_disabled",
+            skipped_mode_environments: modeSkippedEnvironments,
+        })
+    }
+
+    const createdEnvironments = []
+    const skippedEnvironments = []
+    const col = $app.findCollectionByNameOrId("signals")
+
+    for (let i = 0; i < writableEnvironments.length; i++) {
+        const environment = writableEnvironments[i]
+        const extra = { ...baseExtra, environment }
+
+        try {
+            $app.findFirstRecordByFilter(
+                "signals",
+                "signal_id = {:sid} && environment = {:env}",
+                { sid: d.signal_id, env: environment }
+            )
+            skippedEnvironments.push(environment)
+            continue
+        } catch (_) {}
+
+        const record = new Record(col, {})
+        record.set("symbol", d.symbol)
+        record.set("environment", environment)
+        record.set("direction", d.direction)
+        record.set("signal", d.signal)
+        record.set("limit_price", d.limit_price)
+        record.set("entry", d.entry)
+        record.set("stop_loss", d.stop_loss)
+        record.set("take_profit", d.take_profit)
+        record.set("rr", d.rr)
+        record.set("shares", d.shares)
+        record.set("signal_id", d.signal_id)
+        record.set("exchange", d.exchange)
+        record.set("interval", d.interval)
+        record.set("reason", extra.reason)
+        record.set("us_time", d.us_time || "")
+        record.set("cn_time", d.cn_time || "")
+        record.set("date", dateStr)
+        record.set("bar_time_ms", extra.bar_time_ms)
+        record.set("bar_index", extra.bar_index)
+        record.set("script_tag", extra.script_tag)
+        record.set("chart_tf", extra.chart_tf)
+        record.set("extra", extra)
+        record.set("status", getInitialStatus(environment))
+
+        $app.save(record)
+        createdEnvironments.push(environment)
+
+        try {
+            const notifyResult = notifyNewSignal(record);
+            if (notifyResult && notifyResult.success && notifyResult.message_id) {
+                mergeSignalExtra(record, {
+                    feishu_signal_message_id: notifyResult.message_id,
+                    feishu_signal_card_version: 1,
+                }, true);
+            }
+        } catch (err) {
+            console.error("[Feishu] 发送信号通知失败:", err);
         }
 
-        const activeOrders = $app.findRecordsByFilter(
-            "orders",
-            `symbol = {:symbol} && order_type = 'Entry' && (status = 'Submitted' || status = 'Filled')`,
-            "-created", 10, 0,
-            { symbol: d.symbol }
-        );
+        try {
+            const activeOrders = $app.findRecordsByFilter(
+                "orders",
+                `symbol = {:symbol} && environment = {:env} && order_type = 'Entry' && (status = 'Submitted' || status = 'Filled')`,
+                "-created", 10, 0,
+                { symbol: d.symbol, env: environment }
+            );
 
-        let reverseCount = 0;
-        const threshold = getThreshold()
+            let reverseCount = 0;
+            const threshold = getThreshold(environment)
 
-        for (const order of activeOrders) {
-            const orderDirection = order.get("direction");
-            // 方向冲突：新信号 long vs 持仓 short，或反之
-            if (orderDirection && orderDirection !== d.direction) {
-                const orderStatus = order.get("status");
-                const actionType = orderStatus === "Filled" ? "close" : "cancel";
-                const orderContext = reverseUtils.buildOrderContext(order);
+            for (const order of activeOrders) {
+                const orderDirection = order.get("direction");
+                if (orderDirection && orderDirection !== d.direction) {
+                    const orderStatus = order.get("status");
+                    const actionType = orderStatus === "Filled" ? "close" : "cancel";
+                    const orderContext = reverseUtils.buildOrderContext(order);
 
-                const upsertResult = reverseUtils.upsertReverseRecord({
-                    symbol: d.symbol,
-                    direction: orderDirection,
-                    source: "signal",
-                    priority: 1,
-                    strength: "strong",
-                    action_type: actionType,
-                    triggered_signals: ["信号反转"],
-                    score: 10,
-                    status: "pending",
-                    bar_time_ms: extra.bar_time_ms || 0,
-                    us_time: d.us_time || "",
-                    cn_time: d.cn_time || "",
-                    extra: {
-                        reverse_kind: "signal_conflict",
-                        target_state: orderContext ? orderContext.target_state : (orderStatus === "Filled" ? "filled_position" : "pending_entry"),
-                        order_status: orderStatus,
-                        relation_status: orderContext ? orderContext.relation_status : "",
-                        position_side: orderContext ? orderContext.position_side : orderDirection,
-                        current_direction: orderDirection,
-                        new_direction: d.direction,
-                        origin_signal_id: d.signal_id,
-                        signal_id: orderContext ? orderContext.signal_id : "",
-                        order_unique_id: orderContext ? orderContext.order_unique_id : "",
-                        broker_order_id: orderContext ? orderContext.broker_order_id : "",
-                        order_id: orderContext ? orderContext.broker_order_id : "",
-                        trade_group_id: orderContext ? orderContext.trade_group_id : "",
-                        entry_order_unique_id: orderContext ? orderContext.entry_order_unique_id : "",
-                        entry_price: orderContext ? orderContext.entry_price : d.entry,
-                        quantity: orderContext ? orderContext.quantity : d.shares,
-                        take_profit: orderContext ? orderContext.take_profit : d.take_profit,
-                        stop_loss: orderContext ? orderContext.stop_loss : d.stop_loss,
-                    },
-                })
+                    const upsertResult = reverseUtils.upsertReverseRecord({
+                        environment: environment,
+                        symbol: d.symbol,
+                        direction: orderDirection,
+                        source: "signal",
+                        priority: 1,
+                        strength: "strong",
+                        action_type: actionType,
+                        triggered_signals: ["信号反转"],
+                        score: 10,
+                        status: "pending",
+                        bar_time_ms: extra.bar_time_ms || 0,
+                        us_time: d.us_time || "",
+                        cn_time: d.cn_time || "",
+                        extra: {
+                            environment: environment,
+                            reverse_kind: "signal_conflict",
+                            target_state: orderContext ? orderContext.target_state : (orderStatus === "Filled" ? "filled_position" : "pending_entry"),
+                            order_status: orderStatus,
+                            relation_status: orderContext ? orderContext.relation_status : "",
+                            position_side: orderContext ? orderContext.position_side : orderDirection,
+                            current_direction: orderDirection,
+                            new_direction: d.direction,
+                            origin_signal_id: d.signal_id,
+                            signal_id: orderContext ? orderContext.signal_id : "",
+                            order_unique_id: orderContext ? orderContext.order_unique_id : "",
+                            broker_order_id: orderContext ? orderContext.broker_order_id : "",
+                            order_id: orderContext ? orderContext.broker_order_id : "",
+                            trade_group_id: orderContext ? orderContext.trade_group_id : "",
+                            entry_order_unique_id: orderContext ? orderContext.entry_order_unique_id : "",
+                            entry_price: orderContext ? orderContext.entry_price : d.entry,
+                            quantity: orderContext ? orderContext.quantity : d.shares,
+                            take_profit: orderContext ? orderContext.take_profit : d.take_profit,
+                            stop_loss: orderContext ? orderContext.stop_loss : d.stop_loss,
+                        },
+                    })
 
-                if (upsertResult.created) {
-                    reverseCount++
-                }
+                    if (upsertResult.created) {
+                        reverseCount++
+                    }
 
-                if (upsertResult.created && 10 >= threshold) {
-                    try {
-                        notifyReverseSignal(upsertResult.record, {
-                            message: orderStatus === "Filled"
-                                ? "检测到反向新信号，QC 将先平旧仓再评估新方向"
-                                : "检测到反向新信号，QC 将先撤销旧挂单再评估新方向"
-                        })
-                    } catch (notifyErr) {
-                        console.error("[Webhook] 逆向飞书通知失败:", notifyErr)
+                    if (upsertResult.created && 10 >= threshold) {
+                        try {
+                            notifyReverseSignal(upsertResult.record, {
+                                message: orderStatus === "Filled"
+                                    ? "检测到反向新信号，QC 将先平旧仓再评估新方向"
+                                    : "检测到反向新信号，QC 将先撤销旧挂单再评估新方向"
+                            })
+                        } catch (notifyErr) {
+                            console.error("[Webhook] 逆向飞书通知失败:", notifyErr)
+                        }
                     }
                 }
             }
-        }
 
-        if (reverseCount > 0) {
-            console.log(`[Webhook] ${d.symbol}: 检测到 ${reverseCount} 个冲突订单，已写入 reverse_signals`);
+            if (reverseCount > 0) {
+                console.log(`[Webhook] ${d.symbol}/${environment}: 检测到 ${reverseCount} 个冲突订单，已写入 reverse_signals`);
+            }
+        } catch (err) {
+            console.error("[Webhook] 逆向信号检测失败:", err);
         }
-    } catch (err) {
-        console.error("[Webhook] 逆向信号检测失败:", err);
     }
 
-    return c.json(200, { ok: true, type: "signal" })
+    return c.json(200, {
+        ok: true,
+        type: "signal",
+        created_environments: createdEnvironments,
+        skipped_environments: skippedEnvironments,
+        skipped_mode_environments: modeSkippedEnvironments,
+    })
 }, /* middlewares */)

@@ -4,6 +4,7 @@
  */
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
+var envUtils = require(`${__hooks}/lib/environment.js`)
 var PB_HOST = "https://pb.lzw-glory.top"
 
 function formatDateToken(dateToken) {
@@ -169,6 +170,7 @@ function buildSignalDisplayData(recordOrData) {
     var us_time = get("us_time") || ""
     var cn_time = get("cn_time") || ""
     var extra = getSignalExtra(recordOrData)
+    var environment = get("environment") || extra.environment || envUtils.LIVE_ENVIRONMENT
     var bar_time_ms = Number(get("bar_time_ms") || extra.bar_time_ms || 0) || 0
 
     var reason = extra.reason || get("reason") || ""
@@ -209,7 +211,14 @@ function buildSignalDisplayData(recordOrData) {
             for (var i = 0; i < marketSyms.length; i++) {
                 var msym = marketSyms[i]
                 try {
-                    var recs = $app.findRecordsByFilter("indicators", "symbol = {:sym}", "-bar_time_ms", 1, 0, { sym: msym })
+                    var recs = $app.findRecordsByFilter(
+                        "indicators",
+                        "(environment = {:env} || environment = '') && symbol = {:sym}",
+                        "-bar_time_ms",
+                        1,
+                        0,
+                        { env: environment, sym: msym }
+                    )
                     if (recs && recs.length > 0) {
                         var indExtraStr = recs[0].getString("extra")
                         var indExtra = {}
@@ -258,6 +267,7 @@ function buildSignalDisplayData(recordOrData) {
         shares: shares,
         rr: rr,
         signal_id: signal_id,
+        environment: environment,
         us_time: us_time,
         cn_time: cn_time,
         bar_time_ms: bar_time_ms,
@@ -345,7 +355,7 @@ function buildSignalCardV2(symbol, directionText, statusEmoji, statusText, statu
         schema: "2.0",
         config: { update_multi: true },
         header: {
-            title: { tag: "plain_text", content: statusEmoji + " " + statusText + " · " + symbol + " · " + (us_time || "") },
+            title: { tag: "plain_text", content: envUtils.labelTitleWithEnvironment(statusEmoji + " " + statusText + " · " + symbol + " · " + (us_time || ""), displayData && displayData.environment) },
             template: color
         },
         body: {
@@ -378,7 +388,7 @@ function buildSignalNotificationCard(signal) {
                         text: { tag: "plain_text", content: "✅ 确认" },
                         type: "primary",
                         width: "fill",
-                        behaviors: [{ type: "callback", value: { action: "confirm", signal_id: d.signal_id } }]
+                        behaviors: [{ type: "callback", value: { action: "confirm", signal_id: d.signal_id, environment: d.environment } }]
                     }]
                 },
                 {
@@ -390,7 +400,7 @@ function buildSignalNotificationCard(signal) {
                         text: { tag: "plain_text", content: "❌ 拒绝" },
                         type: "danger",
                         width: "fill",
-                        behaviors: [{ type: "callback", value: { action: "reject", signal_id: d.signal_id } }]
+                        behaviors: [{ type: "callback", value: { action: "reject", signal_id: d.signal_id, environment: d.environment } }]
                     }]
                 }
             ]
@@ -409,7 +419,7 @@ function buildSignalNotificationCard(signal) {
         schema: "2.0",
         config: { update_multi: true },
         header: {
-            title: { tag: "plain_text", content: (signalStatus === "awaiting_confirm" ? "🔔 新交易信号" : "⚙️ 自动确认") + " · " + d.symbol + " · " + d.us_time },
+            title: { tag: "plain_text", content: envUtils.labelTitleWithEnvironment((signalStatus === "awaiting_confirm" ? "🔔 新交易信号" : "⚙️ 自动确认") + " · " + d.symbol + " · " + d.us_time, d.environment) },
             template: color
         },
         body: {
@@ -475,6 +485,7 @@ function handleSignalCardCallback(c, options) {
     var opts = options || {}
     var action = opts.action || ""
     var signalId = opts.signalId || ""
+    var environment = envUtils.normalizeRuntimeEnvironment(opts.environment || "", envUtils.LIVE_ENVIRONMENT)
     var updateToken = opts.updateToken || null
 
     if (!signalId) {
@@ -486,7 +497,11 @@ function handleSignalCardCallback(c, options) {
 
     var record
     try {
-        record = $app.findFirstRecordByFilter("signals", "id = {:id} || signal_id = {:id}", { id: signalId })
+        record = $app.findFirstRecordByFilter(
+            "signals",
+            "(id = {:id} || signal_id = {:id}) && environment = {:env}",
+            { id: signalId, env: environment }
+        )
     } catch (err) {
         console.error("[FeishuSignalCallback] 查询信号失败:", err)
     }

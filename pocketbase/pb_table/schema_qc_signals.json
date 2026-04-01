@@ -358,6 +358,21 @@
                 "type": "number"
             },
             {
+                "hidden": false,
+                "id": "qcs_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
                 "autogeneratePattern": "",
                 "hidden": false,
                 "id": "sig_error_msg",
@@ -396,10 +411,11 @@
             "CREATE INDEX idx_qc_signals_status ON qc_signals (status)",
             "CREATE INDEX idx_qc_signals_symbol ON qc_signals (symbol)",
             "CREATE INDEX idx_qc_signals_date ON qc_signals (date)",
-            "CREATE UNIQUE INDEX idx_qc_signals_signal_id ON qc_signals (signal_id)",
+            "CREATE UNIQUE INDEX idx_qc_signals_signal_id_environment ON qc_signals (signal_id, environment)",
             "CREATE INDEX idx_qc_signals_created ON qc_signals (created)",
             "CREATE INDEX idx_qc_signals_symbol_created ON qc_signals (symbol, created)",
-            "CREATE INDEX idx_qc_signals_status_created ON qc_signals (status, created)"
+            "CREATE INDEX idx_qc_signals_status_created ON qc_signals (status, created)",
+            "CREATE INDEX idx_qc_signals_environment ON qc_signals (environment)"
         ],
         "system": false
     }

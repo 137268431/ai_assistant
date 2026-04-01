@@ -18,44 +18,48 @@ class DailyScanner:
         self.pb_client = pb_client
         self.engines = engines
 
-    def run_scan(self, date: str) -> dict:
+    def run_scan(self, date: str, environments=None) -> dict:
         """
         执行盘前扫描
 
         返回: {scanned: int, candidates: int, errors: int}
         """
-        watchlist = self._get_watchlist()
         scanned = 0
         candidates = 0
         errors = 0
 
-        for item in watchlist:
-            symbol = item.get("symbol", "").upper()
-            if not symbol:
-                continue
-            scanned += 1
+        runtime_environments = environments or ["live", "paper"]
 
-            try:
-                result = self.evaluate_symbol(symbol, date)
-                if result and result.get("score", 0) > 0:
-                    self.pb_client.upsert_scan({
-                        "symbol": symbol,
-                        "exchange": item.get("exchange", ""),
-                        "date": date,
-                        "direction_bias": result.get("direction_bias", "neutral"),
-                        "score": result.get("score", 0),
-                        "scan_reason": result.get("reason", ""),
-                        "status": "candidate",
-                        "extra": result.get("extra", {}),
-                    })
-                    candidates += 1
-            except Exception as e:
-                errors += 1
-                print(f"[Scanner] {symbol} error: {e}")
+        for environment in runtime_environments:
+            watchlist = self._get_watchlist(environment)
+            for item in watchlist:
+                symbol = item.get("symbol", "").upper()
+                if not symbol:
+                    continue
+                scanned += 1
+
+                try:
+                    result = self.evaluate_symbol(symbol, date, environment)
+                    if result and result.get("score", 0) > 0:
+                        self.pb_client.upsert_scan({
+                            "environment": environment,
+                            "symbol": symbol,
+                            "exchange": item.get("exchange", ""),
+                            "date": date,
+                            "direction_bias": result.get("direction_bias", "neutral"),
+                            "score": result.get("score", 0),
+                            "scan_reason": result.get("reason", ""),
+                            "status": "candidate",
+                            "extra": {"environment": environment, **result.get("extra", {})},
+                        })
+                        candidates += 1
+                except Exception as e:
+                    errors += 1
+                    print(f"[Scanner] {environment}/{symbol} error: {e}")
 
         return {"scanned": scanned, "candidates": candidates, "errors": errors}
 
-    def evaluate_symbol(self, symbol: str, date: str) -> dict:
+    def evaluate_symbol(self, symbol: str, date: str, environment: str) -> dict:
         """
         单标的评分
 
@@ -63,8 +67,8 @@ class DailyScanner:
         """
         # 收集各TF引擎快照
         snapshots = {}
-        for (sym, tf), engine in self.engines.items():
-            if sym == symbol and engine.is_ready():
+        for (runtime_environment, sym, tf), engine in self.engines.items():
+            if runtime_environment == environment and sym == symbol and engine.is_ready():
                 snapshots[tf] = engine.get_snapshot()
 
         if not snapshots:
@@ -75,12 +79,30 @@ class DailyScanner:
             "score": 0,
             "direction_bias": "neutral",
             "reason": "",
-            "extra": {"timeframes_ready": list(snapshots.keys())},
+            "extra": {"environment": environment, "timeframes_ready": list(snapshots.keys())},
         }
 
-    def _get_watchlist(self) -> list:
+    def _get_watchlist(self, environment: str) -> list:
         try:
-            return self.pb_client.get_records("watchlist", per_page=500)
+            records = self.pb_client.get_records(
+                "watchlist",
+                filter=f'environment = "{environment}" || environment = "global" || environment = ""',
+                per_page=500
+            )
+            merged = {}
+            priority = {"": 0, "global": 1, environment: 2}
+            applied = {}
+            for item in records:
+                symbol = str(item.get("symbol", "")).upper()
+                if not symbol:
+                    continue
+                env = str(item.get("environment", "") or "").strip().lower()
+                rank = priority.get(env, -1)
+                if symbol in applied and applied[symbol] > rank:
+                    continue
+                applied[symbol] = rank
+                merged[symbol] = item
+            return list(merged.values())
         except Exception as e:
             print(f"[Scanner] get watchlist error: {e}")
             return []

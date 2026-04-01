@@ -421,6 +421,21 @@
             },
             {
                 "hidden": false,
+                "id": "ord_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -441,7 +456,7 @@
             }
         ],
         "indexes": [
-            "CREATE UNIQUE INDEX idx_orders_unique_id ON orders (unique_id)",
+            "CREATE UNIQUE INDEX idx_orders_unique_id_environment ON orders (unique_id, environment)",
             "CREATE INDEX idx_orders_symbol ON orders (symbol)",
             "CREATE INDEX idx_orders_status ON orders (status)",
             "CREATE INDEX idx_orders_signal_id ON orders (signal_id)",
@@ -450,7 +465,8 @@
             "CREATE INDEX idx_orders_created ON orders (created)",
             "CREATE INDEX idx_orders_signal_created ON orders (signal_id, created)",
             "CREATE INDEX idx_orders_symbol_status ON orders (symbol, status)",
-            "CREATE INDEX idx_orders_trade_group_status ON orders (trade_group_id, status)"
+            "CREATE INDEX idx_orders_trade_group_status ON orders (trade_group_id, status)",
+            "CREATE INDEX idx_orders_environment ON orders (environment)"
         ],
         "system": false
     }

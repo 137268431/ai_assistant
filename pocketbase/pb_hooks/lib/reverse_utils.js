@@ -3,6 +3,8 @@
  * 反转信号共用解析、归一化与上下文定位能力
  */
 
+const envUtils = require(`${__hooks}/lib/environment.js`)
+
 function parseJsonObject(value) {
     if (!value) return {}
     if (typeof value === "object") return value
@@ -92,6 +94,7 @@ function normalizeReverseRecord(recordOrData) {
 
     return {
         id: get("id") || "",
+        environment: get("environment") || extra.environment || envUtils.LIVE_ENVIRONMENT,
         symbol: get("symbol") || extra.symbol || "",
         direction: get("direction") || extra.direction || "",
         source: source,
@@ -160,6 +163,7 @@ function buildOrderContext(orderRecord) {
     var brokerOrderId = firstNonEmpty(orderRecord.get("broker_order_id"), orderRecord.get("order_id"), orderExtra.broker_order_id, orderExtra.order_id, "")
 
     return {
+        environment: orderRecord.get("environment") || orderExtra.environment || envUtils.LIVE_ENVIRONMENT,
         symbol: orderRecord.get("symbol") || "",
         direction: direction,
         target_state: orderStatus === "Filled" ? "filled_position" : "pending_entry",
@@ -179,14 +183,15 @@ function buildOrderContext(orderRecord) {
     }
 }
 
-function findLatestActiveEntryOrder(symbol, direction) {
+function findLatestActiveEntryOrder(symbol, direction, environment) {
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var records = $app.findRecordsByFilter(
         "orders",
-        "symbol = {:symbol} && order_type = 'Entry' && (status = 'Submitted' || status = 'Filled')",
+        "symbol = {:symbol} && environment = {:env} && order_type = 'Entry' && (status = 'Submitted' || status = 'Filled')",
         "-created",
         20,
         0,
-        { symbol: symbol }
+        { symbol: symbol, env: runtimeEnvironment }
     ) || []
 
     if (!direction) {
@@ -208,11 +213,11 @@ function findPendingReverseDuplicate(criteria) {
 
     var records = $app.findRecordsByFilter(
         "reverse_signals",
-        "symbol = {:symbol} && status = 'pending'",
+        "symbol = {:symbol} && environment = {:env} && status = 'pending'",
         "-created",
         50,
         0,
-        { symbol: criteria.symbol }
+        { symbol: criteria.symbol, env: criteria.environment || envUtils.LIVE_ENVIRONMENT }
     ) || []
 
     for (var i = 0; i < records.length; i++) {
@@ -233,6 +238,7 @@ function findPendingReverseDuplicate(criteria) {
 function upsertReverseRecord(payload) {
     var extra = parseJsonObject(payload && payload.extra)
     var criteria = {
+        environment: envUtils.normalizeRuntimeEnvironment(payload.environment || extra.environment || "", envUtils.LIVE_ENVIRONMENT),
         symbol: payload.symbol || "",
         direction: payload.direction || "",
         reverse_kind: firstNonEmpty(extra.reverse_kind, payload.source === "signal" ? "signal_conflict" : "indicator_conflict"),
@@ -251,6 +257,7 @@ function upsertReverseRecord(payload) {
     }
 
     record.set("symbol", payload.symbol || "")
+    record.set("environment", criteria.environment)
     record.set("direction", payload.direction || "")
     record.set("source", payload.source || "indicator")
     record.set("priority", toNumber(payload.priority, 5))
@@ -266,6 +273,7 @@ function upsertReverseRecord(payload) {
     record.set("extra", {
         ...getReverseExtra(record),
         ...extra,
+        environment: criteria.environment,
         reverse_kind: criteria.reverse_kind,
         target_state: criteria.target_state,
         triggered_signals: normalizeTriggeredSignals(payload.triggered_signals, extra),

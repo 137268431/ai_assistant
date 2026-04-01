@@ -9,6 +9,7 @@
 routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const { notifyNewOrder, notifyOrder, getOrderStatusInfo } = require(`${__hooks}/lib/feishu_order.js`)
   const { appendOrderDetail, getOrderExtra, mergeOrderExtra, resolveOrderRelationship, resolveOrderStatusEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
+  const envUtils = require(`${__hooks}/lib/environment.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
 
   function firstDefined() {
@@ -41,6 +42,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   console.log(`[OrderUpsert] extra: ${JSON.stringify(data.extra || {})}`);
 
   // 字段映射：QC 发送的字段名 -> PB schema 字段名（已统一）
+  const environment = envUtils.getRuntimeEnvironmentFromData(data, envUtils.LIVE_ENVIRONMENT);
   const uniqueId = data.unique_id;
   const orderType = data.order_type;
   const orderId = data.order_id;
@@ -50,7 +52,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   const price = data.limit_price;
   const status = data.status || "Submitted";
   const avgFillPrice = data.fill_price;
-  const extra = data.extra || {};
+  const extra = envUtils.attachEnvironment(data.extra || {}, environment);
   const reason = extra.reason || "";
 
   if (!uniqueId || !orderType || !symbol) {
@@ -65,11 +67,11 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
     try {
       const existing = $app.findRecordsByFilter(
         "orders",
-        `unique_id = {:uniqueId}`,
+        `unique_id = {:uniqueId} && environment = {:env}`,
         "",
         1,
         0,
-        { uniqueId: uniqueId }
+        { uniqueId: uniqueId, env: environment }
       );
       if (existing.length > 0) {
         record = existing[0];
@@ -82,6 +84,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       record = new Record(collection, {});
       record.set("unique_id", uniqueId);
     }
+    record.set("environment", environment);
 
     const previousStatus = record ? record.get("status") : "";
     const existingOrderExtra = record ? getOrderExtra(record) : {};
@@ -181,6 +184,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       String(record.get("role") || "") === String(incomingRelation.role || "") &&
       String(record.get("relation_status") || "") === String(incomingRelation.relation_status || "") &&
       String(record.get("position_side") || "") === String(incomingRelation.position_side || "") &&
+      String(record.get("environment") || "") === String(environment) &&
       String(existingOrderExtra.last_status_reason || "") === String(reason || "");
 
     if (isIdempotentUpsert) {
@@ -189,6 +193,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       const mergedOrderExtra = {
         ...existingOrderExtra,
         ...extra,
+        environment: environment,
         order_id: resolvedOrderId || existingOrderExtra.order_id || "",
         broker_order_id: resolvedBrokerOrderId || existingOrderExtra.broker_order_id || "",
         order_time: resolvedOrderTime || existingOrderExtra.order_time || "",
@@ -200,6 +205,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
       record.set("order_id", resolvedOrderId || "");
       record.set("broker_order_id", resolvedBrokerOrderId || "");
       record.set("symbol", symbol);
+      record.set("environment", environment);
       if (resolvedDirection) record.set("direction", resolvedDirection);
       record.set("quantity", resolvedQuantity);
       record.set("limit_price", resolvedLimitPrice);
@@ -242,6 +248,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
 
       // 写入 order_details（通过 appendOrderDetail 写入完整 order 镜像）
       appendOrderDetail(record, {
+        environment: environment,
         status: status,
         source: "orders/upsert",
         reason: reason,
@@ -250,6 +257,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
         bar_time_ms: eventTimes.bar_time_ms,
         order_time: resolvedOrderTime,
         extra: {
+          environment: environment,
           fill_time: resolvedFillTime,
           ...extra,
         },
@@ -293,7 +301,8 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
         order_type: orderType,
         order_id: orderId,
         symbol: symbol,
-        status: status
+        status: status,
+        environment: environment
       }
     });
   } catch (err) {

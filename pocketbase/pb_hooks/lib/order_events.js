@@ -456,6 +456,7 @@ function appendOrderDetail(record, options) {
     const reason = opts.reason || ""
     const uniqueId = record.get("unique_id") || record.id
     const symbol = record.get("symbol") || ""
+    const environment = opts.environment || record.get("environment") || getOrderExtra(record).environment || "live"
     const sequence = nextSequence(uniqueId)
     const nowStrings = formatNowStrings()
 
@@ -463,6 +464,7 @@ function appendOrderDetail(record, options) {
     const detailRecord = new Record(detailsCollection, {})
     detailRecord.set("order_id", uniqueId)
     detailRecord.set("symbol", symbol)
+    detailRecord.set("environment", environment)
     detailRecord.set("direction", record.get("direction") || "")
     detailRecord.set("order_type", record.get("order_type") || "")
     detailRecord.set("status", status)
@@ -485,6 +487,7 @@ function appendOrderDetail(record, options) {
     const existingExtra = stripInternalExtra(getOrderExtra(record))
     detailRecord.set("extra", {
         sequence: sequence,
+        environment: environment,
         source: source,
         status: status,
         original_order_id: record.get("order_id") || "",

@@ -435,10 +435,7 @@
                 <div class="logo-label">TRADING</div>
                 <div class="logo-title">📜 订单事件关系</div>
             </div>
-            <div class="live-badge">
-                <div class="live-dot"></div>
-                LIVE
-            </div>
+            <div id="environmentHeader"></div>
         </div>
     </div>
 
@@ -517,6 +514,7 @@
         let hasMore = false;
         let allDetails = [];
         let searchDebounceTimer = null;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function parseJsonLike(value) {
             if (!value) return {};
@@ -577,7 +575,7 @@
         function initAuth() {
             const token = getToken();
             if (!token) {
-                location.href = '/login.html?from=/order_details.html';
+                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
                 return false;
             }
             pb.authStore.save(token, null);
@@ -665,23 +663,24 @@
         }
 
         function buildDetailsFilter(searchTerm = '') {
+            const environmentFilter = `environment = "${escapeFilterValue(currentEnvironment)}"`;
             if (queryMode === 'id') {
-                return `id = "${escapeFilterValue(effectiveFilter)}"`;
+                return `${environmentFilter} && id = "${escapeFilterValue(effectiveFilter)}"`;
             }
             if (queryMode === 'trade_group_id') {
-                return `trade_group_id = "${escapeFilterValue(effectiveFilter)}"`;
+                return `${environmentFilter} && trade_group_id = "${escapeFilterValue(effectiveFilter)}"`;
             }
             if (queryMode === 'order_id') {
                 const safe = escapeFilterValue(effectiveFilter);
-                return `(order_id = "${safe}" || broker_order_id = "${safe}")`;
+                return `${environmentFilter} && (order_id = "${safe}" || broker_order_id = "${safe}")`;
             }
             if (queryMode === 'signal_id') {
-                return `signal_id = "${escapeFilterValue(effectiveFilter)}"`;
+                return `${environmentFilter} && signal_id = "${escapeFilterValue(effectiveFilter)}"`;
             }
 
             if (searchTerm) {
                 const safe = escapeFilterValue(searchTerm);
-                return `(
+                return `${environmentFilter} && (
                     symbol ~ "${safe}" ||
                     order_id ~ "${safe}" ||
                     broker_order_id ~ "${safe}" ||
@@ -698,7 +697,7 @@
             const endTime = `${currentDate} 23:59:59`;
             const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
             const endTimeMs = startTimeMs + 24 * 60 * 60 * 1000;
-            return `((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`;
+            return `${environmentFilter} && ((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`;
         }
 
         const loadDetails = guardedLoader(async function() {
@@ -1093,10 +1092,10 @@
             const row = document.getElementById('searchRow');
             const signalContext = contextSignalId || '';
             const backUrl = queryMode === 'signal_id'
-                ? `/signals.html?signal_id=${encodeURIComponent(effectiveFilter)}&date=${encodeURIComponent(currentDate)}`
+                ? buildPageUrl('/signals.html', { signal_id: effectiveFilter, date: currentDate })
                 : signalContext
-                    ? `/orders.html?signal_id=${encodeURIComponent(signalContext)}&date=${encodeURIComponent(currentDate)}`
-                    : `/orders.html?date=${encodeURIComponent(currentDate)}`;
+                    ? buildPageUrl('/orders.html', { signal_id: signalContext, date: currentDate })
+                    : buildPageUrl('/orders.html', { date: currentDate });
             row.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                     <a class="back-btn" href="${backUrl}">← 返回</a>
@@ -1116,21 +1115,27 @@
 
         function viewSignal(signalId) {
             const decoded = decodeURIComponent(signalId);
-            location.href = `/signals.html?signal_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/signals.html', { signal_id: decoded, date: currentDate });
         }
 
         function viewTradeGroup(groupId, signalId = '') {
             const decoded = decodeURIComponent(groupId);
             const decodedSignalId = signalId ? decodeURIComponent(signalId) : contextSignalId;
-            const signalQuery = decodedSignalId ? `&signal_id=${encodeURIComponent(decodedSignalId)}` : '';
-            location.href = `/order_details.html?trade_group_id=${encodeURIComponent(decoded)}${signalQuery}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/order_details.html', {
+                trade_group_id: decoded,
+                signal_id: decodedSignalId,
+                date: currentDate
+            });
         }
 
         function viewOrder(orderId, signalId = '') {
             const decoded = decodeURIComponent(orderId);
             const decodedSignalId = signalId ? decodeURIComponent(signalId) : contextSignalId;
-            const signalQuery = decodedSignalId ? `&signal_id=${encodeURIComponent(decodedSignalId)}` : '';
-            location.href = `/order_details.html?order_id=${encodeURIComponent(decoded)}${signalQuery}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/order_details.html', {
+                order_id: decoded,
+                signal_id: decodedSignalId,
+                date: currentDate
+            });
         }
 
         function manualRefresh() {
@@ -1161,6 +1166,7 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initAuth()) return;
 
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/order_details.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             const dateInput = document.getElementById('customDate');
@@ -1182,6 +1188,17 @@
                 }
             });
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildPageUrl('/order_details.html', {
+                id: filterDetailId,
+                order_id: filterOrderId,
+                signal_id: filterSignalId,
+                trade_group_id: filterTradeGroupId,
+                date: currentDate
+            });
+        };
     </script>
 </body>
 </html>

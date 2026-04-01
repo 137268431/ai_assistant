@@ -529,10 +529,7 @@
                 <div class="logo-label">TRADING</div>
                 <div class="logo-title">📋 订单关系视图</div>
             </div>
-            <div class="live-badge">
-                <div class="live-dot"></div>
-                LIVE
-            </div>
+            <div id="environmentHeader"></div>
         </div>
     </div>
 
@@ -609,11 +606,38 @@
         let currentInterval = 30;
         let currentPage = 1;
         const itemsPerPage = 6;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
         let filterSignalId = '';
         let filterTradeGroupId = '';
         let resolvedLegacySearch = '';
         let pendingLegacySearchResolution = false;
         let signalValidityMinutes = 30;
+
+        function pickConfigValue(records, fallbackValue) {
+            const priority = { '': 0, global: 1, [currentEnvironment]: 2 };
+            let bestRecord = null;
+            let bestPriority = -1;
+
+            records.forEach((record) => {
+                const recordEnvironment = String(record.environment || '').trim().toLowerCase();
+                const recordPriority = priority[recordEnvironment] ?? -1;
+                if (recordPriority > bestPriority) {
+                    bestPriority = recordPriority;
+                    bestRecord = record;
+                }
+            });
+
+            return bestRecord?.value ?? fallbackValue;
+        }
+
+        async function loadConfigValue(key, fallbackValue) {
+            const result = await pb.collection('config').getFullList({
+                filter: `key = "${escapeFilterValue(key)}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
+                sort: '-updated',
+                $autoCancel: false
+            });
+            return pickConfigValue(result, fallbackValue);
+        }
 
         function parseJsonLike(value) {
             if (!value) return {};
@@ -667,10 +691,8 @@
 
         async function loadSignalValidityConfig() {
             try {
-                const configResult = await pb.collection('config').getFirstListItem('key = "signal_validity_minutes"');
-                if (configResult && configResult.value) {
-                    signalValidityMinutes = parseInt(configResult.value, 10) || 30;
-                }
+                const configValue = await loadConfigValue('signal_validity_minutes', '30');
+                signalValidityMinutes = parseInt(configValue, 10) || 30;
             } catch (error) {
                 console.warn('[Orders] 加载 signal_validity_minutes 失败，使用默认值 30:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -808,13 +830,12 @@
         }
 
         function buildOrdersPageUrl() {
-            const params = new URLSearchParams();
-            if (filterSignalId) params.set('signal_id', filterSignalId);
-            if (filterTradeGroupId) params.set('trade_group_id', filterTradeGroupId);
-            if (currentSearch) params.set('search', currentSearch);
-            if (currentDate) params.set('date', currentDate);
-            const query = params.toString();
-            return query ? `/orders.html?${query}` : '/orders.html';
+            return buildPageUrl('/orders.html', {
+                signal_id: filterSignalId,
+                trade_group_id: filterTradeGroupId,
+                search: currentSearch,
+                date: currentDate
+            });
         }
 
         function syncOrdersPageUrl() {
@@ -871,7 +892,7 @@
         function initAuth() {
             const token = getToken();
             if (!token) {
-                location.href = '/login.html?from=/orders.html';
+                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
                 return false;
             }
             pb.authStore.save(token, null);
@@ -1111,7 +1132,7 @@
         }
 
         function renderFilterNote() {
-            const notes = [];
+            const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
             if (filterSignalId) notes.push(`signal_id=${filterSignalId}`);
             if (filterTradeGroupId) notes.push(`trade_group_id=${filterTradeGroupId}`);
             if (currentSearch) notes.push(`search=${currentSearch}`);
@@ -1268,7 +1289,7 @@
                 const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
                 const endTimeMs = startTimeMs + 24 * 60 * 60 * 1000;
                 const records = await pb.collection('orders').getFullList({
-                    filter: `bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-bar_time_ms,-created',
                     $autoCancel: false
                 });
@@ -1341,7 +1362,7 @@
         async function closePosition(uniqueId, symbol) {
             if (!confirm(`确认平仓 ${symbol} 的整组订单？`)) return;
             try {
-                await fetch(`/webhook/order/close?id=${decodeURIComponent(uniqueId)}`);
+                await fetch(buildPageUrl('/webhook/order/close', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }));
                 showToast('已发送平仓整组请求');
                 loadOrders();
             } catch (error) {
@@ -1352,7 +1373,7 @@
         async function cancelOrder(uniqueId, symbol) {
             if (!confirm(`确认取消 ${symbol} 的主入场单？`)) return;
             try {
-                await fetch(`/webhook/order/cancel?id=${decodeURIComponent(uniqueId)}`);
+                await fetch(buildPageUrl('/webhook/order/cancel', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }));
                 showToast('已发送取消主单请求');
                 loadOrders();
             } catch (error) {
@@ -1362,14 +1383,17 @@
 
         function viewSignal(signalId) {
             const decoded = decodeURIComponent(signalId);
-            location.href = `/signals.html?signal_id=${encodeURIComponent(decoded)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/signals.html', { signal_id: decoded, date: currentDate });
         }
 
         function viewTradeGroup(groupId, signalId = '') {
             const decoded = decodeURIComponent(groupId);
             const decodedSignalId = signalId ? decodeURIComponent(signalId) : '';
-            const signalQuery = decodedSignalId ? `&signal_id=${encodeURIComponent(decodedSignalId)}` : '';
-            location.href = `/order_details.html?trade_group_id=${encodeURIComponent(decoded)}${signalQuery}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/order_details.html', {
+                trade_group_id: decoded,
+                signal_id: decodedSignalId,
+                date: currentDate
+            });
         }
 
         function manualRefresh() {
@@ -1393,6 +1417,7 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initAuth()) return;
 
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/orders.html');
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
             document.getElementById('datePicker').innerHTML = renderDatePicker();
@@ -1418,6 +1443,11 @@
             changeRefreshInterval(30);
             setInterval(updateCountdowns, 1000);
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildOrdersPageUrl();
+        };
     </script>
 </body>
 </html>

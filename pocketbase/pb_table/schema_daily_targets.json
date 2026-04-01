@@ -173,6 +173,21 @@
             },
             {
                 "hidden": false,
+                "id": "dt_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -193,9 +208,10 @@
             }
         ],
         "indexes": [
-            "CREATE UNIQUE INDEX idx_daily_targets_sym_date ON daily_targets (symbol, date)",
+            "CREATE UNIQUE INDEX idx_daily_targets_sym_date_environment ON daily_targets (symbol, date, environment)",
             "CREATE INDEX idx_daily_targets_date_status ON daily_targets (date, status)",
-            "CREATE INDEX idx_daily_targets_created ON daily_targets (created)"
+            "CREATE INDEX idx_daily_targets_created ON daily_targets (created)",
+            "CREATE INDEX idx_daily_targets_environment ON daily_targets (environment)"
         ],
         "system": false
     }

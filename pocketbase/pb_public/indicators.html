@@ -353,10 +353,7 @@
                 <div class="logo-label">INDICATORS</div>
                 <div class="logo-title">📈 技术指标</div>
             </div>
-            <div class="live-badge">
-                <div class="live-dot"></div>
-                LIVE
-            </div>
+            <div id="environmentHeader"></div>
         </div>
     </div>
 
@@ -385,6 +382,7 @@
             </div>
             <input type="text" class="search-input" id="searchBox" placeholder="🔍 搜索标的 / 交易所 / 脚本 / PB记录ID..." oninput="onSearchChange(this.value)">
         </div>
+        <div id="filterNote"></div>
 
         <div id="indicatorsContainer"><div class="loading">加载中...</div></div>
         <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreIndicators()" style="display: none;">加载更多</button>
@@ -410,8 +408,15 @@
         const itemsPerPage = 10;
         let hasMore = false;
         let totalItems = 0;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
 
-        document.getElementById('navContainer').innerHTML = renderNav('/indicators.html');
+        function renderFilterNote() {
+            const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
+            if (currentSearch) notes.push(`search=${currentSearch}`);
+            const intervalFilter = document.getElementById('intervalFilter')?.value || '';
+            if (intervalFilter) notes.push(`interval=${intervalFilter}`);
+            document.getElementById('filterNote').innerHTML = `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`;
+        }
 
         function getCurrentEtDateString() {
             return new Intl.DateTimeFormat('en-CA', {
@@ -500,6 +505,7 @@
         function buildIndicatorFilter() {
             const { startDate, endDate } = getDateRange();
             const conditions = [
+                `environment = "${escapeFilterValue(currentEnvironment)}"`,
                 `us_time >= "${escapeFilterValue(startDate)} 00:00"`,
                 `us_time <= "${escapeFilterValue(endDate)} 23:59:59"`,
             ];
@@ -520,7 +526,7 @@
         async function fetchIndicatorsPage(page) {
             const token = getToken();
             if (!token) {
-                window.location.href = '/login.html?from=/indicators.html';
+                window.location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
                 return null;
             }
 
@@ -585,6 +591,7 @@
                 totalItems = data.totalItems || allIndicators.length;
                 hasMore = allIndicators.length < totalItems;
 
+                renderFilterNote();
                 renderIndicators();
                 updateLoadMoreButton();
             } catch (error) {
@@ -594,6 +601,7 @@
         }
 
         function onIntervalChange() {
+            renderFilterNote();
             loadIndicators();
         }
 
@@ -632,6 +640,7 @@
             if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
                 document.getElementById('indicatorsContainer').innerHTML = '<div class="loading">搜索中...</div>';
+                renderFilterNote();
                 loadIndicators();
             }, 300);
         }
@@ -734,8 +743,11 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            document.getElementById('navContainer').innerHTML = renderNav('/indicators.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             syncDatePickerUI(currentDate);
+            renderFilterNote();
             loadIndicators();
             changeRefreshInterval(30);
 
@@ -755,6 +767,11 @@
                 }
             });
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildPageUrl('/indicators.html', { date: currentDate });
+        };
     </script>
 </body>
 </html>

@@ -5,6 +5,7 @@
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
+var envUtils = require(`${__hooks}/lib/environment.js`)
 
 var PB_HOST = "https://pb.lzw-glory.top"
 
@@ -117,6 +118,9 @@ function formatDirection(direction) {
 function buildReversePageUrl(reverse) {
     if (!reverse.id) return ""
     var url = PB_HOST + "/reverse_signals.html?reverse_id=" + encodeURIComponent(reverse.id)
+    if (reverse.environment) {
+        url += "&environment=" + encodeURIComponent(reverse.environment)
+    }
     var pageDate = resolvePageDate(reverse)
     if (pageDate) {
         url += "&date=" + encodeURIComponent(pageDate)
@@ -128,6 +132,9 @@ function buildSignalPageUrl(reverse) {
     var signalId = reverse.signal_id || reverse.origin_signal_id
     if (!signalId) return ""
     var url = PB_HOST + "/signals.html?signal_id=" + encodeURIComponent(signalId)
+    if (reverse.environment) {
+        url += "&environment=" + encodeURIComponent(reverse.environment)
+    }
     var pageDate = resolvePageDate(reverse)
     if (pageDate) {
         url += "&date=" + encodeURIComponent(pageDate)
@@ -142,6 +149,9 @@ function buildOrderPageUrl(reverse) {
         if (reverse.signal_id || reverse.origin_signal_id) {
             detailUrl += "&signal_id=" + encodeURIComponent(reverse.signal_id || reverse.origin_signal_id)
         }
+        if (reverse.environment) {
+            detailUrl += "&environment=" + encodeURIComponent(reverse.environment)
+        }
         if (pageDate) {
             detailUrl += "&date=" + encodeURIComponent(pageDate)
         }
@@ -149,6 +159,9 @@ function buildOrderPageUrl(reverse) {
     }
     if (reverse.signal_id || reverse.origin_signal_id) {
         var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(reverse.signal_id || reverse.origin_signal_id)
+        if (reverse.environment) {
+            listUrl += "&environment=" + encodeURIComponent(reverse.environment)
+        }
         if (pageDate) {
             listUrl += "&date=" + encodeURIComponent(pageDate)
         }
@@ -310,7 +323,7 @@ function buildReverseCard(recordOrData, options) {
         schema: "2.0",
         config: { update_multi: true },
         header: {
-            title: { tag: "plain_text", content: statusInfo.emoji + " 反转信号 · " + (reverse.symbol || "-") },
+            title: { tag: "plain_text", content: envUtils.labelTitleWithEnvironment(statusInfo.emoji + " 反转信号 · " + (reverse.symbol || "-"), reverse.environment || envUtils.LIVE_ENVIRONMENT) },
             template: reverse.current_direction === "short" ? "red" : "green"
         },
         body: {

@@ -12,7 +12,78 @@
     margin-bottom: 24px;
   }
 
+  .config-toolbar {
+    position: sticky;
+    top: 72px;
+    z-index: 20;
+    margin-bottom: 18px;
+    padding-bottom: 8px;
+    background: linear-gradient(180deg, rgba(11,15,18,0.98) 0%, rgba(11,15,18,0.92) 70%, rgba(11,15,18,0) 100%);
+  }
+
+  .config-tabs {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 4px 0 8px;
+    scrollbar-width: none;
+  }
+
+  .config-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .config-tab {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .config-tab:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .config-tab.active {
+    background: rgba(99,179,237,0.14);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .config-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--surface2);
+    color: inherit;
+    font-size: 10px;
+  }
+
+  .config-tab-summary {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
   .section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
     letter-spacing: 2px;
@@ -21,6 +92,12 @@
     margin-bottom: 12px;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--border);
+  }
+
+  .section-count {
+    font-size: 10px;
+    letter-spacing: 0;
+    color: var(--muted);
   }
 
   /* ── Config Item ── */
@@ -42,13 +119,26 @@
     justify-content: space-between;
     align-items: flex-start;
     margin-bottom: 8px;
+    gap: 12px;
+  }
+
+  .config-title-wrap {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .config-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 3px;
   }
 
   .config-key {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
+    font-size: 11px;
+    color: var(--muted);
+    word-break: break-all;
   }
 
   .config-default {
@@ -299,6 +389,7 @@
     </div>
     <button class="refresh-btn" onclick="load()">↻</button>
   </div>
+  <div id="configEnvironmentBar" style="margin-top:12px;"></div>
 </div>
 
 <!-- Content -->
@@ -320,34 +411,270 @@
 requireAuth('/config.html')
 
 let configs = []
+let configRecords = []
 let originalValues = {}
 let modifiedKeys = new Set()
+let activeTab = localStorage.getItem('config_active_tab') || 'all'
+let configEnvironment = getCurrentConfigEnvironment()
+const LEGACY_KEY_REDIRECTS = {
+  health_check_email: 'health_check_notify_enabled'
+}
+
+function meta(displayName, groupName, sortOrder) {
+  return { display_name: displayName, group_name: groupName, sort_order: sortOrder }
+}
+
+const CONFIG_META = {
+  trading_enabled: meta('交易总开关', '核心交易', 100),
+  signal_auto_confirm: meta('信号自动确认', '核心交易', 110),
+  max_positions: meta('最大持仓数', '核心交易', 120),
+  max_daily_sl: meta('每日止损熔断次数', '核心交易', 130),
+  max_loss_per_trade: meta('单笔最大亏损', '核心交易', 140),
+
+  risk_reward_ratio: meta('盈亏比', '风险参数', 200),
+  sl_atr_mult: meta('止损 ATR 倍数', '风险参数', 210),
+  tp_atr_mult: meta('止盈 ATR 倍数', '风险参数', 220),
+  atr_deviation: meta('ATR 偏离阈值', '风险参数', 230),
+  atr_multiplier: meta('ATR 计算倍数', '风险参数', 240),
+  eod_keep_symbols: meta('EOD 保留标的', '风险参数', 250),
+
+  day_start_time: meta('日内开始时间', '执行时间', 300),
+  trading_start_time: meta('交易执行开始', '执行时间', 310),
+  trading_end_time: meta('交易执行结束', '执行时间', 320),
+  order_start_time: meta('下单窗口开始', '执行时间', 330),
+  order_end_time: meta('下单窗口结束', '执行时间', 340),
+  eod_close_time: meta('收盘清理时间', '执行时间', 350),
+
+  sync_start_time: meta('同步窗口开始', '任务调度', 400),
+  sync_end_time: meta('同步窗口结束', '任务调度', 410),
+  signal_interval_min: meta('信号拉取间隔', '任务调度', 420),
+  config_interval_min: meta('配置刷新间隔', '任务调度', 430),
+  watchlist_interval_min: meta('标的同步间隔', '任务调度', 440),
+  signal_validity_minutes: meta('信号有效期', '任务调度', 450),
+  order_validity_minutes: meta('订单有效期', '任务调度', 460),
+  pb_scheduler_enabled: meta('PB 前端定时刷新', '任务调度', 470),
+
+  notification_channel: meta('通知渠道', '通知中心', 500),
+  alert_email: meta('邮件收件人', '通知中心', 510),
+  status_notify_enabled: meta('状态通知', '通知中心', 520),
+  order_notify_enabled: meta('订单邮件补充通知', '通知中心', 530),
+  daily_summary_notify_enabled: meta('日报通知', '通知中心', 540),
+  manual_stop_notify_enabled: meta('手动停止通知', '通知中心', 550),
+  health_check_notify_enabled: meta('健康检查通知', '通知中心', 560),
+  health_check_email: meta('健康检查通知', '通知中心', 560),
+  inspection_notify_enabled: meta('巡检告警', '通知中心', 570),
+  order_validation_notify_enabled: meta('订单校验异常告警', '通知中心', 580),
+  atr_stop_adjust_notify_enabled: meta('ATR 止损调整通知', '通知中心', 590),
+
+  health_check_enabled: meta('健康检查总开关', '健康巡检', 700),
+  health_check_trading_interval_min: meta('盘中健康检查间隔', '健康巡检', 710),
+  health_check_nontrading_interval_hours: meta('非交易时段健康检查间隔', '健康巡检', 720),
+  clear_daily_cache: meta('清除当日缓存', '健康巡检', 730),
+
+  log_level: meta('日志级别', '运行模式', 800),
+  deployment_mode: meta('部署模式', '运行模式', 810),
+
+  qc_write_mode: meta('QC 写入模式', 'PB / QC 服务', 900),
+  qc_compute_enabled: meta('QC Compute 服务开关', 'PB / QC 服务', 910),
+  qc_bar_publish_enabled: meta('QC K线发布开关', 'PB / QC 服务', 920),
+
+  market_index_symbols: meta('大盘指数标的', '市场分析', 1000),
+  daily_target_filter_on: meta('每日目标筛选', '市场分析', 1010)
+}
+
+const BOOLEAN_CONFIG_KEYS = new Set([
+  'trading_enabled',
+  'health_check_enabled',
+  'health_check_email',
+  'status_notify_enabled',
+  'order_notify_enabled',
+  'daily_summary_notify_enabled',
+  'manual_stop_notify_enabled',
+  'health_check_notify_enabled',
+  'inspection_notify_enabled',
+  'order_validation_notify_enabled',
+  'atr_stop_adjust_notify_enabled',
+  'clear_daily_cache',
+  'signal_auto_confirm',
+  'pb_scheduler_enabled',
+  'qc_compute_enabled',
+  'qc_bar_publish_enabled',
+  'daily_target_filter_on'
+])
+
+const SELECT_CONFIGS = {
+  notification_channel: [
+    { value: 'feishu', label: 'feishu (默认飞书)' },
+    { value: 'email', label: 'email (仅邮件)' },
+    { value: 'all', label: 'all (飞书 + 邮件)' }
+  ],
+  qc_write_mode: [
+    { value: 'shadow', label: 'shadow (仅写新表)' },
+    { value: 'primary', label: 'primary (双写新旧表)' },
+    { value: 'settled', label: 'settled (仅写旧表)' }
+  ],
+  log_level: [
+    { value: 'DEBUG', label: 'DEBUG (详细)' },
+    { value: 'INFO', label: 'INFO (重要)' },
+    { value: 'WARN', label: 'WARN (告警)' },
+    { value: 'ERROR', label: 'ERROR (错误)' }
+  ],
+  deployment_mode: [
+    { value: 'live', label: 'live (实盘)' },
+    { value: 'paper', label: 'paper (模拟盘)' }
+  ]
+}
 
 // ── 渲染导航 ──
 document.getElementById('navContainer').innerHTML = renderNav('/config.html')
 
-// ── 配置分组 ──
-const CONFIG_GROUPS = {
-  '核心交易控制': ['trading_enabled', 'signal_auto_confirm', 'max_positions', 'max_daily_sl', 'max_loss_per_trade'],
-  'PB定时调度': ['pb_scheduler_enabled', 'signal_validity_minutes', 'order_validity_minutes'],
-  '风险管理': ['risk_reward_ratio', 'sl_atr_mult', 'tp_atr_mult', 'atr_deviation'],
-  '时间窗口': ['day_start_time', 'trading_start_time', 'trading_end_time', 'order_start_time', 'order_end_time', 'sync_start_time', 'sync_end_time', 'eod_close_time'],
-  '定时调度': ['signal_interval_min','config_interval_min', 'watchlist_interval_min', 'health_check_trading_interval_min', 'health_check_nontrading_interval_hours'],
-  '日志监控': ['log_level', 'health_check_enabled', 'health_check_email', 'alert_email'],
-  '大盘监控': ['market_index_symbols'],
-  'QC Compute': ['qc_write_mode', 'qc_compute_enabled', 'qc_bar_publish_enabled', 'daily_target_filter_on', 'atr_multiplier'],
-  '其他': ['eod_keep_symbols', 'clear_daily_cache']
+function normalizeConfigRecordEnvironment(record) {
+  return String(record?.environment || '').trim().toLowerCase()
+}
+
+function getConfigScopeLabel(environment) {
+  return getEnvironmentLabel(environment || 'global', true)
+}
+
+function buildConfigView(records) {
+  const byKey = new Map()
+
+  records.forEach((record) => {
+    if (!record?.key) return
+    if (!byKey.has(record.key)) byKey.set(record.key, [])
+    byKey.get(record.key).push(record)
+  })
+
+  return Array.from(byKey.entries()).map(([key, keyRecords]) => {
+    const selectedRecord = keyRecords.find((record) => normalizeConfigRecordEnvironment(record) === configEnvironment) || null
+    const globalRecord = keyRecords.find((record) => {
+      const environment = normalizeConfigRecordEnvironment(record)
+      return environment === 'global' || environment === ''
+    }) || null
+    const sourceRecord = selectedRecord || globalRecord || keyRecords[0]
+    const editableRecord = configEnvironment === 'global'
+      ? (globalRecord || selectedRecord || sourceRecord)
+      : selectedRecord
+
+    return {
+      ...sourceRecord,
+      id: editableRecord?.id || '',
+      value: sourceRecord?.value ?? '',
+      _source_environment: normalizeConfigRecordEnvironment(sourceRecord) || 'global',
+      _editable_environment: configEnvironment,
+      _editable_id: editableRecord?.id || '',
+      _has_override: Boolean(selectedRecord),
+    }
+  })
+}
+
+function renderConfigEnvironmentBar() {
+  document.getElementById('configEnvironmentBar').innerHTML = renderPageContextBar(
+    '配置作用域',
+    {
+      allowGlobal: true,
+      description: 'global 为默认基线，live / paper / backtest 为覆盖层'
+    }
+  )
+}
+
+function findConfig(key) {
+  return configs.find(c => c.key === key)
+}
+
+function getVisibleConfigs() {
+  const keySet = new Set(configs.map(c => c.key))
+
+  return configs
+    .filter(config => {
+      const redirectKey = LEGACY_KEY_REDIRECTS[config.key]
+      return !(redirectKey && keySet.has(redirectKey))
+    })
+    .map(config => {
+      const fallbackMeta = CONFIG_META[config.key] || meta(config.key, '其他 / 未归类', 9999)
+      const sortOrder = Number.isFinite(Number(config.sort_order)) ? Number(config.sort_order) : fallbackMeta.sort_order
+
+      config._display_name = config.display_name || fallbackMeta.display_name || config.key
+      config._group_name = config.group_name || fallbackMeta.group_name || '其他 / 未归类'
+      config._sort_order = sortOrder
+      return config
+    })
+    .sort((a, b) => {
+      if (a._sort_order !== b._sort_order) return a._sort_order - b._sort_order
+      return String(a.key || '').localeCompare(String(b.key || ''))
+    })
+}
+
+function getGroupedConfigs() {
+  const visibleConfigs = getVisibleConfigs()
+  const groupedConfigs = []
+  let currentGroupName = ''
+  let currentGroupItems = []
+
+  visibleConfigs.forEach(config => {
+    if (config._group_name !== currentGroupName) {
+      if (currentGroupItems.length > 0) {
+        groupedConfigs.push([currentGroupName, currentGroupItems])
+      }
+      currentGroupName = config._group_name
+      currentGroupItems = [config]
+    } else {
+      currentGroupItems.push(config)
+    }
+  })
+
+  if (currentGroupItems.length > 0) {
+    groupedConfigs.push([currentGroupName, currentGroupItems])
+  }
+
+  return groupedConfigs
+}
+
+function getTabs(groupedConfigs) {
+  return [
+    { id: 'all', label: '全部', count: groupedConfigs.reduce((sum, [, items]) => sum + items.length, 0) },
+    ...groupedConfigs.map(([groupName, items]) => ({
+      id: groupName,
+      label: groupName,
+      count: items.length
+    }))
+  ]
+}
+
+function renderTabs(tabs) {
+  return `
+    <div class="config-toolbar">
+      <div class="config-tabs">
+        ${tabs.map(tab => `
+          <button
+            type="button"
+            class="config-tab ${activeTab === tab.id ? 'active' : ''}"
+            onclick="setConfigTab('${tab.id.replace(/'/g, "\\'")}')"
+          >
+            <span>${tab.label}</span>
+            <span class="config-tab-count">${tab.count}</span>
+          </button>
+        `).join('')}
+      </div>
+      <div class="config-tab-summary">
+        ${activeTab === 'all'
+          ? `当前显示全部功能配置，共 ${tabs[0]?.count || 0} 项`
+          : `当前功能页：${activeTab}`}
+      </div>
+    </div>
+  `
 }
 
 // ── 加载配置 ──
 async function load() {
   try {
     const data = await apiFetch('config', {
-      sort: 'key',
-      perPage: 200
+      perPage: 500,
+      sort: 'key,-updated'
     })
 
-    configs = data.items || []
+    configRecords = data.items || []
+    configs = buildConfigView(configRecords)
     originalValues = {}
     modifiedKeys.clear()
 
@@ -370,17 +697,39 @@ async function load() {
 // ── 渲染 ──
 function render() {
   const container = document.getElementById('configContainer')
-  const configMap = {}
-  configs.forEach(c => configMap[c.key] = c)
+  const groupedConfigs = getGroupedConfigs()
+  const visibleConfigs = groupedConfigs.flatMap(([, items]) => items)
+
+  if (visibleConfigs.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="empty-text">暂无配置</div></div>'
+    updateSaveButton()
+    return
+  }
+
+  const tabs = getTabs(groupedConfigs)
+  if (!tabs.some(tab => tab.id === activeTab)) {
+    activeTab = 'all'
+    localStorage.setItem('config_active_tab', activeTab)
+  }
+
+  const displayGroups = activeTab === 'all'
+    ? groupedConfigs
+    : groupedConfigs.filter(([groupName]) => groupName === activeTab)
 
   let html = ''
+  html += renderTabs(tabs)
 
-  for (const [groupName, keys] of Object.entries(CONFIG_GROUPS)) {
-    html += `<div class="config-section"><div class="section-title">${groupName}</div>`
+  for (const [groupName, groupItems] of displayGroups) {
+    html += `
+      <div class="config-section">
+        <div class="section-title">
+          <span>${groupName}</span>
+          <span class="section-count">${groupItems.length} 项</span>
+        </div>
+    `
 
-    for (const key of keys) {
-      const config = configMap[key]
-      if (!config) continue
+    for (const config of groupItems) {
+      const key = config.key
 
       const isModified = modifiedKeys.has(key)
       const modifiedClass = isModified ? 'modified' : ''
@@ -392,8 +741,11 @@ function render() {
       html += `
         <div class="config-item ${modifiedClass}" data-key="${key}">
           <div class="config-header">
-            <div class="config-key">${key}</div>
-            <div class="config-default">默认: ${config.default_value || '-'}</div>
+            <div class="config-title-wrap">
+              <div class="config-name">${config._display_name}</div>
+              <div class="config-key">${key} · 来源 ${getConfigScopeLabel(config._source_environment)}${config._has_override ? '' : (configEnvironment === 'global' ? '' : ' · 继承')}</div>
+            </div>
+            <div class="config-default">默认: ${config.default_value ?? '-'}</div>
           </div>
           <div class="config-desc">${config.description || ''}</div>
           ${renderControl(config)}
@@ -411,14 +763,21 @@ function render() {
   updateSaveButton()
 }
 
+window.setConfigTab = async function(tabId) {
+  activeTab = tabId
+  localStorage.setItem('config_active_tab', activeTab)
+  await load()
+}
+
 // ── 渲染控件 ──
 function renderControl(config) {
   const key = config.key
-  const value = config.value || config.default_value || ''
+  const value = config.value ?? config.default_value ?? ''
+  const normalizedValue = String(value).toUpperCase()
 
   // 布尔值 - Toggle
-  if (value === 'TRUE' || value === 'FALSE' || key.includes('enabled') || key.includes('email') || key.includes('_auto_') || key === 'clear_daily_cache' || key === 'daily_target_filter_on') {
-    const isActive = value === 'TRUE'
+  if (BOOLEAN_CONFIG_KEYS.has(key) || normalizedValue === 'TRUE' || normalizedValue === 'FALSE') {
+    const isActive = normalizedValue === 'TRUE'
     return `
       <div class="toggle-container">
         <div class="toggle ${isActive ? 'active' : ''}" onclick="toggleBool('${key}', this)"></div>
@@ -427,25 +786,17 @@ function renderControl(config) {
     `
   }
 
-  // QC写入模式 - Select
-  if (key === 'qc_write_mode') {
-    return `
-      <select class="config-select" onchange="updateValue('${key}', this.value)">
-        <option value="shadow" ${value === 'shadow' ? 'selected' : ''}>shadow (仅写新表)</option>
-        <option value="primary" ${value === 'primary' ? 'selected' : ''}>primary (双写新旧表)</option>
-        <option value="settled" ${value === 'settled' ? 'selected' : ''}>settled (仅写旧表)</option>
-      </select>
-    `
+  // 邮箱收件人 - Email Input
+  if (key === 'alert_email') {
+    return `<input type="email" class="config-input" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" value="${value}" oninput="updateValue('${key}', this.value)">`
   }
 
-  // 日志级别 - Select
-  if (key === 'log_level') {
+  if (SELECT_CONFIGS[key]) {
     return `
       <select class="config-select" onchange="updateValue('${key}', this.value)">
-        <option value="DEBUG" ${value === 'DEBUG' ? 'selected' : ''}>DEBUG (详细)</option>
-        <option value="INFO" ${value === 'INFO' ? 'selected' : ''}>INFO (重要)</option>
-        <option value="WARN" ${value === 'WARN' ? 'selected' : ''}>WARN (告警)</option>
-        <option value="ERROR" ${value === 'ERROR' ? 'selected' : ''}>ERROR (错误)</option>
+        ${SELECT_CONFIGS[key].map(option => `
+          <option value="${option.value}" ${value === option.value ? 'selected' : ''}>${option.label}</option>
+        `).join('')}
       </select>
     `
   }
@@ -490,7 +841,7 @@ function renderControl(config) {
 
 // ── 步进数值 ──
 window.stepValue = function(key, delta) {
-  const config = configs.find(c => c.key === key)
+  const config = findConfig(key)
   if (!config) return
 
   const currentVal = parseFloat(config.value) || 0
@@ -520,7 +871,7 @@ window.toggleBool = function(key, el) {
 
 // ── 更新值 ──
 window.updateValue = function(key, newValue) {
-  const config = configs.find(c => c.key === key)
+  const config = findConfig(key)
   if (!config) return
 
   config.value = newValue
@@ -548,11 +899,12 @@ window.updateValue = function(key, newValue) {
 function updateSaveButton() {
   const btn = document.getElementById('saveBtn')
   const resetAllBtn = document.getElementById('resetAllBtn')
+  const visibleConfigs = getVisibleConfigs()
   btn.disabled = modifiedKeys.size === 0
   btn.textContent = modifiedKeys.size > 0 ? `保存配置 (${modifiedKeys.size})` : '保存配置'
 
   // 检查是否有可重置的配置（当前值与默认值不同）
-  const hasResettable = configs.some(c => c.value !== c.default_value && c.default_value !== null)
+  const hasResettable = visibleConfigs.some(c => c.value !== c.default_value && c.default_value !== null)
   resetAllBtn.disabled = !hasResettable
 }
 
@@ -566,18 +918,33 @@ async function saveAll() {
   let failed = 0
 
   for (const key of modifiedKeys) {
-    const config = configs.find(c => c.key === key)
+    const config = findConfig(key)
     if (!config) continue
 
     try {
       const token = getToken()
-      const res = await fetch(`${BASE_URL}/api/collections/config/records/${config.id}`, {
-        method: 'PATCH',
+      const payload = config._editable_id
+        ? { value: config.value, environment: configEnvironment }
+        : {
+            key: config.key,
+            value: config.value,
+            default_value: config.default_value ?? '',
+            description: config.description ?? '',
+            display_name: config.display_name || config._display_name || '',
+            group_name: config.group_name || config._group_name || '',
+            sort_order: config.sort_order ?? config._sort_order ?? 0,
+            environment: configEnvironment
+          }
+      const endpoint = config._editable_id
+        ? `${BASE_URL}/api/collections/config/records/${config._editable_id}`
+        : `${BASE_URL}/api/collections/config/records`
+      const res = await fetch(endpoint, {
+        method: config._editable_id ? 'PATCH' : 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: token
+          Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ value: config.value })
+        body: JSON.stringify(payload)
       })
 
       if (res.ok) {
@@ -600,12 +967,12 @@ async function saveAll() {
     showToast(`⚠️ 保存完成: 成功 ${success}, 失败 ${failed}`)
   }
 
-  render()
+  await load()
 }
 
 // ── 重置单个配置 ──
 window.resetOne = function(key) {
-  const config = configs.find(c => c.key === key)
+  const config = findConfig(key)
   if (!config || config.default_value === null || config.default_value === undefined) return
 
   config.value = config.default_value
@@ -617,12 +984,12 @@ window.resetOne = function(key) {
   }
 
   render()
-  showToast(`已重置 ${key} 为默认值`)
+  showToast(`已重置 ${config._display_name || key} 为默认值`)
 }
 
 // ── 重置全部配置 ──
 async function resetAll() {
-  const resettableConfigs = configs.filter(c =>
+  const resettableConfigs = getVisibleConfigs().filter(c =>
     c.default_value !== null &&
     c.default_value !== undefined &&
     c.default_value !== '' &&
@@ -644,13 +1011,28 @@ async function resetAll() {
   for (const config of resettableConfigs) {
     try {
       const token = getToken()
-      const res = await fetch(`${BASE_URL}/api/collections/config/records/${config.id}`, {
-        method: 'PATCH',
+      const payload = config._editable_id
+        ? { value: config.default_value, environment: configEnvironment }
+        : {
+            key: config.key,
+            value: config.default_value,
+            default_value: config.default_value ?? '',
+            description: config.description ?? '',
+            display_name: config.display_name || config._display_name || '',
+            group_name: config.group_name || config._group_name || '',
+            sort_order: config.sort_order ?? config._sort_order ?? 0,
+            environment: configEnvironment
+          }
+      const endpoint = config._editable_id
+        ? `${BASE_URL}/api/collections/config/records/${config._editable_id}`
+        : `${BASE_URL}/api/collections/config/records`
+      const res = await fetch(endpoint, {
+        method: config._editable_id ? 'PATCH' : 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: token
+          Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ value: config.default_value })
+        body: JSON.stringify(payload)
       })
 
       if (res.ok) {
@@ -677,7 +1059,13 @@ async function resetAll() {
 }
 
 // ── 初始加载 ──
+renderConfigEnvironmentBar()
 load()
+
+window.onEnvironmentChange = function(environment) {
+  configEnvironment = environment
+  location.href = buildPageUrl('/config.html', { environment }, { allowGlobal: true })
+}
 </script>
 </body>
 </html>

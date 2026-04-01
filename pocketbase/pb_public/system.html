@@ -241,7 +241,10 @@
     <div class="content-area">
         <div class="page-header">
             <div class="page-title">🖥️ 系统监控</div>
-            <div class="refresh-info" id="refreshInfo">加载中...</div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+                <div id="environmentHeader"></div>
+                <div class="refresh-info" id="refreshInfo">加载中...</div>
+            </div>
         </div>
 
         <!-- 模块1: 系统总览 -->
@@ -298,7 +301,7 @@
         <div class="section">
             <div class="section-header">
                 <span>🔧 配置</span>
-                <a href="/config.html" style="font-size:10px;color:var(--accent);text-decoration:none;font-family:'JetBrains Mono',monospace">编辑 →</a>
+                <a id="configLink" href="/config.html" style="font-size:10px;color:var(--accent);text-decoration:none;font-family:'JetBrains Mono',monospace">编辑 →</a>
             </div>
             <div class="section-body" id="configArea">
                 <div class="loading-text">加载中...</div>
@@ -319,6 +322,7 @@
 
     <script>
         let refreshTimer = null;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
 
         async function loadSystemData() {
             try {
@@ -326,11 +330,11 @@
                 const headers = token ? { 'Authorization': token } : {};
 
                 // 1) health
-                const healthResp = await fetch('/api/custom/system/health', { headers });
+                const healthResp = await fetch(buildPageUrl('/api/custom/system/health', { environment: currentEnvironment }), { headers });
                 const health = await healthResp.json();
 
                 // 2) summary
-                const summaryResp = await fetch('/api/custom/system/summary', { headers });
+                const summaryResp = await fetch(buildPageUrl('/api/custom/system/summary', { environment: currentEnvironment }), { headers });
                 const summary = await summaryResp.json();
 
                 renderStatus(health);
@@ -520,10 +524,17 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            document.getElementById('configLink').href = buildPageUrl('/config.html', { environment: currentEnvironment }, { allowGlobal: true });
             document.getElementById('nav').innerHTML = renderNav('/system.html');
             loadSystemData();
             refreshTimer = setInterval(loadSystemData, 30000);
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildPageUrl('/system.html');
+        };
     </script>
 </body>
 </html>

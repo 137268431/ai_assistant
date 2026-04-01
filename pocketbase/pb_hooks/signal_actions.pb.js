@@ -6,17 +6,23 @@
  */
 
 console.log("[SignalActions] Hook 文件开始加载...");
+const envUtils = require(`${__hooks}/lib/environment.js`)
 
 routerAdd("GET", "/webhook/signal/confirm", (c) => {
     const { appendOrderDetail } = require(`${__hooks}/lib/order_events.js`)
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
     const { ok, warn, fail, info } = require(`${__hooks}/lib/_page.js`)
     const signalId = c.request.url.query().get("id") || ""
+    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
     if (!signalId) {
         return c.html(400, fail("参数错误", "缺少信号ID"))
     }
     try {
-        const record = $app.findFirstRecordByFilter("signals", "id = {:id} || signal_id = {:id}", { id: signalId })
+        const record = $app.findFirstRecordByFilter(
+            "signals",
+            "(id = {:id} || signal_id = {:id}) && environment = {:env}",
+            { id: signalId, env: environment }
+        )
         const currentStatus = record.get("status")
         const symbol = record.get("symbol") || signalId
         const statusHints = {
@@ -57,11 +63,16 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
     const { ok, warn, fail, info } = require(`${__hooks}/lib/_page.js`)
     const signalId = c.request.url.query().get("id") || ""
+    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
     if (!signalId) {
         return c.html(400, fail("参数错误", "缺少信号ID"))
     }
     try {
-        const record = $app.findFirstRecordByFilter("signals", "id = {:id} || signal_id = {:id}", { id: signalId })
+        const record = $app.findFirstRecordByFilter(
+            "signals",
+            "(id = {:id} || signal_id = {:id}) && environment = {:env}",
+            { id: signalId, env: environment }
+        )
         const currentStatus = record.get("status")
         const symbol = record.get("symbol") || signalId
         const statusHints = {
@@ -103,9 +114,11 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
 routerAdd("GET", "/api/custom/signals/pending", (c) => {
   try {
     const dateStr = c.request.url.query().get("date") || "";
+    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT);
     const indicatorCache = {}
     console.log(`[SignalsPending] === 查询待执行信号 ===`);
     console.log(`[SignalsPending] date 参数: "${dateStr}"`);
+    console.log(`[SignalsPending] environment 参数: "${environment}"`);
 
     if (!dateStr) {
       return c.json(400, { error: "缺少 date 参数" });
@@ -161,26 +174,26 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
       let indicatorRecord = null
       if (symbol && preferredInterval && signalBarTimeMs > 0) {
         indicatorRecord = query(
-          "symbol = {:sym} && interval = {:tf} && bar_time_ms <= {:ms}",
-          { sym: symbol, tf: preferredInterval, ms: signalBarTimeMs }
+          "(environment = {:env} || environment = '') && symbol = {:sym} && interval = {:tf} && bar_time_ms <= {:ms}",
+          { env: environment, sym: symbol, tf: preferredInterval, ms: signalBarTimeMs }
         )
       }
       if (!indicatorRecord && symbol && preferredInterval) {
         indicatorRecord = query(
-          "symbol = {:sym} && interval = {:tf}",
-          { sym: symbol, tf: preferredInterval }
+          "(environment = {:env} || environment = '') && symbol = {:sym} && interval = {:tf}",
+          { env: environment, sym: symbol, tf: preferredInterval }
         )
       }
       if (!indicatorRecord && symbol && signalBarTimeMs > 0) {
         indicatorRecord = query(
-          "symbol = {:sym} && bar_time_ms <= {:ms}",
-          { sym: symbol, ms: signalBarTimeMs }
+          "(environment = {:env} || environment = '') && symbol = {:sym} && bar_time_ms <= {:ms}",
+          { env: environment, sym: symbol, ms: signalBarTimeMs }
         )
       }
       if (!indicatorRecord && symbol) {
         indicatorRecord = query(
-          "symbol = {:sym}",
-          { sym: symbol }
+          "(environment = {:env} || environment = '') && symbol = {:sym}",
+          { env: environment, sym: symbol }
         )
       }
 
@@ -234,10 +247,11 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
     // 先查所有 pending 状态的信号（不看 date），看数据库里有什么
     const allPending = $app.findRecordsByFilter(
       "signals",
-      `status = 'pending'`,
+      `status = 'pending' && environment = {:env}`,
       "-bar_time_ms",
       100,
-      0
+      0,
+      { env: environment }
     );
     console.log(`[SignalsPending] 数据库中全部 pending 信号数: ${allPending.length}`);
     if (allPending.length > 0) {
@@ -250,11 +264,11 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
     // 执行带 date 过滤的查询
     const records = $app.findRecordsByFilter(
       "signals",
-      `status = 'pending' && date = {:d}`,
+      `status = 'pending' && date = {:d} && environment = {:env}`,
       "-bar_time_ms",
       100,
       0,
-      { d: dateStr }
+      { d: dateStr, env: environment }
     );
     console.log(`[SignalsPending] date="${dateStr}" 过滤后命中数: ${records.length}`);
 
@@ -265,6 +279,7 @@ routerAdd("GET", "/api/custom/signals/pending", (c) => {
       return {
         id: r.id,
         signal_id: r.get("signal_id"),
+        environment: r.get("environment") || environment,
         symbol: r.get("symbol"),
         direction: r.get("direction"),
         signal: r.get("signal"),
@@ -304,6 +319,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
   const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
   const { notifyNewOrder, notifyOrder, getOrderStatusInfo, getTradeGroupCardMessageId } = require(`${__hooks}/lib/feishu_order.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
+  const environment = envUtils.getRuntimeEnvironmentFromData(data, envUtils.LIVE_ENVIRONMENT);
   const signalId = data.signal_id;
   const status = data.status || "executed";
   const note = data.note || "";
@@ -327,8 +343,8 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
     console.log(`[SignalAck] 查找信号记录: signal_id=${signalId}`);
     const record = $app.findFirstRecordByFilter(
       "signals",
-      `signal_id = {:sid}`,
-      { sid: signalId }
+      `signal_id = {:sid} && environment = {:env}`,
+      { sid: signalId, env: environment }
     );
     const symbol = record.get("symbol");
     console.log(`[SignalAck] 找到信号: symbol=${symbol}`);
@@ -379,6 +395,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
         : (Array.isArray(orderData.child_orders) ? orderData.child_orders : [])
       const sharedFields = {
         symbol: symbol,
+        environment: environment,
         direction: orderData.direction || record.get("direction"),
         position_side: orderData.position_side || orderData.direction || record.get("direction") || "",
         quantity: resolvedQuantity,
@@ -456,11 +473,11 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       try {
         const existing = $app.findRecordsByFilter(
           "orders",
-          `unique_id = {:uniqueId}`,
+          `unique_id = {:uniqueId} && environment = {:env}`,
           "",
           1,
           0,
-          { uniqueId: orderPayload.unique_id }
+          { uniqueId: orderPayload.unique_id, env: environment }
         )
         if (existing.length > 0) {
           orderRecord = existing[0]
@@ -494,6 +511,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       orderRecord.set("order_type", orderPayload.order_type)
       orderRecord.set("order_id", orderPayload.order_id || "")
       orderRecord.set("symbol", symbol)
+      orderRecord.set("environment", environment)
       orderRecord.set("direction", orderPayload.direction || record.get("direction"))
       orderRecord.set("quantity", resolvedQuantity)
       orderRecord.set("limit_price", resolvedLimitPrice)
@@ -515,6 +533,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
       $app.save(orderRecord)
       mergeOrderExtra(orderRecord, {
         ...orderExtraData,
+        environment: environment,
         order_time: resolvedOrderTime,
         us_time: eventTimes.us_time,
         cn_time: eventTimes.cn_time,
@@ -552,6 +571,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
         created_bar_time_ms: !previousOrderStatus ? eventTimes.bar_time_ms : 0,
       }, true)
       appendOrderDetail(orderRecord, {
+        environment: environment,
         status: resolvedStatus,
         source: "signal_ack",
         reason: orderExtraData.reason || note,
@@ -560,6 +580,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
         bar_time_ms: eventTimes.bar_time_ms,
         order_time: resolvedOrderTime,
         extra: {
+          environment: environment,
           order_type: orderPayload.order_type,
           direction: orderPayload.direction || record.get("direction") || "",
           quantity: resolvedQuantity,
@@ -628,11 +649,12 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
+    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
     if (!uniqueId) {
         return c.html(400, fail("参数错误", "缺少订单ID"))
     }
     try {
-        const records = $app.findRecordsByFilter("orders", "unique_id = {:id}", "", 1, 0, { id: uniqueId })
+        const records = $app.findRecordsByFilter("orders", "unique_id = {:id} && environment = {:env}", "", 1, 0, { id: uniqueId, env: environment })
         if (!records || records.length === 0) {
             return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
         }
@@ -660,11 +682,11 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
         }
         const relatedRecords = $app.findRecordsByFilter(
             "orders",
-            "trade_group_id = {:gid}",
+            "trade_group_id = {:gid} && environment = {:env}",
             "-created",
             100,
             0,
-            { gid: tradeGroupId }
+            { gid: tradeGroupId, env: environment }
         ) || [record]
         relatedRecords.forEach((groupRecord) => {
             const currentStatus = groupRecord.get("status")
@@ -686,6 +708,7 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
             $app.save(groupRecord)
             try {
                 appendOrderDetail(groupRecord, {
+                    environment: environment,
                     status: "Canceled",
                     source: "webhook/order/cancel",
                     reason: "页面取消主单",
@@ -726,11 +749,12 @@ routerAdd("GET", "/webhook/order/close", (c) => {
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
+    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
     if (!uniqueId) {
         return c.html(400, fail("参数错误", "缺少订单ID"))
     }
     try {
-        const records = $app.findRecordsByFilter("orders", "unique_id = {:id}", "", 1, 0, { id: uniqueId })
+        const records = $app.findRecordsByFilter("orders", "unique_id = {:id} && environment = {:env}", "", 1, 0, { id: uniqueId, env: environment })
         if (!records || records.length === 0) {
             return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
         }
@@ -754,11 +778,11 @@ routerAdd("GET", "/webhook/order/close", (c) => {
         }
         const relatedRecords = $app.findRecordsByFilter(
             "orders",
-            "trade_group_id = {:gid}",
+            "trade_group_id = {:gid} && environment = {:env}",
             "-created",
             100,
             0,
-            { gid: tradeGroupId }
+            { gid: tradeGroupId, env: environment }
         ) || []
         relatedRecords.forEach((groupRecord) => {
             const currentGroupStatus = groupRecord.get("status")
@@ -781,6 +805,7 @@ routerAdd("GET", "/webhook/order/close", (c) => {
             $app.save(groupRecord)
             try {
                 appendOrderDetail(groupRecord, {
+                    environment: environment,
                     status: nextStatus,
                     source: "webhook/order/close",
                     reason: `页面平仓交易组 ${tradeGroupId}`,

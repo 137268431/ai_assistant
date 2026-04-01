@@ -28,23 +28,51 @@ PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://localhost:8090")
 pb = PBClient(base_url=PB_BASE_URL)
 cfg = Config(pb_client=pb)
 
-engines = {}           # (symbol, interval) -> IndicatorEngine
-signal_gens = {}       # (symbol, interval) -> SignalGenerator
+engines = {}           # (environment, symbol, interval) -> IndicatorEngine
+signal_gens = {}       # (environment, symbol, interval) -> SignalGenerator
 last_compute_time = 0
 last_scan_time = 0
-last_processed_ms = {} # (symbol, interval) -> last bar_time_ms
+last_processed_ms = {} # (environment, symbol, interval) -> last bar_time_ms
 compute_count = 0
 error_count = 0
 
 INTERVALS = ["5m", "15m", "30m", "1H", "4H", "1D", "1W"]
+SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
+DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
 
 
-def get_or_create_engine(symbol: str, interval: str) -> IndicatorEngine:
-    key = (symbol, interval)
+def get_or_create_engine(environment: str, symbol: str, interval: str) -> IndicatorEngine:
+    key = (environment, symbol, interval)
     if key not in engines:
         engines[key] = IndicatorEngine(symbol, interval)
         signal_gens[key] = SignalGenerator(symbol, interval)
     return engines[key]
+
+
+def get_requested_environments(defaults=None):
+    payload = request.get_json(silent=True) or {}
+    requested = payload.get("environments")
+    if isinstance(requested, str):
+        requested = [requested]
+
+    if isinstance(requested, list):
+        environments = []
+        for value in requested:
+            environment = str(value or "").strip().lower()
+            if environment in SUPPORTED_COMPUTE_ENVIRONMENTS and environment not in environments:
+                environments.append(environment)
+        if environments:
+            return environments
+
+    return list(defaults or DEFAULT_COMPUTE_ENVIRONMENTS)
+
+
+def is_environment_compute_enabled(environment: str) -> bool:
+    runtime_environment = str(environment or "").strip().lower()
+    if runtime_environment == "backtest" and not cfg.has_environment_override("qc_compute_enabled", runtime_environment):
+        return False
+    default_enabled = runtime_environment in ("live", "paper")
+    return cfg.get_bool_for_environment("qc_compute_enabled", runtime_environment, default_enabled)
 
 
 def get_us_time_now() -> str:
@@ -57,13 +85,22 @@ def compute():
     global last_compute_time, compute_count, error_count
 
     cfg.refresh()
-    if not cfg.compute_enabled:
-        return jsonify({"ok": True, "skipped": True, "reason": "compute_disabled"})
+    requested_environments = get_requested_environments()
+    enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
+    if not enabled_environments:
+        return jsonify({
+            "ok": True,
+            "skipped": True,
+            "reason": "compute_disabled",
+            "requested_environments": requested_environments,
+            "environments": [],
+        })
 
     start = time.time()
     processed = 0
     signals_found = 0
     errors = 0
+    enabled_environment_set = set(enabled_environments)
 
     try:
         for interval in INTERVALS:
@@ -81,17 +118,18 @@ def compute():
             if not new_bars:
                 continue
 
-            # 按symbol分组
+            # 按 environment + symbol 分组，避免 live/paper 共用同一个 engine
             by_symbol = {}
             for bar in new_bars:
+                environment = str(bar.get("environment", "live") or "live").strip().lower()
                 sym = bar.get("symbol", "").upper()
-                if sym:
-                    by_symbol.setdefault(sym, []).append(bar)
+                if sym and environment in enabled_environment_set:
+                    by_symbol.setdefault((environment, sym), []).append(bar)
 
-            for symbol, bars in by_symbol.items():
+            for (environment, symbol), bars in by_symbol.items():
                 bars.sort(key=lambda b: b.get("bar_time_ms", 0))
-                engine = get_or_create_engine(symbol, interval)
-                key = (symbol, interval)
+                engine = get_or_create_engine(environment, symbol, interval)
+                key = (environment, symbol, interval)
                 last_ms = last_processed_ms.get(key, 0)
 
                 for bar in bars:
@@ -119,6 +157,7 @@ def compute():
                     if snapshot and engine.is_ready():
                         try:
                             pb.upsert_indicator({
+                                "environment": environment,
                                 "symbol": symbol,
                                 "exchange": bar.get("exchange", ""),
                                 "interval": interval,
@@ -129,6 +168,7 @@ def compute():
                                 "bar_index": engine.bar_count,
                                 "extra": {
                                     **snapshot,
+                                    "environment": environment,
                                     "session_type": bar.get("session_type", "regular"),
                                     "source": "qc",
                                 },
@@ -144,6 +184,7 @@ def compute():
                             signals_found += 1
                             try:
                                 pb.upsert_signal({
+                                    "environment": environment,
                                     "symbol": symbol,
                                     "signal_id": signal.get("signal_id", f"qc_{symbol}_{bar_ms}"),
                                     "direction": signal.get("direction", ""),
@@ -162,6 +203,7 @@ def compute():
                                     "status": "pending",
                                     "session_type": bar.get("session_type", "regular"),
                                     "extra": {
+                                        "environment": environment,
                                         "source": "qc",
                                         "session_type": bar.get("session_type", "regular"),
                                     },
@@ -180,6 +222,8 @@ def compute():
 
     return jsonify({
         "ok": True,
+        "requested_environments": requested_environments,
+        "environments": sorted(enabled_environments),
         "processed": processed,
         "signals": signals_found,
         "errors": errors,
@@ -193,17 +237,31 @@ def scan():
     global last_scan_time
 
     cfg.refresh()
-    if not cfg.compute_enabled:
-        return jsonify({"ok": True, "skipped": True, "reason": "compute_disabled"})
+    requested_environments = get_requested_environments()
+    enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
+    if not enabled_environments:
+        return jsonify({
+            "ok": True,
+            "skipped": True,
+            "reason": "compute_disabled",
+            "requested_environments": requested_environments,
+            "environments": [],
+        })
 
     et = datetime.now(timezone(timedelta(hours=-4)))
     date_str = et.strftime("%Y-%m-%d")
 
     scanner = DailyScanner(pb_client=pb, engines=engines)
-    result = scanner.run_scan(date_str)
+    result = scanner.run_scan(date_str, environments=enabled_environments)
     last_scan_time = time.time()
 
-    return jsonify({"ok": True, "date": date_str, **result})
+    return jsonify({
+        "ok": True,
+        "date": date_str,
+        "requested_environments": requested_environments,
+        "environments": enabled_environments,
+        **result,
+    })
 
 
 @app.route("/recompute", methods=["POST"])
@@ -245,9 +303,10 @@ def health():
 @app.route("/status", methods=["GET"])
 def status():
     engine_status = {}
-    for (symbol, interval), engine in engines.items():
-        key = f"{symbol}/{interval}"
+    for (environment, symbol, interval), engine in engines.items():
+        key = f"{environment}/{symbol}/{interval}"
         engine_status[key] = {
+            "environment": environment,
             "bar_count": engine.bar_count,
             "is_ready": engine.is_ready(),
             "last_bar_time_ms": engine.last_bar_time_ms,
@@ -258,6 +317,12 @@ def status():
         "ok": True,
         "write_mode": cfg.write_mode,
         "compute_enabled": cfg.compute_enabled,
+        "compute_enabled_by_environment": {
+            environment: is_environment_compute_enabled(environment)
+            for environment in SUPPORTED_COMPUTE_ENVIRONMENTS
+        },
+        "supported_environments": SUPPORTED_COMPUTE_ENVIRONMENTS,
+        "default_environments": DEFAULT_COMPUTE_ENVIRONMENTS,
         "total_engines": len(engines),
         "ready_engines": sum(1 for e in engines.values() if e.is_ready()),
         "engines": engine_status,

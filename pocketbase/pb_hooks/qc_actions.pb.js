@@ -9,16 +9,12 @@ console.log("[QCActions] Hook 文件开始加载...");
 
 const QC_PROXY_SOURCE = "pocketbase_qc_hook"
 const QC_PROXY_HOOK = "qc_actions.pb.js"
+const envUtils = require(`${__hooks}/lib/environment.js`)
 
 // ── 工具函数 ──
 
-function getConfigValue(key, defaultValue) {
-    try {
-        const record = $app.findFirstRecordByFilter("config", "key = {:k}", { k: key })
-        return record ? String(record.get("value") || defaultValue) : defaultValue
-    } catch (_) {
-        return defaultValue
-    }
+function getConfigValue(key, defaultValue, environment) {
+    return envUtils.getConfigValue(key, defaultValue, environment)
 }
 
 function upsertRecord(collectionName, filterStr, filterParams, data) {
@@ -57,12 +53,13 @@ routerAdd("POST", "/api/custom/qc/bars", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const bars = d.bars || []
+    const defaultEnvironment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
 
     if (!bars.length) {
         return c.json(400, { ok: false, error: "Empty bars array" })
     }
 
-    const enabled = getConfigValue("qc_bar_publish_enabled", "true")
+    const enabled = getConfigValue("qc_bar_publish_enabled", "true", defaultEnvironment)
     if (enabled !== "true") {
         return c.json(200, { ok: true, skipped: true, reason: "qc_bar_publish_enabled=false" })
     }
@@ -76,6 +73,7 @@ routerAdd("POST", "/api/custom/qc/bars", (c) => {
         const symbol = String(bar.symbol || "").trim().toUpperCase()
         const interval = String(bar.interval || "").trim()
         const barTimeMs = Number(bar.bar_time_ms)
+        const environment = envUtils.getRuntimeEnvironmentFromData(bar, defaultEnvironment)
 
         if (!symbol || !interval || !Number.isFinite(barTimeMs) || barTimeMs <= 0) {
             errors++
@@ -87,8 +85,8 @@ routerAdd("POST", "/api/custom/qc/bars", (c) => {
             try {
                 record = $app.findFirstRecordByFilter(
                     "qc_bars",
-                    "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms}",
-                    { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs) }
+                    "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}",
+                    { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment }
                 )
             } catch (_) {}
 
@@ -101,6 +99,7 @@ routerAdd("POST", "/api/custom/qc/bars", (c) => {
             }
 
             record.set("symbol", symbol)
+            record.set("environment", environment)
             record.set("exchange", String(bar.exchange || "").trim().toUpperCase())
             record.set("interval", interval)
             record.set("open", Number(bar.open) || 0)
@@ -133,7 +132,8 @@ routerAdd("POST", "/api/custom/qc/bars", (c) => {
 routerAdd("POST", "/api/custom/qc/indicator", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const mode = getConfigValue("qc_write_mode", "shadow")
+    const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
+    const mode = getConfigValue("qc_write_mode", "shadow", environment)
 
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const interval = String(d.interval || "").trim()
@@ -145,6 +145,7 @@ routerAdd("POST", "/api/custom/qc/indicator", (c) => {
 
     const recordData = {
         symbol: symbol,
+        environment: environment,
         exchange: String(d.exchange || "").trim().toUpperCase(),
         interval: interval,
         script_tag: String(d.script_tag || "").trim(),
@@ -155,8 +156,8 @@ routerAdd("POST", "/api/custom/qc/indicator", (c) => {
         extra: d.extra || {},
     }
 
-    const filterStr = "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms}"
-    const filterParams = { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs) }
+    const filterStr = "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}"
+    const filterParams = { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment }
 
     try {
         // shadow / primary → 写 qc_indicators
@@ -183,7 +184,8 @@ routerAdd("POST", "/api/custom/qc/signal", (c) => {
     const { notifyNewSignal, mergeSignalExtra } = require(`${__hooks}/lib/feishu_signal.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const mode = getConfigValue("qc_write_mode", "shadow")
+    const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
+    const mode = getConfigValue("qc_write_mode", "shadow", environment)
 
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const signalId = String(d.signal_id || "").trim()
@@ -192,12 +194,13 @@ routerAdd("POST", "/api/custom/qc/signal", (c) => {
         return c.json(400, { ok: false, error: "Missing symbol or signal_id" })
     }
 
-    const extra = d.extra && typeof d.extra === "object" ? d.extra : {}
+    const extra = envUtils.attachEnvironment(d.extra && typeof d.extra === "object" ? d.extra : {}, environment)
     extra.source = "qc"
     if (d.session_type) extra.session_type = d.session_type
 
     const signalData = {
         symbol: symbol,
+        environment: environment,
         direction: d.direction || "",
         signal: d.signal || "",
         limit_price: Number(d.limit_price) || 0,
@@ -222,8 +225,8 @@ routerAdd("POST", "/api/custom/qc/signal", (c) => {
         note: String(d.note || ""),
     }
 
-    const filterStr = "signal_id = {:sid}"
-    const filterParams = { sid: signalId }
+    const filterStr = "signal_id = {:sid} && environment = {:env}"
+    const filterParams = { sid: signalId, env: environment }
 
     try {
         // shadow / primary → 写 qc_signals
@@ -234,7 +237,7 @@ routerAdd("POST", "/api/custom/qc/signal", (c) => {
 
         // primary / settled → 写 signals 老表
         if (mode === "primary" || mode === "settled") {
-            const filterOn = getConfigValue("daily_target_filter_on", "false")
+            const filterOn = getConfigValue("daily_target_filter_on", "false", environment)
             let shouldWrite = true
 
             if (filterOn === "true") {
@@ -243,8 +246,8 @@ routerAdd("POST", "/api/custom/qc/signal", (c) => {
                 try {
                     $app.findFirstRecordByFilter(
                         "daily_targets",
-                        "symbol = {:sym} && date = {:d} && status != 'removed'",
-                        { sym: symbol, d: today }
+                        "symbol = {:sym} && date = {:d} && environment = {:env} && status != 'removed'",
+                        { sym: symbol, d: today, env: environment }
                     )
                 } catch (_) {
                     shouldWrite = false
@@ -278,6 +281,7 @@ routerAdd("POST", "/api/custom/qc/signal", (c) => {
 routerAdd("POST", "/api/custom/qc/scan", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
+    const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
 
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const date = String(d.date || "").trim()
@@ -288,6 +292,7 @@ routerAdd("POST", "/api/custom/qc/scan", (c) => {
 
     const targetData = {
         symbol: symbol,
+        environment: environment,
         exchange: String(d.exchange || "").trim().toUpperCase(),
         date: date,
         direction_bias: d.direction_bias || "neutral",
@@ -303,8 +308,8 @@ routerAdd("POST", "/api/custom/qc/scan", (c) => {
     try {
         upsertRecord(
             "daily_targets",
-            "symbol = {:sym} && date = {:d}",
-            { sym: symbol, d: date },
+            "symbol = {:sym} && date = {:d} && environment = {:env}",
+            { sym: symbol, d: date, env: environment },
             targetData
         )
         return c.json(200, { ok: true, symbol, date })
@@ -408,21 +413,22 @@ routerAdd("GET", "/api/custom/qc/health", (c) => {
 // GET /api/custom/qc/state/signals?date=YYYY-MM-DD
 routerAdd("GET", "/api/custom/qc/state/signals", (c) => {
     const date = c.queryParam("date")
+    const environment = envUtils.getRuntimeEnvironmentFromRequest(c, envUtils.LIVE_ENVIRONMENT)
     if (!date) {
         return c.json(400, { ok: false, error: "date required" })
     }
 
     try {
         const record = $app.findFirstRecordByFilter(
-            "qc_state", "state_key = {:k} && date = {:d}",
-            { k: "signals", d: date }
+            "qc_state", "state_key = {:k} && date = {:d} && environment = {:env}",
+            { k: "signals", d: date, env: environment }
         )
         if (record) {
-            return c.json(200, { ok: true, date: date, data: record.get("data") || {} })
+            return c.json(200, { ok: true, date: date, environment: environment, data: record.get("data") || {} })
         }
-        return c.json(200, { ok: true, date: date, data: {} })
+        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
     } catch (_) {
-        return c.json(200, { ok: true, date: date, data: {} })
+        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
     }
 })
 
@@ -431,6 +437,7 @@ routerAdd("POST", "/api/custom/qc/state/signals", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const date = d.date || ""
+    const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
     if (!date) {
         return c.json(400, { ok: false, error: "date required" })
     }
@@ -444,11 +451,11 @@ routerAdd("POST", "/api/custom/qc/state/signals", (c) => {
     try {
         upsertRecord(
             "qc_state",
-            "state_key = {:k} && date = {:d}",
-            { k: "signals", d: date },
-            { state_key: "signals", date: date, data: stateData }
+            "state_key = {:k} && date = {:d} && environment = {:env}",
+            { k: "signals", d: date, env: environment },
+            { state_key: "signals", date: date, environment: environment, data: stateData }
         )
-        return c.json(200, { ok: true, date: date })
+        return c.json(200, { ok: true, date: date, environment: environment })
     } catch (err) {
         return c.json(500, { ok: false, error: err.message })
     }
@@ -457,21 +464,22 @@ routerAdd("POST", "/api/custom/qc/state/signals", (c) => {
 // GET /api/custom/qc/state/orders?date=YYYY-MM-DD
 routerAdd("GET", "/api/custom/qc/state/orders", (c) => {
     const date = c.queryParam("date")
+    const environment = envUtils.getRuntimeEnvironmentFromRequest(c, envUtils.LIVE_ENVIRONMENT)
     if (!date) {
         return c.json(400, { ok: false, error: "date required" })
     }
 
     try {
         const record = $app.findFirstRecordByFilter(
-            "qc_state", "state_key = {:k} && date = {:d}",
-            { k: "orders", d: date }
+            "qc_state", "state_key = {:k} && date = {:d} && environment = {:env}",
+            { k: "orders", d: date, env: environment }
         )
         if (record) {
-            return c.json(200, { ok: true, date: date, data: record.get("data") || {} })
+            return c.json(200, { ok: true, date: date, environment: environment, data: record.get("data") || {} })
         }
-        return c.json(200, { ok: true, date: date, data: {} })
+        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
     } catch (_) {
-        return c.json(200, { ok: true, date: date, data: {} })
+        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
     }
 })
 
@@ -480,6 +488,7 @@ routerAdd("POST", "/api/custom/qc/state/orders", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const date = d.date || ""
+    const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
     if (!date) {
         return c.json(400, { ok: false, error: "date required" })
     }
@@ -497,11 +506,11 @@ routerAdd("POST", "/api/custom/qc/state/orders", (c) => {
     try {
         upsertRecord(
             "qc_state",
-            "state_key = {:k} && date = {:d}",
-            { k: "orders", d: date },
-            { state_key: "orders", date: date, data: stateData }
+            "state_key = {:k} && date = {:d} && environment = {:env}",
+            { k: "orders", d: date, env: environment },
+            { state_key: "orders", date: date, environment: environment, data: stateData }
         )
-        return c.json(200, { ok: true, date: date })
+        return c.json(200, { ok: true, date: date, environment: environment })
     } catch (err) {
         return c.json(500, { ok: false, error: err.message })
     }
@@ -512,6 +521,7 @@ routerAdd("POST", "/api/custom/qc/health-report", (c) => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
+    const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
 
     // 写 system_events
     try {
@@ -520,8 +530,9 @@ routerAdd("POST", "/api/custom/qc/health-report", (c) => {
         record.set("event_type", "heartbeat")
         record.set("level", "info")
         record.set("source", "qc")
-        record.set("title", "QC 健康上报")
-        record.set("detail", d)
+        record.set("environment", environment)
+        record.set("title", envUtils.labelTitleWithEnvironment("QC 健康上报", environment))
+        record.set("detail", envUtils.addEnvironmentToDetail(d, environment))
         record.set("us_time", d.et_time || "")
         record.set("cn_time", d.bj_time || "")
         record.set("notified", false)
@@ -536,10 +547,11 @@ routerAdd("POST", "/api/custom/qc/notify", (c) => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
+    const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
 
     const notifyType = d.type || "status"
-    const title = d.title || ""
-    const detail = d.data || d.detail || {}
+    const title = envUtils.labelTitleWithEnvironment(d.title || "", environment)
+    const detail = envUtils.addEnvironmentToDetail(d.data || d.detail || {}, environment)
 
     if (!title) {
         return c.json(400, { ok: false, error: "title required" })
@@ -556,6 +568,7 @@ routerAdd("POST", "/api/custom/qc/notify", (c) => {
         record.set("event_type", "status_change")
         record.set("level", level)
         record.set("source", "qc")
+        record.set("environment", environment)
         record.set("title", title)
         record.set("detail", detail)
         record.set("notified", false)
@@ -563,7 +576,7 @@ routerAdd("POST", "/api/custom/qc/notify", (c) => {
     } catch (_) {}
 
     // 发飞书
-    var notified = feishuSystem.notifySystemEvent("status_change", level, "qc", title, detail)
+    var notified = feishuSystem.notifySystemEvent("status_change", level, "qc", title, detail, environment)
 
     return c.json(200, { ok: true, notified: notified })
 })

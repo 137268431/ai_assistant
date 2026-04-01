@@ -708,10 +708,7 @@
                 <div class="logo-label">TRADING</div>
                 <div class="logo-title">📡 信号</div>
             </div>
-            <div class="live-badge">
-                <div class="live-dot"></div>
-                LIVE
-            </div>
+            <div id="environmentHeader"></div>
         </div>
     </div>
 
@@ -771,6 +768,7 @@
         let filterSignalId = '';
         let refreshTimer = null;
         let currentInterval = 30;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
 
         // Pagination
         let currentPage = 1;
@@ -782,10 +780,46 @@
         // Signal validity configuration (from config table, default 30 minutes)
         let signalValidityMinutes = 30;
 
+        function pickConfigValue(records, fallbackValue) {
+            const priority = { '': 0, global: 1, [currentEnvironment]: 2 };
+            let bestRecord = null;
+            let bestPriority = -1;
+
+            records.forEach((record) => {
+                const recordEnvironment = String(record.environment || '').trim().toLowerCase();
+                const recordPriority = priority[recordEnvironment] ?? -1;
+                if (recordPriority > bestPriority) {
+                    bestPriority = recordPriority;
+                    bestRecord = record;
+                }
+            });
+
+            return bestRecord?.value ?? fallbackValue;
+        }
+
+        async function loadConfigValue(key, fallbackValue) {
+            const result = await pb.collection('config').getFullList({
+                filter: `key = "${escapeFilterValue(key)}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
+                sort: '-updated',
+                $autoCancel: false
+            });
+            return pickConfigValue(result, fallbackValue);
+        }
+
+        function buildSignalsPageUrl(overrides = {}) {
+            const params = {
+                date: currentDate,
+                signal_id: filterSignalId || '',
+                search: currentSearch || '',
+                ...overrides
+            };
+            return buildPageUrl('/signals.html', params);
+        }
+
         async function initAuth() {
             const token = getToken();
             if (!token) {
-                location.href = '/login.html?from=/signals.html';
+                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
                 return false;
             }
             pb.authStore.save(token, null);
@@ -808,7 +842,7 @@
         }
 
         function renderFilterNote() {
-            const notes = [];
+            const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
             if (filterSignalId) notes.push(`signal_id=${filterSignalId}`);
             if (currentSearch) notes.push(`search=${currentSearch}`);
             document.getElementById('filterNote').innerHTML = notes.length
@@ -854,12 +888,9 @@
             try {
                 // Load signal validity configuration from config table
                 try {
-                    const configResult = await pb.collection('config').getFirstListItem('key = "signal_validity_minutes"');
-                    console.log('[Signals] signal_validity_minutes 配置结果:', configResult);
-                    if (configResult && configResult.value) {
-                        signalValidityMinutes = parseInt(configResult.value) || 30;
-                        console.log('[Signals] signal_validity_minutes 配置值:', signalValidityMinutes);
-                    }
+                    const configValue = await loadConfigValue('signal_validity_minutes', '30');
+                    signalValidityMinutes = parseInt(configValue, 10) || 30;
+                    console.log('[Signals] signal_validity_minutes 配置值:', signalValidityMinutes, 'environment=', currentEnvironment);
                 } catch (e) {
                     console.warn('[Signals] 无法读取 signal_validity_minutes 配置，使用默认值 30 分钟:', e);
                     signalValidityMinutes = 30;
@@ -876,7 +907,7 @@
                 }
 
                 // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
-                const conditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+                const conditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
 
                 if (filterSignalId) {
                     conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
@@ -993,7 +1024,7 @@
                 // 一次性请求所有 symbol 的指标（用 || 连接）
                 const symbolFilter = symbols.map(s => `symbol = "${s}"`).join(' || ');
                 const result = await pb.collection('indicators').getList(1, symbols.length, {
-                    filter: `(${symbolFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created',
                     $autoCancel: false
                 });
@@ -1065,7 +1096,7 @@
                 // 一次性请求所有 symbol 的反向信号（用 || 连接）
                 const symbolFilter = symbols.map(s => `symbol = "${s}"`).join(' || ');
                 const result = await pb.collection('reverse_signals').getList(1, symbols.length * 2, {
-                    filter: `(${symbolFilter}) && status = "confirmed" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && status = "confirmed" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created',
                     $autoCancel: false
                 });
@@ -1121,7 +1152,7 @@
                 // 一次性请求所有 signal_id 的订单（用 || 连接）
                 const idFilter = signalIds.map(id => `signal_id = "${escapeFilterValue(id)}"`).join(' || ');
                 const result = await pb.collection('orders').getFullList({
-                    filter: `(${idFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                    filter: `environment = "${currentEnvironment}" && (${idFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-bar_time_ms,-created',
                     $autoCancel: false
                 });
@@ -1158,7 +1189,7 @@
                 endTime = `${currentDate} 23:59:59`;
             }
 
-            const baseConditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+            const baseConditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
             if (filterSignalId) {
                 baseConditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
             }
@@ -1231,7 +1262,7 @@
                 endTime = `${currentDate} 23:59:59`;
             }
 
-            const baseConditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+            const baseConditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
             if (filterSignalId) {
                 baseConditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
             }
@@ -1443,7 +1474,7 @@
                 }
 
                 // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
-                const conditions = [`us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+                const conditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
 
                 if (filterSignalId) {
                     conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
@@ -1852,7 +1883,7 @@
                 return;
             }
 
-            location.href = `/orders.html?signal_id=${encodeURIComponent(signalId)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/orders.html', { signal_id: signalId, date: currentDate });
         }
 
         function viewReverseSignal(signalId) {
@@ -1861,7 +1892,7 @@
                 return;
             }
             // 跳转到反向信号页面并按 signal_id 筛选
-            location.href = `/reverse_signals.html?signal_id=${encodeURIComponent(signalId)}&date=${encodeURIComponent(currentDate)}`;
+            location.href = buildPageUrl('/reverse_signals.html', { signal_id: signalId, date: currentDate });
         }
 
         function showIndicatorDetails(signalId) {
@@ -1913,6 +1944,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             if (!await initAuth()) return;
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/signals.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
@@ -1969,6 +2001,11 @@
                 }
             }
         });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            location.href = buildSignalsPageUrl();
+        };
     </script>
 </body>
 </html>
