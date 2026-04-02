@@ -150,7 +150,7 @@ function getConfigValue(key, defaultValue, environment) {
     return best ? String(best.get("value") || defaultValue) : defaultValue
 }
 
-module.exports = {
+const exported = {
     LIVE_ENVIRONMENT,
     PAPER_ENVIRONMENT,
     BACKTEST_ENVIRONMENT,
@@ -167,3 +167,14 @@ module.exports = {
     hasConfigOverride,
     getConfigValue,
 }
+
+if (typeof globalThis !== "undefined") {
+    if (!globalThis.__gloryEnvUtils) {
+        globalThis.__gloryEnvUtils = exported
+    }
+    if (!globalThis.envUtils) {
+        globalThis.envUtils = globalThis.__gloryEnvUtils
+    }
+}
+
+module.exports = exported

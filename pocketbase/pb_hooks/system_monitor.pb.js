@@ -6,94 +6,8 @@
  */
 
 console.log("[SystemMonitor] Hook 文件开始加载...")
-const envUtils = require(`${__hooks}/lib/environment.js`)
-const MONITOR_ENVIRONMENTS = [envUtils.LIVE_ENVIRONMENT, envUtils.PAPER_ENVIRONMENT, envUtils.BACKTEST_ENVIRONMENT]
 
-function getConfigValue(key, defaultValue, environment) {
-    return envUtils.getConfigValue(key, defaultValue, environment)
-}
-
-function isEnabledConfigValue(value) {
-    var text = String(value || "").trim().toLowerCase()
-    return !(text === "false" || text === "0" || text === "off" || text === "no")
-}
-
-function isConfigEnabled(key, defaultValue, environment) {
-    return isEnabledConfigValue(getConfigValue(key, defaultValue, environment))
-}
-
-function isBacktestOptedIn() {
-    return envUtils.hasConfigOverride("qc_compute_enabled", envUtils.BACKTEST_ENVIRONMENT) ||
-        envUtils.hasConfigOverride("trading_enabled", envUtils.BACKTEST_ENVIRONMENT) ||
-        envUtils.hasConfigOverride("pb_scheduler_enabled", envUtils.BACKTEST_ENVIRONMENT)
-}
-
-function getActiveMonitorEnvironments() {
-    return MONITOR_ENVIRONMENTS.filter((environment) => {
-        if (environment === envUtils.BACKTEST_ENVIRONMENT) {
-            return isBacktestOptedIn()
-        }
-        return true
-    })
-}
-
-function getComputeEnabledForEnvironment(environment) {
-    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
-    if (runtimeEnvironment === envUtils.BACKTEST_ENVIRONMENT && !isBacktestOptedIn()) {
-        return false
-    }
-    var defaultValue = runtimeEnvironment === envUtils.BACKTEST_ENVIRONMENT ? "false" : "true"
-    return isConfigEnabled("qc_compute_enabled", defaultValue, runtimeEnvironment)
-}
-
-function getTradingEnabledForEnvironment(environment) {
-    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
-    if (runtimeEnvironment === envUtils.BACKTEST_ENVIRONMENT && !isBacktestOptedIn()) {
-        return false
-    }
-    return isConfigEnabled("trading_enabled", "true", runtimeEnvironment)
-}
-
-function getEffectiveWriteMode(environment) {
-    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
-    if (runtimeEnvironment === envUtils.BACKTEST_ENVIRONMENT && !isBacktestOptedIn()) {
-        return "disabled"
-    }
-    return getConfigValue("qc_write_mode", "shadow", runtimeEnvironment)
-}
-
-function writeSystemEventRecord(eventType, level, source, title, detail, environment, notified) {
-    try {
-        var collection = $app.findCollectionByNameOrId("system_events")
-        var times = getTimeStrings()
-        var record = new Record(collection)
-        record.set("event_type", eventType)
-        record.set("level", level)
-        record.set("source", source)
-        record.set("environment", environment)
-        record.set("title", envUtils.labelTitleWithEnvironment(title, environment))
-        record.set("detail", envUtils.addEnvironmentToDetail(detail, environment))
-        record.set("us_time", times.us)
-        record.set("cn_time", times.cn)
-        record.set("notified", !!notified)
-        $app.save(record)
-    } catch (err) {
-        console.error("[SystemMonitor] 写 cron system_events 失败:", err.message)
-    }
-}
-
-function getTimeStrings() {
-    var now = new Date()
-    var usOffset = -4 * 60
-    var cnOffset = 8 * 60
-    var usTime = new Date(now.getTime() + usOffset * 60000)
-    var cnTime = new Date(now.getTime() + cnOffset * 60000)
-    return {
-        us: usTime.toISOString().slice(0, 19).replace("T", " "),
-        cn: cnTime.toISOString().slice(0, 19).replace("T", " "),
-        date: usTime.toISOString().slice(0, 10)
-    }
-}
+const MONITOR_BACKTEST_KEYS = ["qc_compute_enabled", "trading_enabled", "pb_scheduler_enabled"]
 
 // ══════════════════════════════════════
 // POST /api/custom/system/event
@@ -101,39 +15,23 @@ function getTimeStrings() {
 // ══════════════════════════════════════
 routerAdd("POST", "/api/custom/system/event", (c) => {
     var feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getRuntimeEnvironmentFromData, labelTitleWithEnvironment, addEnvironmentToDetail, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
 
     var reqInfo = c.requestInfo()
     var d = reqInfo.body || reqInfo.data || {}
-    var environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
+    var environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    var rawTitle = d.title || ""
+    var rawDetail = d.detail || {}
 
     var eventType = d.event_type || "status_change"
     var level = d.level || "info"
     var source = d.source || "pb"
-    var title = envUtils.labelTitleWithEnvironment(d.title || "", environment)
-    var detail = envUtils.addEnvironmentToDetail(d.detail || {}, environment)
+    var title = labelTitleWithEnvironment(rawTitle, environment)
+    var detail = addEnvironmentToDetail(rawDetail, environment)
 
     if (!title) {
         return c.json(400, { ok: false, error: "title required" })
-    }
-
-    var times = getTimeStrings()
-
-    // 写 system_events 表
-    try {
-        var collection = $app.findCollectionByNameOrId("system_events")
-        var record = new Record(collection)
-        record.set("event_type", eventType)
-        record.set("level", level)
-        record.set("source", source)
-        record.set("environment", environment)
-        record.set("title", title)
-        record.set("detail", detail)
-        record.set("us_time", times.us)
-        record.set("cn_time", times.cn)
-        record.set("notified", false)
-        $app.save(record)
-    } catch (err) {
-        console.error("[SystemMonitor] 写 system_events 失败:", err.message)
     }
 
     // 发飞书通知: warning/error 即时发送, info 只记录不发
@@ -144,21 +42,7 @@ routerAdd("POST", "/api/custom/system/event", (c) => {
         notified = feishuSystem.notifySystemEvent(eventType, level, source, title, detail, environment)
     }
 
-    // 更新 notified 状态
-    if (notified) {
-        try {
-            var records = $app.findRecordsByFilter(
-                "system_events",
-                "title = {:t} && us_time = {:u}",
-                "-created", 1, 0,
-                { t: title, u: times.us }
-            )
-            if (records && records.length > 0) {
-                records[0].set("notified", true)
-                $app.save(records[0])
-            }
-        } catch (_) {}
-    }
+    writeSystemEvent(eventType, level, source, rawTitle, rawDetail, environment, notified)
 
     return c.json(200, { ok: true, notified: notified })
 })
@@ -168,15 +52,17 @@ routerAdd("POST", "/api/custom/system/event", (c) => {
 // 聚合健康检查
 // ══════════════════════════════════════
 routerAdd("GET", "/api/custom/system/health", (c) => {
-    var environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    const { normalizeRuntimeEnvironment, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { getComputeEnabledForEnvironment, getEffectiveWriteMode } = require(`${__hooks}/lib/runtime_modes.js`)
+    var environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
     var result = {
         ok: true,
         environment: environment,
         pb: { status: "running" },
         qc_compute: { status: "unknown" },
         qc: { status: "unknown" },
-        write_mode: getEffectiveWriteMode(environment),
-        compute_enabled: getComputeEnabledForEnvironment(environment)
+        write_mode: getEffectiveWriteMode(environment, MONITOR_BACKTEST_KEYS),
+        compute_enabled: getComputeEnabledForEnvironment(environment, MONITOR_BACKTEST_KEYS)
     }
 
     // 检查 qc_compute
@@ -232,16 +118,19 @@ routerAdd("GET", "/api/custom/system/health", (c) => {
 // 系统总览 (供前端 system.html 调用)
 // ══════════════════════════════════════
 routerAdd("GET", "/api/custom/system/summary", (c) => {
+    const { normalizeRuntimeEnvironment, LIVE_ENVIRONMENT, getConfigValue } = require(`${__hooks}/lib/environment.js`)
+    const { getComputeEnabledForEnvironment, getTradingEnabledForEnvironment, getEffectiveWriteMode } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     var times = getTimeStrings()
     var todayDate = times.date
-    var environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    var environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
 
     var summary = {
         timestamp: times.us,
         environment: environment,
-        write_mode: getEffectiveWriteMode(environment),
-        compute_enabled: getComputeEnabledForEnvironment(environment),
-        trading_enabled: getTradingEnabledForEnvironment(environment),
+        write_mode: getEffectiveWriteMode(environment, MONITOR_BACKTEST_KEYS),
+        compute_enabled: getComputeEnabledForEnvironment(environment, MONITOR_BACKTEST_KEYS),
+        trading_enabled: getTradingEnabledForEnvironment(environment, MONITOR_BACKTEST_KEYS),
         daily_target_filter: getConfigValue("daily_target_filter_on", "false", environment) === "true",
         max_positions: getConfigValue("max_positions", "3", environment),
         config: {},
@@ -351,8 +240,11 @@ routerAdd("GET", "/api/custom/system/summary", (c) => {
 // ══════════════════════════════════════
 cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
     var feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment, getEffectiveWriteMode } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
     var times = getTimeStrings()
-    var activeEnvironments = getActiveMonitorEnvironments()
+    var activeEnvironments = getActiveRuntimeEnvironments(MONITOR_BACKTEST_KEYS)
 
     // 检查 qc_compute
     var computeOk = false
@@ -365,7 +257,7 @@ cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
             if (data.error_count > 0) {
                 for (var i = 0; i < activeEnvironments.length; i++) {
                     var warningEnvironment = activeEnvironments[i]
-                    if (!getComputeEnabledForEnvironment(warningEnvironment)) continue
+                    if (!getComputeEnabledForEnvironment(warningEnvironment, MONITOR_BACKTEST_KEYS)) continue
                     feishuSystem.notifyWarning("qc_compute", "计算引擎存在错误", {
                         "错误次数": String(data.error_count),
                         "引擎数": String(data.engines),
@@ -381,14 +273,14 @@ cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
     if (!computeOk) {
         for (var j = 0; j < activeEnvironments.length; j++) {
             var alertEnvironment = activeEnvironments[j]
-            if (!getComputeEnabledForEnvironment(alertEnvironment)) continue
+            if (!getComputeEnabledForEnvironment(alertEnvironment, MONITOR_BACKTEST_KEYS)) continue
 
             feishuSystem.notifyAlert("qc_compute", "QC Compute 服务离线", {
                 "检查时间": times.us,
                 "建议": "检查 systemctl status qc_compute"
             }, alertEnvironment)
 
-            writeSystemEventRecord("alert", "error", "qc_compute", "QC Compute 服务离线", {
+            writeSystemEvent("alert", "error", "qc_compute", "QC Compute 服务离线", {
                 check_time: times.us
             }, alertEnvironment, true)
         }
@@ -419,16 +311,16 @@ cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
     if (minute < 5 && computeOk) {
         for (var m = 0; m < activeEnvironments.length; m++) {
             var heartbeatEnvironment = activeEnvironments[m]
-            if (!getComputeEnabledForEnvironment(heartbeatEnvironment) &&
-                !getTradingEnabledForEnvironment(heartbeatEnvironment)) {
+            if (!getComputeEnabledForEnvironment(heartbeatEnvironment, MONITOR_BACKTEST_KEYS) &&
+                !getTradingEnabledForEnvironment(heartbeatEnvironment, MONITOR_BACKTEST_KEYS)) {
                 continue
             }
 
             feishuSystem.notifyHeartbeat("pb", "ok", {
                 environment: heartbeatEnvironment,
                 "qc_compute": "running",
-                "write_mode": getEffectiveWriteMode(heartbeatEnvironment),
-                "trading": getTradingEnabledForEnvironment(heartbeatEnvironment) ? "true" : "false"
+                "write_mode": getEffectiveWriteMode(heartbeatEnvironment, MONITOR_BACKTEST_KEYS),
+                "trading": getTradingEnabledForEnvironment(heartbeatEnvironment, MONITOR_BACKTEST_KEYS) ? "true" : "false"
             })
         }
     }
@@ -439,9 +331,11 @@ cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
 // ══════════════════════════════════════
 cronAdd("system_daily_report", "5 20 * * 1-5", () => {
     var feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getActiveRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     var times = getTimeStrings()
     var todayDate = times.date
-    var activeEnvironments = getActiveMonitorEnvironments()
+    var activeEnvironments = getActiveRuntimeEnvironments(MONITOR_BACKTEST_KEYS)
 
     for (var i = 0; i < activeEnvironments.length; i++) {
         var environment = activeEnvironments[i]

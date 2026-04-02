@@ -1,13 +1,32 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
-const { notifyReverseSignal, notifyReverseStatus } = require(`${__hooks}/lib/feishu_reverse.js`)
-const envUtils = require(`${__hooks}/lib/environment.js`)
-
 /**
  * reverse_signals.pb.js
  * 逆向信号计算、查询、调度、回写 API
  */
+
+function getReverseUtils() {
+  return require(`${__hooks}/lib/reverse_utils.js`)
+}
+
+function getReverseNotifier() {
+  return require(`${__hooks}/lib/feishu_reverse.js`)
+}
+
+function normalizeEnvironment(value) {
+  const { normalizeRuntimeEnvironment, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+  return normalizeRuntimeEnvironment(value || "", LIVE_ENVIRONMENT)
+}
+
+function getRequestEnvironment(c) {
+  const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+  return getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+}
+
+function getDataEnvironment(data) {
+  const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+  return getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
+}
 
 function parseTriggeredSignals(value) {
   if (Array.isArray(value)) return value
@@ -24,7 +43,8 @@ function parseTriggeredSignals(value) {
 function getThreshold(environment) {
   let threshold = 6
   try {
-    threshold = parseInt(envUtils.getConfigValue("reverse_signal_threshold", "6", environment)) || 6
+    const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
+    threshold = parseInt(getConfigValue("reverse_signal_threshold", "6", environment)) || 6
   } catch (e) {
     console.log(`[ReverseSignal] reverse_signal_threshold 配置读取失败，使用默认值 6: ${e}`)
   }
@@ -46,7 +66,7 @@ function resolveIndicatorAction(score, targetState, forcedActionType) {
 }
 
 function loadIndicators(symbol, environment) {
-  const runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+  const runtimeEnvironment = normalizeEnvironment(environment)
   const records = $app.findRecordsByFilter(
     "indicators",
     "(environment = {:env} || environment = '') && symbol = {:symbol}",
@@ -59,6 +79,7 @@ function loadIndicators(symbol, environment) {
 }
 
 function buildIndicatorAnalysis(symbol, direction, indicatorRecord) {
+  const reverseUtils = getReverseUtils()
   const extra = reverseUtils.parseJsonObject(indicatorRecord.get("extra"))
   const crsi = Number(extra.crsi)
   const obvRsi = Number(extra.obv_rsi)
@@ -110,6 +131,7 @@ function buildIndicatorAnalysis(symbol, direction, indicatorRecord) {
 }
 
 function buildReverseResponse(record, created, duplicate) {
+  const reverseUtils = getReverseUtils()
   return {
     success: true,
     created: !!created,
@@ -119,8 +141,9 @@ function buildReverseResponse(record, created, duplicate) {
 }
 
 function listReverseRecords(dateText, maxItems, environment) {
+  const reverseUtils = getReverseUtils()
   const limit = Math.max(1, Math.min(Number(maxItems) || 200, 500))
-  const runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+  const runtimeEnvironment = normalizeEnvironment(environment)
   if (dateText) {
     const range = reverseUtils.buildDateRange(dateText)
     if (range) {
@@ -140,8 +163,9 @@ function listReverseRecords(dateText, maxItems, environment) {
 // GET /api/custom/reverse/list - 获取某日反转信号列表
 routerAdd("GET", "/api/custom/reverse/list", (c) => {
   try {
+    const reverseUtils = getReverseUtils()
     const dateText = c.request.url.query().get("date") || ""
-    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    const environment = getRequestEnvironment(c)
     const symbol = String(c.request.url.query().get("symbol") || "").toUpperCase()
     const statusFilter = String(c.request.url.query().get("status") || "")
       .split(",")
@@ -161,8 +185,9 @@ routerAdd("GET", "/api/custom/reverse/list", (c) => {
 
 // POST /api/custom/reverse/calculate - 从 indicators 计算逆向信号并写入
 routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
+  const reverseUtils = getReverseUtils()
   const data = c.requestInfo().body || c.requestInfo().data || {}
-  const environment = envUtils.getRuntimeEnvironmentFromData(data, envUtils.LIVE_ENVIRONMENT)
+  const environment = getDataEnvironment(data)
   const symbol = String(data.symbol || "").trim().toUpperCase()
   const direction = String(data.direction || "").trim().toLowerCase()
   const forcedActionType = String(data.force_action_type || data.action_type || "").trim()
@@ -290,6 +315,7 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
     const threshold = getThreshold(environment)
     if (score >= threshold) {
       try {
+        const { notifyReverseSignal } = getReverseNotifier()
         notifyReverseSignal(upsertResult.record, {
           message: upsertResult.created ? "检测到指标反转信号，等待 QC 执行" : "检测到重复指标反转信号，已刷新现有记录"
         })
@@ -308,7 +334,8 @@ routerAdd("POST", "/api/custom/reverse/calculate", (c) => {
 // GET /api/custom/reverse/pending - 获取未处理的逆向信号
 routerAdd("GET", "/api/custom/reverse/pending", (c) => {
   try {
-    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    const reverseUtils = getReverseUtils()
+    const environment = getRequestEnvironment(c)
     const records = $app.findRecordsByFilter(
       "reverse_signals",
       "status = 'pending' && environment = {:env}",
@@ -329,6 +356,7 @@ routerAdd("GET", "/api/custom/reverse/pending", (c) => {
 
 // POST /api/custom/reverse/dispatch - 页面触发执行/取消
 routerAdd("POST", "/api/custom/reverse/dispatch", (c) => {
+  const reverseUtils = getReverseUtils()
   const data = c.requestInfo().body || c.requestInfo().data || {}
   const reverseId = String(data.reverse_id || data.signal_id || "").trim()
   const action = String(data.action || "").trim()
@@ -367,6 +395,7 @@ routerAdd("POST", "/api/custom/reverse/dispatch", (c) => {
       })
       $app.save(record)
       try {
+        const { notifyReverseStatus } = getReverseNotifier()
         notifyReverseStatus("cancel", record, {
           message: reason || "页面已取消该反转信号"
         })
@@ -392,6 +421,7 @@ routerAdd("POST", "/api/custom/reverse/dispatch", (c) => {
     $app.save(record)
 
     try {
+      const { notifyReverseStatus } = getReverseNotifier()
       notifyReverseStatus("execute_request", record, {
         message: reason || "已请求 QC 优先执行该反转动作"
       })
@@ -408,6 +438,7 @@ routerAdd("POST", "/api/custom/reverse/dispatch", (c) => {
 
 // POST /api/custom/reverse/ack - QC 回写处理结果
 routerAdd("POST", "/api/custom/reverse/ack", (c) => {
+  const reverseUtils = getReverseUtils()
   const data = c.requestInfo().body || c.requestInfo().data || {}
   const reverseId = String(data.signal_id || data.reverse_id || "").trim()
   const status = String(data.status || "confirmed").trim()
@@ -457,6 +488,7 @@ routerAdd("POST", "/api/custom/reverse/ack", (c) => {
     $app.save(record)
 
     try {
+      const { notifyReverseStatus } = getReverseNotifier()
       notifyReverseStatus("ack", record, {
         message: reason || `QC 已回写 ${status}`
       })

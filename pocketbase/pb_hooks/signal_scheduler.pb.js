@@ -6,22 +6,21 @@
  * 读取 config 表中 signal_validity_minutes 配置
  */
 
-const envUtils = require(`${__hooks}/lib/environment.js`)
-const SCHEDULE_ENVIRONMENTS = [envUtils.LIVE_ENVIRONMENT, envUtils.PAPER_ENVIRONMENT, envUtils.BACKTEST_ENVIRONMENT]
-
 cronAdd("signal_expiry_check", "* * * * *", () => {
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
+    const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
+    const { getRuntimeEnvironments, isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
 
     let totalCount = 0
 
-    for (const environment of SCHEDULE_ENVIRONMENTS) {
-        const schedulerEnabled = String(envUtils.getConfigValue("pb_scheduler_enabled", "true", environment) || "").trim().toUpperCase()
-        if (schedulerEnabled === "FALSE" || schedulerEnabled === "0" || schedulerEnabled === "OFF") {
+    for (const environment of getRuntimeEnvironments()) {
+        const schedulerEnabled = String(getConfigValue("pb_scheduler_enabled", "true", environment) || "").trim().toUpperCase()
+        if (!isEnabledConfigValue(schedulerEnabled)) {
             console.log(`[SignalExpiry] ${environment}: pb_scheduler_enabled="${schedulerEnabled}", 跳过执行`)
             continue
         }
 
-        let validityMinutes = parseInt(envUtils.getConfigValue("signal_validity_minutes", "30", environment), 10)
+        let validityMinutes = parseInt(getConfigValue("signal_validity_minutes", "30", environment), 10)
         if (!Number.isFinite(validityMinutes) || validityMinutes <= 0) {
             validityMinutes = 30
         }

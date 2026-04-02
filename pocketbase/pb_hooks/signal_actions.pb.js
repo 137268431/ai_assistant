@@ -6,14 +6,23 @@
  */
 
 console.log("[SignalActions] Hook 文件开始加载...");
-const envUtils = require(`${__hooks}/lib/environment.js`)
+
+function getRequestEnvironment(c) {
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+}
+
+function getDataEnvironment(data) {
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
+}
 
 routerAdd("GET", "/webhook/signal/confirm", (c) => {
     const { appendOrderDetail } = require(`${__hooks}/lib/order_events.js`)
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
     const { ok, warn, fail, info } = require(`${__hooks}/lib/_page.js`)
     const signalId = c.request.url.query().get("id") || ""
-    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    const environment = getRequestEnvironment(c)
     if (!signalId) {
         return c.html(400, fail("参数错误", "缺少信号ID"))
     }
@@ -63,7 +72,7 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
     const { ok, warn, fail, info } = require(`${__hooks}/lib/_page.js`)
     const signalId = c.request.url.query().get("id") || ""
-    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    const environment = getRequestEnvironment(c)
     if (!signalId) {
         return c.html(400, fail("参数错误", "缺少信号ID"))
     }
@@ -114,7 +123,7 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
 routerAdd("GET", "/api/custom/signals/pending", (c) => {
   try {
     const dateStr = c.request.url.query().get("date") || "";
-    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT);
+    const environment = getRequestEnvironment(c);
     const indicatorCache = {}
     console.log(`[SignalsPending] === 查询待执行信号 ===`);
     console.log(`[SignalsPending] date 参数: "${dateStr}"`);
@@ -319,7 +328,7 @@ routerAdd("POST", "/api/custom/signals/ack", (c) => {
   const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
   const { notifyNewOrder, notifyOrder, getOrderStatusInfo, getTradeGroupCardMessageId } = require(`${__hooks}/lib/feishu_order.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {};
-  const environment = envUtils.getRuntimeEnvironmentFromData(data, envUtils.LIVE_ENVIRONMENT);
+  const environment = getDataEnvironment(data);
   const signalId = data.signal_id;
   const status = data.status || "executed";
   const note = data.note || "";
@@ -649,7 +658,7 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
-    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    const environment = getRequestEnvironment(c)
     if (!uniqueId) {
         return c.html(400, fail("参数错误", "缺少订单ID"))
     }
@@ -749,7 +758,7 @@ routerAdd("GET", "/webhook/order/close", (c) => {
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
     const uniqueId = c.request.url.query().get("id") || ""
-    const environment = envUtils.normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", envUtils.LIVE_ENVIRONMENT)
+    const environment = getRequestEnvironment(c)
     if (!uniqueId) {
         return c.html(400, fail("参数错误", "缺少订单ID"))
     }

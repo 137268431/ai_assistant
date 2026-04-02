@@ -3,7 +3,16 @@
  * 反转信号共用解析、归一化与上下文定位能力
  */
 
-const envUtils = require(`${__hooks}/lib/environment.js`)
+function getEnvUtils() {
+    if (globalThis.__gloryEnvUtils) return globalThis.__gloryEnvUtils
+    if (globalThis.envUtils) return globalThis.envUtils
+    const loaded = require(`${__hooks}/lib/environment.js`)
+    globalThis.__gloryEnvUtils = loaded
+    if (!globalThis.envUtils) {
+        globalThis.envUtils = loaded
+    }
+    return loaded
+}
 
 function parseJsonObject(value) {
     if (!value) return {}
@@ -79,6 +88,7 @@ function normalizeTriggeredSignals(value, extra) {
 }
 
 function normalizeReverseRecord(recordOrData) {
+    var envUtils = getEnvUtils()
     var get = (typeof recordOrData.get === "function") ? recordOrData.get.bind(recordOrData) : function(k) { return recordOrData[k] }
     var extra = getReverseExtra(recordOrData)
     var source = get("source") || extra.source || ""
@@ -153,6 +163,7 @@ function buildDateRange(dateText) {
 }
 
 function buildOrderContext(orderRecord) {
+    var envUtils = getEnvUtils()
     if (!orderRecord) return null
     var orderExtra = parseJsonObject(typeof orderRecord.getString === "function" ? orderRecord.getString("extra") : orderRecord.get("extra"))
     var orderStatus = orderRecord.get("status") || ""
@@ -184,6 +195,7 @@ function buildOrderContext(orderRecord) {
 }
 
 function findLatestActiveEntryOrder(symbol, direction, environment) {
+    var envUtils = getEnvUtils()
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var records = $app.findRecordsByFilter(
         "orders",
@@ -209,6 +221,7 @@ function findLatestActiveEntryOrder(symbol, direction, environment) {
 }
 
 function findPendingReverseDuplicate(criteria) {
+    var envUtils = getEnvUtils()
     if (!criteria || !criteria.symbol) return null
 
     var records = $app.findRecordsByFilter(
@@ -236,6 +249,7 @@ function findPendingReverseDuplicate(criteria) {
 }
 
 function upsertReverseRecord(payload) {
+    var envUtils = getEnvUtils()
     var extra = parseJsonObject(payload && payload.extra)
     var criteria = {
         environment: envUtils.normalizeRuntimeEnvironment(payload.environment || extra.environment || "", envUtils.LIVE_ENVIRONMENT),

@@ -24,6 +24,48 @@ routerAdd("POST", "/webhook/tv", (c) => {
         }
     }
 
+    function toFiniteNumber(value) {
+        const number = Number(value)
+        return Number.isFinite(number) ? number : null
+    }
+
+    function normalizeRiskRewardValue(rawValue, entry, stopLoss, takeProfit) {
+        if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+            return rawValue.toFixed(2)
+        }
+
+        const text = String(rawValue || "").trim()
+        if (text) {
+            const normalizedText = text.replace(/：/g, ":")
+            const ratioMatch = normalizedText.match(/^([+-]?\d+(?:\.\d+)?)\s*:\s*([+-]?\d+(?:\.\d+)?)$/)
+            if (ratioMatch) {
+                const numerator = toFiniteNumber(ratioMatch[1])
+                const denominator = toFiniteNumber(ratioMatch[2])
+                if (numerator != null && denominator != null && denominator !== 0) {
+                    return (numerator / denominator).toFixed(2)
+                }
+            }
+
+            const directValue = toFiniteNumber(normalizedText)
+            if (directValue != null) {
+                return directValue.toFixed(2)
+            }
+        }
+
+        const entryPrice = toFiniteNumber(entry)
+        const stopLossPrice = toFiniteNumber(stopLoss)
+        const takeProfitPrice = toFiniteNumber(takeProfit)
+        if (entryPrice != null && stopLossPrice != null && takeProfitPrice != null) {
+            const risk = Math.abs(entryPrice - stopLossPrice)
+            const reward = Math.abs(takeProfitPrice - entryPrice)
+            if (risk > 0) {
+                return (reward / risk).toFixed(2)
+            }
+        }
+
+        return text
+    }
+
     // ══════════════════════════════════════
     // 技术指标表（type = "indicator"）
     // ══════════════════════════════════════
@@ -276,7 +318,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
         record.set("entry", d.entry)
         record.set("stop_loss", d.stop_loss)
         record.set("take_profit", d.take_profit)
-        record.set("rr", d.rr)
+        record.set("rr", normalizeRiskRewardValue(d.rr, d.entry, d.stop_loss, d.take_profit))
         record.set("shares", d.shares)
         record.set("signal_id", d.signal_id)
         record.set("exchange", d.exchange)
