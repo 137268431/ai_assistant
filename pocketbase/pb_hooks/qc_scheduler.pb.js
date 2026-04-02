@@ -7,33 +7,28 @@
 
 console.log("[QCScheduler] Hook 文件开始加载...");
 
-const QC_SCHEDULER_BACKTEST_KEYS = ["qc_compute_enabled", "pb_scheduler_enabled"]
-
-function getShadowValidationEnvironments() {
-    const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
+// 每分钟触发指标计算 (美东 4:00-20:00, 周一到周五)
+cronAdd("qc_compute", "* 4-20 * * 1-5", () => {
+    // PocketBase cron 回调执行时不要依赖文件级闭包变量，否则运行期可能找不到。
     const { getEnabledRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
-    return getEnabledRuntimeEnvironments("qc_compute_enabled", "true", QC_SCHEDULER_BACKTEST_KEYS).filter((environment) => {
-        const writeMode = String(getConfigValue("qc_write_mode", "shadow", environment) || "shadow").trim().toLowerCase()
-        return writeMode === "shadow"
-    })
-}
+    const backtestKeys = ["qc_compute_enabled", "pb_scheduler_enabled"]
+    const environments = getEnabledRuntimeEnvironments("qc_compute_enabled", "true", backtestKeys)
 
-function triggerQcEndpoint(endpoint, environments, timeoutSeconds) {
     if (!environments.length) {
-        console.log(`[QCScheduler] ${endpoint}: 无启用环境，跳过`)
+        console.log("[QCScheduler] compute: 无启用环境，跳过")
         return
     }
 
     try {
         const resp = $http.send({
-            url: `http://localhost:5100/${endpoint}`,
+            url: "http://localhost:5100/compute",
             method: "POST",
             body: JSON.stringify({ source: "cron", environments: environments }),
             headers: { "Content-Type": "application/json" },
-            timeout: timeoutSeconds,
+            timeout: 30,
         })
         if (resp.statusCode !== 200) {
-            console.error(`[QCScheduler] ${endpoint} returned ${resp.statusCode}: ${resp.raw}`)
+            console.error(`[QCScheduler] compute returned ${resp.statusCode}: ${resp.raw}`)
             return
         }
 
@@ -43,31 +38,61 @@ function triggerQcEndpoint(endpoint, environments, timeoutSeconds) {
         } catch (_) {
             payload = {}
         }
-        console.log(`[QCScheduler] ${endpoint}: environments=${(payload.environments || environments).join(",")}, ok=${payload.ok !== false}`)
+        console.log(`[QCScheduler] compute: environments=${(payload.environments || environments).join(",")}, ok=${payload.ok !== false}`)
     } catch (err) {
-        console.error(`[QCScheduler] ${endpoint} error: ${err.message}`)
+        console.error(`[QCScheduler] compute error: ${err.message}`)
     }
-}
-
-// 每分钟触发指标计算 (美东 4:00-20:00, 周一到周五)
-cronAdd("qc_compute", "* 4-20 * * 1-5", () => {
-    const { getEnabledRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
-    triggerQcEndpoint("compute", getEnabledRuntimeEnvironments("qc_compute_enabled", "true", QC_SCHEDULER_BACKTEST_KEYS), 30)
 })
 
 // 盘前扫描 (7:00-10:00, 每5分钟, 周一到周五)
 cronAdd("qc_scan", "*/5 7-9 * * 1-5", () => {
     const { getEnabledRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
-    triggerQcEndpoint("scan", getEnabledRuntimeEnvironments("qc_compute_enabled", "true", QC_SCHEDULER_BACKTEST_KEYS), 60)
+    const backtestKeys = ["qc_compute_enabled", "pb_scheduler_enabled"]
+    const environments = getEnabledRuntimeEnvironments("qc_compute_enabled", "true", backtestKeys)
+
+    if (!environments.length) {
+        console.log("[QCScheduler] scan: 无启用环境，跳过")
+        return
+    }
+
+    try {
+        const resp = $http.send({
+            url: "http://localhost:5100/scan",
+            method: "POST",
+            body: JSON.stringify({ source: "cron", environments: environments }),
+            headers: { "Content-Type": "application/json" },
+            timeout: 60,
+        })
+        if (resp.statusCode !== 200) {
+            console.error(`[QCScheduler] scan returned ${resp.statusCode}: ${resp.raw}`)
+            return
+        }
+
+        let payload = {}
+        try {
+            payload = typeof resp.json === "function" ? resp.json() : JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        console.log(`[QCScheduler] scan: environments=${(payload.environments || environments).join(",")}, ok=${payload.ok !== false}`)
+    } catch (err) {
+        console.error(`[QCScheduler] scan error: ${err.message}`)
+    }
 })
 
 // Shadow模式验证 (每30分钟, 9:30-16:00, 周一到周五)
 // 比较 qc_signals vs signals, qc_indicators vs indicators
 cronAdd("qc_shadow_validate", "*/30 9-15 * * 1-5", () => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
+    const { getEnabledRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-    const environments = getShadowValidationEnvironments()
+    const backtestKeys = ["qc_compute_enabled", "pb_scheduler_enabled"]
+    const environments = getEnabledRuntimeEnvironments("qc_compute_enabled", "true", backtestKeys).filter((environment) => {
+        const writeMode = String(getConfigValue("qc_write_mode", "shadow", environment) || "shadow").trim().toLowerCase()
+        return writeMode === "shadow"
+    })
     if (!environments.length) {
         return
     }

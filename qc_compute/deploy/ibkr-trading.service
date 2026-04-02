@@ -1,0 +1,18 @@
+[Unit]
+Description=IBKR Trading Service (qc_compute)
+After=network.target ibkr-gateway.service
+Requires=ibkr-gateway.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/qc_compute
+ExecStart=/opt/qc_compute/venv/bin/python -m qc_compute.ibkr_service
+EnvironmentFile=/opt/qc_compute/.env
+Environment=PYTHONPATH=/opt/qc_compute/src
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

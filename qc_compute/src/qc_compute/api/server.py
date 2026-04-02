@@ -334,6 +334,66 @@ def status():
 
 _start_time = time.time()
 
+# ─── IBKR Trading Service Integration ───
+
+_ibkr_service = None
+
+
+def get_ibkr_service():
+    global _ibkr_service
+    if _ibkr_service is None:
+        try:
+            from qc_compute.ibkr_service import IBKRTradingService
+            _ibkr_service = IBKRTradingService()
+        except Exception as e:
+            print(f"[IBKR] Service init failed: {e}")
+    return _ibkr_service
+
+
+@app.route("/ibkr/start", methods=["POST"])
+def ibkr_start():
+    svc = get_ibkr_service()
+    if not svc:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"})
+    try:
+        import threading
+        t = threading.Thread(target=svc.start, daemon=True, name="ibkr-service")
+        t.start()
+        return jsonify({"ok": True, "message": "IBKR service starting"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/ibkr/stop", methods=["POST"])
+def ibkr_stop():
+    svc = get_ibkr_service()
+    if not svc:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"})
+    svc.stop()
+    return jsonify({"ok": True, "message": "IBKR service stopped"})
+
+
+@app.route("/ibkr/status", methods=["GET"])
+def ibkr_status():
+    svc = get_ibkr_service()
+    if not svc:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"})
+    return jsonify({"ok": True, **svc.status()})
+
+
+@app.route("/ibkr/dashboard", methods=["GET"])
+def ibkr_dashboard():
+    import os
+    dashboard_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "dashboard", "paper_trading.html"
+    )
+    try:
+        with open(dashboard_path, "r") as f:
+            return f.read(), 200, {"Content-Type": "text/html"}
+    except FileNotFoundError:
+        return "Dashboard not found", 404
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5100))
     print(f"[QC Compute] Starting on port {port}, PB={PB_BASE_URL}")
