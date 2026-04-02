@@ -190,23 +190,91 @@ class OrderPlacer:
             return
         try:
             et_now = datetime.now(ET)
+            us_time = et_now.strftime("%Y-%m-%d %H:%M:%S")
+            direction = kwargs.get("direction")
+            quantity = kwargs.get("quantity")
+            entry_unique_id = kwargs.get("entry_coid")
+            tp_unique_id = kwargs.get("tp_coid")
+            sl_unique_id = kwargs.get("sl_coid")
+            symbol = kwargs.get("symbol")
+            signal_id = kwargs.get("signal_id", "")
+
+            # 兼容旧表，避免现网依赖被一次性切断。
             self.pb_client.create_record("ibkr_orders", {
-                "symbol": kwargs.get("symbol"),
+                "symbol": symbol,
                 "conid": kwargs.get("conid"),
-                "side": "BUY" if kwargs.get("direction") == "long" else "SELL",
+                "side": "BUY" if direction == "long" else "SELL",
                 "orderType": "BRACKET",
-                "cOID": kwargs.get("entry_coid"),
+                "cOID": entry_unique_id,
                 "price": kwargs.get("entry_price"),
-                "quantity": kwargs.get("quantity"),
+                "quantity": quantity,
                 "status": "submitted",
                 "parentId": "",
-                "bracket_group": kwargs.get("entry_coid"),
-                "signal_id": kwargs.get("signal_id", ""),
+                "bracket_group": entry_unique_id,
+                "signal_id": signal_id,
                 "account": kwargs.get("account"),
                 "tp_price": kwargs.get("tp_price"),
                 "sl_price": kwargs.get("sl_price"),
-                "us_time": et_now.strftime("%Y-%m-%d %H:%M:%S"),
+                "us_time": us_time,
             })
+
+            if hasattr(self.pb_client, "upsert_order"):
+                base_payload = {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "position_side": direction,
+                    "trade_group_id": entry_unique_id,
+                    "entry_order_unique_id": entry_unique_id,
+                    "quantity": quantity,
+                    "signal_id": signal_id,
+                    "us_time": us_time,
+                    "bar_time_ms": int(et_now.timestamp() * 1000),
+                }
+                self.pb_client.upsert_order({
+                    **base_payload,
+                    "unique_id": entry_unique_id,
+                    "order_id": entry_unique_id,
+                    "broker_order_id": entry_unique_id,
+                    "order_type": "Entry",
+                    "role": "entry",
+                    "relation_status": "active",
+                    "limit_price": kwargs.get("entry_price"),
+                    "status": "Submitted",
+                    "filled_qty": 0,
+                    "fill_price": 0,
+                    "tp_price": kwargs.get("tp_price"),
+                    "sl_price": kwargs.get("sl_price"),
+                })
+                self.pb_client.upsert_order({
+                    **base_payload,
+                    "unique_id": tp_unique_id,
+                    "order_id": tp_unique_id,
+                    "broker_order_id": tp_unique_id,
+                    "order_type": "TakeProfit",
+                    "role": "take_profit",
+                    "relation_status": "planned",
+                    "parent_order_unique_id": entry_unique_id,
+                    "sibling_order_unique_id": sl_unique_id,
+                    "limit_price": kwargs.get("tp_price"),
+                    "status": "Init",
+                    "filled_qty": 0,
+                    "fill_price": 0,
+                })
+                self.pb_client.upsert_order({
+                    **base_payload,
+                    "unique_id": sl_unique_id,
+                    "order_id": sl_unique_id,
+                    "broker_order_id": sl_unique_id,
+                    "order_type": "StopLoss",
+                    "role": "stop_loss",
+                    "relation_status": "planned",
+                    "parent_order_unique_id": entry_unique_id,
+                    "sibling_order_unique_id": tp_unique_id,
+                    "limit_price": kwargs.get("sl_price"),
+                    "status": "Init",
+                    "filled_qty": 0,
+                    "fill_price": 0,
+                })
         except Exception as e:
             logger.debug("PB order log failed: %s", e)
 

@@ -68,3 +68,6 @@ class PBClient:
 
     def upsert_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("qc/scan", method="POST", data=data)
+
+    def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.call_custom_api("orders/upsert", method="POST", data=data)

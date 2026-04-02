@@ -88,6 +88,56 @@ function withProxyMeta(payload, route, upstream) {
     return base
 }
 
+routerAdd("GET", "/api/custom/qc/ping_write", (c) => {
+    try {
+        const signalId = "PING_" + Date.now()
+        let record = null
+        try {
+            record = $app.findFirstRecordByFilter(
+                "qc_signals",
+                "signal_id = {:sid} && environment = {:env}",
+                { sid: signalId, env: "live" }
+            )
+        } catch (_) {}
+
+        const col = $app.findCollectionByNameOrId("qc_signals")
+        if (!record) {
+            record = new Record(col, {})
+        }
+
+        record.set("symbol", "AAPL")
+        record.set("environment", "live")
+        record.set("direction", "long")
+        record.set("signal", "ping_write")
+        record.set("limit_price", 0)
+        record.set("entry", 100)
+        record.set("stop_loss", 99)
+        record.set("take_profit", 101)
+        record.set("rr", "1.00")
+        record.set("shares", 1)
+        record.set("signal_id", signalId)
+        record.set("exchange", "NASDAQ")
+        record.set("interval", "5")
+        record.set("reason", "ping_write")
+        record.set("us_time", "2026-04-02 11:24:00")
+        record.set("cn_time", "2026-04-02 23:24:00")
+        record.set("date", "2026-04-02")
+        record.set("bar_time_ms", Date.now())
+        record.set("bar_index", 1)
+        record.set("script_tag", "ping")
+        record.set("chart_tf", "5")
+        record.set("extra", { source: "ping_write", environment: "live" })
+        record.set("status", "pending")
+        record.set("note", "")
+        $app.save(record)
+
+        return c.json(200, { ok: true, signal_id: signalId, id: record.id || "" })
+    } catch (err) {
+        console.error(`[QCActions] ping_write error: ${err.message}`)
+        return c.json(500, { ok: false, error: err.message || String(err) })
+    }
+})
+
 // ══════════════════════════════════════
 // 批量OHLCV接收 → qc_bars
 // ══════════════════════════════════════
@@ -225,98 +275,48 @@ routerAdd("POST", "/api/custom/qc/indicator", (c) => {
 // QC信号写入 → qc_signals + (老表)
 // ══════════════════════════════════════
 routerAdd("POST", "/api/custom/qc/signal", (c) => {
-    const { notifyNewSignal, mergeSignalExtra } = require(`${__hooks}/lib/feishu_signal.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const { getRuntimeEnvironmentFromData, attachEnvironment, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const mode = getConfigValue("qc_write_mode", "shadow", environment)
-
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const signalId = String(d.signal_id || "").trim()
+    const environment = String(d.environment || "live").trim().toLowerCase() || "live"
 
     if (!symbol || !signalId) {
         return c.json(400, { ok: false, error: "Missing symbol or signal_id" })
     }
 
-    const extra = attachEnvironment(d.extra && typeof d.extra === "object" ? d.extra : {}, environment)
-    extra.source = "qc"
-    if (d.session_type) extra.session_type = d.session_type
-
-    const signalData = {
-        symbol: symbol,
-        environment: environment,
-        direction: d.direction || "",
-        signal: d.signal || "",
-        limit_price: Number(d.limit_price) || 0,
-        entry: Number(d.entry) || 0,
-        stop_loss: Number(d.stop_loss) || 0,
-        take_profit: Number(d.take_profit) || 0,
-        rr: normalizeRiskRewardValue(d.rr, d.entry, d.stop_loss, d.take_profit),
-        shares: Number(d.shares) || 0,
-        signal_id: signalId,
-        exchange: String(d.exchange || "").trim().toUpperCase(),
-        interval: String(d.interval || "").trim(),
-        reason: String(d.reason || ""),
-        us_time: String(d.us_time || "").trim(),
-        cn_time: String(d.cn_time || "").trim(),
-        date: String(d.date || "").trim(),
-        bar_time_ms: d.bar_time_ms ? Math.trunc(Number(d.bar_time_ms)) : 0,
-        bar_index: d.bar_index != null ? Number(d.bar_index) : null,
-        script_tag: String(d.script_tag || "").trim(),
-        chart_tf: String(d.chart_tf || "").trim(),
-        extra: extra,
-        status: d.status || "pending",
-        note: String(d.note || ""),
-    }
-
-    const filterStr = "signal_id = {:sid} && environment = {:env}"
-    const filterParams = { sid: signalId, env: environment }
-
     try {
-        // shadow / primary → 写 qc_signals
-        if (mode === "shadow" || mode === "primary") {
-            const qcExtra = { ...extra, forwarded: mode === "primary" }
-            upsertRecord("qc_signals", filterStr, filterParams, { ...signalData, extra: qcExtra })
-        }
-
-        // primary / settled → 写 signals 老表
-        if (mode === "primary" || mode === "settled") {
-            const filterOn = getConfigValue("daily_target_filter_on", "false", environment)
-            let shouldWrite = true
-
-            if (filterOn === "true") {
-                // 检查 daily_targets
-                const today = signalData.date || new Date().toISOString().slice(0, 10)
-                try {
-                    $app.findFirstRecordByFilter(
-                        "daily_targets",
-                        "symbol = {:sym} && date = {:d} && environment = {:env} && status != 'removed'",
-                        { sym: symbol, d: today, env: environment }
-                    )
-                } catch (_) {
-                    shouldWrite = false
-                    console.log(`[QCActions] signal filtered: ${symbol} not in daily_targets for ${today}`)
-                }
-            }
-
-            if (shouldWrite) {
-                const oldRecord = upsertRecord("signals", filterStr, filterParams, signalData)
-                // 飞书通知 (仅新信号)
-                try {
-                    if (oldRecord && signalData.status === "pending") {
-                        notifyNewSignal(oldRecord)
-                    }
-                } catch (notifyErr) {
-                    console.error(`[QCActions] feishu notify error: ${notifyErr.message}`)
-                }
-            }
-        }
-
-        return c.json(200, { ok: true, mode, symbol, signal_id: signalId })
+        const col = $app.findCollectionByNameOrId("qc_signals")
+        const record = new Record(col, {})
+        record.set("symbol", symbol)
+        record.set("environment", environment)
+        record.set("direction", String(d.direction || "").trim())
+        record.set("signal", String(d.signal || "").trim())
+        record.set("limit_price", Number(d.limit_price) || 0)
+        record.set("entry", Number(d.entry) || 0)
+        record.set("stop_loss", Number(d.stop_loss) || 0)
+        record.set("take_profit", Number(d.take_profit) || 0)
+        record.set("rr", String(d.rr || ""))
+        record.set("shares", Number(d.shares) || 0)
+        record.set("signal_id", signalId)
+        record.set("exchange", String(d.exchange || "").trim().toUpperCase())
+        record.set("interval", String(d.interval || "").trim())
+        record.set("reason", String(d.reason || ""))
+        record.set("us_time", String(d.us_time || "").trim())
+        record.set("cn_time", String(d.cn_time || "").trim())
+        record.set("date", String(d.date || "").trim())
+        record.set("bar_time_ms", d.bar_time_ms ? Math.trunc(Number(d.bar_time_ms)) : 0)
+        record.set("bar_index", d.bar_index != null ? Number(d.bar_index) : null)
+        record.set("script_tag", String(d.script_tag || "").trim())
+        record.set("chart_tf", String(d.chart_tf || "").trim())
+        record.set("extra", { source: "qc", environment: environment })
+        record.set("status", String(d.status || "pending"))
+        record.set("note", String(d.note || ""))
+        $app.save(record)
+        return c.json(200, { ok: true, signal_id: signalId, target: "qc_signals", id: record.id || "" })
     } catch (err) {
         console.error(`[QCActions] signal upsert error: ${err.message}`)
-        return c.json(500, { ok: false, error: err.message })
+        return c.json(500, { ok: false, error: err.message || String(err), target: "qc_signals" })
     }
 })
 

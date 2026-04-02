@@ -128,6 +128,9 @@ class OrderTracker:
             return
         try:
             order_id = str(order.get("orderId", ""))
+            symbol = order.get("ticker", "")
+            status = order.get("status", "")
+            now_str = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
             existing = self.pb_client.get_records(
                 "ibkr_orders",
                 filter=f'orderId = "{order_id}"',
@@ -136,21 +139,68 @@ class OrderTracker:
 
             data = {
                 "orderId": order_id,
-                "symbol": order.get("ticker", ""),
+                "symbol": symbol,
                 "side": order.get("side", ""),
                 "orderType": order.get("orderType", ""),
-                "status": order.get("status", ""),
+                "status": status,
                 "price": order.get("price", 0),
                 "quantity": order.get("totalSize", 0),
                 "filled_quantity": order.get("filledQuantity", 0),
                 "avg_price": order.get("avgPrice", 0),
-                "us_time": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S"),
+                "us_time": now_str,
             }
 
             if existing:
                 self.pb_client.update_record("ibkr_orders", existing[0]["id"], data)
             else:
                 self.pb_client.create_record("ibkr_orders", data)
+
+            if hasattr(self.pb_client, "upsert_order"):
+                normalized_side = str(order.get("side", "")).upper()
+                direction = "long" if normalized_side == "BUY" else "short" if normalized_side == "SELL" else ""
+                quantity = order.get("totalSize", 0)
+                fill_qty = order.get("filledQuantity", 0)
+                avg_price = order.get("avgPrice", 0)
+                limit_price = order.get("price", 0)
+                parent_id = order.get("parentId") or ""
+                order_type = order.get("orderType", "Entry") or "Entry"
+                upper_type = str(order_type).upper()
+                if not parent_id:
+                    role = "entry"
+                elif upper_type in ("STP", "STOP", "STOPLOSS"):
+                    role = "stop_loss"
+                else:
+                    role = "take_profit"
+                relation_status = "closed" if str(status).upper() in ("FILLED", "EXECUTED", "CANCELLED", "CANCELED") else "active"
+                mapped_status = {
+                    "PRESUBMITTED": "Submitted",
+                    "SUBMITTED": "Submitted",
+                    "FILLED": "Filled",
+                    "EXECUTED": "Filled",
+                    "CANCELLED": "Canceled",
+                    "CANCELED": "Canceled",
+                }.get(str(status).upper(), "Submitted")
+                self.pb_client.upsert_order({
+                    "unique_id": order_id,
+                    "order_id": order_id,
+                    "broker_order_id": order_id,
+                    "order_type": order_type,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "position_side": direction,
+                    "trade_group_id": parent_id or order_id,
+                    "entry_order_unique_id": parent_id or order_id,
+                    "parent_order_unique_id": parent_id,
+                    "role": role,
+                    "relation_status": relation_status,
+                    "quantity": quantity,
+                    "limit_price": limit_price,
+                    "status": mapped_status,
+                    "filled_qty": fill_qty,
+                    "fill_price": avg_price,
+                    "us_time": now_str,
+                    "bar_time_ms": int(time.time() * 1000),
+                })
 
         except Exception as e:
             logger.debug("PB order sync failed: %s", e)

@@ -121,13 +121,24 @@ class ReverseSignalHandler:
             return result.get("ok", False)
 
         if bracket_group:
-            orders = self.pb_client.get_records(
-                "ibkr_orders",
-                filter=f'bracket_group = "{bracket_group}" && status != "FILLED"',
-            )
+            orders = []
+            try:
+                orders = self.pb_client.get_records(
+                    "orders",
+                    filter=f'trade_group_id = "{bracket_group}" && status != "Filled" && status != "Canceled"',
+                )
+            except Exception:
+                orders = []
+
+            if not orders:
+                orders = self.pb_client.get_records(
+                    "ibkr_orders",
+                    filter=f'bracket_group = "{bracket_group}" && status != "FILLED"',
+                )
+
             cancelled = 0
             for o in orders:
-                oid = o.get("orderId")
+                oid = o.get("broker_order_id") or o.get("orderId")
                 if oid:
                     r = self.order_modifier.cancel_order(oid)
                     if r.get("ok"):

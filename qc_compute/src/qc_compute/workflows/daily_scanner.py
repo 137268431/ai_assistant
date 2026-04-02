@@ -63,9 +63,8 @@ class DailyScanner:
         """
         单标的评分
 
-        TODO P4: 实现完整评分逻辑
+        先提供一个稳定的轻量评分，避免 scan 永远产出 0 个候选。
         """
-        # 收集各TF引擎快照
         snapshots = {}
         for (runtime_environment, sym, tf), engine in self.engines.items():
             if runtime_environment == environment and sym == symbol and engine.is_ready():
@@ -74,12 +73,85 @@ class DailyScanner:
         if not snapshots:
             return None
 
-        # TODO P4: 基于指标快照计算评分
+        score = 0
+        long_votes = 0
+        short_votes = 0
+        reasons = []
+
+        for tf, snapshot in snapshots.items():
+            if not isinstance(snapshot, dict):
+                continue
+
+            trend_dir = snapshot.get("trend_dir")
+            dtp_dir = snapshot.get("dtp_dir")
+            ema_bullish = bool(snapshot.get("ema_bullish"))
+            ema_bearish = bool(snapshot.get("ema_bearish"))
+            fractal_bull = bool(snapshot.get("fractal_bull"))
+            fractal_bear = bool(snapshot.get("fractal_bear"))
+            crsi_os = bool(snapshot.get("crsi_os"))
+            crsi_ob = bool(snapshot.get("crsi_ob"))
+            sd_lower = bool(snapshot.get("sd_lower"))
+            sd_upper = bool(snapshot.get("sd_upper"))
+
+            if trend_dir == 1 or dtp_dir == 1 or ema_bullish:
+                long_votes += 1
+                score += 2
+            if trend_dir == -1 or dtp_dir == -1 or ema_bearish:
+                short_votes += 1
+                score += 2
+
+            if fractal_bull or crsi_os or sd_lower:
+                long_votes += 1
+                score += 1
+            if fractal_bear or crsi_ob or sd_upper:
+                short_votes += 1
+                score += 1
+
+            if fractal_bull:
+                reasons.append(f"{tf}:fractal_bull")
+            if fractal_bear:
+                reasons.append(f"{tf}:fractal_bear")
+            if ema_bullish:
+                reasons.append(f"{tf}:ema_bullish")
+            if ema_bearish:
+                reasons.append(f"{tf}:ema_bearish")
+            if sd_lower:
+                reasons.append(f"{tf}:sd_lower")
+            if sd_upper:
+                reasons.append(f"{tf}:sd_upper")
+
+        if long_votes == short_votes:
+            direction_bias = "neutral"
+        elif long_votes > short_votes:
+            direction_bias = "long"
+        else:
+            direction_bias = "short"
+
+        if direction_bias == "neutral":
+            return {
+                "score": 0,
+                "direction_bias": direction_bias,
+                "reason": "vote_tie",
+                "extra": {
+                    "environment": environment,
+                    "timeframes_ready": sorted(snapshots.keys()),
+                    "long_votes": long_votes,
+                    "short_votes": short_votes,
+                },
+            }
+
+        score += len(snapshots)
+
         return {
-            "score": 0,
-            "direction_bias": "neutral",
-            "reason": "",
-            "extra": {"environment": environment, "timeframes_ready": list(snapshots.keys())},
+            "score": score,
+            "direction_bias": direction_bias,
+            "reason": ", ".join(reasons[:6]),
+            "extra": {
+                "environment": environment,
+                "timeframes_ready": sorted(snapshots.keys()),
+                "long_votes": long_votes,
+                "short_votes": short_votes,
+            },
         }
 
     def _get_watchlist(self, environment: str) -> list:
