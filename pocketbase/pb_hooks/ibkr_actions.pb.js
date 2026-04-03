@@ -106,6 +106,7 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
     const d = reqInfo.body || reqInfo.data || {}
     const bars = d.bars || []
     const { getRuntimeEnvironmentFromData, getConfigValue, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
     const defaultEnvironment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
 
     if (!bars.length) {
@@ -113,8 +114,13 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
     }
 
     const enabled = getConfigValue("ibkr_bar_publish_enabled", "true", defaultEnvironment)
-    if (enabled !== "true") {
-        return c.json(200, { ok: true, skipped: true, reason: "ibkr_bar_publish_enabled=false" })
+    if (!isEnabledConfigValue(enabled)) {
+        return c.json(200, {
+            ok: true,
+            skipped: true,
+            reason: "ibkr_bar_publish_enabled=false",
+            config_value: String(enabled || ""),
+        })
     }
 
     let created = 0
@@ -187,6 +193,22 @@ routerAdd("POST", "/api/custom/ibkr/indicator", (c) => {
     const d = reqInfo.body || reqInfo.data || {}
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const upsertRecord = function(collectionName, filterStr, filterParams, data) {
+        let record = null
+        try {
+            record = $app.findFirstRecordByFilter(collectionName, filterStr, filterParams)
+        } catch (_) {}
+
+        const col = $app.findCollectionByNameOrId(collectionName)
+        if (!record) {
+            record = new Record(col, {})
+        }
+        Object.keys(data).forEach((key) => {
+            record.set(key, data[key])
+        })
+        $app.save(record)
+        return record
+    }
 
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const interval = String(d.interval || "").trim()
@@ -217,7 +239,7 @@ routerAdd("POST", "/api/custom/ibkr/indicator", (c) => {
     const filterParams = { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment }
 
     try {
-        ibkrActionsUpsertRecord("ibkr_indicators", filterStr, filterParams, recordData)
+        upsertRecord("ibkr_indicators", filterStr, filterParams, recordData)
         return c.json(200, { ok: true, symbol, interval, collection: "ibkr_indicators" })
     } catch (err) {
         console.error(`[IBKRActions] indicator upsert error: ${err.message}`)
@@ -297,6 +319,22 @@ routerAdd("POST", "/api/custom/ibkr/scan", (c) => {
     const d = reqInfo.body || reqInfo.data || {}
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const upsertRecord = function(collectionName, filterStr, filterParams, data) {
+        let record = null
+        try {
+            record = $app.findFirstRecordByFilter(collectionName, filterStr, filterParams)
+        } catch (_) {}
+
+        const col = $app.findCollectionByNameOrId(collectionName)
+        if (!record) {
+            record = new Record(col, {})
+        }
+        Object.keys(data).forEach((key) => {
+            record.set(key, data[key])
+        })
+        $app.save(record)
+        return record
+    }
 
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const date = String(d.date || "").trim()
@@ -321,7 +359,7 @@ routerAdd("POST", "/api/custom/ibkr/scan", (c) => {
     }
 
     try {
-        ibkrActionsUpsertRecord(
+        upsertRecord(
             "ibkr_targets",
             "symbol = {:sym} && date = {:d} && environment = {:env}",
             { sym: symbol, d: date, env: environment },
@@ -399,19 +437,38 @@ routerAdd("POST", "/api/custom/ibkr/proxy", (c) => {
 routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const computeBase = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
     try {
-        const resp = $http.send({
-            url: `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/status`,
+        const computeResp = $http.send({
+            url: `${computeBase}/status`,
             method: "GET",
             timeout: 10,
         })
-        let payload = {}
+        const runtimeResp = $http.send({
+            url: `${computeBase}/ibkr/status`,
+            method: "GET",
+            timeout: 10,
+        })
+        let computePayload = {}
+        let runtimePayload = {}
         try {
-            payload = JSON.parse(resp.raw || "{}")
+            computePayload = JSON.parse(computeResp.raw || "{}")
         } catch (_) {
-            payload = {}
+            computePayload = {}
         }
-        return c.json(200, payload)
+        try {
+            runtimePayload = JSON.parse(runtimeResp.raw || "{}")
+        } catch (_) {
+            runtimePayload = {}
+        }
+        return c.json(200, {
+            ...computePayload,
+            ...(runtimePayload && runtimePayload.ok !== false ? runtimePayload : {}),
+            compute: computePayload,
+            runtime: runtimePayload,
+            proxy_upstream_compute: `${computeBase}/status`,
+            proxy_upstream_runtime: `${computeBase}/ibkr/status`,
+        })
     } catch (err) {
         return c.json(200, { ok: false, status: "offline", error: err.message })
     }

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>系统监控 - Trading Flight</title>
+    <title>IBKR Overview - Trading Flight</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
@@ -262,8 +262,8 @@
         <div class="content-area">
             <div class="page-header">
                 <div>
-                    <div class="page-title">🖥️ IBKR System</div>
-                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、配置快照、最近事件。运行动作、2FA 请求与链路回放集中放到 Runtime 页面，避免两张页面职责混在一起。</div>
+                    <div class="page-title">🖥️ IBKR 总览</div>
+                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、配置快照、最近事件。所有动作控制、2FA 请求与链路回放集中放到控制台页面，避免两张页面职责混在一起。</div>
                 </div>
                 <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
                     <div id="environmentHeader"></div>
@@ -527,15 +527,22 @@
             }
 
             const keys = Object.keys(computeData.engines);
-            countEl.textContent = `${computeData.ready_engines || 0}/${computeData.total_engines || keys.length} ready`;
+            countEl.textContent = `${computeData.ready_engines || 0}/${computeData.total_engines || keys.length} ready · top 16`;
 
             if (!keys.length) {
                 el.innerHTML = '<div class="loading-text">无引擎数据</div>';
                 return;
             }
 
-            let html = '<table class="data-table"><thead><tr><th>ENV / SYMBOL / TF</th><th>BARS</th><th>READY</th><th>LAST</th></tr></thead><tbody>';
-            keys.sort().forEach((key) => {
+            let html = '<div style="color:var(--muted);font-size:11px;margin-bottom:10px;">总览页只保留最关键的 16 条引擎概况；完整排查与动作控制请切到控制台。</div>';
+            html += '<table class="data-table"><thead><tr><th>ENV / SYMBOL / TF</th><th>BARS</th><th>READY</th><th>LAST</th></tr></thead><tbody>';
+            keys.sort((a, b) => {
+                const readyDiff = Number(Boolean(computeData.engines[b]?.is_ready)) - Number(Boolean(computeData.engines[a]?.is_ready));
+                if (readyDiff) return readyDiff;
+                const barDiff = Number(computeData.engines[b]?.bar_count || 0) - Number(computeData.engines[a]?.bar_count || 0);
+                if (barDiff) return barDiff;
+                return a.localeCompare(b);
+            }).slice(0, 16).forEach((key) => {
                 const engine = computeData.engines[key] || {};
                 const readyIcon = engine.is_ready ? 'READY' : 'WARMING';
                 const lastClose = engine.last_close != null ? `$${Number(engine.last_close).toFixed(2)}` : '--';
@@ -611,19 +618,19 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initSystemAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_system.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🖥️ IBKR System', { description: '健康 / freshness / 配置总览' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🖥️ IBKR 总览', { description: '健康 / freshness / 配置总览' });
             document.getElementById('pageBridge').innerHTML = renderPageBridge([
                 {
                     path: '/ibkr_system.html',
                     kicker: 'Monitor',
-                    label: '系统概览',
+                    label: '总览',
                     copy: '健康 / freshness / config / recent events',
                     active: true
                 },
                 {
                     path: '/ibkr_runtime.html',
-                    kicker: 'Runtime',
-                    label: '运行控制台',
+                    kicker: 'Console',
+                    label: '控制台',
                     copy: '启动 / 2FA / compute / flow trace'
                 }
             ]);

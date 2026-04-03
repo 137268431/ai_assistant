@@ -36,14 +36,14 @@ var STATUS_CONFIG = {
         emoji: "📲",
         title: "IBKR 2FA 待确认",
         template: "yellow",
-        summary: "请在 IBKR Mobile 上确认推送。",
+        summary: "请在 IBKR Mobile 上确认推送；如果后续切到 Challenge/Response，再按卡片提示改为输入 Response Code。",
         button: "重新触发"
     },
     waiting_response: {
         emoji: "🔢",
         title: "IBKR 2FA 待输入响应码",
         template: "orange",
-        summary: "请根据 Challenge 码生成 Response Code，并在 Runtime 页面提交。",
+        summary: "当前不是手机点确认，而是要在 App 输入 Challenge 生成 Response Code，再去 Runtime 页面提交。",
         button: "重新触发"
     },
     success: {
@@ -350,11 +350,19 @@ function build2faCard(stateData, environment) {
         })
     }
 
+    if (stateData.status === "waiting_confirm") {
+        elements.push({ tag: "hr" })
+        elements.push({
+            tag: "markdown",
+            content: "**当前阶段**: 只需要点手机通知确认；如果卡片稍后变成 Challenge/Response，再改去 Runtime 页面提交 Response Code。"
+        })
+    }
+
     if (stateData.status === "waiting_response" && stateData.challenge_code) {
         elements.push({ tag: "hr" })
         elements.push({
             tag: "markdown",
-            content: "**操作提示**: 打开 Runtime 页面，输入当前 Challenge 对应的 Response Code。"
+            content: "**操作提示**: 这一步不是点手机推送。请在 IBKR App 的 Two-Factor Authentication 输入当前 Challenge，拿到 Response Code 后打开 Runtime 页面提交。"
         })
     }
 
@@ -787,6 +795,15 @@ function submit2faResponse(options) {
             ok: false,
             environment: runtimeEnvironment,
             error: "challenge_not_ready",
+            state: currentData,
+        }
+    }
+
+    if (["timeout", "failed"].indexOf(String(currentData.status || "").trim().toLowerCase()) !== -1) {
+        return {
+            ok: false,
+            environment: runtimeEnvironment,
+            error: "challenge_expired_retrigger_required",
             state: currentData,
         }
     }

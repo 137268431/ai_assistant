@@ -318,8 +318,8 @@ function renderNav(activePage) {
     { path: '/ibkr_order_details.html', icon: '📜', label: '明细' },
     { path: '/ibkr_indicators.html', icon: '📈', label: '指标' },
     { path: '/ibkr_stats.html', icon: '📊', label: '统计' },
-    { path: '/ibkr_system.html', icon: '🖥️', label: '监控' },
-    { path: '/ibkr_runtime.html', icon: '🎛️', label: '运行' }
+    { path: '/ibkr_system.html', icon: '🖥️', label: '总览' },
+    { path: '/ibkr_runtime.html', icon: '🎛️', label: '控制台' }
   ];
 
   return `

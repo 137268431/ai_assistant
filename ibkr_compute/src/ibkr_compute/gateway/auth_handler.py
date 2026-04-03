@@ -16,12 +16,15 @@ logger = logging.getLogger(__name__)
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5000")
 LOGIN_TIMEOUT = int(os.environ.get("IBKR_LOGIN_TIMEOUT", "120"))
 MAX_2FA_WAIT = int(os.environ.get("IBKR_2FA_WAIT", "180"))
+CHALLENGE_RESPONSE_WAIT = int(os.environ.get("IBKR_CHALLENGE_RESPONSE_WAIT", "240"))
+POST_RESPONSE_GRACE_SECONDS = int(os.environ.get("IBKR_2FA_RESPONSE_GRACE", "90"))
 MAX_LOGIN_RETRIES = 3
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", "").rstrip("/")
 WAIT_POLL_SECONDS = 3
 BROWSER_PROBE_SECONDS = 12
+BACKEND_PROMOTE_SECONDS = 12
 
 
 class AuthHandler:
@@ -551,6 +554,43 @@ class AuthHandler:
             patch.update(extra_patch)
         return patch
 
+    def _check_backend_auth(self, session) -> Dict[str, Any]:
+        try:
+            resp = session.post(
+                f"{self.gateway_url}/v1/api/iserver/auth/status",
+                timeout=10,
+            )
+            payload = resp.json() if resp.status_code == 200 else {}
+            return {
+                "ok": resp.status_code == 200,
+                "status_code": resp.status_code,
+                "authenticated": bool(payload.get("authenticated", False)),
+                "payload": payload,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status_code": 0,
+                "authenticated": False,
+                "payload": {},
+                "error": str(exc),
+            }
+
+    def _promote_backend_auth(self, session) -> Dict[str, Any]:
+        for step in ("tickle", "reauthenticate", "tickle"):
+            try:
+                if step == "tickle":
+                    session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
+                else:
+                    session.post(f"{self.gateway_url}/v1/api/iserver/reauthenticate", timeout=15)
+            except Exception as exc:
+                logger.debug("Gateway %s bridge failed: %s", step, exc)
+
+        result = self._check_backend_auth(session)
+        if result.get("authenticated"):
+            logger.info("Gateway backend auth promoted after browser confirmation bridge")
+        return result
+
     def _get_pending_response_code(self, current_challenge: str) -> str:
         if not self.pb_client:
             return ""
@@ -854,22 +894,46 @@ class AuthHandler:
 
         self._last_wait_context = {}
         start = time.time()
+        base_deadline = start + MAX_2FA_WAIT
+        challenge_deadline = 0.0
+        response_deadline = 0.0
         last_report_key = None
         last_browser_probe_at = 0.0
+        last_backend_promote_at = 0.0
         browser_state: Dict[str, Any] = {}
         submitted_response = ""
+        active_challenge_code = ""
 
-        while time.time() - start < MAX_2FA_WAIT:
+        while True:
+            now = time.time()
+            effective_deadline = max(base_deadline, challenge_deadline, response_deadline)
+            if now >= effective_deadline:
+                break
             if self._cancel_requested:
                 logger.info("2FA wait cancelled by service stop request")
                 return False
             try:
-                if (time.time() - last_browser_probe_at) >= BROWSER_PROBE_SECONDS:
+                if (now - last_browser_probe_at) >= BROWSER_PROBE_SECONDS:
                     browser_state = self._fetch_browser_gateway_state()
-                    last_browser_probe_at = time.time()
+                    last_browser_probe_at = now
                 page_state = self._capture_page_state()
                 page_state["browser_gateway_state"] = dict(browser_state or {})
                 self._last_wait_context = page_state
+
+                page_mode = str(page_state.get("mode") or "").strip()
+                challenge_code = str(page_state.get("challenge_code") or "").strip()
+                normalized_challenge = self._normalize_code(challenge_code)
+                if page_mode == "challenge_response":
+                    if normalized_challenge and normalized_challenge != active_challenge_code:
+                        active_challenge_code = normalized_challenge
+                        challenge_deadline = max(challenge_deadline, time.time() + CHALLENGE_RESPONSE_WAIT)
+                        logger.info(
+                            "Challenge/Response detected for %s, extending wait by %ss",
+                            challenge_code or normalized_challenge,
+                            CHALLENGE_RESPONSE_WAIT,
+                        )
+                    elif not challenge_deadline:
+                        challenge_deadline = time.time() + CHALLENGE_RESPONSE_WAIT
 
                 sso_expires_ms = browser_state.get("sso_expires_ms")
                 if isinstance(sso_expires_ms, (int, float)):
@@ -899,11 +963,12 @@ class AuthHandler:
                     )
                     last_report_key = report_key
 
-                if page_state.get("mode") == "challenge_response":
-                    response_code = self._get_pending_response_code(page_state.get("challenge_code") or "")
+                if page_mode == "challenge_response":
+                    response_code = self._get_pending_response_code(challenge_code)
                     if response_code and response_code != submitted_response:
                         if self._submit_challenge_response(response_code):
                             submitted_response = response_code
+                            response_deadline = max(response_deadline, time.time() + POST_RESPONSE_GRACE_SECONDS)
                             logger.info("Submitted challenge response for active 2FA flow")
                             self._report_2fa_status(
                                 status="waiting_confirm",
@@ -941,30 +1006,28 @@ class AuthHandler:
                                 ),
                             )
 
-                resp = session.post(
-                    f"{self.gateway_url}/v1/api/iserver/auth/status",
-                    timeout=10,
-                )
-                backend_authenticated = False
-                if resp.status_code == 200:
-                    data = resp.json()
-                    backend_authenticated = bool(data.get("authenticated", False))
-                    page_state["backend_authenticated"] = backend_authenticated
+                backend_result = self._check_backend_auth(session)
+                backend_authenticated = bool(backend_result.get("authenticated", False))
+                page_state["backend_authenticated"] = backend_authenticated
+                self._last_wait_context = page_state
+                if backend_authenticated:
                     self._last_wait_context = page_state
-                    if backend_authenticated:
-                        self._last_wait_context = page_state
-                        return True
-                    competing = data.get("competing", False)
-                    if competing:
-                        logger.warning("Competing session detected")
-                else:
-                    page_state["backend_authenticated"] = False
-                    self._last_wait_context = page_state
+                    return True
+                competing = bool((backend_result.get("payload") or {}).get("competing", False))
+                if competing:
+                    logger.warning("Competing session detected")
 
                 browser_authenticated = bool(browser_state.get("authenticated", False))
                 if browser_authenticated and not backend_authenticated:
                     logger.warning("2FA auth mismatch: browser authenticated but backend auth/status still false")
                     self._log_to_pb("2fa_auth_mismatch", "warning", "browser=true backend=false")
+                    if (time.time() - last_backend_promote_at) >= BACKEND_PROMOTE_SECONDS:
+                        promoted = self._promote_backend_auth(session)
+                        last_backend_promote_at = time.time()
+                        page_state["backend_authenticated"] = bool(promoted.get("authenticated", False))
+                        self._last_wait_context = page_state
+                        if promoted.get("authenticated"):
+                            return True
 
                 page_source = self._driver.page_source if self._driver else ""
                 if (
@@ -972,13 +1035,11 @@ class AuthHandler:
                     or "Client login succeeds" in page_source
                     or "two_fa_result" in page_source
                 ):
-                    time.sleep(3)
-                    resp2 = session.post(
-                        f"{self.gateway_url}/v1/api/iserver/auth/status",
-                        timeout=10,
-                    )
-                    if resp2.status_code == 200 and resp2.json().get("authenticated"):
-                        self._last_wait_context = page_state
+                    time.sleep(2)
+                    promoted = self._promote_backend_auth(session)
+                    page_state["backend_authenticated"] = bool(promoted.get("authenticated", False))
+                    self._last_wait_context = page_state
+                    if promoted.get("authenticated"):
                         return True
 
             except Exception as e:

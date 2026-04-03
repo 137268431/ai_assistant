@@ -337,6 +337,16 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
     }
 })
 
+cronAdd("ibkr_compute_runtime", "* 4-20 * * 1-5", () => {
+    const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
+    runIbkrScheduledAction("compute", 30, "[IBKRComputeCron]")
+})
+
+cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
+    const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
+    runIbkrScheduledAction("scan", 60, "[IBKRComputeCron]")
+})
+
 cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment, getEffectiveWriteMode } = require(`${__hooks}/lib/runtime_modes.js`)

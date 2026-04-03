@@ -248,10 +248,7 @@ class IBKRTradingService:
         reverse_map = {cid: sym for sym, cid in conid_map.items()}
         self.bar_aggregator.set_symbol_map(reverse_map)
 
-        logger.info("Resolved %d/%d conids, starting backfill...", len(conid_map), len(symbols))
-
-        self.data_backfill.backfill_all(conid_map, symbol_meta=self._symbol_meta)
-
+        logger.info("Resolved %d/%d conids, starting live subscriptions...", len(conid_map), len(symbols))
         self.ws_client.start()
         time.sleep(2)
 
@@ -259,6 +256,8 @@ class IBKRTradingService:
             self.ws_client.subscribe(conid)
 
         logger.info("Subscribed to %d symbols via WebSocket", len(conid_map))
+        logger.info("Starting historical backfill after subscriptions...")
+        self.data_backfill.backfill_all(conid_map, symbol_meta=self._symbol_meta)
 
     def _on_bar_close(self, bar_data: dict):
         symbol = str(bar_data.get("symbol", "")).upper()
@@ -403,6 +402,7 @@ class IBKRTradingService:
             "websocket": self.ws_client.status(),
             "bar_aggregator": self.bar_aggregator.status(),
             "data_writer": self.data_writer.status(),
+            "data_backfill": self.data_backfill.status(),
             "data_retention": self.data_retention.status(),
             "order_placer": self.order_placer.status(),
             "order_tracker": self.order_tracker.status(),

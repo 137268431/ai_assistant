@@ -22,8 +22,10 @@ from ibkr_compute.core.config import Config
 from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
+    HIGHER_INTERVALS,
     build_runtime_timestamps,
     build_signal_id,
     interval_to_chart_tf,
@@ -47,6 +49,7 @@ last_processed_ms = {}
 last_interval_fetch_ms = {}
 compute_count = 0
 error_count = 0
+rollup_bootstrap_checked = set()
 symbol_metadata_cache = {}
 daily_close_cache = {}
 metadata_cache_updated_at = 0.0
@@ -73,7 +76,21 @@ LEGACY_COLLECTION_MAP = {
     "qc_state": "ibkr_state",
 }
 LEGACY_EMPTY_FALLBACKS = {"ibkr_positions", "ibkr_session"}
+ROLLUP_BATCH_SIZE = 100
 
+
+def build_bar_environment_filter(environment: str, include_legacy_empty: bool = False) -> str:
+    runtime_environment = str(environment or "").strip().lower() or "live"
+    clauses = [f'environment = "{runtime_environment}"']
+    if include_legacy_empty and runtime_environment == "live":
+        clauses.append('environment = ""')
+    return f"({' || '.join(clauses)})" if len(clauses) > 1 else clauses[0]
+
+
+def normalize_bar_environment(bar: dict, environment: str) -> dict:
+    payload = dict(bar)
+    payload["environment"] = str(environment or "live").strip().lower() or "live"
+    return payload
 
 
 def get_or_create_engine(environment: str, symbol: str, interval: str) -> IndicatorEngine:
@@ -124,7 +141,7 @@ def refresh_daily_close_cache(environments, force: bool = False):
         rows = pb.get_all_records(
             "ibkr_bars",
             filter=(
-                f'interval = "1d" && environment = "{environment}" '
+                f'interval = "1d" && {build_bar_environment_filter(environment, include_legacy_empty=True)} '
                 f"&& bar_time_ms >= {max(0, now_ms - lookback_ms)}"
             ),
             sort="bar_time_ms",
@@ -182,14 +199,95 @@ def get_fetch_since_ms(environment: str, interval: str) -> int:
     last_fetch = int(last_interval_fetch_ms.get(key, 0) or 0)
     if last_fetch > 0:
         return max(0, last_fetch - interval_to_ms(interval) * 2)
-    return max(0, int(time.time() * 1000) - BOOTSTRAP_LOOKBACK_BARS[interval] * interval_to_ms(interval))
+    return 0
+
+
+def has_interval_bars(environment: str, interval: str) -> bool:
+    try:
+        rows = pb.get_records(
+            "ibkr_bars",
+            filter=f'interval = "{interval}" && {build_bar_environment_filter(environment, include_legacy_empty=True)}',
+            sort="-bar_time_ms",
+            per_page=1,
+            page=1,
+        )
+        return bool(rows)
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
+def rebuild_higher_timeframe_bars(environment: str) -> dict:
+    base_rows = pb.get_all_records(
+        "ibkr_bars",
+        filter=f'interval = "5m" && {build_bar_environment_filter(environment, include_legacy_empty=True)}',
+        sort="bar_time_ms",
+        max_pages=1000,
+    )
+    if not base_rows:
+        return {"processed_5m": 0, "written": 0, "errors": 0}
+
+    builder = TimeframeBarBuilder(target_intervals=HIGHER_INTERVALS)
+    batch = []
+    written = 0
+    errors = 0
+
+    rows = sorted(
+        base_rows,
+        key=lambda item: (int(item.get("bar_time_ms", 0) or 0), str(item.get("symbol", "")).upper()),
+    )
+
+    def flush_batch():
+        nonlocal written, errors, batch
+        if not batch:
+            return
+        try:
+            result = pb.upsert_bars(batch)
+            if result.get("ok", False):
+                written += int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
+            else:
+                errors += len(batch)
+        except Exception:
+            errors += len(batch)
+            traceback.print_exc()
+        batch = []
+
+    for row in rows:
+        base_bar = normalize_bar_environment(row, environment)
+        for derived_bar in builder.consume(base_bar):
+            batch.append(normalize_bar_environment(derived_bar, environment))
+            if len(batch) >= ROLLUP_BATCH_SIZE:
+                flush_batch()
+
+    flush_batch()
+    return {"processed_5m": len(rows), "written": written, "errors": errors}
+
+
+def ensure_higher_timeframe_bars(environments, force: bool = False):
+    results = {}
+    for environment in environments:
+        if not force and environment in rollup_bootstrap_checked:
+            results[environment] = {"skipped": True, "reason": "already_checked", "written": 0, "errors": 0}
+            continue
+
+        missing_intervals = [interval for interval in HIGHER_INTERVALS if force or not has_interval_bars(environment, interval)]
+        if not missing_intervals:
+            rollup_bootstrap_checked.add(environment)
+            results[environment] = {"skipped": True, "reason": "already_present", "written": 0, "errors": 0}
+            continue
+
+        rollup_result = rebuild_higher_timeframe_bars(environment)
+        rollup_result["missing_intervals"] = missing_intervals
+        results[environment] = rollup_result
+        rollup_bootstrap_checked.add(environment)
+    return results
 
 
 def fetch_interval_bars(environment: str, interval: str):
     rows = pb.get_all_records(
         "ibkr_bars",
         filter=(
-            f'interval = "{interval}" && environment = "{environment}" '
+            f'interval = "{interval}" && {build_bar_environment_filter(environment, include_legacy_empty=True)} '
             f"&& bar_time_ms >= {get_fetch_since_ms(environment, interval)}"
         ),
         sort="bar_time_ms",
@@ -375,6 +473,7 @@ def compute():
     global last_compute_time, compute_count, error_count
 
     cfg.refresh()
+    payload = request.get_json(silent=True) or {}
     requested_environments = get_requested_environments()
     enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
     if not enabled_environments:
@@ -390,8 +489,11 @@ def compute():
     processed = 0
     signals_found = 0
     errors = 0
+    force_rollup = bool(payload.get("force_rollup")) or str(payload.get("source") or "") == "recompute"
 
     refresh_symbol_metadata()
+    rollup_results = ensure_higher_timeframe_bars(enabled_environments, force=force_rollup)
+    errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
     refresh_daily_close_cache(enabled_environments)
 
     try:
@@ -468,6 +570,7 @@ def compute():
         "processed": processed,
         "signals": signals_found,
         "errors": errors,
+        "rollup": rollup_results,
         "engines": len(engines),
         "elapsed_s": round(time.time() - start, 3),
     })
@@ -505,7 +608,7 @@ def scan():
 
 @app.route("/recompute", methods=["POST"])
 def recompute():
-    global last_processed_ms, last_interval_fetch_ms, daily_close_cache
+    global last_processed_ms, last_interval_fetch_ms, daily_close_cache, rollup_bootstrap_checked
 
     for engine in engines.values():
         engine.reset()
@@ -514,14 +617,21 @@ def recompute():
     last_processed_ms.clear()
     last_interval_fetch_ms.clear()
     daily_close_cache = {}
+    rollup_bootstrap_checked.clear()
 
-    with app.test_request_context("/compute", method="POST", json={"source": "recompute"}):
-        compute()
+    compute_payload = {}
+    with app.test_request_context("/compute", method="POST", json={"source": "recompute", "force_rollup": True}):
+        response = compute()
+        try:
+            compute_payload = response.get_json() or {}
+        except Exception:
+            compute_payload = {}
 
     return jsonify({
         "ok": True,
         "action": "recompute",
         "engines_reset": len(engines),
+        "compute": compute_payload,
     })
 
 

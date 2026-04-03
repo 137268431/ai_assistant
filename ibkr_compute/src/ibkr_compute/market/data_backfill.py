@@ -27,11 +27,11 @@ GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5000")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 
 PERIOD_MAP = {
-    "5m": ("2d", "5min"),
-    "15m": ("5d", "15min"),
-    "30m": ("10d", "30min"),
-    "1h": ("20d", "1h"),
-    "4h": ("60d", "4h"),
+    "5m": ("4d", "5min"),
+    "15m": ("10d", "15min"),
+    "30m": ("20d", "30min"),
+    "1h": ("40d", "1h"),
+    "4h": ("120d", "4h"),
     "1d": ("2y", "1d"),
 }
 
