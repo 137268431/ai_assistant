@@ -165,6 +165,38 @@ def main():
             if time.time() - last_cookie_sync >= 10:
                 sync_cookies()
                 last_cookie_sync = time.time()
+
+            # Check browser page state for success/redirect
+            try:
+                current_url = driver.current_url or ""
+                page_text = driver.find_element(By.TAG_NAME, "body").text[:300]
+                if "/sso/Dispatcher" in current_url or "Client login succeeds" in page_text:
+                    print("  [%ds] SUCCESS PAGE DETECTED: %s" % (elapsed, current_url))
+                    sync_cookies()
+                    for promote_round in range(5):
+                        time.sleep(2)
+                        sync_cookies()
+                        try:
+                            resp = session.post(GATEWAY_URL + "/v1/api/tickle", timeout=10)
+                        except Exception:
+                            pass
+                        try:
+                            resp = session.post(GATEWAY_URL + "/v1/api/iserver/auth/status", timeout=10)
+                            if resp.status_code == 200 and resp.text.strip():
+                                data = resp.json()
+                                if data.get("authenticated", False):
+                                    print("  [%ds] Backend auth confirmed (round %d)" % (elapsed, promote_round + 1))
+                                    authenticated = True
+                                    break
+                        except Exception:
+                            pass
+                        print("  [%ds] Promote attempt %d..." % (elapsed, promote_round + 1))
+                    if authenticated:
+                        break
+                    print("  [%ds] WARNING: Success page but backend auth not confirmed" % elapsed)
+            except Exception:
+                pass
+
             try:
                 resp = session.post(GATEWAY_URL + "/v1/api/iserver/auth/status", timeout=10)
                 if resp.status_code == 200 and resp.text.strip():

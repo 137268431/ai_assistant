@@ -943,6 +943,13 @@ class AuthHandler:
                 self._last_wait_context = page_state
 
                 page_mode = str(page_state.get("mode") or "").strip()
+                page_url = str(page_state.get("url") or "")
+                elapsed = int(now - start)
+                logger.info(
+                    "[2FA %ds] mode=%s url=%s body=%.120s",
+                    elapsed, page_mode, page_url,
+                    str(page_state.get("body_excerpt") or "")[:120],
+                )
                 challenge_code = str(page_state.get("challenge_code") or "").strip()
                 normalized_challenge = self._normalize_code(challenge_code)
                 if page_mode == "challenge_response":
@@ -1053,18 +1060,30 @@ class AuthHandler:
                             return True
 
                 page_source = self._driver.page_source if self._driver else ""
-                if (
+                is_success_page = (
                     page_state.get("mode") == "success"
                     or "Client login succeeds" in page_source
                     or "two_fa_result" in page_source
-                ):
-                    time.sleep(2)
-                    self._sync_browser_cookies(session)
-                    promoted = self._promote_backend_auth(session)
-                    page_state["backend_authenticated"] = bool(promoted.get("authenticated", False))
+                    or "/sso/Dispatcher" in page_url
+                )
+                if is_success_page:
+                    logger.info(
+                        "[2FA] Success page detected! url=%s, waiting for session to stabilize...",
+                        page_url,
+                    )
+                    for wait_round in range(5):
+                        time.sleep(2)
+                        self._sync_browser_cookies(session)
+                        promoted = self._promote_backend_auth(session)
+                        if promoted.get("authenticated"):
+                            logger.info("[2FA] Backend auth confirmed after success page (round %d)", wait_round + 1)
+                            page_state["backend_authenticated"] = True
+                            self._last_wait_context = page_state
+                            return True
+                        logger.info("[2FA] Promote attempt %d: authenticated=%s", wait_round + 1, promoted.get("authenticated"))
+                    page_state["backend_authenticated"] = False
                     self._last_wait_context = page_state
-                    if promoted.get("authenticated"):
-                        return True
+                    logger.warning("[2FA] Success page detected but backend auth never confirmed after 5 promote attempts")
 
             except Exception as e:
                 logger.debug("2FA wait check: %s", e)
