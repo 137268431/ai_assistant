@@ -8,9 +8,70 @@
 console.log("[IBKRSystemMonitor] Hook 文件开始加载...")
 
 const MONITORED_INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"]
+const BAR_INTERVAL_MS = 5 * 60 * 1000
+const BAR_LAG_ALERT_MS = 10 * 60 * 1000
+const INDICATOR_LAG_ALERT_MS = 10 * 60 * 1000
+const GAP_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+const GAP_MONITOR_STATE_KEY = "system_gap_monitor"
 
 function getRuntimeKeys() {
     return ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
+}
+
+function toNumber(value, fallback) {
+    const num = Number(value)
+    return Number.isFinite(num) ? num : (fallback || 0)
+}
+
+function uniqueSorted(values) {
+    const seen = {}
+    const output = []
+    for (let i = 0; i < (values || []).length; i++) {
+        const item = String(values[i] || "").trim().toUpperCase()
+        if (!item || seen[item]) continue
+        seen[item] = true
+        output.push(item)
+    }
+    output.sort()
+    return output
+}
+
+function getStateRecord(stateKey, environment, dateToken) {
+    try {
+        return $app.findFirstRecordByFilter(
+            "ibkr_state",
+            "state_key = {:k} && date = {:d} && environment = {:env}",
+            { k: stateKey, d: dateToken, env: environment }
+        )
+    } catch (_) {
+        return null
+    }
+}
+
+function getStateData(stateKey, environment, dateToken) {
+    const record = getStateRecord(stateKey, environment, dateToken)
+    if (!record) return { record: null, data: {} }
+    let data = record.get("data") || {}
+    if (!data || typeof data !== "object") {
+        data = {}
+    }
+    return { record: record, data: data }
+}
+
+function saveStateData(stateKey, environment, dateToken, patch) {
+    const current = getStateData(stateKey, environment, dateToken)
+    const collection = $app.findCollectionByNameOrId("ibkr_state")
+    const record = current.record || new Record(collection, {})
+    const next = {
+        ...(current.data || {}),
+        ...(patch || {}),
+    }
+    record.set("state_key", stateKey)
+    record.set("date", dateToken)
+    record.set("environment", environment)
+    record.set("data", next)
+    $app.save(record)
+    return next
 }
 
 function parseHttpJson(resp) {
@@ -59,6 +120,34 @@ function loadComputeSnapshot(environment) {
     }
 }
 
+function loadRuntimeSnapshot(environment) {
+    try {
+        const payload = fetchComputeJson("/ibkr/status", 8, environment)
+        return {
+            ok: payload.ok !== false,
+            session: payload.session || {},
+            websocket: payload.websocket || {},
+            bar_aggregator: payload.bar_aggregator || {},
+            order_tracker: payload.order_tracker || {},
+            order_lifecycle: payload.order_lifecycle || {},
+            signal_router: payload.signal_router || {},
+            signal_processor: payload.signal_processor || {},
+        }
+    } catch (err) {
+        console.log(`[IBKRSystemMonitor] loadRuntimeSnapshot(${environment}) error: ${err.message || err}`)
+        return {
+            ok: false,
+            session: {},
+            websocket: {},
+            bar_aggregator: {},
+            order_tracker: {},
+            order_lifecycle: {},
+            signal_router: {},
+            signal_processor: {},
+        }
+    }
+}
+
 function loadFreshness(environment) {
     const freshness = {}
     for (let i = 0; i < MONITORED_INTERVALS.length; i++) {
@@ -76,6 +165,227 @@ function loadFreshness(environment) {
         } catch (_) {}
     }
     return freshness
+}
+
+function loadWatchlistSymbols(environment) {
+    try {
+        const rows = $app.findRecordsByFilter(
+            "watchlist",
+            "symbol != '' && (environment = {:env} || environment = 'global' || environment = '')",
+            "",
+            500,
+            0,
+            { env: environment || "live" }
+        ) || []
+        const symbols = []
+        for (let i = 0; i < rows.length; i++) {
+            symbols.push(String(rows[i].get("symbol") || "").toUpperCase())
+        }
+        return uniqueSorted(symbols)
+    } catch (_) {
+        return []
+    }
+}
+
+function loadTargetSymbols(environment, date) {
+    try {
+        const rows = $app.findRecordsByFilter(
+            "ibkr_targets",
+            "date = {:d} && environment = {:env} && (status = 'candidate' || status = 'active')",
+            "-score,-updated",
+            500,
+            0,
+            { d: date, env: environment || "live" }
+        ) || []
+        const symbols = []
+        const seen = {}
+        for (let i = 0; i < rows.length; i++) {
+            const symbol = String(rows[i].get("symbol") || "").toUpperCase()
+            if (!symbol || seen[symbol]) continue
+            seen[symbol] = true
+            symbols.push(symbol)
+        }
+        return uniqueSorted(symbols)
+    } catch (_) {
+        return []
+    }
+}
+
+function loadRecentRowsBySymbol(collection, environment, interval, todayStart, limit) {
+    const rows = $app.findRecordsByFilter(
+        collection,
+        "environment = {:env} && interval = {:interval} && us_time >= {:start}",
+        "-bar_time_ms",
+        limit || 2000,
+        0,
+        { env: environment, interval: interval, start: todayStart }
+    ) || []
+
+    const latestBySymbol = {}
+    const seriesBySymbol = {}
+
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i]
+        const symbol = String(row.get("symbol") || "").toUpperCase()
+        if (!symbol) continue
+
+        if (!latestBySymbol[symbol]) {
+            latestBySymbol[symbol] = {
+                bar_time_ms: toNumber(row.get("bar_time_ms"), 0),
+                us_time: String(row.get("us_time") || ""),
+                session_type: String(row.get("session_type") || ""),
+            }
+        }
+
+        if (!seriesBySymbol[symbol]) {
+            seriesBySymbol[symbol] = []
+        }
+        if (seriesBySymbol[symbol].length < 12) {
+            seriesBySymbol[symbol].push({
+                bar_time_ms: toNumber(row.get("bar_time_ms"), 0),
+                us_time: String(row.get("us_time") || ""),
+                session_type: String(row.get("session_type") || ""),
+            })
+        }
+    }
+
+    return {
+        rows: rows,
+        latest_by_symbol: latestBySymbol,
+        series_by_symbol: seriesBySymbol,
+    }
+}
+
+function buildGapFingerprint(summary) {
+    return JSON.stringify({
+        latest_bar_time_ms: summary.latest_bar_time_ms || 0,
+        bar_lag_symbols: (summary.bar_lag_symbols || []).slice(0, 12),
+        indicator_lag_symbols: (summary.indicator_lag_symbols || []).slice(0, 12),
+        sequence_gap_examples: (summary.sequence_gap_examples || []).slice(0, 6),
+    })
+}
+
+function loadDataGapSummary(environment, times) {
+    try {
+        const watchlistSymbols = loadWatchlistSymbols(environment)
+        const targetSymbols = loadTargetSymbols(environment, times.date)
+        const bars = loadRecentRowsBySymbol("ibkr_bars", environment, "5m", times.todayStart, 1200)
+        const indicators = loadRecentRowsBySymbol("ibkr_indicators", environment, "5m", times.todayStart, 1200)
+        const latestBarBySymbol = bars.latest_by_symbol || {}
+        const latestIndicatorBySymbol = indicators.latest_by_symbol || {}
+        const monitoredSymbols = targetSymbols.length > 0 ? targetSymbols : Object.keys(latestBarBySymbol)
+        const symbols = uniqueSorted(monitoredSymbols.concat(Object.keys(latestBarBySymbol)))
+        let latestBarTimeMs = 0
+        let latestBarSymbol = ""
+
+        const recentSymbols = Object.keys(latestBarBySymbol)
+        for (let i = 0; i < recentSymbols.length; i++) {
+            const symbol = recentSymbols[i]
+            const barMs = toNumber(latestBarBySymbol[symbol] && latestBarBySymbol[symbol].bar_time_ms, 0)
+            if (barMs > latestBarTimeMs) {
+                latestBarTimeMs = barMs
+                latestBarSymbol = symbol
+            }
+        }
+
+        const barLagSymbols = []
+        const indicatorLagSymbols = []
+        const sequenceGapExamples = []
+        let maxBarLagMs = 0
+        let maxIndicatorLagMs = 0
+
+        for (let i = 0; i < symbols.length; i++) {
+            const symbol = symbols[i]
+            const latestBar = latestBarBySymbol[symbol]
+            const barMs = toNumber(latestBar && latestBar.bar_time_ms, 0)
+            if (latestBarTimeMs > 0 && barMs > 0) {
+                const lagMs = latestBarTimeMs - barMs
+                if (lagMs >= BAR_LAG_ALERT_MS) {
+                    barLagSymbols.push(symbol)
+                    if (lagMs > maxBarLagMs) maxBarLagMs = lagMs
+                }
+            }
+
+            const latestIndicator = latestIndicatorBySymbol[symbol]
+            const indicatorMs = toNumber(latestIndicator && latestIndicator.bar_time_ms, 0)
+            if (barMs > 0 && (barMs - indicatorMs) >= INDICATOR_LAG_ALERT_MS) {
+                indicatorLagSymbols.push(symbol)
+                if ((barMs - indicatorMs) > maxIndicatorLagMs) maxIndicatorLagMs = (barMs - indicatorMs)
+            }
+
+            if (sequenceGapExamples.length >= 6) continue
+            const series = (bars.series_by_symbol && bars.series_by_symbol[symbol]) ? bars.series_by_symbol[symbol].slice() : []
+            if (series.length < 3) continue
+            series.sort((a, b) => a.bar_time_ms - b.bar_time_ms)
+            for (let j = 1; j < series.length; j++) {
+                const prev = series[j - 1]
+                const curr = series[j]
+                if (!prev || !curr) continue
+                if (String(prev.session_type || "") !== "regular" || String(curr.session_type || "") !== "regular") continue
+                const deltaMs = toNumber(curr.bar_time_ms, 0) - toNumber(prev.bar_time_ms, 0)
+                if (deltaMs > BAR_INTERVAL_MS && deltaMs <= (6 * BAR_INTERVAL_MS)) {
+                    sequenceGapExamples.push({
+                        symbol: symbol,
+                        prev_us_time: prev.us_time || "",
+                        next_us_time: curr.us_time || "",
+                        missing_points: Math.max(Math.round(deltaMs / BAR_INTERVAL_MS) - 1, 1),
+                    })
+                    break
+                }
+            }
+        }
+
+        const summary = {
+            watchlist_count: watchlistSymbols.length,
+            target_count: targetSymbols.length,
+            monitored_symbol_count: monitoredSymbols.length,
+            today_bar_symbol_count: Object.keys(latestBarBySymbol).length,
+            latest_bar_time_ms: latestBarTimeMs,
+            latest_bar_symbol: latestBarSymbol,
+            latest_bar_us_time: latestBarSymbol && latestBarBySymbol[latestBarSymbol]
+                ? latestBarBySymbol[latestBarSymbol].us_time || ""
+                : "",
+            bar_lag_symbols: barLagSymbols,
+            indicator_lag_symbols: indicatorLagSymbols,
+            sequence_gap_examples: sequenceGapExamples,
+            bar_lag_count: barLagSymbols.length,
+            indicator_lag_count: indicatorLagSymbols.length,
+            sequence_gap_count: sequenceGapExamples.length,
+            max_bar_lag_min: Math.round(maxBarLagMs / 60000),
+            max_indicator_lag_min: Math.round(maxIndicatorLagMs / 60000),
+            market_activity_detected: latestBarTimeMs > 0,
+        }
+        summary.has_issue = summary.market_activity_detected && (
+            summary.bar_lag_count > 0
+            || summary.indicator_lag_count > 0
+            || summary.sequence_gap_count > 0
+        )
+        summary.fingerprint = buildGapFingerprint(summary)
+        return summary
+    } catch (err) {
+        console.log(`[IBKRSystemMonitor] loadDataGapSummary(${environment}) error: ${err.message || err}`)
+        return {
+            watchlist_count: 0,
+            target_count: 0,
+            monitored_symbol_count: 0,
+            today_bar_symbol_count: 0,
+            latest_bar_time_ms: 0,
+            latest_bar_symbol: "",
+            latest_bar_us_time: "",
+            bar_lag_symbols: [],
+            indicator_lag_symbols: [],
+            sequence_gap_examples: [],
+            bar_lag_count: 0,
+            indicator_lag_count: 0,
+            sequence_gap_count: 0,
+            max_bar_lag_min: 0,
+            max_indicator_lag_min: 0,
+            market_activity_detected: false,
+            has_issue: false,
+            fingerprint: "",
+            error: String(err && err.message ? err.message : err || ""),
+        }
+    }
 }
 
 function logRouteError(route, err) {
@@ -172,9 +482,6 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
 
         const computeEnabled = environment !== BACKTEST_ENVIRONMENT
             && String(getConfigValue("ibkr_compute_enabled", "TRUE", environment)).trim().toLowerCase() !== "false"
-        const writeMode = environment === BACKTEST_ENVIRONMENT
-            ? "disabled"
-            : String(getConfigValue("ibkr_write_mode", "shadow", environment) || "shadow")
 
         return c.json(200, {
             ok: compute.status === "running",
@@ -192,7 +499,6 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
                 last_scan: compute.last_scan || null,
             },
             ibkr_data: dataHealth,
-            write_mode: writeMode,
             compute_enabled: computeEnabled,
         })
     } catch (err) {
@@ -209,14 +515,12 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
         const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
         const times = getTimeStrings()
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
+        const liteMode = ["1", "true", "yes", "on"].indexOf(String(c.request.url.query().get("lite") || "").trim().toLowerCase()) !== -1
         const todayStart = times.date + " 00:00:00"
         const computeEnabled = environment !== BACKTEST_ENVIRONMENT
             && String(getConfigValue("ibkr_compute_enabled", "TRUE", environment)).trim().toLowerCase() !== "false"
         const tradingEnabled = environment !== BACKTEST_ENVIRONMENT
             && String(getConfigValue("ibkr_trading_enabled", getConfigValue("trading_enabled", "TRUE", environment), environment)).trim().toLowerCase() !== "false"
-        const writeMode = environment === BACKTEST_ENVIRONMENT
-            ? "disabled"
-            : String(getConfigValue("ibkr_write_mode", "shadow", environment) || "shadow")
 
         let computeSummary = {
             ok: false,
@@ -256,7 +560,6 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
         const summary = {
             timestamp: times.us,
             environment: environment,
-            write_mode: writeMode,
             compute_enabled: computeEnabled,
             ibkr_trading_enabled: tradingEnabled,
             daily_target_filter: false,
@@ -266,6 +569,7 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             ibkr_compute: computeSummary,
             recent_events: [],
             data_freshness: dataFreshness,
+            lite_mode: liteMode,
         }
 
         try {
@@ -276,7 +580,6 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
                     summary.config[String(key)] = String(configs[i].get("value") || "")
                 }
             }
-            if (summary.config.ibkr_write_mode) summary.write_mode = summary.config.ibkr_write_mode
             if (summary.config.ibkr_compute_enabled) summary.compute_enabled = String(summary.config.ibkr_compute_enabled).trim().toLowerCase() === "true"
             if (summary.config.ibkr_trading_enabled) {
                 summary.ibkr_trading_enabled = String(summary.config.ibkr_trading_enabled).trim().toLowerCase() === "true"
@@ -287,30 +590,32 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             if (summary.config.ibkr_target_filter_on) summary.daily_target_filter = String(summary.config.ibkr_target_filter_on).trim().toLowerCase() === "true"
         } catch (_) {}
 
-        try {
-            const records = $app.findRecordsByFilter("ibkr_signals", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-            summary.today.ibkr_signals = records ? records.length : 0
-        } catch (_) {}
-        try {
-            const records = $app.findRecordsByFilter("ibkr_indicators", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-            summary.today.ibkr_indicators = records ? records.length : 0
-        } catch (_) {}
-        try {
-            const records = $app.findRecordsByFilter("orders", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-            summary.today.orders = records ? records.length : 0
-        } catch (_) {}
-        try {
-            const records = $app.findRecordsByFilter("ibkr_bars", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-            summary.today.ibkr_bars = records ? records.length : 0
-        } catch (_) {}
-        try {
-            const records = $app.findRecordsByFilter("ibkr_targets", "date = {:d} && environment = {:env}", "", 0, 0, { d: times.date, env: environment })
-            summary.today.ibkr_targets = records ? records.length : 0
-        } catch (_) {}
-        try {
-            const records = $app.findRecordsByFilter("system_events", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-            summary.today.events = records ? records.length : 0
-        } catch (_) {}
+        if (!liteMode) {
+            try {
+                const records = $app.findRecordsByFilter("ibkr_signals", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
+                summary.today.ibkr_signals = records ? records.length : 0
+            } catch (_) {}
+            try {
+                const records = $app.findRecordsByFilter("ibkr_indicators", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
+                summary.today.ibkr_indicators = records ? records.length : 0
+            } catch (_) {}
+            try {
+                const records = $app.findRecordsByFilter("orders", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
+                summary.today.orders = records ? records.length : 0
+            } catch (_) {}
+            try {
+                const records = $app.findRecordsByFilter("ibkr_bars", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
+                summary.today.ibkr_bars = records ? records.length : 0
+            } catch (_) {}
+            try {
+                const records = $app.findRecordsByFilter("ibkr_targets", "date = {:d} && environment = {:env}", "", 0, 0, { d: times.date, env: environment })
+                summary.today.ibkr_targets = records ? records.length : 0
+            } catch (_) {}
+            try {
+                const records = $app.findRecordsByFilter("system_events", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
+                summary.today.events = records ? records.length : 0
+            } catch (_) {}
+        }
 
         try {
             const recent = $app.findRecordsByFilter("system_events", "environment = {:env}", "-created", 20, 0, { env: environment }) || []
@@ -337,9 +642,9 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
     }
 })
 
-cronAdd("ibkr_compute_runtime", "* 4-20 * * 1-5", () => {
+cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {
     const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
-    runIbkrScheduledAction("compute", 30, "[IBKRComputeCron]")
+    runIbkrScheduledAction("compute", 60, "[IBKRComputeCron]")
 })
 
 cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
@@ -349,7 +654,7 @@ cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
 
 cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
-    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment, getEffectiveWriteMode } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
     const times = getTimeStrings()
@@ -390,9 +695,199 @@ cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
             feishuSystem.notifyHeartbeat("pb", "ok", {
                 environment: environment,
                 ibkr_compute: "running",
-                write_mode: getEffectiveWriteMode(environment, backtestKeys),
                 trading: getTradingEnabledForEnvironment(environment, backtestKeys) ? "true" : "false",
             })
+        }
+    }
+})
+
+cronAdd("system_status_reminder", "0,30 4-20 * * 1-5", () => {
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const times = getTimeStrings()
+    const runtimeKeys = getRuntimeKeys()
+    const environments = getActiveRuntimeEnvironments(runtimeKeys)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        if (!getComputeEnabledForEnvironment(environment, runtimeKeys) && !getTradingEnabledForEnvironment(environment, runtimeKeys)) {
+            continue
+        }
+
+        const compute = loadComputeSnapshot(environment)
+        const runtime = loadRuntimeSnapshot(environment)
+        const freshness = loadFreshness(environment)
+        const gaps = loadDataGapSummary(environment, times)
+        const latest5m = freshness["5m"] || {}
+        const level = (
+            compute.status !== "running"
+            || !(runtime.session && runtime.session.authenticated === true)
+            || !(runtime.websocket && runtime.websocket.connected === true)
+            || gaps.has_issue
+        ) ? "warning" : "info"
+
+        const detail = {
+            "检查时间": times.us,
+            "Compute": compute.status || "unknown",
+            "认证": runtime.session && runtime.session.authenticated === true ? "ok" : "pending",
+            "WebSocket": runtime.websocket && runtime.websocket.connected === true
+                ? ("connected / ready=" + (runtime.websocket.ready === true ? "true" : "false"))
+                : "offline",
+            "消息数": String(toNumber(runtime.websocket && runtime.websocket.message_count, 0)),
+            "Tick数": String(toNumber(runtime.bar_aggregator && runtime.bar_aggregator.total_ticks, 0)),
+            "最新5m": latest5m.last_bar_time_ms
+                ? `${latest5m.symbol || "-"} / ${latest5m.age_min || 0}m / ${latest5m.last_bar_time_ms}`
+                : "no_data_today",
+            "bars缺口": String(gaps.bar_lag_count || 0),
+            "指标滞后": String(gaps.indicator_lag_count || 0),
+            "序列缺口": String(gaps.sequence_gap_count || 0),
+            "交易开关": getTradingEnabledForEnvironment(environment, runtimeKeys) ? "true" : "false",
+        }
+        if (gaps.latest_bar_us_time) {
+            detail["最新bar时间"] = gaps.latest_bar_us_time
+        }
+        if (gaps.bar_lag_symbols && gaps.bar_lag_symbols.length > 0) {
+            detail["bars异常样本"] = gaps.bar_lag_symbols.slice(0, 8).join(", ")
+        }
+        if (gaps.indicator_lag_symbols && gaps.indicator_lag_symbols.length > 0) {
+            detail["指标异常样本"] = gaps.indicator_lag_symbols.slice(0, 8).join(", ")
+        }
+
+        const title = level === "warning" ? "IBKR 系统状态提醒（需关注）" : "IBKR 系统状态提醒"
+        const notified = feishuSystem.notifySystemEvent("heartbeat", level, "pb", title, detail, environment)
+        writeSystemEvent("heartbeat", level, "pb", title, detail, environment, notified)
+    }
+})
+
+cronAdd("system_data_gap_guard", "*/10 4-20 * * 1-5", () => {
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const times = getTimeStrings()
+    const runtimeKeys = getRuntimeKeys()
+    const environments = getActiveRuntimeEnvironments(runtimeKeys)
+    const nowMs = Date.now()
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        if (!getComputeEnabledForEnvironment(environment, runtimeKeys)) {
+            continue
+        }
+
+        const gaps = loadDataGapSummary(environment, times)
+        const nextState = {
+            last_gap_scan_at: times.us,
+            last_gap_fingerprint: gaps.fingerprint || "",
+        }
+
+        if (!gaps.market_activity_detected || !gaps.has_issue) {
+            saveStateData(GAP_MONITOR_STATE_KEY, environment, times.date, {
+                ...nextState,
+                last_gap_issue_at: "",
+            })
+            continue
+        }
+
+        const state = getStateData(GAP_MONITOR_STATE_KEY, environment, times.date).data || {}
+        const lastAlertHash = String(state.last_gap_alert_hash || "")
+        const lastAlertMs = toNumber(state.last_gap_alert_ms, 0)
+        const shouldNotify = (
+            gaps.fingerprint !== lastAlertHash
+            || lastAlertMs <= 0
+            || (nowMs - lastAlertMs) >= GAP_ALERT_COOLDOWN_MS
+        )
+
+        if (!shouldNotify) {
+            saveStateData(GAP_MONITOR_STATE_KEY, environment, times.date, nextState)
+            continue
+        }
+
+        const detail = {
+            "检查时间": times.us,
+            "最新bar时间": gaps.latest_bar_us_time || "unknown",
+            "bars缺口数": String(gaps.bar_lag_count || 0),
+            "指标滞后数": String(gaps.indicator_lag_count || 0),
+            "序列缺口数": String(gaps.sequence_gap_count || 0),
+        }
+        if (gaps.bar_lag_symbols && gaps.bar_lag_symbols.length > 0) {
+            detail["bars异常样本"] = gaps.bar_lag_symbols.slice(0, 10).join(", ")
+        }
+        if (gaps.indicator_lag_symbols && gaps.indicator_lag_symbols.length > 0) {
+            detail["指标异常样本"] = gaps.indicator_lag_symbols.slice(0, 10).join(", ")
+        }
+        if (gaps.sequence_gap_examples && gaps.sequence_gap_examples.length > 0) {
+            const first = gaps.sequence_gap_examples[0]
+            detail["序列缺口样本"] = `${first.symbol}: ${first.prev_us_time} -> ${first.next_us_time} (${first.missing_points})`
+        }
+
+        const title = "IBKR 数据缺口告警"
+        const notified = feishuSystem.notifyWarning("ibkr_compute", title, detail, environment)
+        writeSystemEvent("alert", "warning", "ibkr_compute", title, detail, environment, notified)
+        saveStateData(GAP_MONITOR_STATE_KEY, environment, times.date, {
+            ...nextState,
+            last_gap_issue_at: times.us,
+            last_gap_alert_ms: nowMs,
+            last_gap_alert_hash: gaps.fingerprint || "",
+        })
+    }
+})
+
+cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getStatePayload, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const environments = getActiveRuntimeEnvironments(getRuntimeKeys())
+    const nowMs = Date.now()
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        if (!getComputeEnabledForEnvironment(environment, getRuntimeKeys()) && !getTradingEnabledForEnvironment(environment, getRuntimeKeys())) {
+            continue
+        }
+
+        try {
+            const runtimeStatus = fetchComputeJson("/ibkr/status", 8, environment)
+            const runtimeStarted = Boolean(
+                runtimeStatus.starting
+                || (runtimeStatus.session && runtimeStatus.session.running)
+                || (runtimeStatus.websocket && runtimeStatus.websocket.running)
+                || (runtimeStatus.order_tracker && runtimeStatus.order_tracker.running)
+            )
+            const runtimeAuthenticated = Boolean(runtimeStatus.session && runtimeStatus.session.authenticated)
+            if (!runtimeStarted || runtimeAuthenticated) {
+                continue
+            }
+
+            const statePayload = getStatePayload(environment)
+            const state = statePayload.data || {}
+            const status = String(state.status || "").trim().toLowerCase()
+            const gatewayAuthenticated = state.gateway_authenticated === true || state.backend_authenticated === true
+            const lastPushMs = Number(state.last_request_push_ms || 0) || 0
+
+            if (gatewayAuthenticated && status === "success") {
+                continue
+            }
+            if (lastPushMs > 0 && (nowMs - lastPushMs) < 55 * 60 * 1000) {
+                continue
+            }
+
+            request2faApproval({
+                environment: environment,
+                reason: String(state.reason || "scheduled_2fa_check"),
+                source: "pb_scheduler",
+                message: "检测到 IBKR 2FA 仍未恢复，已按小时发送提醒，请在方便时点击卡片继续验证。",
+                detail: {
+                    "当前状态": status || "requested",
+                    "最近结果": String(state.last_result || ""),
+                    "最近错误": String(state.last_error || ""),
+                },
+                forceReset: false,
+                forceNew: false,
+            })
+        } catch (err) {
+            console.log(`[IBKR2FAHourly] ${environment}: ${err.message || err}`)
         }
     }
 })

@@ -7,11 +7,12 @@ Symbol → conid 映射解析 & 缓存
 import os
 import logging
 import requests
-from typing import Optional, Dict
+from typing import Optional, Dict, Iterable, List
 
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
+STOCK_SEARCH_BATCH_SIZE = max(1, int(os.environ.get("IBKR_CONID_BATCH_SIZE", "25")))
 
 
 class ConidResolver:
@@ -72,40 +73,82 @@ class ConidResolver:
                 return None
 
             items = payload.get(symbol) or payload.get(symbol.upper()) or []
-            best_conid = None
-            best_score = -1
-
-            for item in items if isinstance(items, list) else []:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("assetClass") or "").upper() != "STK":
-                    continue
-
-                for contract in item.get("contracts") if isinstance(item.get("contracts"), list) else []:
-                    if not isinstance(contract, dict):
-                        continue
-                    conid = contract.get("conid")
-                    if not conid:
-                        continue
-
-                    exchange = str(contract.get("exchange") or "").upper()
-                    is_us = bool(contract.get("isUS"))
-                    score = 0
-                    if is_us:
-                        score += 100
-                    if exchange in {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "SMART"}:
-                        score += 50
-                    if exchange in {"NASDAQ", "NYSE"}:
-                        score += 10
-
-                    if score > best_score:
-                        best_score = score
-                        best_conid = int(conid)
-
-            return best_conid
+            return self._pick_best_stock_conid(items)
         except Exception as e:
             logger.error("IBKR stocks search failed for %s: %s", symbol, e)
             return None
+
+    def _score_contract(self, contract: dict) -> int:
+        exchange = str(contract.get("exchange") or "").upper()
+        is_us = bool(contract.get("isUS"))
+        score = 0
+        if is_us:
+            score += 100
+        if exchange in {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "SMART"}:
+            score += 50
+        if exchange in {"NASDAQ", "NYSE"}:
+            score += 10
+        return score
+
+    def _pick_best_stock_conid(self, items) -> Optional[int]:
+        best_conid = None
+        best_score = -1
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("assetClass") or "").upper() != "STK":
+                continue
+
+            contracts = item.get("contracts")
+            for contract in contracts if isinstance(contracts, list) else []:
+                if not isinstance(contract, dict):
+                    continue
+                conid = contract.get("conid")
+                if not conid:
+                    continue
+
+                score = self._score_contract(contract)
+                if score > best_score:
+                    best_score = score
+                    best_conid = int(conid)
+        return best_conid
+
+    def _batched(self, symbols: Iterable[str], batch_size: int) -> List[List[str]]:
+        batch = []
+        output = []
+        for symbol in symbols:
+            normalized = str(symbol or "").strip().upper()
+            if not normalized:
+                continue
+            batch.append(normalized)
+            if len(batch) >= batch_size:
+                output.append(batch)
+                batch = []
+        if batch:
+            output.append(batch)
+        return output
+
+    def _search_stocks_bulk(self, symbols: Iterable[str]) -> Dict[str, int]:
+        resolved = {}
+        for batch in self._batched(symbols, STOCK_SEARCH_BATCH_SIZE):
+            try:
+                resp = self._session.get(
+                    self._api_url("/trsrv/stocks"),
+                    params={"symbols": ",".join(batch)},
+                    timeout=20,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                if not isinstance(payload, dict):
+                    continue
+
+                for symbol in batch:
+                    best_conid = self._pick_best_stock_conid(payload.get(symbol) or payload.get(symbol.upper()) or [])
+                    if best_conid:
+                        resolved[symbol] = best_conid
+            except Exception as e:
+                logger.warning("IBKR bulk stocks search failed for %s: %s", ",".join(batch), e)
+        return resolved
 
     def _search_secdef(self, symbol: str) -> Optional[int]:
         try:
@@ -185,11 +228,38 @@ class ConidResolver:
             logger.debug("Failed to save conid cache to PB: %s", e)
 
     def resolve_bulk(self, symbols: list) -> Dict[str, int]:
+        normalized_symbols = []
+        seen = set()
+        for symbol in symbols or []:
+            normalized = str(symbol or "").strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_symbols.append(normalized)
+
         result = {}
-        for symbol in symbols:
-            conid = self.resolve(symbol)
+        bulk_matches = self._search_stocks_bulk(normalized_symbols)
+        for symbol in normalized_symbols:
+            matched_conid = bulk_matches.get(symbol)
+            cached_conid = self._cache.get(symbol)
+
+            if matched_conid:
+                if cached_conid != matched_conid:
+                    if cached_conid:
+                        logger.warning(
+                            "Conid cache mismatch for %s: cached=%s live=%s; refreshing cache",
+                            symbol,
+                            cached_conid,
+                            matched_conid,
+                        )
+                    self._cache[symbol] = matched_conid
+                    self._save_to_pb(symbol, matched_conid)
+                result[symbol] = matched_conid
+                continue
+
+            conid = cached_conid or self.resolve(symbol)
             if conid:
-                result[symbol.upper()] = conid
+                result[symbol] = int(conid)
         return result
 
     def get_reverse(self, conid: int) -> Optional[str]:

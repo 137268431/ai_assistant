@@ -19,6 +19,43 @@ function ibkrActionsParseHttpJson(rawValue) {
     }
 }
 
+const IBKR_ACTIONS_VOLATILE_COMPARE_KEYS = {
+    computed_at_ms: true,
+    computed_at_us: true,
+    computed_at_cn: true,
+}
+
+function ibkrActionsNormalizeForCompare(value) {
+    if (Array.isArray(value)) {
+        return value.map((item) => ibkrActionsNormalizeForCompare(item))
+    }
+    if (value && typeof value === "object") {
+        const normalized = {}
+        Object.keys(value).sort().forEach((key) => {
+            if (IBKR_ACTIONS_VOLATILE_COMPARE_KEYS[key]) {
+                return
+            }
+            normalized[key] = ibkrActionsNormalizeForCompare(value[key])
+        })
+        return normalized
+    }
+    if (typeof value === "number") {
+        return Number.isFinite(value) ? Number(value) : null
+    }
+    return value == null ? null : value
+}
+globalThis.ibkrActionsNormalizeForCompare = ibkrActionsNormalizeForCompare
+
+function ibkrActionsValuesEqual(left, right) {
+    return JSON.stringify(globalThis.ibkrActionsNormalizeForCompare(left)) === JSON.stringify(globalThis.ibkrActionsNormalizeForCompare(right))
+}
+globalThis.ibkrActionsValuesEqual = ibkrActionsValuesEqual
+
+function ibkrActionsRecordNeedsUpdate(record, data) {
+    return Object.keys(data || {}).some((key) => !globalThis.ibkrActionsValuesEqual(record.get(key), data[key]))
+}
+globalThis.ibkrActionsRecordNeedsUpdate = ibkrActionsRecordNeedsUpdate
+
 function ibkrActionsUpsertRecord(collectionName, filterStr, filterParams, data) {
     let record = null
     try {
@@ -26,15 +63,20 @@ function ibkrActionsUpsertRecord(collectionName, filterStr, filterParams, data) 
     } catch (_) {}
 
     const col = $app.findCollectionByNameOrId(collectionName)
+    let action = "updated"
     if (!record) {
         record = new Record(col, {})
+        action = "created"
+    } else if (!globalThis.ibkrActionsRecordNeedsUpdate(record, data)) {
+        return { record: record, action: "skipped" }
     }
     Object.keys(data).forEach((key) => {
         record.set(key, data[key])
     })
     $app.save(record)
-    return record
+    return { record: record, action: action }
 }
+globalThis.ibkrActionsUpsertRecord = ibkrActionsUpsertRecord
 
 function ibkrActionsBuildProxyMeta(payload, route, upstream) {
     const base = payload && typeof payload === "object" && !Array.isArray(payload)
@@ -47,6 +89,120 @@ function ibkrActionsBuildProxyMeta(payload, route, upstream) {
     base.proxy_upstream = upstream
     return base
 }
+
+function ibkrActionsBuildIndicatorData(d, environment) {
+    const symbol = String(d.symbol || "").trim().toUpperCase()
+    const interval = String(d.interval || "").trim()
+    const barTimeMs = Number(d.bar_time_ms)
+
+    if (!symbol || !interval || !Number.isFinite(barTimeMs) || barTimeMs <= 0) {
+        return { ok: false, error: "Missing symbol/interval/bar_time_ms" }
+    }
+
+    return {
+        ok: true,
+        symbol: symbol,
+        interval: interval,
+        bar_time_ms: Math.trunc(barTimeMs),
+        filter: "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}",
+        params: { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment },
+        data: {
+            symbol: symbol,
+            environment: environment,
+            exchange: String(d.exchange || "").trim().toUpperCase(),
+            interval: interval,
+            script_tag: String(d.script_tag || "").trim(),
+            us_time: String(d.us_time || "").trim(),
+            cn_time: String(d.cn_time || "").trim(),
+            bar_time_ms: Math.trunc(barTimeMs),
+            bar_index: d.bar_index != null ? Number(d.bar_index) : null,
+            extra: {
+                ...(d.extra || {}),
+                environment: environment,
+                source: (d.extra && d.extra.source) ? d.extra.source : "ibkr_compute",
+            },
+        },
+    }
+}
+globalThis.ibkrActionsBuildIndicatorData = ibkrActionsBuildIndicatorData
+
+function ibkrActionsBuildSignalData(d, environment) {
+    const symbol = String(d.symbol || "").trim().toUpperCase()
+    const signalId = String(d.signal_id || "").trim()
+
+    if (!symbol || !signalId) {
+        return { ok: false, error: "Missing symbol or signal_id" }
+    }
+
+    return {
+        ok: true,
+        symbol: symbol,
+        signal_id: signalId,
+        filter: "signal_id = {:sid} && environment = {:env}",
+        params: { sid: signalId, env: environment },
+        data: {
+            symbol: symbol,
+            environment: environment,
+            direction: String(d.direction || "").trim(),
+            signal: String(d.signal || "").trim(),
+            limit_price: Number(d.limit_price) || 0,
+            entry: Number(d.entry) || 0,
+            stop_loss: Number(d.stop_loss) || 0,
+            take_profit: Number(d.take_profit) || 0,
+            rr: String(d.rr || ""),
+            shares: Number(d.shares) || 0,
+            signal_id: signalId,
+            exchange: String(d.exchange || "").trim().toUpperCase(),
+            interval: String(d.interval || "").trim(),
+            reason: String(d.reason || ""),
+            us_time: String(d.us_time || "").trim(),
+            cn_time: String(d.cn_time || "").trim(),
+            date: String(d.date || "").trim(),
+            bar_time_ms: d.bar_time_ms ? Math.trunc(Number(d.bar_time_ms)) : 0,
+            bar_index: d.bar_index != null ? Number(d.bar_index) : null,
+            script_tag: String(d.script_tag || "").trim(),
+            chart_tf: String(d.chart_tf || "").trim(),
+            extra: {
+                ...(d.extra || {}),
+                source: (d.extra && d.extra.source) ? d.extra.source : "ibkr_compute",
+                environment: environment,
+            },
+            status: String(d.status || "pending"),
+            note: String(d.note || ""),
+        },
+    }
+}
+globalThis.ibkrActionsBuildSignalData = ibkrActionsBuildSignalData
+
+function ibkrActionsUpsertConfigValue(key, value, environment, extras) {
+    const runtimeEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    let record = null
+    try {
+        record = $app.findFirstRecordByFilter(
+            "config",
+            "key = {:key} && environment = {:env}",
+            { key: String(key || ""), env: runtimeEnvironment }
+        )
+    } catch (_) {}
+
+    const collection = $app.findCollectionByNameOrId("config")
+    if (!record) {
+        record = new Record(collection, {})
+        record.set("key", String(key || ""))
+        record.set("environment", runtimeEnvironment)
+    }
+
+    const meta = extras || {}
+    if (meta.display_name) record.set("display_name", String(meta.display_name))
+    if (meta.description) record.set("description", String(meta.description))
+    if (meta.group_name) record.set("group_name", String(meta.group_name))
+    if (meta.default_value != null) record.set("default_value", String(meta.default_value))
+    if (meta.sort_order != null) record.set("sort_order", Number(meta.sort_order) || 0)
+    record.set("value", String(value == null ? "" : value))
+    $app.save(record)
+    return record
+}
+globalThis.ibkrActionsUpsertConfigValue = ibkrActionsUpsertConfigValue
 
 routerAdd("GET", "/api/custom/ibkr/ping_write", (c) => {
     try {
@@ -107,6 +263,7 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
     const bars = d.bars || []
     const { getRuntimeEnvironmentFromData, getConfigValue, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const { isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const defaultEnvironment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
 
     if (!bars.length) {
@@ -125,6 +282,7 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
 
     let created = 0
     let updated = 0
+    let skipped = 0
     let errors = 0
 
     for (let i = 0; i < bars.length; i++) {
@@ -140,49 +298,42 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
         }
 
         try {
-            let record = null
-            try {
-                record = $app.findFirstRecordByFilter(
-                    "ibkr_bars",
-                    "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}",
-                    { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment }
-                )
-            } catch (_) {}
-
-            const col = $app.findCollectionByNameOrId("ibkr_bars")
-            if (!record) {
-                record = new Record(col, {})
+            const result = actionHelpers.upsertRecord(
+                "ibkr_bars",
+                "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}",
+                { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment },
+                {
+                    symbol: symbol,
+                    environment: environment,
+                    exchange: String(bar.exchange || "").trim().toUpperCase(),
+                    interval: interval,
+                    open: Number(bar.open) || 0,
+                    high: Number(bar.high) || 0,
+                    low: Number(bar.low) || 0,
+                    close: Number(bar.close) || 0,
+                    volume: Number(bar.volume) || 0,
+                    session_type: String(bar.session_type || "").trim(),
+                    us_time: String(bar.us_time || "").trim(),
+                    cn_time: String(bar.cn_time || "").trim(),
+                    bar_time_ms: Math.trunc(barTimeMs),
+                    extra: bar.extra || {},
+                },
+            )
+            if (result.action === "created") {
                 created++
-            } else {
+            } else if (result.action === "updated") {
                 updated++
+            } else {
+                skipped++
             }
-
-            record.set("symbol", symbol)
-            record.set("environment", environment)
-            record.set("exchange", String(bar.exchange || "").trim().toUpperCase())
-            record.set("interval", interval)
-            record.set("open", Number(bar.open) || 0)
-            record.set("high", Number(bar.high) || 0)
-            record.set("low", Number(bar.low) || 0)
-            record.set("close", Number(bar.close) || 0)
-            record.set("volume", Number(bar.volume) || 0)
-            record.set("session_type", String(bar.session_type || "").trim())
-            record.set("us_time", String(bar.us_time || "").trim())
-            record.set("cn_time", String(bar.cn_time || "").trim())
-            record.set("bar_time_ms", Math.trunc(barTimeMs))
-            if (bar.extra) {
-                record.set("extra", bar.extra)
-            }
-
-            $app.save(record)
         } catch (err) {
             errors++
             console.error(`[IBKRActions] bars upsert error: ${symbol}/${interval}/${barTimeMs}: ${err.message}`)
         }
     }
 
-    console.log(`[IBKRActions] bars: received=${bars.length}, created=${created}, updated=${updated}, errors=${errors}`)
-    return c.json(200, { ok: true, received: bars.length, created, updated, errors })
+    console.log(`[IBKRActions] bars: received=${bars.length}, created=${created}, updated=${updated}, skipped=${skipped}, errors=${errors}`)
+    return c.json(200, { ok: true, received: bars.length, created, updated, skipped, errors })
 })
 
 // ══════════════════════════════════════
@@ -192,59 +343,76 @@ routerAdd("POST", "/api/custom/ibkr/indicator", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upsertRecord = function(collectionName, filterStr, filterParams, data) {
-        let record = null
-        try {
-            record = $app.findFirstRecordByFilter(collectionName, filterStr, filterParams)
-        } catch (_) {}
-
-        const col = $app.findCollectionByNameOrId(collectionName)
-        if (!record) {
-            record = new Record(col, {})
-        }
-        Object.keys(data).forEach((key) => {
-            record.set(key, data[key])
-        })
-        $app.save(record)
-        return record
+    const prepared = actionHelpers.buildIndicatorData(d, environment)
+    if (!prepared.ok) {
+        return c.json(400, { ok: false, error: prepared.error || "invalid_indicator_payload" })
     }
-
-    const symbol = String(d.symbol || "").trim().toUpperCase()
-    const interval = String(d.interval || "").trim()
-    const barTimeMs = Number(d.bar_time_ms)
-
-    if (!symbol || !interval || !Number.isFinite(barTimeMs) || barTimeMs <= 0) {
-        return c.json(400, { ok: false, error: "Missing symbol/interval/bar_time_ms" })
-    }
-
-    const recordData = {
-        symbol: symbol,
-        environment: environment,
-        exchange: String(d.exchange || "").trim().toUpperCase(),
-        interval: interval,
-        script_tag: String(d.script_tag || "").trim(),
-        us_time: String(d.us_time || "").trim(),
-        cn_time: String(d.cn_time || "").trim(),
-        bar_time_ms: Math.trunc(barTimeMs),
-        bar_index: d.bar_index != null ? Number(d.bar_index) : null,
-        extra: {
-            ...(d.extra || {}),
-            environment: environment,
-            source: (d.extra && d.extra.source) ? d.extra.source : "ibkr_compute",
-        },
-    }
-
-    const filterStr = "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}"
-    const filterParams = { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment }
 
     try {
-        upsertRecord("ibkr_indicators", filterStr, filterParams, recordData)
-        return c.json(200, { ok: true, symbol, interval, collection: "ibkr_indicators" })
+        const result = actionHelpers.upsertRecord("ibkr_indicators", prepared.filter, prepared.params, prepared.data)
+        return c.json(200, {
+            ok: true,
+            symbol: prepared.symbol,
+            interval: prepared.interval,
+            collection: "ibkr_indicators",
+            action: result.action,
+        })
     } catch (err) {
         console.error(`[IBKRActions] indicator upsert error: ${err.message}`)
         return c.json(500, { ok: false, error: err.message })
     }
+})
+
+routerAdd("POST", "/api/custom/ibkr/indicators", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const items = Array.isArray(d.items) ? d.items : []
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+    const defaultEnvironment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+
+    if (!items.length) {
+        return c.json(400, { ok: false, error: "Empty indicators array" })
+    }
+
+    let created = 0
+    let updated = 0
+    let skipped = 0
+    let errors = 0
+    for (let i = 0; i < items.length; i++) {
+        const environment = getRuntimeEnvironmentFromData(items[i], defaultEnvironment)
+        const prepared = actionHelpers.buildIndicatorData(items[i], environment)
+        if (!prepared.ok) {
+            errors++
+            continue
+        }
+        try {
+            const result = actionHelpers.upsertRecord("ibkr_indicators", prepared.filter, prepared.params, prepared.data)
+            if (result.action === "created") {
+                created++
+            } else if (result.action === "updated") {
+                updated++
+            } else {
+                skipped++
+            }
+        } catch (err) {
+            errors++
+            console.error(`[IBKRActions] indicators upsert error: ${prepared.symbol}/${prepared.interval}/${prepared.bar_time_ms}: ${err.message}`)
+        }
+    }
+
+    return c.json(200, {
+        ok: errors === 0,
+        received: items.length,
+        success: created + updated,
+        created: created,
+        updated: updated,
+        skipped: skipped,
+        errors: errors,
+        collection: "ibkr_indicators",
+    })
 })
 
 // ══════════════════════════════════════
@@ -253,62 +421,75 @@ routerAdd("POST", "/api/custom/ibkr/indicator", (c) => {
 routerAdd("POST", "/api/custom/ibkr/signal", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const symbol = String(d.symbol || "").trim().toUpperCase()
-    const signalId = String(d.signal_id || "").trim()
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const environment = String(d.environment || "live").trim().toLowerCase() || "live"
-
-    if (!symbol || !signalId) {
-        return c.json(400, { ok: false, error: "Missing symbol or signal_id" })
+    const prepared = actionHelpers.buildSignalData(d, environment)
+    if (!prepared.ok) {
+        return c.json(400, { ok: false, error: prepared.error || "invalid_signal_payload" })
     }
 
     try {
-        let record = null
-        try {
-            record = $app.findFirstRecordByFilter(
-                "ibkr_signals",
-                "signal_id = {:sid} && environment = {:env}",
-                { sid: signalId, env: environment }
-            )
-        } catch (_) {}
-
-        const col = $app.findCollectionByNameOrId("ibkr_signals")
-        if (!record) {
-            record = new Record(col, {})
-        }
-        record.set("symbol", symbol)
-        record.set("environment", environment)
-        record.set("direction", String(d.direction || "").trim())
-        record.set("signal", String(d.signal || "").trim())
-        record.set("limit_price", Number(d.limit_price) || 0)
-        record.set("entry", Number(d.entry) || 0)
-        record.set("stop_loss", Number(d.stop_loss) || 0)
-        record.set("take_profit", Number(d.take_profit) || 0)
-        record.set("rr", String(d.rr || ""))
-        record.set("shares", Number(d.shares) || 0)
-        record.set("signal_id", signalId)
-        record.set("exchange", String(d.exchange || "").trim().toUpperCase())
-        record.set("interval", String(d.interval || "").trim())
-        record.set("reason", String(d.reason || ""))
-        record.set("us_time", String(d.us_time || "").trim())
-        record.set("cn_time", String(d.cn_time || "").trim())
-        record.set("date", String(d.date || "").trim())
-        record.set("bar_time_ms", d.bar_time_ms ? Math.trunc(Number(d.bar_time_ms)) : 0)
-        record.set("bar_index", d.bar_index != null ? Number(d.bar_index) : null)
-        record.set("script_tag", String(d.script_tag || "").trim())
-        record.set("chart_tf", String(d.chart_tf || "").trim())
-        record.set("extra", {
-            ...(d.extra || {}),
-            source: (d.extra && d.extra.source) ? d.extra.source : "ibkr_compute",
-            environment: environment,
+        const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
+        return c.json(200, {
+            ok: true,
+            signal_id: prepared.signal_id,
+            target: "ibkr_signals",
+            id: (result.record && result.record.id) || "",
+            action: result.action,
         })
-        record.set("status", String(d.status || "pending"))
-        record.set("note", String(d.note || ""))
-        $app.save(record)
-        return c.json(200, { ok: true, signal_id: signalId, target: "ibkr_signals", id: record.id || "" })
     } catch (err) {
         console.error(`[IBKRActions] signal upsert error: ${err.message}`)
         return c.json(500, { ok: false, error: err.message || String(err), target: "ibkr_signals" })
     }
+})
+
+routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const items = Array.isArray(d.items) ? d.items : []
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+    const defaultEnvironment = String(d.environment || "live").trim().toLowerCase() || "live"
+
+    if (!items.length) {
+        return c.json(400, { ok: false, error: "Empty signals array" })
+    }
+
+    let created = 0
+    let updated = 0
+    let skipped = 0
+    let errors = 0
+    for (let i = 0; i < items.length; i++) {
+        const environment = String((items[i] && items[i].environment) || defaultEnvironment).trim().toLowerCase() || defaultEnvironment
+        const prepared = actionHelpers.buildSignalData(items[i] || {}, environment)
+        if (!prepared.ok) {
+            errors++
+            continue
+        }
+        try {
+            const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
+            if (result.action === "created") {
+                created++
+            } else if (result.action === "updated") {
+                updated++
+            } else {
+                skipped++
+            }
+        } catch (err) {
+            errors++
+            console.error(`[IBKRActions] signals upsert error: ${prepared.signal_id}: ${err.message}`)
+        }
+    }
+
+    return c.json(200, {
+        ok: errors === 0,
+        received: items.length,
+        success: created + updated,
+        created: created,
+        updated: updated,
+        skipped: skipped,
+        errors: errors,
+        target: "ibkr_signals",
+    })
 })
 
 // ══════════════════════════════════════
@@ -579,6 +760,167 @@ routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
             proxy_upstream: upstream,
         })
     }
+})
+
+routerAdd("POST", "/api/custom/ibkr/emergency-stop", (c) => {
+    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const action = String(d.action || "all").trim().toLowerCase() || "all"
+    const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
+
+    const configActions = {
+        compute: [
+            ["ibkr_compute_enabled", "FALSE", "Compute 调度开关", "紧急停止后关闭自动 compute / scan"],
+        ],
+        trading: [
+            ["ibkr_trading_enabled", "FALSE", "交易总开关", "紧急停止后禁止继续下单"],
+        ],
+        scheduler: [
+            ["pb_scheduler_enabled", "FALSE", "PB 调度开关", "紧急停止后暂停 PB cron 调度"],
+        ],
+        publish: [
+            ["ibkr_bar_publish_enabled", "FALSE", "IBKR K线发布开关", "紧急停止后暂停 bars 写入 PocketBase"],
+        ],
+        all: [
+            ["ibkr_compute_enabled", "FALSE", "Compute 调度开关", "紧急停止后关闭自动 compute / scan"],
+            ["ibkr_trading_enabled", "FALSE", "交易总开关", "紧急停止后禁止继续下单"],
+            ["pb_scheduler_enabled", "FALSE", "PB 调度开关", "紧急停止后暂停 PB cron 调度"],
+            ["ibkr_bar_publish_enabled", "FALSE", "IBKR K线发布开关", "紧急停止后暂停 bars 写入 PocketBase"],
+        ],
+        runtime: [],
+    }
+
+    const selected = configActions[action]
+    if (!selected) {
+        return c.json(400, { ok: false, error: "Unsupported emergency action", action: action })
+    }
+
+    const updated = []
+    for (let i = 0; i < selected.length; i++) {
+        const item = selected[i]
+        const record = actionHelpers.upsertConfigValue(item[0], item[1], environment, {
+            display_name: item[2],
+            description: item[3],
+            group_name: "PB / IBKR 服务",
+        })
+        updated.push({
+            key: item[0],
+            value: item[1],
+            id: record && record.id ? record.id : "",
+        })
+    }
+
+    let stopPayload = { ok: true, skipped: true }
+    if (action === "runtime" || action === "all" || action === "compute") {
+        try {
+            const resp = $http.send({ url: `${computeBaseUrl}/ibkr/stop`, method: "POST", timeout: 20 })
+            try {
+                stopPayload = JSON.parse(resp.raw || "{}")
+            } catch (_) {
+                stopPayload = {}
+            }
+            stopPayload.status_code = resp.statusCode || 200
+        } catch (err) {
+            stopPayload = { ok: false, error: err.message || String(err) }
+        }
+    }
+
+    writeSystemEvent(
+        "status_change",
+        "warning",
+        "manual",
+        "触发紧急停止",
+        {
+            action: action,
+            updated_keys: updated.map((item) => item.key).join(","),
+            runtime_stop: stopPayload.ok !== false ? "requested" : "failed",
+        },
+        environment,
+        false,
+    )
+
+    return c.json(200, {
+        ok: stopPayload.ok !== false,
+        environment: environment,
+        action: action,
+        updated: updated,
+        runtime_stop: stopPayload,
+    })
+})
+
+routerAdd("POST", "/api/custom/ibkr/recover", (c) => {
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const action = String(d.action || "all").trim().toLowerCase() || "all"
+
+    const configActions = {
+        compute: [
+            ["ibkr_compute_enabled", "TRUE", "Compute 调度开关", "恢复自动 compute / scan"],
+        ],
+        trading: [
+            ["ibkr_trading_enabled", "TRUE", "交易总开关", "恢复自动交易执行"],
+        ],
+        scheduler: [
+            ["pb_scheduler_enabled", "TRUE", "PB 调度开关", "恢复 PB cron 调度"],
+        ],
+        publish: [
+            ["ibkr_bar_publish_enabled", "TRUE", "IBKR K线发布开关", "恢复 bars 写入 PocketBase"],
+        ],
+        all: [
+            ["ibkr_compute_enabled", "TRUE", "Compute 调度开关", "恢复自动 compute / scan"],
+            ["ibkr_trading_enabled", "TRUE", "交易总开关", "恢复自动交易执行"],
+            ["pb_scheduler_enabled", "TRUE", "PB 调度开关", "恢复 PB cron 调度"],
+            ["ibkr_bar_publish_enabled", "TRUE", "IBKR K线发布开关", "恢复 bars 写入 PocketBase"],
+        ],
+    }
+
+    const selected = configActions[action]
+    if (!selected) {
+        return c.json(400, { ok: false, error: "Unsupported recover action", action: action })
+    }
+
+    const updated = []
+    for (let i = 0; i < selected.length; i++) {
+        const item = selected[i]
+        const record = actionHelpers.upsertConfigValue(item[0], item[1], environment, {
+            display_name: item[2],
+            description: item[3],
+            group_name: "PB / IBKR 服务",
+        })
+        updated.push({
+            key: item[0],
+            value: item[1],
+            id: record && record.id ? record.id : "",
+        })
+    }
+
+    writeSystemEvent(
+        "status_change",
+        "info",
+        "manual",
+        "恢复运行开关",
+        {
+            action: action,
+            updated_keys: updated.map((item) => item.key).join(","),
+        },
+        environment,
+        false,
+    )
+
+    return c.json(200, {
+        ok: true,
+        environment: environment,
+        action: action,
+        updated: updated,
+    })
 })
 
 routerAdd("POST", "/api/custom/ibkr/reauth", (c) => {

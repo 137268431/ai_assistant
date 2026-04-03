@@ -280,10 +280,6 @@
                     <div class="status-label">IBKR COMPUTE</div>
                     <div class="status-value" id="computeStatus"><span class="status-dot dot-gray"></span>--</div>
                 </div>
-                <div class="status-card">
-                    <div class="status-label">WRITE MODE</div>
-                    <div class="status-value" id="writeMode" style="color:var(--accent)">--</div>
-                </div>
             </div>
 
             <div class="section">
@@ -396,7 +392,7 @@
                 const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
                 const [health, summary, eventsResp, ...freshnessResponses] = await Promise.all([
                     requestSystemJson('/api/custom/system/healthz'),
-                    requestSystemJson('/api/custom/system/summaryz'),
+                    requestSystemJson('/api/custom/system/summaryz?lite=1'),
                     apiFetch('system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }),
                     ...freshnessIntervals.map((interval) =>
                         apiFetch('ibkr_bars', {
@@ -455,8 +451,6 @@
             } else {
                 compEl.innerHTML = `<span class="status-dot dot-${comp.status === 'error' ? 'red' : 'gray'}"></span>${escapeHtml(comp.status || '--')}`;
             }
-
-            document.getElementById('writeMode').textContent = health.write_mode || '--';
         }
 
         function renderTodayStats(today) {
@@ -561,7 +555,6 @@
             const el = document.getElementById('configArea');
             const items = [
                 { label: 'TRADING', value: summary.ibkr_trading_enabled },
-                { label: 'WRITE MODE', value: summary.write_mode },
                 { label: 'COMPUTE', value: summary.compute_enabled },
                 { label: 'TARGET FILTER', value: summary.daily_target_filter },
                 { label: 'MAX POS', value: summary.max_positions },
@@ -637,7 +630,7 @@
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
             await loadSystemData(false);
-            refreshTimer = setInterval(() => loadSystemData(false), 30000);
+            refreshTimer = setInterval(() => loadSystemData(false), 60000);
         });
 
         window.onEnvironmentChange = function(environment) {

@@ -64,6 +64,7 @@ class DataBackfill:
     def __init__(self, gateway_url: str = None, data_writer=None):
         self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
         self.data_writer = data_writer
+        self.pb_client = getattr(data_writer, "pb_client", None) if data_writer else None
         self.default_intervals = list(DEFAULT_BACKFILL_INTERVALS)
         self.request_spacing = REQUEST_SPACING_SECONDS
         self.interval_delay = INTERVAL_DELAY_SECONDS
@@ -162,6 +163,41 @@ class DataBackfill:
             self._backfill_count += written
         return written
 
+    def _get_latest_stored_bar_ms(self, symbol: str, interval: str) -> int:
+        if not self.pb_client:
+            return 0
+
+        normalized = normalize_interval(interval)
+        safe_symbol = str(symbol or "").upper().replace('"', '\\"')
+        safe_interval = normalized.replace('"', '\\"')
+        safe_environment = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        try:
+            rows = self.pb_client.get_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{safe_symbol}" && '
+                    f'interval = "{safe_interval}" && '
+                    f'environment = "{safe_environment}"'
+                ),
+                sort="-bar_time_ms",
+                per_page=1,
+                page=1,
+            )
+            if not rows:
+                return 0
+            return int(rows[0].get("bar_time_ms", 0) or 0)
+        except Exception as exc:
+            logger.warning(
+                "Failed to query latest stored bar for %s/%s: %s",
+                symbol,
+                normalized,
+                exc,
+            )
+            return 0
+
+    def get_latest_stored_bar_ms(self, symbol: str, interval: str = "5m") -> int:
+        return self._get_latest_stored_bar_ms(symbol, interval)
+
     def fetch_history(
         self,
         conid: int,
@@ -219,12 +255,17 @@ class DataBackfill:
                 }
                 result.append(payload)
 
+            latest_stored_ms = self._get_latest_stored_bar_ms(symbol, normalized)
+            if latest_stored_ms > 0:
+                result = [row for row in result if int(row.get("bar_time_ms", 0) or 0) > latest_stored_ms]
+
             logger.info(
-                "Fetched %d bars for %s/%s (period=%s)",
+                "Fetched %d new bars for %s/%s (period=%s, latest_stored_ms=%d)",
                 len(result),
                 symbol,
                 normalized,
                 period,
+                latest_stored_ms,
             )
             return result
         except Exception as e:

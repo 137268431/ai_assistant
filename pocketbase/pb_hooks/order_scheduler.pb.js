@@ -6,7 +6,7 @@
  * 读取 config 表中 order_validity_minutes 配置（默认 30 分钟）
  */
 
-cronAdd("order_expiry_check", "* * * * *", () => {
+cronAdd("order_expiry_check", "*/5 * * * *", () => {
     const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta } = require(`${__hooks}/lib/order_events.js`)
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { getConfigValue } = require(`${__hooks}/lib/environment.js`)

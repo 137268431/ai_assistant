@@ -64,15 +64,6 @@ function getTradingEnabledForEnvironment(environment, backtestOptInKeys) {
     return isConfigEnabled("ibkr_trading_enabled", "true", runtimeEnvironment, backtestOptInKeys)
 }
 
-function getEffectiveWriteMode(environment, backtestOptInKeys) {
-    const { normalizeRuntimeEnvironment, getConfigValue, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const runtimeEnvironment = normalizeRuntimeEnvironment(environment || "", LIVE_ENVIRONMENT)
-    if (runtimeEnvironment === BACKTEST_ENVIRONMENT && !isBacktestOptedIn(backtestOptInKeys)) {
-        return "disabled"
-    }
-    return getConfigValue("ibkr_write_mode", "shadow", runtimeEnvironment)
-}
-
 module.exports = {
     getRuntimeEnvironments,
     isEnabledConfigValue,
@@ -82,5 +73,4 @@ module.exports = {
     getEnabledRuntimeEnvironments,
     getComputeEnabledForEnvironment,
     getTradingEnabledForEnvironment,
-    getEffectiveWriteMode,
 }

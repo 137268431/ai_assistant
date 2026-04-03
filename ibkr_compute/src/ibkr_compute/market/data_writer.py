@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import os
 import logging
+import threading
+import time
 from typing import Dict
 
 from .timeframe_utils import build_runtime_timestamps, classify_session, normalize_interval
@@ -13,6 +15,8 @@ from .timeframe_utils import build_runtime_timestamps, classify_session, normali
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
+BAR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_BAR_BATCH_SIZE", "40")))
+BAR_FLUSH_INTERVAL_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_INTERVAL", "2.0")))
 
 
 class DataWriter:
@@ -22,6 +26,17 @@ class DataWriter:
         self._write_count = 0
         self._skip_count = 0
         self._error_count = 0
+        self._batch_size = BAR_BATCH_SIZE
+        self._flush_interval = BAR_FLUSH_INTERVAL_SECONDS
+        self._pending_batch = []
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._flush_thread = threading.Thread(
+            target=self._flush_loop,
+            daemon=True,
+            name="ibkr-bar-writer",
+        )
+        self._flush_thread.start()
 
     def write_bar(self, bar_data: dict) -> bool:
         if not self._validate_bar(bar_data):
@@ -30,25 +45,63 @@ class DataWriter:
             return False
 
         payload = self._build_payload(bar_data)
+        batch_to_flush = None
+        with self._lock:
+            self._pending_batch.append(payload)
+            if len(self._pending_batch) >= self._batch_size:
+                batch_to_flush = self._drain_batch_locked()
+
+        if batch_to_flush:
+            return self._flush_batch(batch_to_flush)
+        return True
+
+    def _drain_batch_locked(self):
+        batch = self._pending_batch
+        self._pending_batch = []
+        return batch
+
+    def _flush_batch(self, batch) -> bool:
+        if not batch:
+            return True
+
         try:
-            result = self.pb_client.upsert_bars([payload])
+            result = self.pb_client.upsert_bars(batch)
             if not result.get("ok", False):
                 raise RuntimeError(result.get("error") or "bar_upsert_failed")
 
-            if int(result.get("created", 0) or 0) > 0 or int(result.get("updated", 0) or 0) > 0:
-                self._write_count += 1
-            else:
-                self._skip_count += 1
+            changed = int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
+            skipped = int(result.get("skipped", 0) or 0)
+            self._write_count += changed
+            self._skip_count += skipped if skipped > 0 else max(0, len(batch) - changed)
             return True
         except Exception as e:
             logger.error(
-                "Failed to write bar %s %s: %s",
-                bar_data.get("symbol"),
-                bar_data.get("us_time"),
+                "Failed to write %d bars batch: %s",
+                len(batch),
                 e,
             )
-            self._error_count += 1
+            self._error_count += len(batch)
             return False
+
+    def flush(self) -> bool:
+        batch = None
+        with self._lock:
+            if self._pending_batch:
+                batch = self._drain_batch_locked()
+        return self._flush_batch(batch)
+
+    def _flush_loop(self):
+        while not self._stop_event.wait(self._flush_interval):
+            try:
+                self.flush()
+            except Exception as exc:
+                logger.error("Bar writer flush loop error: %s", exc)
+
+    def close(self):
+        self._stop_event.set()
+        if self._flush_thread.is_alive():
+            self._flush_thread.join(timeout=5)
+        self.flush()
 
     def _build_payload(self, bar: Dict) -> Dict:
         base_extra = dict(bar.get("extra") or {})
@@ -113,9 +166,14 @@ class DataWriter:
         return True
 
     def status(self) -> dict:
+        with self._lock:
+            pending = len(self._pending_batch)
         return {
             "writes": self._write_count,
             "skips_dedup": self._skip_count,
             "errors": self._error_count,
             "collection": self.collection,
+            "pending_batch": pending,
+            "batch_size": self._batch_size,
+            "flush_interval_s": self._flush_interval,
         }

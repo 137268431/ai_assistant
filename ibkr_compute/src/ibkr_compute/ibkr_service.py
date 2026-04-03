@@ -11,6 +11,7 @@ import time
 import signal
 import logging
 import threading
+import queue
 from datetime import datetime, timezone, timedelta
 
 from ibkr_compute.integrations.pb_client import PBClient
@@ -104,8 +105,29 @@ class IBKRTradingService:
         self._starting = False
         self._state_lock = threading.Lock()
         self._signal_thread = None
+        self._subscription_thread = None
+        self._watchlist_backfill_thread = None
+        self._compute_thread = None
         self._auth_required_reason = ""
         self._symbol_meta = {}
+        self._watchlist_symbols = []
+        self._watchlist_records = {}
+        self._active_subscription_symbols = []
+        self._active_subscription_map = {}
+        self._active_target_date = ""
+        self._last_watchlist_refresh_at = 0.0
+        self._last_target_refresh_at = 0.0
+        self._last_backfill_at = 0.0
+        self._last_backfill_symbols = []
+        self._watchlist_backfill_cursor = 0
+        self._subscription_lock = threading.Lock()
+        self._compute_queue = queue.Queue()
+        self._signal_wakeup = threading.Event()
+        self._realtime_compute_runs = 0
+        self._last_realtime_compute_at = 0.0
+        self._last_realtime_compute_result = {}
+        self._current_market_date = ""
+        self._last_daily_reset_at = 0.0
 
     def _build_2fa_detail(self, reason: str) -> dict:
         return {
@@ -185,7 +207,12 @@ class IBKRTradingService:
                         last_result="复用现有认证会话。",
                     )
 
-            self._load_watchlist_and_subscribe()
+            self.conid_resolver.load_cache_from_pb()
+            self._reset_for_new_market_day(force=True)
+            self._refresh_watchlist_pool(force=True)
+            self.ws_client.start()
+            time.sleep(2)
+            self._refresh_target_subscriptions(force=True, reason="startup")
 
             self.order_tracker.start()
             self.order_lifecycle.start()
@@ -196,6 +223,24 @@ class IBKRTradingService:
                 target=self._signal_loop, daemon=True, name="signal-loop",
             )
             self._signal_thread.start()
+            self._subscription_thread = threading.Thread(
+                target=self._subscription_refresh_loop,
+                daemon=True,
+                name="target-refresh",
+            )
+            self._subscription_thread.start()
+            self._watchlist_backfill_thread = threading.Thread(
+                target=self._watchlist_backfill_loop,
+                daemon=True,
+                name="watchlist-backfill",
+            )
+            self._watchlist_backfill_thread.start()
+            self._compute_thread = threading.Thread(
+                target=self._compute_loop,
+                daemon=True,
+                name="close-compute",
+            )
+            self._compute_thread.start()
 
             self._schedule_retention()
 
@@ -216,48 +261,467 @@ class IBKRTradingService:
             time.sleep(8)
         return True
 
-    def _load_watchlist_and_subscribe(self):
-        logger.info("Loading watchlist and resolving conids...")
+    def _market_date(self) -> str:
+        return datetime.now(ET).strftime("%Y-%m-%d")
+
+    def _drain_compute_queue(self) -> int:
+        drained = 0
+        while True:
+            try:
+                self._compute_queue.get_nowait()
+                drained += 1
+            except queue.Empty:
+                break
+        return drained
+
+    def _remove_stale_target_rows(self, active_date: str) -> int:
+        safe_env = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        try:
+            rows = self.pb.get_all_records(
+                "ibkr_targets",
+                filter=(
+                    f'environment = "{safe_env}" && '
+                    '(status = "candidate" || status = "active")'
+                ),
+                max_pages=20,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load stale target rows: %s", exc)
+            return 0
+
+        removed = 0
+        removed_at = datetime.now(ET).isoformat()
+        for row in rows:
+            row_date = str(row.get("date", "") or "").strip()
+            if not row_date or row_date == active_date:
+                continue
+
+            record_id = str(row.get("id") or "")
+            if not record_id:
+                continue
+
+            payload = {"status": "removed"}
+            extra = row.get("extra")
+            if isinstance(extra, dict):
+                next_extra = dict(extra)
+                next_extra["removed_reason"] = "market_day_reset"
+                next_extra["removed_at"] = removed_at
+                next_extra["removed_market_date"] = active_date
+                payload["extra"] = next_extra
+
+            try:
+                self.pb.update_record("ibkr_targets", record_id, payload)
+                removed += 1
+            except Exception as exc:
+                logger.warning(
+                    "Failed to remove stale target row %s (%s %s): %s",
+                    record_id,
+                    row_date,
+                    str(row.get("symbol", "")).upper(),
+                    exc,
+                )
+
+        if removed > 0:
+            logger.info("Removed %d stale target rows before activating %s", removed, active_date)
+        return removed
+
+    def _reset_for_new_market_day(self, force: bool = False):
+        current_date = self._market_date()
+        previous_date = self._current_market_date
+        if not force and previous_date == current_date:
+            return False
+
+        logger.info(
+            "Market day reset: previous=%s current=%s force=%s",
+            previous_date or "n/a",
+            current_date,
+            force,
+        )
+        self._current_market_date = current_date
+        self._last_daily_reset_at = time.time()
+
+        self.signal_router.daily_reset()
+        self.signal_processor.daily_reset()
+        self.reverse_handler.daily_reset()
+        self.order_lifecycle.daily_reset()
+        self.timeframe_builder.reset()
+        self.bar_aggregator.reset()
+        self._signal_wakeup.clear()
+        drained = self._drain_compute_queue()
+        if drained > 0:
+            logger.info("Cleared %d queued realtime compute tasks during market day reset", drained)
 
         try:
-            watchlist = self.pb.get_all_records("watchlist")
-            symbols = []
-            symbol_meta = {}
-            for row in watchlist:
+            from ibkr_compute.api import server as compute_server
+
+            reset_result = compute_server.reset_daily_runtime_state([ENVIRONMENT], reason="market_day_reset")
+            logger.info("Compute daily reset result: %s", reset_result)
+        except Exception as exc:
+            logger.warning("Compute daily reset failed: %s", exc)
+
+        self._remove_stale_target_rows(current_date)
+        self._apply_live_subscriptions(current_date, {}, reason="market_day_reset")
+        self._active_target_date = ""
+        self._last_target_refresh_at = 0.0
+        return True
+
+    def _environment_watchlist_filter(self) -> str:
+        safe_env = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        return f'environment = "{safe_env}" || environment = "global" || environment = ""'
+
+    def _refresh_watchlist_pool(self, force: bool = False):
+        refresh_minutes = max(1, self.config.get_int("watchlist_interval_min", 5))
+        now = time.time()
+        if (
+            not force
+            and self._watchlist_symbols
+            and (now - self._last_watchlist_refresh_at) < (refresh_minutes * 60)
+        ):
+            return
+
+        logger.info("Refreshing watchlist pool for env=%s", ENVIRONMENT)
+        merged = {}
+        applied = {}
+        priority = {"": 0, "global": 1, str(ENVIRONMENT or "live").strip().lower(): 2}
+
+        try:
+            rows = self.pb.get_all_records(
+                "watchlist",
+                filter=self._environment_watchlist_filter(),
+                max_pages=20,
+            )
+            for row in rows:
                 symbol = str(row.get("symbol", "")).upper()
                 if not symbol:
                     continue
-                symbols.append(symbol)
-                symbol_meta[symbol] = {
-                    "exchange": str(row.get("exchange", "") or "").upper(),
-                    "industry": str(row.get("industry", "") or ""),
-                }
-            self._symbol_meta = symbol_meta
-        except Exception as e:
-            logger.error("Failed to load watchlist: %s", e)
-            symbols = []
-            self._symbol_meta = {}
-
-        if not symbols:
-            logger.warning("Empty watchlist, no symbols to subscribe")
+                row_env = str(row.get("environment", "") or "").strip().lower()
+                rank = priority.get(row_env, -1)
+                if symbol in applied and applied[symbol] > rank:
+                    continue
+                applied[symbol] = rank
+                merged[symbol] = row
+        except Exception as exc:
+            logger.error("Failed to refresh watchlist pool: %s", exc)
             return
 
-        self.conid_resolver.load_cache_from_pb()
+        symbol_meta = {}
+        for symbol, row in merged.items():
+            symbol_meta[symbol] = {
+                "exchange": str(row.get("exchange", "") or "").upper(),
+                "industry": str(row.get("industry", "") or ""),
+            }
+
+        self._watchlist_records = merged
+        self._watchlist_symbols = sorted(merged.keys())
+        self._symbol_meta = symbol_meta
+        self._last_watchlist_refresh_at = now
+        logger.info("Watchlist pool refreshed: %d symbols", len(self._watchlist_symbols))
+
+    def _get_target_subscription_limit(self) -> int:
+        return max(0, self.config.get_int("ibkr_target_subscription_limit", 60))
+
+    def _today_target_rows(self):
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        safe_env = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        rows = self.pb.get_all_records(
+            "ibkr_targets",
+            filter=(
+                f'date = "{today}" && '
+                f'environment = "{safe_env}" && '
+                '(status = "candidate" || status = "active")'
+            ),
+            sort="-score,-updated",
+            max_pages=10,
+        )
+        return today, rows
+
+    def _build_target_subscription_plan(self):
+        target_date, rows = self._today_target_rows()
+        limit = self._get_target_subscription_limit()
+        selected_symbols = []
+        selected_meta = {}
+        selected_rows = []
+        seen = set()
+
+        for row in rows:
+            symbol = str(row.get("symbol", "")).upper()
+            if not symbol or symbol in seen:
+                continue
+            if limit and len(selected_symbols) >= limit:
+                break
+            score = float(row.get("score", 0) or 0)
+            if score <= 0:
+                continue
+
+            watchlist_row = self._watchlist_records.get(symbol) or {}
+            selected_symbols.append(symbol)
+            selected_rows.append(row)
+            selected_meta[symbol] = {
+                "exchange": str(
+                    row.get("exchange")
+                    or watchlist_row.get("exchange")
+                    or ""
+                ).upper(),
+                "industry": str(
+                    watchlist_row.get("industry")
+                    or ""
+                ),
+            }
+            seen.add(symbol)
+
+        return target_date, selected_symbols, selected_meta, selected_rows
+
+    def _mark_target_statuses(self, target_date: str, selected_rows):
+        safe_env = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        try:
+            existing = self.pb.get_all_records(
+                "ibkr_targets",
+                filter=(
+                    f'date = "{target_date}" && '
+                    f'environment = "{safe_env}" && '
+                    '(status = "candidate" || status = "active")'
+                ),
+                max_pages=10,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load target rows for status sync: %s", exc)
+            return
+
+        selected_ids = {str(row.get("id") or "") for row in selected_rows}
+        for row in existing:
+            record_id = str(row.get("id") or "")
+            if not record_id:
+                continue
+            desired = "active" if record_id in selected_ids else "candidate"
+            current = str(row.get("status", "") or "").strip().lower()
+            if current == desired:
+                continue
+            try:
+                self.pb.update_record("ibkr_targets", record_id, {"status": desired})
+            except Exception as exc:
+                logger.warning("Failed to update target status %s -> %s: %s", record_id, desired, exc)
+
+    def _apply_live_subscriptions(self, target_date: str, conid_map: dict, reason: str = ""):
+        with self._subscription_lock:
+            previous_map = dict(self._active_subscription_map)
+            previous_conids = set(previous_map.values())
+            next_conids = set(conid_map.values())
+            removed_conids = previous_conids - next_conids
+            added_symbols = [
+                symbol for symbol, conid in conid_map.items()
+                if previous_map.get(symbol) != conid
+            ]
+
+            if removed_conids:
+                self.bar_aggregator.remove_conids(removed_conids)
+                for conid in sorted(removed_conids):
+                    self.ws_client.unsubscribe(conid)
+
+            reverse_map = {cid: sym for sym, cid in conid_map.items()}
+            self.bar_aggregator.set_symbol_map(reverse_map)
+
+            for symbol in added_symbols:
+                conid = conid_map.get(symbol)
+                if conid:
+                    self.ws_client.subscribe(conid)
+
+            self._active_subscription_map = dict(conid_map)
+            self._active_subscription_symbols = sorted(conid_map.keys())
+            self._active_target_date = target_date
+            self._last_target_refresh_at = time.time()
+
+        if added_symbols:
+            added_map = {symbol: conid_map[symbol] for symbol in added_symbols if symbol in conid_map}
+            logger.info(
+                "Backfilling newly subscribed target symbols: %s",
+                ",".join(sorted(added_map.keys())),
+            )
+            self.data_backfill.backfill_all(added_map, symbol_meta=self._symbol_meta, intervals=["5m"])
+            self.data_writer.flush()
+
+        logger.info(
+            "Applied target subscriptions (%s): active=%d added=%d removed=%d",
+            reason or "refresh",
+            len(conid_map),
+            len(added_symbols),
+            len(removed_conids),
+        )
+
+    def _refresh_target_subscriptions(self, force: bool = False, reason: str = "loop"):
+        self._reset_for_new_market_day(force=False)
+        refresh_seconds = max(15, self.config.get_int("ibkr_target_refresh_sec", 60))
+        now = time.time()
+        if not force and (now - self._last_target_refresh_at) < refresh_seconds:
+            return
+
+        self._refresh_watchlist_pool(force=force)
+        try:
+            target_date, symbols, target_meta, selected_rows = self._build_target_subscription_plan()
+        except Exception as exc:
+            logger.error("Failed to build target subscription plan: %s", exc)
+            return
+
+        if not symbols:
+            logger.info("No target symbols selected for %s (%s)", target_date, reason)
+            self._mark_target_statuses(target_date, [])
+            self._apply_live_subscriptions(target_date, {}, reason=reason)
+            return
+
+        for symbol, meta in target_meta.items():
+            base_meta = self._symbol_meta.get(symbol, {})
+            self._symbol_meta[symbol] = {
+                "exchange": str(meta.get("exchange") or base_meta.get("exchange") or "").upper(),
+                "industry": str(meta.get("industry") or base_meta.get("industry") or ""),
+            }
+
         conid_map = self.conid_resolver.resolve_bulk(symbols)
+        if not conid_map:
+            logger.warning("No conids resolved for target plan (%s)", reason)
+            return
 
-        reverse_map = {cid: sym for sym, cid in conid_map.items()}
-        self.bar_aggregator.set_symbol_map(reverse_map)
+        self._mark_target_statuses(target_date, selected_rows)
+        self._apply_live_subscriptions(target_date, conid_map, reason=reason)
 
-        logger.info("Resolved %d/%d conids, starting live subscriptions...", len(conid_map), len(symbols))
-        self.ws_client.start()
-        time.sleep(2)
+    def _subscription_refresh_loop(self):
+        logger.info("Target subscription loop started")
+        while self._running:
+            try:
+                self.config.refresh()
+                self._reset_for_new_market_day(force=False)
+                if self.session_keeper.is_authenticated:
+                    self._refresh_target_subscriptions(reason="poll")
+                else:
+                    logger.info("Skip target refresh while session is unauthenticated")
+            except Exception as exc:
+                logger.error("Target subscription loop error: %s", exc)
 
-        for symbol, conid in conid_map.items():
-            self.ws_client.subscribe(conid)
+            sleep_seconds = max(15, self.config.get_int("ibkr_target_refresh_sec", 60))
+            for _ in range(sleep_seconds):
+                if not self._running:
+                    break
+                time.sleep(1)
 
-        logger.info("Subscribed to %d symbols via WebSocket", len(conid_map))
-        logger.info("Starting historical backfill after subscriptions...")
-        self.data_backfill.backfill_all(conid_map, symbol_meta=self._symbol_meta)
+    def _watchlist_backfill_candidates(self):
+        with self._subscription_lock:
+            active_symbols = set(self._active_subscription_symbols)
+
+        pool = [symbol for symbol in self._watchlist_symbols if symbol not in active_symbols]
+        if not pool:
+            return []
+
+        batch_size = max(1, self.config.get_int("ibkr_watchlist_backfill_batch_size", 12))
+        start = self._watchlist_backfill_cursor % len(pool)
+        ordered = pool[start:] + pool[:start]
+        self._watchlist_backfill_cursor = (start + batch_size) % max(len(pool), 1)
+        return ordered[:batch_size]
+
+    def _watchlist_backfill_loop(self):
+        logger.info("Watchlist backfill loop started")
+        while self._running:
+            try:
+                self.config.refresh()
+                self._run_watchlist_backfill_cycle()
+            except Exception as exc:
+                logger.error("Watchlist backfill loop error: %s", exc)
+
+            sleep_seconds = max(300, self.config.get_int("ibkr_watchlist_backfill_interval_min", 30) * 60)
+            for _ in range(sleep_seconds):
+                if not self._running:
+                    break
+                time.sleep(1)
+
+    def _run_watchlist_backfill_cycle(self):
+        self._refresh_watchlist_pool()
+        candidates = self._watchlist_backfill_candidates()
+        if not candidates:
+            logger.info("Watchlist backfill skipped: no non-target symbols in pool")
+            return
+
+        stale_minutes = max(5, self.config.get_int("ibkr_watchlist_backfill_stale_min", 20))
+        now_ms = int(time.time() * 1000)
+        stale_ms = stale_minutes * 60 * 1000
+        eligible = []
+        for symbol in candidates:
+            latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+            if latest_ms <= 0 or (now_ms - latest_ms) >= stale_ms:
+                eligible.append(symbol)
+
+        if not eligible:
+            logger.info("Watchlist backfill skipped: batch is fresh enough")
+            return
+
+        conid_map = self.conid_resolver.resolve_bulk(eligible)
+        if not conid_map:
+            logger.warning("Watchlist backfill skipped: no conids resolved")
+            return
+
+        symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
+        logger.info("Running incremental watchlist backfill for %d symbols", len(conid_map))
+        self.data_backfill.backfill_all(conid_map, symbol_meta=symbol_meta, intervals=["5m"])
+        self.data_writer.flush()
+        self._last_backfill_at = time.time()
+        self._last_backfill_symbols = sorted(conid_map.keys())
+
+    def _trigger_realtime_compute(self, source: str = "bar_close") -> dict:
+        try:
+            from ibkr_compute.api import server as compute_server
+
+            with compute_server.app.test_request_context(
+                "/compute",
+                method="POST",
+                json={"source": source, "environments": [ENVIRONMENT]},
+            ):
+                response = compute_server.compute()
+            if hasattr(response, "get_json"):
+                return response.get_json() or {}
+        except Exception as exc:
+            logger.error("Realtime compute trigger failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": "empty_response"}
+
+    def _compute_loop(self):
+        logger.info("Realtime close-driven compute loop started")
+        while self._running or not self._compute_queue.empty():
+            try:
+                first_item = self._compute_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+
+            if first_item is None:
+                continue
+
+            close_events = 1
+            bar_count = int(first_item or 0)
+            drain_until = time.time() + 0.25
+            while time.time() < drain_until:
+                try:
+                    next_item = self._compute_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if next_item is None:
+                    continue
+                close_events += 1
+                bar_count += int(next_item or 0)
+
+            try:
+                self.data_writer.flush()
+                result = self._trigger_realtime_compute()
+                self._realtime_compute_runs += 1
+                self._last_realtime_compute_at = time.time()
+                self._last_realtime_compute_result = result or {}
+                logger.info(
+                    "Realtime compute finished: events=%d bars=%d processed=%s signals=%s errors=%s elapsed_s=%s",
+                    close_events,
+                    bar_count,
+                    result.get("processed", 0),
+                    result.get("signals", 0),
+                    result.get("errors", 0),
+                    result.get("elapsed_s", 0),
+                )
+                if int(result.get("signals", 0) or 0) > 0:
+                    self._signal_wakeup.set()
+            except Exception as exc:
+                logger.error("Realtime compute loop error: %s", exc)
 
     def _on_bar_close(self, bar_data: dict):
         symbol = str(bar_data.get("symbol", "")).upper()
@@ -271,10 +735,15 @@ class IBKRTradingService:
         if not self.data_writer.write_bar(payload):
             return
 
+        queued_bars = 1
         for derived_bar in self.timeframe_builder.consume(payload):
             derived_bar["environment"] = ENVIRONMENT
             derived_bar["exchange"] = str(meta.get("exchange") or derived_bar.get("exchange") or "").upper()
             self.data_writer.write_bar(derived_bar)
+            queued_bars += 1
+
+        if self._running:
+            self._compute_queue.put(queued_bars)
 
     def _signal_loop(self):
         logger.info("Signal processing loop started (interval=%ds)", SIGNAL_POLL_INTERVAL)
@@ -288,11 +757,8 @@ class IBKRTradingService:
                     logger.info("Skip signal/reverse processing while session is unauthenticated")
             except Exception as e:
                 logger.error("Signal loop error: %s", e)
-
-            for _ in range(SIGNAL_POLL_INTERVAL):
-                if not self._running:
-                    break
-                time.sleep(1)
+            self._signal_wakeup.wait(timeout=SIGNAL_POLL_INTERVAL)
+            self._signal_wakeup.clear()
 
     def _process_signals(self):
         if not self.session_keeper.is_authenticated:
@@ -387,9 +853,18 @@ class IBKRTradingService:
         self.session_keeper.stop()
         self.order_tracker.stop()
         self.order_lifecycle.stop()
+        self.data_writer.close()
+        self._signal_wakeup.set()
+        self._compute_queue.put(None)
 
         if self._signal_thread:
             self._signal_thread.join(timeout=10)
+        if self._subscription_thread:
+            self._subscription_thread.join(timeout=10)
+        if self._watchlist_backfill_thread:
+            self._watchlist_backfill_thread.join(timeout=10)
+        if self._compute_thread:
+            self._compute_thread.join(timeout=10)
 
         logger.info("IBKR Trading Service stopped")
 
@@ -409,6 +884,39 @@ class IBKRTradingService:
             "order_lifecycle": self.order_lifecycle.status(),
             "signal_router": self.signal_router.status(),
             "signal_processor": self.signal_processor.status(),
+            "realtime_compute": {
+                "runs": self._realtime_compute_runs,
+                "queue_size": self._compute_queue.qsize(),
+                "last_run": (
+                    datetime.fromtimestamp(self._last_realtime_compute_at, ET).isoformat()
+                    if self._last_realtime_compute_at else None
+                ),
+                "last_result": self._last_realtime_compute_result,
+            },
+            "market_universe": {
+                "market_date": self._current_market_date,
+                "last_daily_reset": (
+                    datetime.fromtimestamp(self._last_daily_reset_at, ET).isoformat()
+                    if self._last_daily_reset_at else None
+                ),
+                "watchlist_pool_count": len(self._watchlist_symbols),
+                "active_target_date": self._active_target_date,
+                "active_target_count": len(self._active_subscription_symbols),
+                "active_target_symbols": list(self._active_subscription_symbols),
+                "last_watchlist_refresh": (
+                    datetime.fromtimestamp(self._last_watchlist_refresh_at, ET).isoformat()
+                    if self._last_watchlist_refresh_at else None
+                ),
+                "last_target_refresh": (
+                    datetime.fromtimestamp(self._last_target_refresh_at, ET).isoformat()
+                    if self._last_target_refresh_at else None
+                ),
+                "last_watchlist_backfill": (
+                    datetime.fromtimestamp(self._last_backfill_at, ET).isoformat()
+                    if self._last_backfill_at else None
+                ),
+                "last_watchlist_backfill_symbols": list(self._last_backfill_symbols),
+            },
         }
 
     @property

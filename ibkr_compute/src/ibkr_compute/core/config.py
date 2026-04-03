@@ -10,6 +10,11 @@ class Config:
         "ibkr_compute_enabled": "true",
         "ibkr_bar_publish_enabled": "true",
         "ibkr_target_filter_on": "false",
+        "ibkr_target_subscription_limit": "60",
+        "ibkr_target_refresh_sec": "60",
+        "ibkr_watchlist_backfill_interval_min": "30",
+        "ibkr_watchlist_backfill_batch_size": "12",
+        "ibkr_watchlist_backfill_stale_min": "20",
         "ibkr_scan_schedule": "7:00-10:00",
         "ibkr_publish_batch_size": "10",
         "ibkr_signal_source": "both",
@@ -52,6 +57,12 @@ class Config:
     def get_int(self, key: str, default: int = 0) -> int:
         try:
             return int(self.get(key, str(default)))
+        except (ValueError, TypeError):
+            return default
+
+    def get_float(self, key: str, default: float = 0.0) -> float:
+        try:
+            return float(self.get(key, str(default)))
         except (ValueError, TypeError):
             return default
 

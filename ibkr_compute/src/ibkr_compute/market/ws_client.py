@@ -35,6 +35,7 @@ class IBKRWebSocketClient:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._connected = False
+        self._ready = False
         self._subscribed_conids: Set[int] = set()
         self._pending_subscriptions: Set[int] = set()
         self._reconnect_delay = RECONNECT_DELAY
@@ -63,7 +64,7 @@ class IBKRWebSocketClient:
 
     def subscribe(self, conid: int):
         self._pending_subscriptions.add(conid)
-        if self._connected and self._ws:
+        if self._connected and self._ready and self._ws:
             self._send_subscription(conid)
 
     def unsubscribe(self, conid: int):
@@ -117,11 +118,9 @@ class IBKRWebSocketClient:
 
     def _on_open(self, ws):
         self._connected = True
+        self._ready = False
         self._reconnect_delay = RECONNECT_DELAY
         logger.info("WebSocket connected")
-
-        for conid in self._pending_subscriptions:
-            self._send_subscription(conid)
 
     def _on_message(self, ws, message):
         self._last_message_time = time.time()
@@ -136,7 +135,28 @@ class IBKRWebSocketClient:
             return
 
         if isinstance(data, dict):
+            topic = str(data.get("topic") or "").strip()
+            if topic == "sts":
+                args = data.get("args") or {}
+                if args.get("authenticated") and args.get("established"):
+                    if not self._ready:
+                        self._ready = True
+                        logger.info(
+                            "WebSocket session ready, flushing %d market-data subscriptions",
+                            len(self._pending_subscriptions),
+                        )
+                    for conid in list(self._pending_subscriptions):
+                        self._send_subscription(conid)
+                return
+
             conid = data.get("conid") or data.get("conidEx")
+            if not conid and topic.startswith("smd+"):
+                _, _, maybe_conid = topic.partition("+")
+                try:
+                    conid = int((maybe_conid or "").split("+", 1)[0])
+                    data["conid"] = conid
+                except (TypeError, ValueError):
+                    conid = None
             if conid and self.on_tick:
                 try:
                     self.on_tick(data)
@@ -156,9 +176,11 @@ class IBKRWebSocketClient:
     def _on_error(self, ws, error):
         logger.warning("WebSocket error: %s", error)
         self._connected = False
+        self._ready = False
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._connected = False
+        self._ready = False
         self._subscribed_conids.clear()
         logger.info("WebSocket closed (code=%s, msg=%s)", close_status_code, close_msg)
 
@@ -170,6 +192,7 @@ class IBKRWebSocketClient:
         return {
             "connected": self._connected,
             "running": self._running,
+            "ready": self._ready,
             "subscribed_conids": sorted(self._subscribed_conids),
             "pending_conids": sorted(self._pending_subscriptions),
             "message_count": self._message_count,

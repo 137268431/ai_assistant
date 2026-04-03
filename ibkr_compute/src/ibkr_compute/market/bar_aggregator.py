@@ -85,6 +85,16 @@ def get_bar_interval_start(et_now: datetime) -> datetime:
     return et_now.replace(minute=minute_aligned, second=0, microsecond=0)
 
 
+def _tick_time_to_et(tick_data: dict) -> datetime:
+    updated_ms = tick_data.get("_updated")
+    if updated_ms is not None:
+        try:
+            return datetime.fromtimestamp(int(updated_ms) / 1000, ET)
+        except (TypeError, ValueError, OSError):
+            pass
+    return datetime.now(ET)
+
+
 class BarAggregator:
     def __init__(self, conid_to_symbol: Dict[int, str] = None,
                  on_bar_close: Callable = None):
@@ -97,6 +107,16 @@ class BarAggregator:
 
     def set_symbol_map(self, conid_to_symbol: Dict[int, str]):
         self.conid_to_symbol = conid_to_symbol
+
+    def remove_conids(self, conids):
+        for conid in list(conids or []):
+            try:
+                self._current_bars.pop(int(conid), None)
+            except (TypeError, ValueError):
+                continue
+
+    def reset(self):
+        self._current_bars.clear()
 
     def on_tick(self, tick_data: dict):
         conid = tick_data.get("conid") or tick_data.get("conidEx")
@@ -116,7 +136,7 @@ class BarAggregator:
 
         self._tick_count += 1
 
-        et_now = datetime.now(ET)
+        et_now = _tick_time_to_et(tick_data)
         interval_start = get_bar_interval_start(et_now)
 
         current = self._current_bars.get(conid)
@@ -173,16 +193,25 @@ class BarAggregator:
 
     def status(self) -> dict:
         active_bars = {}
+        stale_symbols = 0
+        now_ts = time.time()
         for conid, bar in self._current_bars.items():
+            age_seconds = max(0.0, now_ts - float(bar.last_update or 0.0))
+            if bar.last_update and age_seconds > (BAR_INTERVAL_SECONDS * 2):
+                stale_symbols += 1
+                continue
             active_bars[bar.symbol] = {
                 "interval_start": bar.interval_start.strftime("%H:%M"),
                 "open": bar.open,
                 "close": bar.close,
                 "tick_count": bar.tick_count,
+                "last_update_age_s": round(age_seconds, 1),
             }
 
         return {
             "active_symbols": len(self._current_bars),
+            "active_symbols_visible": len(active_bars),
+            "stale_symbols": stale_symbols,
             "total_bars_closed": self._bar_count,
             "total_ticks": self._tick_count,
             "active_bars": active_bars,

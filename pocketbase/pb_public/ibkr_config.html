@@ -420,8 +420,8 @@ const LEGACY_KEY_REDIRECTS = {
   health_check_email: 'health_check_notify_enabled'
 }
 
-function meta(displayName, groupName, sortOrder) {
-  return { display_name: displayName, group_name: groupName, sort_order: sortOrder }
+function meta(displayName, groupName, sortOrder, defaultValue = '') {
+  return { display_name: displayName, group_name: groupName, sort_order: sortOrder, default_value: defaultValue }
 }
 
 const CONFIG_META = {
@@ -449,7 +449,12 @@ const CONFIG_META = {
   sync_end_time: meta('同步窗口结束', '任务调度', 410),
   signal_interval_min: meta('信号拉取间隔', '任务调度', 420),
   config_interval_min: meta('配置刷新间隔', '任务调度', 430),
-  watchlist_interval_min: meta('标的同步间隔', '任务调度', 440),
+  watchlist_interval_min: meta('标的同步间隔', '任务调度', 440, '5'),
+  ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '任务调度', 441, '60'),
+  ibkr_target_subscription_limit: meta('目标订阅上限', '任务调度', 442, '60'),
+  ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '任务调度', 443, '30'),
+  ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '任务调度', 444, '12'),
+  ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '任务调度', 445, '20'),
   signal_validity_minutes: meta('信号有效期', '任务调度', 450),
   order_validity_minutes: meta('订单有效期', '任务调度', 460),
   pb_scheduler_enabled: meta('PB 前端定时刷新', '任务调度', 470),
@@ -474,7 +479,6 @@ const CONFIG_META = {
   log_level: meta('日志级别', '运行模式', 800),
   deployment_mode: meta('部署模式', '运行模式', 810),
 
-  ibkr_write_mode: meta('IBKR 写入模式', 'PB / IBKR 服务', 900),
   ibkr_compute_public_url: meta('IBKR Compute 地址', 'PB / IBKR 服务', 905),
   ibkr_compute_enabled: meta('IBKR Compute 服务开关', 'PB / IBKR 服务', 910),
   ibkr_bar_publish_enabled: meta('IBKR K线发布开关', 'PB / IBKR 服务', 920),
@@ -509,11 +513,6 @@ const SELECT_CONFIGS = {
     { value: 'email', label: 'email (仅邮件)' },
     { value: 'all', label: 'all (飞书 + 邮件)' }
   ],
-  ibkr_write_mode: [
-    { value: 'shadow', label: 'shadow (仅写新表)' },
-    { value: 'primary', label: 'primary (双写新旧表)' },
-    { value: 'settled', label: 'settled (仅写旧表)' }
-  ],
   log_level: [
     { value: 'DEBUG', label: 'DEBUG (详细)' },
     { value: 'INFO', label: 'INFO (重要)' },
@@ -544,6 +543,20 @@ function buildConfigView(records) {
     if (!record?.key) return
     if (!byKey.has(record.key)) byKey.set(record.key, [])
     byKey.get(record.key).push(record)
+  })
+
+  Object.entries(CONFIG_META).forEach(([key, metaInfo]) => {
+    if (byKey.has(key)) return
+    byKey.set(key, [{
+      key,
+      id: '',
+      environment: configEnvironment === 'global' ? 'global' : '',
+      value: metaInfo.default_value ?? '',
+      default_value: metaInfo.default_value ?? '',
+      display_name: metaInfo.display_name || key,
+      group_name: metaInfo.group_name || '其他 / 未归类',
+      sort_order: metaInfo.sort_order ?? 9999
+    }])
   })
 
   return Array.from(byKey.entries()).map(([key, keyRecords]) => {

@@ -6,7 +6,7 @@
  * 读取 config 表中 signal_validity_minutes 配置
  */
 
-cronAdd("signal_expiry_check", "* * * * *", () => {
+cronAdd("signal_expiry_check", "*/5 * * * *", () => {
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
     const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
     const { getRuntimeEnvironments, isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)

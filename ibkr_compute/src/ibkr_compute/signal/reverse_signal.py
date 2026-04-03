@@ -32,14 +32,11 @@ class ReverseSignalHandler:
 
     def check_and_process(self):
         try:
-            et_now = datetime.now(ET)
-            today = et_now.strftime("%Y-%m-%d")
-
             records = self.pb_client.get_records(
                 "reverse_signals",
-                filter=f'status = "pending" && date = "{today}"',
-                sort="-created",
-                per_page=20,
+                filter=f'status = "pending" && environment = "{self.environment}"',
+                sort="-priority,-bar_time_ms",
+                per_page=50,
             )
 
             for r in records:
@@ -47,7 +44,7 @@ class ReverseSignalHandler:
                 if rid in self._processed_ids:
                     continue
 
-                action = r.get("action", "").lower()
+                action = str(r.get("action_type", "") or "").lower()
                 if action not in REVERSE_ACTIONS:
                     continue
 
@@ -55,10 +52,21 @@ class ReverseSignalHandler:
                 self._processed_ids.add(rid)
 
                 try:
-                    self.pb_client.update_record("reverse_signals", rid, {
-                        "status": "processed" if result else "failed",
-                        "processed_time": et_now.strftime("%Y-%m-%d %H:%M:%S"),
-                    })
+                    ack_status = "confirmed" if result else "cancelled"
+                    ack_reason = (
+                        f"ibkr_compute 自动执行 {action} 成功"
+                        if result else
+                        f"ibkr_compute 自动执行 {action} 失败"
+                    )
+                    self.pb_client.ack_ibkr_reverse_signal(
+                        rid,
+                        status=ack_status,
+                        reason=ack_reason,
+                        detail={
+                            "executed_action": action,
+                            "result_status": "ok" if result else "failed",
+                        },
+                    )
                 except Exception as e:
                     logger.debug("Failed to update reverse signal status: %s", e)
 

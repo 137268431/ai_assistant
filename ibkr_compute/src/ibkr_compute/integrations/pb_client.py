@@ -50,6 +50,15 @@ class PBClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_first_record(
+        self,
+        collection: str,
+        filter: str = None,
+        sort: str = None,
+    ) -> Optional[Dict[str, Any]]:
+        rows = self.get_records(collection, filter=filter, sort=sort, per_page=1, page=1)
+        return rows[0] if rows else None
+
     def call_custom_api(
         self,
         endpoint: str,
@@ -69,8 +78,14 @@ class PBClient:
     def upsert_indicator(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/indicator", method="POST", data=data)
 
+    def upsert_indicators(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return self.call_custom_api("ibkr/indicators", method="POST", data={"items": items}, timeout=30)
+
     def upsert_signal(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/signal", method="POST", data=data)
+
+    def upsert_signals(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return self.call_custom_api("ibkr/signals", method="POST", data={"items": items}, timeout=30)
 
     def upsert_bars(self, bars: List[Dict[str, Any]]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/bars", method="POST", data={"bars": bars})
@@ -80,6 +95,44 @@ class PBClient:
 
     def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/orders/upsert", method="POST", data=data)
+
+    def get_state(
+        self,
+        state_key: str,
+        environment: str,
+        date: str = "global",
+    ) -> Optional[Dict[str, Any]]:
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        safe_state_key = str(state_key or "").replace('"', '\\"')
+        safe_date = str(date or "global").replace('"', '\\"')
+        safe_environment = runtime_environment.replace('"', '\\"')
+        return self.get_first_record(
+            "ibkr_state",
+            filter=(
+                f'state_key = "{safe_state_key}" && '
+                f'date = "{safe_date}" && '
+                f'environment = "{safe_environment}"'
+            ),
+        )
+
+    def upsert_state(
+        self,
+        state_key: str,
+        environment: str,
+        data: Dict[str, Any],
+        date: str = "global",
+    ) -> Dict[str, Any]:
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        payload = {
+            "state_key": str(state_key or ""),
+            "date": str(date or "global"),
+            "environment": runtime_environment,
+            "data": data or {},
+        }
+        existing = self.get_state(payload["state_key"], runtime_environment, payload["date"])
+        if existing and existing.get("id"):
+            return self.update_record("ibkr_state", existing["id"], payload)
+        return self.create_record("ibkr_state", payload)
 
     def get_runtime_config(self) -> List[Dict[str, Any]]:
         payload = self.call_custom_api("ibkr/runtime/config", method="GET")
@@ -168,3 +221,19 @@ class PBClient:
             "state_patch": state_patch or {},
         }
         return self.call_custom_api("ibkr/2fa/result", method="POST", data=payload, timeout=8)
+
+    def ack_ibkr_reverse_signal(
+        self,
+        reverse_id: str,
+        status: str = "confirmed",
+        reason: str = "",
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = {
+            "reverse_id": reverse_id,
+            "status": status,
+            "reason": reason,
+        }
+        if detail:
+            payload.update(detail)
+        return self.call_custom_api("ibkr/reverse/ack", method="POST", data=payload, timeout=8)

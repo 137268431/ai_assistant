@@ -13,6 +13,7 @@ IBKR Compute — 指标计算 HTTP 服务
 import os
 import time
 import traceback
+import threading
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -31,6 +32,7 @@ from ibkr_compute.market.timeframe_utils import (
     interval_to_chart_tf,
     interval_to_ms,
     ms_to_et,
+    normalize_interval,
 )
 from ibkr_compute.workflows.daily_scanner import DailyScanner
 
@@ -50,9 +52,13 @@ last_interval_fetch_ms = {}
 compute_count = 0
 error_count = 0
 rollup_bootstrap_checked = set()
+engine_bootstrap_checked = set()
+persistent_cursor_envs_loaded = set()
 symbol_metadata_cache = {}
 daily_close_cache = {}
+daily_close_cache_date = ""
 metadata_cache_updated_at = 0.0
+compute_lock = threading.RLock()
 
 INTERVALS = list(COMPUTE_INTERVALS)
 SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
@@ -77,6 +83,15 @@ LEGACY_COLLECTION_MAP = {
 }
 LEGACY_EMPTY_FALLBACKS = {"ibkr_positions", "ibkr_session"}
 ROLLUP_BATCH_SIZE = 100
+INDICATOR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_INDICATOR_BATCH_SIZE", "60")))
+SIGNAL_BATCH_SIZE = max(1, int(os.environ.get("IBKR_SIGNAL_BATCH_SIZE", "30")))
+COMPUTE_CURSOR_STATE_KEY = "compute_cursors"
+COMPUTE_CURSOR_STATE_DATE = "global"
+
+
+def current_market_date(now: datetime | None = None) -> str:
+    et_now = now.astimezone(timezone(timedelta(hours=-4))) if now else datetime.now(timezone(timedelta(hours=-4)))
+    return et_now.strftime("%Y-%m-%d")
 
 
 def build_bar_environment_filter(environment: str, include_legacy_empty: bool = False) -> str:
@@ -99,6 +114,179 @@ def get_or_create_engine(environment: str, symbol: str, interval: str) -> Indica
         engines[key] = IndicatorEngine(symbol, interval)
         signal_gens[key] = SignalGenerator(symbol, interval)
     return engines[key]
+
+
+def build_compute_cursor_key(symbol: str, interval: str) -> str:
+    return f"{str(symbol or '').upper()}|{normalize_interval(interval)}"
+
+
+def parse_compute_cursor_key(raw_key: str):
+    text = str(raw_key or "").strip()
+    if "|" not in text:
+        return "", ""
+    symbol, interval = text.split("|", 1)
+    return str(symbol or "").upper(), normalize_interval(interval)
+
+
+def apply_cursor_map(environment: str, cursor_map: dict) -> int:
+    applied = 0
+    for raw_key, raw_value in (cursor_map or {}).items():
+        symbol, interval = parse_compute_cursor_key(raw_key)
+        bar_ms = int(raw_value or 0)
+        if not symbol or not interval or bar_ms <= 0:
+            continue
+        key = (environment, symbol, interval)
+        last_processed_ms[key] = max(int(last_processed_ms.get(key, 0) or 0), bar_ms)
+        interval_key = (environment, interval)
+        last_interval_fetch_ms[interval_key] = max(int(last_interval_fetch_ms.get(interval_key, 0) or 0), bar_ms)
+        applied += 1
+    return applied
+
+
+def collect_environment_cursor_map(environment: str) -> dict:
+    env_map = {}
+    for (env, symbol, interval), bar_ms in last_processed_ms.items():
+        if env != environment:
+            continue
+        bar_ms = int(bar_ms or 0)
+        if bar_ms <= 0:
+            continue
+        env_map[build_compute_cursor_key(symbol, interval)] = bar_ms
+    return env_map
+
+
+def persist_compute_cursors(environment: str):
+    payload = {
+        "version": 1,
+        "cursor_count": 0,
+        "updated_at_ms": int(time.time() * 1000),
+        **build_runtime_timestamps(),
+        "cursors": {},
+    }
+    payload["cursors"] = collect_environment_cursor_map(environment)
+    payload["cursor_count"] = len(payload["cursors"])
+    try:
+        pb.upsert_state(
+            COMPUTE_CURSOR_STATE_KEY,
+            environment,
+            payload,
+            date=COMPUTE_CURSOR_STATE_DATE,
+        )
+    except Exception:
+        traceback.print_exc()
+
+
+def seed_compute_cursors_from_indicators(environment: str) -> int:
+    rows = pb.get_all_records(
+        "ibkr_indicators",
+        filter=f'environment = "{environment}"',
+        sort="-bar_time_ms",
+        max_pages=60,
+    )
+    seed_map = {}
+    for row in rows:
+        symbol = str(row.get("symbol", "")).upper()
+        interval = normalize_interval(row.get("interval", ""))
+        bar_ms = int(row.get("bar_time_ms", 0) or 0)
+        if not symbol or not interval or bar_ms <= 0:
+            continue
+        cursor_key = build_compute_cursor_key(symbol, interval)
+        if cursor_key not in seed_map:
+            seed_map[cursor_key] = bar_ms
+
+    applied = apply_cursor_map(environment, seed_map)
+    if applied:
+        persist_compute_cursors(environment)
+    return applied
+
+
+def load_persisted_compute_cursors(environment: str):
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    if runtime_environment in persistent_cursor_envs_loaded:
+        return
+
+    applied = 0
+    try:
+        state = pb.get_state(
+            COMPUTE_CURSOR_STATE_KEY,
+            runtime_environment,
+            date=COMPUTE_CURSOR_STATE_DATE,
+        )
+        payload = state.get("data") if isinstance(state, dict) else {}
+        applied = apply_cursor_map(runtime_environment, payload.get("cursors") if isinstance(payload, dict) else {})
+    except Exception:
+        traceback.print_exc()
+
+    if applied == 0:
+        applied = seed_compute_cursors_from_indicators(runtime_environment)
+
+    persistent_cursor_envs_loaded.add(runtime_environment)
+    return applied
+
+
+def bootstrap_engine_state(environment: str, symbol: str, interval: str, before_bar_time_ms: int, inclusive: bool = True):
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_interval = normalize_interval(interval)
+    key = (runtime_environment, symbol, normalized_interval)
+    engine = get_or_create_engine(runtime_environment, symbol, normalized_interval)
+    signal_generator = signal_gens.get(key)
+    target_ms = int(before_bar_time_ms or 0)
+
+    if key in engine_bootstrap_checked and (target_ms <= 0 or engine.last_bar_time_ms >= target_ms):
+        return 0
+
+    lookback = int(BOOTSTRAP_LOOKBACK_BARS.get(normalized_interval, 192) or 192)
+    max_pages = max(1, (lookback + 199) // 200 + 1)
+    comparison = "<=" if inclusive else "<"
+    filter_parts = [
+        f'symbol = "{symbol}"',
+        f'interval = "{normalized_interval}"',
+        build_bar_environment_filter(runtime_environment, include_legacy_empty=True),
+    ]
+    if target_ms > 0:
+        filter_parts.append(f"bar_time_ms {comparison} {target_ms}")
+
+    rows = pb.get_all_records(
+        "ibkr_bars",
+        filter=" && ".join(filter_parts),
+        sort="-bar_time_ms",
+        max_pages=max_pages,
+    )
+    if lookback > 0:
+        rows = rows[:lookback]
+    rows = list(reversed(rows))
+
+    engine.reset()
+    if signal_generator:
+        signal_generator.daily_reset()
+
+    processed = 0
+    for row in rows:
+        normalized_row = normalize_bar_environment(row, runtime_environment)
+        snapshot = engine.update({
+            "open": float(normalized_row.get("open", 0) or 0),
+            "high": float(normalized_row.get("high", 0) or 0),
+            "low": float(normalized_row.get("low", 0) or 0),
+            "close": float(normalized_row.get("close", 0) or 0),
+            "volume": float(normalized_row.get("volume", 0) or 0),
+            "bar_time_ms": int(normalized_row.get("bar_time_ms", 0) or 0),
+            "us_time": normalized_row.get("us_time", ""),
+            "cn_time": normalized_row.get("cn_time", ""),
+            "session_type": normalized_row.get("session_type", "regular"),
+        })
+        if normalized_interval == "5m" and signal_generator and snapshot and engine.is_ready():
+            signal_generator.update(snapshot)
+        processed += 1
+
+    if engine.last_bar_time_ms > 0:
+        last_processed_ms[key] = int(engine.last_bar_time_ms)
+        interval_key = (runtime_environment, normalized_interval)
+        last_interval_fetch_ms[interval_key] = max(
+            int(last_interval_fetch_ms.get(interval_key, 0) or 0),
+            int(engine.last_bar_time_ms),
+        )
+    engine_bootstrap_checked.add(key)
+    return processed
 
 
 
@@ -129,8 +317,14 @@ def refresh_symbol_metadata(force: bool = False):
 
 
 def refresh_daily_close_cache(environments, force: bool = False):
-    global daily_close_cache
-    if daily_close_cache and not force and set(environments).issubset(set(daily_close_cache.keys())):
+    global daily_close_cache, daily_close_cache_date
+    market_date = current_market_date()
+    if (
+        daily_close_cache
+        and not force
+        and daily_close_cache_date == market_date
+        and set(environments).issubset(set(daily_close_cache.keys()))
+    ):
         return daily_close_cache
 
     cache = {}
@@ -162,7 +356,36 @@ def refresh_daily_close_cache(environments, force: bool = False):
         cache[environment] = env_cache
 
     daily_close_cache = cache
+    daily_close_cache_date = market_date
     return daily_close_cache
+
+
+def reset_daily_runtime_state(environments=None, reason: str = "new_day") -> dict:
+    runtime_environments = []
+    for environment in (environments or DEFAULT_COMPUTE_ENVIRONMENTS):
+        normalized = str(environment or "").strip().lower()
+        if normalized in SUPPORTED_COMPUTE_ENVIRONMENTS and normalized not in runtime_environments:
+            runtime_environments.append(normalized)
+
+    reset_count = 0
+    with compute_lock:
+        for (environment, _, _), signal_generator in signal_gens.items():
+            if environment not in runtime_environments:
+                continue
+            signal_generator.daily_reset()
+            reset_count += 1
+
+        global daily_close_cache, daily_close_cache_date
+        daily_close_cache = {}
+        daily_close_cache_date = ""
+
+    return {
+        "ok": True,
+        "reason": reason,
+        "date": current_market_date(),
+        "environments": runtime_environments,
+        "signal_generators_reset": reset_count,
+    }
 
 
 def get_daily_change_fields(environment: str, symbol: str, current_close: float, bar_time_ms: int):
@@ -382,6 +605,62 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
         "extra": signal_extra,
     }
 
+
+def flush_indicator_batch(batch):
+    if not batch:
+        return {"ok": True, "written": 0, "errors": 0}
+
+    try:
+        result = pb.upsert_indicators(batch)
+        written = int(result.get("success", 0) or 0)
+        errors = int(result.get("errors", 0) or 0)
+        if not result.get("ok", False) and written == 0 and errors == 0:
+            errors = len(batch)
+        if result.get("ok", False) or (written > 0 and errors == 0):
+            return {"ok": True, "written": written, "errors": errors}
+    except Exception:
+        traceback.print_exc()
+
+    written = 0
+    errors = 0
+    for item in batch:
+        try:
+            result = pb.upsert_indicator(item)
+            if str(result.get("action", "")).strip().lower() != "skipped":
+                written += 1
+        except Exception:
+            errors += 1
+            traceback.print_exc()
+    return {"ok": errors == 0, "written": written, "errors": errors}
+
+
+def flush_signal_batch(batch):
+    if not batch:
+        return {"ok": True, "written": 0, "errors": 0}
+
+    try:
+        result = pb.upsert_signals(batch)
+        written = int(result.get("success", 0) or 0)
+        errors = int(result.get("errors", 0) or 0)
+        if not result.get("ok", False) and written == 0 and errors == 0:
+            errors = len(batch)
+        if result.get("ok", False) or (written > 0 and errors == 0):
+            return {"ok": True, "written": written, "errors": errors}
+    except Exception:
+        traceback.print_exc()
+
+    written = 0
+    errors = 0
+    for item in batch:
+        try:
+            result = pb.upsert_signal(item)
+            if str(result.get("action", "")).strip().lower() != "skipped":
+                written += 1
+        except Exception:
+            errors += 1
+            traceback.print_exc()
+    return {"ok": errors == 0, "written": written, "errors": errors}
+
 def get_requested_environments(defaults=None):
     payload = request.get_json(silent=True) or {}
     requested = payload.get("environments")
@@ -472,108 +751,147 @@ def is_environment_compute_enabled(environment: str) -> bool:
 def compute():
     global last_compute_time, compute_count, error_count
 
-    cfg.refresh()
-    payload = request.get_json(silent=True) or {}
-    requested_environments = get_requested_environments()
-    enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
-    if not enabled_environments:
+    with compute_lock:
+        cfg.refresh()
+        payload = request.get_json(silent=True) or {}
+        skip_persisted_cursor = str(payload.get("source") or "").strip().lower() == "recompute"
+        requested_environments = get_requested_environments()
+        enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
+        if not enabled_environments:
+            return jsonify({
+                "ok": True,
+                "skipped": True,
+                "reason": "compute_disabled",
+                "requested_environments": requested_environments,
+                "environments": [],
+            })
+
+        start = time.time()
+        processed = 0
+        signals_found = 0
+        errors = 0
+        force_rollup = bool(payload.get("force_rollup")) or str(payload.get("source") or "") == "recompute"
+        indicator_batch = []
+        signal_batch = []
+        dirty_cursor_environments = set()
+
+        def flush_pending_indicators():
+            nonlocal errors, indicator_batch
+            if not indicator_batch:
+                return
+            result = flush_indicator_batch(indicator_batch)
+            errors += int(result.get("errors", 0) or 0)
+            indicator_batch = []
+
+        def flush_pending_signals():
+            nonlocal errors, signals_found, signal_batch
+            if not signal_batch:
+                return
+            result = flush_signal_batch(signal_batch)
+            errors += int(result.get("errors", 0) or 0)
+            signals_found += int(result.get("written", 0) or 0)
+            signal_batch = []
+
+        refresh_symbol_metadata()
+        rollup_results = ensure_higher_timeframe_bars(enabled_environments, force=force_rollup)
+        errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
+        refresh_daily_close_cache(enabled_environments)
+
+        try:
+            for environment in enabled_environments:
+                if not skip_persisted_cursor:
+                    load_persisted_compute_cursors(environment)
+                for interval in INTERVALS:
+                    interval_bars = fetch_interval_bars(environment, interval)
+                    if not interval_bars:
+                        continue
+
+                    by_symbol = {}
+                    for bar in interval_bars:
+                        symbol = str(bar.get("symbol", "")).upper()
+                        if symbol:
+                            by_symbol.setdefault(symbol, []).append(bar)
+
+                    for symbol, bars in by_symbol.items():
+                        bars.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+                        engine = get_or_create_engine(environment, symbol, interval)
+                        signal_generator = signal_gens.get((environment, symbol, interval))
+                        key = (environment, symbol, interval)
+                        last_ms = int(last_processed_ms.get(key, 0) or 0)
+                        bootstrap_target_ms = last_ms
+                        bootstrap_inclusive = True
+                        if bootstrap_target_ms <= 0 and bars:
+                            bootstrap_target_ms = int(bars[0].get("bar_time_ms", 0) or 0)
+                            bootstrap_inclusive = False
+                        if bootstrap_target_ms > 0:
+                            bootstrap_engine_state(
+                                environment,
+                                symbol,
+                                interval,
+                                bootstrap_target_ms,
+                                inclusive=bootstrap_inclusive,
+                            )
+                            last_ms = int(last_processed_ms.get(key, 0) or 0)
+
+                        for bar in bars:
+                            bar_ms = int(bar.get("bar_time_ms", 0) or 0)
+                            if bar_ms <= last_ms:
+                                continue
+
+                            snapshot = engine.update({
+                                "open": float(bar.get("open", 0) or 0),
+                                "high": float(bar.get("high", 0) or 0),
+                                "low": float(bar.get("low", 0) or 0),
+                                "close": float(bar.get("close", 0) or 0),
+                                "volume": float(bar.get("volume", 0) or 0),
+                                "bar_time_ms": bar_ms,
+                                "us_time": bar.get("us_time", ""),
+                                "cn_time": bar.get("cn_time", ""),
+                                "session_type": bar.get("session_type", "regular"),
+                            })
+                            last_processed_ms[key] = bar_ms
+                            last_ms = bar_ms
+                            dirty_cursor_environments.add(environment)
+                            processed += 1
+
+                            if not snapshot or not engine.is_ready():
+                                continue
+
+                            indicator_batch.append(build_indicator_payload(environment, symbol, interval, bar, engine, snapshot))
+                            if len(indicator_batch) >= INDICATOR_BATCH_SIZE:
+                                flush_pending_indicators()
+
+                            if interval != "5m" or not signal_generator:
+                                continue
+
+                            signal = signal_generator.update(snapshot)
+                            if signal and is_recent_signal_bar(bar_ms, interval):
+                                signal_batch.append(build_signal_payload(environment, symbol, interval, bar, engine, signal))
+                                if len(signal_batch) >= SIGNAL_BATCH_SIZE:
+                                    flush_pending_signals()
+        except Exception:
+            errors += 1
+            error_count += 1
+            traceback.print_exc()
+        finally:
+            flush_pending_indicators()
+            flush_pending_signals()
+            for environment in sorted(dirty_cursor_environments):
+                persist_compute_cursors(environment)
+
+        last_compute_time = time.time()
+        compute_count += 1
         return jsonify({
             "ok": True,
-            "skipped": True,
-            "reason": "compute_disabled",
             "requested_environments": requested_environments,
-            "environments": [],
+            "environments": sorted(enabled_environments),
+            "processed": processed,
+            "signals": signals_found,
+            "errors": errors,
+            "rollup": rollup_results,
+            "engines": len(engines),
+            "elapsed_s": round(time.time() - start, 3),
         })
-
-    start = time.time()
-    processed = 0
-    signals_found = 0
-    errors = 0
-    force_rollup = bool(payload.get("force_rollup")) or str(payload.get("source") or "") == "recompute"
-
-    refresh_symbol_metadata()
-    rollup_results = ensure_higher_timeframe_bars(enabled_environments, force=force_rollup)
-    errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
-    refresh_daily_close_cache(enabled_environments)
-
-    try:
-        for environment in enabled_environments:
-            for interval in INTERVALS:
-                interval_bars = fetch_interval_bars(environment, interval)
-                if not interval_bars:
-                    continue
-
-                by_symbol = {}
-                for bar in interval_bars:
-                    symbol = str(bar.get("symbol", "")).upper()
-                    if symbol:
-                        by_symbol.setdefault(symbol, []).append(bar)
-
-                for symbol, bars in by_symbol.items():
-                    bars.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
-                    engine = get_or_create_engine(environment, symbol, interval)
-                    signal_generator = signal_gens.get((environment, symbol, interval))
-                    key = (environment, symbol, interval)
-                    last_ms = int(last_processed_ms.get(key, 0) or 0)
-
-                    for bar in bars:
-                        bar_ms = int(bar.get("bar_time_ms", 0) or 0)
-                        if bar_ms <= last_ms:
-                            continue
-
-                        snapshot = engine.update({
-                            "open": float(bar.get("open", 0) or 0),
-                            "high": float(bar.get("high", 0) or 0),
-                            "low": float(bar.get("low", 0) or 0),
-                            "close": float(bar.get("close", 0) or 0),
-                            "volume": float(bar.get("volume", 0) or 0),
-                            "bar_time_ms": bar_ms,
-                            "us_time": bar.get("us_time", ""),
-                            "cn_time": bar.get("cn_time", ""),
-                            "session_type": bar.get("session_type", "regular"),
-                        })
-                        last_processed_ms[key] = bar_ms
-                        last_ms = bar_ms
-                        processed += 1
-
-                        if not snapshot or not engine.is_ready():
-                            continue
-
-                        try:
-                            pb.upsert_indicator(build_indicator_payload(environment, symbol, interval, bar, engine, snapshot))
-                        except Exception:
-                            errors += 1
-                            traceback.print_exc()
-
-                        if interval != "5m" or not signal_generator:
-                            continue
-
-                        signal = signal_generator.update(snapshot)
-                        if signal and is_recent_signal_bar(bar_ms, interval):
-                            try:
-                                pb.upsert_signal(build_signal_payload(environment, symbol, interval, bar, engine, signal))
-                                signals_found += 1
-                            except Exception:
-                                errors += 1
-                                traceback.print_exc()
-    except Exception:
-        errors += 1
-        error_count += 1
-        traceback.print_exc()
-
-    last_compute_time = time.time()
-    compute_count += 1
-    return jsonify({
-        "ok": True,
-        "requested_environments": requested_environments,
-        "environments": sorted(enabled_environments),
-        "processed": processed,
-        "signals": signals_found,
-        "errors": errors,
-        "rollup": rollup_results,
-        "engines": len(engines),
-        "elapsed_s": round(time.time() - start, 3),
-    })
 
 
 @app.route("/scan", methods=["POST"])
@@ -609,6 +927,7 @@ def scan():
 @app.route("/recompute", methods=["POST"])
 def recompute():
     global last_processed_ms, last_interval_fetch_ms, daily_close_cache, rollup_bootstrap_checked
+    global engine_bootstrap_checked, persistent_cursor_envs_loaded
 
     for engine in engines.values():
         engine.reset()
@@ -618,6 +937,8 @@ def recompute():
     last_interval_fetch_ms.clear()
     daily_close_cache = {}
     rollup_bootstrap_checked.clear()
+    engine_bootstrap_checked.clear()
+    persistent_cursor_envs_loaded.clear()
 
     compute_payload = {}
     with app.test_request_context("/compute", method="POST", json={"source": "recompute", "force_rollup": True}):
@@ -674,6 +995,8 @@ def status():
         "total_engines": len(engines),
         "ready_engines": sum(1 for engine in engines.values() if engine.is_ready()),
         "engines": engine_status,
+        "persisted_cursor_envs_loaded": sorted(persistent_cursor_envs_loaded),
+        "tracked_cursors": len(last_processed_ms),
         "compute_count": compute_count,
         "last_compute": datetime.fromtimestamp(last_compute_time).isoformat() if last_compute_time else None,
         "last_scan": datetime.fromtimestamp(last_scan_time).isoformat() if last_scan_time else None,

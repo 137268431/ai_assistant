@@ -637,6 +637,37 @@
                 </button>
             </div>
 
+            <div class="last-action" style="margin-top:12px">
+                紧急控制：用于快速降载和止损，不直接删除数据；其中“全部急停”会关闭 compute / trading / bars publish / PB 调度，并请求停止当前 runtime。
+            </div>
+
+            <div class="action-section" id="emergencySection">
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_runtime')">
+                    <span class="action-label">急停运行线程</span>
+                    <span class="action-copy">只停止当前 IBKR runtime，适合重新认证或排查网关问题。</span>
+                </button>
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_compute')">
+                    <span class="action-label">关闭计算调度</span>
+                    <span class="action-copy">关闭自动 compute / scan，降低 PocketBase 和 compute 的持续负载。</span>
+                </button>
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_publish')">
+                    <span class="action-label">关闭 Bars 写入</span>
+                    <span class="action-copy">停止新的 `ibkr_bars` 写入，适合快速止血排查数据库压力。</span>
+                </button>
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_scheduler')">
+                    <span class="action-label">关闭 PB 调度</span>
+                    <span class="action-copy">暂停 PocketBase cron 调度，避免继续触发 compute / heartbeat / 清理任务。</span>
+                </button>
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_trading')">
+                    <span class="action-label">关闭交易执行</span>
+                    <span class="action-copy">保留观测链路，但禁止继续下新单。</span>
+                </button>
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_all')">
+                    <span class="action-label">全部急停</span>
+                    <span class="action-copy">一次关闭计算、交易、K线写入、PB 调度，并停止当前 runtime。</span>
+                </button>
+            </div>
+
             <div class="last-action" id="lastAction">最近动作：尚未执行。</div>
         </section>
 
@@ -923,6 +954,13 @@
                 if (payload.candidates != null) pieces.push(`candidates=${payload.candidates}`);
                 return `${action} 返回：${pieces.join(' · ') || 'ok'}`;
             }
+            if (action.startsWith('emergency_')) {
+                const updatedKeys = Array.isArray(payload.updated)
+                    ? payload.updated.map(item => item.key).filter(Boolean).join(',')
+                    : '';
+                const stopState = payload.runtime_stop?.ok === false ? 'runtime_stop_failed' : 'runtime_stop_requested';
+                return `紧急动作完成：${payload.action || action} · ${updatedKeys || 'no_config_change'} · ${stopState}`;
+            }
             return `${action} 返回：${payload.message || payload.status || (payload.ok === false ? 'failed' : 'ok')}`;
         }
 
@@ -965,11 +1003,6 @@
                     label: 'Compute Status',
                     value: String(computeHealth.status || 'unknown').toUpperCase(),
                     copy: `last compute ${formatAgo(computeHealth.last_compute)}`
-                },
-                {
-                    label: 'Write Mode',
-                    value: String(summary?.write_mode || '--').toUpperCase(),
-                    copy: `compute ${summary?.compute_enabled ? 'enabled' : 'disabled'} · trading ${summary?.ibkr_trading_enabled ? 'enabled' : 'disabled'}`
                 },
                 {
                     label: 'Data Freshness',
@@ -1088,7 +1121,6 @@
                 { label: `Gateway ${gatewayRunning ? 'ACTIVE' : 'OFFLINE'}`, tone: gatewayRunning ? 'chip-ok' : 'chip-error' },
                 { label: `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`, tone: sessionAuthenticated ? 'chip-ok' : 'chip-warn' },
                 { label: `2FA ${twoFactorStatus.toUpperCase()}`, tone: sessionAuthenticated ? 'chip-ok' : chipTone(twoFactorStatus) },
-                { label: `Write ${String(summary?.write_mode || '--').toUpperCase()}`, tone: 'chip-muted' },
                 { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Active Env ${String(currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
@@ -1134,6 +1166,16 @@
                 ['Error Count', String(computeHealth.error_count || 0)],
                 ['Uptime', `${Math.round(Number(computeHealth.uptime_s || 0) / 60)} min`],
                 ['Backfill Written', String(status?.data_backfill?.total_backfilled || 0)],
+                ['Close Compute Runs', String(status?.realtime_compute?.runs || 0)],
+                ['Close Compute Queue', String(status?.realtime_compute?.queue_size || 0)],
+                ['Close Compute Last', formatTimeLabel(status?.realtime_compute?.last_run)],
+                ['Market Date', String(status?.market_universe?.market_date || '--')],
+                ['Last Daily Reset', formatTimeLabel(status?.market_universe?.last_daily_reset)],
+                ['Watchlist Pool', String(status?.market_universe?.watchlist_pool_count || 0)],
+                ['Today Targets', String(status?.market_universe?.active_target_count || 0)],
+                ['Target Date', String(status?.market_universe?.active_target_date || '--')],
+                ['Last Target Refresh', formatTimeLabel(status?.market_universe?.last_target_refresh)],
+                ['Last Pool Backfill', formatTimeLabel(status?.market_universe?.last_watchlist_backfill)],
                 ['Last Bar Time', dataHealth.last_bar_label || '--'],
                 ['Bar Write Time', latestBarWrite],
                 ['Latest Indicator Calc', latestIndicatorCalc],
@@ -1195,8 +1237,9 @@
         function renderConfigDetail(summary, runtimeConfig) {
             const preferredKeys = [
                 'ibkr_compute_public_url',
-                'ibkr_write_mode',
                 'ibkr_compute_enabled',
+                'pb_scheduler_enabled',
+                'ibkr_bar_publish_enabled',
                 'ibkr_trading_enabled',
                 'max_positions',
                 'sl_atr_mult',
@@ -1505,7 +1548,7 @@
                 const [health, status, summary, twoFactorResp, runtimeConfigResp, barsResp, indicatorsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     requestRuntimeJson('/api/custom/ibkr/healthz'),
                     requestRuntimeJson('/api/custom/ibkr/statusz'),
-                    requestRuntimeJson('/api/custom/system/summaryz'),
+                    requestRuntimeJson('/api/custom/system/summaryz?lite=1'),
                     requestRuntimeJson('/api/custom/ibkr/2fa/status'),
                     requestRuntimeJson('/api/custom/ibkr/runtime/config'),
                     apiFetch('ibkr_bars', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
@@ -1592,6 +1635,24 @@
             if (action === 'recompute' && !window.confirm('确认执行 recompute？这会重置内存引擎缓存并重新跑一次 compute。')) {
                 return;
             }
+            if (action === 'emergency_all' && !window.confirm('确认执行全部急停？这会关闭 compute / trading / bars publish / PB 调度，并停止当前 runtime。')) {
+                return;
+            }
+            if (action === 'emergency_runtime' && !window.confirm('确认停止当前 runtime 线程？')) {
+                return;
+            }
+            if (action === 'emergency_compute' && !window.confirm('确认关闭自动 compute / scan 调度？')) {
+                return;
+            }
+            if (action === 'emergency_publish' && !window.confirm('确认关闭 bars 写入？新的 ibkr_bars 将不再进入 PocketBase。')) {
+                return;
+            }
+            if (action === 'emergency_scheduler' && !window.confirm('确认关闭 PB 调度？')) {
+                return;
+            }
+            if (action === 'emergency_trading' && !window.confirm('确认关闭交易执行？新的自动下单会被阻止。')) {
+                return;
+            }
             if (!initRuntimeAuth()) return;
 
             const actionMap = {
@@ -1609,7 +1670,13 @@
                 },
                 compute: { path: '/api/custom/ibkr/proxy', body: { action: 'compute', environment: currentEnvironment } },
                 scan: { path: '/api/custom/ibkr/proxy', body: { action: 'scan', environment: currentEnvironment } },
-                recompute: { path: '/api/custom/ibkr/proxy', body: { action: 'recompute', environment: currentEnvironment } }
+                recompute: { path: '/api/custom/ibkr/proxy', body: { action: 'recompute', environment: currentEnvironment } },
+                emergency_runtime: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'runtime', environment: currentEnvironment } },
+                emergency_compute: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'compute', environment: currentEnvironment } },
+                emergency_publish: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'publish', environment: currentEnvironment } },
+                emergency_scheduler: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'scheduler', environment: currentEnvironment } },
+                emergency_trading: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'trading', environment: currentEnvironment } },
+                emergency_all: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'all', environment: currentEnvironment } }
             };
 
             const target = actionMap[action];
@@ -1661,7 +1728,7 @@
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
             await loadRuntimeData(false);
-            refreshTimer = setInterval(() => loadRuntimeData(false), 30000);
+            refreshTimer = setInterval(() => loadRuntimeData(false), 60000);
         });
     </script>
 </body>

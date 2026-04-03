@@ -318,14 +318,13 @@ function renderNav(activePage) {
     { path: '/ibkr_order_details.html', icon: '📜', label: '明细' },
     { path: '/ibkr_indicators.html', icon: '📈', label: '指标' },
     { path: '/ibkr_stats.html', icon: '📊', label: '统计' },
-    { path: '/ibkr_system.html', icon: '🖥️', label: '总览' },
-    { path: '/ibkr_runtime.html', icon: '🎛️', label: '控制台' }
+    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html'], icon: '🖥️', label: '系统' }
   ];
 
   return `
     <div class="nav">
       ${pages.map(p => `
-        <a href="${buildPageUrl(p.path)}" class="nav-item ${p.path === activePage ? 'active' : ''}">
+        <a href="${buildPageUrl(p.path)}" class="nav-item ${(p.path === activePage || (Array.isArray(p.aliases) && p.aliases.includes(activePage))) ? 'active' : ''}">
           <span class="nav-icon">${p.icon}</span>${p.label}
         </a>
       `).join('')}
