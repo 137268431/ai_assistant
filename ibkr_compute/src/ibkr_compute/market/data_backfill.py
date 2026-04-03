@@ -4,16 +4,16 @@ Historical bar backfill across the IBKR timeframes used by the pipeline.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import time
 import logging
-from datetime import datetime
-from typing import Dict, List, Optional
+import threading
+from typing import Dict, List, Optional, Sequence
 
 import requests
 
 from .timeframe_utils import (
-    COMPUTE_INTERVALS,
     build_runtime_timestamps,
     classify_session,
     format_cn_time,
@@ -35,19 +35,132 @@ PERIOD_MAP = {
     "1d": ("2y", "1d"),
 }
 
-REQUEST_DELAY = 0.35
+
+def _parse_intervals(value: str, fallback: Sequence[str]) -> List[str]:
+    parsed = []
+    for raw in str(value or "").split(","):
+        normalized = normalize_interval(raw)
+        if normalized and normalized not in parsed:
+            parsed.append(normalized)
+    return parsed or list(fallback)
+
+
+DEFAULT_BACKFILL_INTERVALS = _parse_intervals(
+    os.environ.get("IBKR_BACKFILL_INTERVALS", "5m"),
+    fallback=("5m",),
+)
+REQUEST_SPACING_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_REQUEST_SPACING", "0.20")))
+INTERVAL_DELAY_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_INTERVAL_DELAY", "0.35")))
+MAX_CONCURRENT_REQUESTS = max(
+    1,
+    min(5, int(os.environ.get("IBKR_HISTORY_MAX_CONCURRENCY", "4"))),
+)
+MAX_RETRIES = max(0, int(os.environ.get("IBKR_HISTORY_MAX_RETRIES", "4")))
+RETRY_BASE_DELAY_SECONDS = max(0.5, float(os.environ.get("IBKR_HISTORY_RETRY_BASE_DELAY", "2.0")))
+RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 
 
 class DataBackfill:
     def __init__(self, gateway_url: str = None, data_writer=None):
         self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
         self.data_writer = data_writer
-        self._session = requests.Session()
-        self._session.verify = False
+        self.default_intervals = list(DEFAULT_BACKFILL_INTERVALS)
+        self.request_spacing = REQUEST_SPACING_SECONDS
+        self.interval_delay = INTERVAL_DELAY_SECONDS
+        self.max_concurrency = MAX_CONCURRENT_REQUESTS
+        self.max_retries = MAX_RETRIES
+        self.retry_base_delay = RETRY_BASE_DELAY_SECONDS
         self._backfill_count = 0
+        self._request_count = 0
+        self._retry_count = 0
+        self._throttle_count = 0
+        self._count_lock = threading.Lock()
+        self._request_gate_lock = threading.Lock()
+        self._next_request_at = 0.0
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
+
+    def _create_session(self) -> requests.Session:
+        session = requests.Session()
+        session.verify = False
+        return session
+
+    def _resolve_intervals(self, intervals: Optional[Sequence[str]]) -> List[str]:
+        if intervals is None:
+            return list(self.default_intervals)
+        return _parse_intervals(",".join(str(item) for item in intervals), fallback=self.default_intervals)
+
+    def _wait_for_request_slot(self):
+        if self.request_spacing <= 0:
+            return
+
+        delay = 0.0
+        with self._request_gate_lock:
+            now = time.monotonic()
+            if self._next_request_at > now:
+                delay = self._next_request_at - now
+                now = self._next_request_at
+            self._next_request_at = now + self.request_spacing
+
+        if delay > 0:
+            time.sleep(delay)
+
+    def _request_history_json(self, conid: int, symbol: str, interval: str, period: str, bar_size: str) -> Dict:
+        params = {
+            "conid": conid,
+            "period": period,
+            "bar": bar_size,
+            "outsideRth": "true",
+        }
+
+        for attempt in range(self.max_retries + 1):
+            self._wait_for_request_slot()
+            session = self._create_session()
+            try:
+                with self._count_lock:
+                    self._request_count += 1
+
+                resp = session.get(
+                    self._api_url("/iserver/marketdata/history"),
+                    params=params,
+                    timeout=30,
+                )
+
+                if resp.status_code in RETRYABLE_STATUS_CODES and attempt < self.max_retries:
+                    delay = self.retry_base_delay * (2 ** attempt)
+                    with self._count_lock:
+                        self._retry_count += 1
+                        if resp.status_code == 429:
+                            self._throttle_count += 1
+                    logger.warning(
+                        "History fetch retry for %s/%s (conid=%d, status=%d, attempt=%d/%d, sleep=%.1fs)",
+                        symbol,
+                        interval,
+                        conid,
+                        resp.status_code,
+                        attempt + 1,
+                        self.max_retries + 1,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+
+                resp.raise_for_status()
+                return resp.json()
+            finally:
+                session.close()
+
+        raise RuntimeError(f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}")
+
+    def _write_bars(self, bars: List[Dict]) -> int:
+        written = 0
+        for bar_data in bars:
+            if self.data_writer and self.data_writer.write_bar(bar_data):
+                written += 1
+        with self._count_lock:
+            self._backfill_count += written
+        return written
 
     def fetch_history(
         self,
@@ -60,20 +173,25 @@ class DataBackfill:
         period, bar_size = PERIOD_MAP.get(normalized, PERIOD_MAP["5m"])
 
         try:
-            resp = self._session.get(
-                self._api_url("/iserver/marketdata/history"),
-                params={
-                    "conid": conid,
-                    "period": period,
-                    "bar": bar_size,
-                    "outsideRth": "true",
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._request_history_json(conid, symbol, normalized, period, bar_size)
             bars = data.get("data", [])
             result = []
+            fetch_meta = {
+                "source": "ibkr_history_backfill",
+                "conid": conid,
+                "exchange": exchange,
+                "interval": normalized,
+                "outside_rth": True,
+                "request_period": period,
+                "request_bar": bar_size,
+            }
+            if data.get("mktDataDelay") is not None:
+                fetch_meta["mkt_data_delay"] = data.get("mktDataDelay")
+            if data.get("mdAvailability"):
+                fetch_meta["md_availability"] = data.get("mdAvailability")
+            if data.get("points") is not None:
+                fetch_meta["points"] = data.get("points")
+
             for bar in bars:
                 raw_bar_time = int(bar.get("t", 0) or 0)
                 bar_time_ms = raw_bar_time if raw_bar_time > 1_000_000_000_000 else raw_bar_time * 1000
@@ -95,11 +213,7 @@ class DataBackfill:
                     "session_type": classify_session(us_time, bar_time_ms),
                     "source": "backfill",
                     "extra": {
-                        "source": "ibkr_history_backfill",
-                        "conid": conid,
-                        "exchange": exchange,
-                        "interval": normalized,
-                        "outside_rth": True,
+                        **fetch_meta,
                         **build_runtime_timestamps(),
                     },
                 }
@@ -131,11 +245,7 @@ class DataBackfill:
         exchange: str = "",
     ) -> int:
         bars = self.fetch_history(conid, symbol, interval=interval, exchange=exchange)
-        written = 0
-        for bar_data in bars:
-            if self.data_writer and self.data_writer.write_bar(bar_data):
-                written += 1
-        self._backfill_count += written
+        written = self._write_bars(bars)
         logger.info(
             "Backfill %s/%s: %d/%d bars written",
             symbol,
@@ -153,11 +263,26 @@ class DataBackfill:
         intervals: Optional[List[str]] = None,
     ) -> Dict[str, int]:
         results = {}
-        for interval in intervals or COMPUTE_INTERVALS:
+        for interval in self._resolve_intervals(intervals):
             written = self.backfill_symbol(conid, symbol, interval=interval, exchange=exchange)
             results[normalize_interval(interval)] = written
-            time.sleep(REQUEST_DELAY)
+            if self.interval_delay > 0:
+                time.sleep(self.interval_delay)
         return results
+
+    def _fetch_symbol_all_intervals(
+        self,
+        conid: int,
+        symbol: str,
+        exchange: str,
+        intervals: Sequence[str],
+    ) -> Dict[str, List[Dict]]:
+        fetched = {}
+        for interval in self._resolve_intervals(intervals):
+            fetched[interval] = self.fetch_history(conid, symbol, interval=interval, exchange=exchange)
+            if self.interval_delay > 0:
+                time.sleep(self.interval_delay)
+        return fetched
 
     def backfill_all(
         self,
@@ -167,19 +292,55 @@ class DataBackfill:
     ) -> Dict[str, Dict[str, int]]:
         results = {}
         metadata = symbol_meta or {}
+        interval_list = self._resolve_intervals(intervals)
         for symbol, conid in conid_map.items():
             exchange = str((metadata.get(symbol) or {}).get("exchange") or "")
-            results[symbol] = self.backfill_symbol_all_intervals(
-                conid=conid,
-                symbol=symbol,
-                exchange=exchange,
-                intervals=intervals,
-            )
+            results[symbol] = {interval: 0 for interval in interval_list}
+
+        if not conid_map:
+            return results
+
+        worker_count = min(self.max_concurrency, len(conid_map))
+        logger.info(
+            "Starting history backfill: symbols=%d, tasks=%d, intervals=%s, workers=%d",
+            len(conid_map),
+            len(conid_map) * len(interval_list),
+            ",".join(interval_list),
+            worker_count,
+        )
+
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ibkr-backfill") as executor:
+            future_map = {
+                executor.submit(self._fetch_symbol_all_intervals, conid, symbol, str((metadata.get(symbol) or {}).get("exchange") or ""), interval_list): symbol
+                for symbol, conid in conid_map.items()
+            }
+
+            for future in as_completed(future_map):
+                symbol = future_map[future]
+                try:
+                    fetched = future.result()
+                    for interval, bars in fetched.items():
+                        written = self._write_bars(bars)
+                        results[symbol][normalize_interval(interval)] = written
+                        logger.info(
+                            "Backfill %s/%s complete: %d/%d bars written",
+                            symbol,
+                            normalize_interval(interval),
+                            written,
+                            len(bars),
+                        )
+                except Exception as e:
+                    logger.error("Backfill task failed for %s: %s", symbol, e)
         return results
 
     def status(self) -> dict:
         return {
             "total_backfilled": self._backfill_count,
+            "request_count": self._request_count,
+            "retry_count": self._retry_count,
+            "throttle_count": self._throttle_count,
             "environment": ENVIRONMENT,
-            "intervals": list(COMPUTE_INTERVALS),
+            "intervals": list(self.default_intervals),
+            "max_concurrency": self.max_concurrency,
+            "request_spacing_s": self.request_spacing,
         }
