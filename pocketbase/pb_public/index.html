@@ -338,7 +338,7 @@
 <body>
     <div class="hero">
         <div class="hero-actions">
-            <a id="configLink" href="/config.html" class="hero-btn">⚙️ 设置</a>
+            <a id="configLink" href="/ibkr_config.html" class="hero-btn">⚙️ 设置</a>
             <button class="hero-btn hero-btn-logout" onclick="handleLogout(event)">🚪 退出</button>
         </div>
         <div class="hero-title">Trading Flight</div>
@@ -355,7 +355,7 @@
 
     <div class="content">
         <div class="quick-stats">
-            <a id="signalsLink" href="/signals.html" class="stat-card">
+            <a id="signalsLink" href="/ibkr_signals.html" class="stat-card">
                 <div class="stat-icon">📡</div>
                 <div class="stat-number-row" id="todaySignalsRow">
                     <span class="stat-number long" id="todaySignalsLong">-</span>
@@ -363,14 +363,14 @@
                 </div>
                 <div class="stat-label">今日信号 📈/📉</div>
             </a>
-            <a id="reverseSignalsLink" href="/reverse_signals.html" class="stat-card">
+            <a id="reverseSignalsLink" href="/ibkr_reverse_signals.html" class="stat-card">
                 <div class="stat-icon">🔄</div>
                 <div class="stat-number-row" id="reverseSignalsRow">
                     <span class="stat-number" id="reverseSignalsPending">-</span>
                 </div>
                 <div class="stat-label">反转信号</div>
             </a>
-            <a id="ordersLink" href="/orders.html" class="stat-card">
+            <a id="ordersLink" href="/ibkr_orders.html" class="stat-card">
                 <div class="stat-icon">📋</div>
                 <div class="stat-number-row" id="todayOrdersRow">
                     <span class="stat-number long" id="todayOrdersLong">-</span>
@@ -378,7 +378,7 @@
                 </div>
                 <div class="stat-label">今日订单 📈/📉</div>
             </a>
-            <a id="positionsLink" href="/orders.html?status=filled&type=entry" class="stat-card">
+            <a id="positionsLink" href="/ibkr_orders.html?status=filled&type=entry" class="stat-card">
                 <div class="stat-icon">📈</div>
                 <div class="stat-number-row" id="activePositionsRow">
                     <span class="stat-number long" id="activePositionsLong">-</span>
@@ -396,22 +396,22 @@
         <div class="quick-actions">
             <div class="section-title">快捷入口</div>
             <div class="action-grid">
-                <a id="actionSignalsLink" href="/signals.html" class="action-card">
+                <a id="actionSignalsLink" href="/ibkr_signals.html" class="action-card">
                     <div class="action-icon">📡</div>
                     <div class="action-label">信号管理</div>
                     <div class="action-desc">查看和确认交易信号</div>
                 </a>
-                <a id="actionReverseSignalsLink" href="/reverse_signals.html" class="action-card">
+                <a id="actionReverseSignalsLink" href="/ibkr_reverse_signals.html" class="action-card">
                     <div class="action-icon">🔄</div>
                     <div class="action-label">反转信号</div>
                     <div class="action-desc">处理平仓/取消/调整信号</div>
                 </a>
-                <a id="actionOrdersLink" href="/orders.html" class="action-card">
+                <a id="actionOrdersLink" href="/ibkr_orders.html" class="action-card">
                     <div class="action-icon">📋</div>
                     <div class="action-label">订单管理</div>
                     <div class="action-desc">管理和平仓订单</div>
                 </a>
-                <a id="actionIndicatorsLink" href="/indicators.html" class="action-card">
+                <a id="actionIndicatorsLink" href="/ibkr_indicators.html" class="action-card">
                     <div class="action-icon">📈</div>
                     <div class="action-label">指标监控</div>
                     <div class="action-desc">查看技术指标</div>
@@ -461,15 +461,15 @@
         }
 
         function bindEnvironmentLinks() {
-            document.getElementById('configLink').href = buildPageUrl('/config.html', { environment: currentEnvironment }, { allowGlobal: true });
-            document.getElementById('signalsLink').href = buildPageUrl('/signals.html');
-            document.getElementById('reverseSignalsLink').href = buildPageUrl('/reverse_signals.html');
-            document.getElementById('ordersLink').href = buildPageUrl('/orders.html');
-            document.getElementById('positionsLink').href = buildPageUrl('/orders.html', { status: 'filled', type: 'entry' });
-            document.getElementById('actionSignalsLink').href = buildPageUrl('/signals.html');
-            document.getElementById('actionReverseSignalsLink').href = buildPageUrl('/reverse_signals.html');
-            document.getElementById('actionOrdersLink').href = buildPageUrl('/orders.html');
-            document.getElementById('actionIndicatorsLink').href = buildPageUrl('/indicators.html');
+            document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', { environment: currentEnvironment }, { allowGlobal: true });
+            document.getElementById('signalsLink').href = buildPageUrl('/ibkr_signals.html');
+            document.getElementById('reverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
+            document.getElementById('ordersLink').href = buildPageUrl('/ibkr_orders.html');
+            document.getElementById('positionsLink').href = buildPageUrl('/ibkr_orders.html', { status: 'filled', type: 'entry' });
+            document.getElementById('actionSignalsLink').href = buildPageUrl('/ibkr_signals.html');
+            document.getElementById('actionReverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
+            document.getElementById('actionOrdersLink').href = buildPageUrl('/ibkr_orders.html');
+            document.getElementById('actionIndicatorsLink').href = buildPageUrl('/ibkr_indicators.html');
         }
 
         async function initAuth() {
@@ -491,7 +491,7 @@
                 const endTimeMs = endDate.getTime();
 
                 // 加载今日信号
-                const signals = await pb.collection('signals').getFullList({
+                const ibkr_signals = await pb.collection('ibkr_signals').getFullList({
                     filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created',
                     $autoCancel: false
@@ -522,8 +522,8 @@
                 const pnl = calculatePnL(orders);
 
                 // 统计信号多空
-                const longSignals = signals.filter(s => s.direction === 'long').length;
-                const shortSignals = signals.filter(s => s.direction === 'short').length;
+                const longSignals = ibkr_signals.filter(s => s.direction === 'long').length;
+                const shortSignals = ibkr_signals.filter(s => s.direction === 'short').length;
 
                 // 统计反向信号
                 const pendingReverseSignals = reverseSignals.filter(s => !s.processed).length;
@@ -557,7 +557,7 @@
                 }
 
                 // 渲染最近活动
-                renderRecentActivity(signals, orders);
+                renderRecentActivity(ibkr_signals, orders);
             } catch (error) {
                 console.error('加载失败:', error);
                 showToast('加载失败: ' + error.message);
@@ -566,7 +566,7 @@
             }
         }
 
-        // 加载大盘指数数据（从 indicators 表获取）
+        // 加载大盘指数数据（从 ibkr_indicators 表获取）
         async function loadMarketIndex() {
             const container = document.getElementById('marketIndexGrid');
             if (!container) return;
@@ -590,10 +590,10 @@
                 const startTimeMs = startDate.getTime();
                 const endTimeMs = endDate.getTime();
 
-                // 从 indicators 表获取每个大盘的最新数据
+                // 从 ibkr_indicators 表获取每个大盘的最新数据
                 const promises = symbols.map(async (symbol) => {
                     try {
-                        const records = await pb.collection('indicators').getList(1, 1, {
+                        const records = await pb.collection('ibkr_indicators').getList(1, 1, {
                             filter: `environment = "${currentEnvironment}" && symbol = "${symbol}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                             sort: '-bar_time_ms',
                             $autoCancel: false
@@ -703,12 +703,12 @@
             return totalPnL;
         }
 
-        function renderRecentActivity(signals, orders) {
+        function renderRecentActivity(ibkr_signals, orders) {
             const container = document.getElementById('activityList');
 
             // 合并信号和订单，按时间排序
             const activities = [
-                ...signals.slice(0, 5).map(s => ({
+                ...ibkr_signals.slice(0, 5).map(s => ({
                     type: 'signal',
                     id: s.id,
                     icon: s.direction === 'long' ? '📈' : '📉',
@@ -754,9 +754,9 @@
 
         function navigateToActivity(type, id) {
             if (type === 'signal') {
-                location.href = buildPageUrl('/signals.html');
+                location.href = buildPageUrl('/ibkr_signals.html');
             } else if (type === 'order') {
-                location.href = buildPageUrl('/orders.html');
+                location.href = buildPageUrl('/ibkr_orders.html');
             }
         }
 

@@ -369,7 +369,7 @@ function getTradeGroupPageDate(group) {
 
 function buildSignalPageUrl(signalId, pageDate, environment) {
     if (!signalId) return ""
-    var url = PB_HOST + "/signals.html?signal_id=" + encodeURIComponent(signalId)
+    var url = PB_HOST + "/ibkr_signals.html?signal_id=" + encodeURIComponent(signalId)
     if (environment) {
         url += "&environment=" + encodeURIComponent(environment)
     }
@@ -383,7 +383,7 @@ function buildOrderPageUrl(group, pageDate) {
     if (!group) return ""
     var signalId = group.primary && group.primary.signal_id ? group.primary.signal_id : ""
     if (group.trade_group_id) {
-        var detailUrl = PB_HOST + "/order_details.html?trade_group_id=" + encodeURIComponent(group.trade_group_id)
+        var detailUrl = PB_HOST + "/ibkr_order_details.html?trade_group_id=" + encodeURIComponent(group.trade_group_id)
         if (signalId) {
             detailUrl += "&signal_id=" + encodeURIComponent(signalId)
         }
@@ -396,7 +396,7 @@ function buildOrderPageUrl(group, pageDate) {
         return detailUrl
     }
     if (signalId) {
-        var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(signalId)
+        var listUrl = PB_HOST + "/ibkr_orders.html?signal_id=" + encodeURIComponent(signalId)
         if (group.primary && group.primary.environment) {
             listUrl += "&environment=" + encodeURIComponent(group.primary.environment)
         }

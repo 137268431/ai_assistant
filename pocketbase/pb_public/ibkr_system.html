@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>系统监控 - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .page-shell {
+            position: relative;
+            z-index: 1;
+        }
+        .page-header {
+            padding: 4px 16px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+        }
+        .page-title {
+            font-size: 20px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .page-copy {
+            margin-top: 8px;
+            max-width: 720px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        .refresh-info {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Status bar */
+        .status-bar {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            padding: 0 16px 12px;
+        }
+        .status-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px;
+            text-align: center;
+        }
+        .status-label {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .status-value {
+            font-size: 13px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .dot-green { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+        .dot-yellow { background: #eab308; box-shadow: 0 0 6px #eab308; }
+        .dot-red { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+        .dot-gray { background: #64748b; }
+
+        /* Section */
+        .section {
+            margin: 0 16px 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 12px 14px 8px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .section-body { padding: 10px 14px; }
+
+        /* Stats grid */
+        .stats-mini {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        .stat-mini {
+            text-align: center;
+            padding: 8px 4px;
+            background: var(--surface2);
+            border-radius: 8px;
+        }
+        .stat-mini-label {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 2px;
+        }
+        .stat-mini-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        /* Data table */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .data-table th {
+            text-align: left;
+            padding: 6px 4px;
+            color: var(--muted);
+            font-weight: 400;
+            font-size: 9px;
+            border-bottom: 1px solid var(--border);
+        }
+        .data-table td {
+            padding: 6px 4px;
+            color: var(--text);
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+
+        /* Freshness bar */
+        .freshness-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+        }
+        .freshness-label {
+            width: 32px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--muted);
+            flex-shrink: 0;
+        }
+        .freshness-bar-bg {
+            flex: 1;
+            height: 6px;
+            background: var(--surface2);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .freshness-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s;
+        }
+        .freshness-age {
+            width: 40px;
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        /* Event list */
+        .event-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .event-item:last-child { border-bottom: none; }
+        .event-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            margin-top: 5px;
+            flex-shrink: 0;
+        }
+        .event-content { flex: 1; min-width: 0; }
+        .event-title {
+            font-size: 11px;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .event-meta {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            margin-top: 1px;
+        }
+
+        /* Config item */
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 6px;
+        }
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 6px 8px;
+            background: var(--surface2);
+            border-radius: 6px;
+            min-width: 0;
+        }
+        .config-key {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .config-val {
+            font-size: 11px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            text-align: right;
+            max-width: 60%;
+            word-break: break-word;
+        }
+        .val-on { color: #22c55e; }
+        .val-off { color: #ef4444; }
+        .val-neutral { color: var(--accent); }
+
+        .loading-text {
+            text-align: center;
+            padding: 20px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .content-area {
+            padding-bottom: 80px;
+        }
+    </style>
+</head>
+<body>
+    <div id="nav"></div>
+
+    <div class="page-shell">
+        <div id="contextBar"></div>
+        <div id="pageBridge"></div>
+
+        <div class="content-area">
+            <div class="page-header">
+                <div>
+                    <div class="page-title">🖥️ IBKR System</div>
+                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、配置快照、最近事件。运行动作、2FA 请求与链路回放集中放到 Runtime 页面，避免两张页面职责混在一起。</div>
+                </div>
+                <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+                    <div id="environmentHeader"></div>
+                    <div class="refresh-info" id="refreshInfo">加载中...</div>
+                </div>
+            </div>
+
+            <div class="status-bar" id="statusBar">
+                <div class="status-card">
+                    <div class="status-label">IBKR DATA</div>
+                    <div class="status-value" id="dataStatus"><span class="status-dot dot-gray"></span>--</div>
+                </div>
+                <div class="status-card">
+                    <div class="status-label">IBKR COMPUTE</div>
+                    <div class="status-value" id="computeStatus"><span class="status-dot dot-gray"></span>--</div>
+                </div>
+                <div class="status-card">
+                    <div class="status-label">WRITE MODE</div>
+                    <div class="status-value" id="writeMode" style="color:var(--accent)">--</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">📊 今日统计</div>
+                <div class="section-body">
+                    <div class="stats-mini" id="todayStats">
+                        <div class="stat-mini"><div class="stat-mini-label">ORDERS</div><div class="stat-mini-value">-</div></div>
+                        <div class="stat-mini"><div class="stat-mini-label">IBKR BARS</div><div class="stat-mini-value">-</div></div>
+                        <div class="stat-mini"><div class="stat-mini-label">IBKR IND</div><div class="stat-mini-value">-</div></div>
+                        <div class="stat-mini"><div class="stat-mini-label">IBKR SIG</div><div class="stat-mini-value">-</div></div>
+                        <div class="stat-mini"><div class="stat-mini-label">TARGETS</div><div class="stat-mini-value">-</div></div>
+                        <div class="stat-mini"><div class="stat-mini-label">EVENTS</div><div class="stat-mini-value">-</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">📡 数据延迟</div>
+                <div class="section-body" id="freshnessArea">
+                    <div class="loading-text">加载中...</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <span>⚙️ 计算引擎</span>
+                    <span id="engineCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
+                </div>
+                <div class="section-body" id="engineArea" style="overflow-x:auto">
+                    <div class="loading-text">加载中...</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <span>🔧 配置</span>
+                    <a id="configLink" href="/ibkr_config.html" style="font-size:10px;color:var(--accent);text-decoration:none;font-family:'JetBrains Mono',monospace">编辑 →</a>
+                </div>
+                <div class="section-body" id="configArea">
+                    <div class="loading-text">加载中...</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <span>📋 最近事件</span>
+                    <span id="eventCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
+                </div>
+                <div class="section-body" id="eventArea">
+                    <div class="loading-text">加载中...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let refreshTimer = null;
+        let currentEnvironment = getCurrentRuntimeEnvironment();
+
+        function initSystemAuth() {
+            const token = getToken();
+            if (!token) {
+                redirectToLogin(`${location.pathname}${location.search}`);
+                return false;
+            }
+            return true;
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function getAuthHeaders(extra = {}) {
+            const headers = { ...extra };
+            const token = getToken();
+            if (token) headers.Authorization = `Bearer ${token}`;
+            return headers;
+        }
+
+        async function requestSystemJson(path) {
+            const response = await fetch(buildPageUrl(path, {}, { environment: currentEnvironment }), {
+                headers: getAuthHeaders()
+            });
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+            const text = await response.text();
+            let data = {};
+            try {
+                data = text ? JSON.parse(text) : {};
+            } catch (_) {
+                data = { ok: false, raw: text };
+            }
+            if (!response.ok) {
+                throw new Error(data.message || data.error || `Request failed (${response.status})`);
+            }
+            return data;
+        }
+
+        async function loadSystemData(showToastOnSuccess = false) {
+            if (!initSystemAuth()) return;
+            try {
+                const freshnessIntervals = ['5m', '15m', '30m', '1h', '4h', '1d'];
+                const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
+                const [health, summary, eventsResp, ...freshnessResponses] = await Promise.all([
+                    requestSystemJson('/api/custom/system/healthz'),
+                    requestSystemJson('/api/custom/system/summaryz'),
+                    apiFetch('system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }),
+                    ...freshnessIntervals.map((interval) =>
+                        apiFetch('ibkr_bars', {
+                            filter: `${envFilterBase} && interval = "${escapeQueryValue(interval)}"`,
+                            sort: '-bar_time_ms',
+                            perPage: 1
+                        })
+                    )
+                ]);
+                const freshnessItems = freshnessIntervals.map((interval, index) => {
+                    const latest = Array.isArray(freshnessResponses[index]?.items) ? freshnessResponses[index].items[0] : null;
+                    const lastBarTimeMs = Number(latest?.bar_time_ms || 0) || 0;
+                    return {
+                        interval,
+                        last_bar_time_ms: lastBarTimeMs,
+                        age_min: lastBarTimeMs ? Math.max(0, Math.round((Date.now() - lastBarTimeMs) / 60000)) : null,
+                        symbol: latest?.symbol || ''
+                    };
+                });
+
+                renderStatus(health);
+                renderTodayStats(summary.today || {});
+                renderFreshness(freshnessItems);
+                renderEngines(summary.ibkr_compute || {});
+                renderConfig(summary);
+                renderEvents(Array.isArray(eventsResp?.items) ? eventsResp.items : []);
+
+                document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()}`;
+                if (showToastOnSuccess) showToast('System 数据已刷新');
+            } catch (err) {
+                console.error('System 加载失败:', err);
+                document.getElementById('refreshInfo').textContent = '加载失败';
+                showToast(`加载失败: ${err.message || err}`);
+            }
+        }
+
+        function renderStatus(health) {
+            const dataHealth = health.ibkr_data || {};
+            const dataEl = document.getElementById('dataStatus');
+            if (dataHealth.status === 'online') {
+                dataEl.innerHTML = '<span class="status-dot dot-green"></span>在线';
+            } else if (dataHealth.status === 'delayed') {
+                dataEl.innerHTML = `<span class="status-dot dot-yellow"></span>延迟 ${escapeHtml(String(dataHealth.last_bar_age_min || '?'))}m`;
+            } else if (dataHealth.status === 'offline') {
+                dataEl.innerHTML = '<span class="status-dot dot-red"></span>离线';
+            } else {
+                dataEl.innerHTML = `<span class="status-dot dot-gray"></span>${escapeHtml(dataHealth.status || '无数据')}`;
+            }
+
+            const comp = health.ibkr_compute || {};
+            const compEl = document.getElementById('computeStatus');
+            if (comp.status === 'running') {
+                compEl.innerHTML = '<span class="status-dot dot-green"></span>运行';
+            } else if (comp.status === 'offline') {
+                compEl.innerHTML = '<span class="status-dot dot-red"></span>离线';
+            } else {
+                compEl.innerHTML = `<span class="status-dot dot-${comp.status === 'error' ? 'red' : 'gray'}"></span>${escapeHtml(comp.status || '--')}`;
+            }
+
+            document.getElementById('writeMode').textContent = health.write_mode || '--';
+        }
+
+        function renderTodayStats(today) {
+            const stats = [
+                { label: 'ORDERS', value: today.orders },
+                { label: 'IBKR BARS', value: today.ibkr_bars },
+                { label: 'IBKR IND', value: today.ibkr_indicators },
+                { label: 'IBKR SIG', value: today.ibkr_signals },
+                { label: 'TARGETS', value: today.ibkr_targets },
+                { label: 'EVENTS', value: today.events }
+            ];
+            document.getElementById('todayStats').innerHTML = stats.map((item) => `
+                <div class="stat-mini">
+                    <div class="stat-mini-label">${escapeHtml(item.label)}</div>
+                    <div class="stat-mini-value">${escapeHtml(String(item.value || 0))}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderFreshness(data) {
+            const el = document.getElementById('freshnessArea');
+            const byInterval = Array.isArray(data)
+                ? data.reduce((acc, item) => {
+                    if (item && item.interval) acc[item.interval] = item;
+                    return acc;
+                }, {})
+                : (data || {});
+            if (!byInterval || Object.keys(byInterval).length === 0) {
+                el.innerHTML = '<div class="loading-text">暂无数据</div>';
+                return;
+            }
+            const tfs = ['5m', '15m', '30m', '1h', '4h', '1d'];
+            let html = '';
+            tfs.forEach((tf) => {
+                const item = byInterval[tf];
+                if (!item) {
+                    html += `<div class="freshness-row">
+                        <span class="freshness-label">${tf}</span>
+                        <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:0;background:#64748b"></div></div>
+                        <span class="freshness-age" style="color:var(--muted)">--</span>
+                    </div>`;
+                    return;
+                }
+                const age = Number(item.age_min || 0);
+                let color = '#ef4444';
+                let pct = 15;
+                if (age <= 2) { color = '#22c55e'; pct = 100; }
+                else if (age <= 5) { color = '#eab308'; pct = 70; }
+                else if (age <= 15) { color = '#f97316'; pct = 40; }
+
+                html += `<div class="freshness-row">
+                    <span class="freshness-label">${tf}</span>
+                    <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+                    <span class="freshness-age" style="color:${color}">${escapeHtml(String(age))}m</span>
+                </div>`;
+            });
+            el.innerHTML = html;
+        }
+
+        function renderEngines(computeData) {
+            const el = document.getElementById('engineArea');
+            const countEl = document.getElementById('engineCount');
+
+            if (!computeData || !computeData.engines || typeof computeData.engines !== 'object') {
+                el.innerHTML = '<div class="loading-text">无引擎数据</div>';
+                countEl.textContent = '0 engines';
+                return;
+            }
+
+            const keys = Object.keys(computeData.engines);
+            countEl.textContent = `${computeData.ready_engines || 0}/${computeData.total_engines || keys.length} ready`;
+
+            if (!keys.length) {
+                el.innerHTML = '<div class="loading-text">无引擎数据</div>';
+                return;
+            }
+
+            let html = '<table class="data-table"><thead><tr><th>ENV / SYMBOL / TF</th><th>BARS</th><th>READY</th><th>LAST</th></tr></thead><tbody>';
+            keys.sort().forEach((key) => {
+                const engine = computeData.engines[key] || {};
+                const readyIcon = engine.is_ready ? 'READY' : 'WARMING';
+                const lastClose = engine.last_close != null ? `$${Number(engine.last_close).toFixed(2)}` : '--';
+                html += `<tr>
+                    <td>${escapeHtml(key)}</td>
+                    <td>${escapeHtml(String(engine.bar_count || 0))}</td>
+                    <td>${escapeHtml(readyIcon)}</td>
+                    <td>${escapeHtml(lastClose)}</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            el.innerHTML = html;
+        }
+
+        function renderConfig(summary) {
+            const el = document.getElementById('configArea');
+            const items = [
+                { label: 'TRADING', value: summary.ibkr_trading_enabled },
+                { label: 'WRITE MODE', value: summary.write_mode },
+                { label: 'COMPUTE', value: summary.compute_enabled },
+                { label: 'TARGET FILTER', value: summary.daily_target_filter },
+                { label: 'MAX POS', value: summary.max_positions },
+                { label: 'COMPUTE URL', value: summary.config?.ibkr_compute_public_url || '--' }
+            ];
+
+            ['sl_atr_mult', 'tp_atr_mult', 'signal_interval_min', 'signal_validity_minutes', 'order_validity_minutes'].forEach((key) => {
+                if (summary.config && summary.config[key] !== undefined && summary.config[key] !== '') {
+                    items.push({ label: key.toUpperCase().replace(/_/g, ' '), value: summary.config[key] });
+                }
+            });
+
+            el.innerHTML = `<div class="config-grid">${items.map((item) => {
+                let valClass = 'val-neutral';
+                let display = String(item.value ?? '--');
+                const normalized = display.trim().toLowerCase();
+                if (normalized === 'true') { valClass = 'val-on'; display = 'ON'; }
+                else if (normalized === 'false') { valClass = 'val-off'; display = 'OFF'; }
+                return `<div class="config-item">
+                    <span class="config-key">${escapeHtml(item.label)}</span>
+                    <span class="config-val ${valClass}">${escapeHtml(display)}</span>
+                </div>`;
+            }).join('')}</div>`;
+        }
+
+        function renderEvents(events) {
+            const el = document.getElementById('eventArea');
+            const countEl = document.getElementById('eventCount');
+
+            if (!events || events.length === 0) {
+                el.innerHTML = '<div class="loading-text">暂无事件</div>';
+                countEl.textContent = '0';
+                return;
+            }
+
+            countEl.textContent = String(events.length);
+            const levelColors = { info: '#64748b', warning: '#eab308', error: '#ef4444' };
+            const sourceLabels = { ibkr_compute: 'COMPUTE', pb: 'PB', manual: 'MANUAL', tradingview: 'TV', ibkr: 'IBKR' };
+
+            el.innerHTML = events.map((event) => {
+                const dotColor = levelColors[event.level] || '#64748b';
+                const source = sourceLabels[event.source] || event.source || '--';
+                const time = event.us_time ? String(event.us_time).slice(11, 16) : '--';
+                return `<div class="event-item">
+                    <div class="event-dot" style="background:${dotColor}"></div>
+                    <div class="event-content">
+                        <div class="event-title">${escapeHtml(event.title || '--')}</div>
+                        <div class="event-meta">${escapeHtml(time)} · ${escapeHtml(source)} · ${escapeHtml(event.event_type || '')}</div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!initSystemAuth()) return;
+            document.getElementById('nav').innerHTML = renderNav('/ibkr_system.html');
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🖥️ IBKR System', { description: '健康 / freshness / 配置总览' });
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_system.html',
+                    kicker: 'Monitor',
+                    label: '系统概览',
+                    copy: '健康 / freshness / config / recent events',
+                    active: true
+                },
+                {
+                    path: '/ibkr_runtime.html',
+                    kicker: 'Runtime',
+                    label: '运行控制台',
+                    copy: '启动 / 2FA / compute / flow trace'
+                }
+            ]);
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
+            document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
+            await loadSystemData(false);
+            refreshTimer = setInterval(() => loadSystemData(false), 30000);
+        });
+
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            window.location.href = buildPageUrl('/ibkr_system.html', {}, { environment: currentEnvironment });
+        };
+    </script>
+</body>
+</html>

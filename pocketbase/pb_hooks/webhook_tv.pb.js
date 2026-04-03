@@ -18,7 +18,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
 
     function getWriteMode(environment) {
         try {
-            return String(envUtils.getConfigValue("qc_write_mode", "shadow", environment) || "shadow").trim().toLowerCase()
+            return String(envUtils.getConfigValue("ibkr_write_mode", "shadow", environment) || "shadow").trim().toLowerCase()
         } catch (_) {
             return "shadow"
         }
@@ -64,6 +64,16 @@ routerAdd("POST", "/webhook/tv", (c) => {
         }
 
         return text
+    }
+
+    function toOptionalBoolean(value) {
+        if (value == null || value === "") {
+            return null
+        }
+        const text = String(value).trim().toLowerCase()
+        if (["true", "1", "yes", "on"].includes(text)) return true
+        if (["false", "0", "no", "off"].includes(text)) return false
+        return null
     }
 
     // ══════════════════════════════════════
@@ -152,26 +162,25 @@ routerAdd("POST", "/webhook/tv", (c) => {
         if (cnTime) extra.cn_time = cnTime
         if (Number.isFinite(barIndex)) extra.bar_index = Math.trunc(barIndex)
         const environment = envUtils.getRuntimeEnvironmentFromData(d, envUtils.LIVE_ENVIRONMENT)
-        const writeMode = getWriteMode(environment)
-        if (writeMode === "primary" || writeMode === "settled") {
-            console.log(`[Webhook TV] ${environment}: qc_write_mode=${writeMode}, TV指标写入已停用`)
-            return c.json(200, { ok: true, skipped: true, reason: "qc_" + writeMode + "_mode", type: "indicator", environment })
-        }
+        const collectionName = "tv_indicators"
         extra.environment = environment
+        if (!extra.source) {
+            extra.source = "tradingview"
+        }
 
         const dedupKey = `${Math.trunc(barTimeMs)}_${symbol}_${interval}`
         console.log(`[Webhook TV] 接收指标数据: symbol=${symbol}, interval=${interval}, bar_time_ms=${Math.trunc(barTimeMs)}, fields=${Object.keys(extra).sort().join(",")}`)
 
         try {
             $app.findFirstRecordByFilter(
-                "indicators",
+                collectionName,
                 "bar_time_ms = {:ms} && symbol = {:sym} && interval = {:tf} && environment = {:env}",
                 { ms: Math.trunc(barTimeMs), sym: symbol, tf: interval, env: environment }
             )
             return c.json(200, { ok: true, msg: "duplicate indicator, skipped", key: dedupKey })
         } catch (_) {}
 
-        const col = $app.findCollectionByNameOrId("indicators")
+        const col = $app.findCollectionByNameOrId(collectionName)
         const rec = new Record(col, {})
 
         rec.set("symbol", symbol)
@@ -249,15 +258,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
         ? [envUtils.normalizeRuntimeEnvironment(requestedEnvironment, envUtils.LIVE_ENVIRONMENT)]
         : [envUtils.LIVE_ENVIRONMENT, envUtils.PAPER_ENVIRONMENT]
     const modeSkippedEnvironments = []
-    const writableEnvironments = targetEnvironments.filter((environment) => {
-        const writeMode = getWriteMode(environment)
-        if (writeMode === "primary" || writeMode === "settled") {
-            console.log(`[Webhook TV] ${environment}: qc_write_mode=${writeMode}, TV信号写入已停用`)
-            modeSkippedEnvironments.push({ environment, mode: writeMode })
-            return false
-        }
-        return true
-    })
+    const writableEnvironments = targetEnvironments
 
     function getThreshold(environment) {
         try {
@@ -293,15 +294,25 @@ routerAdd("POST", "/webhook/tv", (c) => {
 
     const createdEnvironments = []
     const skippedEnvironments = []
-    const col = $app.findCollectionByNameOrId("signals")
+    const workflowEnvironments = []
+    const collectionName = "tv_signals"
+    const col = $app.findCollectionByNameOrId(collectionName)
 
     for (let i = 0; i < writableEnvironments.length; i++) {
         const environment = writableEnvironments[i]
         const extra = { ...baseExtra, environment }
+        if (!extra.source) {
+            extra.source = "tradingview"
+        }
+        const writeMode = getWriteMode(environment)
+        const workflowOverride = toOptionalBoolean(d.workflow_enabled != null ? d.workflow_enabled : extra.workflow_enabled)
+        const workflowEnabled = workflowOverride != null ? workflowOverride : writeMode !== "shadow"
+        extra.write_mode = writeMode
+        extra.workflow_enabled = workflowEnabled
 
         try {
             $app.findFirstRecordByFilter(
-                "signals",
+                collectionName,
                 "signal_id = {:sid} && environment = {:env}",
                 { sid: d.signal_id, env: environment }
             )
@@ -332,10 +343,16 @@ routerAdd("POST", "/webhook/tv", (c) => {
         record.set("script_tag", extra.script_tag)
         record.set("chart_tf", extra.chart_tf)
         record.set("extra", extra)
-        record.set("status", getInitialStatus(environment))
+        record.set("status", String(d.status || getInitialStatus(environment)))
 
         $app.save(record)
         createdEnvironments.push(environment)
+
+        if (!workflowEnabled) {
+            continue
+        }
+
+        workflowEnvironments.push(environment)
 
         try {
             const notifyResult = notifyNewSignal(record);
@@ -412,8 +429,8 @@ routerAdd("POST", "/webhook/tv", (c) => {
                         try {
                             notifyReverseSignal(upsertResult.record, {
                                 message: orderStatus === "Filled"
-                                    ? "检测到反向新信号，QC 将先平旧仓再评估新方向"
-                                    : "检测到反向新信号，QC 将先撤销旧挂单再评估新方向"
+                                    ? "检测到反向新信号，IBKR 将先平旧仓再评估新方向"
+                                    : "检测到反向新信号，IBKR 将先撤销旧挂单再评估新方向"
                             })
                         } catch (notifyErr) {
                             console.error("[Webhook] 逆向飞书通知失败:", notifyErr)
@@ -434,6 +451,7 @@ routerAdd("POST", "/webhook/tv", (c) => {
         ok: true,
         type: "signal",
         created_environments: createdEnvironments,
+        workflow_environments: workflowEnvironments,
         skipped_environments: skippedEnvironments,
         skipped_mode_environments: modeSkippedEnvironments,
     })

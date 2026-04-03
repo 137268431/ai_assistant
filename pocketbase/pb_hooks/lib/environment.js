@@ -13,6 +13,8 @@ const ENVIRONMENT_LABELS = {
     global: "GLOBAL",
 }
 
+const DEFAULT_IBKR_COMPUTE_PUBLIC_URL = "https://qc.lzw-glory.top"
+
 function normalizeRuntimeEnvironment(value, defaultValue) {
     const fallback = RUNTIME_ENVIRONMENTS.includes(defaultValue) ? defaultValue : LIVE_ENVIRONMENT
     const text = String(value || "").trim().toLowerCase()
@@ -150,6 +152,12 @@ function getConfigValue(key, defaultValue, environment) {
     return best ? String(best.get("value") || defaultValue) : defaultValue
 }
 
+function getIbkrComputePublicUrl(environment, defaultValue) {
+    const fallback = String(defaultValue || DEFAULT_IBKR_COMPUTE_PUBLIC_URL || "").trim() || DEFAULT_IBKR_COMPUTE_PUBLIC_URL
+    const configured = getConfigValue("ibkr_compute_public_url", fallback, environment)
+    return String(configured || fallback).trim().replace(/\/+$/, "") || fallback
+}
+
 const exported = {
     LIVE_ENVIRONMENT,
     PAPER_ENVIRONMENT,
@@ -166,6 +174,7 @@ const exported = {
     attachEnvironment,
     hasConfigOverride,
     getConfigValue,
+    getIbkrComputePublicUrl,
 }
 
 if (typeof globalThis !== "undefined") {

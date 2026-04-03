@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IBKR Runtime - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .page-shell {
+            position: relative;
+            z-index: 1;
+            padding: 0 16px 96px;
+        }
+        .hero {
+            position: relative;
+            margin: 12px 0 16px;
+            padding: 20px;
+            border-radius: 20px;
+            border: 1px solid rgba(99, 179, 237, 0.16);
+            background:
+                radial-gradient(circle at top right, rgba(72, 187, 120, 0.18), transparent 38%),
+                radial-gradient(circle at bottom left, rgba(99, 179, 237, 0.22), transparent 42%),
+                linear-gradient(145deg, rgba(14, 20, 32, 0.98), rgba(9, 15, 24, 0.96));
+            box-shadow: 0 24px 60px rgba(2, 8, 23, 0.38);
+            overflow: hidden;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            inset: auto -80px -120px auto;
+            width: 220px;
+            height: 220px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(99, 179, 237, 0.22), transparent 68%);
+            pointer-events: none;
+        }
+        .hero-title-row {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 14px;
+            align-items: flex-start;
+        }
+        .hero-kicker {
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent);
+            letter-spacing: 1.4px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .hero-title {
+            font-size: 24px;
+            font-weight: 700;
+            line-height: 1.12;
+            margin-bottom: 10px;
+        }
+        .hero-title .accent {
+            color: var(--accent);
+        }
+        .hero-copy {
+            max-width: 760px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.65;
+        }
+        .hero-meta {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 10px;
+            min-width: 180px;
+        }
+        .hero-meta-line {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .hero-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 14px;
+        }
+        .status-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .status-chip .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            box-shadow: 0 0 12px currentColor;
+        }
+        .chip-ok { color: #48BB78; }
+        .chip-warn { color: #F6AD55; }
+        .chip-error { color: #FC8181; }
+        .chip-muted { color: #8BA4C4; }
+
+        .action-section {
+            margin-top: 18px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+        }
+        .action-btn {
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 13px 14px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+            color: var(--text);
+            cursor: pointer;
+            text-align: left;
+            transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+        }
+        .action-btn:hover {
+            transform: translateY(-1px);
+            border-color: rgba(99, 179, 237, 0.35);
+            background: linear-gradient(180deg, rgba(99, 179, 237, 0.16), rgba(255,255,255,0.04));
+        }
+        .action-btn:disabled {
+            cursor: wait;
+            opacity: 0.62;
+            transform: none;
+        }
+        .action-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+        .action-copy {
+            display: block;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .action-primary { border-color: rgba(72, 187, 120, 0.22); }
+        .action-danger { border-color: rgba(252, 129, 129, 0.24); }
+        .action-accent { border-color: rgba(99, 179, 237, 0.24); }
+
+        .last-action {
+            margin-top: 14px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(99, 179, 237, 0.12);
+            background: rgba(14, 20, 32, 0.62);
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.6;
+            min-height: 44px;
+        }
+        .challenge-shell {
+            display: grid;
+            gap: 12px;
+        }
+        .challenge-head {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .challenge-code {
+            border-radius: 16px;
+            border: 1px solid rgba(246, 173, 85, 0.28);
+            background: linear-gradient(180deg, rgba(246, 173, 85, 0.12), rgba(255,255,255,0.03));
+            padding: 16px 18px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: #F6AD55;
+        }
+        .challenge-code.is-empty {
+            color: var(--muted);
+            letter-spacing: 0.5px;
+            font-size: 14px;
+        }
+        .challenge-copy {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        .response-label {
+            display: block;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--muted);
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+        }
+        .response-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .response-input {
+            flex: 1;
+            min-width: 0;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--text);
+            padding: 12px 14px;
+            font-size: 15px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 1px;
+        }
+        .response-input:focus {
+            outline: none;
+            border-color: rgba(246, 173, 85, 0.45);
+            box-shadow: 0 0 0 3px rgba(246, 173, 85, 0.12);
+        }
+        .response-btn {
+            border: 1px solid rgba(246, 173, 85, 0.28);
+            border-radius: 14px;
+            background: linear-gradient(180deg, rgba(246, 173, 85, 0.18), rgba(255,255,255,0.04));
+            color: var(--text);
+            padding: 12px 16px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .response-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .metric-grid,
+        .panel-grid,
+        .table-grid {
+            display: grid;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .metric-grid {
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        }
+        .panel-grid,
+        .table-grid {
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        }
+        .panel {
+            background: rgba(14, 20, 32, 0.92);
+            border: 1px solid rgba(99, 179, 237, 0.1);
+            border-radius: 18px;
+            overflow: hidden;
+            min-width: 0;
+        }
+        .panel-header {
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid rgba(99, 179, 237, 0.08);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+        .panel-title {
+            font-size: 14px;
+            font-weight: 700;
+        }
+        .panel-subtitle {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .panel-body {
+            padding: 14px 16px 16px;
+        }
+        .metric-card {
+            background: rgba(14, 20, 32, 0.92);
+            border: 1px solid rgba(99, 179, 237, 0.1);
+            border-radius: 18px;
+            padding: 16px;
+        }
+        .metric-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+        .metric-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+
+        .detail-list {
+            display: grid;
+            gap: 10px;
+        }
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .detail-row:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+        .detail-key {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .detail-value {
+            color: var(--text);
+            font-size: 12px;
+            text-align: right;
+            max-width: 60%;
+            word-break: break-word;
+        }
+        .tag-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .mini-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.06);
+            font-size: 11px;
+            color: var(--text);
+        }
+        .mini-tag .mini-label {
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .data-table-wrap {
+            overflow-x: auto;
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        .data-table th,
+        .data-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            text-align: left;
+            vertical-align: top;
+            white-space: nowrap;
+        }
+        .data-table th {
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.6px;
+        }
+        .data-table tr:last-child td {
+            border-bottom: none;
+        }
+        .table-empty {
+            padding: 22px 0;
+            text-align: center;
+            color: var(--muted);
+            font-size: 12px;
+        }
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .muted {
+            color: var(--muted);
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 4px 8px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .pill-long,
+        .pill-running,
+        .pill-ok,
+        .pill-filled,
+        .pill-online { color: #48BB78; }
+        .pill-short,
+        .pill-error,
+        .pill-offline,
+        .pill-cancelled,
+        .pill-rejected { color: #FC8181; }
+        .pill-pending,
+        .pill-warning,
+        .pill-delayed,
+        .pill-awaiting_confirm,
+        .pill-waiting_response,
+        .pill-submitted { color: #F6AD55; }
+        .pill-neutral,
+        .pill-expired,
+        .pill-init,
+        .pill-unknown { color: #8BA4C4; }
+
+        @media (max-width: 720px) {
+            .hero {
+                padding: 18px 16px;
+            }
+            .hero-title {
+                font-size: 21px;
+            }
+            .hero-meta {
+                align-items: flex-start;
+            }
+            .metric-value {
+                font-size: 22px;
+            }
+            .data-table th,
+            .data-table td {
+                padding: 9px 6px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="nav"></div>
+
+    <div class="page-shell">
+        <div id="contextBar"></div>
+        <div id="pageBridge"></div>
+
+        <section class="hero">
+            <div class="hero-title-row">
+                <div>
+                    <div class="hero-kicker">IBKR Runtime Console</div>
+                    <div class="hero-title">把 <span class="accent">ibkr_compute</span> 的运行状态、调度动作和数据链路放到 PocketBase 页面里统一管理。</div>
+                    <div class="hero-copy">这里聚合 compute 服务状态、最新 bars / signals / orders / system events，并直接触发计算、扫描、重算、Gateway 启停与重登。页面默认按当前环境过滤，方便检查 live / paper / backtest 的流转是否连续。</div>
+                </div>
+                <div class="hero-meta">
+                    <div id="environmentHeader"></div>
+                    <div class="hero-meta-line" id="refreshInfo">等待加载...</div>
+                    <div class="hero-meta-line" id="computeBaseInfo">Runtime bootstrap</div>
+                    <div class="hero-meta-line" id="authInfo">Session bootstrap</div>
+                </div>
+            </div>
+
+            <div class="hero-badges" id="heroBadges">
+                <span class="status-chip chip-muted"><span class="dot" style="background:currentColor"></span>等待状态</span>
+            </div>
+
+            <div class="action-section" id="actionSection">
+                <button class="action-btn action-primary" onclick="handleRuntimeAction('start')">
+                    <span class="action-label">启动 Gateway</span>
+                    <span class="action-copy">调用 `/api/custom/ibkr/start`，启动 IBKR 登录与会话链路。</span>
+                </button>
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('stop')">
+                    <span class="action-label">停止 Gateway</span>
+                    <span class="action-copy">调用 `/api/custom/ibkr/stop`，停止运行中的 IBKR 服务。</span>
+                </button>
+                <button class="action-btn action-accent" onclick="handleRuntimeAction('reauth')">
+                    <span class="action-label">请求 2FA</span>
+                    <span class="action-copy">发送飞书 2FA 卡片，等你点击按钮后再触发登录验证。</span>
+                </button>
+                <button class="action-btn action-accent" onclick="handleRuntimeAction('compute')">
+                    <span class="action-label">执行 Compute</span>
+                    <span class="action-copy">通过 PocketBase 代理触发 `/compute`，检查 bars → indicators → signals。</span>
+                </button>
+                <button class="action-btn action-accent" onclick="handleRuntimeAction('scan')">
+                    <span class="action-label">执行 Scan</span>
+                    <span class="action-copy">触发盘前扫描，把候选标的写入 `ibkr_targets`。</span>
+                </button>
+                <button class="action-btn" onclick="handleRuntimeAction('recompute')">
+                    <span class="action-label">重算历史缓存</span>
+                    <span class="action-copy">清空内存引擎缓存后重新跑 compute，用于核对链路回放。</span>
+                </button>
+                <button class="action-btn" onclick="loadRuntimeData(true)">
+                    <span class="action-label">手动刷新</span>
+                    <span class="action-copy">重新抓取 healthz / statusz / summaryz 与最近几张表的数据。</span>
+                </button>
+            </div>
+
+            <div class="last-action" id="lastAction">最近动作：尚未执行。</div>
+        </section>
+
+        <section class="metric-grid" id="metricGrid"></section>
+
+        <section class="panel-grid">
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">2FA 控制台</div>
+                        <div class="panel-subtitle">push / challenge / response</div>
+                    </div>
+                </div>
+                <div class="panel-body" id="twoFactorPanel"></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">运行详情</div>
+                        <div class="panel-subtitle">healthz + statusz</div>
+                    </div>
+                </div>
+                <div class="panel-body" id="runtimeDetail"></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">关键配置</div>
+                        <div class="panel-subtitle">summaryz + runtime/config</div>
+                    </div>
+                    <a id="configLink" href="/ibkr_config.html" class="panel-subtitle" style="text-decoration:none;color:var(--accent)">配置页 →</a>
+                </div>
+                <div class="panel-body" id="configDetail"></div>
+            </div>
+        </section>
+
+        <section class="panel-grid">
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">计算引擎</div>
+                        <div class="panel-subtitle" id="engineHint">等待数据</div>
+                    </div>
+                </div>
+                <div class="panel-body data-table-wrap" id="engineTable"></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">最新 Bars</div>
+                        <div class="panel-subtitle">`ibkr_bars` 最近写入</div>
+                    </div>
+                </div>
+                <div class="panel-body data-table-wrap" id="barsTable"></div>
+            </div>
+        </section>
+
+        <section class="table-grid">
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">最近 Signals</div>
+                        <div class="panel-subtitle">`ibkr_signals`</div>
+                    </div>
+                </div>
+                <div class="panel-body data-table-wrap" id="signalsTable"></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">最近 Orders</div>
+                        <div class="panel-subtitle">`orders`</div>
+                    </div>
+                </div>
+                <div class="panel-body data-table-wrap" id="ordersTable"></div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <div class="panel-title">最近系统事件</div>
+                    <div class="panel-subtitle">`system_events`</div>
+                </div>
+            </div>
+            <div class="panel-body data-table-wrap" id="eventsTable"></div>
+        </section>
+    </div>
+
+    <script>
+        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let refreshTimer = null;
+        let actionPending = false;
+        let latestTwoFactorState = {};
+
+        function initRuntimeAuth() {
+            const token = getToken();
+            if (!token) {
+                redirectToLogin(`${location.pathname}${location.search}`);
+                return false;
+            }
+            return true;
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function getAuthHeaders(extra = {}) {
+            const headers = { ...extra };
+            const token = getToken();
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            return headers;
+        }
+
+        async function requestRuntimeJson(path, { method = 'GET', body = null } = {}) {
+            const options = {
+                method,
+                headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
+            };
+            if (body) options.body = JSON.stringify(body);
+            const response = await fetch(buildPageUrl(path, {}, { environment: currentEnvironment }), options);
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+            const text = await response.text();
+            let data = {};
+            try {
+                data = text ? JSON.parse(text) : {};
+            } catch (_) {
+                data = { ok: false, raw: text };
+            }
+            if (!response.ok) {
+                throw new Error(data.message || data.error || `Request failed (${response.status})`);
+            }
+            return data;
+        }
+
+        function toArray(payload) {
+            return Array.isArray(payload?.items) ? payload.items : [];
+        }
+
+        function statusClass(value) {
+            const text = String(value || '').trim().toLowerCase();
+            if (!text) return 'pill-neutral';
+            if (['running', 'ok', 'online', 'filled', 'long', 'buy', 'active', 'executed'].includes(text)) return `pill-${text}`;
+            if (['warning', 'delayed', 'pending', 'awaiting_confirm', 'waiting_response', 'submitted'].includes(text)) return `pill-${text}`;
+            if (['error', 'offline', 'cancelled', 'rejected', 'short', 'sell', 'failed'].includes(text)) return `pill-${text}`;
+            if (['expired', 'init', 'candidate'].includes(text)) return 'pill-neutral';
+            return 'pill-neutral';
+        }
+
+        function chipTone(value) {
+            const text = String(value || '').trim().toLowerCase();
+            if (['running', 'ok', 'online'].includes(text)) return 'chip-ok';
+            if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_response'].includes(text)) return 'chip-warn';
+            if (['error', 'offline', 'failed', 'rejected'].includes(text)) return 'chip-error';
+            return 'chip-muted';
+        }
+
+        function normalizeCode(value) {
+            return String(value || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+        }
+
+        function formatMoney(value) {
+            const number = Number(value || 0);
+            if (!Number.isFinite(number)) return '--';
+            return `$${number.toFixed(2)}`;
+        }
+
+        function formatCompactNumber(value) {
+            const number = Number(value || 0);
+            if (!Number.isFinite(number)) return '0';
+            return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(number);
+        }
+
+        function formatTimeLabel(value) {
+            if (!value) return '--';
+            if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+                return formatTime(value, 'America/New_York', 'default');
+            }
+            if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value;
+            return String(value);
+        }
+
+        function formatAgo(isoValue) {
+            if (!isoValue) return '--';
+            const date = new Date(isoValue);
+            if (Number.isNaN(date.getTime())) return '--';
+            const diffMin = Math.max(0, Math.round((Date.now() - date.getTime()) / 60000));
+            if (diffMin < 1) return 'just now';
+            if (diffMin < 60) return `${diffMin}m ago`;
+            const diffHour = Math.round(diffMin / 60);
+            if (diffHour < 24) return `${diffHour}h ago`;
+            return `${Math.round(diffHour / 24)}d ago`;
+        }
+
+        function renderEmpty(message) {
+            return `<div class="table-empty">${escapeHtml(message)}</div>`;
+        }
+
+        function normalizeComputeHealth(health) {
+            return {
+                status: health?.ibkr_compute?.status || health?.status || 'unknown',
+                last_compute: health?.ibkr_compute?.last_compute || health?.last_compute || null,
+                last_scan: health?.ibkr_compute?.last_scan || health?.last_scan || null,
+                error_count: health?.ibkr_compute?.error_count ?? health?.error_count ?? 0,
+                uptime_s: health?.ibkr_compute?.uptime_s ?? health?.uptime_s ?? 0
+            };
+        }
+
+        function deriveDataHealth(latestBar) {
+            const lastBarTimeMs = Number(latestBar?.bar_time_ms || 0) || 0;
+            if (!lastBarTimeMs) {
+                return { status: 'no_data', last_bar_age_min: null, last_symbol: '' };
+            }
+            const ageMin = Math.max(0, Math.round((Date.now() - lastBarTimeMs) / 60000));
+            return {
+                status: ageMin <= 5 ? 'online' : (ageMin <= 15 ? 'delayed' : 'offline'),
+                last_bar_age_min: ageMin,
+                last_symbol: latestBar?.symbol || ''
+            };
+        }
+
+        function buildEnvironmentFilter() {
+            return `environment = "${escapeQueryValue(currentEnvironment)}"`;
+        }
+
+        function summarizeAction(action, payload) {
+            if (!payload || typeof payload !== 'object') {
+                return `${action} 已执行。`;
+            }
+            if (action === 'compute' || action === 'scan' || action === 'recompute') {
+                const pieces = [];
+                if (payload.environments) pieces.push(`env=${payload.environments.join(',')}`);
+                if (payload.processed != null) pieces.push(`processed=${payload.processed}`);
+                if (payload.signals != null) pieces.push(`signals=${payload.signals}`);
+                if (payload.errors != null) pieces.push(`errors=${payload.errors}`);
+                if (payload.candidates != null) pieces.push(`candidates=${payload.candidates}`);
+                return `${action} 返回：${pieces.join(' · ') || 'ok'}`;
+            }
+            return `${action} 返回：${payload.message || payload.status || (payload.ok === false ? 'failed' : 'ok')}`;
+        }
+
+        function setActionState(isPending) {
+            actionPending = isPending;
+            document.querySelectorAll('.action-btn').forEach((button) => {
+                button.disabled = isPending;
+            });
+        }
+
+        function renderMetricCards(summary, health, status, twoFactorState, latestBar) {
+            const today = summary?.today || {};
+            const computeHealth = normalizeComputeHealth(health);
+            const dataHealth = deriveDataHealth(latestBar);
+            const isAuthenticated = Boolean(status?.session?.authenticated);
+            const gatewayRunning = Boolean(status?.gateway?.running);
+            const twoFactorStatus = String(twoFactorState?.status || '').trim().toUpperCase() || '--';
+            const cards = [
+                {
+                    label: 'Session Auth',
+                    value: isAuthenticated ? 'AUTHED' : 'WAITING',
+                    copy: `2FA ${twoFactorStatus} · gateway ${gatewayRunning ? 'running' : 'offline'}`
+                },
+                {
+                    label: 'Ready Engines',
+                    value: `${status?.ready_engines || 0}/${status?.total_engines || 0}`,
+                    copy: `compute count ${status?.compute_count || 0}`
+                },
+                {
+                    label: 'Today Signals',
+                    value: formatCompactNumber(today.ibkr_signals || 0),
+                    copy: `orders ${today.orders || 0} · events ${today.events || 0}`
+                },
+                {
+                    label: 'Today Bars',
+                    value: formatCompactNumber(today.ibkr_bars || 0),
+                    copy: `targets ${today.ibkr_targets || 0}`
+                },
+                {
+                    label: 'Compute Status',
+                    value: String(computeHealth.status || 'unknown').toUpperCase(),
+                    copy: `last compute ${formatAgo(computeHealth.last_compute)}`
+                },
+                {
+                    label: 'Write Mode',
+                    value: String(summary?.write_mode || '--').toUpperCase(),
+                    copy: `compute ${summary?.compute_enabled ? 'enabled' : 'disabled'} · trading ${summary?.ibkr_trading_enabled ? 'enabled' : 'disabled'}`
+                },
+                {
+                    label: 'Data Freshness',
+                    value: dataHealth.last_bar_age_min != null ? `${dataHealth.last_bar_age_min}m` : '--',
+                    copy: `latest ${dataHealth.last_symbol || 'n/a'}`
+                }
+            ];
+            document.getElementById('metricGrid').innerHTML = cards.map((card) => `
+                <div class="metric-card">
+                    <div class="metric-label">${escapeHtml(card.label)}</div>
+                    <div class="metric-value">${escapeHtml(card.value)}</div>
+                    <div class="metric-copy">${escapeHtml(card.copy)}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderHero(summary, health, status, runtimeConfig, twoFactorState, latestBar) {
+            const computeHealth = normalizeComputeHealth(health);
+            const dataHealth = deriveDataHealth(latestBar);
+            const dataStatus = dataHealth.status || 'no_data';
+            const computeStatus = computeHealth.status || 'unknown';
+            const gatewayRunning = Boolean(status?.gateway?.running);
+            const sessionAuthenticated = Boolean(status?.session?.authenticated);
+            const twoFactorStatus = String(twoFactorState?.status || '').trim().toLowerCase() || 'idle';
+            const chips = [
+                { label: `Compute ${String(computeStatus).toUpperCase()}`, tone: chipTone(computeStatus) },
+                { label: `Data ${String(dataStatus).toUpperCase()}`, tone: chipTone(dataStatus) },
+                { label: `Gateway ${gatewayRunning ? 'RUNNING' : 'OFFLINE'}`, tone: gatewayRunning ? 'chip-ok' : 'chip-error' },
+                { label: `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`, tone: sessionAuthenticated ? 'chip-ok' : 'chip-warn' },
+                { label: `2FA ${twoFactorStatus.toUpperCase()}`, tone: sessionAuthenticated ? 'chip-ok' : chipTone(twoFactorStatus) },
+                { label: `Write ${String(summary?.write_mode || '--').toUpperCase()}`, tone: 'chip-muted' },
+                { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
+                { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
+                { label: `Active Env ${String(currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
+            ];
+            document.getElementById('heroBadges').innerHTML = chips.map((chip) => `
+                <span class="status-chip ${chip.tone}"><span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}</span>
+            `).join('');
+
+            const computeBase = runtimeConfig.find((item) => item.key === 'ibkr_compute_public_url')?.value
+                || summary?.config?.ibkr_compute_public_url
+                || 'https://qc.lzw-glory.top';
+            document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase}`;
+            const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
+            const authSummary = sessionAuthenticated
+                ? 'session authenticated'
+                : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`;
+            document.getElementById('authInfo').textContent = authSummary;
+            document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
+        }
+
+        function renderRuntimeDetail(summary, health, status, twoFactorState, latestBar) {
+            const computeHealth = normalizeComputeHealth(health);
+            const dataHealth = deriveDataHealth(latestBar);
+            const sessionAuthenticated = Boolean(status?.session?.authenticated);
+            const rows = [
+                ['Gateway', status?.gateway?.running ? 'RUNNING' : 'OFFLINE'],
+                ['Session', sessionAuthenticated ? 'AUTHENTICATED' : 'WAITING_FOR_2FA'],
+                ['2FA Status', String(twoFactorState?.status || '--').toUpperCase()],
+                ['2FA Mode', String(twoFactorState?.mode || '--').toUpperCase()],
+                ['Challenge', String(twoFactorState?.challenge_code || '--')],
+                ['2FA Request', formatTimeLabel(twoFactorState?.last_request_at)],
+                ['2FA Result', formatTimeLabel(twoFactorState?.result_at)],
+                ['Response Received', formatTimeLabel(twoFactorState?.response_received_at)],
+                ['Response Submitted', formatTimeLabel(twoFactorState?.response_submitted_at)],
+                ['Last Compute', formatTimeLabel(computeHealth.last_compute)],
+                ['Last Scan', formatTimeLabel(computeHealth.last_scan)],
+                ['Compute Count', String(status?.compute_count || 0)],
+                ['Error Count', String(computeHealth.error_count || 0)],
+                ['Uptime', `${Math.round(Number(computeHealth.uptime_s || 0) / 60)} min`],
+                ['Default Envs', Array.isArray(status?.default_environments) ? status.default_environments.join(', ') : '--'],
+                ['Supported Envs', Array.isArray(status?.supported_environments) ? status.supported_environments.join(', ') : '--'],
+                ['Target Filter', summary?.daily_target_filter ? 'ON' : 'OFF'],
+                ['Max Positions', String(summary?.max_positions || '--')],
+                ['Bars Latest', dataHealth.last_symbol ? `${dataHealth.last_symbol} · ${dataHealth.last_bar_age_min || 0}m` : '--']
+            ];
+            document.getElementById('runtimeDetail').innerHTML = `<div class="detail-list">${rows.map(([key, value]) => `
+                <div class="detail-row">
+                    <div class="detail-key">${escapeHtml(key)}</div>
+                    <div class="detail-value">${escapeHtml(value)}</div>
+                </div>
+            `).join('')}</div>`;
+        }
+
+        function renderTwoFactorPanel(twoFactorState) {
+            latestTwoFactorState = twoFactorState || {};
+            const status = String(twoFactorState?.status || 'requested').toLowerCase();
+            const mode = String(twoFactorState?.mode || '').trim();
+            const challengeCode = String(twoFactorState?.challenge_code || '').trim();
+            const canSubmit = status === 'waiting_response' && !!challengeCode;
+            const helper = canSubmit
+                ? '当前网关已进入 Challenge/Response 模式。请在手机 IBKR App 中输入上方 Challenge，得到 Response Code 后在这里提交。'
+                : (twoFactorState?.last_result || '当前没有等待中的 Challenge。若状态为手机推送，请直接点手机通知；若后续切到 challenge，这里会显示对应的 Challenge。');
+
+            document.getElementById('twoFactorPanel').innerHTML = `
+                <div class="challenge-shell">
+                    <div class="challenge-head">
+                        <span class="mini-tag"><span class="mini-label">STATUS</span><span class="pill ${statusClass(status)}">${escapeHtml(String(twoFactorState?.status || '--').toUpperCase())}</span></span>
+                        <span class="mini-tag"><span class="mini-label">MODE</span>${escapeHtml(mode || '--')}</span>
+                        <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(String(twoFactorState?.source || '--'))}</span>
+                    </div>
+                    <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || '当前未检测到 Challenge')}</div>
+                    <div class="challenge-copy">${escapeHtml(helper)}</div>
+                    <label class="response-label" for="challengeResponseInput">Response Code</label>
+                    <div class="response-row">
+                        <input
+                            id="challengeResponseInput"
+                            class="response-input"
+                            type="text"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            spellcheck="false"
+                            placeholder="${canSubmit ? '输入 Response Code' : '等待 Challenge'}"
+                            ${canSubmit ? '' : 'disabled'}
+                        />
+                        <button id="challengeResponseSubmit" class="response-btn" onclick="submitTwoFactorResponse()" ${canSubmit ? '' : 'disabled'}>提交响应码</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderConfigDetail(summary, runtimeConfig) {
+            const preferredKeys = [
+                'ibkr_compute_public_url',
+                'ibkr_write_mode',
+                'ibkr_compute_enabled',
+                'ibkr_trading_enabled',
+                'max_positions',
+                'sl_atr_mult',
+                'tp_atr_mult',
+                'signal_interval_min',
+                'signal_validity_minutes',
+                'order_validity_minutes'
+            ];
+            const configMap = {};
+            runtimeConfig.forEach((item) => {
+                if (item?.key && !(item.key in configMap)) configMap[item.key] = item.value;
+            });
+            Object.entries(summary?.config || {}).forEach(([key, value]) => {
+                if (!(key in configMap)) configMap[key] = value;
+            });
+            const chips = preferredKeys
+                .filter((key) => configMap[key] !== undefined && configMap[key] !== '')
+                .map((key) => `
+                    <span class="mini-tag"><span class="mini-label">${escapeHtml(key)}</span>${escapeHtml(String(configMap[key]))}</span>
+                `);
+            document.getElementById('configDetail').innerHTML = chips.length
+                ? `<div class="tag-row">${chips.join('')}</div>`
+                : renderEmpty('暂无关键配置');
+        }
+
+        function renderEngineTable(status) {
+            const engines = status?.engines && typeof status.engines === 'object' ? Object.entries(status.engines) : [];
+            document.getElementById('engineHint').textContent = `${status?.ready_engines || 0}/${status?.total_engines || 0} ready`;
+            if (!engines.length) {
+                document.getElementById('engineTable').innerHTML = renderEmpty('当前没有预热引擎');
+                return;
+            }
+            const rows = engines.sort((a, b) => a[0].localeCompare(b[0])).slice(0, 20).map(([key, engine]) => `
+                <tr>
+                    <td class="mono">${escapeHtml(key)}</td>
+                    <td>${engine.bar_count || 0}</td>
+                    <td><span class="pill ${engine.is_ready ? 'pill-ok' : 'pill-pending'}">${engine.is_ready ? 'READY' : 'WARMING'}</span></td>
+                    <td>${engine.last_close != null ? formatMoney(engine.last_close) : '--'}</td>
+                    <td class="mono">${engine.last_bar_time_ms ? formatBarTimeMsToET(engine.last_bar_time_ms) : '--'}</td>
+                </tr>
+            `).join('');
+            document.getElementById('engineTable').innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr><th>ENV / SYMBOL / TF</th><th>BARS</th><th>READY</th><th>LAST CLOSE</th><th>LAST BAR</th></tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            `;
+        }
+
+        function renderBarsTable(items) {
+            if (!items.length) {
+                document.getElementById('barsTable').innerHTML = renderEmpty('暂无 bars 数据');
+                return;
+            }
+            document.getElementById('barsTable').innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr><th>TIME</th><th>SYMBOL</th><th>TF</th><th>CLOSE</th><th>VOL</th></tr>
+                    </thead>
+                    <tbody>
+                        ${items.map((item) => `
+                            <tr>
+                                <td class="mono">${item.bar_time_ms ? formatBarTimeMsToET(item.bar_time_ms) : escapeHtml(item.us_time || '--')}</td>
+                                <td>${escapeHtml(item.symbol || '--')}</td>
+                                <td>${escapeHtml(item.interval || '--')}</td>
+                                <td>${formatMoney(item.close)}</td>
+                                <td>${formatCompactNumber(item.volume || 0)}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderSignalsTable(items) {
+            if (!items.length) {
+                document.getElementById('signalsTable').innerHTML = renderEmpty('暂无最近信号');
+                return;
+            }
+            document.getElementById('signalsTable').innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr><th>TIME</th><th>SYMBOL</th><th>DIRECTION</th><th>STATUS</th><th>ENTRY</th><th>RR</th></tr>
+                    </thead>
+                    <tbody>
+                        ${items.map((item) => {
+                            const direction = String(item.direction || '').toLowerCase();
+                            const status = String(item.status || '').toLowerCase();
+                            return `
+                                <tr>
+                                    <td class="mono">${escapeHtml((item.us_time || item.created || '--').slice(0, 19))}</td>
+                                    <td>${escapeHtml(item.symbol || '--')}</td>
+                                    <td><span class="pill ${direction === 'short' ? 'pill-short' : 'pill-long'}">${escapeHtml((item.direction || '--').toUpperCase())}</span></td>
+                                    <td><span class="pill ${statusClass(status)}">${escapeHtml(item.status || '--')}</span></td>
+                                    <td>${formatMoney(item.entry)}</td>
+                                    <td>${escapeHtml(String(item.rr || '--'))}</td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderOrdersTable(items) {
+            if (!items.length) {
+                document.getElementById('ordersTable').innerHTML = renderEmpty('暂无最近订单');
+                return;
+            }
+            document.getElementById('ordersTable').innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr><th>TIME</th><th>SYMBOL</th><th>ROLE</th><th>STATUS</th><th>QTY</th><th>PRICE</th></tr>
+                    </thead>
+                    <tbody>
+                        ${items.map((item) => {
+                            const status = String(item.status || '').toLowerCase();
+                            const direction = String(item.direction || '').toLowerCase();
+                            return `
+                                <tr>
+                                    <td class="mono">${escapeHtml((item.us_time || item.created || '--').slice(0, 19))}</td>
+                                    <td>${escapeHtml(item.symbol || '--')}</td>
+                                    <td><span class="pill ${direction === 'short' ? 'pill-short' : 'pill-long'}">${escapeHtml(item.role || item.order_type || '--')}</span></td>
+                                    <td><span class="pill ${statusClass(status)}">${escapeHtml(item.status || '--')}</span></td>
+                                    <td>${escapeHtml(String(item.quantity || 0))}</td>
+                                    <td>${item.fill_price ? formatMoney(item.fill_price) : formatMoney(item.limit_price)}</td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderEventsTable(items) {
+            if (!items.length) {
+                document.getElementById('eventsTable').innerHTML = renderEmpty('暂无系统事件');
+                return;
+            }
+            document.getElementById('eventsTable').innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr><th>TIME</th><th>LEVEL</th><th>SOURCE</th><th>TITLE</th></tr>
+                    </thead>
+                    <tbody>
+                        ${items.map((item) => `
+                            <tr>
+                                <td class="mono">${escapeHtml((item.us_time || item.created || '--').slice(0, 19))}</td>
+                                <td><span class="pill ${statusClass(String(item.level || '').toLowerCase())}">${escapeHtml(item.level || '--')}</span></td>
+                                <td>${escapeHtml(item.source || '--')}</td>
+                                <td style="white-space:normal">${escapeHtml(item.title || '--')}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        async function loadRuntimeData(showToastOnSuccess = false) {
+            if (!initRuntimeAuth()) return;
+            try {
+                const envFilter = buildEnvironmentFilter();
+                const [health, status, summary, twoFactorResp, runtimeConfigResp, barsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
+                    requestRuntimeJson('/api/custom/ibkr/healthz'),
+                    requestRuntimeJson('/api/custom/ibkr/statusz'),
+                    requestRuntimeJson('/api/custom/system/summaryz'),
+                    requestRuntimeJson('/api/custom/ibkr/2fa/status'),
+                    requestRuntimeJson('/api/custom/ibkr/runtime/config'),
+                    apiFetch('ibkr_bars', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
+                    apiFetch('ibkr_signals', { filter: envFilter, sort: '-created', perPage: 8 }),
+                    apiFetch('orders', { filter: envFilter, sort: '-created', perPage: 8 }),
+                    apiFetch('system_events', { filter: envFilter, sort: '-created', perPage: 8 })
+                ]);
+
+                const runtimeConfig = Array.isArray(runtimeConfigResp?.items) ? runtimeConfigResp.items : [];
+                const twoFactorState = twoFactorResp?.state || {};
+                const barsItems = toArray(barsResp);
+                const latestBar = barsItems[0] || null;
+                renderHero(summary, health, status, runtimeConfig, twoFactorState, latestBar);
+                renderMetricCards(summary, health, status, twoFactorState, latestBar);
+                renderTwoFactorPanel(twoFactorState);
+                renderRuntimeDetail(summary, health, status, twoFactorState, latestBar);
+                renderConfigDetail(summary, runtimeConfig);
+                renderEngineTable(status);
+                renderBarsTable(barsItems);
+                renderSignalsTable(toArray(signalsResp));
+                renderOrdersTable(toArray(ordersResp));
+                renderEventsTable(toArray(eventsResp));
+
+                if (showToastOnSuccess) showToast('Runtime 数据已刷新');
+            } catch (error) {
+                console.error('Runtime 加载失败:', error);
+                document.getElementById('refreshInfo').textContent = '加载失败';
+                document.getElementById('lastAction').textContent = `加载失败：${error.message || error}`;
+                showToast(`加载失败: ${error.message || error}`);
+            }
+        }
+
+        async function submitTwoFactorResponse() {
+            if (!initRuntimeAuth()) return;
+            const input = document.getElementById('challengeResponseInput');
+            const button = document.getElementById('challengeResponseSubmit');
+            const responseCode = normalizeCode(input?.value || '');
+            const challengeCode = String(latestTwoFactorState?.challenge_code || '').trim();
+
+            if (!challengeCode) {
+                showToast('当前没有可提交的 Challenge');
+                return;
+            }
+            if (!responseCode) {
+                showToast('请输入 Response Code');
+                input?.focus();
+                return;
+            }
+
+            if (button) button.disabled = true;
+            try {
+                const payload = await requestRuntimeJson('/api/custom/ibkr/2fa/respond', {
+                    method: 'POST',
+                    body: {
+                        environment: currentEnvironment,
+                        response_code: responseCode,
+                        challenge_code: challengeCode,
+                        source: 'runtime_page'
+                    }
+                });
+                if (input) input.value = '';
+                document.getElementById('lastAction').textContent = `最近动作：已提交 Challenge Response (${payload.status || 'ok'})`;
+                showToast('Response Code 已提交，等待网关认证');
+                await loadRuntimeData(false);
+            } catch (error) {
+                const message = `提交 Response 失败：${error.message || error}`;
+                document.getElementById('lastAction').textContent = message;
+                showToast(message);
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        async function handleRuntimeAction(action) {
+            if (actionPending) return;
+            if (action === 'recompute' && !window.confirm('确认执行 recompute？这会重置内存引擎缓存并重新跑一次 compute。')) {
+                return;
+            }
+            if (!initRuntimeAuth()) return;
+
+            const actionMap = {
+                start: { path: '/api/custom/ibkr/start', body: { environment: currentEnvironment } },
+                stop: { path: '/api/custom/ibkr/stop', body: { environment: currentEnvironment } },
+                reauth: {
+                    path: '/api/custom/ibkr/2fa/request',
+                    body: {
+                        environment: currentEnvironment,
+                        reason: 'manual_reauth',
+                        source: 'runtime_page',
+                        force_reset: true,
+                        message: '已从 PocketBase Runtime 页面请求 2FA，请在飞书中点击按钮触发验证。'
+                    }
+                },
+                compute: { path: '/api/custom/ibkr/proxy', body: { action: 'compute', environment: currentEnvironment } },
+                scan: { path: '/api/custom/ibkr/proxy', body: { action: 'scan', environment: currentEnvironment } },
+                recompute: { path: '/api/custom/ibkr/proxy', body: { action: 'recompute', environment: currentEnvironment } }
+            };
+
+            const target = actionMap[action];
+            if (!target) return;
+
+            setActionState(true);
+            document.getElementById('lastAction').textContent = `执行中：${action} ...`;
+            try {
+                const payload = await requestRuntimeJson(target.path, { method: 'POST', body: target.body });
+                const message = summarizeAction(action, payload);
+                document.getElementById('lastAction').textContent = `最近动作：${message}`;
+                showToast(message);
+                await loadRuntimeData(false);
+            } catch (error) {
+                const message = `动作失败：${action} · ${error.message || error}`;
+                document.getElementById('lastAction').textContent = message;
+                showToast(message);
+            } finally {
+                setActionState(false);
+            }
+        }
+
+        window.handleRuntimeAction = handleRuntimeAction;
+        window.submitTwoFactorResponse = submitTwoFactorResponse;
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            window.location.href = buildPageUrl('/ibkr_runtime.html', {}, { environment: currentEnvironment });
+        };
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!initRuntimeAuth()) return;
+            document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('⚙️ IBKR Runtime', { description: '运行/调度/链路观察' });
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_system.html',
+                    kicker: 'Monitor',
+                    label: '系统概览',
+                    copy: '健康 / freshness / config / recent events'
+                },
+                {
+                    path: '/ibkr_runtime.html',
+                    kicker: 'Runtime',
+                    label: '运行控制台',
+                    copy: '启动 / 2FA / compute / flow trace',
+                    active: true
+                }
+            ]);
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
+            document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
+            await loadRuntimeData(false);
+            refreshTimer = setInterval(() => loadRuntimeData(false), 30000);
+        });
+    </script>
+</body>
+</html>

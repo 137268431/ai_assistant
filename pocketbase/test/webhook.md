@@ -457,7 +457,7 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
 
 ## 相关文档
 
-- [信号管理 API](./signals.md) - 了解信号接收后的处理流程
-- [订单管理 API](./orders.md) - 了解 QC 下单后的订单流程
+- [信号管理 API](./ibkr_signals.md) - 了解信号接收后的处理流程
+- [订单管理 API](./orders.md) - 了解 IBKR 下单后的订单流程
 - [逆向信号 API](./reverse_signals.md) - 了解逆向信号检测机制
 - [配置参考](./config.md) - 了解系统配置项

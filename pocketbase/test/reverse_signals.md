@@ -4,11 +4,11 @@
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| `POST` | `/api/custom/reverse/calculate` | 基于最新指标计算并写入反转信号 |
-| `GET` | `/api/custom/reverse/list` | 获取某日反转信号列表（页面使用） |
-| `GET` | `/api/custom/reverse/pending` | 拉取待处理反转信号（QC 使用） |
-| `POST` | `/api/custom/reverse/dispatch` | 页面请求执行或取消反转信号 |
-| `POST` | `/api/custom/reverse/ack` | QC 回写执行结果 |
+| `POST` | `/api/custom/ibkr/reverse/calculate` | 基于最新指标计算并写入反转信号 |
+| `GET` | `/api/custom/ibkr/reverse/list` | 获取某日反转信号列表（页面使用） |
+| `GET` | `/api/custom/ibkr/reverse/pending` | 拉取待处理反转信号（IBKR 使用） |
+| `POST` | `/api/custom/ibkr/reverse/dispatch` | 页面请求执行或取消反转信号 |
+| `POST` | `/api/custom/ibkr/reverse/ack` | IBKR 回写执行结果 |
 
 ---
 
@@ -38,7 +38,7 @@
 
 ```json
 {
-  "signals": [
+  "ibkr_signals": [
     {
       "id": "reverse_record_id",
       "symbol": "AAPL",
@@ -112,7 +112,7 @@
 页面不再直接更新 `reverse_signals` 表，而是统一走：
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/dispatch" \
+curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/reverse/dispatch" \
   -H "Content-Type: application/json" \
   -d '{
     "reverse_id": "reverse_record_id",
@@ -123,17 +123,17 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/dispatch" \
 
 ### `action`
 
-- `execute`：保留 `pending`，写入 `manual_requested`，由 QC 尽快处理
+- `execute`：保留 `pending`，写入 `manual_requested`，由 IBKR 尽快处理
 - `cancel`：直接将该 reverse 置为 `cancelled`
 
 ---
 
 ## `reverse/ack`
 
-QC 完成后统一回写：
+IBKR 完成后统一回写：
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/ack" \
+curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/reverse/ack" \
   -H "Content-Type: application/json" \
   -d '{
     "signal_id": "reverse_record_id",
@@ -179,11 +179,11 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/reverse/ack" \
 
 ### 3. 页面请求执行
 
-页面点击“执行”只会写 `manual_requested`，不会伪造 QC 已执行状态。
+页面点击“执行”只会写 `manual_requested`，不会伪造 IBKR 已执行状态。
 
-### 4. QC 执行结果
+### 4. IBKR 执行结果
 
-QC 会根据 `action_type` 执行：
+IBKR 会根据 `action_type` 执行：
 
 - `cancel`
 - `close`
@@ -200,5 +200,5 @@ QC 会根据 `action_type` 执行：
 
 - `A` 生成 reverse signal，可选强制 `force_action_type`
 - `B` 查询 `reverse/list`
-- `C` 先 `dispatch execute`，再模拟 QC `reverse/ack`
+- `C` 先 `dispatch execute`，再模拟 IBKR `reverse/ack`
 - `H` 在保留当前交易组的情况下发送反向新信号，直接触发 `signal_conflict`

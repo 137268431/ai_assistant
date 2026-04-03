@@ -183,18 +183,18 @@ show_menu() {
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[1]${NC} 发送信号到PB      ${CYAN}│${NC}  ${MAGENTA}[2]${NC} 查询信号状态(pending)         ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[3]${NC} 飞书-确认信号    ${CYAN}│${NC}  ${MAGENTA}[4]${NC} 飞书-拒绝信号             ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[5]${NC} QC确认信号→创建交易组Init(signals/ack)                         ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[5]${NC} IBKR确认信号→创建交易组Init(signals/ack)                         ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        📦 订单流程                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[6]${NC} QC同步Entry Submitted ${CYAN}│${NC}  ${MAGENTA}[7]${NC} Entry Filled+激活TP/SL    ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[6]${NC} IBKR同步Entry Submitted ${CYAN}│${NC}  ${MAGENTA}[7]${NC} Entry Filled+激活TP/SL    ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[8]${NC} TP成交+SL取消     ${CYAN}│${NC}  ${MAGENTA}[9]${NC} SL成交+TP取消          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[O]${NC} 飞书-取消订单    ${CYAN}│${NC}  ${MAGENTA}[P]${NC} 飞书-平仓订单           ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        ⚡ 逆向信号                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[A]${NC} 生成逆向信号    ${CYAN}│${NC}  ${MAGENTA}[B]${NC} 查询逆向信号               ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[H]${NC} 发送反向新信号  ${CYAN}│${NC}  ${MAGENTA}[C]${NC} 请求执行+模拟QC回写        ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[H]${NC} 发送反向新信号  ${CYAN}│${NC}  ${MAGENTA}[C]${NC} 请求执行+模拟IBKR回写        ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        📊 指标数据                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
@@ -270,7 +270,7 @@ check_today_test_data() {
     local us_date=$(get_us_date)
 
     # 查询信号
-    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "检查-查询信号")
+    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "检查-查询信号")
     local sig_count=$(echo "$sig_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询订单
@@ -303,7 +303,7 @@ cleanup_today_data() {
     echo -e "${YELLOW}═══ 清理所有测试数据（不限日期）══════${NC}"
 
     # ── 信号 ──
-    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?filter=(script_tag~'test'||signal_id~'_sig')&perPage=200" "" "清理-查询所有信号")
+    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?filter=(script_tag~'test'||signal_id~'_sig')&perPage=200" "" "清理-查询所有信号")
     local sig_count=$(echo "$sig_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_sig=0
 
@@ -317,7 +317,7 @@ cleanup_today_data() {
                 [ -n "$sid" ] && echo -e "    ${RED}✗${NC} $sid"
             done
             for sig_id in $deleted_sig_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/signals/records/${sig_id}" "" "删除信号" > /dev/null 2>&1
+                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_signals/records/${sig_id}" "" "删除信号" > /dev/null 2>&1
             done
         fi
     fi
@@ -607,7 +607,7 @@ test_2_query_signals() {
     log_info "查询 ${TEST_DATE} (US: ${us_date}) 的待确认/等待执行测试信号..."
 
     # 使用 collection API 直接查询（只查询 pending 或 awaiting_confirm 状态的测试信号）
-    response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=(status='pending'||status='awaiting_confirm')&&(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询待确认/等待执行测试信号")
+    response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?sort=-created&filter=(status='pending'||status='awaiting_confirm')&&(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询待确认/等待执行测试信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -688,10 +688,10 @@ test_4_feishu_reject() {
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
-# 5. QC确认信号 (signals/ack)
-test_5_qc_ack_signal() {
+# 5. IBKR确认信号 (signals/ack)
+test_5_ibkr_ack_signal() {
     echo ""
-    echo -e "${MAGENTA}═══ 📡 步骤5: QC确认信号 → 创建交易组 Init ═══${NC}"
+    echo -e "${MAGENTA}═══ 📡 步骤5: IBKR确认信号 → 创建交易组 Init ═══${NC}"
 
     local sig_id
     sig_id=$(cache_get "pb_sig_latest")
@@ -739,7 +739,7 @@ test_5_qc_ack_signal() {
 {
   "signal_id": "${sig_id}",
   "status": "executed",
-  "note": "QC确认测试信号",
+  "note": "IBKR确认测试信号",
   "order": {
     "unique_id": "${entry_unique_id}",
     "order_id": "${entry_broker_id}",
@@ -763,7 +763,7 @@ test_5_qc_ack_signal() {
     "cn_time": "${sig_cn_time}",
     "bar_time_ms": ${timestamp_ms},
     "extra": {
-      "reason": "QC确认测试信号",
+      "reason": "IBKR确认测试信号",
       "created_via": "pb-flow.sh",
       "scenario": "signal_ack_init"
     }
@@ -827,7 +827,7 @@ EOF
 )
 
     # 通过 signals/ack hook 处理状态流转
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/signals/ack" "$json" "QC确认信号→创建交易组")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/signals/ack" "$json" "IBKR确认信号→创建交易组")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -843,10 +843,10 @@ EOF
 # 📦 订单流程测试
 # ============================================================
 
-# 6. QC同步订单 Submitted
-test_6_qc_order_submitted() {
+# 6. IBKR同步订单 Submitted
+test_6_ibkr_order_submitted() {
     echo ""
-    echo -e "${MAGENTA}═══ 📦 步骤6: QC同步订单 Submitted ═══${NC}"
+    echo -e "${MAGENTA}═══ 📦 步骤6: IBKR同步订单 Submitted ═══${NC}"
 
     ensure_order_relation_cache || { log_error "没有信号缓存，请先执行步骤1和5"; return 1; }
 
@@ -901,14 +901,14 @@ test_6_qc_order_submitted() {
   "cn_time": "${sig_cn_time}",
   "bar_time_ms": ${timestamp_ms},
   "extra": {
-    "reason": "QC同步Submitted",
+    "reason": "IBKR同步Submitted",
     "scenario": "entry_submitted"
   }
 }
 EOF
 )
 
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "QC同步订单Submitted")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$json" "IBKR同步订单Submitted")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -918,8 +918,8 @@ EOF
     fi
 }
 
-# 7. QC同步订单 Filled
-test_7_qc_order_filled() {
+# 7. IBKR同步订单 Filled
+test_7_ibkr_order_filled() {
     echo ""
     echo -e "${MAGENTA}═══ 📦 步骤7: Entry Filled + 激活 TP/SL ═══${NC}"
 
@@ -995,14 +995,14 @@ test_7_qc_order_filled() {
   "cn_time": "${sig_cn_time}",
   "bar_time_ms": ${timestamp_ms},
   "extra": {
-    "reason": "QC同步Filled",
+    "reason": "IBKR同步Filled",
     "scenario": "entry_filled"
   }
 }
 EOF
 )
 
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "QC同步订单Filled")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$json" "IBKR同步订单Filled")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -1070,15 +1070,15 @@ EOF
 EOF
 )
 
-    local tp_submit_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$tp_submit_json" "激活止盈TP")
+    local tp_submit_response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$tp_submit_json" "激活止盈TP")
     echo "$tp_submit_response" | jq '.' 2>/dev/null || echo "$tp_submit_response"
 
-    local sl_submit_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$sl_submit_json" "激活止损SL")
+    local sl_submit_response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$sl_submit_json" "激活止损SL")
     echo "$sl_submit_response" | jq '.' 2>/dev/null || echo "$sl_submit_response"
 }
 
 # 8. 同步订单止盈 TP
-test_8_qc_order_takeprofit() {
+test_8_ibkr_order_takeprofit() {
     echo ""
     echo -e "${MAGENTA}═══ 📦 步骤8: 同步 TP 成交 + SL 对手单取消 ═══${NC}"
 
@@ -1162,7 +1162,7 @@ test_8_qc_order_takeprofit() {
 EOF
 )
 
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "同步订单止盈TP")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$json" "同步订单止盈TP")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -1199,12 +1199,12 @@ EOF
 EOF
 )
 
-    local sl_cancel_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$sl_cancel_json" "同步对手SL取消")
+    local sl_cancel_response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$sl_cancel_json" "同步对手SL取消")
     echo "$sl_cancel_response" | jq '.' 2>/dev/null || echo "$sl_cancel_response"
 }
 
 # 9. 同步订单止损 SL
-test_9_qc_order_stoploss() {
+test_9_ibkr_order_stoploss() {
     echo ""
     echo -e "${MAGENTA}═══ 📦 步骤9: 同步 SL 成交 + TP 对手单取消 ═══${NC}"
 
@@ -1290,7 +1290,7 @@ test_9_qc_order_stoploss() {
 EOF
 )
 
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$json" "同步订单止损SL")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$json" "同步订单止损SL")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -1327,7 +1327,7 @@ EOF
 EOF
 )
 
-    local tp_cancel_response=$(curl_exec "POST" "${BASE_URL}/api/custom/orders/upsert" "$tp_cancel_json" "同步对手TP取消")
+    local tp_cancel_response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/orders/upsert" "$tp_cancel_json" "同步对手TP取消")
     echo "$tp_cancel_response" | jq '.' 2>/dev/null || echo "$tp_cancel_response"
 }
 
@@ -1427,8 +1427,8 @@ build_reverse_ack_prices() {
 fetch_reverse_detail_json() {
     local rev_id=$1
     local query
-    query=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/list?date=${TEST_DATE}&limit=200" "" "查询reverse详情")
-    echo "$query" | jq -c --arg id "$rev_id" '.signals[] | select(.id == $id)' 2>/dev/null | head -n1
+    query=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/reverse/list?date=${TEST_DATE}&limit=200" "" "查询reverse详情")
+    echo "$query" | jq -c --arg id "$rev_id" '.ibkr_signals[] | select(.id == $id)' 2>/dev/null | head -n1
 }
 
 # A. 计算逆向信号
@@ -1486,7 +1486,7 @@ test_a_calc_reverse() {
 EOF
 )
 
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/reverse/calculate" "$json" "计算逆向信号")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/reverse/calculate" "$json" "计算逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -1516,30 +1516,30 @@ test_b_query_reverse() {
     echo -e "${CYAN}📤 当前逆向信号:${NC} ${GREEN}${rev_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    response=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/list?date=${TEST_DATE}&limit=200" "" "查询逆向信号")
+    response=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/reverse/list?date=${TEST_DATE}&limit=200" "" "查询逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
-    local count=$(echo "$response" | jq '.signals | length' 2>/dev/null || echo "0")
+    local count=$(echo "$response" | jq '.ibkr_signals | length' 2>/dev/null || echo "0")
     log_info "共 $count 条逆向信号"
 
     # 保存最新的
     if [ "$count" -gt 0 ]; then
-        local latest_rev=$(echo "$response" | jq -r '.signals[0].id' 2>/dev/null)
+        local latest_rev=$(echo "$response" | jq -r '.ibkr_signals[0].id' 2>/dev/null)
         cache_set "pb_rev_latest" "$latest_rev"
         cache_set "pb_rev_id" "$latest_rev"
     fi
 }
 
-# C. 请求执行并模拟 QC 回写
+# C. 请求执行并模拟 IBKR 回写
 test_c_ack_reverse() {
     echo ""
-    echo -e "${MAGENTA}═══ ⚡ C: 请求执行+模拟QC回写 ═══${NC}"
+    echo -e "${MAGENTA}═══ ⚡ C: 请求执行+模拟IBKR回写 ═══${NC}"
 
     local rev_id=$(cache_get "pb_rev_id")
     if [ -z "$rev_id" ]; then
-        local rev_pending=$(curl_exec "GET" "${BASE_URL}/api/custom/reverse/pending" "" "获取逆向信号ID")
-        rev_id=$(echo "$rev_pending" | jq -r '.signals[0].id' 2>/dev/null)
+        local rev_pending=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/reverse/pending" "" "获取逆向信号ID")
+        rev_id=$(echo "$rev_pending" | jq -r '.ibkr_signals[0].id' 2>/dev/null)
     fi
 
     if [ -z "$rev_id" ] || [ "$rev_id" = "null" ]; then
@@ -1570,7 +1570,7 @@ EOF
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     local dispatch_response
-    dispatch_response=$(curl_exec "POST" "${BASE_URL}/api/custom/reverse/dispatch" "$dispatch_json" "请求执行 reverse")
+    dispatch_response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/reverse/dispatch" "$dispatch_json" "请求执行 reverse")
     echo "$dispatch_response" | jq '.' 2>/dev/null || echo "$dispatch_response"
 
     local rev_detail
@@ -1609,7 +1609,7 @@ EOF
 {
   "signal_id": "${rev_id}",
   "status": "confirmed",
-  "reason": "pb-flow 模拟 QC ${action_type}",
+  "reason": "pb-flow 模拟 IBKR ${action_type}",
   "order_id": "${broker_order_id}",
   "broker_order_id": "${broker_order_id}",
   "order_unique_id": "${detail_order_unique_id}",
@@ -1633,7 +1633,7 @@ EOF
 EOF
 )
 
-    response=$(curl_exec "POST" "${BASE_URL}/api/custom/reverse/ack" "$json" "确认逆向信号")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/reverse/ack" "$json" "确认逆向信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -1827,7 +1827,7 @@ test_e_list_signals() {
     local us_date=$(get_us_date)
     log_info "查询 ${TEST_DATE} (US: ${us_date}) 测试信号（script_tag~test 或 signal_id~_sig）"
     # 过滤：script_tag 包含 test 或 signal_id 包含 _sig
-    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询测试信号")
+    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询测试信号")
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
@@ -2024,8 +2024,8 @@ main() {
             2) echo -e "${MAGENTA}查询信号状态${NC}" ;;
             3) echo -e "${MAGENTA}飞书-确认信号${NC}" ;;
             4) echo -e "${MAGENTA}飞书-拒绝信号${NC}" ;;
-            5) echo -e "${MAGENTA}QC确认信号 → 创建交易组Init${NC}" ;;
-            6) echo -e "${MAGENTA}QC同步 Entry Submitted${NC}" ;;
+            5) echo -e "${MAGENTA}IBKR确认信号 → 创建交易组Init${NC}" ;;
+            6) echo -e "${MAGENTA}IBKR同步 Entry Submitted${NC}" ;;
             7) echo -e "${MAGENTA}Entry Filled + 激活 TP/SL${NC}" ;;
             8) echo -e "${MAGENTA}同步 TP 成交 + SL 对手单取消${NC}" ;;
             9) echo -e "${MAGENTA}同步 SL 成交 + TP 对手单取消${NC}" ;;
@@ -2066,11 +2066,11 @@ main() {
             2) test_2_query_signals ;;
             3) test_3_feishu_confirm ;;
             4) test_4_feishu_reject ;;
-            5) test_5_qc_ack_signal ;;
-            6) test_6_qc_order_submitted ;;
-            7) test_7_qc_order_filled ;;
-            8) test_8_qc_order_takeprofit ;;
-            9) test_9_qc_order_stoploss ;;
+            5) test_5_ibkr_ack_signal ;;
+            6) test_6_ibkr_order_submitted ;;
+            7) test_7_ibkr_order_filled ;;
+            8) test_8_ibkr_order_takeprofit ;;
+            9) test_9_ibkr_order_stoploss ;;
             O|o) test_o_cancel_order ;;
             P|p) test_p_close_order ;;
             A|a) test_a_calc_reverse ;;

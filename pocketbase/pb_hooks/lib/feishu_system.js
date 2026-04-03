@@ -17,8 +17,8 @@ var LEVEL_CONFIG = {
 }
 
 var SOURCE_LABELS = {
-    qc: "QuantConnect",
-    qc_compute: "QC Compute",
+    qc: "IBKR Data",
+    ibkr_compute: "IBKR Compute",
     pb: "PocketBase",
     manual: "手动"
 }
@@ -71,7 +71,7 @@ function buildSystemCard(level, source, title, detailFields, environment) {
             tag: "button",
             text: { tag: "plain_text", content: "📊 查看系统状态" },
             type: "default",
-            multi_url: { url: PB_HOST + "/system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
+            multi_url: { url: PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
         }]
     })
 
@@ -130,7 +130,7 @@ function buildSimpleCard(level, source, title, detailFields, environment) {
             tag: "button",
             text: { tag: "plain_text", content: "📊 查看系统状态" },
             type: "default",
-            multi_url: { url: PB_HOST + "/system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
+            multi_url: { url: PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
         }]
     })
 
@@ -192,7 +192,7 @@ function notifyStatusChange(source, title, detail, environment) {
 }
 
 function notifyComputeStats(stats, environment) {
-    return notifySystemEvent("compute_stats", "info", "qc_compute", "计算完成", stats, environment)
+    return notifySystemEvent("compute_stats", "info", "ibkr_compute", "计算完成", stats, environment)
 }
 
 function notifyDailyReport(report, environment) {

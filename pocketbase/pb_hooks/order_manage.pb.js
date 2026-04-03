@@ -5,8 +5,8 @@
  * 订单管理 API（替代 GAS order_manager.gs）
  */
 
-// POST /api/custom/orders/upsert - 订单 upsert，自动写入 order_details
-routerAdd("POST", "/api/custom/orders/upsert", (c) => {
+// POST /api/custom/ibkr/orders/upsert - 订单 upsert，自动写入 order_details
+routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
   const { notifyNewOrder, notifyOrder, getOrderStatusInfo } = require(`${__hooks}/lib/feishu_order.js`)
   const { appendOrderDetail, getOrderExtra, mergeOrderExtra, resolveOrderRelationship, resolveOrderStatusEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
   const envUtils = require(`${__hooks}/lib/environment.js`)
@@ -41,7 +41,7 @@ routerAdd("POST", "/api/custom/orders/upsert", (c) => {
   console.log(`[OrderUpsert] relation_status: ${data.relation_status}`);
   console.log(`[OrderUpsert] extra: ${JSON.stringify(data.extra || {})}`);
 
-  // 字段映射：QC 发送的字段名 -> PB schema 字段名（已统一）
+  // 字段映射：IBKR 发送的字段名 -> PB schema 字段名（已统一）
   const environment = envUtils.getRuntimeEnvironmentFromData(data, envUtils.LIVE_ENVIRONMENT);
   const uniqueId = data.unique_id;
   const orderType = data.order_type;

@@ -9,6 +9,7 @@ console.log("[FeishuPB] Hook 文件开始加载...")
 
 routerAdd("POST", "/webhook/feishu/callback", (c) => {
     const { sendFeishuCallbackResponse } = require(`${__hooks}/lib/feishu_app.js`)
+    const { handle2faCardCallback } = require(`${__hooks}/lib/feishu_2fa.js`)
     const { handleSignalCardCallback } = require(`${__hooks}/lib/feishu_signal.js`)
     const { handleOrderCardCallback } = require(`${__hooks}/lib/feishu_order.js`)
 
@@ -32,6 +33,14 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
         const environment = value.environment || body.environment || ""
 
         console.log("[FeishuCallback] 收到回调请求, action:", action, "signalId:", signalId, "orderId:", orderId, "updateToken:", updateToken ? "存在" : "无")
+
+        if (action && action.indexOf("ibkr_2fa_") === 0) {
+            return handle2faCardCallback(c, {
+                action: action,
+                environment: environment,
+                updateToken: updateToken
+            })
+        }
 
         if (orderId) {
             return handleOrderCardCallback(c, {

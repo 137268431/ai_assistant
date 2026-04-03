@@ -4,7 +4,7 @@
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| `POST` | `/api/custom/orders/upsert` | 创建或更新单条订单，并自动追加 `order_details` |
+| `POST` | `/api/custom/ibkr/orders/upsert` | 创建或更新单条订单，并自动追加 `order_details` |
 | `GET` | `/webhook/order/cancel?id={entry_unique_id}` | 取消主入场单 |
 | `GET` | `/webhook/order/close?id={entry_unique_id}` | 关闭整个交易组 |
 
@@ -16,7 +16,7 @@
 
 | 字段 | 说明 |
 |------|------|
-| `unique_id` | QC 侧唯一订单 ID，`orders` 的逻辑主键 |
+| `unique_id` | IBKR 侧唯一订单 ID，`orders` 的逻辑主键 |
 | `order_id` | 兼容字段，通常与 broker id 同步 |
 | `broker_order_id` | 原始 broker 订单 ID |
 | `trade_group_id` | 交易组 ID |
@@ -39,7 +39,7 @@
 ### 1. Entry Submitted
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_entry",
@@ -73,7 +73,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
 ### 2. TP Submitted（由 Entry Filled 激活）
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_take_profit",
@@ -107,7 +107,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
 ### 3. TP Filled
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_take_profit",
@@ -143,7 +143,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
 ### 4. SL Counterpart Canceled
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/orders/upsert" \
+curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_stop_loss",

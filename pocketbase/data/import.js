@@ -21,7 +21,7 @@ function cfg(key, value, defaultValue, displayName, groupName, sortOrder, descri
 }
 
 const configData = [
-  cfg('trading_enabled', 'TRUE', 'TRUE', '交易总开关', '核心交易', 100, 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
+  cfg('ibkr_trading_enabled', 'TRUE', 'TRUE', '交易总开关', '核心交易', 100, 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
   cfg('signal_auto_confirm', 'FALSE', 'FALSE', '信号自动确认', '核心交易', 110, 'TRUE 时信号直接进入 pending 状态自动执行，FALSE 时需在管理页面手动确认'),
   cfg('max_positions', '3', '3', '最大持仓数', '核心交易', 120, '最大同时持仓数'),
   cfg('max_daily_sl', '3', '3', '每日止损熔断次数', '核心交易', 130, '达到次数上限后停止当日新增交易'),
@@ -48,12 +48,12 @@ const configData = [
   cfg('watchlist_interval_min', '5', '5', '标的同步间隔', '任务调度', 440, '联动 sync_*: 同步窗口内按该间隔同步标的'),
   cfg('signal_validity_minutes', '30', '30', '信号有效期', '任务调度', 450, '超过此时间的信号将被忽略'),
   cfg('order_validity_minutes', '30', '30', '订单有效期', '任务调度', 460, 'Init/Submitted 状态的订单超过此时间自动标记为 Canceled'),
-  cfg('pb_scheduler_enabled', 'TRUE', 'TRUE', 'PB 前端定时刷新', '任务调度', 470, '仅控制 PB 前端页面的定时刷新，QC 算法调度不受此开关影响'),
+  cfg('pb_scheduler_enabled', 'TRUE', 'TRUE', 'PB 前端定时刷新', '任务调度', 470, '仅控制 PB 前端页面的定时刷新，IBKR 算法调度不受此开关影响'),
 
   cfg('notification_channel', 'feishu', 'feishu', '通知渠道', '通知中心', 500, 'feishu=默认飞书，email=仅邮件，all=飞书+邮件；订单飞书由 PB 订单卡片触发'),
   cfg('alert_email', '137268431@qq.com', '137268431@qq.com', '邮件收件人', '通知中心', 510, '仅在通知渠道包含 email 时生效'),
   cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态通知', '通知中心', 520, '开盘、重启等状态通知开关'),
-  cfg('order_notify_enabled', 'TRUE', 'TRUE', '订单邮件补充通知', '通知中心', 530, '控制 QC 侧订单邮件补充通知；飞书订单卡片由 PB 同步触发'),
+  cfg('order_notify_enabled', 'TRUE', 'TRUE', '订单邮件补充通知', '通知中心', 530, '控制 IBKR 侧订单邮件补充通知；飞书订单卡片由 PB 同步触发'),
   cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '通知中心', 540, '收盘后发送当日交易汇总'),
   cfg('manual_stop_notify_enabled', 'TRUE', 'TRUE', '手动停止通知', '通知中心', 550, '手动停止算法时发送通知'),
   cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '健康检查通知', '通知中心', 560, '盘前、盘中、盘后健康状态汇报'),
@@ -69,12 +69,13 @@ const configData = [
   cfg('log_level', 'INFO', 'INFO', '日志级别', '运行模式', 800, 'DEBUG(详细) / INFO(重要) / WARN(告警) / ERROR(错误)'),
   cfg('deployment_mode', 'live', 'live', '部署模式', '运行模式', 810, 'live=实盘，paper=模拟盘；用于统一标记数据来源'),
 
-  cfg('qc_write_mode', 'shadow', 'shadow', 'QC 写入模式', 'PB / QC 服务', 900, 'shadow(仅写新表) / primary(双写新旧表) / settled(仅写旧表, TV停写)'),
-  cfg('qc_compute_enabled', 'TRUE', 'TRUE', 'QC Compute 服务开关', 'PB / QC 服务', 910, '控制定时指标计算和盘前扫描'),
-  cfg('qc_bar_publish_enabled', 'TRUE', 'TRUE', 'QC K线发布开关', 'PB / QC 服务', 920, '控制 BarPublisher 是否向 PB 推送 OHLCV 数据'),
+  cfg('ibkr_write_mode', 'shadow', 'shadow', 'IBKR 写入模式', 'PB / IBKR 服务', 900, 'shadow(仅写新表) / primary(双写新旧表) / settled(仅写旧表, TV停写)'),
+  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'IBKR Compute 地址', 'PB / IBKR 服务', 905, 'PocketBase 代理与运行页访问的公开 Compute 地址'),
+  cfg('ibkr_compute_enabled', 'TRUE', 'TRUE', 'IBKR Compute 服务开关', 'PB / IBKR 服务', 910, '控制定时指标计算和盘前扫描'),
+  cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'IBKR K线发布开关', 'PB / IBKR 服务', 920, '控制 BarPublisher 是否向 PB 推送 OHLCV 数据'),
 
   cfg('market_index_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '大盘指数标的', '市场分析', 1000, '用于监控和关联分析的大盘指数代码，逗号分隔'),
-  cfg('daily_target_filter_on', 'FALSE', 'FALSE', '每日目标筛选', '市场分析', 1010, '开启后信号需经 daily_targets 筛选才进入执行流程')
+  cfg('ibkr_target_filter_on', 'FALSE', 'FALSE', '每日目标筛选', '市场分析', 1010, '开启后信号需经 ibkr_targets 筛选才进入执行流程')
 ];
 
 const watchlistData = [
@@ -114,7 +115,6 @@ const watchlistData = [
   {"ticker": "EQNR", "exchange": "BATS", "industry": "Integrated Oil", "created_us": "2026-02-27 09:32", "created_cn": "2026-02-27 22:32", "updated_us": "2026-03-03 09:57", "updated_cn": "2026-03-03 22:57"},
   {"ticker": "OXY", "exchange": "BATS", "industry": "Integrated Oil", "created_us": "2026-02-25 11:57", "created_cn": "2026-02-26 00:57", "updated_us": "2026-03-03 09:56", "updated_cn": "2026-03-03 22:56"},
   {"ticker": "PBR", "exchange": "BATS", "industry": "Integrated Oil", "created_us": "2026-02-25 11:58", "created_cn": "2026-02-26 00:58", "updated_us": "2026-03-03 09:57", "updated_cn": "2026-03-03 22:57"},
-  {"ticker": "PBR.A", "exchange": "BATS", "industry": "Integrated Oil", "created_us": "2026-02-25 11:58", "created_cn": "2026-02-26 00:58", "updated_us": "2026-03-03 09:57", "updated_cn": "2026-03-03 22:57"},
   {"ticker": "SHEL", "exchange": "BATS", "industry": "Integrated Oil", "created_us": "2026-02-25 11:58", "created_cn": "2026-02-26 00:58", "updated_us": "2026-03-03 09:56", "updated_cn": "2026-03-03 22:56"},
   {"ticker": "SU", "exchange": "BATS", "industry": "Integrated Oil", "created_us": "2026-02-25 11:59", "created_cn": "2026-02-26 00:59", "updated_us": "2026-03-03 09:57", "updated_cn": "2026-03-03 22:57"},
   {"ticker": "XOM", "exchange": "BATS", "industry": "Integrated Oil", "created_us": "2026-02-27 09:31", "created_cn": "2026-02-27 22:31", "updated_us": "2026-03-03 09:57", "updated_cn": "2026-03-03 22:57"},

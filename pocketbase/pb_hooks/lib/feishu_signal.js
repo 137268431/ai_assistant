@@ -53,7 +53,7 @@ function buildOpenLinkButton(label, url) {
 
 function buildSignalPageUrl(d) {
     if (!d || !d.signal_id) return ""
-    var url = PB_HOST + "/signals.html?signal_id=" + encodeURIComponent(d.signal_id)
+    var url = PB_HOST + "/ibkr_signals.html?signal_id=" + encodeURIComponent(d.signal_id)
     if (d.page_date) {
         url += "&date=" + encodeURIComponent(d.page_date)
     }
@@ -62,7 +62,7 @@ function buildSignalPageUrl(d) {
 
 function buildSignalOrdersPageUrl(d) {
     if (!d || !d.signal_id) return ""
-    var url = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(d.signal_id)
+    var url = PB_HOST + "/ibkr_orders.html?signal_id=" + encodeURIComponent(d.signal_id)
     if (d.page_date) {
         url += "&date=" + encodeURIComponent(d.page_date)
     }
@@ -153,7 +153,7 @@ function getSignalStatusInfo(status) {
 }
 
 /**
- * 从 signals record 构建展示用数据（回调和通知共用）
+ * 从 ibkr_signals record 构建展示用数据（回调和通知共用）
  * 兼容 PB record（有 get() 方法）和 plain object
  */
 function buildSignalDisplayData(recordOrData) {
@@ -212,7 +212,7 @@ function buildSignalDisplayData(recordOrData) {
                 var msym = marketSyms[i]
                 try {
                     var recs = $app.findRecordsByFilter(
-                        "indicators",
+                        "ibkr_indicators",
                         "(environment = {:env} || environment = '') && symbol = {:sym}",
                         "-bar_time_ms",
                         1,
@@ -234,10 +234,10 @@ function buildSignalDisplayData(recordOrData) {
             }
             if (fetched.length > 0) {
                 marketIndexes = fetched
-                console.log("[FeishuSignal] 从 indicators 表查询 market_indexes:", JSON.stringify(fetched))
+                console.log("[FeishuSignal] 从 ibkr_indicators 表查询 market_indexes:", JSON.stringify(fetched))
             }
         } catch (e) {
-            console.log("[FeishuSignal] 查询 indicators 表失败:", e)
+            console.log("[FeishuSignal] 查询 ibkr_indicators 表失败:", e)
         }
     }
 
@@ -498,7 +498,7 @@ function handleSignalCardCallback(c, options) {
     var record
     try {
         record = $app.findFirstRecordByFilter(
-            "signals",
+            "ibkr_signals",
             "(id = {:id} || signal_id = {:id}) && environment = {:env}",
             { id: signalId, env: environment }
         )

@@ -312,13 +312,14 @@ function showToast(msg, duration = 2500) {
 function renderNav(activePage) {
   const pages = [
     { path: '/index.html', icon: '🏠', label: '首页' },
-    { path: '/signals.html', icon: '📡', label: '信号' },
-    { path: '/reverse_signals.html', icon: '🔄', label: '反转' },
-    { path: '/orders.html', icon: '📋', label: '订单' },
-    { path: '/order_details.html', icon: '📜', label: '明细' },
-    { path: '/indicators.html', icon: '📈', label: '指标' },
-    { path: '/stats.html', icon: '📊', label: '统计' },
-    { path: '/system.html', icon: '🖥️', label: '监控' }
+    { path: '/ibkr_signals.html', icon: '📡', label: '信号' },
+    { path: '/ibkr_reverse_signals.html', icon: '🔄', label: '反转' },
+    { path: '/ibkr_orders.html', icon: '📋', label: '订单' },
+    { path: '/ibkr_order_details.html', icon: '📜', label: '明细' },
+    { path: '/ibkr_indicators.html', icon: '📈', label: '指标' },
+    { path: '/ibkr_stats.html', icon: '📊', label: '统计' },
+    { path: '/ibkr_system.html', icon: '🖥️', label: '监控' },
+    { path: '/ibkr_runtime.html', icon: '🎛️', label: '运行' }
   ];
 
   return `
@@ -942,6 +943,24 @@ function renderPageContextBar(title, options = {}) {
   `;
 }
 
+function renderPageBridge(items = []) {
+  if (!Array.isArray(items) || items.length === 0) return '';
+  return `
+    <div class="page-bridge">
+      ${items.map((item) => {
+        const href = buildPageUrl(item.path || '/', item.params || {}, item.options || {});
+        return `
+          <a href="${href}" class="page-bridge-link${item.active ? ' active' : ''}">
+            <span class="page-bridge-kicker">${item.kicker || ''}</span>
+            <span class="page-bridge-label">${item.label || ''}</span>
+            <span class="page-bridge-copy">${item.copy || ''}</span>
+          </a>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 // ── 通用 CSS 样式 ──
 function getCommonStyles() {
   return `
@@ -1034,6 +1053,61 @@ function getCommonStyles() {
         font-size: 12px;
         color: var(--muted);
         font-family: 'JetBrains Mono', monospace;
+      }
+
+      .page-bridge {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 10px;
+        margin: 0 16px 16px;
+        position: relative;
+        z-index: 1;
+      }
+
+      .page-bridge-link {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(14,20,32,0.88);
+        text-decoration: none;
+        color: var(--text);
+        transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+      }
+
+      .page-bridge-link:hover {
+        transform: translateY(-1px);
+        border-color: rgba(99,179,237,0.28);
+        background: rgba(20,28,46,0.96);
+      }
+
+      .page-bridge-link.active {
+        border-color: rgba(99,179,237,0.34);
+        background: linear-gradient(180deg, rgba(99,179,237,0.16), rgba(20,28,46,0.94));
+        box-shadow: 0 12px 28px rgba(2, 8, 23, 0.24);
+      }
+
+      .page-bridge-kicker {
+        color: var(--accent);
+        font-size: 10px;
+        font-family: 'JetBrains Mono', monospace;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+
+      .page-bridge-label {
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .page-bridge-copy {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
       }
 
       .env-badge {
@@ -1143,9 +1217,9 @@ function getCommonStyles() {
         font-family: 'JetBrains Mono', monospace;
         letter-spacing: 0.5px;
         transition: color 0.2s;
-        min-width: 0;
+        min-width: 76px;
         padding: 0 2px;
-        flex: 1 0 calc(100% / 8);
+        flex: 1 0 76px;
       }
 
       .nav-item.active { color: var(--accent); }
@@ -1669,7 +1743,7 @@ if (typeof module !== 'undefined' && module.exports) {
   };
 }
 
-// ── 技术指标弹窗（signals.html / indicators.html 共用） ──
+// ── 技术指标弹窗（ibkr_signals.html / ibkr_indicators.html 共用） ──
 function getIndicatorModalStyles() {
   return `
     .modal-overlay {

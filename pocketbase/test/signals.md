@@ -5,8 +5,8 @@
 | 方法 | 端点 | 说明 |
 |------|------|------|
 | `POST` | `/webhook/tv` | 接收 TradingView 信号或指标 |
-| `GET` | `/api/custom/signals/pending?date=YYYY-MM-DD` | QC 拉取待执行信号 |
-| `POST` | `/api/custom/signals/ack` | QC 确认信号并创建交易组骨架 |
+| `GET` | `/api/custom/ibkr/signals/pending?date=YYYY-MM-DD` | IBKR 拉取待执行信号 |
+| `POST` | `/api/custom/ibkr/signals/ack` | IBKR 确认信号并创建交易组骨架 |
 | `POST` | `/webhook/feishu/callback` | 飞书确认 / 拒绝信号 |
 
 ---
@@ -25,17 +25,17 @@
 其中订单链路真正开始的节点是：
 
 - 信号已进入 `pending`
-- QC 拉取后调用 `signals/ack`
+- IBKR 拉取后调用 `signals/ack`
 
 ---
 
 ## `signals/ack` 的实际作用
 
-`POST /api/custom/signals/ack` 不是只改信号状态。
+`POST /api/custom/ibkr/signals/ack` 不是只改信号状态。
 
 它会同时做两件事：
 
-1. 把 `signals.status` 改成 `executed`
+1. 把 `ibkr_signals.status` 改成 `executed`
 2. 在 `orders` 中创建交易组骨架：
    - `Entry + Init + active`
    - `TakeProfit + Init + planned`
@@ -48,12 +48,12 @@
 ## 请求示例
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
+curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/signals/ack" \
   -H "Content-Type: application/json" \
   -d '{
     "signal_id": "AAPL_20260331_093000_sig",
     "status": "executed",
-    "note": "QC ack signal and create init entry",
+    "note": "IBKR ack signal and create init entry",
     "order": {
       "unique_id": "test_AAPL_20260331_093000_sig_entry",
       "order_id": "IB_test_AAPL_20260331_093000_sig_entry",
@@ -116,7 +116,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 
 | 字段 | 说明 |
 |------|------|
-| `unique_id` | 主入场单的 QC 唯一 ID |
+| `unique_id` | 主入场单的 IBKR 唯一 ID |
 | `order_id` / `broker_order_id` | broker 原始订单 ID |
 | `trade_group_id` | 整个交易组 ID，当前实现等于 `entry_order_unique_id` |
 | `entry_order_unique_id` | 主入场单 ID |
@@ -130,7 +130,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/signals/ack" \
 
 调用成功后：
 
-- `signals.status = executed`
+- `ibkr_signals.status = executed`
 - `orders` 新增三条交易组记录：`Entry + Init`、`TP + Init`、`SL + Init`
 - `order_details` 为三条记录分别新增第一条初始化事件
 

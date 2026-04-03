@@ -183,6 +183,6 @@ curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_I
 ## 相关文档
 
 - [Webhook API](./webhook.md) - 了解配置如何影响信号处理
-- [信号管理 API](./signals.md) - 了解信号状态流转
+- [信号管理 API](./ibkr_signals.md) - 了解信号状态流转
 - [订单管理 API](./orders.md) - 了解订单相关配置
 - [逆向信号 API](./reverse_signals.md) - 了解逆向信号阈值配置

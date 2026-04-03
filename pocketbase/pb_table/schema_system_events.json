@@ -63,7 +63,7 @@
                 "type": "select",
                 "values": [
                     "qc",
-                    "qc_compute",
+                    "ibkr_compute",
                     "pb",
                     "manual"
                 ]

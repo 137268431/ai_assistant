@@ -176,7 +176,7 @@ const BASE = 'https://pb.lzw-glory.top'
 
 // 已有 token 直接跳转，失效由目标页的 401/403 处理
 if (localStorage.getItem('pb_token')) {
-  const redirect = new URLSearchParams(location.search).get('from') || '/signals.html'
+  const redirect = new URLSearchParams(location.search).get('from') || '/ibkr_signals.html'
   location.href = redirect
 }
 
@@ -228,7 +228,7 @@ async function login() {
     console.log('[login] token saved:', token.slice(0, 30) + '...')
 
     // 跳转到来源页或默认信号页
-    const redirect = new URLSearchParams(location.search).get('from') || '/signals.html'
+    const redirect = new URLSearchParams(location.search).get('from') || '/ibkr_signals.html'
     location.href = redirect
 
   } catch(e) {

@@ -1,0 +1,105 @@
+[
+    {
+        "id": "_pb_ibkr_state_",
+        "listRule": "",
+        "viewRule": "",
+        "createRule": "",
+        "updateRule": "",
+        "deleteRule": "",
+        "name": "ibkr_state",
+        "type": "base",
+        "fields": [
+            {
+                "autogeneratePattern": "[a-z0-9]{15}",
+                "hidden": false,
+                "id": "text3208210256",
+                "max": 15,
+                "min": 15,
+                "name": "id",
+                "pattern": "^[a-z0-9]+$",
+                "presentable": false,
+                "primaryKey": true,
+                "required": true,
+                "system": true,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "qs_state_key",
+                "max": 200,
+                "min": 0,
+                "name": "state_key",
+                "pattern": "",
+                "presentable": true,
+                "primaryKey": false,
+                "required": true,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "autogeneratePattern": "",
+                "hidden": false,
+                "id": "qs_date",
+                "max": 0,
+                "min": 0,
+                "name": "date",
+                "pattern": "",
+                "presentable": false,
+                "primaryKey": false,
+                "required": true,
+                "system": false,
+                "type": "text"
+            },
+            {
+                "hidden": false,
+                "id": "qs_data",
+                "maxSize": 500000,
+                "name": "data",
+                "presentable": false,
+                "required": false,
+                "system": false,
+                "type": "json"
+            },
+            {
+                "hidden": false,
+                "id": "qs_environment",
+                "maxSelect": 1,
+                "name": "environment",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "live",
+                    "paper",
+                    "backtest"
+                ]
+            },
+            {
+                "hidden": false,
+                "id": "autodate2990389176",
+                "name": "created",
+                "onCreate": true,
+                "onUpdate": false,
+                "presentable": false,
+                "system": false,
+                "type": "autodate"
+            },
+            {
+                "hidden": false,
+                "id": "autodate3332085495",
+                "name": "updated",
+                "onCreate": true,
+                "onUpdate": true,
+                "presentable": false,
+                "system": false,
+                "type": "autodate"
+            }
+        ],
+        "indexes": [
+            "CREATE UNIQUE INDEX idx_ibkr_state_key_date_environment ON ibkr_state (state_key, date, environment)",
+            "CREATE INDEX idx_ibkr_state_environment ON ibkr_state (environment)"
+        ]
+    }
+]
