@@ -43,7 +43,7 @@ logger = logging.getLogger("ibkr_service")
 ET = timezone(timedelta(hours=-4))
 
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://localhost:8090")
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5000")
+GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 SIGNAL_POLL_INTERVAL = 120
 

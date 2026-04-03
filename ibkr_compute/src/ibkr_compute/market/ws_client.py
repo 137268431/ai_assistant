@@ -1,6 +1,6 @@
 """
 IBKR WebSocket 实时行情客户端
-- 连接 wss://localhost:5000/v1/api/ws
+- 连接 wss://localhost:5001/v1/api/ws
 - 订阅多个 conid 的实时 tick 数据
 - 自动重连
 - tick 回调分发到 BarAggregator
@@ -18,7 +18,7 @@ import websocket
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5000")
+GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 RECONNECT_DELAY = 5
 MAX_RECONNECT_DELAY = 60
 

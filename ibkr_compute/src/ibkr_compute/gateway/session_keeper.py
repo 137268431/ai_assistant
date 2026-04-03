@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5000")
+GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 TICKLE_INTERVAL = 55
 MAX_CONSECUTIVE_FAILURES = 3
 CALLBACK_COOLDOWN_SECONDS = int(os.environ.get("IBKR_2FA_REMINDER_COOLDOWN", "900"))

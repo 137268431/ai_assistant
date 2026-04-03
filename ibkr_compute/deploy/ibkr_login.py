@@ -146,11 +146,25 @@ def main():
         session = requests.Session()
         session.verify = False
 
+        def sync_cookies():
+            try:
+                for cookie in driver.get_cookies():
+                    session.cookies.set(cookie["name"], cookie["value"],
+                                        domain=cookie.get("domain", ""),
+                                        path=cookie.get("path", "/"))
+            except Exception:
+                pass
+
+        sync_cookies()
         start = time.time()
         authenticated = False
+        last_cookie_sync = time.time()
 
         while time.time() - start < MAX_2FA_WAIT:
             elapsed = int(time.time() - start)
+            if time.time() - last_cookie_sync >= 10:
+                sync_cookies()
+                last_cookie_sync = time.time()
             try:
                 resp = session.post(GATEWAY_URL + "/v1/api/iserver/auth/status", timeout=10)
                 if resp.status_code == 200 and resp.text.strip():

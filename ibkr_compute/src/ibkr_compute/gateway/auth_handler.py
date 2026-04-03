@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5000")
+GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 LOGIN_TIMEOUT = int(os.environ.get("IBKR_LOGIN_TIMEOUT", "120"))
 MAX_2FA_WAIT = int(os.environ.get("IBKR_2FA_WAIT", "180"))
 CHALLENGE_RESPONSE_WAIT = int(os.environ.get("IBKR_CHALLENGE_RESPONSE_WAIT", "240"))
@@ -880,6 +880,21 @@ class AuthHandler:
             )
         return False
 
+    def _sync_browser_cookies(self, session) -> None:
+        if not self._driver:
+            return
+        try:
+            for cookie in self._driver.get_cookies():
+                session.cookies.set(
+                    cookie["name"],
+                    cookie["value"],
+                    domain=cookie.get("domain", ""),
+                    path=cookie.get("path", "/"),
+                )
+            logger.debug("Synced %d browser cookies to requests session", len(self._driver.get_cookies()))
+        except Exception as exc:
+            logger.debug("Failed to sync browser cookies: %s", exc)
+
     def _wait_for_2fa_completion(
         self,
         reason: str,
@@ -891,6 +906,7 @@ class AuthHandler:
 
         session = requests.Session()
         session.verify = False
+        self._sync_browser_cookies(session)
 
         self._last_wait_context = {}
         start = time.time()
@@ -900,9 +916,12 @@ class AuthHandler:
         last_report_key = None
         last_browser_probe_at = 0.0
         last_backend_promote_at = 0.0
+        last_cookie_sync_at = time.time()
         browser_state: Dict[str, Any] = {}
         submitted_response = ""
         active_challenge_code = ""
+
+        COOKIE_SYNC_INTERVAL = 10
 
         while True:
             now = time.time()
@@ -913,6 +932,9 @@ class AuthHandler:
                 logger.info("2FA wait cancelled by service stop request")
                 return False
             try:
+                if (now - last_cookie_sync_at) >= COOKIE_SYNC_INTERVAL:
+                    self._sync_browser_cookies(session)
+                    last_cookie_sync_at = now
                 if (now - last_browser_probe_at) >= BROWSER_PROBE_SECONDS:
                     browser_state = self._fetch_browser_gateway_state()
                     last_browser_probe_at = now
@@ -1021,6 +1043,7 @@ class AuthHandler:
                 if browser_authenticated and not backend_authenticated:
                     logger.warning("2FA auth mismatch: browser authenticated but backend auth/status still false")
                     self._log_to_pb("2fa_auth_mismatch", "warning", "browser=true backend=false")
+                    self._sync_browser_cookies(session)
                     if (time.time() - last_backend_promote_at) >= BACKEND_PROMOTE_SECONDS:
                         promoted = self._promote_backend_auth(session)
                         last_backend_promote_at = time.time()
@@ -1036,6 +1059,7 @@ class AuthHandler:
                     or "two_fa_result" in page_source
                 ):
                     time.sleep(2)
+                    self._sync_browser_cookies(session)
                     promoted = self._promote_backend_auth(session)
                     page_state["backend_authenticated"] = bool(promoted.get("authenticated", False))
                     self._last_wait_context = page_state
