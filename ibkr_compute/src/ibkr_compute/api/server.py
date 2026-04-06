@@ -89,6 +89,8 @@ INDICATOR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_INDICATOR_BATCH_SIZE", "6
 SIGNAL_BATCH_SIZE = max(1, int(os.environ.get("IBKR_SIGNAL_BATCH_SIZE", "30")))
 COMPUTE_CURSOR_STATE_KEY = "compute_cursors"
 COMPUTE_CURSOR_STATE_DATE = "global"
+IBKR_RUNTIME_CONTROL_STATE_KEY = "ibkr_runtime_control"
+IBKR_RUNTIME_CONTROL_STATE_DATE = "global"
 
 
 def current_market_date(now: datetime | None = None) -> str:
@@ -1066,6 +1068,134 @@ def status():
 
 _start_time = time.time()
 _ibkr_service = None
+_ibkr_restore_attempted = False
+
+
+def _ibkr_runtime_control_default(environment: str) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    return {
+        "environment": runtime_environment,
+        "desired_running": False,
+        "last_source": "",
+        "last_reason": "",
+        "last_start_request_at": "",
+        "last_stop_request_at": "",
+        "last_restore_attempt_at": "",
+        "last_restore_trigger_login": False,
+        "updated_at": "",
+    }
+
+
+def get_ibkr_runtime_control(environment: str) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    fallback = _ibkr_runtime_control_default(runtime_environment)
+    try:
+        state = pb.get_state(
+            IBKR_RUNTIME_CONTROL_STATE_KEY,
+            runtime_environment,
+            date=IBKR_RUNTIME_CONTROL_STATE_DATE,
+        )
+    except Exception:
+        traceback.print_exc()
+        return fallback
+
+    payload = state.get("data") if isinstance(state, dict) else {}
+    if not isinstance(payload, dict):
+        return fallback
+    return {
+        **fallback,
+        **payload,
+        "environment": runtime_environment,
+        "desired_running": bool(payload.get("desired_running", False)),
+        "last_restore_trigger_login": bool(payload.get("last_restore_trigger_login", False)),
+    }
+
+
+def set_ibkr_runtime_control(
+    environment: str,
+    desired_running: bool,
+    source: str,
+    reason: str,
+    extra: dict | None = None,
+) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    timestamps = build_runtime_timestamps()
+    current = get_ibkr_runtime_control(runtime_environment)
+    patch = {
+        **current,
+        "environment": runtime_environment,
+        "desired_running": bool(desired_running),
+        "last_source": str(source or "").strip(),
+        "last_reason": str(reason or "").strip(),
+        "updated_at": timestamps.get("us", ""),
+    }
+    if desired_running:
+        patch["last_start_request_at"] = timestamps.get("us", "")
+    else:
+        patch["last_stop_request_at"] = timestamps.get("us", "")
+    if isinstance(extra, dict):
+        patch.update(extra)
+    try:
+        return pb.upsert_state(
+            IBKR_RUNTIME_CONTROL_STATE_KEY,
+            runtime_environment,
+            patch,
+            date=IBKR_RUNTIME_CONTROL_STATE_DATE,
+        )
+    except Exception:
+        traceback.print_exc()
+        return {"data": patch}
+
+
+def _background_start_ibkr_service(service, trigger_login: bool, reason: str, source: str):
+    thread = threading.Thread(
+        target=service.start,
+        kwargs={
+            "trigger_login": bool(trigger_login),
+            "reason": reason,
+            "source": source,
+        },
+        daemon=True,
+        name=f"ibkr-service-{source}",
+    )
+    thread.start()
+    return thread
+
+
+def _maybe_restore_ibkr_service(service):
+    global _ibkr_restore_attempted
+    if not service or _ibkr_restore_attempted:
+        return
+
+    runtime_environment = _ibkr_service_environment(service)
+    control = get_ibkr_runtime_control(runtime_environment)
+    if not control.get("desired_running"):
+        return
+    if getattr(service, "is_busy", False):
+        return
+
+    _ibkr_restore_attempted = True
+    timestamps = build_runtime_timestamps()
+    set_ibkr_runtime_control(
+        runtime_environment,
+        True,
+        source="server_boot",
+        reason="auto_restore",
+        extra={
+            "last_restore_attempt_at": timestamps.get("us", ""),
+            "last_restore_trigger_login": False,
+        },
+    )
+    print(
+        f"[IBKR] Auto-restore requested for env={runtime_environment}; "
+        "starting runtime with trigger_login=false"
+    )
+    _background_start_ibkr_service(
+        service,
+        trigger_login=False,
+        reason="auto_restore",
+        source="server_boot",
+    )
 
 
 
@@ -1300,15 +1430,27 @@ def _build_ibkr_account_snapshot(service) -> dict:
 
 @app.route("/ibkr/start", methods=["POST"])
 def ibkr_start():
+    global _ibkr_restore_attempted
     service = get_ibkr_service()
     if not service:
         return jsonify({"ok": False, "error": "IBKR service not initialized"})
     try:
-        import threading
         payload = request.get_json(silent=True) or {}
         trigger_login = payload.get("trigger_login", True)
         reason = str(payload.get("reason") or "manual_start")
         source = str(payload.get("source") or "api_start")
+        runtime_environment = _ibkr_service_environment(service)
+
+        _ibkr_restore_attempted = False
+        set_ibkr_runtime_control(
+            runtime_environment,
+            True,
+            source=source,
+            reason=reason,
+            extra={
+                "last_restore_trigger_login": bool(trigger_login),
+            },
+        )
 
         if getattr(service, "is_busy", False):
             return jsonify({
@@ -1321,17 +1463,12 @@ def ibkr_start():
                 "running": bool(getattr(service, "is_running", False)),
             })
 
-        thread = threading.Thread(
-            target=service.start,
-            kwargs={
-                "trigger_login": bool(trigger_login),
-                "reason": reason,
-                "source": source,
-            },
-            daemon=True,
-            name="ibkr-service",
+        _background_start_ibkr_service(
+            service,
+            trigger_login=bool(trigger_login),
+            reason=reason,
+            source=source,
         )
-        thread.start()
         return jsonify({
             "ok": True,
             "message": "IBKR service starting",
@@ -1345,10 +1482,22 @@ def ibkr_start():
 
 @app.route("/ibkr/stop", methods=["POST"])
 def ibkr_stop():
+    global _ibkr_restore_attempted
     service = get_ibkr_service()
     if not service:
         return jsonify({"ok": False, "error": "IBKR service not initialized"})
     service.stop()
+    _ibkr_restore_attempted = False
+    runtime_environment = _ibkr_service_environment(service)
+    set_ibkr_runtime_control(
+        runtime_environment,
+        False,
+        source="api_stop",
+        reason="manual_stop",
+        extra={
+            "last_restore_trigger_login": False,
+        },
+    )
     return jsonify({"ok": True, "message": "IBKR service stopped"})
 
 
@@ -1357,7 +1506,10 @@ def ibkr_status():
     service = get_ibkr_service()
     if not service:
         return jsonify({"ok": False, "error": "IBKR service not initialized"})
-    return jsonify({"ok": True, **service.status()})
+    _maybe_restore_ibkr_service(service)
+    status_payload = service.status()
+    status_payload["runtime_control"] = get_ibkr_runtime_control(_ibkr_service_environment(service))
+    return jsonify({"ok": True, **status_payload})
 
 
 @app.route("/ibkr/account", methods=["GET"])

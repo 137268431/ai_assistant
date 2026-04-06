@@ -211,10 +211,19 @@ class ConidResolver:
             score += 120
 
         if preferred_exchanges:
-            if exchange in preferred_exchanges:
+            exchange_matches = any(
+                exchange == preferred_exchange
+                or exchange.startswith(preferred_exchange)
+                or preferred_exchange in exchange
+                for preferred_exchange in preferred_exchanges
+            )
+            if exchange_matches:
                 score += 120
             elif exchange:
                 score -= 10
+
+        if hint and "VOLATILITY INDEX" in description:
+            score += 80
 
         if "OPT" in sec_types or "FOP" in sec_types or "WAR" in sec_types:
             score -= 80
@@ -223,19 +232,43 @@ class ConidResolver:
         return score, conid
 
     def _search_secdef(self, symbol: str, hint: Optional[dict] = None) -> Optional[int]:
-        try:
-            load_cookies(self._session)
-            resp = self._session.get(
-                self._api_url("/iserver/secdef/search"),
-                params={"symbol": symbol},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            results = resp.json()
-            save_cookies(self._session)
+        preferred_sec_types = []
+        for sec_type in list((hint or {}).get("preferred_sec_types") or []):
+            normalized = str(sec_type or "").strip().upper()
+            if not normalized:
+                continue
+            if normalized == "INDEX":
+                normalized = "IND"
+            if normalized not in preferred_sec_types:
+                preferred_sec_types.append(normalized)
+        if not preferred_sec_types:
+            preferred_sec_types = ["STK"]
+
+        attempts = [
+            {"symbol": symbol, "name": False, "secType": sec_type}
+            for sec_type in preferred_sec_types
+        ]
+        attempts.append({"symbol": symbol, "name": False})
+
+        last_error = None
+        for payload in attempts:
+            try:
+                load_cookies(self._session)
+                resp = self._session.post(
+                    self._api_url("/iserver/secdef/search"),
+                    json=payload,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                results = resp.json()
+                save_cookies(self._session)
+            except Exception as e:
+                last_error = e
+                logger.debug("IBKR secdef POST search failed for %s payload=%s: %s", symbol, payload, e)
+                continue
 
             if not results:
-                return None
+                continue
 
             best_score = -1
             best_conid = None
@@ -248,14 +281,39 @@ class ConidResolver:
                     best_conid = conid
             if best_conid:
                 return best_conid
-            if results and results[0].get("conid"):
+            if results and isinstance(results, list) and results[0].get("conid"):
                 return int(results[0]["conid"])
 
-            return None
-
+        try:
+            load_cookies(self._session)
+            resp = self._session.get(
+                self._api_url("/iserver/secdef/search"),
+                params={"symbol": symbol},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            results = resp.json()
+            save_cookies(self._session)
+            if results and isinstance(results, list):
+                best_score = -1
+                best_conid = None
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    score, conid = self._score_secdef_item(symbol, item, hint=hint)
+                    if conid and score > best_score:
+                        best_score = score
+                        best_conid = conid
+                if best_conid:
+                    return best_conid
+                if results[0].get("conid"):
+                    return int(results[0]["conid"])
         except Exception as e:
-            logger.error("IBKR secdef search failed for %s: %s", symbol, e)
-            return None
+            last_error = e
+
+        if last_error:
+            logger.error("IBKR secdef search failed for %s: %s", symbol, last_error)
+        return None
 
     def _save_to_pb(self, symbol: str, conid: int):
         if not self.pb_client:
