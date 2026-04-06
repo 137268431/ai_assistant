@@ -50,6 +50,14 @@ class PBClient:
         resp.raise_for_status()
         return resp.json()
 
+    def delete_record(self, collection: str, record_id: str) -> bool:
+        url = f"{self.base_url}/api/collections/{collection}/records/{record_id}"
+        resp = self.session.delete(url, timeout=15)
+        if resp.status_code in (200, 204):
+            return True
+        resp.raise_for_status()
+        return True
+
     def get_first_record(
         self,
         collection: str,

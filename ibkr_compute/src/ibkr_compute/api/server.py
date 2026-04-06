@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 from flask import Flask, Response, jsonify, redirect, request
 
+from ibkr_compute.backtest import BacktestService
 from ibkr_compute.core.config import Config
 from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
@@ -42,6 +43,7 @@ PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://localhost:8090")
 PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", PB_BASE_URL)
 pb = PBClient(base_url=PB_BASE_URL)
 cfg = Config(pb_client=pb)
+backtest_service = BacktestService(pb)
 
 engines = {}
 signal_gens = {}
@@ -956,6 +958,49 @@ def recompute():
     })
 
 
+@app.route("/backtest/run", methods=["POST"])
+def backtest_run():
+    payload = request.get_json(silent=True) or {}
+    result = backtest_service.start_run(payload)
+    status_code = 200 if result.get("ok") else 409
+    return jsonify(result), status_code
+
+
+@app.route("/backtest/status", methods=["GET"])
+def backtest_status():
+    return jsonify(backtest_service.status())
+
+
+@app.route("/backtest/cancel", methods=["POST"])
+def backtest_cancel():
+    payload = request.get_json(silent=True) or {}
+    run_id = str(payload.get("run_id") or "").strip()
+    result = backtest_service.cancel(run_id)
+    status_code = 200 if result.get("ok") else 409
+    return jsonify(result), status_code
+
+
+@app.route("/backtest/replay", methods=["GET"])
+def backtest_replay():
+    run_id = str(request.args.get("run_id") or "").strip()
+    symbol = str(request.args.get("symbol") or "").strip().upper()
+    center_bar_ms = int(request.args.get("center_bar_ms") or 0)
+    window = int(request.args.get("window") or 80)
+    result = backtest_service.replay(run_id, symbol, center_bar_ms=center_bar_ms, window=window)
+    status_code = 200 if result.get("ok") else 404
+    return jsonify(result), status_code
+
+
+@app.route("/backtest/cleanup", methods=["POST"])
+def backtest_cleanup():
+    payload = request.get_json(silent=True) or {}
+    run_id = str(payload.get("run_id") or "").strip()
+    batch_id = str(payload.get("batch_id") or "").strip()
+    result = backtest_service.cleanup(run_id=run_id, batch_id=batch_id)
+    status_code = 200 if result.get("ok") else 409
+    return jsonify(result), status_code
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
@@ -967,6 +1012,7 @@ def health():
         "last_compute": datetime.fromtimestamp(last_compute_time).isoformat() if last_compute_time else None,
         "last_scan": datetime.fromtimestamp(last_scan_time).isoformat() if last_scan_time else None,
         "uptime_s": round(time.time() - _start_time, 1),
+        "backtest": backtest_service.status(),
     })
 
 
@@ -1000,6 +1046,7 @@ def status():
         "compute_count": compute_count,
         "last_compute": datetime.fromtimestamp(last_compute_time).isoformat() if last_compute_time else None,
         "last_scan": datetime.fromtimestamp(last_scan_time).isoformat() if last_scan_time else None,
+        "backtest": backtest_service.status(),
     })
 
 

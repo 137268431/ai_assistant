@@ -318,6 +318,7 @@ function renderNav(activePage) {
     { path: '/ibkr_order_details.html', icon: '📜', label: '明细' },
     { path: '/ibkr_indicators.html', icon: '📈', label: '指标' },
     { path: '/ibkr_stats.html', icon: '📊', label: '统计' },
+    { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
     { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html'], icon: '🖥️', label: '系统' }
   ];
 
