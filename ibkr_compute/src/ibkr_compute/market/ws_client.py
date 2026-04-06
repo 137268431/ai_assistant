@@ -22,7 +22,7 @@ GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 RECONNECT_DELAY = 5
 MAX_RECONNECT_DELAY = 60
 
-MARKET_DATA_FIELDS = ["31", "84", "86", "87", "7295", "7296", "7297"]
+MARKET_DATA_FIELDS = ["31", "84", "85", "86", "87", "88", "7059", "7295", "7296", "7297"]
 
 
 class IBKRWebSocketClient:

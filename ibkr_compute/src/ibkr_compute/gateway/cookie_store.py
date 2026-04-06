@@ -1,0 +1,130 @@
+"""
+Persist and restore IBKR gateway cookies across runtime clients.
+
+The Client Portal Gateway auth is cookie-bound. When the compute process or an
+individual runtime component restarts, a fresh requests.Session loses those
+cookies and immediately starts returning 401. Keeping a lightweight shared
+cookie jar lets the runtime reuse a still-valid gateway session after local
+restarts and keeps the 2FA / runtime status in sync.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Iterable
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+COOKIE_FILE = os.environ.get(
+    "IBKR_GATEWAY_COOKIE_FILE",
+    "/tmp/ibkr_gateway_cookies.json",
+)
+
+
+def _cookie_path() -> Path:
+    return Path(COOKIE_FILE)
+
+
+def _normalize_cookie(cookie: dict) -> dict | None:
+    name = str(cookie.get("name") or "").strip()
+    value = str(cookie.get("value") or "")
+    if not name:
+        return None
+    return {
+        "name": name,
+        "value": value,
+        "domain": str(cookie.get("domain") or ""),
+        "path": str(cookie.get("path") or "/") or "/",
+        "secure": bool(cookie.get("secure", False)),
+        "expires": cookie.get("expires"),
+    }
+
+
+def _session_cookie_payload(session: requests.Session) -> list[dict]:
+    payload = []
+    for item in session.cookies:
+        normalized = _normalize_cookie(
+            {
+                "name": item.name,
+                "value": item.value,
+                "domain": item.domain or "",
+                "path": item.path or "/",
+                "secure": item.secure,
+                "expires": item.expires,
+            }
+        )
+        if normalized:
+            payload.append(normalized)
+    return payload
+
+
+def load_cookies(session: requests.Session) -> int:
+    path = _cookie_path()
+    if not path.exists():
+        return 0
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("Failed to read gateway cookie store %s: %s", path, exc)
+        return 0
+
+    count = 0
+    for item in raw if isinstance(raw, list) else []:
+        normalized = _normalize_cookie(item if isinstance(item, dict) else {})
+        if not normalized:
+            continue
+        try:
+            session.cookies.set(
+                normalized["name"],
+                normalized["value"],
+                domain=normalized["domain"] or None,
+                path=normalized["path"] or "/",
+            )
+            count += 1
+        except Exception as exc:
+            logger.debug("Failed to hydrate cookie %s: %s", normalized["name"], exc)
+    return count
+
+
+def save_cookies(session: requests.Session) -> int:
+    payload = _session_cookie_payload(session)
+    if not payload:
+        return 0
+
+    path = _cookie_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix="ibkr-cookie-", suffix=".json", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=True)
+            os.replace(tmp_name, path)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        return len(payload)
+    except Exception as exc:
+        logger.debug("Failed to persist gateway cookies to %s: %s", path, exc)
+        return 0
+
+
+def save_browser_cookies(cookies: Iterable[dict]) -> int:
+    session = requests.Session()
+    for item in cookies or []:
+        normalized = _normalize_cookie(item if isinstance(item, dict) else {})
+        if not normalized:
+            continue
+        session.cookies.set(
+            normalized["name"],
+            normalized["value"],
+            domain=normalized["domain"] or None,
+            path=normalized["path"] or "/",
+        )
+    return save_cookies(session)

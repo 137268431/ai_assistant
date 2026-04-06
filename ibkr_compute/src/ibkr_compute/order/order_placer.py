@@ -12,6 +12,8 @@ import requests
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone, timedelta
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
@@ -27,6 +29,7 @@ class OrderPlacer:
         self.pb_client = pb_client
         self._session = requests.Session()
         self._session.verify = False
+        load_cookies(self._session)
         self._order_count = 0
 
     def _api_url(self, path: str) -> str:
@@ -141,9 +144,11 @@ class OrderPlacer:
         url = self._api_url(f"/iserver/account/{acct_id}/orders")
 
         try:
+            load_cookies(self._session)
             resp = self._session.post(url, json={"orders": orders}, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
 
             if isinstance(data, list) and data:
                 first = data[0]
@@ -166,9 +171,11 @@ class OrderPlacer:
     def _confirm_order(self, reply_id: str) -> Dict[str, Any]:
         url = self._api_url(f"/iserver/reply/{reply_id}")
         try:
+            load_cookies(self._session)
             resp = self._session.post(url, json={"confirmed": True}, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
 
             if isinstance(data, list) and data:
                 first = data[0]

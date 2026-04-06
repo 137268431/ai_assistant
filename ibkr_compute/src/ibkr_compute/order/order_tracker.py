@@ -13,6 +13,8 @@ import requests
 from typing import Dict, Optional, Callable, List
 from datetime import datetime, timezone, timedelta
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
@@ -32,6 +34,7 @@ class OrderTracker:
 
         self._session = requests.Session()
         self._session.verify = False
+        load_cookies(self._session)
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._known_orders: Dict[str, dict] = {}
@@ -42,6 +45,7 @@ class OrderTracker:
 
     def get_live_orders(self) -> List[Dict]:
         try:
+            load_cookies(self._session)
             resp = self._session.get(
                 self._api_url("/iserver/account/orders"),
                 params={"force": "true"},
@@ -49,6 +53,7 @@ class OrderTracker:
             )
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
 
             if isinstance(data, dict):
                 return data.get("orders", [])
@@ -62,12 +67,15 @@ class OrderTracker:
 
     def get_order_status(self, order_id: str) -> Dict:
         try:
+            load_cookies(self._session)
             resp = self._session.get(
                 self._api_url(f"/iserver/account/order/status/{order_id}"),
                 timeout=15,
             )
             resp.raise_for_status()
-            return resp.json()
+            payload = resp.json()
+            save_cookies(self._session)
+            return payload
         except Exception as e:
             logger.warning("Failed to get order status %s: %s", order_id, e)
             return {}

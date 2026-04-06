@@ -110,6 +110,7 @@ class IBKRTradingService:
         self._compute_thread = None
         self._auth_required_reason = ""
         self._symbol_meta = {}
+        self._market_index_symbols = []
         self._watchlist_symbols = []
         self._watchlist_records = {}
         self._active_subscription_symbols = []
@@ -369,6 +370,30 @@ class IBKRTradingService:
         safe_env = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
         return f'environment = "{safe_env}" || environment = "global" || environment = ""'
 
+    def _configured_market_index_symbols(self) -> list[str]:
+        raw_value = ""
+        try:
+            raw_value = self.config.get_for_environment("market_index_symbols", ENVIRONMENT, "SPY,QQQ,VIX")
+        except Exception:
+            raw_value = self.config.get("market_index_symbols", "SPY,QQQ,VIX")
+        symbols = []
+        seen = set()
+        for item in str(raw_value or "SPY,QQQ,VIX").split(","):
+            symbol = str(item or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+        return symbols
+
+    def _default_symbol_meta(self, symbol: str) -> dict:
+        defaults = {
+            "SPY": {"exchange": "ARCA", "industry": "ETF"},
+            "QQQ": {"exchange": "NASDAQ", "industry": "ETF"},
+            "VIX": {"exchange": "CBOE", "industry": "INDEX"},
+        }
+        return defaults.get(symbol, {"exchange": "SMART", "industry": "INDEX"})
+
     def _refresh_watchlist_pool(self, force: bool = False):
         refresh_minutes = max(1, self.config.get_int("watchlist_interval_min", 5))
         now = time.time()
@@ -411,8 +436,25 @@ class IBKRTradingService:
                 "industry": str(row.get("industry", "") or ""),
             }
 
+        market_index_symbols = self._configured_market_index_symbols()
+        for symbol in market_index_symbols:
+            if symbol not in merged:
+                default_meta = self._default_symbol_meta(symbol)
+                merged[symbol] = {
+                    "symbol": symbol,
+                    "exchange": default_meta["exchange"],
+                    "industry": default_meta["industry"],
+                }
+            if symbol not in symbol_meta:
+                default_meta = self._default_symbol_meta(symbol)
+                symbol_meta[symbol] = {
+                    "exchange": default_meta["exchange"],
+                    "industry": default_meta["industry"],
+                }
+
         self._watchlist_records = merged
         self._watchlist_symbols = sorted(merged.keys())
+        self._market_index_symbols = market_index_symbols
         self._symbol_meta = symbol_meta
         self._last_watchlist_refresh_at = now
         logger.info("Watchlist pool refreshed: %d symbols", len(self._watchlist_symbols))
@@ -464,6 +506,25 @@ class IBKRTradingService:
                 ).upper(),
                 "industry": str(
                     watchlist_row.get("industry")
+                    or ""
+                ),
+            }
+            seen.add(symbol)
+
+        for symbol in self._market_index_symbols:
+            if symbol in seen:
+                continue
+            default_meta = self._default_symbol_meta(symbol)
+            selected_symbols.append(symbol)
+            selected_meta[symbol] = {
+                "exchange": str(
+                    self._symbol_meta.get(symbol, {}).get("exchange")
+                    or default_meta.get("exchange")
+                    or ""
+                ).upper(),
+                "industry": str(
+                    self._symbol_meta.get(symbol, {}).get("industry")
+                    or default_meta.get("industry")
                     or ""
                 ),
             }

@@ -712,6 +712,8 @@
         </div>
     </div>
 
+    <div id="pageBridge" style="padding: 10px 16px 0;"></div>
+
     <div class="content">
         <div class="search-row">
             <div style="display:flex;gap:8px;align-items:center;">
@@ -1910,6 +1912,21 @@
             if (!await initAuth()) return;
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/ibkr_signals.html');
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_signals.html',
+                    kicker: 'Signals',
+                    label: '主信号',
+                    copy: '待确认 / 执行 / 指标快照',
+                    active: true
+                },
+                {
+                    path: '/ibkr_reverse_signals.html',
+                    kicker: 'Reverse',
+                    label: '反转信号',
+                    copy: '平仓 / 取消 / 调整流转'
+                }
+            ]);
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
 

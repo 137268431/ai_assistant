@@ -14,6 +14,8 @@ import threading
 from typing import Dict, List, Optional, Callable
 from datetime import datetime, timezone, timedelta
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
@@ -35,6 +37,7 @@ class OrderLifecycle:
 
         self._session = requests.Session()
         self._session.verify = False
+        load_cookies(self._session)
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._eod_closed_today = False
@@ -47,12 +50,14 @@ class OrderLifecycle:
     def get_positions(self, acct_id: str = None) -> List[Dict]:
         acct = acct_id or self.account_id
         try:
+            load_cookies(self._session)
             resp = self._session.get(
                 self._api_url(f"/portfolio/{acct}/positions/0"),
                 timeout=15,
             )
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
             return data if isinstance(data, list) else []
         except Exception as e:
             logger.warning("Failed to get positions: %s", e)
@@ -61,12 +66,15 @@ class OrderLifecycle:
     def get_account_summary(self, acct_id: str = None) -> Dict:
         acct = acct_id or self.account_id
         try:
+            load_cookies(self._session)
             resp = self._session.get(
                 self._api_url(f"/portfolio/{acct}/summary"),
                 timeout=15,
             )
             resp.raise_for_status()
-            return resp.json()
+            payload = resp.json()
+            save_cookies(self._session)
+            return payload
         except Exception as e:
             logger.warning("Failed to get account summary: %s", e)
             return {}
@@ -106,13 +114,17 @@ class OrderLifecycle:
                     "cOID": f"eod_{symbol}_{datetime.now(ET).strftime('%H%M%S')}",
                 }]
 
+                load_cookies(self._session)
                 resp = self._session.post(url, json={"orders": orders}, timeout=15)
                 resp.raise_for_status()
                 data = resp.json()
+                save_cookies(self._session)
 
                 if isinstance(data, list) and data and data[0].get("id"):
                     reply_url = self._api_url(f"/iserver/reply/{data[0]['id']}")
+                    load_cookies(self._session)
                     self._session.post(reply_url, json={"confirmed": True}, timeout=15)
+                    save_cookies(self._session)
 
                 closed += 1
                 logger.info("EOD close: %s %s %d shares", symbol, side, qty)

@@ -11,6 +11,8 @@ import time
 import logging
 from typing import Optional, Dict, Any
 
+from ibkr_compute.gateway.cookie_store import save_browser_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
@@ -561,6 +563,8 @@ class AuthHandler:
                 timeout=10,
             )
             payload = resp.json() if resp.status_code == 200 else {}
+            if resp.status_code == 200:
+                save_cookies(session)
             return {
                 "ok": resp.status_code == 200,
                 "status_code": resp.status_code,
@@ -884,13 +888,16 @@ class AuthHandler:
         if not self._driver:
             return
         try:
-            for cookie in self._driver.get_cookies():
+            browser_cookies = self._driver.get_cookies()
+            for cookie in browser_cookies:
                 session.cookies.set(
                     cookie["name"],
                     cookie["value"],
                     domain=cookie.get("domain", ""),
                     path=cookie.get("path", "/"),
                 )
+            save_browser_cookies(browser_cookies)
+            save_cookies(session)
             logger.debug("Synced %d browser cookies to requests session", len(self._driver.get_cookies()))
         except Exception as exc:
             logger.debug("Failed to sync browser cookies: %s", exc)

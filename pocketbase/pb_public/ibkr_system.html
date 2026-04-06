@@ -247,6 +247,45 @@
             font-size: 12px;
         }
 
+        .backtest-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .backtest-card {
+            background: var(--surface2);
+            border-radius: 10px;
+            padding: 10px;
+            min-width: 0;
+        }
+        .backtest-kicker {
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 4px;
+        }
+        .backtest-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 6px;
+            word-break: break-word;
+        }
+        .backtest-meta {
+            font-size: 10px;
+            color: var(--muted);
+            line-height: 1.6;
+            word-break: break-word;
+        }
+
+        @media (max-width: 720px) {
+            .backtest-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
         .content-area {
             padding-bottom: 80px;
         }
@@ -263,7 +302,7 @@
             <div class="page-header">
                 <div>
                     <div class="page-title">🖥️ IBKR 总览</div>
-                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、配置快照、最近事件。所有动作控制、2FA 请求与链路回放集中放到控制台页面，避免两张页面职责混在一起。</div>
+                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、配置快照、最近事件，以及最近回测统计。所有动作控制、2FA 请求与链路回放集中放到控制台页面，避免两张页面职责混在一起。</div>
                 </div>
                 <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
                     <div id="environmentHeader"></div>
@@ -279,6 +318,10 @@
                 <div class="status-card">
                     <div class="status-label">IBKR COMPUTE</div>
                     <div class="status-value" id="computeStatus"><span class="status-dot dot-gray"></span>--</div>
+                </div>
+                <div class="status-card">
+                    <div class="status-label">RUNTIME</div>
+                    <div class="status-value" id="runtimeStatus"><span class="status-dot dot-gray"></span>--</div>
                 </div>
             </div>
 
@@ -319,6 +362,16 @@
                     <a id="configLink" href="/ibkr_config.html" style="font-size:10px;color:var(--accent);text-decoration:none;font-family:'JetBrains Mono',monospace">编辑 →</a>
                 </div>
                 <div class="section-body" id="configArea">
+                    <div class="loading-text">加载中...</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <span>🧪 最近回测统计</span>
+                    <span id="backtestCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
+                </div>
+                <div class="section-body" id="backtestArea">
                     <div class="loading-text">加载中...</div>
                 </div>
             </div>
@@ -390,9 +443,9 @@
             try {
                 const freshnessIntervals = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
-                const [health, summary, eventsResp, ...freshnessResponses] = await Promise.all([
+                const [health, summary, eventsResp, ...restResponses] = await Promise.all([
                     requestSystemJson('/api/custom/system/healthz'),
-                    requestSystemJson('/api/custom/system/summaryz?lite=1'),
+                    requestSystemJson('/api/custom/system/summaryz'),
                     apiFetch('system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }),
                     ...freshnessIntervals.map((interval) =>
                         apiFetch('ibkr_bars', {
@@ -400,8 +453,13 @@
                             sort: '-bar_time_ms',
                             perPage: 1
                         })
-                    )
+                    ),
+                    apiFetch('ibkr_backtest_batches', { filter: envFilterBase, sort: '-updated', perPage: 1 }),
+                    apiFetch('ibkr_backtest_runs', { filter: envFilterBase, sort: '-updated', perPage: 2 })
                 ]);
+                const freshnessResponses = restResponses.slice(0, freshnessIntervals.length);
+                const backtestBatchResp = restResponses[freshnessIntervals.length] || {};
+                const backtestRunsResp = restResponses[freshnessIntervals.length + 1] || {};
                 const freshnessItems = freshnessIntervals.map((interval, index) => {
                     const latest = Array.isArray(freshnessResponses[index]?.items) ? freshnessResponses[index].items[0] : null;
                     const lastBarTimeMs = Number(latest?.bar_time_ms || 0) || 0;
@@ -418,6 +476,10 @@
                 renderFreshness(freshnessItems);
                 renderEngines(summary.ibkr_compute || {});
                 renderConfig(summary);
+                renderBacktests(
+                    Array.isArray(backtestBatchResp?.items) ? backtestBatchResp.items : [],
+                    Array.isArray(backtestRunsResp?.items) ? backtestRunsResp.items : []
+                );
                 renderEvents(Array.isArray(eventsResp?.items) ? eventsResp.items : []);
 
                 document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()}`;
@@ -450,6 +512,25 @@
                 compEl.innerHTML = '<span class="status-dot dot-red"></span>离线';
             } else {
                 compEl.innerHTML = `<span class="status-dot dot-${comp.status === 'error' ? 'red' : 'gray'}"></span>${escapeHtml(comp.status || '--')}`;
+            }
+
+            const runtime = health.runtime || {};
+            const runtimeEl = document.getElementById('runtimeStatus');
+            const runtimeStarted = Boolean(
+                runtime.starting
+                || runtime?.session?.running
+                || runtime?.websocket?.running
+                || runtime?.order_tracker?.running
+            );
+            const runtimeAuthed = Boolean(runtime?.session?.authenticated);
+            if (runtimeStarted && runtimeAuthed) {
+                runtimeEl.innerHTML = '<span class="status-dot dot-green"></span>认证';
+            } else if (runtimeStarted) {
+                runtimeEl.innerHTML = '<span class="status-dot dot-yellow"></span>待认证';
+            } else if (runtime?.gateway?.running || runtime?.gateway?.reachable) {
+                runtimeEl.innerHTML = '<span class="status-dot dot-red"></span>未启动';
+            } else {
+                runtimeEl.innerHTML = '<span class="status-dot dot-gray"></span>离线';
             }
         }
 
@@ -608,6 +689,74 @@
             }).join('');
         }
 
+        function parseMaybeJson(value, fallback) {
+            if (!value) return fallback;
+            if (typeof value === 'object') return value;
+            try {
+                const parsed = JSON.parse(value);
+                return parsed && typeof parsed === 'object' ? parsed : fallback;
+            } catch (_) {
+                return fallback;
+            }
+        }
+
+        function formatPct(value) {
+            const num = Number(value || 0);
+            const prefix = num > 0 ? '+' : '';
+            return `${prefix}${num.toFixed(2)}%`;
+        }
+
+        function formatNum(value) {
+            const num = Number(value || 0);
+            return Number.isFinite(num) ? num.toFixed(2) : '--';
+        }
+
+        function renderBacktests(batches, runs) {
+            const area = document.getElementById('backtestArea');
+            const countEl = document.getElementById('backtestCount');
+            const batch = batches && batches[0] ? batches[0] : null;
+            const run = runs && runs[0] ? runs[0] : null;
+            const cards = [];
+
+            if (batch) {
+                cards.push(`
+                    <div class="backtest-card">
+                        <div class="backtest-kicker">Latest Batch</div>
+                        <div class="backtest-title">${escapeHtml(String(batch.name || batch.batch_id || batch.id || 'batch'))}</div>
+                        <div class="backtest-meta">
+                            状态 ${escapeHtml(String(batch.status || '--'))}<br>
+                            变体 ${escapeHtml(String(batch.completed_count || 0))}/${escapeHtml(String(batch.variant_count || 0))}<br>
+                            Best Return ${escapeHtml(formatPct(batch.best_total_return_pct || 0))}<br>
+                            Best Sharpe ${escapeHtml(formatNum(batch.best_sharpe || 0))}
+                        </div>
+                    </div>
+                `);
+            }
+
+            if (run) {
+                const metrics = parseMaybeJson(run.metrics, {});
+                cards.push(`
+                    <div class="backtest-card">
+                        <div class="backtest-kicker">Latest Run</div>
+                        <div class="backtest-title">${escapeHtml(String(run.name || run.run_id || run.id || 'run'))}</div>
+                        <div class="backtest-meta">
+                            状态 ${escapeHtml(String(run.status || '--'))}<br>
+                            Return ${escapeHtml(formatPct(run.total_return_pct || metrics.total_return_pct || 0))}<br>
+                            Sharpe ${escapeHtml(formatNum(run.sharpe || metrics.sharpe || 0))}<br>
+                            Max DD ${escapeHtml(formatPct(-Math.abs(Number(run.max_drawdown_pct || metrics.max_drawdown_pct || 0))))}
+                        </div>
+                    </div>
+                `);
+            }
+
+            countEl.textContent = String((batch ? 1 : 0) + (run ? 1 : 0));
+            if (!cards.length) {
+                area.innerHTML = '<div class="loading-text">当前环境暂无回测统计</div>';
+                return;
+            }
+            area.innerHTML = `<div class="backtest-grid">${cards.join('')}</div>`;
+        }
+
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initSystemAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_system.html');
@@ -617,7 +766,7 @@
                     path: '/ibkr_system.html',
                     kicker: 'Monitor',
                     label: '总览',
-                    copy: '健康 / freshness / config / recent events',
+                    copy: '健康 / freshness / config / stats',
                     active: true
                 },
                 {
@@ -625,6 +774,12 @@
                     kicker: 'Console',
                     label: '控制台',
                     copy: '启动 / 2FA / compute / flow trace'
+                },
+                {
+                    path: '/ibkr_account.html',
+                    kicker: 'Account',
+                    label: '账户',
+                    copy: '真实持仓 / 挂单 / 操作'
                 }
             ]);
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();

@@ -9,10 +9,18 @@ import logging
 import requests
 from typing import Optional, Dict, Iterable, List
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 STOCK_SEARCH_BATCH_SIZE = max(1, int(os.environ.get("IBKR_CONID_BATCH_SIZE", "25")))
+INDEX_HINTS = {
+    "VIX": {
+        "preferred_sec_types": {"IND", "INDEX"},
+        "preferred_exchanges": {"CBOE", "CFE"},
+    },
+}
 
 
 class ConidResolver:
@@ -22,6 +30,7 @@ class ConidResolver:
         self._cache: Dict[str, int] = {}
         self._session = requests.Session()
         self._session.verify = False
+        load_cookies(self._session)
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
@@ -55,13 +64,19 @@ class ConidResolver:
         return None
 
     def _search_ibkr(self, symbol: str) -> Optional[int]:
+        hint = INDEX_HINTS.get(symbol)
+        if hint:
+            conid = self._search_secdef(symbol, hint=hint)
+            if conid:
+                return conid
         conid = self._search_stocks(symbol)
         if conid:
             return conid
-        return self._search_secdef(symbol)
+        return self._search_secdef(symbol, hint=hint)
 
     def _search_stocks(self, symbol: str) -> Optional[int]:
         try:
+            load_cookies(self._session)
             resp = self._session.get(
                 self._api_url("/trsrv/stocks"),
                 params={"symbols": symbol},
@@ -69,6 +84,7 @@ class ConidResolver:
             )
             resp.raise_for_status()
             payload = resp.json()
+            save_cookies(self._session)
             if not isinstance(payload, dict):
                 return None
 
@@ -132,6 +148,7 @@ class ConidResolver:
         resolved = {}
         for batch in self._batched(symbols, STOCK_SEARCH_BATCH_SIZE):
             try:
+                load_cookies(self._session)
                 resp = self._session.get(
                     self._api_url("/trsrv/stocks"),
                     params={"symbols": ",".join(batch)},
@@ -139,6 +156,7 @@ class ConidResolver:
                 )
                 resp.raise_for_status()
                 payload = resp.json()
+                save_cookies(self._session)
                 if not isinstance(payload, dict):
                     continue
 
@@ -150,8 +168,63 @@ class ConidResolver:
                 logger.warning("IBKR bulk stocks search failed for %s: %s", ",".join(batch), e)
         return resolved
 
-    def _search_secdef(self, symbol: str) -> Optional[int]:
+    def _score_secdef_item(self, symbol: str, item: dict, hint: Optional[dict] = None) -> tuple[int, Optional[int]]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        item_symbol = str(item.get("symbol") or item.get("ticker") or "").strip().upper()
+        description = str(item.get("description") or "").strip().upper()
+        company_name = str(item.get("companyName") or item.get("companyHeader") or "").strip().upper()
+        exchange = str(
+            item.get("listingExchange")
+            or item.get("exchange")
+            or item.get("exchangeName")
+            or ""
+        ).strip().upper()
+        sections = item.get("sections", [])
+        sections = sections if isinstance(sections, list) else []
+        sec_types = {
+            str(sec.get("secType") or "").strip().upper()
+            for sec in sections
+            if isinstance(sec, dict) and str(sec.get("secType") or "").strip()
+        }
+        conid = int(item.get("conid", 0)) or None
+        if not conid:
+            return -1, None
+
+        score = 0
+        exact_match = item_symbol == normalized_symbol or description == normalized_symbol or company_name == normalized_symbol
+        starts_match = description.startswith(normalized_symbol) or company_name.startswith(normalized_symbol)
+        if exact_match:
+            score += 500
+        elif starts_match:
+            score += 250
+
+        preferred_sec_types = set((hint or {}).get("preferred_sec_types") or [])
+        preferred_exchanges = set((hint or {}).get("preferred_exchanges") or [])
+        if preferred_sec_types:
+            if sec_types & preferred_sec_types:
+                score += 300
+            elif sec_types:
+                score -= 40
+        elif "STK" in sec_types:
+            score += 200
+        elif "ETF" in sec_types:
+            score += 120
+
+        if preferred_exchanges:
+            if exchange in preferred_exchanges:
+                score += 120
+            elif exchange:
+                score -= 10
+
+        if "OPT" in sec_types or "FOP" in sec_types or "WAR" in sec_types:
+            score -= 80
+        if "FUT" in sec_types and preferred_sec_types and "FUT" not in preferred_sec_types:
+            score -= 60
+        return score, conid
+
+    def _search_secdef(self, symbol: str, hint: Optional[dict] = None) -> Optional[int]:
         try:
+            load_cookies(self._session)
             resp = self._session.get(
                 self._api_url("/iserver/secdef/search"),
                 params={"symbol": symbol},
@@ -159,44 +232,22 @@ class ConidResolver:
             )
             resp.raise_for_status()
             results = resp.json()
+            save_cookies(self._session)
 
             if not results:
                 return None
 
-            normalized_symbol = str(symbol or "").strip().upper()
-            best_stk_exact = None
-            best_stk = None
-            best_any_exact = None
-
+            best_score = -1
+            best_conid = None
             for item in results:
                 if not isinstance(item, dict):
                     continue
-
-                description = str(item.get("description") or "").strip().upper()
-                item_symbol = str(item.get("symbol") or item.get("ticker") or "").strip().upper()
-                company_name = str(item.get("companyName") or item.get("companyHeader") or "").strip().upper()
-                sections = item.get("sections", [])
-                sections = sections if isinstance(sections, list) else []
-                has_stk = any(str(sec.get("secType") or "").upper() == "STK" for sec in sections if isinstance(sec, dict))
-                exact_match = item_symbol == normalized_symbol or description == normalized_symbol or company_name == normalized_symbol
-                conid = int(item.get("conid", 0)) or None
-                if not conid:
-                    continue
-
-                if has_stk and exact_match:
-                    best_stk_exact = conid
-                    break
-                if has_stk and best_stk is None:
-                    best_stk = conid
-                if exact_match and best_any_exact is None:
-                    best_any_exact = conid
-
-            if best_stk_exact:
-                return best_stk_exact
-            if best_stk:
-                return best_stk
-            if best_any_exact:
-                return best_any_exact
+                score, conid = self._score_secdef_item(symbol, item, hint=hint)
+                if conid and score > best_score:
+                    best_score = score
+                    best_conid = conid
+            if best_conid:
+                return best_conid
             if results and results[0].get("conid"):
                 return int(results[0]["conid"])
 
@@ -260,6 +311,10 @@ class ConidResolver:
             conid = cached_conid or self.resolve(symbol)
             if conid:
                 result[symbol] = int(conid)
+
+        unresolved = [symbol for symbol in normalized_symbols if symbol not in result]
+        if unresolved:
+            logger.warning("Conid resolve missed symbols: %s", ",".join(unresolved))
         return result
 
     def get_reverse(self, conid: int) -> Optional[str]:

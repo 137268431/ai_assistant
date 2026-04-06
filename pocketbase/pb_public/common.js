@@ -20,6 +20,12 @@ function escapeQueryValue(value) {
   return String(value ?? '');
 }
 
+function escapeFilterValue(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+}
+
 function normalizeRuntimeEnvironment(value, fallback = 'live') {
   const text = String(value || '').trim().toLowerCase();
   const aliases = {
@@ -312,18 +318,15 @@ function showToast(msg, duration = 2500) {
 function renderNav(activePage) {
   const pages = [
     { path: '/index.html', icon: '🏠', label: '首页' },
-    { path: '/ibkr_signals.html', icon: '📡', label: '信号' },
-    { path: '/ibkr_reverse_signals.html', icon: '🔄', label: '反转' },
-    { path: '/ibkr_orders.html', icon: '📋', label: '订单' },
-    { path: '/ibkr_order_details.html', icon: '📜', label: '明细' },
+    { path: '/ibkr_signals.html', aliases: ['/ibkr_reverse_signals.html'], icon: '📡', label: '信号' },
+    { path: '/ibkr_orders.html', aliases: ['/ibkr_order_details.html'], icon: '📋', label: '订单' },
     { path: '/ibkr_indicators.html', icon: '📈', label: '指标' },
-    { path: '/ibkr_stats.html', icon: '📊', label: '统计' },
     { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
-    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html'], icon: '🖥️', label: '系统' }
+    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_stats.html', '/ibkr_account.html'], icon: '🖥️', label: '系统' }
   ];
 
   return `
-    <div class="nav">
+    <div class="nav" style="--nav-count:${pages.length}">
       ${pages.map(p => `
         <a href="${buildPageUrl(p.path)}" class="nav-item ${(p.path === activePage || (Array.isArray(p.aliases) && p.aliases.includes(activePage))) ? 'active' : ''}">
           <span class="nav-icon">${p.icon}</span>${p.label}
@@ -1196,15 +1199,11 @@ function getCommonStyles() {
         background: rgba(8,11,16,0.96);
         backdrop-filter: blur(16px);
         border-top: 1px solid var(--border);
-        display: flex;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
+        display: grid;
+        grid-template-columns: repeat(var(--nav-count, 6), minmax(0, 1fr));
         padding: 10px 0 max(20px, env(safe-area-inset-bottom));
         z-index: 50;
-        gap: 0;
       }
-      .nav::-webkit-scrollbar { display: none; }
 
       .nav-item {
         display: flex;
@@ -1217,9 +1216,8 @@ function getCommonStyles() {
         font-family: 'JetBrains Mono', monospace;
         letter-spacing: 0.5px;
         transition: color 0.2s;
-        min-width: 76px;
         padding: 0 2px;
-        flex: 1 0 76px;
+        min-width: 0;
       }
 
       .nav-item.active { color: var(--accent); }
@@ -1361,6 +1359,30 @@ function getCommonStyles() {
       .interval-select:focus,
       .refresh-select:focus {
         border-color: var(--accent);
+      }
+
+      @media (max-width: 480px) {
+        .page-context-bar {
+          flex-wrap: wrap;
+          align-items: flex-start;
+        }
+
+        .env-switcher {
+          padding: 6px 8px;
+        }
+
+        .env-switcher-select {
+          min-width: 82px;
+          font-size: 11px;
+        }
+
+        .nav-item {
+          font-size: 7px;
+        }
+
+        .nav-icon {
+          font-size: 17px;
+        }
       }
 
       /* ── Header ── */

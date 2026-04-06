@@ -110,6 +110,19 @@ def normalize_bar_environment(bar: dict, environment: str) -> dict:
     return payload
 
 
+def get_market_index_symbols(environment: str) -> set[str]:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    try:
+        raw_value = cfg.get_for_environment("market_index_symbols", runtime_environment, "SPY,QQQ,VIX")
+    except Exception:
+        raw_value = cfg.get("market_index_symbols", "SPY,QQQ,VIX")
+    return {
+        str(item or "").strip().upper()
+        for item in str(raw_value or "SPY,QQQ,VIX").split(",")
+        if str(item or "").strip()
+    }
+
+
 def get_or_create_engine(environment: str, symbol: str, interval: str) -> IndicatorEngine:
     key = (environment, symbol, interval)
     if key not in engines:
@@ -803,6 +816,7 @@ def compute():
             for environment in enabled_environments:
                 if not skip_persisted_cursor:
                     load_persisted_compute_cursors(environment)
+                market_index_symbols = get_market_index_symbols(environment)
                 for interval in INTERVALS:
                     interval_bars = fetch_interval_bars(environment, interval)
                     if not interval_bars:
@@ -863,7 +877,7 @@ def compute():
                             if len(indicator_batch) >= INDICATOR_BATCH_SIZE:
                                 flush_pending_indicators()
 
-                            if interval != "5m" or not signal_generator:
+                            if interval != "5m" or not signal_generator or symbol in market_index_symbols:
                                 continue
 
                             signal = signal_generator.update(snapshot)
@@ -1067,6 +1081,223 @@ def get_ibkr_service():
     return _ibkr_service
 
 
+def _ibkr_service_environment(service) -> str:
+    try:
+        return str(service.status().get("environment") or "live").strip().lower() or "live"
+    except Exception:
+        return "live"
+
+
+def _ibkr_service_uses_paper_account(service) -> bool:
+    return _ibkr_service_environment(service) == "paper"
+
+
+def _coerce_float(value, default: float | None = None) -> float | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return default
+    try:
+        return float(text)
+    except Exception:
+        return default
+
+
+def _summary_lookup(summary: dict) -> dict:
+    if not isinstance(summary, dict):
+        return {}
+    return {str(key).strip().lower(): value for key, value in summary.items()}
+
+
+def _extract_summary_number(summary_map: dict, *keys: str) -> float:
+    for key in keys:
+        raw_value = summary_map.get(str(key).strip().lower())
+        if isinstance(raw_value, dict):
+            lowered = {str(k).strip().lower(): v for k, v in raw_value.items()}
+            for field in ("amount", "value"):
+                number = _coerce_float(lowered.get(field))
+                if number is not None:
+                    return float(number)
+        else:
+            number = _coerce_float(raw_value)
+            if number is not None:
+                return float(number)
+    return 0.0
+
+
+def _extract_summary_text(summary_map: dict, *keys: str) -> str:
+    for key in keys:
+        raw_value = summary_map.get(str(key).strip().lower())
+        if isinstance(raw_value, dict):
+            lowered = {str(k).strip().lower(): v for k, v in raw_value.items()}
+            for field in ("value", "displayvalue", "text"):
+                value = lowered.get(field)
+                if value not in (None, ""):
+                    return str(value)
+            amount = lowered.get("amount")
+            if amount not in (None, ""):
+                return str(amount)
+        elif raw_value not in (None, ""):
+            return str(raw_value)
+    return ""
+
+
+def _normalize_live_position(position: dict) -> dict:
+    quantity = float(_coerce_float(position.get("position"), 0.0) or 0.0)
+    market_price = float(_coerce_float(position.get("mktPrice"), 0.0) or 0.0)
+    market_value = _coerce_float(position.get("mktValue"))
+    if market_value is None:
+        market_value = quantity * market_price
+
+    return {
+        "symbol": str(position.get("ticker") or position.get("contractDesc") or "").strip().upper(),
+        "conid": int(_coerce_float(position.get("conid"), 0) or 0),
+        "quantity": quantity,
+        "direction": "long" if quantity > 0 else "short" if quantity < 0 else "flat",
+        "avg_cost": float(_coerce_float(position.get("avgCost"), 0.0) or 0.0),
+        "avg_price": float(_coerce_float(position.get("avgPrice"), 0.0) or 0.0),
+        "market_price": market_price,
+        "market_value": float(market_value or 0.0),
+        "unrealized_pnl": float(_coerce_float(position.get("unrealizedPnl"), 0.0) or 0.0),
+        "realized_pnl": float(_coerce_float(position.get("realizedPnl"), 0.0) or 0.0),
+        "account": str(position.get("acctId") or position.get("account") or "").strip(),
+        "currency": str(position.get("currency") or "USD").strip().upper(),
+        "asset_class": str(position.get("assetClass") or "").strip().upper(),
+        "raw": position,
+    }
+
+
+def _normalize_live_order(order: dict) -> dict:
+    status = str(order.get("status") or "").strip()
+    total_quantity = float(
+        _coerce_float(
+            order.get("totalSize")
+            if order.get("totalSize") is not None
+            else order.get("quantity"),
+            0.0,
+        ) or 0.0
+    )
+    filled_quantity = float(_coerce_float(order.get("filledQuantity"), 0.0) or 0.0)
+    remaining_quantity = _coerce_float(order.get("remainingQuantity"))
+    if remaining_quantity is None:
+        remaining_quantity = _coerce_float(order.get("remainingSize"))
+    if remaining_quantity is None:
+        remaining_quantity = max(total_quantity - filled_quantity, 0.0)
+
+    closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}
+    normalized_status = status.upper()
+
+    return {
+        "order_id": str(order.get("orderId") or order.get("id") or "").strip(),
+        "parent_id": str(order.get("parentId") or "").strip(),
+        "symbol": str(order.get("ticker") or order.get("symbol") or order.get("contractDesc") or "").strip().upper(),
+        "side": str(order.get("side") or "").strip().upper(),
+        "status": status,
+        "order_type": str(order.get("orderType") or order.get("orderDesc") or "").strip().upper(),
+        "price": float(_coerce_float(order.get("price"), 0.0) or 0.0),
+        "avg_price": float(_coerce_float(order.get("avgPrice"), 0.0) or 0.0),
+        "total_quantity": total_quantity,
+        "filled_quantity": filled_quantity,
+        "remaining_quantity": float(remaining_quantity or 0.0),
+        "time_in_force": str(order.get("tif") or order.get("timeInForce") or "").strip().upper(),
+        "account": str(order.get("acct") or order.get("acctId") or "").strip(),
+        "can_cancel": bool(normalized_status and normalized_status not in closed_statuses),
+        "can_modify": bool(normalized_status and normalized_status not in closed_statuses),
+        "raw": order,
+    }
+
+
+def _build_ibkr_account_snapshot(service) -> dict:
+    runtime_environment = _ibkr_service_environment(service)
+    service_status = service.status() if hasattr(service, "status") else {}
+    use_paper = _ibkr_service_uses_paper_account(service)
+    account_id = ""
+    if hasattr(service, "order_placer"):
+        try:
+            account_id = str(service.order_placer.get_active_account_id(use_paper=use_paper) or "").strip()
+        except Exception:
+            account_id = ""
+    if not account_id and hasattr(service, "order_lifecycle"):
+        account_id = str(getattr(service.order_lifecycle, "account_id", "") or "").strip()
+
+    summary_raw = {}
+    positions_raw = []
+    orders_raw = []
+    summary_error = ""
+    positions_error = ""
+    orders_error = ""
+
+    try:
+        summary_raw = service.order_lifecycle.get_account_summary(account_id)
+    except Exception as exc:
+        summary_error = str(exc)
+    try:
+        positions_raw = service.order_lifecycle.get_positions(account_id)
+    except Exception as exc:
+        positions_error = str(exc)
+    try:
+        orders_raw = service.order_tracker.get_live_orders()
+    except Exception as exc:
+        orders_error = str(exc)
+
+    positions = [_normalize_live_position(item) for item in (positions_raw or []) if isinstance(item, dict)]
+    orders = [_normalize_live_order(item) for item in (orders_raw or []) if isinstance(item, dict)]
+    summary_map = _summary_lookup(summary_raw)
+
+    total_unrealized = sum(float(item.get("unrealized_pnl", 0) or 0) for item in positions)
+    total_market_value = sum(abs(float(item.get("market_value", 0) or 0)) for item in positions)
+    open_orders_count = len([item for item in orders if item.get("can_cancel")])
+
+    summary = {
+        "account_code": _extract_summary_text(summary_map, "accountcode") or account_id,
+        "account_type": _extract_summary_text(summary_map, "accounttype"),
+        "net_liquidation": _extract_summary_number(summary_map, "netliquidation", "netliq"),
+        "available_funds": _extract_summary_number(summary_map, "availablefunds"),
+        "buying_power": _extract_summary_number(summary_map, "buyingpower"),
+        "excess_liquidity": _extract_summary_number(summary_map, "excessliquidity"),
+        "equity_with_loan": _extract_summary_number(summary_map, "equitywithloanvalue"),
+        "gross_position_value": _extract_summary_number(summary_map, "grosspositionvalue", "stockmarketvalue") or total_market_value,
+        "total_cash_value": _extract_summary_number(summary_map, "totalcashvalue", "cashbalance", "settledcash"),
+        "initial_margin": _extract_summary_number(summary_map, "initmarginreq"),
+        "maintenance_margin": _extract_summary_number(summary_map, "maintmarginreq"),
+        "unrealized_pnl": _extract_summary_number(summary_map, "unrealizedpnl") or total_unrealized,
+        "realized_pnl": _extract_summary_number(summary_map, "realizedpnl"),
+        "currency": _extract_summary_text(summary_map, "currency", "basecurrency") or "USD",
+    }
+
+    return {
+        "ok": True,
+        "environment": runtime_environment,
+        "account_id": account_id,
+        "service_running": bool(getattr(service, "is_running", False)),
+        "service_starting": bool(getattr(service, "is_starting", False)),
+        "session_authenticated": bool((service_status.get("session") or {}).get("authenticated")),
+        "gateway_running": bool((service_status.get("gateway") or {}).get("running")),
+        "websocket_ready": bool((service_status.get("websocket") or {}).get("ready")),
+        "summary": summary,
+        "summary_raw": summary_raw if isinstance(summary_raw, dict) else {},
+        "positions": positions,
+        "orders": orders,
+        "counts": {
+            "positions": len(positions),
+            "open_positions": len([item for item in positions if float(item.get("quantity", 0) or 0) != 0]),
+            "orders": len(orders),
+            "open_orders": open_orders_count,
+        },
+        "errors": {
+            "summary": summary_error,
+            "positions": positions_error,
+            "orders": orders_error,
+        },
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.route("/ibkr/start", methods=["POST"])
 def ibkr_start():
     service = get_ibkr_service()
@@ -1127,6 +1358,193 @@ def ibkr_status():
     if not service:
         return jsonify({"ok": False, "error": "IBKR service not initialized"})
     return jsonify({"ok": True, **service.status()})
+
+
+@app.route("/ibkr/account", methods=["GET"])
+def ibkr_account():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    try:
+        return jsonify(_build_ibkr_account_snapshot(service))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/ibkr/positions", methods=["GET"])
+def ibkr_positions():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    snapshot = _build_ibkr_account_snapshot(service)
+    return jsonify(
+        {
+            "ok": True,
+            "environment": snapshot.get("environment"),
+            "account_id": snapshot.get("account_id"),
+            "positions": snapshot.get("positions", []),
+            "count": snapshot.get("counts", {}).get("positions", 0),
+            "fetched_at": snapshot.get("fetched_at"),
+        }
+    )
+
+
+@app.route("/ibkr/orders/live", methods=["GET"])
+def ibkr_live_orders():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    snapshot = _build_ibkr_account_snapshot(service)
+    return jsonify(
+        {
+            "ok": True,
+            "environment": snapshot.get("environment"),
+            "account_id": snapshot.get("account_id"),
+            "orders": snapshot.get("orders", []),
+            "count": snapshot.get("counts", {}).get("orders", 0),
+            "open_count": snapshot.get("counts", {}).get("open_orders", 0),
+            "fetched_at": snapshot.get("fetched_at"),
+        }
+    )
+
+
+@app.route("/ibkr/orders/cancel", methods=["POST"])
+def ibkr_cancel_order():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    order_id = str(payload.get("order_id") or payload.get("id") or "").strip()
+    acct_id = str(payload.get("account_id") or "").strip() or None
+    if not order_id:
+        return jsonify({"ok": False, "error": "Missing order_id"}), 400
+
+    result = service.order_modifier.cancel_order(order_id, acct_id=acct_id)
+    time.sleep(0.5)
+    snapshot = _build_ibkr_account_snapshot(service)
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "action": "cancel_order",
+            "order_id": order_id,
+            "result": result,
+            "snapshot": snapshot,
+        }
+    ), (200 if result.get("ok") else 500)
+
+
+@app.route("/ibkr/orders/cancel_all", methods=["POST"])
+def ibkr_cancel_all_orders():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    acct_id = str(payload.get("account_id") or "").strip() or None
+    result = service.order_modifier.cancel_all_orders(acct_id=acct_id)
+    time.sleep(0.5)
+    snapshot = _build_ibkr_account_snapshot(service)
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "action": "cancel_all_orders",
+            "result": result,
+            "snapshot": snapshot,
+        }
+    ), (200 if result.get("ok") else 500)
+
+
+@app.route("/ibkr/orders/modify", methods=["POST"])
+def ibkr_modify_order():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    order_id = str(payload.get("order_id") or payload.get("id") or "").strip()
+    acct_id = str(payload.get("account_id") or "").strip() or None
+    updates = {}
+
+    if not order_id:
+        return jsonify({"ok": False, "error": "Missing order_id"}), 400
+
+    price = _coerce_float(payload.get("price"))
+    quantity = _coerce_float(payload.get("quantity"))
+    tif = str(payload.get("tif") or "").strip().upper()
+
+    if price is not None:
+        updates["price"] = price
+    if quantity is not None:
+        updates["quantity"] = quantity
+    if tif:
+        updates["tif"] = tif
+    if not updates:
+        return jsonify({"ok": False, "error": "No valid modify fields supplied"}), 400
+
+    result = service.order_modifier.modify_order(order_id, updates, acct_id=acct_id)
+    time.sleep(0.5)
+    snapshot = _build_ibkr_account_snapshot(service)
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "action": "modify_order",
+            "order_id": order_id,
+            "updates": updates,
+            "result": result,
+            "snapshot": snapshot,
+        }
+    ), (200 if result.get("ok") else 500)
+
+
+@app.route("/ibkr/positions/close", methods=["POST"])
+def ibkr_close_position():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    conid = int(_coerce_float(payload.get("conid"), 0) or 0)
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    position_value = _coerce_float(payload.get("position"))
+    quantity = _coerce_float(payload.get("quantity"))
+
+    if quantity is None and position_value is not None:
+        quantity = abs(float(position_value))
+    elif quantity is not None:
+        quantity = abs(float(quantity))
+
+    direction = str(payload.get("direction") or "").strip().lower()
+    if direction not in {"long", "short"}:
+        if position_value is not None:
+            direction = "long" if float(position_value) > 0 else "short"
+        else:
+            direction = "long"
+
+    if conid <= 0 or not symbol or not quantity or quantity <= 0:
+        return jsonify({"ok": False, "error": "Missing conid/symbol/quantity"}), 400
+
+    result = service.order_placer.place_market_close(
+        conid=conid,
+        symbol=symbol,
+        direction=direction,
+        quantity=quantity,
+        use_paper=_ibkr_service_uses_paper_account(service),
+    )
+    time.sleep(0.75)
+    snapshot = _build_ibkr_account_snapshot(service)
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "action": "close_position",
+            "symbol": symbol,
+            "conid": conid,
+            "quantity": quantity,
+            "direction": direction,
+            "result": result,
+            "snapshot": snapshot,
+        }
+    ), (200 if result.get("ok") else 500)
 
 
 @app.route("/ibkr/dashboard", methods=["GET"])

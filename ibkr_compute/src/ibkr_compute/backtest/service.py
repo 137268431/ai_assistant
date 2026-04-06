@@ -451,6 +451,7 @@ class BacktestService:
         force_flat_eod = True
         max_symbols = max(1, min(DEFAULT_MAX_SYMBOLS, int(payload.get("max_symbols") or DEFAULT_MAX_SYMBOLS)))
         compare_with_tv = bool(payload.get("compare_with_tv", True))
+        compare_tv_signals = bool(payload.get("compare_tv_signals", False))
         raw_params = payload.get("strategy_params") or payload.get("params") or {}
         strategy_params = self._normalize_strategy_params(raw_params)
         strategy_tag = str(payload.get("strategy_tag") or "IBKR_SAC_BACKTEST_V1").strip() or "IBKR_SAC_BACKTEST_V1"
@@ -472,6 +473,7 @@ class BacktestService:
             "force_flat_eod": force_flat_eod,
             "max_symbols": max_symbols,
             "compare_with_tv": compare_with_tv,
+            "compare_tv_signals": compare_tv_signals,
             "params": {
                 "strategy_params": strategy_params,
                 "strategy_tag": strategy_tag,
@@ -838,6 +840,7 @@ class BacktestService:
             "max_symbols": request["max_symbols"],
             "strategy_tag": request["strategy_tag"],
             "compare_with_tv": bool(request.get("compare_with_tv", True)),
+            "compare_tv_signals": bool(request.get("compare_tv_signals", False)),
             **build_runtime_timestamps(),
         }
         if request.get("batch_id"):
@@ -1337,11 +1340,13 @@ class BacktestService:
         engine = IndicatorEngine(symbol, "5m", params=params)
         signal_gen = SignalGenerator(symbol, "5m", params=params)
         compare_with_tv = self._should_compare_with_tv(request)
+        compare_tv_signals = self._should_compare_tv_signals(request)
         tv_reference = self._load_tv_reference(
             symbol,
             request["source_environment"],
             request["date_from"],
             request["date_to"],
+            include_signals=compare_tv_signals,
         ) if compare_with_tv else {}
         daily_close_lookup = self._load_daily_close_lookup(
             symbol,
@@ -1349,7 +1354,11 @@ class BacktestService:
             request["date_from"],
             request["date_to"],
         )
-        symbol_tv_parity = self._init_symbol_tv_parity(symbol, tv_reference) if compare_with_tv else None
+        symbol_tv_parity = self._init_symbol_tv_parity(
+            symbol,
+            tv_reference,
+            compare_tv_signals=compare_tv_signals,
+        ) if compare_with_tv else None
         trades = []
         indicator_rows = []
         gap_count = 0
@@ -1431,7 +1440,7 @@ class BacktestService:
                 continue
             if int(signal.get("shares", 0) or 0) <= 0:
                 continue
-            if symbol_tv_parity is not None:
+            if symbol_tv_parity is not None and compare_tv_signals:
                 signal_payload = self._build_tv_signal_compare_payload(
                     symbol,
                     bar,
@@ -1475,6 +1484,9 @@ class BacktestService:
 
     def _should_compare_with_tv(self, request: dict) -> bool:
         return bool(request.get("compare_with_tv", True)) and str(request.get("source_environment") or "").strip().lower() != BACKTEST_ENVIRONMENT
+
+    def _should_compare_tv_signals(self, request: dict) -> bool:
+        return self._should_compare_with_tv(request) and bool(request.get("compare_tv_signals", False))
 
     def _parse_object(self, value: Any) -> dict:
         if isinstance(value, dict):
@@ -1614,6 +1626,7 @@ class BacktestService:
             {
                 "backtest_source_environment": request.get("source_environment") or "",
                 "backtest_compare_with_tv": bool(request.get("compare_with_tv", True)),
+                "backtest_compare_tv_signals": bool(request.get("compare_tv_signals", False)),
                 "tv_parity_status": audit.get("status") or "unverified",
                 "tv_parity_field_count": int(audit.get("field_count", 0) or 0),
                 "script_tag": str(request.get("strategy_tag") or ""),
@@ -1672,7 +1685,14 @@ class BacktestService:
             "extra": extra,
         }
 
-    def _load_tv_reference(self, symbol: str, source_environment: str, date_from: str, date_to: str) -> dict:
+    def _load_tv_reference(
+        self,
+        symbol: str,
+        source_environment: str,
+        date_from: str,
+        date_to: str,
+        include_signals: bool = True,
+    ) -> dict:
         reference = {"indicator_map": {}, "signal_map": {}, "signal_bar_map": {}, "error": ""}
         if not self.pb:
             reference["error"] = "pb_client_unavailable"
@@ -1689,35 +1709,37 @@ class BacktestService:
                 sort="bar_time_ms",
                 max_pages=DEFAULT_MAX_PAGES,
             )
-            signal_rows = self.pb.get_all_records(
-                TV_SIGNAL_COLLECTION,
-                filter=(
-                    f'symbol = "{symbol}" && interval = "{chart_tf}" && environment = "{source_environment}" '
-                    f"&& bar_time_ms >= {start_ms} && bar_time_ms <= {end_ms}"
-                ),
-                sort="bar_time_ms",
-                max_pages=400,
-            )
             for row in indicator_rows:
                 normalized = self._normalize_tv_indicator_row(row)
                 if normalized["bar_time_ms"] > 0:
                     reference["indicator_map"][normalized["bar_time_ms"]] = normalized
-            for row in signal_rows:
-                normalized = self._normalize_tv_signal_row(row)
-                signal_id = normalized["signal_id"]
-                if signal_id:
-                    reference["signal_map"][signal_id] = normalized
-                bar_ms = normalized["bar_time_ms"]
-                if bar_ms > 0:
-                    reference["signal_bar_map"].setdefault(bar_ms, []).append(normalized)
+            if include_signals:
+                signal_rows = self.pb.get_all_records(
+                    TV_SIGNAL_COLLECTION,
+                    filter=(
+                        f'symbol = "{symbol}" && interval = "{chart_tf}" && environment = "{source_environment}" '
+                        f"&& bar_time_ms >= {start_ms} && bar_time_ms <= {end_ms}"
+                    ),
+                    sort="bar_time_ms",
+                    max_pages=400,
+                )
+                for row in signal_rows:
+                    normalized = self._normalize_tv_signal_row(row)
+                    signal_id = normalized["signal_id"]
+                    if signal_id:
+                        reference["signal_map"][signal_id] = normalized
+                    bar_ms = normalized["bar_time_ms"]
+                    if bar_ms > 0:
+                        reference["signal_bar_map"].setdefault(bar_ms, []).append(normalized)
         except Exception as exc:
             reference["error"] = str(exc)[:300]
         return reference
 
-    def _init_symbol_tv_parity(self, symbol: str, reference: dict) -> dict:
+    def _init_symbol_tv_parity(self, symbol: str, reference: dict, compare_tv_signals: bool = True) -> dict:
         return {
             "symbol": symbol,
             "reference_error": str((reference or {}).get("error") or ""),
+            "signal_compare_enabled": bool(compare_tv_signals),
             "indicators": {
                 "generated_count": 0,
                 "tv_count": len((reference or {}).get("indicator_map", {})),
@@ -1733,7 +1755,7 @@ class BacktestService:
             },
             "signals": {
                 "generated_count": 0,
-                "tv_count": len((reference or {}).get("signal_map", {})),
+                "tv_count": len((reference or {}).get("signal_map", {})) if compare_tv_signals else 0,
                 "matched_count": 0,
                 "mismatch_count": 0,
                 "missing_in_tv_count": 0,
@@ -1888,6 +1910,8 @@ class BacktestService:
         return {"status": "matched", "field_count": 0, "mismatches": []}
 
     def _compare_generated_signal(self, report: dict, generated: dict):
+        if not bool(report.get("signal_compare_enabled", True)):
+            return
         section = report["signals"]
         signal_id = str(generated.get("signal_id", "") or "")
         bar_time_ms = int(generated.get("bar_time_ms", 0) or 0)
@@ -1946,19 +1970,20 @@ class BacktestService:
                 },
             )
 
-        for key, reference in report["_tv_signal_map"].items():
-            if key in report["signals"]["_seen_keys"]:
-                continue
-            report["signals"]["missing_in_backtest_count"] += 1
-            self._append_tv_sample(
-                report["signals"]["missing_in_backtest_samples"],
-                {
-                    "symbol": report["symbol"],
-                    "signal_id": key,
-                    "bar_time_ms": reference.get("bar_time_ms", 0),
-                    "us_time": reference.get("us_time", ""),
-                },
-            )
+        if bool(report.get("signal_compare_enabled", True)):
+            for key, reference in report["_tv_signal_map"].items():
+                if key in report["signals"]["_seen_keys"]:
+                    continue
+                report["signals"]["missing_in_backtest_count"] += 1
+                self._append_tv_sample(
+                    report["signals"]["missing_in_backtest_samples"],
+                    {
+                        "symbol": report["symbol"],
+                        "signal_id": key,
+                        "bar_time_ms": reference.get("bar_time_ms", 0),
+                        "us_time": reference.get("us_time", ""),
+                    },
+                )
 
         for section_name in ("indicators", "signals"):
             section = report[section_name]
@@ -1966,11 +1991,33 @@ class BacktestService:
             section["match_rate"] = round((section["matched_count"] / denominator) * 100.0, 2) if denominator else 100.0
             section.pop("_seen_keys", None)
 
+        if not bool(report.get("signal_compare_enabled", True)):
+            report["signals"].update(
+                {
+                    "generated_count": 0,
+                    "tv_count": 0,
+                    "matched_count": 0,
+                    "mismatch_count": 0,
+                    "missing_in_tv_count": 0,
+                    "missing_in_backtest_count": 0,
+                    "field_mismatch_count": 0,
+                    "mismatch_samples": [],
+                    "missing_in_tv_samples": [],
+                    "missing_in_backtest_samples": [],
+                    "match_rate": 0.0,
+                    "status": "disabled",
+                }
+            )
+
         if report["reference_error"]:
             report["status"] = "error"
-        elif report["indicators"]["tv_count"] == 0 and report["signals"]["tv_count"] == 0:
+        elif report["indicators"]["tv_count"] == 0 and (not bool(report.get("signal_compare_enabled", True)) or report["signals"]["tv_count"] == 0):
             report["status"] = "no_reference"
-        elif report["signals"]["mismatch_count"] or report["signals"]["missing_in_tv_count"] or report["signals"]["missing_in_backtest_count"]:
+        elif bool(report.get("signal_compare_enabled", True)) and (
+            report["signals"]["mismatch_count"]
+            or report["signals"]["missing_in_tv_count"]
+            or report["signals"]["missing_in_backtest_count"]
+        ):
             report["status"] = "fail"
         elif report["indicators"]["mismatch_count"] or report["indicators"]["missing_in_tv_count"] or report["indicators"]["missing_in_backtest_count"]:
             report["status"] = "warn"
@@ -2011,6 +2058,7 @@ class BacktestService:
             "missing_in_backtest_count": 0,
             "field_mismatch_count": 0,
         }
+        compare_tv_signals = self._should_compare_tv_signals(request)
 
         for report in reports:
             for key in indicator_totals:
@@ -2023,11 +2071,15 @@ class BacktestService:
         signal_match_rate = round((signal_totals["matched_count"] / signal_denominator) * 100.0, 2) if signal_denominator else 100.0
         symbols_with_reference = len([item for item in reports if item.get("status") not in {"no_reference", "error"}])
 
-        if not reports or (indicator_totals["tv_count"] == 0 and signal_totals["tv_count"] == 0):
+        if not reports or (indicator_totals["tv_count"] == 0 and (not compare_tv_signals or signal_totals["tv_count"] == 0)):
             status = "no_reference"
         elif any(item.get("status") == "error" for item in reports):
             status = "error"
-        elif signal_totals["mismatch_count"] or signal_totals["missing_in_tv_count"] or signal_totals["missing_in_backtest_count"]:
+        elif compare_tv_signals and (
+            signal_totals["mismatch_count"]
+            or signal_totals["missing_in_tv_count"]
+            or signal_totals["missing_in_backtest_count"]
+        ):
             status = "fail"
         elif indicator_totals["mismatch_count"] or indicator_totals["missing_in_tv_count"] or indicator_totals["missing_in_backtest_count"]:
             status = "warn"
@@ -2039,6 +2091,7 @@ class BacktestService:
             "status": status,
             "symbol_count": len(reports),
             "symbols_with_reference": symbols_with_reference,
+            "signal_compare_enabled": compare_tv_signals,
             "indicator_match_rate": indicator_match_rate,
             "signal_match_rate": signal_match_rate,
             "indicator_generated_count": indicator_totals["generated_count"],
@@ -2057,6 +2110,7 @@ class BacktestService:
         return {
             "enabled": True,
             "status": status,
+            "signal_compare_enabled": compare_tv_signals,
             "source_environment": request.get("source_environment") or "",
             "session_mode": request.get("session_mode") or "",
             "interval": interval_to_chart_tf("5m"),

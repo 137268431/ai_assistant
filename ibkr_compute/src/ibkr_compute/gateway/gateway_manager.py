@@ -13,6 +13,8 @@ from typing import Optional
 
 import requests
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_DIR = os.environ.get("IBKR_GATEWAY_DIR", "/opt/ibkr/clientportal.gw")
@@ -34,6 +36,7 @@ class GatewayManager:
         self._start_time: Optional[float] = None
         self._session = requests.Session()
         self._session.verify = False
+        load_cookies(self._session)
 
     @property
     def run_script(self) -> str:
@@ -73,7 +76,9 @@ class GatewayManager:
 
     def _probe_gateway(self) -> tuple[bool, Optional[int]]:
         try:
+            load_cookies(self._session)
             resp = self._session.post(self.health_url, timeout=3)
+            save_cookies(self._session)
             return True, resp.status_code
         except Exception:
             return False, None

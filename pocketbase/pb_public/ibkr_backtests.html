@@ -435,6 +435,7 @@
             border-radius: 16px;
             border: 1px solid rgba(255,255,255,0.08);
             background: rgba(255,255,255,0.03);
+            min-width: 0;
         }
         .detail-list {
             display: grid;
@@ -540,6 +541,7 @@
             line-height: 1.7;
             white-space: pre-wrap;
             word-break: break-word;
+            overflow-wrap: anywhere;
         }
         .quality-grid {
             display: grid;
@@ -1091,6 +1093,11 @@
             const summary = tvParity.summary || run?.metrics?.tv_parity || {};
             const status = String(tvParity.status || summary.status || 'disabled').toLowerCase();
             const symbolRows = Array.isArray(tvParity.symbols) ? tvParity.symbols : [];
+            const signalCompareEnabled = Boolean(
+                summary.signal_compare_enabled !== undefined
+                    ? summary.signal_compare_enabled
+                    : tvParity.signal_compare_enabled
+            );
 
             if (!summary.enabled && !tvParity.enabled) {
                 return `
@@ -1123,18 +1130,20 @@
             return `
                 <div class="detail-card">
                     <div class="subhead">TV 对齐校验</div>
-                    <div class="foot-note">这是回测阶段的临时 accuracy audit，只用于当前对齐验证，不会作为以后生产链路的硬阻断条件。</div>
+                    <div class="foot-note">${signalCompareEnabled
+                        ? '这是回测阶段的临时 accuracy audit，只用于当前对齐验证，不会作为以后生产链路的硬阻断条件。'
+                        : '当前只校验技术指标与 TV reference 的对齐，TV 信号不再作为误差来源。'}</div>
                     <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
                     <div class="detail-list">
                         <div class="detail-item"><div class="detail-item-label">Reference</div><div class="detail-item-value">${escapeHtml((tvParity.source_environment || run?.source_environment || '--').toUpperCase())} · ${escapeHtml(tvParity.interval || '5')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Compared Symbols</div><div class="detail-item-value">${escapeHtml(String(summary.symbol_count || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Symbols With Ref</div><div class="detail-item-value">${escapeHtml(String(summary.symbols_with_reference || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Indicator Match</div><div class="detail-item-value">${escapeHtml(formatPct(summary.indicator_match_rate || 0))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Signal Match</div><div class="detail-item-value">${escapeHtml(formatPct(summary.signal_match_rate || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Signal Match</div><div class="detail-item-value">${signalCompareEnabled ? escapeHtml(formatPct(summary.signal_match_rate || 0)) : 'OFF'}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Indicator Rows</div><div class="detail-item-value">${escapeHtml(String(summary.indicator_matched_count || 0))} / ${escapeHtml(String(summary.indicator_generated_count || 0))} generated · TV ${escapeHtml(String(summary.indicator_tv_count || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Indicator Drift</div><div class="detail-item-value">${escapeHtml(String(summary.indicator_mismatch_count || 0))} mismatch · ${escapeHtml(String(summary.indicator_missing_in_tv_count || 0))} missing in TV · ${escapeHtml(String(summary.indicator_missing_in_backtest_count || 0))} missing in replay</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Signal Rows</div><div class="detail-item-value">${escapeHtml(String(summary.signal_matched_count || 0))} / ${escapeHtml(String(summary.signal_generated_count || 0))} generated · TV ${escapeHtml(String(summary.signal_tv_count || 0))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Signal Drift</div><div class="detail-item-value">${escapeHtml(String(summary.signal_mismatch_count || 0))} mismatch · ${escapeHtml(String(summary.signal_missing_in_tv_count || 0))} missing in TV · ${escapeHtml(String(summary.signal_missing_in_backtest_count || 0))} missing in replay</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Signal Rows</div><div class="detail-item-value">${signalCompareEnabled ? `${escapeHtml(String(summary.signal_matched_count || 0))} / ${escapeHtml(String(summary.signal_generated_count || 0))} generated · TV ${escapeHtml(String(summary.signal_tv_count || 0))}` : 'disabled'}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Signal Drift</div><div class="detail-item-value">${signalCompareEnabled ? `${escapeHtml(String(summary.signal_mismatch_count || 0))} mismatch · ${escapeHtml(String(summary.signal_missing_in_tv_count || 0))} missing in TV · ${escapeHtml(String(summary.signal_missing_in_backtest_count || 0))} missing in replay` : 'disabled'}</div></div>
                     </div>
                     ${symbolRows.length ? `
                         <div class="table-wrap" style="margin-top: 14px;">
@@ -1158,8 +1167,10 @@
                                                 <br>match ${escapeHtml(String(item?.indicators?.matched_count || 0))} · drift ${escapeHtml(String((item?.indicators?.mismatch_count || 0) + (item?.indicators?.missing_in_tv_count || 0) + (item?.indicators?.missing_in_backtest_count || 0)))}
                                             </td>
                                             <td>
-                                                gen ${escapeHtml(String(item?.signals?.generated_count || 0))} / tv ${escapeHtml(String(item?.signals?.tv_count || 0))}
-                                                <br>match ${escapeHtml(String(item?.signals?.matched_count || 0))} · drift ${escapeHtml(String((item?.signals?.mismatch_count || 0) + (item?.signals?.missing_in_tv_count || 0) + (item?.signals?.missing_in_backtest_count || 0)))}
+                                                ${signalCompareEnabled
+                                                    ? `gen ${escapeHtml(String(item?.signals?.generated_count || 0))} / tv ${escapeHtml(String(item?.signals?.tv_count || 0))}
+                                                <br>match ${escapeHtml(String(item?.signals?.matched_count || 0))} · drift ${escapeHtml(String((item?.signals?.mismatch_count || 0) + (item?.signals?.missing_in_tv_count || 0) + (item?.signals?.missing_in_backtest_count || 0)))}`
+                                                    : 'disabled'}
                                             </td>
                                             <td class="mono">${escapeHtml(item.reference_error || '--')}</td>
                                         </tr>
@@ -2099,27 +2110,7 @@
             if (!initAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_backtests.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🧪 IBKR 回测工坊', { description: '隔离结果 / 参数覆盖 / replay 验证' });
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                {
-                    path: '/ibkr_runtime.html',
-                    kicker: 'Console',
-                    label: '控制台',
-                    copy: '运行态 / 2FA / compute / emergency stop'
-                },
-                {
-                    path: '/ibkr_stats.html',
-                    kicker: 'Stats',
-                    label: '统计',
-                    copy: '实盘订单 / 信号 / 历史分布'
-                },
-                {
-                    path: '/ibkr_backtests.html',
-                    kicker: 'Replay',
-                    label: '回测工坊',
-                    copy: 'bars replay / isolated trades / sharpe',
-                    active: true
-                }
-            ]);
+            document.getElementById('pageBridge').innerHTML = '';
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             applyDefaultDates();
             syncSymbolSourceUI();

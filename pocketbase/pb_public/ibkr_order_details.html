@@ -36,6 +36,8 @@
             display: flex;
             gap: 6px;
             align-items: center;
+            max-width: 100%;
+            overflow-x: auto;
         }
 
         .back-btn {
@@ -438,6 +440,8 @@
             <div id="environmentHeader"></div>
         </div>
     </div>
+
+    <div id="pageBridge" style="padding: 10px 16px 0;"></div>
 
     <div class="content">
         <div class="search-row" id="searchRow">
@@ -1168,6 +1172,21 @@
 
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/ibkr_order_details.html');
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_orders.html',
+                    kicker: 'Orders',
+                    label: '关系视图',
+                    copy: '交易组 / 当前状态 / 操作'
+                },
+                {
+                    path: '/ibkr_order_details.html',
+                    kicker: 'Timeline',
+                    label: '订单明细',
+                    copy: '事件时间线 / 关系展开',
+                    active: true
+                }
+            ]);
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             const dateInput = document.getElementById('customDate');
             if (dateInput) dateInput.value = currentDate;

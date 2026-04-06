@@ -1025,6 +1025,12 @@
             const latestIndicatorExtra = getExtraObject(latestIndicator);
             const latestSignalExtra = getExtraObject(latestSignal);
             const gatewayActive = Boolean(status?.gateway?.running || status?.gateway?.reachable);
+            const runtimeStarted = Boolean(
+                status?.starting
+                || status?.session?.running
+                || status?.websocket?.running
+                || status?.order_tracker?.running
+            );
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
             const readyEngines = Number(status?.ready_engines || 0) || 0;
             const totalEngines = Number(status?.total_engines || 0) || 0;
@@ -1036,6 +1042,10 @@
                 blocker.tone = 'error';
                 blocker.title = 'Gateway 当前离线';
                 blocker.copy = '先恢复网关或重启 IBKR 服务，否则 2FA、bars、订单和信号链路都会停住。';
+            } else if (!runtimeStarted) {
+                blocker.tone = 'warn';
+                blocker.title = 'Runtime 当前未启动';
+                blocker.copy = '这次更像是 runtime service 没有拉起，不是单纯 session pending；重启 compute 后如果没有自动恢复，需要重新触发一次 IBKR start / 2FA。';
             } else if (twoFactorStatus === 'waiting_response') {
                 blocker.tone = 'warn';
                 blocker.title = `等待 Response Code${challengeCode ? ` · ${challengeCode}` : ''}`;
@@ -1134,8 +1144,16 @@
                 || 'https://qc.lzw-glory.top';
             document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase}`;
             const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
+            const runtimeStarted = Boolean(
+                status?.starting
+                || status?.session?.running
+                || status?.websocket?.running
+                || status?.order_tracker?.running
+            );
             const authSummary = sessionAuthenticated
                 ? 'session authenticated'
+                : !runtimeStarted
+                    ? 'runtime stopped · waiting manual start'
                 : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`;
             document.getElementById('authInfo').textContent = authSummary;
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
@@ -1334,6 +1352,8 @@
             }
             if (!gatewayActive) {
                 notes.push({ tone: 'error', text: 'Gateway 当前不可达，先恢复网关进程，再谈 2FA 和 bars 刷新。' });
+            } else if (!status?.session?.running && !status?.websocket?.running && !status?.order_tracker?.running) {
+                notes.push({ tone: 'warn', text: '当前 runtime service 没有真正拉起；这种状态下会看到 Session 待认证，但根因通常是服务停止或刚重启后未恢复。' });
             } else if (!isAuthenticated) {
                 notes.push({ tone: 'warn', text: 'Gateway 已在线，但 IBKR Session 仍未认证，新的 bars/高周期 bars 不会持续刷新。' });
             }
@@ -1715,7 +1735,7 @@
                     path: '/ibkr_system.html',
                     kicker: 'Monitor',
                     label: '总览',
-                    copy: '健康 / freshness / config / recent events'
+                    copy: '健康 / freshness / config / stats'
                 },
                 {
                     path: '/ibkr_runtime.html',
@@ -1723,6 +1743,12 @@
                     label: '控制台',
                     copy: '启动 / 2FA / compute / flow trace',
                     active: true
+                },
+                {
+                    path: '/ibkr_account.html',
+                    kicker: 'Account',
+                    label: '账户',
+                    copy: '真实持仓 / 挂单 / 操作'
                 }
             ]);
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();

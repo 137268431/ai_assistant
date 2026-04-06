@@ -19,8 +19,20 @@ BAR_INTERVAL_SECONDS = 300  # 5 minutes
 
 
 class LiveBar:
-    __slots__ = ("symbol", "conid", "interval_start", "open", "high", "low",
-                 "close", "volume", "tick_count", "last_update")
+    __slots__ = (
+        "symbol",
+        "conid",
+        "interval_start",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "tick_count",
+        "last_update",
+        "volume_update_count",
+        "volume_source",
+    )
 
     def __init__(self, symbol: str, conid: int, interval_start: datetime):
         self.symbol = symbol
@@ -33,8 +45,10 @@ class LiveBar:
         self.volume = 0.0
         self.tick_count = 0
         self.last_update = 0.0
+        self.volume_update_count = 0
+        self.volume_source = ""
 
-    def update(self, price: float, volume: float = 0.0):
+    def update(self, price: float, volume: float = 0.0, volume_source: str = ""):
         if price <= 0:
             return
 
@@ -47,7 +61,11 @@ class LiveBar:
             self.low = min(self.low, price)
 
         self.close = price
-        self.volume = volume
+        if volume > 0:
+            self.volume += volume
+            self.volume_update_count += 1
+            if volume_source:
+                self.volume_source = volume_source
         self.tick_count += 1
         self.last_update = time.time()
 
@@ -70,6 +88,10 @@ class LiveBar:
             "session_type": classify_session(us_time, bar_time_ms),
             "tick_count": self.tick_count,
             "source": "ws",
+            "extra": {
+                "volume_source": self.volume_source or "",
+                "volume_updates": self.volume_update_count,
+            },
         }
 
     @property
@@ -129,7 +151,7 @@ class BarAggregator:
             return
 
         last_price = self._extract_price(tick_data)
-        volume = self._extract_volume(tick_data)
+        volume, volume_source = self._extract_volume(tick_data)
 
         if last_price is None or last_price <= 0:
             return
@@ -147,7 +169,7 @@ class BarAggregator:
             current = LiveBar(symbol, conid, interval_start)
             self._current_bars[conid] = current
 
-        current.update(last_price, volume)
+        current.update(last_price, volume, volume_source)
 
     def _extract_price(self, tick: dict) -> Optional[float]:
         for field in ("31", "last_price", "last"):
@@ -161,15 +183,41 @@ class BarAggregator:
                     continue
         return None
 
-    def _extract_volume(self, tick: dict) -> float:
-        for field in ("87", "volume", "vol"):
-            val = tick.get(field)
-            if val is not None:
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    continue
-        return 0.0
+    def _coerce_numeric(self, value) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        text = str(value).strip().replace(",", "")
+        if not text:
+            return None
+
+        multiplier = 1.0
+        upper = text.upper()
+        if upper.endswith("K"):
+            multiplier = 1_000.0
+            text = text[:-1]
+        elif upper.endswith("M"):
+            multiplier = 1_000_000.0
+            text = text[:-1]
+        elif upper.endswith("B"):
+            multiplier = 1_000_000_000.0
+            text = text[:-1]
+
+        try:
+            return float(text) * multiplier
+        except (ValueError, TypeError):
+            return None
+
+    def _extract_volume(self, tick: dict) -> tuple[float, str]:
+        # 7059 is IBKR's "last size" field for websocket market data. We treat
+        # it as the per-trade size contribution for the current 5m bar volume.
+        for field in ("7059", "last_size", "lastSize", "size", "87", "volume", "vol"):
+            value = self._coerce_numeric(tick.get(field))
+            if value is not None and value > 0:
+                return float(value), field
+        return 0.0, ""
 
     def _close_bar(self, bar: LiveBar):
         self._bar_count += 1
@@ -204,6 +252,9 @@ class BarAggregator:
                 "interval_start": bar.interval_start.strftime("%H:%M"),
                 "open": bar.open,
                 "close": bar.close,
+                "volume": round(bar.volume, 2),
+                "volume_updates": bar.volume_update_count,
+                "volume_source": bar.volume_source or "",
                 "tick_count": bar.tick_count,
                 "last_update_age_s": round(age_seconds, 1),
             }

@@ -378,7 +378,7 @@
                 </div>
                 <div class="stat-label">今日订单 📈/📉</div>
             </a>
-            <a id="positionsLink" href="/ibkr_orders.html?status=filled&type=entry" class="stat-card">
+            <a id="positionsLink" href="/ibkr_account.html" class="stat-card">
                 <div class="stat-icon">📈</div>
                 <div class="stat-number-row" id="activePositionsRow">
                     <span class="stat-number long" id="activePositionsLong">-</span>
@@ -465,7 +465,7 @@
             document.getElementById('signalsLink').href = buildPageUrl('/ibkr_signals.html');
             document.getElementById('reverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
             document.getElementById('ordersLink').href = buildPageUrl('/ibkr_orders.html');
-            document.getElementById('positionsLink').href = buildPageUrl('/ibkr_orders.html', { status: 'filled', type: 'entry' });
+            document.getElementById('positionsLink').href = buildPageUrl('/ibkr_account.html');
             document.getElementById('actionSignalsLink').href = buildPageUrl('/ibkr_signals.html');
             document.getElementById('actionReverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
             document.getElementById('actionOrdersLink').href = buildPageUrl('/ibkr_orders.html');

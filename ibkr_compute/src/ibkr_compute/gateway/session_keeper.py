@@ -13,6 +13,8 @@ import requests
 from typing import Optional, Callable
 from datetime import datetime, timezone, timedelta
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
@@ -39,15 +41,18 @@ class SessionKeeper:
         self._last_gateway_down_callback: Optional[float] = None
         self._session = requests.Session()
         self._session.verify = False
+        load_cookies(self._session)
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
 
     def tickle(self) -> dict:
         try:
+            load_cookies(self._session)
             resp = self._session.post(self._api_url("/tickle"), timeout=10)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
             self._last_tickle_time = time.time()
             self._consecutive_failures = 0
             return data
@@ -59,9 +64,11 @@ class SessionKeeper:
 
     def check_auth_status(self) -> dict:
         try:
+            load_cookies(self._session)
             resp = self._session.post(self._api_url("/iserver/auth/status"), timeout=10)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
             self._authenticated = data.get("authenticated", False)
             return data
         except Exception as e:
@@ -71,9 +78,11 @@ class SessionKeeper:
 
     def reauthenticate(self) -> dict:
         try:
+            load_cookies(self._session)
             resp = self._session.post(self._api_url("/iserver/reauthenticate"), timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
             logger.info("Reauthenticate response: %s", data)
             return data
         except Exception as e:

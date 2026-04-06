@@ -441,12 +441,17 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
             last_compute: null,
             last_scan: null,
         }
+        let runtime = {}
         try {
             const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
             const healthResp = $http.send({ url: `${computeBaseUrl}/health`, method: "GET", timeout: 5 })
             const healthData = JSON.parse(healthResp.raw || "{}")
             const statusResp = $http.send({ url: `${computeBaseUrl}/status`, method: "GET", timeout: 5 })
             const statusData = JSON.parse(statusResp.raw || "{}")
+            try {
+                const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
+                runtime = JSON.parse(runtimeResp.raw || "{}")
+            } catch (_) {}
             compute = {
                 status: healthData.status || statusData.status || "unknown",
                 engines: Number(statusData.total_engines || 0) || 0,
@@ -499,6 +504,7 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
                 last_scan: compute.last_scan || null,
             },
             ibkr_data: dataHealth,
+            runtime: runtime,
             compute_enabled: computeEnabled,
         })
     } catch (err) {
@@ -856,19 +862,18 @@ cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
                 || (runtimeStatus.order_tracker && runtimeStatus.order_tracker.running)
             )
             const runtimeAuthenticated = Boolean(runtimeStatus.session && runtimeStatus.session.authenticated)
-            if (!runtimeStarted || runtimeAuthenticated) {
+            const gatewayReachable = Boolean(runtimeStatus.gateway && (runtimeStatus.gateway.running || runtimeStatus.gateway.reachable))
+            const gatewayStatusCode = Number(runtimeStatus.gateway && runtimeStatus.gateway.status_code || 0) || 0
+            const needsAuthAttention = gatewayReachable && (!runtimeAuthenticated || gatewayStatusCode === 401 || !runtimeStarted)
+            if (!needsAuthAttention) {
                 continue
             }
 
             const statePayload = getStatePayload(environment)
             const state = statePayload.data || {}
             const status = String(state.status || "").trim().toLowerCase()
-            const gatewayAuthenticated = state.gateway_authenticated === true || state.backend_authenticated === true
             const lastPushMs = Number(state.last_request_push_ms || 0) || 0
 
-            if (gatewayAuthenticated && status === "success") {
-                continue
-            }
             if (lastPushMs > 0 && (nowMs - lastPushMs) < 55 * 60 * 1000) {
                 continue
             }
@@ -880,6 +885,9 @@ cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
                 message: "检测到 IBKR 2FA 仍未恢复，已按小时发送提醒，请在方便时点击卡片继续验证。",
                 detail: {
                     "当前状态": status || "requested",
+                    "Runtime已启动": runtimeStarted ? "yes" : "no",
+                    "Session认证": runtimeAuthenticated ? "yes" : "no",
+                    "Gateway状态码": gatewayStatusCode ? String(gatewayStatusCode) : "n/a",
                     "最近结果": String(state.last_result || ""),
                     "最近错误": String(state.last_error || ""),
                 },

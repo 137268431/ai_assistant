@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IBKR 账户</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .account-shell {
+            padding-bottom: 96px;
+        }
+
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+            margin: 18px 16px 12px;
+        }
+
+        .page-title {
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: -0.04em;
+        }
+
+        .page-copy {
+            margin-top: 8px;
+            max-width: 720px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .header-side {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+        }
+
+        .refresh-info {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .ops-row {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: 0 16px 14px;
+        }
+
+        .ops-btn {
+            border: 1px solid var(--border);
+            background: linear-gradient(180deg, rgba(22, 31, 50, 0.95), rgba(10, 16, 28, 0.98));
+            color: var(--text);
+            border-radius: 14px;
+            padding: 12px 14px;
+            cursor: pointer;
+            text-align: left;
+            transition: transform 0.18s ease, border-color 0.18s ease;
+        }
+
+        .ops-btn:disabled {
+            opacity: 0.55;
+            cursor: wait;
+            transform: none;
+        }
+
+        .ops-btn:active {
+            transform: translateY(1px);
+        }
+
+        .ops-btn.primary {
+            border-color: rgba(99,179,237,0.34);
+        }
+
+        .ops-btn.warn {
+            border-color: rgba(246,173,85,0.34);
+        }
+
+        .ops-btn.danger {
+            border-color: rgba(252,129,129,0.34);
+        }
+
+        .ops-kicker {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .ops-label {
+            margin-top: 6px;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .ops-copy {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 10px;
+            margin: 0 16px 14px;
+        }
+
+        .summary-card,
+        .surface-card {
+            background: linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.96));
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 14px;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+        }
+
+        .summary-label,
+        .meta-label,
+        .section-kicker {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .summary-value {
+            margin-top: 8px;
+            font-size: 20px;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+
+        .summary-value.positive,
+        .metric-value.positive {
+            color: var(--long);
+        }
+
+        .summary-value.negative,
+        .metric-value.negative {
+            color: var(--short);
+        }
+
+        .summary-sub {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin: 0 16px 14px;
+        }
+
+        .meta-value,
+        .metric-value {
+            margin-top: 6px;
+            font-size: 14px;
+            font-weight: 700;
+            word-break: break-word;
+        }
+
+        .section {
+            margin: 0 16px 14px;
+        }
+
+        .section-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .section-copy {
+            color: var(--muted);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .card-list {
+            display: grid;
+            gap: 12px;
+        }
+
+        .position-grid,
+        .order-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .record-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .record-symbol {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.04em;
+        }
+
+        .badge-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            background: rgba(99,179,237,0.12);
+            color: var(--accent);
+        }
+
+        .badge.long { background: rgba(72,187,120,0.14); color: var(--long); }
+        .badge.short { background: rgba(252,129,129,0.14); color: var(--short); }
+        .badge.warn { background: rgba(246,173,85,0.14); color: var(--pending); }
+        .badge.neutral { background: rgba(160,174,192,0.14); color: #CBD5E0; }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .metric-item {
+            background: rgba(20,28,46,0.9);
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+
+        .metric-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .record-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .action-btn {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 8px 12px;
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+        }
+
+        .action-btn.close {
+            color: var(--short);
+            border-color: rgba(252,129,129,0.26);
+        }
+
+        .action-btn.cancel {
+            color: var(--pending);
+            border-color: rgba(246,173,85,0.26);
+        }
+
+        .action-btn.modify {
+            color: var(--accent);
+            border-color: rgba(99,179,237,0.26);
+        }
+
+        .empty-state,
+        .blocker {
+            padding: 18px;
+            border-radius: 16px;
+            border: 1px dashed rgba(255,255,255,0.12);
+            background: rgba(14,20,32,0.84);
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.7;
+        }
+
+        .blocker {
+            margin: 0 16px 14px;
+            border-style: solid;
+        }
+
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        @media (max-width: 1100px) {
+            .summary-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+            .meta-grid,
+            .position-grid,
+            .order-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 760px) {
+            .page-header {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .header-side {
+                align-items: flex-start;
+            }
+            .ops-row,
+            .summary-grid,
+            .meta-grid,
+            .position-grid,
+            .order-grid {
+                grid-template-columns: 1fr;
+            }
+            .record-symbol {
+                font-size: 20px;
+            }
+            .metric-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .page-title {
+                font-size: 22px;
+            }
+            .metric-grid {
+                grid-template-columns: 1fr;
+            }
+            .section, .page-header, .ops-row, .summary-grid, .meta-grid, .blocker {
+                margin-left: 12px;
+                margin-right: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="nav"></div>
+
+    <div class="page-shell account-shell">
+        <div id="contextBar"></div>
+        <div id="pageBridge"></div>
+
+        <div class="page-header">
+            <div>
+                <div class="page-title">💼 IBKR 账户实况</div>
+                <div class="page-copy">这里直接看 Gateway 返回的真实账户状态：净值、可用资金、当前持仓、实时挂单，并支持撤单、改单和单个持仓市价平仓。</div>
+            </div>
+            <div class="header-side">
+                <div id="environmentHeader"></div>
+                <div class="refresh-info" id="refreshInfo">加载中...</div>
+            </div>
+        </div>
+
+        <div class="ops-row">
+            <button class="ops-btn primary" id="refreshButton" type="button" onclick="loadAccountSnapshot(true)">
+                <div class="ops-kicker">Refresh</div>
+                <div class="ops-label">刷新账户</div>
+                <div class="ops-copy">立即拉取最新账户、持仓和挂单状态。</div>
+            </button>
+            <button class="ops-btn warn" id="cancelAllButton" type="button" onclick="cancelAllOrders()">
+                <div class="ops-kicker">Orders</div>
+                <div class="ops-label">撤全部挂单</div>
+                <div class="ops-copy">只取消当前 open orders，不处理已成交持仓。</div>
+            </button>
+            <button class="ops-btn danger" id="runtimeButton" type="button" onclick="goRuntime()">
+                <div class="ops-kicker">Control</div>
+                <div class="ops-label">去控制台</div>
+                <div class="ops-copy">遇到 2FA、会话、Gateway 问题时回控制台处理。</div>
+            </button>
+        </div>
+
+        <div id="blocker"></div>
+
+        <div class="summary-grid" id="summaryGrid"></div>
+        <div class="meta-grid" id="metaGrid"></div>
+
+        <div class="section">
+            <div class="section-head">
+                <div>
+                    <div class="section-kicker">Positions</div>
+                    <div class="section-title">当前持仓</div>
+                </div>
+                <div class="section-copy mono" id="positionsMeta">--</div>
+            </div>
+            <div class="card-list" id="positionsArea"></div>
+        </div>
+
+        <div class="section">
+            <div class="section-head">
+                <div>
+                    <div class="section-kicker">Orders</div>
+                    <div class="section-title">实时挂单</div>
+                </div>
+                <div class="section-copy mono" id="ordersMeta">--</div>
+            </div>
+            <div class="card-list" id="ordersArea"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let refreshTimer = null;
+        let latestSnapshot = null;
+        let actionBusy = false;
+
+        function initAuth() {
+            const token = getToken();
+            if (!token) {
+                redirectToLogin(`${location.pathname}${location.search}`);
+                return false;
+            }
+            return true;
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function getAuthHeaders(extra = {}) {
+            const headers = { ...extra };
+            const token = getToken();
+            if (token) headers.Authorization = `Bearer ${token}`;
+            return headers;
+        }
+
+        async function requestAccountJson(path, { method = 'GET', body = null } = {}) {
+            const options = {
+                method,
+                headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
+            };
+            if (body) options.body = JSON.stringify(body);
+            const response = await fetch(buildPageUrl(path, {}, { environment: currentEnvironment }), options);
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+            const text = await response.text();
+            let data = {};
+            try {
+                data = text ? JSON.parse(text) : {};
+            } catch (_) {
+                data = { ok: false, raw: text };
+            }
+            if (!response.ok) {
+                throw new Error(data.message || data.error || `Request failed (${response.status})`);
+            }
+            return data;
+        }
+
+        function formatMoney(value) {
+            const num = Number(value || 0);
+            if (!Number.isFinite(num)) return '--';
+            return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function formatQty(value) {
+            const num = Number(value || 0);
+            if (!Number.isFinite(num)) return '--';
+            if (Math.abs(num) >= 1000) {
+                return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+            }
+            return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
+        }
+
+        function formatSignedMoney(value) {
+            const num = Number(value || 0);
+            if (!Number.isFinite(num)) return '--';
+            const prefix = num > 0 ? '+' : '';
+            return `${prefix}${formatMoney(num).replace('$', '$')}`;
+        }
+
+        function formatTimeLabel(value) {
+            if (!value) return '--';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return String(value);
+            return date.toLocaleString('zh-CN', {
+                timeZone: 'Asia/Shanghai',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false,
+            });
+        }
+
+        function badgeClass(kind) {
+            const text = String(kind || '').toLowerCase();
+            if (text === 'long' || text === 'buy' || text === 'authenticated' || text === 'ready') return 'badge long';
+            if (text === 'short' || text === 'sell' || text === 'offline' || text === 'error') return 'badge short';
+            if (text === 'warning' || text === 'pending' || text === 'submitted') return 'badge warn';
+            return 'badge neutral';
+        }
+
+        function valueClass(value) {
+            const num = Number(value || 0);
+            if (num > 0) return 'positive';
+            if (num < 0) return 'negative';
+            return '';
+        }
+
+        function setActionState(busy) {
+            actionBusy = Boolean(busy);
+            ['refreshButton', 'cancelAllButton', 'runtimeButton'].forEach((id) => {
+                const node = document.getElementById(id);
+                if (node) node.disabled = actionBusy;
+            });
+            document.querySelectorAll('.action-btn').forEach((node) => {
+                node.disabled = actionBusy;
+            });
+        }
+
+        function goRuntime() {
+            window.location.href = buildPageUrl('/ibkr_runtime.html', {}, { environment: currentEnvironment });
+        }
+
+        function renderBlocker(snapshot) {
+            const blocker = document.getElementById('blocker');
+            const errors = snapshot?.errors || {};
+            const hasFetchError = Boolean(errors.summary || errors.positions || errors.orders);
+            const sessionAuthenticated = Boolean(snapshot?.session_authenticated);
+            const serviceRunning = Boolean(snapshot?.service_running || snapshot?.service_starting);
+
+            if (serviceRunning && sessionAuthenticated && !hasFetchError) {
+                blocker.innerHTML = '';
+                return;
+            }
+
+            const lines = [];
+            if (!serviceRunning) lines.push('IBKR 服务当前没有 running，账户页只能看到空状态。');
+            if (serviceRunning && !sessionAuthenticated) lines.push('当前会话未认证，先去控制台完成 2FA。');
+            if (errors.summary) lines.push(`summary error: ${errors.summary}`);
+            if (errors.positions) lines.push(`positions error: ${errors.positions}`);
+            if (errors.orders) lines.push(`orders error: ${errors.orders}`);
+            blocker.innerHTML = `<div class="blocker">${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('') || '当前状态正常。'}</div>`;
+        }
+
+        function renderSummary(snapshot) {
+            const summary = snapshot?.summary || {};
+            const counts = snapshot?.counts || {};
+            const cards = [
+                ['Net Liq', formatMoney(summary.net_liquidation), '账户净值'],
+                ['Available', formatMoney(summary.available_funds), '可用资金'],
+                ['Buying Power', formatMoney(summary.buying_power), '购买力'],
+                ['Cash', formatMoney(summary.total_cash_value), '现金余额'],
+                ['Gross Exposure', formatMoney(summary.gross_position_value), '持仓市值'],
+                ['Unrealized', formatSignedMoney(summary.unrealized_pnl), `${counts.open_positions || 0} positions`],
+            ];
+            document.getElementById('summaryGrid').innerHTML = cards.map(([label, value, sub]) => `
+                <div class="summary-card">
+                    <div class="summary-label">${escapeHtml(label)}</div>
+                    <div class="summary-value ${valueClass(value)}">${escapeHtml(String(value))}</div>
+                    <div class="summary-sub">${escapeHtml(sub)}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderMeta(snapshot) {
+            const summary = snapshot?.summary || {};
+            const counts = snapshot?.counts || {};
+            const items = [
+                ['Account', summary.account_code || snapshot?.account_id || '--'],
+                ['Type', summary.account_type || '--'],
+                ['Session', snapshot?.session_authenticated ? 'AUTHENTICATED' : 'UNAUTHENTICATED'],
+                ['Gateway / WS', `${snapshot?.gateway_running ? 'UP' : 'DOWN'} / ${snapshot?.websocket_ready ? 'READY' : 'WAIT'}`],
+            ];
+            document.getElementById('metaGrid').innerHTML = items.map(([label, value]) => `
+                <div class="surface-card">
+                    <div class="meta-label">${escapeHtml(label)}</div>
+                    <div class="meta-value">${escapeHtml(String(value))}</div>
+                    <div class="summary-sub mono">positions=${escapeHtml(String(counts.positions || 0))} · open_orders=${escapeHtml(String(counts.open_orders || 0))}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderPositions(snapshot) {
+            const positions = Array.isArray(snapshot?.positions) ? snapshot.positions.slice() : [];
+            positions.sort((a, b) => Math.abs(Number(b.market_value || 0)) - Math.abs(Number(a.market_value || 0)));
+            document.getElementById('positionsMeta').textContent = `${positions.length} items · updated ${formatTimeLabel(snapshot?.fetched_at)}`;
+            const area = document.getElementById('positionsArea');
+            if (!positions.length) {
+                area.innerHTML = '<div class="empty-state">当前没有持仓。这里显示的是 Gateway 直接返回的真实仓位，不依赖 PocketBase 镜像表。</div>';
+                return;
+            }
+            area.innerHTML = `<div class="position-grid">${positions.map((position) => `
+                <div class="surface-card">
+                    <div class="record-head">
+                        <div>
+                            <div class="record-symbol">${escapeHtml(position.symbol || '--')}</div>
+                            <div class="summary-sub mono">conid=${escapeHtml(String(position.conid || '--'))} · acct=${escapeHtml(position.account || '--')}</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="${badgeClass(position.direction)}">${escapeHtml(String(position.direction || 'flat').toUpperCase())}</span>
+                            <span class="badge neutral">${escapeHtml(position.asset_class || 'ASSET')}</span>
+                        </div>
+                    </div>
+                    <div class="metric-grid">
+                        <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(position.quantity))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Avg Cost</div><div class="metric-value">${escapeHtml(formatMoney(position.avg_cost))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Market Price</div><div class="metric-value">${escapeHtml(formatMoney(position.market_price))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Unrealized</div><div class="metric-value ${valueClass(position.unrealized_pnl)}">${escapeHtml(formatSignedMoney(position.unrealized_pnl))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
+                    </div>
+                    <div class="record-actions">
+                        <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction }).replace(/'/g, "&#39;")})'>市价平仓</button>
+                    </div>
+                </div>
+            `).join('')}</div>`;
+        }
+
+        function renderOrders(snapshot) {
+            const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.slice() : [];
+            orders.sort((a, b) => {
+                const leftOpen = a.can_cancel ? 1 : 0;
+                const rightOpen = b.can_cancel ? 1 : 0;
+                if (leftOpen !== rightOpen) return rightOpen - leftOpen;
+                return String(a.symbol || '').localeCompare(String(b.symbol || ''));
+            });
+            document.getElementById('ordersMeta').textContent = `${orders.length} items · open ${snapshot?.counts?.open_orders || 0}`;
+            const area = document.getElementById('ordersArea');
+            if (!orders.length) {
+                area.innerHTML = '<div class="empty-state">当前没有实时挂单。</div>';
+                return;
+            }
+            area.innerHTML = `<div class="order-grid">${orders.map((order) => `
+                <div class="surface-card">
+                    <div class="record-head">
+                        <div>
+                            <div class="record-symbol">${escapeHtml(order.symbol || '--')}</div>
+                            <div class="summary-sub mono">order_id=${escapeHtml(order.order_id || '--')} · parent=${escapeHtml(order.parent_id || '--')}</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="${badgeClass(order.side === 'BUY' ? 'long' : order.side === 'SELL' ? 'short' : '')}">${escapeHtml(order.side || '--')}</span>
+                            <span class="${badgeClass(order.can_cancel ? 'pending' : 'neutral')}">${escapeHtml((order.status || '--').toUpperCase())}</span>
+                        </div>
+                    </div>
+                    <div class="metric-grid">
+                        <div class="metric-item"><div class="metric-label">Type</div><div class="metric-value">${escapeHtml(order.order_type || '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">TIF</div><div class="metric-value">${escapeHtml(order.time_in_force || '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">Price</div><div class="metric-value">${escapeHtml(formatMoney(order.price))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Avg Fill</div><div class="metric-value">${escapeHtml(formatMoney(order.avg_price))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Total / Filled</div><div class="metric-value">${escapeHtml(formatQty(order.total_quantity))} / ${escapeHtml(formatQty(order.filled_quantity))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Remaining</div><div class="metric-value">${escapeHtml(formatQty(order.remaining_quantity))}</div></div>
+                    </div>
+                    <div class="record-actions">
+                        ${order.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder('${escapeHtml(order.order_id)}', ${Number(order.price || 0)}, ${Number(order.total_quantity || 0)})">改单</button>` : ''}
+                        ${order.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder('${escapeHtml(order.order_id)}')">撤单</button>` : ''}
+                    </div>
+                </div>
+            `).join('')}</div>`;
+        }
+
+        async function loadAccountSnapshot(showFeedback = false) {
+            if (!initAuth()) return;
+            const refreshInfo = document.getElementById('refreshInfo');
+            refreshInfo.textContent = '刷新中...';
+            try {
+                const snapshot = await requestAccountJson('/api/custom/ibkr/account_snapshot');
+                latestSnapshot = snapshot;
+                renderBlocker(snapshot);
+                renderSummary(snapshot);
+                renderMeta(snapshot);
+                renderPositions(snapshot);
+                renderOrders(snapshot);
+                refreshInfo.textContent = `上次刷新：${formatTimeLabel(snapshot.fetched_at)}`;
+                if (showFeedback) showToast('账户状态已刷新');
+            } catch (error) {
+                renderBlocker({ errors: { summary: error.message } });
+                document.getElementById('summaryGrid').innerHTML = '';
+                document.getElementById('metaGrid').innerHTML = '';
+                document.getElementById('positionsArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
+                document.getElementById('ordersArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
+                refreshInfo.textContent = `刷新失败：${error.message || error}`;
+                if (showFeedback) showToast(`加载失败: ${error.message || error}`);
+            }
+        }
+
+        async function runAction(label, path, body, successMessage) {
+            if (actionBusy) return;
+            setActionState(true);
+            try {
+                const payload = await requestAccountJson(path, { method: 'POST', body: { ...body, environment: currentEnvironment } });
+                latestSnapshot = payload.snapshot || latestSnapshot;
+                if (payload.snapshot) {
+                    renderBlocker(payload.snapshot);
+                    renderSummary(payload.snapshot);
+                    renderMeta(payload.snapshot);
+                    renderPositions(payload.snapshot);
+                    renderOrders(payload.snapshot);
+                    document.getElementById('refreshInfo').textContent = `上次刷新：${formatTimeLabel(payload.snapshot.fetched_at)}`;
+                }
+                showToast(successMessage || `${label} 已执行`);
+            } catch (error) {
+                showToast(`${label} 失败: ${error.message || error}`);
+            } finally {
+                setActionState(false);
+            }
+        }
+
+        async function cancelAllOrders() {
+            const confirmText = window.prompt('这是实盘/模拟账户的真实操作。请输入 CANCEL ALL 确认撤掉全部挂单。', '');
+            if (confirmText !== 'CANCEL ALL') return;
+            await runAction('撤全部挂单', '/api/custom/ibkr/orders/cancel_all', {}, '全部挂单撤单请求已发送');
+        }
+
+        async function cancelOrder(orderId) {
+            if (!orderId || !window.confirm(`确认撤掉真实挂单 ${orderId} ?`)) return;
+            await runAction('撤单', '/api/custom/ibkr/orders/cancel', { order_id: orderId }, `订单 ${orderId} 撤单请求已发送`);
+        }
+
+        async function modifyOrder(orderId, currentPrice, currentQty) {
+            if (!orderId) return;
+            const priceText = window.prompt(`订单 ${orderId} 的新价格（留空表示不改）`, currentPrice > 0 ? String(currentPrice) : '');
+            if (priceText === null) return;
+            const qtyText = window.prompt(`订单 ${orderId} 的新数量（留空表示不改）`, currentQty > 0 ? String(currentQty) : '');
+            if (qtyText === null) return;
+            const body = { order_id: orderId };
+            if (String(priceText).trim() !== '') body.price = Number(priceText);
+            if (String(qtyText).trim() !== '') body.quantity = Number(qtyText);
+            if (body.price === undefined && body.quantity === undefined) {
+                showToast('没有输入修改项');
+                return;
+            }
+            if ((body.price !== undefined && !Number.isFinite(body.price)) || (body.quantity !== undefined && !Number.isFinite(body.quantity))) {
+                showToast('改单参数无效');
+                return;
+            }
+            await runAction('改单', '/api/custom/ibkr/orders/modify', body, `订单 ${orderId} 改单请求已发送`);
+        }
+
+        async function closePosition(position) {
+            if (!position || !position.symbol || !position.conid) return;
+            const qty = Number(position.quantity || 0);
+            if (!Number.isFinite(qty) || qty === 0) return;
+            if (!window.confirm(`确认对 ${position.symbol} 发起真实市价平仓？\n数量: ${formatQty(Math.abs(qty))}`)) return;
+            await runAction(
+                '平仓',
+                '/api/custom/ibkr/positions/close',
+                {
+                    symbol: position.symbol,
+                    conid: position.conid,
+                    quantity: Math.abs(qty),
+                    position: qty,
+                    direction: position.direction,
+                },
+                `${position.symbol} 平仓请求已发送`
+            );
+        }
+
+        window.cancelAllOrders = cancelAllOrders;
+        window.cancelOrder = cancelOrder;
+        window.modifyOrder = modifyOrder;
+        window.closePosition = closePosition;
+        window.loadAccountSnapshot = loadAccountSnapshot;
+        window.goRuntime = goRuntime;
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            window.location.href = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
+        };
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!initAuth()) return;
+            document.getElementById('nav').innerHTML = renderNav('/ibkr_account.html');
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('💼 IBKR 账户', { description: '真实账户 / 持仓 / 挂单 / 操作入口' });
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_system.html',
+                    kicker: 'Monitor',
+                    label: '总览',
+                    copy: '健康 / freshness / stats'
+                },
+                {
+                    path: '/ibkr_runtime.html',
+                    kicker: 'Console',
+                    label: '控制台',
+                    copy: '2FA / 启停 / compute / emergency'
+                },
+                {
+                    path: '/ibkr_account.html',
+                    kicker: 'Account',
+                    label: '账户',
+                    copy: '真实持仓 / 挂单 / 操作',
+                    active: true
+                }
+            ]);
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
+            await loadAccountSnapshot(false);
+            refreshTimer = setInterval(() => loadAccountSnapshot(false), 20000);
+        });
+    </script>
+</body>
+</html>

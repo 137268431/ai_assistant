@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Sequence
 
 import requests
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 from .timeframe_utils import (
     build_runtime_timestamps,
     classify_session,
@@ -85,6 +87,7 @@ class DataBackfill:
     def _create_session(self) -> requests.Session:
         session = requests.Session()
         session.verify = False
+        load_cookies(session)
         return session
 
     def _resolve_intervals(self, intervals: Optional[Sequence[str]]) -> List[str]:
@@ -148,7 +151,9 @@ class DataBackfill:
                     continue
 
                 resp.raise_for_status()
-                return resp.json()
+                payload = resp.json()
+                save_cookies(session)
+                return payload
             finally:
                 session.close()
 

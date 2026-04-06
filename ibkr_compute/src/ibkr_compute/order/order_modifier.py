@@ -11,6 +11,8 @@ import requests
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 
+from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
@@ -25,6 +27,7 @@ class OrderModifier:
         self.pb_client = pb_client
         self._session = requests.Session()
         self._session.verify = False
+        load_cookies(self._session)
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
@@ -35,9 +38,11 @@ class OrderModifier:
         url = self._api_url(f"/iserver/account/{acct}/order/{order_id}")
 
         try:
+            load_cookies(self._session)
             resp = self._session.put(url, json=updates, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
 
             if isinstance(data, list) and data and data[0].get("id"):
                 return self._confirm_modify(data[0]["id"])
@@ -52,9 +57,11 @@ class OrderModifier:
     def _confirm_modify(self, reply_id: str) -> Dict[str, Any]:
         url = self._api_url(f"/iserver/reply/{reply_id}")
         try:
+            load_cookies(self._session)
             resp = self._session.post(url, json={"confirmed": True}, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
             return {"ok": True, "raw": data}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -74,9 +81,11 @@ class OrderModifier:
         url = self._api_url(f"/iserver/account/{acct}/order/{order_id}")
 
         try:
+            load_cookies(self._session)
             resp = self._session.delete(url, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            save_cookies(self._session)
             logger.info("Order %s cancelled", order_id)
             return {"ok": True, "raw": data}
         except Exception as e:
@@ -87,7 +96,7 @@ class OrderModifier:
         """Caution: cancels ALL open orders for the account."""
         # Use order tracker to get all open orders, then cancel each
         from ibkr_compute.order.order_tracker import OrderTracker
-        tracker = OrderTracker(self.gateway_url, self.account_id)
+        tracker = OrderTracker(self.gateway_url, acct_id or self.account_id)
         orders = tracker.get_live_orders()
 
         cancelled = 0
