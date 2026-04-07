@@ -633,7 +633,7 @@
                     <div class="hero-title">把 <span class="accent">ibkr_bars</span> 变成可回放、可统计、可清理的回测流转</div>
                     <div class="hero-copy">
                         回测只读取缓存好的 <span class="mono">ibkr_bars</span>，运行时重新生成指标与信号，不写入 <span class="mono">ibkr_indicators</span> / <span class="mono">ibkr_signals</span>。
-                        结果只落到隔离的 <span class="mono">ibkr_backtest_runs</span> / <span class="mono">ibkr_backtest_trades</span>，便于后续参数调优、回放检查和一键清理。
+                        结果只落到隔离的 <span class="mono">ibkr_backtest_runs</span> / <span class="mono">ibkr_backtest_trades</span> / <span class="mono">ibkr_backtest_indicators</span> / <span class="mono">ibkr_backtest_signals</span> / <span class="mono">ibkr_backtest_targets</span> / <span class="mono">ibkr_backtest_reverse_signals</span>，并按 run_id 串联，便于后续参数调优、回放检查和一键清理。
                     </div>
                 </div>
                 <div class="hero-actions">
@@ -650,7 +650,7 @@
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">新建回测</div>
-                        <div class="panel-copy">支持手动 symbols、当日 <span class="mono">ibkr_targets</span>、以及 watchlist 底池。策略参数先走 JSON 覆盖，后续可直接扩展为参数扫描。</div>
+                        <div class="panel-copy">支持手动 symbols、当日 <span class="mono">ibkr_targets</span>、watchlist 底池，以及历史盘前选股回放 <span class="mono">daily_scan_replay</span>。策略参数先走 JSON 覆盖，后续可直接扩展为参数扫描。</div>
                     </div>
                     <div class="panel-tools">
                         <button class="btn primary" id="startButton" type="button" onclick="handleStartBacktest()">启动回测</button>
@@ -667,6 +667,7 @@
                             <option value="manual">manual</option>
                             <option value="targets">targets</option>
                             <option value="watchlist">watchlist</option>
+                            <option value="daily_scan_replay">daily_scan_replay</option>
                         </select>
                     </div>
                     <div class="field">
@@ -708,6 +709,14 @@
                     <div class="field">
                         <label for="slippageBps">Slippage (bps)</label>
                         <input id="slippageBps" type="number" min="0" step="0.5" value="2">
+                    </div>
+                    <div class="field">
+                        <label for="warmupBars">Warmup Bars</label>
+                        <input id="warmupBars" type="number" min="0" max="2000" step="10" value="320">
+                    </div>
+                    <div class="field">
+                        <label for="premarketCutoff">Premarket Cutoff</label>
+                        <input id="premarketCutoff" type="text" value="09:25" placeholder="09:25">
                     </div>
                     <div class="field span-2">
                         <label for="strategyParams">Strategy Params JSON</label>
@@ -1048,6 +1057,15 @@
             return `${from} → ${to}`;
         }
 
+        function formatBreakdown(breakdown) {
+            if (!breakdown || typeof breakdown !== 'object') return '--';
+            const entries = Object.entries(breakdown)
+                .filter(([, value]) => Number(value || 0) > 0)
+                .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+            if (!entries.length) return '--';
+            return entries.map(([key, value]) => `${key}:${value}`).join(' · ');
+        }
+
         function summarizeRunSymbols(run) {
             const raw = String(run?.symbols || '').trim();
             if (!raw) return '--';
@@ -1084,6 +1102,31 @@
                         <div class="detail-item"><div class="detail-item-label">Errors</div><div class="detail-item-value">${escapeHtml(String(capture.error_count || 0))}</div></div>
                     </div>
                     ${errors.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(errors, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 run 的回测指标留痕没有落库错误。</div>'}
+                </div>
+            `;
+        }
+
+        function buildBacktestReverseCaptureCard(run) {
+            const capture = run?.extra?.backtest_reverse_capture || run?.metrics?.backtest_reverse_capture || {};
+            const status = String(capture.status || 'empty').toLowerCase();
+            const errors = Array.isArray(capture.errors) ? capture.errors : [];
+            const metrics = run?.metrics || {};
+            const samples = Array.isArray(metrics.backtest_reverse_samples) ? metrics.backtest_reverse_samples : [];
+            return `
+                <div class="detail-card">
+                    <div class="subhead">反转验证</div>
+                    <div class="foot-note">这是回测阶段的反转动作留痕，只用于验证持仓后的 <span class="mono">indicator_conflict</span> 场景，不会回写 live <span class="mono">reverse_signals</span>。</div>
+                    <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
+                    <div class="detail-list">
+                        <div class="detail-item"><div class="detail-item-label">Collection</div><div class="detail-item-value mono">${escapeHtml(capture.collection || 'ibkr_backtest_reverse_signals')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Attempted</div><div class="detail-item-value">${escapeHtml(String(capture.attempted_count || metrics.backtest_reverse_signal_count || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Saved</div><div class="detail-item-value">${escapeHtml(String(capture.saved_count || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Errors</div><div class="detail-item-value">${escapeHtml(String(capture.error_count || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Action Breakdown</div><div class="detail-item-value">${escapeHtml(formatBreakdown(metrics.backtest_reverse_action_breakdown || {}))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Strength Breakdown</div><div class="detail-item-value">${escapeHtml(formatBreakdown(metrics.backtest_reverse_strength_breakdown || {}))}</div></div>
+                    </div>
+                    ${samples.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(samples, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 run 没有记录到反转动作。</div>'}
+                    ${errors.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(errors, null, 2))}</div>` : ''}
                 </div>
             `;
         }
@@ -1204,14 +1247,17 @@
             const source = document.getElementById('symbolSource').value;
             const symbolsInput = document.getElementById('symbolsText');
             const help = document.getElementById('symbolsHelp');
-            const isManual = source === 'manual';
-            symbolsInput.disabled = !isManual;
-            if (isManual) {
+            const supportsManualUniverse = source === 'manual' || source === 'daily_scan_replay';
+            symbolsInput.disabled = !supportsManualUniverse;
+            if (source === 'manual') {
                 help.textContent = '手动模式下必填；其它模式会忽略这个输入。';
                 symbolsInput.placeholder = 'AAPL,NVDA,MSFT';
             } else if (source === 'targets') {
                 help.textContent = '会读取 ibkr_targets 中当前环境的 active 标的，按 score / 日期截取。';
                 symbolsInput.placeholder = 'targets 模式会自动解析';
+            } else if (source === 'daily_scan_replay') {
+                help.textContent = '可选：填写后会作为历史盘前选股的底池；留空则按 watchlist 快照逐日回放。';
+                symbolsInput.placeholder = '可选：限制历史盘前扫描底池';
             } else {
                 help.textContent = '会读取 watchlist 股票池，并按 max_symbols 截断。';
                 symbolsInput.placeholder = 'watchlist 模式会自动解析';
@@ -1420,7 +1466,10 @@
                 ['Sharpe', formatNumber(selectedRun.sharpe, 2), classForValue(selectedRun.sharpe), `sortino ${formatNumber(metrics.sortino, 2)}`],
                 ['Max Drawdown', formatPct(-Math.abs(selectedRun.max_drawdown_pct || 0)), 'negative', `profit factor ${formatNumber(metrics.profit_factor, 2)}`],
                 ['Win Rate', formatPct(selectedRun.win_rate), classForValue(selectedRun.win_rate - 50), `expectancy ${formatMoney(metrics.expectancy || 0)}`],
-                ['Avg Win / Loss', `${formatMoney(metrics.avg_win || 0)} / ${formatMoney(metrics.avg_loss || 0)}`, '', `${metrics.monthly_returns?.length || 0} monthly points`],
+                ['Avg Win / Loss', `${formatMoney(metrics.avg_win || 0)} / ${formatMoney(metrics.avg_loss || 0)}`, '', `盈亏比 ${formatNumber(metrics.win_loss_ratio || 0, 2)}`],
+                ['Signal Fill', formatPct(metrics.signal_fill_rate || 0), classForValue((metrics.signal_fill_rate || 0) - 50), `${metrics.executed_signal_count || 0}/${metrics.signal_count || 0} executed`],
+                ['Replay Targets', String(metrics.backtest_target_count || 0), '', `${metrics.historical_targeting?.target_date_count || 0} trade dates`],
+                ['Reverse Actions', String(metrics.backtest_reverse_signal_count || 0), '', formatBreakdown(metrics.backtest_reverse_action_breakdown || {})],
             ];
             document.getElementById('metricsGrid').innerHTML = cards.map(([label, value, tone, subtext]) => `
                 <div class="metric-card">
@@ -1522,8 +1571,11 @@
                         <div class="detail-item"><div class="detail-item-label">Run ID</div><div class="detail-item-value mono">${escapeHtml(selectedRun.id || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Date Range</div><div class="detail-item-value">${escapeHtml(formatRunDate(selectedRun))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Symbols</div><div class="detail-item-value">${escapeHtml(selectedRun.symbols || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Symbol Source</div><div class="detail-item-value">${escapeHtml(selectedRun.symbol_source || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Source Environment</div><div class="detail-item-value">${escapeHtml((selectedRun.source_environment || '--').toUpperCase())}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Session</div><div class="detail-item-value">${escapeHtml(selectedRun.session_mode || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Warmup</div><div class="detail-item-value">${escapeHtml(String(extra.warmup_bars || metrics.warmup_bars || '--'))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Scan Cutoff</div><div class="detail-item-value">${escapeHtml(extra.premarket_cutoff_time || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Capital</div><div class="detail-item-value">${escapeHtml(formatMoney(selectedRun.initial_capital || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Runtime</div><div class="detail-item-value">${escapeHtml(String(selectedRun.duration_s || 0))}s</div></div>
                         <div class="detail-item"><div class="detail-item-label">Started</div><div class="detail-item-value mono">${escapeHtml(selectedRun.started_at || '--')}</div></div>
@@ -1576,6 +1628,7 @@
                     <div class="note-box">${escapeHtml(selectedRun.error || 'No error. This run completed without runtime exceptions.')}</div>
                 </div>
                 ${buildBacktestIndicatorCaptureCard(selectedRun)}
+                ${buildBacktestReverseCaptureCard(selectedRun)}
                 ${buildTvParityCard(selectedRun)}
                 <div class="detail-card">
                     <div class="subhead">Runtime Extra</div>
@@ -1584,6 +1637,10 @@
                         resolved_symbols: extra.resolved_symbols || [],
                         force_flat_eod: extra.force_flat_eod,
                         backtest_indicator_capture: extra.backtest_indicator_capture || {},
+                        backtest_signal_capture: extra.backtest_signal_capture || {},
+                        backtest_target_capture: extra.backtest_target_capture || {},
+                        backtest_reverse_capture: extra.backtest_reverse_capture || {},
+                        historical_targeting: extra.historical_targeting || {},
                     }, null, 2))}</div>
                 </div>
             `;
@@ -1915,6 +1972,9 @@
                 initial_capital: Number(document.getElementById('initialCapital').value || 100000),
                 commission_per_share: Number(document.getElementById('commissionPerShare').value || 0.005),
                 slippage_bps: Number(document.getElementById('slippageBps').value || 2),
+                warmup_bars: Number(document.getElementById('warmupBars').value || 320),
+                scan_warmup_bars: Number(document.getElementById('warmupBars').value || 320),
+                premarket_cutoff_time: String(document.getElementById('premarketCutoff').value || '09:25').trim(),
                 max_symbols: Number(document.getElementById('maxSymbols').value || 12),
                 source_environment: currentEnvironment,
                 strategy_params: strategyParams,
@@ -1972,7 +2032,7 @@
                 showToast('先选择一个 run');
                 return;
             }
-            if (!window.confirm(`确认清理回测 ${selectedRunId} 吗？这会删除 run 和所有 trade rows。`)) return;
+            if (!window.confirm(`确认清理回测 ${selectedRunId} 吗？这会删除 run 和所有关联 backtest rows。`)) return;
             setActionState(true);
             try {
                 await requestBacktestJson('/api/custom/ibkr/backtest/cleanup', {
@@ -2001,7 +2061,7 @@
                 showToast('先选择一个 experiment');
                 return;
             }
-            if (!window.confirm(`确认清理 experiment ${selectedBatchId} 吗？这会删除该批次下所有 run 和 trade rows。`)) return;
+            if (!window.confirm(`确认清理 experiment ${selectedBatchId} 吗？这会删除该批次下所有 run 和关联 backtest rows。`)) return;
             setActionState(true);
             try {
                 await requestBacktestJson('/api/custom/ibkr/backtest/cleanup', {

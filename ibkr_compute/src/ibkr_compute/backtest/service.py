@@ -14,6 +14,7 @@ from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.timeframe_utils import (
+    COMPUTE_INTERVALS,
     ET,
     build_runtime_timestamps,
     build_signal_id,
@@ -23,24 +24,34 @@ from ibkr_compute.market.timeframe_utils import (
     interval_to_chart_tf,
     interval_to_ms,
     ms_to_et,
+    normalize_interval,
 )
+from ibkr_compute.workflows.daily_scanner import DailyScanner
 
 BACKTEST_ENVIRONMENT = "backtest"
 RUN_COLLECTION = "ibkr_backtest_runs"
 TRADE_COLLECTION = "ibkr_backtest_trades"
 BATCH_COLLECTION = "ibkr_backtest_batches"
 BACKTEST_INDICATOR_COLLECTION = "ibkr_backtest_indicators"
+BACKTEST_SIGNAL_COLLECTION = "ibkr_backtest_signals"
+BACKTEST_TARGET_COLLECTION = "ibkr_backtest_targets"
+BACKTEST_REVERSE_SIGNAL_COLLECTION = "ibkr_backtest_reverse_signals"
 TV_INDICATOR_COLLECTION = "tv_indicators"
 TV_SIGNAL_COLLECTION = "tv_signals"
 RUN_STATUS_VALUES = {"queued", "running", "completed", "failed", "cancelled"}
 SESSION_MODE_VALUES = {"extended", "regular"}
-SYMBOL_SOURCE_VALUES = {"manual", "targets", "watchlist"}
+SYMBOL_SOURCE_VALUES = {"manual", "targets", "watchlist", "daily_scan_replay"}
 DEFAULT_MAX_SYMBOLS = 20
 DEFAULT_MAX_PAGES = 1200
 MAX_REPLAY_ROWS = 240
 MAX_BATCH_VARIANTS = 16
 TV_COMPARE_SAMPLE_LIMIT = 8
 BACKTEST_WARMUP_BARS = 320
+DEFAULT_SCAN_CUTOFF_TIME = "09:25"
+DEFAULT_BACKTEST_RETENTION_LIMIT = 30
+MAX_BACKTEST_RETENTION_LIMIT = 200
+MAX_BACKTEST_WARMUP_BARS = 2000
+SCAN_INTERVALS = tuple(COMPUTE_INTERVALS)
 
 TV_INDICATOR_EXTRA_FIELDS = (
     "open",
@@ -390,43 +401,51 @@ class BacktestService:
         if not run:
             return {"ok": False, "error": "run_not_found", "run_id": safe_run_id}
 
-        deleted_trades = 0
-        deleted_indicators = 0
-        safe_run_id_filter = safe_run_id.replace('"', '\\"')
-        trade_rows = self.pb.get_all_records(
-            TRADE_COLLECTION,
-            filter=f'run_id = "{safe_run_id_filter}"',
-            sort="trade_index",
-            max_pages=200,
-        )
-        for row in trade_rows:
-            record_id = str(row.get("id") or "")
-            if not record_id:
-                continue
-            self.pb.delete_record(TRADE_COLLECTION, record_id)
-            deleted_trades += 1
-
-        indicator_rows = self.pb.get_all_records(
-            BACKTEST_INDICATOR_COLLECTION,
-            filter=f'run_id = "{safe_run_id_filter}"',
-            sort="bar_time_ms",
-            max_pages=DEFAULT_MAX_PAGES,
-        )
-        for row in indicator_rows:
-            record_id = str(row.get("id") or "")
-            if not record_id:
-                continue
-            self.pb.delete_record(BACKTEST_INDICATOR_COLLECTION, record_id)
-            deleted_indicators += 1
-
+        deleted = self._delete_run_series(safe_run_id)
         self.pb.delete_record(RUN_COLLECTION, safe_run_id)
         self._sync_batch_after_run_cleanup(run, safe_run_id)
         return {
             "ok": True,
             "run_id": safe_run_id,
-            "deleted_trades": deleted_trades,
-            "deleted_indicators": deleted_indicators,
+            **deleted,
             "deleted_run": True,
+        }
+
+    def _delete_collection_rows(self, collection: str, run_id: str, sort: str, max_pages: int) -> int:
+        safe_run_id_filter = str(run_id or "").replace('"', '\\"')
+        if not safe_run_id_filter:
+            return 0
+        deleted_count = 0
+        rows = self.pb.get_all_records(
+            collection,
+            filter=f'run_id = "{safe_run_id_filter}"',
+            sort=sort,
+            max_pages=max_pages,
+        )
+        for row in rows:
+            record_id = str(row.get("id") or "")
+            if not record_id:
+                continue
+            self.pb.delete_record(collection, record_id)
+            deleted_count += 1
+        return deleted_count
+
+    def _delete_run_series(self, run_id: str) -> dict:
+        safe_run_id = str(run_id or "").strip()
+        if not safe_run_id:
+            return {
+                "deleted_trades": 0,
+                "deleted_indicators": 0,
+                "deleted_signals": 0,
+                "deleted_targets": 0,
+                "deleted_reverse_signals": 0,
+            }
+        return {
+            "deleted_trades": self._delete_collection_rows(TRADE_COLLECTION, safe_run_id, "trade_index", 200),
+            "deleted_indicators": self._delete_collection_rows(BACKTEST_INDICATOR_COLLECTION, safe_run_id, "bar_time_ms", DEFAULT_MAX_PAGES),
+            "deleted_signals": self._delete_collection_rows(BACKTEST_SIGNAL_COLLECTION, safe_run_id, "bar_time_ms", 200),
+            "deleted_targets": self._delete_collection_rows(BACKTEST_TARGET_COLLECTION, safe_run_id, "date,symbol", 100),
+            "deleted_reverse_signals": self._delete_collection_rows(BACKTEST_REVERSE_SIGNAL_COLLECTION, safe_run_id, "bar_time_ms", 200),
         }
 
     def _normalize_request(self, payload: dict) -> dict:
@@ -452,6 +471,28 @@ class BacktestService:
         max_symbols = max(1, min(DEFAULT_MAX_SYMBOLS, int(payload.get("max_symbols") or DEFAULT_MAX_SYMBOLS)))
         compare_with_tv = bool(payload.get("compare_with_tv", True))
         compare_tv_signals = bool(payload.get("compare_tv_signals", False))
+        warmup_bars = self._normalize_positive_int(
+            payload.get("warmup_bars") or payload.get("preheat_bars"),
+            default=BACKTEST_WARMUP_BARS,
+            minimum=0,
+            maximum=MAX_BACKTEST_WARMUP_BARS,
+        )
+        scan_warmup_bars = self._normalize_positive_int(
+            payload.get("scan_warmup_bars") or payload.get("selection_warmup_bars"),
+            default=warmup_bars,
+            minimum=0,
+            maximum=MAX_BACKTEST_WARMUP_BARS,
+        )
+        premarket_cutoff_time = self._normalize_hhmm(payload.get("premarket_cutoff_time") or payload.get("scan_cutoff_time"))
+        scan_session_mode = str(payload.get("scan_session_mode") or "extended").strip().lower() or "extended"
+        if scan_session_mode not in SESSION_MODE_VALUES:
+            scan_session_mode = "extended"
+        retention_limit = self._normalize_positive_int(
+            payload.get("retention_limit"),
+            default=DEFAULT_BACKTEST_RETENTION_LIMIT,
+            minimum=1,
+            maximum=MAX_BACKTEST_RETENTION_LIMIT,
+        )
         raw_params = payload.get("strategy_params") or payload.get("params") or {}
         strategy_params = self._normalize_strategy_params(raw_params)
         strategy_tag = str(payload.get("strategy_tag") or "IBKR_SAC_BACKTEST_V1").strip() or "IBKR_SAC_BACKTEST_V1"
@@ -467,6 +508,7 @@ class BacktestService:
             "date_from": date_from,
             "date_to": date_to,
             "session_mode": session_mode,
+            "scan_session_mode": scan_session_mode,
             "initial_capital": initial_capital,
             "commission_per_share": commission_per_share,
             "slippage_bps": slippage_bps,
@@ -474,11 +516,18 @@ class BacktestService:
             "max_symbols": max_symbols,
             "compare_with_tv": compare_with_tv,
             "compare_tv_signals": compare_tv_signals,
+            "warmup_bars": warmup_bars,
+            "scan_warmup_bars": scan_warmup_bars,
+            "premarket_cutoff_time": premarket_cutoff_time,
+            "retention_limit": retention_limit,
             "params": {
                 "strategy_params": strategy_params,
                 "strategy_tag": strategy_tag,
                 "source_environment": source_environment,
                 "session_mode": session_mode,
+                "warmup_bars": warmup_bars,
+                "scan_warmup_bars": scan_warmup_bars,
+                "premarket_cutoff_time": premarket_cutoff_time,
             },
             "variants": variants,
             "strategy_tag": strategy_tag,
@@ -556,6 +605,27 @@ class BacktestService:
             items.append(symbol)
         return items
 
+    def _normalize_positive_int(self, raw_value: Any, default: int, minimum: int = 0, maximum: int = MAX_BACKTEST_WARMUP_BARS) -> int:
+        try:
+            value = int(raw_value)
+        except Exception:
+            value = int(default)
+        return max(minimum, min(maximum, value))
+
+    def _normalize_hhmm(self, raw_value: Any) -> str:
+        text = str(raw_value or "").strip()
+        if ":" not in text:
+            return DEFAULT_SCAN_CUTOFF_TIME
+        hour_text, minute_text = text.split(":", 1)
+        try:
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except Exception:
+            return DEFAULT_SCAN_CUTOFF_TIME
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return DEFAULT_SCAN_CUTOFF_TIME
+        return f"{hour:02d}:{minute:02d}"
+
     def _build_variant_request(self, base_request: dict, variant: dict, variant_index: int) -> dict:
         request = deepcopy(base_request)
         request["variant_index"] = variant_index
@@ -576,6 +646,11 @@ class BacktestService:
             "requested_symbols": request["symbols"],
             "max_symbols": request["max_symbols"],
             "strategy_tag": request["strategy_tag"],
+            "warmup_bars": request.get("warmup_bars", BACKTEST_WARMUP_BARS),
+            "scan_warmup_bars": request.get("scan_warmup_bars", request.get("warmup_bars", BACKTEST_WARMUP_BARS)),
+            "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
+            "scan_session_mode": request.get("scan_session_mode", "extended"),
+            "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
             **build_runtime_timestamps(),
         }
         if extra_patch:
@@ -638,6 +713,11 @@ class BacktestService:
                 "extra": {
                     "requested_symbols": request["symbols"],
                     "max_symbols": request["max_symbols"],
+                    "warmup_bars": request.get("warmup_bars", BACKTEST_WARMUP_BARS),
+                    "scan_warmup_bars": request.get("scan_warmup_bars", request.get("warmup_bars", BACKTEST_WARMUP_BARS)),
+                    "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
+                    "scan_session_mode": request.get("scan_session_mode", "extended"),
+                    "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
                     **build_runtime_timestamps(),
                 },
                 "error": "",
@@ -744,34 +824,20 @@ class BacktestService:
         deleted_runs = 0
         deleted_trades = 0
         deleted_indicators = 0
-        for summary in self._collect_batch_run_summaries(batch):
-            safe_run_id_filter = str(summary["run_id"]).replace('"', '\\"')
-            trade_rows = self.pb.get_all_records(
-                TRADE_COLLECTION,
-                filter=f'run_id = "{safe_run_id_filter}"',
-                sort="trade_index",
-                max_pages=200,
-            )
-            for row in trade_rows:
-                record_id = str(row.get("id") or "")
-                if not record_id:
-                    continue
-                self.pb.delete_record(TRADE_COLLECTION, record_id)
-                deleted_trades += 1
-            indicator_rows = self.pb.get_all_records(
-                BACKTEST_INDICATOR_COLLECTION,
-                filter=f'run_id = "{safe_run_id_filter}"',
-                sort="bar_time_ms",
-                max_pages=DEFAULT_MAX_PAGES,
-            )
-            for row in indicator_rows:
-                record_id = str(row.get("id") or "")
-                if not record_id:
-                    continue
-                self.pb.delete_record(BACKTEST_INDICATOR_COLLECTION, record_id)
-                deleted_indicators += 1
-            if summary["run_id"]:
-                self.pb.delete_record(RUN_COLLECTION, summary["run_id"])
+        deleted_signals = 0
+        deleted_targets = 0
+        batch_extra = batch.get("extra") or {}
+        run_ids = [str(item or "").strip() for item in list(batch_extra.get("run_ids") or []) if str(item or "").strip()]
+        if not run_ids:
+            run_ids = [str(item.get("run_id") or "").strip() for item in self._collect_batch_run_summaries(batch) if str(item.get("run_id") or "").strip()]
+        for run_id in run_ids:
+            deleted = self._delete_run_series(run_id)
+            deleted_trades += int(deleted.get("deleted_trades", 0) or 0)
+            deleted_indicators += int(deleted.get("deleted_indicators", 0) or 0)
+            deleted_signals += int(deleted.get("deleted_signals", 0) or 0)
+            deleted_targets += int(deleted.get("deleted_targets", 0) or 0)
+            if run_id and self._get_run(run_id):
+                self.pb.delete_record(RUN_COLLECTION, run_id)
                 deleted_runs += 1
 
         self.pb.delete_record(BATCH_COLLECTION, safe_batch_id)
@@ -781,7 +847,68 @@ class BacktestService:
             "deleted_runs": deleted_runs,
             "deleted_trades": deleted_trades,
             "deleted_indicators": deleted_indicators,
+            "deleted_signals": deleted_signals,
+            "deleted_targets": deleted_targets,
             "deleted_batch": True,
+        }
+
+    def _apply_retention_limits(
+        self,
+        retention_limit: int = DEFAULT_BACKTEST_RETENTION_LIMIT,
+        exclude_run_ids: set[str] | None = None,
+        exclude_batch_ids: set[str] | None = None,
+    ) -> dict:
+        limit = self._normalize_positive_int(
+            retention_limit,
+            default=DEFAULT_BACKTEST_RETENTION_LIMIT,
+            minimum=1,
+            maximum=MAX_BACKTEST_RETENTION_LIMIT,
+        )
+        skip_runs = {str(item or "").strip() for item in (exclude_run_ids or set()) if str(item or "").strip()}
+        skip_batches = {str(item or "").strip() for item in (exclude_batch_ids or set()) if str(item or "").strip()}
+        deleted_batches = 0
+        deleted_runs = 0
+
+        try:
+            batches = self.pb.get_all_records(BATCH_COLLECTION, sort="-created", max_pages=10)
+            for index, batch in enumerate(batches):
+                batch_id = str(batch.get("id") or "").strip()
+                if not batch_id or index < limit or batch_id in skip_batches:
+                    continue
+                result = self._cleanup_batch(batch_id)
+                if result.get("ok"):
+                    deleted_batches += 1
+        except Exception:
+            traceback.print_exc()
+
+        try:
+            runs = self.pb.get_all_records(RUN_COLLECTION, sort="-created", max_pages=20)
+            standalone_runs = []
+            for run in runs:
+                run_id = str(run.get("id") or "").strip()
+                if not run_id:
+                    continue
+                extra = run.get("extra") or {}
+                if isinstance(extra, str):
+                    extra = self._parse_object(extra)
+                if str((extra or {}).get("batch_id") or "").strip():
+                    continue
+                standalone_runs.append(run)
+            for index, run in enumerate(standalone_runs):
+                run_id = str(run.get("id") or "").strip()
+                if not run_id or index < limit or run_id in skip_runs:
+                    continue
+                result = self.cleanup(run_id=run_id)
+                if result.get("ok"):
+                    deleted_runs += 1
+        except Exception:
+            traceback.print_exc()
+
+        return {
+            "ok": True,
+            "retention_limit": limit,
+            "deleted_batches": deleted_batches,
+            "deleted_runs": deleted_runs,
         }
 
     def _get_run(self, run_id: str) -> Optional[dict]:
@@ -832,6 +959,10 @@ class BacktestService:
         benchmark_points: list | None = None,
         tv_parity: dict | None = None,
         backtest_indicator_capture: dict | None = None,
+        backtest_signal_capture: dict | None = None,
+        backtest_target_capture: dict | None = None,
+        backtest_reverse_capture: dict | None = None,
+        historical_targeting: dict | None = None,
     ) -> dict:
         extra = {
             "force_flat_eod": request["force_flat_eod"],
@@ -841,6 +972,11 @@ class BacktestService:
             "strategy_tag": request["strategy_tag"],
             "compare_with_tv": bool(request.get("compare_with_tv", True)),
             "compare_tv_signals": bool(request.get("compare_tv_signals", False)),
+            "warmup_bars": int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+            "scan_warmup_bars": int(request.get("scan_warmup_bars", request.get("warmup_bars", BACKTEST_WARMUP_BARS)) or BACKTEST_WARMUP_BARS),
+            "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
+            "scan_session_mode": str(request.get("scan_session_mode") or "extended"),
+            "retention_limit": int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
             **build_runtime_timestamps(),
         }
         if request.get("batch_id"):
@@ -863,6 +999,14 @@ class BacktestService:
             extra["tv_parity"] = tv_parity
         if backtest_indicator_capture is not None:
             extra["backtest_indicator_capture"] = backtest_indicator_capture
+        if backtest_signal_capture is not None:
+            extra["backtest_signal_capture"] = backtest_signal_capture
+        if backtest_target_capture is not None:
+            extra["backtest_target_capture"] = backtest_target_capture
+        if backtest_reverse_capture is not None:
+            extra["backtest_reverse_capture"] = backtest_reverse_capture
+        if historical_targeting is not None:
+            extra["historical_targeting"] = historical_targeting
         return extra
 
     def _execute_run(self, run_id: str, request: dict, progress_context: dict | None = None) -> dict:
@@ -878,7 +1022,21 @@ class BacktestService:
             },
         )
 
-        symbols = self._resolve_symbols(request)
+        backtest_target_rows = []
+        backtest_target_capture = self._empty_capture_summary(BACKTEST_TARGET_COLLECTION, run_id, "disabled")
+        historical_targeting = {}
+        allowed_trade_days_by_symbol = {}
+        if request.get("symbol_source") == "daily_scan_replay":
+            scan_replay = self._build_daily_scan_replay_plan(request, progress_context=progress_context)
+            symbols = list(scan_replay.get("symbols") or [])
+            backtest_target_rows = list(scan_replay.get("target_rows") or [])
+            historical_targeting = dict(scan_replay.get("summary") or {})
+            allowed_trade_days_by_symbol = self._invert_selection_plan(scan_replay.get("selection_plan") or {})
+            self._set_progress_context("running", "persist_targets", "saving historical target replay", 14, progress_context)
+            backtest_target_capture = self._persist_backtest_targets(run_id, backtest_target_rows)
+            historical_targeting["capture"] = backtest_target_capture
+        else:
+            symbols = self._resolve_symbols(request)
         if not symbols:
             raise ValueError("No symbols resolved for backtest")
         request["symbols"] = symbols
@@ -887,12 +1045,19 @@ class BacktestService:
             run_id,
             {
                 "symbols": request["symbols_text"],
-                "extra": self._build_run_extra(request, symbols),
+                "extra": self._build_run_extra(
+                    request,
+                    symbols,
+                    backtest_target_capture=backtest_target_capture,
+                    historical_targeting=historical_targeting,
+                ),
             },
         )
 
         all_trades = []
         all_indicator_rows = []
+        all_signal_rows = []
+        all_reverse_rows = []
         daily_equity_points = []
         skipped_symbols = []
         data_quality = []
@@ -927,9 +1092,16 @@ class BacktestService:
                 completed_symbols += 1
                 continue
 
-            trades, quality, tv_symbol_report, indicator_rows = self._run_symbol_backtest(symbol, bars, request)
+            trades, quality, tv_symbol_report, indicator_rows, signal_rows, reverse_rows = self._run_symbol_backtest(
+                symbol,
+                bars,
+                request,
+                allowed_trade_days=allowed_trade_days_by_symbol.get(symbol),
+            )
             all_trades.extend(trades)
             all_indicator_rows.extend(indicator_rows)
+            all_signal_rows.extend(signal_rows)
+            all_reverse_rows.extend(reverse_rows)
             data_quality.append(quality)
             if tv_symbol_report:
                 tv_symbol_reports.append(tv_symbol_report)
@@ -939,6 +1111,7 @@ class BacktestService:
             raise BacktestCancelled()
 
         all_trades.sort(key=lambda item: (int(item.get("exit_bar_ms", 0) or 0), item.get("symbol", "")))
+        all_reverse_rows.sort(key=lambda item: (int(item.get("bar_time_ms", 0) or 0), item.get("symbol", ""), item.get("action_type", "")))
         for trade in all_trades:
             realized_pnl += float(trade.get("pnl", 0) or 0)
             daily_equity_points.append(
@@ -964,10 +1137,32 @@ class BacktestService:
         tv_parity = self._finalize_tv_parity_report(request, tv_symbol_reports)
         metrics["tv_parity"] = tv_parity.get("summary") or {}
         metrics["backtest_indicator_count"] = len(all_indicator_rows)
+        metrics["backtest_signal_count"] = len(all_signal_rows)
+        metrics["backtest_target_count"] = len(backtest_target_rows)
+        metrics["backtest_reverse_signal_count"] = len(all_reverse_rows)
+        metrics["signal_count"] = len(all_signal_rows)
+        metrics["executed_signal_count"] = len([row for row in all_signal_rows if str(row.get("status") or "") == "executed"])
+        metrics["signal_fill_rate"] = (
+            round((metrics["executed_signal_count"] / metrics["signal_count"]) * 100.0, 4)
+            if metrics["signal_count"] else 0.0
+        )
+        metrics["backtest_reverse_action_breakdown"] = self._count_values(all_reverse_rows, "action_type")
+        metrics["backtest_reverse_strength_breakdown"] = self._count_values(all_reverse_rows, "strength")
+        metrics["backtest_reverse_source_breakdown"] = self._count_values(all_reverse_rows, "source")
+        metrics["backtest_reverse_status_breakdown"] = self._count_values(all_reverse_rows, "status")
+        metrics["backtest_reverse_samples"] = self._build_backtest_reverse_samples(all_reverse_rows)
+        metrics["historical_targeting"] = historical_targeting
+        avg_loss = float(metrics.get("avg_loss", 0) or 0)
+        metrics["win_loss_ratio"] = round((float(metrics.get("avg_win", 0) or 0) / abs(avg_loss)), 4) if avg_loss < 0 else 0.0
 
         self._set_progress_context("running", "persist", "saving trades and metrics", 92, progress_context)
         backtest_indicator_capture = self._persist_backtest_indicators(run_id, all_indicator_rows)
         metrics["backtest_indicator_capture"] = backtest_indicator_capture
+        backtest_signal_capture = self._persist_backtest_signals(run_id, all_signal_rows)
+        metrics["backtest_signal_capture"] = backtest_signal_capture
+        metrics["backtest_target_capture"] = backtest_target_capture
+        backtest_reverse_capture = self._persist_backtest_reverse_signals(run_id, all_reverse_rows)
+        metrics["backtest_reverse_capture"] = backtest_reverse_capture
         self._persist_trades(run_id, all_trades)
         finished_at = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
         duration_s = round(time.time() - started_at, 3)
@@ -993,6 +1188,10 @@ class BacktestService:
                     benchmark_points=benchmark_points,
                     tv_parity=tv_parity,
                     backtest_indicator_capture=backtest_indicator_capture,
+                    backtest_signal_capture=backtest_signal_capture,
+                    backtest_target_capture=backtest_target_capture,
+                    backtest_reverse_capture=backtest_reverse_capture,
+                    historical_targeting=historical_targeting,
                 ),
                 "error": "",
             },
@@ -1006,6 +1205,9 @@ class BacktestService:
             "benchmark_points": benchmark_points,
             "tv_parity": tv_parity,
             "backtest_indicator_capture": backtest_indicator_capture,
+            "backtest_signal_capture": backtest_signal_capture,
+            "backtest_target_capture": backtest_target_capture,
+            "backtest_reverse_capture": backtest_reverse_capture,
             "duration_s": duration_s,
             "finished_at": finished_at,
             "error": "",
@@ -1043,6 +1245,13 @@ class BacktestService:
             )
             self._set_progress_context("failed", "failed", str(exc), self._progress.get("progress", 0))
         finally:
+            try:
+                self._apply_retention_limits(
+                    retention_limit=int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
+                    exclude_run_ids={run_id},
+                )
+            except Exception:
+                traceback.print_exc()
             with self._lock:
                 self._cancel_event.clear()
                 self._thread = None
@@ -1171,6 +1380,14 @@ class BacktestService:
             )
             self._set_progress_context("cancelled", "cancelled", "parameter batch cancelled", self._progress.get("progress", 0))
         finally:
+            try:
+                self._apply_retention_limits(
+                    retention_limit=int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
+                    exclude_run_ids={str(item.get("run_id") or "") for item in planned_runs if str(item.get("run_id") or "")},
+                    exclude_batch_ids={batch_id},
+                )
+            except Exception:
+                traceback.print_exc()
             with self._lock:
                 self._cancel_event.clear()
                 self._thread = None
@@ -1319,6 +1536,333 @@ class BacktestService:
         normalized.sort(key=lambda item: int(item["bar_time_ms"]))
         return normalized
 
+    def _parse_pb_datetime(self, raw_value: Any) -> Optional[datetime]:
+        text = str(raw_value or "").strip()
+        if not text:
+            return None
+        normalized = text.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(ET)
+
+    def _load_scan_universe(self, request: dict, as_of_date: str = "") -> list[dict]:
+        requested_symbols = list(request.get("symbols") or [])
+        if requested_symbols:
+            return [{"symbol": symbol, "exchange": "", "environment": request.get("source_environment", "live")} for symbol in requested_symbols]
+
+        source_environment = str(request.get("source_environment") or "live").strip().lower() or "live"
+        rows = self.pb.get_all_records("watchlist", sort="symbol", max_pages=20)
+        merged = {}
+        priority = {"": 0, "global": 1, source_environment: 2}
+        applied = {}
+        as_of_end = None
+        if as_of_date:
+            as_of_end = datetime.strptime(as_of_date, "%Y-%m-%d").replace(tzinfo=ET) + timedelta(days=1) - timedelta(milliseconds=1)
+        for row in rows:
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            if not symbol:
+                continue
+            env = str(row.get("environment", "") or "").strip().lower()
+            rank = priority.get(env, -1)
+            if rank < 0:
+                continue
+            if as_of_end is not None:
+                created_at = self._parse_pb_datetime(row.get("created")) or self._parse_pb_datetime(row.get("created_us"))
+                if created_at and created_at > as_of_end:
+                    continue
+            if symbol in applied and applied[symbol] > rank:
+                continue
+            applied[symbol] = rank
+            merged[symbol] = row
+        return list(merged.values())
+
+    def _load_trading_dates(self, request: dict) -> list[str]:
+        start_ms, end_ms = self._date_to_ms_range(request["date_from"], request["date_to"])
+        benchmark_symbol = str(request.get("benchmark_symbol") or "").strip().upper() or "SPY"
+        dates = []
+        seen = set()
+        for interval, max_pages in (("1d", 24), ("5m", 240)):
+            rows = self.pb.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{benchmark_symbol}" && interval = "{interval}" && environment = "{request["source_environment"]}" '
+                    f"&& bar_time_ms >= {start_ms} && bar_time_ms <= {end_ms}"
+                ),
+                sort="bar_time_ms",
+                max_pages=max_pages,
+            )
+            for row in rows:
+                bar_ms = int(row.get("bar_time_ms", 0) or 0)
+                if bar_ms <= 0:
+                    continue
+                date_text = ms_to_et(bar_ms).strftime("%Y-%m-%d")
+                if date_text in seen:
+                    continue
+                seen.add(date_text)
+                dates.append(date_text)
+        if dates:
+            dates.sort()
+            return dates
+
+        start = datetime.strptime(request["date_from"], "%Y-%m-%d").replace(tzinfo=ET)
+        end = datetime.strptime(request["date_to"], "%Y-%m-%d").replace(tzinfo=ET)
+        fallback = []
+        current = start
+        while current <= end:
+            if current.weekday() < 5:
+                fallback.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+        return fallback
+
+    def _build_scan_cutoff_ms(self, date_text: str, cutoff_time: str) -> int:
+        hour_text, minute_text = str(cutoff_time or DEFAULT_SCAN_CUTOFF_TIME).split(":", 1)
+        cutoff_dt = datetime.strptime(date_text, "%Y-%m-%d").replace(
+            tzinfo=ET,
+            hour=int(hour_text),
+            minute=int(minute_text),
+            second=0,
+            microsecond=0,
+        )
+        return int(cutoff_dt.timestamp() * 1000)
+
+    def _load_interval_bars_before(
+        self,
+        symbol: str,
+        source_environment: str,
+        interval: str,
+        end_bar_time_ms: int,
+        session_mode: str,
+        limit: int,
+    ) -> list[dict]:
+        normalized_interval = normalize_interval(interval)
+        if end_bar_time_ms <= 0 or limit <= 0:
+            return []
+        rows = self.pb.get_all_records(
+            "ibkr_bars",
+            filter=(
+                f'symbol = "{symbol}" && interval = "{normalized_interval}" && environment = "{source_environment}" '
+                f"&& bar_time_ms <= {end_bar_time_ms}"
+            ),
+            sort="-bar_time_ms",
+            max_pages=max(4, min(20, math.ceil(limit / 200) + 2)),
+        )
+        normalized = []
+        seen = set()
+        for row in rows:
+            bar_ms = int(row.get("bar_time_ms", 0) or 0)
+            if bar_ms <= 0 or bar_ms in seen:
+                continue
+            seen.add(bar_ms)
+            session_type = str(row.get("session_type", "") or classify_session(bar_time_ms=bar_ms))
+            if session_mode == "regular" and normalized_interval != "1d" and session_type != "regular":
+                continue
+            normalized.append(
+                {
+                    "symbol": symbol,
+                    "exchange": str(row.get("exchange", "") or "").upper(),
+                    "interval": normalized_interval,
+                    "open": float(row.get("open", 0) or 0),
+                    "high": float(row.get("high", 0) or 0),
+                    "low": float(row.get("low", 0) or 0),
+                    "close": float(row.get("close", 0) or 0),
+                    "volume": float(row.get("volume", 0) or 0),
+                    "session_type": session_type,
+                    "us_time": str(row.get("us_time", "") or format_us_time(bar_ms)),
+                    "cn_time": str(row.get("cn_time", "") or format_cn_time(bar_ms)),
+                    "bar_time_ms": bar_ms,
+                }
+            )
+            if len(normalized) >= limit:
+                break
+        normalized.sort(key=lambda item: int(item["bar_time_ms"]))
+        return normalized
+
+    def _build_historical_scan_engines(self, symbol: str, request: dict, cutoff_ms: int) -> tuple[dict, dict]:
+        params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
+        environment = request["source_environment"]
+        session_mode = request.get("scan_session_mode") or "extended"
+        lookback_limit = int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS)
+        engines = {}
+        details = {
+            "ready_timeframes": [],
+            "bars_loaded": {},
+            "last_bar_time_ms_by_interval": {},
+        }
+        for interval in SCAN_INTERVALS:
+            bars = self._load_interval_bars_before(
+                symbol,
+                environment,
+                interval,
+                cutoff_ms,
+                session_mode,
+                lookback_limit,
+            )
+            details["bars_loaded"][interval] = len(bars)
+            if not bars:
+                continue
+            engine = IndicatorEngine(symbol, interval, params=params)
+            last_snapshot = None
+            for bar in bars:
+                last_snapshot = engine.update(bar)
+            if not last_snapshot or not engine.is_ready():
+                continue
+            engines[(environment, symbol, interval)] = engine
+            details["ready_timeframes"].append(interval)
+            details["last_bar_time_ms_by_interval"][interval] = int(bars[-1].get("bar_time_ms", 0) or 0)
+        details["ready_timeframes"].sort(key=lambda item: interval_to_ms(item))
+        return engines, details
+
+    def _evaluate_historical_scan_symbol(self, symbol: str, trade_date: str, request: dict) -> dict | None:
+        cutoff_ms = self._build_scan_cutoff_ms(trade_date, request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME)
+        engines, details = self._build_historical_scan_engines(symbol, request, cutoff_ms)
+        if not engines:
+            return None
+        scanner = DailyScanner(self.pb, engines)
+        result = scanner.evaluate_symbol(symbol, trade_date, request["source_environment"])
+        if not result:
+            return None
+        enriched = dict(result)
+        enriched_extra = dict(result.get("extra") or {})
+        enriched_extra.update(
+            {
+                "scan_cutoff_time": request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME,
+                "scan_cutoff_ms": cutoff_ms,
+                "scan_session_mode": request.get("scan_session_mode") or "extended",
+                "scan_warmup_bars": int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+                "ready_timeframes": list(details.get("ready_timeframes") or []),
+                "bars_loaded": details.get("bars_loaded") or {},
+                "last_bar_time_ms_by_interval": details.get("last_bar_time_ms_by_interval") or {},
+            }
+        )
+        enriched["extra"] = enriched_extra
+        return enriched
+
+    def _build_daily_scan_replay_plan(self, request: dict, progress_context: dict | None = None) -> dict:
+        trading_dates = self._load_trading_dates(request)
+        selected_symbols = []
+        selected_lookup = set()
+        target_rows = []
+        selection_plan = {}
+        daily_summaries = []
+        total_days = max(1, len(trading_dates))
+        universe_mode = "manual_symbols" if request.get("symbols") else "watchlist_snapshot"
+
+        for day_index, trade_date in enumerate(trading_dates, start=1):
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            progress_value = 3 + int((day_index - 1) / total_days * 12)
+            self._set_progress_context(
+                "running",
+                "scan_replay",
+                f"rebuilding premarket targets for {trade_date}",
+                progress_value,
+                progress_context,
+            )
+            universe_rows = self._load_scan_universe(request, as_of_date=trade_date)
+            day_candidates = []
+            scanned_count = 0
+            ready_count = 0
+            for item in universe_rows:
+                if self._cancel_event.is_set():
+                    raise BacktestCancelled()
+                symbol = str(item.get("symbol", "") or "").strip().upper()
+                if not symbol:
+                    continue
+                scanned_count += 1
+                evaluated = self._evaluate_historical_scan_symbol(symbol, trade_date, request)
+                if not evaluated:
+                    continue
+                ready_count += 1
+                score = float(evaluated.get("score", 0) or 0)
+                direction_bias = str(evaluated.get("direction_bias", "neutral") or "neutral")
+                if score <= 0 or direction_bias == "neutral":
+                    continue
+                day_candidates.append(
+                    {
+                        "symbol": symbol,
+                        "exchange": str(item.get("exchange", "") or "").upper(),
+                        "score": score,
+                        "direction_bias": direction_bias,
+                        "scan_reason": str(evaluated.get("reason", "") or ""),
+                        "extra": dict(evaluated.get("extra") or {}),
+                    }
+                )
+
+            day_candidates.sort(key=lambda item: (-float(item.get("score", 0) or 0), item.get("symbol", "")))
+            selected_rows = day_candidates[: request["max_symbols"]]
+            selection_plan[trade_date] = [item["symbol"] for item in selected_rows]
+            for rank, candidate in enumerate(selected_rows, start=1):
+                symbol = candidate["symbol"]
+                if symbol not in selected_lookup:
+                    selected_lookup.add(symbol)
+                    selected_symbols.append(symbol)
+                cutoff_ms = int((candidate.get("extra") or {}).get("scan_cutoff_ms", 0) or 0)
+                target_rows.append(
+                    {
+                        "symbol": symbol,
+                        "exchange": candidate.get("exchange", ""),
+                        "date": trade_date,
+                        "direction_bias": candidate.get("direction_bias", "neutral"),
+                        "score": round(float(candidate.get("score", 0) or 0), 4),
+                        "scan_reason": candidate.get("scan_reason", ""),
+                        "status": "active",
+                        "rank": rank,
+                        "us_time": format_us_time(cutoff_ms) if cutoff_ms > 0 else f"{trade_date} {request.get('premarket_cutoff_time') or DEFAULT_SCAN_CUTOFF_TIME}",
+                        "cn_time": format_cn_time(cutoff_ms) if cutoff_ms > 0 else "",
+                        "bar_time_ms": cutoff_ms,
+                        "environment": BACKTEST_ENVIRONMENT,
+                        "extra": {
+                            **(candidate.get("extra") or {}),
+                            "source_environment": request["source_environment"],
+                            "selection_rank": rank,
+                            "universe_mode": universe_mode,
+                            "universe_size": scanned_count,
+                            **build_runtime_timestamps(),
+                        },
+                    }
+                )
+            daily_summaries.append(
+                {
+                    "date": trade_date,
+                    "universe_size": scanned_count,
+                    "ready_symbol_count": ready_count,
+                    "candidate_count": len(day_candidates),
+                    "selected_count": len(selected_rows),
+                    "selected_symbols": [item["symbol"] for item in selected_rows],
+                }
+            )
+
+        return {
+            "symbols": selected_symbols,
+            "selection_plan": selection_plan,
+            "target_rows": target_rows,
+            "summary": {
+                "mode": "daily_scan_replay",
+                "target_date_count": len(trading_dates),
+                "selected_symbol_count": len(selected_symbols),
+                "target_row_count": len(target_rows),
+                "premarket_cutoff_time": request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME,
+                "scan_session_mode": request.get("scan_session_mode") or "extended",
+                "scan_warmup_bars": int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+                "universe_mode": universe_mode,
+                "daily": daily_summaries,
+            },
+        }
+
+    def _invert_selection_plan(self, selection_plan: dict[str, list[str]]) -> dict[str, set[str]]:
+        inverted = {}
+        for trade_date, symbols in (selection_plan or {}).items():
+            for symbol in list(symbols or []):
+                symbol_text = str(symbol or "").strip().upper()
+                if not symbol_text:
+                    continue
+                inverted.setdefault(symbol_text, set()).add(str(trade_date or ""))
+        return inverted
+
     def _bootstrap_backtest_state(self, engine: IndicatorEngine, signal_gen: SignalGenerator, warmup_bars: list[dict]) -> str:
         previous_day = ""
         for bar in warmup_bars:
@@ -1332,7 +1876,13 @@ class BacktestService:
             signal_gen.update(snapshot)
         return previous_day
 
-    def _run_symbol_backtest(self, symbol: str, bars: list[dict], request: dict) -> tuple[list[dict], dict, dict | None, list[dict]]:
+    def _run_symbol_backtest(
+        self,
+        symbol: str,
+        bars: list[dict],
+        request: dict,
+        allowed_trade_days: set[str] | None = None,
+    ) -> tuple[list[dict], dict, dict | None, list[dict], list[dict]]:
         params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
         slippage_bps = float(request["slippage_bps"])
         commission_per_share = float(request["commission_per_share"])
@@ -1361,6 +1911,10 @@ class BacktestService:
         ) if compare_with_tv else None
         trades = []
         indicator_rows = []
+        signal_rows = []
+        reverse_rows = []
+        signal_index = {}
+        reverse_index = set()
         gap_count = 0
         market_bars = 0
         previous_ms = 0
@@ -1373,6 +1927,7 @@ class BacktestService:
             request["source_environment"],
             int(bars[0].get("bar_time_ms", 0) or 0) if bars else 0,
             request["session_mode"],
+            limit=int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
         )
         if warmup_bars:
             previous_day = self._bootstrap_backtest_state(engine, signal_gen, warmup_bars)
@@ -1393,11 +1948,24 @@ class BacktestService:
                     exit_trade = self._close_position(open_position, bars[index - 1], commission_per_share, slippage_bps, "eod")
                     trades.append(exit_trade)
                     open_position = None
+                if pending_signal:
+                    self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "new_day_reset")
                 pending_signal = None
             previous_day = current_day
 
             if pending_signal and open_position is None:
                 open_position = self._open_position(symbol, bar, pending_signal, commission_per_share, slippage_bps)
+                self._mark_backtest_signal_status(
+                    signal_index,
+                    pending_signal.get("signal_id"),
+                    "executed",
+                    "opened_next_bar",
+                    {
+                        "entry_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+                        "entry_us_time": str(bar.get("us_time", "") or ""),
+                        "entry_cn_time": str(bar.get("cn_time", "") or ""),
+                    },
+                )
                 pending_signal = None
 
             if open_position:
@@ -1434,25 +2002,49 @@ class BacktestService:
                     indicator_audit,
                 )
             )
+            if open_position:
+                reverse_row = self._build_backtest_reverse_signal_row(
+                    request,
+                    symbol,
+                    bar,
+                    engine.bar_count,
+                    snapshot,
+                    daily_fields,
+                    open_position,
+                )
+                reverse_key = self._build_backtest_reverse_key(reverse_row)
+                if reverse_row and reverse_key not in reverse_index:
+                    reverse_rows.append(reverse_row)
+                    reverse_index.add(reverse_key)
 
             signal = signal_gen.update(snapshot)
+            trading_day_enabled = allowed_trade_days is None or current_day in allowed_trade_days
             if not signal or open_position is not None or index >= len(bars) - 1:
                 continue
             if int(signal.get("shares", 0) or 0) <= 0:
                 continue
+            signal_payload = self._build_tv_signal_compare_payload(
+                symbol,
+                bar,
+                engine.bar_count,
+                signal,
+                request["source_environment"],
+                daily_fields,
+            )
             if symbol_tv_parity is not None and compare_tv_signals:
-                signal_payload = self._build_tv_signal_compare_payload(
-                    symbol,
-                    bar,
-                    engine.bar_count,
-                    signal,
-                    request["source_environment"],
-                    daily_fields,
-                )
                 self._compare_generated_signal(symbol_tv_parity, signal_payload)
+            signal_row = self._build_backtest_signal_row(request, bar, signal_payload)
+            signal_row["status"] = "generated"
+            signal_rows.append(signal_row)
+            signal_id = str(signal_row.get("signal_id", "") or "")
+            if signal_id:
+                signal_index[signal_id] = signal_row
+            if not trading_day_enabled:
+                self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "symbol_not_selected_for_day")
+                continue
             pending_signal = {
                 **signal,
-                "signal_id": build_signal_id(symbol, int(bar["bar_time_ms"]), str(signal.get("signal", ""))),
+                "signal_id": signal_payload.get("signal_id", build_signal_id(symbol, int(bar["bar_time_ms"]), str(signal.get("signal", "")))),
                 "signal_bar_ms": int(bar["bar_time_ms"]),
                 "signal_us_time": bar.get("us_time", ""),
                 "signal_cn_time": bar.get("cn_time", ""),
@@ -1464,10 +2056,13 @@ class BacktestService:
             if force_flat_eod and index < len(bars) - 1:
                 next_day = str(bars[index + 1].get("us_time", "") or "")[:10]
                 if next_day != current_day:
+                    self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "force_flat_eod")
                     pending_signal = None
 
         if open_position:
             trades.append(self._close_position(open_position, bars[-1], commission_per_share, slippage_bps, "last_bar"))
+        if pending_signal:
+            self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "last_bar_no_entry")
 
         quality = {
             "symbol": symbol,
@@ -1477,10 +2072,11 @@ class BacktestService:
             "first_bar_us": bars[0].get("us_time", "") if bars else "",
             "last_bar_us": bars[-1].get("us_time", "") if bars else "",
             "market_bars": market_bars,
+            "selected_trade_day_count": len(allowed_trade_days or []),
         }
         if symbol_tv_parity is not None:
             self._finalize_symbol_tv_parity(symbol_tv_parity)
-        return trades, quality, symbol_tv_parity, indicator_rows
+        return trades, quality, symbol_tv_parity, indicator_rows, signal_rows, reverse_rows
 
     def _should_compare_with_tv(self, request: dict) -> bool:
         return bool(request.get("compare_with_tv", True)) and str(request.get("source_environment") or "").strip().lower() != BACKTEST_ENVIRONMENT
@@ -1648,6 +2244,263 @@ class BacktestService:
             "environment": BACKTEST_ENVIRONMENT,
             "extra": indicator_extra,
         }
+
+    def _build_backtest_signal_row(self, request: dict, bar: dict, signal_payload: dict) -> dict:
+        signal_extra = dict(signal_payload.get("extra") or {})
+        signal_extra.update(
+            {
+                "backtest_source_environment": request.get("source_environment") or "",
+                "backtest_compare_with_tv": bool(request.get("compare_with_tv", True)),
+                "backtest_compare_tv_signals": bool(request.get("compare_tv_signals", False)),
+                "script_tag": str(request.get("strategy_tag") or ""),
+                **build_runtime_timestamps(),
+            }
+        )
+        return {
+            "symbol": signal_payload.get("symbol", ""),
+            "direction": signal_payload.get("direction", ""),
+            "signal": signal_payload.get("signal", ""),
+            "entry": float(signal_payload.get("entry", 0) or 0),
+            "stop_loss": float(signal_payload.get("stop_loss", 0) or 0),
+            "take_profit": float(signal_payload.get("take_profit", 0) or 0),
+            "rr": "" if signal_payload.get("rr") in (None, "") else str(signal_payload.get("rr")),
+            "shares": int(signal_payload.get("shares", 0) or 0),
+            "signal_id": signal_payload.get("signal_id", ""),
+            "exchange": str(bar.get("exchange", "") or "").upper(),
+            "interval": signal_payload.get("interval", interval_to_chart_tf("5m")),
+            "reason": signal_payload.get("reason", ""),
+            "us_time": signal_payload.get("us_time", ""),
+            "cn_time": signal_payload.get("cn_time", ""),
+            "date": str(signal_payload.get("us_time", "") or "")[:10],
+            "bar_time_ms": int(signal_payload.get("bar_time_ms", 0) or 0),
+            "bar_index": int(signal_extra.get("bar_index", 0) or 0),
+            "script_tag": str(request.get("strategy_tag") or ""),
+            "status": "generated",
+            "environment": BACKTEST_ENVIRONMENT,
+            "extra": signal_extra,
+        }
+
+    def _mark_backtest_signal_status(
+        self,
+        signal_index: dict,
+        signal_id: Any,
+        status: str,
+        reason: str,
+        extra_patch: dict | None = None,
+    ):
+        safe_signal_id = str(signal_id or "").strip()
+        if not safe_signal_id:
+            return
+        row = signal_index.get(safe_signal_id)
+        if not row:
+            return
+        row["status"] = status
+        extra = self._parse_object(row.get("extra"))
+        extra["signal_status_reason"] = reason
+        if extra_patch:
+            extra.update(extra_patch)
+        row["extra"] = extra
+
+    def _map_reverse_strength(self, score: float) -> str:
+        safe_score = float(score or 0)
+        if safe_score >= 6:
+            return "strong"
+        if safe_score >= 3:
+            return "medium"
+        return "weak"
+
+    def _resolve_reverse_indicator_action(self, score: float, target_state: str) -> str:
+        if target_state == "pending_entry":
+            return "cancel"
+        if score >= 6:
+            return "close"
+        if score >= 3:
+            return "adjust_sl"
+        if score > 0:
+            return "cancel"
+        return ""
+
+    def _analyze_backtest_reverse_snapshot(self, snapshot: dict, direction: str) -> dict:
+        if not snapshot or direction not in {"long", "short"}:
+            return {"score": 0.0, "triggered_signals": []}
+
+        score = 0.0
+        triggered_signals = []
+        crsi = float(snapshot.get("crsi", 0) or 0)
+        vwap_dist = float(snapshot.get("vwap_dist", 0) or 0)
+        is_bear_signal = direction == "long"
+        crsi_reverse_div = bool(snapshot.get("crsi_bear_div" if is_bear_signal else "crsi_bull_div"))
+        obv_reverse_div = bool(snapshot.get("obv_bear_div" if is_bear_signal else "obv_bull_div"))
+        fractal_reverse = bool(snapshot.get("fractal_bear" if is_bear_signal else "fractal_bull"))
+        sd_channel_reverse = bool(snapshot.get("sd_upper" if is_bear_signal else "sd_lower"))
+        ema_touch_reverse = bool(snapshot.get("ema_bear_touch" if is_bear_signal else "ema_bull_touch"))
+
+        if (direction == "long" and crsi > 70) or (direction == "short" and crsi < 30):
+            score += 2
+            triggered_signals.append("cRSI超买" if direction == "long" else "cRSI超卖")
+        if crsi_reverse_div or obv_reverse_div:
+            score += 3
+            triggered_signals.append("背离")
+        if fractal_reverse or sd_channel_reverse:
+            score += 2
+            triggered_signals.append("分形/SD通道")
+        if abs(vwap_dist) > 2 or ema_touch_reverse:
+            score += 1
+            triggered_signals.append("VWAP偏离/EMA触碰")
+
+        deduped = []
+        seen = set()
+        for item in triggered_signals:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        return {
+            "score": score,
+            "triggered_signals": deduped,
+            "crsi": crsi,
+            "obv_rsi": float(snapshot.get("obv_rsi", 0) or 0),
+            "vwap_dist": vwap_dist,
+            "close": float(snapshot.get("close", 0) or 0),
+        }
+
+    def _build_backtest_reverse_key(self, reverse_row: dict | None) -> str:
+        if not reverse_row:
+            return ""
+        signal_id = str(reverse_row.get("signal_id", "") or "").strip()
+        trade_group_id = str(reverse_row.get("trade_group_id", "") or "").strip()
+        target_state = str(reverse_row.get("target_state", "") or "").strip()
+        action_type = str(reverse_row.get("action_type", "") or "").strip()
+        direction = str(reverse_row.get("direction", "") or "").strip()
+        return "|".join(
+            [
+                signal_id or trade_group_id or str(reverse_row.get("symbol", "") or "").strip().upper(),
+                direction,
+                target_state,
+                action_type,
+            ]
+        )
+
+    def _build_backtest_reverse_signal_row(
+        self,
+        request: dict,
+        symbol: str,
+        bar: dict,
+        bar_index: int,
+        snapshot: dict,
+        daily_fields: dict,
+        position: dict,
+    ) -> dict | None:
+        direction = str(position.get("direction", "") or "").strip().lower()
+        if direction not in {"long", "short"}:
+            return None
+        analysis = self._analyze_backtest_reverse_snapshot(snapshot, direction)
+        score = float(analysis.get("score", 0) or 0)
+        triggered_signals = list(analysis.get("triggered_signals") or [])
+        if score <= 0 or not triggered_signals:
+            return None
+
+        target_state = "filled_position"
+        action_type = self._resolve_reverse_indicator_action(score, target_state)
+        if not action_type:
+            return None
+
+        signal_id = str(position.get("signal_id", "") or "").strip()
+        trade_group_id = signal_id or f"{symbol}_{int(position.get('entry_bar_ms', 0) or 0)}"
+        strength = self._map_reverse_strength(score)
+        bar_time_ms = int(bar.get("bar_time_ms", 0) or 0)
+        close_value = float(analysis.get("close", snapshot.get("close", 0)) or 0)
+        extra = {
+            "environment": BACKTEST_ENVIRONMENT,
+            "source_environment": request.get("source_environment") or "",
+            "reverse_kind": "indicator_conflict",
+            "target_state": target_state,
+            "order_status": "Filled",
+            "relation_status": "backtest_position_open",
+            "position_side": direction,
+            "current_direction": direction,
+            "signal_id": signal_id,
+            "origin_signal_id": signal_id,
+            "trade_group_id": trade_group_id,
+            "entry_order_unique_id": trade_group_id,
+            "order_unique_id": trade_group_id,
+            "broker_order_id": "",
+            "order_id": "",
+            "entry_price": round(float(position.get("entry_price", 0) or 0), 4),
+            "quantity": int(position.get("shares", 0) or 0),
+            "take_profit": round(float(position.get("target_price", 0) or 0), 4),
+            "stop_loss": round(float(position.get("stop_price", 0) or 0), 4),
+            "crsi": round(float(analysis.get("crsi", 0) or 0), 4),
+            "obv_rsi": round(float(analysis.get("obv_rsi", 0) or 0), 4),
+            "vwap_dist": round(float(analysis.get("vwap_dist", 0) or 0), 4),
+            "close": round(close_value, 4),
+            "triggered_signals": triggered_signals,
+            "chart_tf": interval_to_chart_tf("5m"),
+            "bar_index": int(bar_index or 0),
+            "bar_time_ms": bar_time_ms,
+            "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
+            "signal_us_time": str(position.get("signal_us_time", "") or ""),
+            "signal_close": round(float(position.get("signal_close", 0) or 0), 4),
+            "simulated_only": True,
+            "backtest_compare_with_tv": bool(request.get("compare_with_tv", True)),
+            "backtest_compare_tv_signals": bool(request.get("compare_tv_signals", False)),
+            "script_tag": str(request.get("strategy_tag") or ""),
+            **(daily_fields or {}),
+            **build_runtime_timestamps(),
+        }
+        reason = f"indicator_conflict({target_state}) -> {', '.join(triggered_signals)}"
+        return {
+            "symbol": symbol,
+            "direction": direction,
+            "reverse_kind": "indicator_conflict",
+            "source": "indicator",
+            "target_state": target_state,
+            "target_order_status": "Filled",
+            "strength": strength,
+            "score": round(score, 4),
+            "triggered_signals": triggered_signals,
+            "action_type": action_type,
+            "status": "generated",
+            "reason": reason,
+            "priority": max(1, min(10, int(round(score)) or 1)),
+            "signal_id": signal_id,
+            "origin_signal_id": signal_id,
+            "trade_group_id": trade_group_id,
+            "date": str(bar.get("us_time", "") or "")[:10],
+            "bar_time_ms": bar_time_ms,
+            "us_time": str(bar.get("us_time", "") or ""),
+            "cn_time": str(bar.get("cn_time", "") or ""),
+            "environment": BACKTEST_ENVIRONMENT,
+            "extra": extra,
+        }
+
+    def _count_values(self, rows: list[dict], field_name: str) -> dict:
+        counts = {}
+        for row in rows:
+            key = str(row.get(field_name, "") or "").strip()
+            if not key:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _build_backtest_reverse_samples(self, rows: list[dict], limit: int = 8) -> list[dict]:
+        samples = []
+        for row in rows[: max(0, int(limit or 0))]:
+            samples.append(
+                {
+                    "symbol": str(row.get("symbol", "") or ""),
+                    "direction": str(row.get("direction", "") or ""),
+                    "action_type": str(row.get("action_type", "") or ""),
+                    "score": round(float(row.get("score", 0) or 0), 4),
+                    "strength": str(row.get("strength", "") or ""),
+                    "status": str(row.get("status", "") or ""),
+                    "target_state": str(row.get("target_state", "") or ""),
+                    "us_time": str(row.get("us_time", "") or ""),
+                    "triggered_signals": list(row.get("triggered_signals") or []),
+                    "signal_id": str(row.get("signal_id", "") or ""),
+                }
+            )
+        return samples
 
     def _normalize_tv_indicator_row(self, row: dict) -> dict:
         extra = self._parse_object(row.get("extra"))
@@ -2118,16 +2971,20 @@ class BacktestService:
             "summary": summary,
         }
 
-    def _persist_backtest_indicators(self, run_id: str, indicator_rows: list[dict]) -> dict:
-        summary = {
-            "collection": BACKTEST_INDICATOR_COLLECTION,
+    def _empty_capture_summary(self, collection: str, run_id: str, status: str = "empty") -> dict:
+        return {
+            "collection": collection,
             "run_id": run_id,
-            "attempted_count": len(indicator_rows),
+            "attempted_count": 0,
             "saved_count": 0,
             "error_count": 0,
-            "status": "disabled" if not self.pb else "empty",
+            "status": "disabled" if not self.pb else status,
             "errors": [],
         }
+
+    def _persist_backtest_indicators(self, run_id: str, indicator_rows: list[dict]) -> dict:
+        summary = self._empty_capture_summary(BACKTEST_INDICATOR_COLLECTION, run_id)
+        summary["attempted_count"] = len(indicator_rows)
         if not self.pb or not run_id:
             return summary
         if not indicator_rows:
@@ -2153,6 +3010,114 @@ class BacktestService:
                         {
                             "bar_time_ms": int(payload.get("bar_time_ms", 0) or 0),
                             "symbol": str(payload.get("symbol", "") or ""),
+                            "error": str(exc)[:300],
+                        }
+                    )
+        if summary["error_count"] and summary["saved_count"] == 0:
+            summary["status"] = "error"
+        return summary
+
+    def _persist_backtest_signals(self, run_id: str, signal_rows: list[dict]) -> dict:
+        summary = self._empty_capture_summary(BACKTEST_SIGNAL_COLLECTION, run_id)
+        summary["attempted_count"] = len(signal_rows)
+        if not self.pb or not run_id:
+            return summary
+        if not signal_rows:
+            return summary
+
+        summary["status"] = "ok"
+        for row in signal_rows:
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            payload = dict(row or {})
+            extra = self._parse_object(payload.get("extra"))
+            extra["backtest_run_id"] = run_id
+            payload["run_id"] = run_id
+            payload["extra"] = extra
+            try:
+                self.pb.create_record(BACKTEST_SIGNAL_COLLECTION, payload)
+                summary["saved_count"] += 1
+            except Exception as exc:
+                summary["error_count"] += 1
+                summary["status"] = "partial"
+                if len(summary["errors"]) < TV_COMPARE_SAMPLE_LIMIT:
+                    summary["errors"].append(
+                        {
+                            "bar_time_ms": int(payload.get("bar_time_ms", 0) or 0),
+                            "symbol": str(payload.get("symbol", "") or ""),
+                            "signal_id": str(payload.get("signal_id", "") or ""),
+                            "error": str(exc)[:300],
+                        }
+                    )
+        if summary["error_count"] and summary["saved_count"] == 0:
+            summary["status"] = "error"
+        return summary
+
+    def _persist_backtest_targets(self, run_id: str, target_rows: list[dict]) -> dict:
+        summary = self._empty_capture_summary(BACKTEST_TARGET_COLLECTION, run_id)
+        summary["attempted_count"] = len(target_rows)
+        if not self.pb or not run_id:
+            return summary
+        if not target_rows:
+            return summary
+
+        summary["status"] = "ok"
+        for row in target_rows:
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            payload = dict(row or {})
+            extra = self._parse_object(payload.get("extra"))
+            extra["backtest_run_id"] = run_id
+            payload["run_id"] = run_id
+            payload["extra"] = extra
+            try:
+                self.pb.create_record(BACKTEST_TARGET_COLLECTION, payload)
+                summary["saved_count"] += 1
+            except Exception as exc:
+                summary["error_count"] += 1
+                summary["status"] = "partial"
+                if len(summary["errors"]) < TV_COMPARE_SAMPLE_LIMIT:
+                    summary["errors"].append(
+                        {
+                            "date": str(payload.get("date", "") or ""),
+                            "symbol": str(payload.get("symbol", "") or ""),
+                            "error": str(exc)[:300],
+                        }
+                    )
+        if summary["error_count"] and summary["saved_count"] == 0:
+            summary["status"] = "error"
+        return summary
+
+    def _persist_backtest_reverse_signals(self, run_id: str, reverse_rows: list[dict]) -> dict:
+        summary = self._empty_capture_summary(BACKTEST_REVERSE_SIGNAL_COLLECTION, run_id)
+        summary["attempted_count"] = len(reverse_rows)
+        if not self.pb or not run_id:
+            return summary
+        if not reverse_rows:
+            return summary
+
+        summary["status"] = "ok"
+        for row in reverse_rows:
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            payload = dict(row or {})
+            extra = self._parse_object(payload.get("extra"))
+            extra["backtest_run_id"] = run_id
+            payload["run_id"] = run_id
+            payload["extra"] = extra
+            try:
+                self.pb.create_record(BACKTEST_REVERSE_SIGNAL_COLLECTION, payload)
+                summary["saved_count"] += 1
+            except Exception as exc:
+                summary["error_count"] += 1
+                summary["status"] = "partial"
+                if len(summary["errors"]) < TV_COMPARE_SAMPLE_LIMIT:
+                    summary["errors"].append(
+                        {
+                            "bar_time_ms": int(payload.get("bar_time_ms", 0) or 0),
+                            "symbol": str(payload.get("symbol", "") or ""),
+                            "action_type": str(payload.get("action_type", "") or ""),
+                            "signal_id": str(payload.get("signal_id", "") or ""),
                             "error": str(exc)[:300],
                         }
                     )

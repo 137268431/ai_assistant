@@ -801,12 +801,41 @@
         }
 
         async function loadConfigValue(key, fallbackValue) {
-            const result = await pb.collection('config').getFullList({
+            const result = await fetchCollectionFullList('config', {
                 filter: `key = "${escapeFilterValue(key)}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
                 sort: '-updated',
-                $autoCancel: false
+                maxPages: 2
             });
             return pickConfigValue(result, fallbackValue);
+        }
+
+        async function fetchCollectionFullList(collection, options = {}) {
+            const perPage = Math.max(1, Math.min(Number(options.perPage || 200), 200));
+            const maxPages = Math.max(1, Number(options.maxPages || 20));
+            const items = [];
+
+            for (let page = 1; page <= maxPages; page += 1) {
+                const result = await apiFetch(collection, {
+                    filter: options.filter || '',
+                    sort: options.sort || '',
+                    perPage,
+                    page
+                });
+                const pageItems = Array.isArray(result?.items) ? result.items : [];
+                items.push(...pageItems);
+                if (pageItems.length < perPage) break;
+            }
+
+            return items;
+        }
+
+        function chunkArray(items, size) {
+            const chunkSize = Math.max(1, Number(size || 1));
+            const chunks = [];
+            for (let index = 0; index < items.length; index += chunkSize) {
+                chunks.push(items.slice(index, index + chunkSize));
+            }
+            return chunks;
         }
 
         function buildSignalsPageUrl(overrides = {}) {
@@ -1082,21 +1111,20 @@
                     endTimeMs = date.getTime() + 86400000; // 加一天
                 }
 
-                // 一次性请求所有 symbol 的指标（用 || 连接）
-                const symbolFilter = symbols.map(s => `symbol = "${s}"`).join(' || ');
-                const result = await pb.collection('ibkr_indicators').getList(1, symbols.length, {
-                    filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-created',
-                    $autoCancel: false
-                });
-
-                // 按 symbol 分组，取每个 symbol 的最新一条
                 const latestBySymbol = {};
-                result.items.forEach(item => {
-                    if (!latestBySymbol[item.symbol]) {
-                        latestBySymbol[item.symbol] = item;
-                    }
-                });
+                for (const symbolChunk of chunkArray(symbols, 12)) {
+                    const symbolFilter = symbolChunk.map(s => `symbol = "${escapeFilterValue(s)}"`).join(' || ');
+                    const rows = await fetchCollectionFullList('ibkr_indicators', {
+                        filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-bar_time_ms,-created',
+                        maxPages: 4
+                    });
+                    rows.forEach((item) => {
+                        if (!latestBySymbol[item.symbol]) {
+                            latestBySymbol[item.symbol] = item;
+                        }
+                    });
+                }
 
                 // 处理结果
                 Object.keys(latestBySymbol).forEach(symbol => {
@@ -1154,25 +1182,22 @@
             }
 
             try {
-                // 一次性请求所有 symbol 的反向信号（用 || 连接）
-                const symbolFilter = symbols.map(s => `symbol = "${s}"`).join(' || ');
-                const result = await pb.collection('reverse_signals').getList(1, symbols.length * 2, {
-                    filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && status = "confirmed" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-created',
-                    $autoCancel: false
-                });
-
-                // 按 symbol 分组，取每个 symbol 在其信号之后的最新一条
                 const latestBySymbol = {};
-                result.items.forEach(item => {
-                    const signalTime = latestSignalTimeBySymbol[item.symbol];
-                    // 只取信号产生之后的反向信号
-                    if (signalTime && new Date(item.created) > new Date(signalTime)) {
-                        if (!latestBySymbol[item.symbol]) {
+                for (const symbolChunk of chunkArray(symbols, 12)) {
+                    const symbolFilter = symbolChunk.map(s => `symbol = "${escapeFilterValue(s)}"`).join(' || ');
+                    const rows = await fetchCollectionFullList('reverse_signals', {
+                        filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && status = "confirmed" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-created',
+                        maxPages: 4
+                    });
+
+                    rows.forEach((item) => {
+                        const signalTime = latestSignalTimeBySymbol[item.symbol];
+                        if (signalTime && new Date(item.created) > new Date(signalTime) && !latestBySymbol[item.symbol]) {
                             latestBySymbol[item.symbol] = item;
                         }
-                    }
-                });
+                    });
+                }
 
                 // 按 symbol 建立映射
                 Object.keys(latestBySymbol).forEach(symbol => {
@@ -1210,23 +1235,23 @@
             }
 
             try {
-                // 一次性请求所有 signal_id 的订单（用 || 连接）
-                const idFilter = signalIds.map(id => `signal_id = "${escapeFilterValue(id)}"`).join(' || ');
-                const result = await pb.collection('orders').getFullList({
-                    filter: `environment = "${currentEnvironment}" && (${idFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-bar_time_ms,-created',
-                    $autoCancel: false
-                });
+                for (const idChunk of chunkArray(signalIds, 8)) {
+                    const idFilter = idChunk.map(id => `signal_id = "${escapeFilterValue(id)}"`).join(' || ');
+                    const rows = await fetchCollectionFullList('orders', {
+                        filter: `environment = "${currentEnvironment}" && (${idFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-bar_time_ms,-created',
+                        maxPages: 6
+                    });
 
-                // 按 signal_id 建立映射
-                result.forEach(order => {
-                    if (order.signal_id) {
-                        if (!ordersMap[order.signal_id]) {
-                            ordersMap[order.signal_id] = [];
+                    rows.forEach((order) => {
+                        if (order.signal_id) {
+                            if (!ordersMap[order.signal_id]) {
+                                ordersMap[order.signal_id] = [];
+                            }
+                            ordersMap[order.signal_id].push(order);
                         }
-                        ordersMap[order.signal_id].push(order);
-                    }
-                });
+                    });
+                }
 
                 console.log('[Orders] 加载完成:', ordersMap);
             } catch (error) {
@@ -1259,10 +1284,10 @@
             }
 
             const baseFilter = baseConditions.join(' && ');
-            return await pb.collection('ibkr_signals').getFullList({
+            return await fetchCollectionFullList('ibkr_signals', {
                 filter: baseFilter,
                 sort: '-created',
-                $autoCancel: false
+                maxPages: 8
             });
         }
 

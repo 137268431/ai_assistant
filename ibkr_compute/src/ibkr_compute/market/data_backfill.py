@@ -20,6 +20,7 @@ from .timeframe_utils import (
     classify_session,
     format_cn_time,
     format_us_time,
+    interval_to_ms,
     normalize_interval,
 )
 
@@ -203,12 +204,90 @@ class DataBackfill:
     def get_latest_stored_bar_ms(self, symbol: str, interval: str = "5m") -> int:
         return self._get_latest_stored_bar_ms(symbol, interval)
 
+    def get_integrity_snapshot(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        min_bars: int = 0,
+        gap_lookback: int = 80,
+    ) -> Dict:
+        normalized = normalize_interval(interval)
+        snapshot = {
+            "symbol": str(symbol or "").upper(),
+            "interval": normalized,
+            "stored_bar_count": 0,
+            "latest_stored_ms": 0,
+            "oldest_loaded_ms": 0,
+            "gap_count": 0,
+            "gap_examples": [],
+        }
+        if not self.pb_client:
+            return snapshot
+
+        safe_symbol = snapshot["symbol"].replace('"', '\\"')
+        safe_interval = normalized.replace('"', '\\"')
+        safe_environment = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        bars_needed = max(1, int(min_bars or 0), int(gap_lookback or 0))
+        max_pages = max(1, min(5, (bars_needed + 199) // 200))
+
+        try:
+            rows = self.pb_client.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{safe_symbol}" && '
+                    f'interval = "{safe_interval}" && '
+                    f'environment = "{safe_environment}"'
+                ),
+                sort="-bar_time_ms",
+                max_pages=max_pages,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to inspect stored bars for %s/%s: %s",
+                symbol,
+                normalized,
+                exc,
+            )
+            return snapshot
+
+        if not rows:
+            return snapshot
+
+        snapshot["stored_bar_count"] = len(rows)
+        snapshot["latest_stored_ms"] = int(rows[0].get("bar_time_ms", 0) or 0)
+        snapshot["oldest_loaded_ms"] = int(rows[-1].get("bar_time_ms", 0) or 0)
+
+        recent_rows = list(reversed(rows[: max(3, int(gap_lookback or 0))]))
+        expected_ms = interval_to_ms(normalized)
+        for index in range(1, len(recent_rows)):
+            prev = recent_rows[index - 1]
+            curr = recent_rows[index]
+            if str(prev.get("session_type", "") or "") != "regular":
+                continue
+            if str(curr.get("session_type", "") or "") != "regular":
+                continue
+
+            prev_ms = int(prev.get("bar_time_ms", 0) or 0)
+            curr_ms = int(curr.get("bar_time_ms", 0) or 0)
+            delta_ms = curr_ms - prev_ms
+            if delta_ms > expected_ms and delta_ms <= (6 * expected_ms):
+                snapshot["gap_count"] += 1
+                if len(snapshot["gap_examples"]) < 4:
+                    snapshot["gap_examples"].append({
+                        "prev_us_time": str(prev.get("us_time", "") or ""),
+                        "next_us_time": str(curr.get("us_time", "") or ""),
+                        "missing_points": max(int(round(delta_ms / expected_ms)) - 1, 1),
+                    })
+
+        return snapshot
+
     def fetch_history(
         self,
         conid: int,
         symbol: str,
         interval: str = "5m",
         exchange: str = "",
+        repair: bool = False,
     ) -> List[Dict]:
         normalized = normalize_interval(interval)
         period, bar_size = PERIOD_MAP.get(normalized, PERIOD_MAP["5m"])
@@ -255,18 +334,20 @@ class DataBackfill:
                     "source": "backfill",
                     "extra": {
                         **fetch_meta,
+                        "repair_mode": bool(repair),
                         **build_runtime_timestamps(),
                     },
                 }
                 result.append(payload)
 
             latest_stored_ms = self._get_latest_stored_bar_ms(symbol, normalized)
-            if latest_stored_ms > 0:
+            if latest_stored_ms > 0 and not repair:
                 result = [row for row in result if int(row.get("bar_time_ms", 0) or 0) > latest_stored_ms]
 
             logger.info(
-                "Fetched %d new bars for %s/%s (period=%s, latest_stored_ms=%d)",
+                "Fetched %d %s bars for %s/%s (period=%s, latest_stored_ms=%d)",
                 len(result),
+                "repair" if repair else "new",
                 symbol,
                 normalized,
                 period,
@@ -289,13 +370,15 @@ class DataBackfill:
         symbol: str,
         interval: str = "5m",
         exchange: str = "",
+        repair: bool = False,
     ) -> int:
-        bars = self.fetch_history(conid, symbol, interval=interval, exchange=exchange)
+        bars = self.fetch_history(conid, symbol, interval=interval, exchange=exchange, repair=repair)
         written = self._write_bars(bars)
         logger.info(
-            "Backfill %s/%s: %d/%d bars written",
+            "Backfill %s/%s (%s): %d/%d bars written",
             symbol,
             normalize_interval(interval),
+            "repair" if repair else "incremental",
             written,
             len(bars),
         )
@@ -307,10 +390,11 @@ class DataBackfill:
         symbol: str,
         exchange: str = "",
         intervals: Optional[List[str]] = None,
+        repair: bool = False,
     ) -> Dict[str, int]:
         results = {}
         for interval in self._resolve_intervals(intervals):
-            written = self.backfill_symbol(conid, symbol, interval=interval, exchange=exchange)
+            written = self.backfill_symbol(conid, symbol, interval=interval, exchange=exchange, repair=repair)
             results[normalize_interval(interval)] = written
             if self.interval_delay > 0:
                 time.sleep(self.interval_delay)
@@ -322,10 +406,11 @@ class DataBackfill:
         symbol: str,
         exchange: str,
         intervals: Sequence[str],
+        repair: bool,
     ) -> Dict[str, List[Dict]]:
         fetched = {}
         for interval in self._resolve_intervals(intervals):
-            fetched[interval] = self.fetch_history(conid, symbol, interval=interval, exchange=exchange)
+            fetched[interval] = self.fetch_history(conid, symbol, interval=interval, exchange=exchange, repair=repair)
             if self.interval_delay > 0:
                 time.sleep(self.interval_delay)
         return fetched
@@ -335,10 +420,12 @@ class DataBackfill:
         conid_map: Dict[str, int],
         symbol_meta: Optional[Dict[str, Dict[str, str]]] = None,
         intervals: Optional[List[str]] = None,
+        repair_symbols: Optional[Sequence[str]] = None,
     ) -> Dict[str, Dict[str, int]]:
         results = {}
         metadata = symbol_meta or {}
         interval_list = self._resolve_intervals(intervals)
+        repair_set = {str(symbol or "").upper() for symbol in (repair_symbols or []) if str(symbol or "").strip()}
         for symbol, conid in conid_map.items():
             exchange = str((metadata.get(symbol) or {}).get("exchange") or "")
             results[symbol] = {interval: 0 for interval in interval_list}
@@ -357,7 +444,14 @@ class DataBackfill:
 
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ibkr-backfill") as executor:
             future_map = {
-                executor.submit(self._fetch_symbol_all_intervals, conid, symbol, str((metadata.get(symbol) or {}).get("exchange") or ""), interval_list): symbol
+                executor.submit(
+                    self._fetch_symbol_all_intervals,
+                    conid,
+                    symbol,
+                    str((metadata.get(symbol) or {}).get("exchange") or ""),
+                    interval_list,
+                    symbol in repair_set,
+                ): symbol
                 for symbol, conid in conid_map.items()
             }
 

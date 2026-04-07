@@ -1,0 +1,401 @@
+/// <reference path="../pb_data/types.d.ts" />
+
+const IBKR_BACKTEST_REVERSE_SIGNALS_SCHEMA = {
+  "id": "_pb_ibkr_backtest_reverse_signals_",
+  "name": "ibkr_backtest_reverse_signals",
+  "type": "base",
+  "system": false,
+  "fields": [
+    {
+      "autogeneratePattern": "[a-z0-9]{15}",
+      "hidden": false,
+      "id": "text3208210256",
+      "max": 15,
+      "min": 15,
+      "name": "id",
+      "pattern": "^[a-z0-9]+$",
+      "presentable": false,
+      "primaryKey": true,
+      "required": true,
+      "system": true,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_run_id",
+      "max": 15,
+      "min": 0,
+      "name": "run_id",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_symbol",
+      "max": 20,
+      "min": 0,
+      "name": "symbol",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "btrs_direction",
+      "maxSelect": 1,
+      "name": "direction",
+      "presentable": false,
+      "required": true,
+      "system": false,
+      "type": "select",
+      "values": [
+        "long",
+        "short"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "btrs_reverse_kind",
+      "maxSelect": 1,
+      "name": "reverse_kind",
+      "presentable": false,
+      "required": true,
+      "system": false,
+      "type": "select",
+      "values": [
+        "indicator_conflict",
+        "signal_conflict"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "btrs_source",
+      "maxSelect": 1,
+      "name": "source",
+      "presentable": false,
+      "required": true,
+      "system": false,
+      "type": "select",
+      "values": [
+        "indicator",
+        "signal",
+        "manual"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "btrs_target_state",
+      "maxSelect": 1,
+      "name": "target_state",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "select",
+      "values": [
+        "pending_entry",
+        "filled_position"
+      ]
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_target_order_status",
+      "max": 40,
+      "min": 0,
+      "name": "target_order_status",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "btrs_strength",
+      "maxSelect": 1,
+      "name": "strength",
+      "presentable": false,
+      "required": true,
+      "system": false,
+      "type": "select",
+      "values": [
+        "strong",
+        "medium",
+        "weak"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "btrs_score",
+      "max": null,
+      "min": null,
+      "name": "score",
+      "onlyInt": false,
+      "presentable": false,
+      "required": true,
+      "system": false,
+      "type": "number"
+    },
+    {
+      "hidden": false,
+      "id": "btrs_triggered_signals",
+      "maxSize": 2097152,
+      "name": "triggered_signals",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    },
+    {
+      "hidden": false,
+      "id": "btrs_action_type",
+      "maxSelect": 1,
+      "name": "action_type",
+      "presentable": true,
+      "required": true,
+      "system": false,
+      "type": "select",
+      "values": [
+        "close",
+        "cancel",
+        "adjust_sl",
+        "adjust_tp"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "btrs_status",
+      "maxSelect": 1,
+      "name": "status",
+      "presentable": true,
+      "required": false,
+      "system": false,
+      "type": "select",
+      "values": [
+        "generated",
+        "expired",
+        "suppressed"
+      ]
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_reason",
+      "max": 500,
+      "min": 0,
+      "name": "reason",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "btrs_priority",
+      "max": 10,
+      "min": 1,
+      "name": "priority",
+      "onlyInt": true,
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "number"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_signal_id",
+      "max": 120,
+      "min": 0,
+      "name": "signal_id",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_origin_signal_id",
+      "max": 120,
+      "min": 0,
+      "name": "origin_signal_id",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_trade_group_id",
+      "max": 120,
+      "min": 0,
+      "name": "trade_group_id",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_date",
+      "max": 10,
+      "min": 0,
+      "name": "date",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "btrs_bar_time_ms",
+      "max": null,
+      "min": null,
+      "name": "bar_time_ms",
+      "onlyInt": true,
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "number"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_us_time",
+      "max": 40,
+      "min": 0,
+      "name": "us_time",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "btrs_cn_time",
+      "max": 40,
+      "min": 0,
+      "name": "cn_time",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "btrs_environment",
+      "maxSelect": 1,
+      "name": "environment",
+      "presentable": true,
+      "required": false,
+      "system": false,
+      "type": "select",
+      "values": [
+        "live",
+        "paper",
+        "backtest"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "btrs_extra",
+      "maxSize": 2097152,
+      "name": "extra",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    },
+    {
+      "hidden": false,
+      "id": "autodate2990389176",
+      "name": "created",
+      "onCreate": true,
+      "onUpdate": false,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    },
+    {
+      "hidden": false,
+      "id": "autodate3332085495",
+      "name": "updated",
+      "onCreate": true,
+      "onUpdate": true,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    }
+  ],
+  "indexes": [
+    "CREATE INDEX idx_ibkr_backtest_reverse_run_id ON ibkr_backtest_reverse_signals (run_id)",
+    "CREATE INDEX idx_ibkr_backtest_reverse_symbol ON ibkr_backtest_reverse_signals (symbol)",
+    "CREATE INDEX idx_ibkr_backtest_reverse_action ON ibkr_backtest_reverse_signals (action_type)",
+    "CREATE INDEX idx_ibkr_backtest_reverse_status ON ibkr_backtest_reverse_signals (status)",
+    "CREATE INDEX idx_ibkr_backtest_reverse_bar_time_ms ON ibkr_backtest_reverse_signals (bar_time_ms)",
+    "CREATE UNIQUE INDEX idx_ibkr_backtest_reverse_run_signal_action_bar ON ibkr_backtest_reverse_signals (run_id, signal_id, action_type, bar_time_ms)"
+  ],
+  "listRule": "",
+  "viewRule": "",
+  "createRule": "",
+  "updateRule": "",
+  "deleteRule": "",
+  "options": {}
+}
+
+function findIbkrBacktestReverseSignalsCollection(app) {
+  try {
+    return app.findCollectionByNameOrId("_pb_ibkr_backtest_reverse_signals_")
+  } catch (e) {}
+  try {
+    return app.findCollectionByNameOrId("ibkr_backtest_reverse_signals")
+  } catch (e) {}
+  return null
+}
+
+migrate((app) => {
+  let collection = findIbkrBacktestReverseSignalsCollection(app)
+
+  if (collection) {
+    unmarshal(IBKR_BACKTEST_REVERSE_SIGNALS_SCHEMA, collection)
+  } else {
+    collection = new Collection(IBKR_BACKTEST_REVERSE_SIGNALS_SCHEMA)
+  }
+
+  return app.save(collection)
+}, (app) => {
+  const collection = findIbkrBacktestReverseSignalsCollection(app)
+  if (!collection) {
+    return null
+  }
+
+  return app.delete(collection)
+})

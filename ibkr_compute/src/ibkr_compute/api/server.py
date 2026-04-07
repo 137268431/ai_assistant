@@ -244,7 +244,14 @@ def load_persisted_compute_cursors(environment: str):
     return applied
 
 
-def bootstrap_engine_state(environment: str, symbol: str, interval: str, before_bar_time_ms: int, inclusive: bool = True):
+def bootstrap_engine_state(
+    environment: str,
+    symbol: str,
+    interval: str,
+    before_bar_time_ms: int,
+    inclusive: bool = True,
+    force_rebuild: bool = False,
+):
     runtime_environment = str(environment or "live").strip().lower() or "live"
     normalized_interval = normalize_interval(interval)
     key = (runtime_environment, symbol, normalized_interval)
@@ -252,7 +259,10 @@ def bootstrap_engine_state(environment: str, symbol: str, interval: str, before_
     signal_generator = signal_gens.get(key)
     target_ms = int(before_bar_time_ms or 0)
 
-    if key in engine_bootstrap_checked and (target_ms <= 0 or engine.last_bar_time_ms >= target_ms):
+    if force_rebuild:
+        engine_bootstrap_checked.discard(key)
+
+    if not force_rebuild and key in engine_bootstrap_checked and (target_ms <= 0 or engine.last_bar_time_ms >= target_ms):
         return 0
 
     lookback = int(BOOTSTRAP_LOOKBACK_BARS.get(normalized_interval, 192) or 192)
@@ -307,6 +317,83 @@ def bootstrap_engine_state(environment: str, symbol: str, interval: str, before_
         )
     engine_bootstrap_checked.add(key)
     return processed
+
+
+def materialize_engines_from_storage(environment: str, symbols, interval: str = "5m") -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_interval = normalize_interval(interval)
+    normalized_symbols = []
+    seen = set()
+    for raw_symbol in (symbols or []):
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        normalized_symbols.append(symbol)
+
+    if not normalized_symbols:
+        return {}
+
+    symbol_filters = " || ".join(f'symbol = "{symbol}"' for symbol in normalized_symbols)
+    rows = pb.get_all_records(
+        "ibkr_bars",
+        filter=(
+            f'interval = "{normalized_interval}" && '
+            f'{build_bar_environment_filter(runtime_environment, include_legacy_empty=True)} && '
+            f'({symbol_filters})'
+        ),
+        sort="-bar_time_ms",
+        max_pages=max(4, len(normalized_symbols)),
+    )
+
+    latest_by_symbol = {}
+    for row in rows:
+        symbol = str(row.get("symbol", "")).upper()
+        bar_ms = int(row.get("bar_time_ms", 0) or 0)
+        if symbol and bar_ms > 0 and symbol not in latest_by_symbol:
+            latest_by_symbol[symbol] = bar_ms
+        if len(latest_by_symbol) >= len(normalized_symbols):
+            break
+
+    results = {}
+    for symbol in normalized_symbols:
+        target_ms = int(latest_by_symbol.get(symbol, 0) or 0)
+        if target_ms <= 0:
+            results[symbol] = {
+                "processed": 0,
+                "bar_count": 0,
+                "last_bar_time_ms": 0,
+                "is_ready": False,
+                "reason": "no_stored_bars",
+            }
+            continue
+
+        existing_engine = engines.get((runtime_environment, symbol, normalized_interval))
+        force_rebuild = bool(existing_engine and not existing_engine.is_ready())
+        processed = bootstrap_engine_state(
+            runtime_environment,
+            symbol,
+            normalized_interval,
+            target_ms,
+            inclusive=True,
+            force_rebuild=force_rebuild,
+        )
+        engine = engines.get((runtime_environment, symbol, normalized_interval))
+        results[symbol] = {
+            "processed": processed,
+            "bar_count": int(getattr(engine, "bar_count", 0) or 0) if engine else 0,
+            "last_bar_time_ms": int(getattr(engine, "last_bar_time_ms", 0) or 0) if engine else 0,
+            "is_ready": bool(engine and engine.is_ready()),
+            "reason": (
+                "rebootstrapped"
+                if force_rebuild and processed > 0
+                else "bootstrapped"
+                if processed > 0
+                else "already_materialized"
+            ),
+        }
+
+    return results
 
 
 

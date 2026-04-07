@@ -73,6 +73,28 @@
             flex-wrap: wrap;
         }
 
+        .toolbar-filters {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .filter-block {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            align-items: flex-end;
+        }
+
+        .toolbar-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
         .symbol-form {
             display: flex;
             gap: 10px;
@@ -121,6 +143,13 @@
             flex-wrap: wrap;
         }
 
+        .range-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
         .tf-btn {
             padding: 9px 12px;
             border-radius: 999px;
@@ -137,6 +166,25 @@
             border-color: rgba(72,187,120,0.42);
             background: rgba(72,187,120,0.14);
             color: #bbf7d0;
+            transform: translateY(-1px);
+        }
+
+        .range-btn {
+            padding: 9px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+
+        .range-btn.active {
+            border-color: rgba(246,173,85,0.42);
+            background: rgba(246,173,85,0.14);
+            color: #fbd38d;
             transform: translateY(-1px);
         }
 
@@ -616,6 +664,12 @@
                 font-size: 22px;
             }
 
+            .toolbar-filters,
+            .filter-block {
+                width: 100%;
+                align-items: flex-start;
+            }
+
             .workspace {
                 gap: 10px;
                 padding: 0 12px 12px;
@@ -698,7 +752,16 @@
                     <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
                     <button class="toolbar-btn" type="button" onclick="reloadChartPage()">刷新图表</button>
                 </div>
-                <div class="tf-group" id="timeframeGroup"></div>
+                <div class="toolbar-filters">
+                    <div class="filter-block">
+                        <div class="toolbar-label">周期</div>
+                        <div class="tf-group" id="timeframeGroup"></div>
+                    </div>
+                    <div class="filter-block">
+                        <div class="toolbar-label">时间范围</div>
+                        <div class="range-group" id="rangeGroup"></div>
+                    </div>
+                </div>
             </div>
             <div class="summary-strip" id="summaryStrip"></div>
             <div class="layer-strip" id="layerStrip"></div>
@@ -733,9 +796,17 @@
 
     <script>
         const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
+        const RANGE_PRESETS = [
+            { key: '1d', shortLabel: '1D', longLabel: '最近1天', durationMs: 24 * 60 * 60 * 1000 },
+            { key: '3d', shortLabel: '3D', longLabel: '最近3天', durationMs: 3 * 24 * 60 * 60 * 1000 },
+            { key: '1w', shortLabel: '1W', longLabel: '最近1周', durationMs: 7 * 24 * 60 * 60 * 1000 },
+            { key: '1m', shortLabel: '1M', longLabel: '最近1月', durationMs: 31 * 24 * 60 * 60 * 1000 },
+            { key: 'all', shortLabel: 'ALL', longLabel: '全部历史', durationMs: 0 },
+        ];
         let currentEnvironment = getCurrentRuntimeEnvironment();
         let currentSymbol = '';
         let currentInterval = '5m';
+        let currentRangeKey = '1d';
         let currentAnchorMs = 0;
         let currentIndicatorId = '';
         let chartInstance = null;
@@ -782,6 +853,135 @@
             };
             const normalized = map[text] || text;
             return SUPPORTED_INTERVALS.includes(normalized) ? normalized : fallback;
+        }
+
+        function getDefaultRangeKey(interval) {
+            const normalized = normalizeInterval(interval || '5m');
+            const defaults = {
+                '5m': '1d',
+                '15m': '3d',
+                '30m': '1w',
+                '1h': '1m',
+                '4h': '1m',
+                '1d': '1m',
+            };
+            return defaults[normalized] || '1d';
+        }
+
+        function normalizeRangeKey(value, interval = currentInterval) {
+            const key = String(value || '').trim().toLowerCase();
+            const exists = RANGE_PRESETS.some((item) => item.key === key);
+            return exists ? key : getDefaultRangeKey(interval);
+        }
+
+        function getRangePreset(rangeKey) {
+            return RANGE_PRESETS.find((item) => item.key === normalizeRangeKey(rangeKey, currentInterval)) || RANGE_PRESETS[0];
+        }
+
+        function getRangeLabel(rangeKey) {
+            return getRangePreset(rangeKey)?.longLabel || '最近1天';
+        }
+
+        function getRangeStartMs(endMs, rangeKey) {
+            const durationMs = Number(getRangePreset(rangeKey)?.durationMs || 0);
+            return durationMs > 0 && endMs > 0 ? Math.max(0, endMs - durationMs) : 0;
+        }
+
+        function getRangePerPage(interval, rangeKey) {
+            if (normalizeRangeKey(rangeKey, interval) === 'all') return 3000;
+            const barsPerDay = {
+                '5m': 78,
+                '15m': 26,
+                '30m': 13,
+                '1h': 7,
+                '4h': 2,
+                '1d': 1,
+            };
+            const tradingDays = {
+                '1d': 1,
+                '3d': 3,
+                '1w': 5,
+                '1m': 22,
+            };
+            const normalizedInterval = normalizeInterval(interval || '5m');
+            const normalizedRange = normalizeRangeKey(rangeKey, normalizedInterval);
+            const estimate = (barsPerDay[normalizedInterval] || 80) * (tradingDays[normalizedRange] || 1);
+            return Math.max(80, Math.min(estimate + 24, 2500));
+        }
+
+        function buildIntervalAliases(interval) {
+            const normalized = normalizeInterval(interval || '5m');
+            const map = {
+                '5m': ['5m', '5'],
+                '15m': ['15m', '15'],
+                '30m': ['30m', '30'],
+                '1h': ['1h', '60', '60m', '1hr'],
+                '4h': ['4h', '240', '240m'],
+                '1d': ['1d', 'd', 'day'],
+            };
+            return map[normalized] || [normalized];
+        }
+
+        function buildIntervalFilterExpression(interval, fields = ['interval']) {
+            const conditions = [];
+            buildIntervalAliases(interval).forEach((alias) => {
+                fields.forEach((field) => {
+                    conditions.push(`${field} = "${escapeQueryValue(alias)}"`);
+                });
+            });
+            return `(${conditions.join(' || ')})`;
+        }
+
+        function buildHistoryFilter({ environment, symbol = '', interval, endMs = 0, startMs = 0 }) {
+            const parts = [
+                `environment = "${escapeQueryValue(environment)}"`,
+                `symbol = "${escapeQueryValue(symbol)}"`,
+                buildIntervalFilterExpression(interval, ['interval'])
+            ];
+            if (startMs > 0) parts.push(`bar_time_ms >= ${startMs}`);
+            if (endMs > 0) parts.push(`bar_time_ms <= ${endMs}`);
+            return parts.join(' && ');
+        }
+
+        function toChartValue(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function parseRecordExtra(extra) {
+            if (!extra) return {};
+            if (typeof extra === 'object') return extra;
+            if (typeof extra === 'string') {
+                try {
+                    const parsed = JSON.parse(extra);
+                    return parsed && typeof parsed === 'object' ? parsed : {};
+                } catch (_) {
+                    return {};
+                }
+            }
+            return {};
+        }
+
+        function normalizeIndicatorRecord(record) {
+            if (!record || typeof record !== 'object') return record;
+            const extra = parseRecordExtra(record.extra);
+            const normalized = { ...record };
+            Object.entries(extra).forEach(([key, value]) => {
+                if (normalized[key] === undefined || normalized[key] === null || normalized[key] === '') {
+                    normalized[key] = value;
+                }
+            });
+            normalized._extra = extra;
+            return normalized;
+        }
+
+        function getInitialZoom(rangeKey, barsCount) {
+            if (!barsCount) return { start: 0, end: 100 };
+            if (normalizeRangeKey(rangeKey, currentInterval) !== 'all') return { start: 0, end: 100 };
+            const visibleBars = Math.min(240, barsCount);
+            const start = Math.max(0, 100 - (visibleBars / barsCount) * 100);
+            return { start, end: 100 };
         }
 
         function getIntervalLabel(interval) {
@@ -878,6 +1078,7 @@
             return {
                 symbol: String(params.get('symbol') || '').trim().toUpperCase(),
                 interval: normalizeInterval(params.get('interval') || '5m'),
+                range: String(params.get('range') || '').trim().toLowerCase(),
                 barTimeMs: Number(params.get('bar_time_ms') || 0) || 0,
                 indicatorId: String(params.get('indicator_id') || '').trim(),
             };
@@ -887,6 +1088,7 @@
             const url = buildPageUrl('/ibkr_chart.html', {
                 symbol: currentSymbol,
                 interval: currentInterval,
+                range: currentRangeKey,
                 bar_time_ms: currentAnchorMs || '',
                 indicator_id: currentIndicatorId || '',
             }, { environment: currentEnvironment });
@@ -911,9 +1113,11 @@
 
         async function resolveInitialContext() {
             const query = parseQueryContext();
+            const hasExplicitRange = RANGE_PRESETS.some((item) => item.key === query.range);
             currentIndicatorId = query.indicatorId;
             currentSymbol = query.symbol;
             currentInterval = query.interval;
+            currentRangeKey = normalizeRangeKey(query.range, currentInterval);
             currentAnchorMs = query.barTimeMs;
 
             if (currentIndicatorId) {
@@ -922,10 +1126,11 @@
                         filter: `id = "${escapeQueryValue(currentIndicatorId)}" && environment = "${escapeQueryValue(currentEnvironment)}"`,
                         perPage: 1
                     });
-                    const indicator = Array.isArray(indicatorResp?.items) ? indicatorResp.items[0] : null;
+                    const indicator = normalizeIndicatorRecord(Array.isArray(indicatorResp?.items) ? indicatorResp.items[0] : null);
                     if (indicator) {
                         currentSymbol = String(indicator.symbol || currentSymbol).trim().toUpperCase();
                         currentInterval = normalizeInterval(indicator.interval || currentInterval, currentInterval || '5m');
+                        if (!hasExplicitRange) currentRangeKey = getDefaultRangeKey(currentInterval);
                         currentAnchorMs = Number(indicator.bar_time_ms || currentAnchorMs) || currentAnchorMs;
                         return;
                     }
@@ -936,14 +1141,15 @@
 
             try {
                 const latestIndicatorResp = await fetchWithRetry('ibkr_indicators', {
-                    filter: `environment = "${escapeQueryValue(currentEnvironment)}" && interval = "5m"`,
+                    filter: `environment = "${escapeQueryValue(currentEnvironment)}" && ${buildIntervalFilterExpression('5m', ['interval'])}`,
                     sort: '-bar_time_ms',
                     perPage: 1
                 });
-                const latestIndicator = Array.isArray(latestIndicatorResp?.items) ? latestIndicatorResp.items[0] : null;
+                const latestIndicator = normalizeIndicatorRecord(Array.isArray(latestIndicatorResp?.items) ? latestIndicatorResp.items[0] : null);
                 if (latestIndicator) {
                     currentSymbol = String(latestIndicator.symbol || '').trim().toUpperCase();
                     currentInterval = normalizeInterval(latestIndicator.interval || '5m');
+                    if (!hasExplicitRange) currentRangeKey = getDefaultRangeKey(currentInterval);
                     currentAnchorMs = Number(latestIndicator.bar_time_ms || 0) || 0;
                     currentIndicatorId = String(latestIndicator.id || '').trim();
                     return;
@@ -951,13 +1157,14 @@
             } catch (_) {}
 
             const latestBarResp = await fetchWithRetry('ibkr_bars', {
-                filter: `environment = "${escapeQueryValue(currentEnvironment)}" && interval = "5m"`,
+                filter: `environment = "${escapeQueryValue(currentEnvironment)}" && ${buildIntervalFilterExpression('5m', ['interval'])}`,
                 sort: '-bar_time_ms',
                 perPage: 1
             }).catch(() => ({ items: [] }));
             const latestBar = Array.isArray(latestBarResp?.items) ? latestBarResp.items[0] : null;
             currentSymbol = String(latestBar?.symbol || 'SPY').trim().toUpperCase();
             currentInterval = normalizeInterval(latestBar?.interval || '5m');
+            if (!hasExplicitRange) currentRangeKey = getDefaultRangeKey(currentInterval);
             currentAnchorMs = Number(latestBar?.bar_time_ms || 0) || 0;
         }
 
@@ -977,13 +1184,22 @@
             `).join('');
         }
 
+        function renderRangeGroup() {
+            document.getElementById('rangeGroup').innerHTML = RANGE_PRESETS.map((preset) => `
+                <button class="range-btn ${preset.key === currentRangeKey ? 'active' : ''}" type="button" onclick="selectChartRange('${preset.key}')">${escapeHtml(preset.shortLabel)}</button>
+            `).join('');
+        }
+
         function renderSummaryStrip(payload) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
             const latest = payload?.latestIndicator || null;
             const chips = [
                 `bars ${bars.length}`,
+                `ind ${indicators.length}`,
                 `signals ${signals.length}`,
+                `range ${getRangeLabel(currentRangeKey)}`,
                 `trend ${latest ? getTrendText(latest.trend_dir) : '--'}`,
                 `EMA ${latest?.ema_bullish ? 'bull' : latest?.ema_bearish ? 'bear' : 'neutral'}`,
                 `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`,
@@ -1265,7 +1481,7 @@
                         <div class="metric-item"><div class="metric-label">CRSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.crsi)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">OBV RSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.obv_rsi)) : '--'}</div></div>
                     </div>
-                    <div class="rail-sub">时间范围: ${escapeHtml(timeRange)}</div>
+                    <div class="rail-sub">时间范围: ${escapeHtml(getRangeLabel(currentRangeKey))}<br>${escapeHtml(timeRange)}</div>
                 </div>
                 <div class="rail-card">
                     <div class="rail-kicker">Signal Flow</div>
@@ -1371,13 +1587,13 @@
             const barMap = new Map(sortedBars.map((item) => [Number(item.bar_time_ms || 0), item]));
             const categories = sortedBars.map((bar) => formatChartLabel(bar));
             const candle = sortedBars.map((bar) => [Number(bar.open || 0), Number(bar.close || 0), Number(bar.low || 0), Number(bar.high || 0)]);
-            const emaFast = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_fast ?? null));
-            const emaSlow = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_slow ?? null));
-            const emaTrend = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_trend ?? null));
-            const vwap = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap ?? null));
-            const crsi = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi ?? null));
-            const obvRsi = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.obv_rsi ?? null));
-            const atrPct = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.atr_pct ?? null));
+            const emaFast = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_fast));
+            const emaSlow = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_slow));
+            const emaTrend = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_trend));
+            const vwap = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap));
+            const crsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi));
+            const obvRsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.obv_rsi));
+            const atrPct = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.atr_pct));
             const volume = sortedBars.map((bar) => Number(bar.volume || 0));
             const longSignals = buildSignalScatter(
                 signals.filter((item) => String(item.direction || '').toLowerCase() === 'long'),
@@ -1393,8 +1609,10 @@
             );
 
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)} 图表页`;
-            document.getElementById('chartMeta').textContent = `${sortedBars.length} bars · ${signals.length} signals · ${latest?.us_time || sortedBars[sortedBars.length - 1]?.us_time || '--'}`;
-            note.textContent = currentInterval === '5m'
+            document.getElementById('chartMeta').textContent = `${sortedBars.length} bars · ${indicators.length} ind · ${signals.length} signals · ${latest?.us_time || sortedBars[sortedBars.length - 1]?.us_time || '--'}`;
+            note.textContent = !indicators.length
+                ? '当前窗口只有价格 bars，没有匹配到 indicators；EMA / VWAP / Osc 将暂时不可见。'
+                : currentInterval === '5m'
                 ? `可用上方图层按钮切换 EMA / VWAP / Signals / Volume；当前主图${chartLayerState.signals ? '已叠加' : '未叠加'} ibkr_signals 散点。`
                 : '当前为非 5m 周期，主图只展示价格结构与指标轨迹；仍可用图层按钮切换 EMA / VWAP / Volume。';
 
@@ -1403,26 +1621,27 @@
             }
             canvas.innerHTML = '';
             chartInstance = echarts.init(canvas);
+            const zoomWindow = getInitialZoom(currentRangeKey, sortedBars.length);
             const series = [
-                { name: 'Price', type: 'candlestick', data: candle, itemStyle: { color: '#48BB78', color0: '#FC8181', borderColor: '#48BB78', borderColor0: '#FC8181' } },
+                { name: 'Price', type: 'candlestick', data: candle, barMaxWidth: 18, barMinWidth: 6, itemStyle: { color: '#48BB78', color0: '#FC8181', borderColor: '#48BB78', borderColor0: '#FC8181' } },
                 ...(chartLayerState.ema ? [
-                    { name: 'EMA 20', type: 'line', data: emaFast, symbol: 'none', smooth: true, lineStyle: { width: 1.3, color: '#63B3ED' } },
-                    { name: 'EMA 50', type: 'line', data: emaSlow, symbol: 'none', smooth: true, lineStyle: { width: 1.2, color: '#F6AD55' } },
-                    { name: 'EMA 100', type: 'line', data: emaTrend, symbol: 'none', smooth: true, lineStyle: { width: 1.1, color: '#A78BFA' } },
+                    { name: 'EMA 20', type: 'line', data: emaFast, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.3, color: '#63B3ED' } },
+                    { name: 'EMA 50', type: 'line', data: emaSlow, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.2, color: '#F6AD55' } },
+                    { name: 'EMA 100', type: 'line', data: emaTrend, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.1, color: '#A78BFA' } },
                 ] : []),
                 ...(chartLayerState.vwap ? [
-                    { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', smooth: true, lineStyle: { width: 1.1, color: '#68D391' } },
+                    { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.1, color: '#68D391' } },
                 ] : []),
                 ...(currentInterval === '5m' && chartLayerState.signals ? [
                     { name: 'LONG Signal', type: 'scatter', data: longSignals, symbolSize: 11 },
                     { name: 'SHORT Signal', type: 'scatter', data: shortSignals, symbolSize: 11 },
                 ] : []),
-                { name: 'CRSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: crsi, symbol: 'none', lineStyle: { width: 1.2, color: '#48BB78' }, markLine: { symbol: 'none', lineStyle: { color: 'rgba(246,173,85,0.45)' }, data: [{ yAxis: 80 }, { yAxis: 20 }] } },
-                { name: 'OBV RSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: obvRsi, symbol: 'none', lineStyle: { width: 1.2, color: '#F6AD55' } },
+                { name: 'CRSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: crsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#48BB78' }, markLine: { symbol: 'none', lineStyle: { color: 'rgba(246,173,85,0.45)' }, data: [{ yAxis: 80 }, { yAxis: 20 }] } },
+                { name: 'OBV RSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: obvRsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#F6AD55' } },
                 ...(chartLayerState.volume ? [
                     { name: 'Volume', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: volume, itemStyle: { color: 'rgba(99,179,237,0.42)' } },
                 ] : []),
-                { name: 'ATR %', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: atrPct, symbol: 'none', lineStyle: { width: 1.2, color: '#FC8181' } }
+                { name: 'ATR %', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: atrPct, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#FC8181' } }
             ];
             chartInstance.setOption({
                 animation: false,
@@ -1466,8 +1685,8 @@
                     { left: 52, right: 62, top: '79%', height: '12%' }
                 ],
                 dataZoom: [
-                    { type: 'inside', xAxisIndex: [0, 1, 2], start: 55, end: 100 },
-                    { type: 'slider', xAxisIndex: [0, 1, 2], bottom: 10, height: 18, borderColor: 'rgba(99,179,237,0.12)', textStyle: { color: '#8BA4C4' } }
+                    { type: 'inside', xAxisIndex: [0, 1, 2], start: zoomWindow.start, end: zoomWindow.end },
+                    { type: 'slider', xAxisIndex: [0, 1, 2], start: zoomWindow.start, end: zoomWindow.end, bottom: 10, height: 18, borderColor: 'rgba(99,179,237,0.12)', textStyle: { color: '#8BA4C4' } }
                 ],
                 xAxis: [
                     { type: 'category', data: categories, scale: true, boundaryGap: true, axisLine: { lineStyle: { color: '#30435E' } }, axisLabel: { color: '#8BA4C4', fontSize: 10 }, splitLine: { show: false } },
@@ -1527,6 +1746,7 @@
             const input = document.getElementById('chartSymbolInput');
             if (input && currentSymbol) input.value = currentSymbol;
             renderTimeframeGroup();
+            renderRangeGroup();
             renderLayerStrip();
             closeSignalDrawer();
             document.getElementById('cursorStrip').innerHTML = '';
@@ -1537,18 +1757,28 @@
             document.getElementById('infoRail').innerHTML = '<div class="rail-card"><div class="rail-kicker">Loading</div><div class="rail-sub">正在拉取该标的的历史 bars / indicators / signals ...</div></div>';
 
             const cappedMs = currentAnchorMs || Date.now();
-            const baseFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(currentSymbol)}" && interval = "${escapeQueryValue(currentInterval)}" && bar_time_ms <= ${cappedMs}`;
+            const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
+            const baseFilter = buildHistoryFilter({
+                environment: currentEnvironment,
+                symbol: currentSymbol,
+                interval: currentInterval,
+                startMs: rangeStartMs,
+                endMs: cappedMs,
+            });
+            const perPage = getRangePerPage(currentInterval, currentRangeKey);
 
             try {
                 const [latestResp, barsResp, indicatorsResp] = await Promise.all([
                     fetchWithRetry('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage: 1 }).catch(() => ({ items: [] })),
-                    fetchWithRetry('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage: 240 }),
-                    fetchWithRetry('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage: 240 }).catch(() => ({ items: [] })),
+                    fetchWithRetry('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage }),
+                    fetchWithRetry('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage }).catch(() => ({ items: [] })),
                 ]);
 
                 const bars = Array.isArray(barsResp?.items) ? barsResp.items.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0)) : [];
-                const indicators = Array.isArray(indicatorsResp?.items) ? indicatorsResp.items.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0)) : [];
-                const latestIndicator = (Array.isArray(latestResp?.items) ? latestResp.items[0] : null) || (indicators.length ? indicators[indicators.length - 1] : null);
+                const indicators = Array.isArray(indicatorsResp?.items)
+                    ? indicatorsResp.items.map((item) => normalizeIndicatorRecord(item)).sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                    : [];
+                const latestIndicator = normalizeIndicatorRecord(Array.isArray(latestResp?.items) ? latestResp.items[0] : null) || (indicators.length ? indicators[indicators.length - 1] : null);
                 const minMs = Number(bars[0]?.bar_time_ms || 0) || 0;
                 const maxMs = Number(bars[bars.length - 1]?.bar_time_ms || cappedMs) || cappedMs;
 
@@ -1591,8 +1821,17 @@
 
         window.selectChartInterval = async function(interval) {
             currentInterval = normalizeInterval(interval, currentInterval);
+            currentRangeKey = normalizeRangeKey(currentRangeKey, currentInterval);
             currentAnchorMs = 0;
             currentIndicatorId = '';
+            selectedBarIndex = -1;
+            selectedSignalId = '';
+            hoverBarIndex = -1;
+            await loadChartWorkspace();
+        };
+
+        window.selectChartRange = async function(rangeKey) {
+            currentRangeKey = normalizeRangeKey(rangeKey, currentInterval);
             selectedBarIndex = -1;
             selectedSignalId = '';
             hoverBarIndex = -1;

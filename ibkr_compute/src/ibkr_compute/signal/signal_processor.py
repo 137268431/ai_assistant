@@ -10,7 +10,7 @@
 
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +23,11 @@ DEFAULT_SIGNAL_EXPIRY_MINUTES = 30
 
 
 class SignalProcessor:
-    def __init__(self, config, order_lifecycle=None, environment: str = "live"):
+    def __init__(self, config, order_lifecycle=None, environment: str = "live", readiness_provider: Callable | None = None):
         self.config = config
         self.order_lifecycle = order_lifecycle
         self.environment = environment
+        self.readiness_provider = readiness_provider
         self._active_positions: Dict[str, dict] = {}
 
     def validate_signal(self, signal: dict) -> Tuple[bool, str]:
@@ -34,6 +35,10 @@ class SignalProcessor:
 
         if not self._is_trading_enabled():
             return False, "trading_disabled"
+
+        trade_ready, trade_ready_reason = self._trade_readiness_status()
+        if not trade_ready:
+            return False, trade_ready_reason
 
         if not self._in_trade_window(et_now):
             return False, "outside_trade_window"
@@ -65,6 +70,22 @@ class SignalProcessor:
         return self.config.get_bool_for_environment(
             "ibkr_trading_enabled", self.environment, True
         )
+
+    def _trade_readiness_status(self) -> Tuple[bool, str]:
+        if not callable(self.readiness_provider):
+            return True, "ok"
+        try:
+            payload = self.readiness_provider()
+        except Exception as exc:
+            logger.warning("Signal readiness provider failed: %s", exc)
+            return False, "warmup_status_error"
+
+        if isinstance(payload, dict):
+            if payload.get("open"):
+                return True, str(payload.get("reason") or "ok")
+            return False, str(payload.get("reason") or "warmup_incomplete")
+
+        return (True, "ok") if payload else (False, "warmup_incomplete")
 
     def _get_time_window(self, key: str, default: Tuple[int, int]) -> Tuple[int, int]:
         raw_value = str(
@@ -168,11 +189,14 @@ class SignalProcessor:
         logger.info("Signal processor daily reset")
 
     def status(self) -> dict:
+        trade_ready, trade_ready_reason = self._trade_readiness_status()
         return {
             "environment": self.environment,
             "active_positions": len(self._active_positions),
             "positions": list(self._active_positions.keys()),
             "ibkr_trading_enabled": self._is_trading_enabled(),
+            "trading_gate_open": trade_ready,
+            "trading_gate_reason": trade_ready_reason,
             "trade_window_start_time": f"{self._trade_window_start()[0]:02d}:{self._trade_window_start()[1]:02d}",
             "trade_window_end_time": f"{self._trade_window_end()[0]:02d}:{self._trade_window_end()[1]:02d}",
             "order_window_end_time": f"{self._order_window_end()[0]:02d}:{self._order_window_end()[1]:02d}",

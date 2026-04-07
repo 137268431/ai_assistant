@@ -842,6 +842,9 @@
         function statusClass(value) {
             const text = String(value || '').trim().toLowerCase();
             if (!text) return 'pill-neutral';
+            if (['ready', 'open'].includes(text)) return 'pill-ok';
+            if (['warming', 'blocked', 'degraded', 'closed'].includes(text)) return 'pill-warning';
+            if (['stopped'].includes(text)) return 'pill-error';
             if (['running', 'ok', 'online', 'filled', 'long', 'buy', 'active', 'executed'].includes(text)) return `pill-${text}`;
             if (['warning', 'delayed', 'pending', 'awaiting_confirm', 'waiting_response', 'submitted'].includes(text)) return `pill-${text}`;
             if (['error', 'offline', 'cancelled', 'rejected', 'short', 'sell', 'failed'].includes(text)) return `pill-${text}`;
@@ -851,6 +854,9 @@
 
         function chipTone(value) {
             const text = String(value || '').trim().toLowerCase();
+            if (['ready', 'open'].includes(text)) return 'chip-ok';
+            if (['warming', 'blocked', 'degraded', 'closed'].includes(text)) return 'chip-warn';
+            if (['stopped'].includes(text)) return 'chip-error';
             if (['running', 'ok', 'online'].includes(text)) return 'chip-ok';
             if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_response'].includes(text)) return 'chip-warn';
             if (['error', 'offline', 'failed', 'rejected'].includes(text)) return 'chip-error';
@@ -922,6 +928,26 @@
             };
         }
 
+        function normalizeWarmup(status) {
+            const warmup = status?.warmup || {};
+            return {
+                phase: String(warmup.phase || 'idle').trim().toLowerCase() || 'idle',
+                gate_open: Boolean(warmup.trading_gate_open),
+                gate_reason: String(warmup.trading_gate_reason || '').trim() || 'warmup_idle',
+                required_interval: String(warmup.required_interval || '5m'),
+                symbols_total: Number(warmup.symbols_total || 0) || 0,
+                trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
+                monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
+                ready_symbols: Number(warmup.ready_symbols || 0) || 0,
+                ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
+                ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
+                pending_symbols: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : [],
+                started_at: warmup.started_at || null,
+                finished_at: warmup.finished_at || null,
+                last_error: String(warmup.last_error || '').trim(),
+            };
+        }
+
         function deriveDataHealth(latestBar) {
             const lastBarTimeMs = Number(latestBar?.bar_time_ms || 0) || 0;
             if (!lastBarTimeMs) {
@@ -975,6 +1001,7 @@
             const today = summary?.today || {};
             const computeHealth = normalizeComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
+            const warmup = normalizeWarmup(status);
             const isAuthenticated = Boolean(status?.session?.authenticated);
             const gatewayRunning = Boolean(status?.gateway?.running || status?.gateway?.reachable);
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toUpperCase() || '--';
@@ -988,6 +1015,11 @@
                     label: 'Ready Engines',
                     value: `${status?.ready_engines || 0}/${status?.total_engines || 0}`,
                     copy: `compute count ${status?.compute_count || 0}`
+                },
+                {
+                    label: 'Warmup Gate',
+                    value: warmup.gate_open ? 'OPEN' : String(warmup.phase || 'idle').toUpperCase(),
+                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total} monitor`
                 },
                 {
                     label: 'Today Signals',
@@ -1021,6 +1053,7 @@
 
         function renderOpsGrid(summary, status, twoFactorState, latestBar, latestIndicator, latestSignal) {
             const dataHealth = deriveDataHealth(latestBar);
+            const warmup = normalizeWarmup(status);
             const latestBarExtra = getExtraObject(latestBar);
             const latestIndicatorExtra = getExtraObject(latestIndicator);
             const latestSignalExtra = getExtraObject(latestSignal);
@@ -1056,6 +1089,18 @@
                 blocker.copy = twoFactorStatus === 'waiting_confirm'
                     ? '浏览器已经停在手机确认阶段，确认完成后会自动继续；如果迟迟不成功，我会继续排查浏览器已认证但网关未放行的桥接问题。'
                     : '当前还没有拿到可用 Session，新的 bars / backfill / 订单链路都不会继续刷新。';
+            } else if (warmup.phase === 'failed') {
+                blocker.tone = 'error';
+                blocker.title = 'Warmup 执行失败';
+                blocker.copy = warmup.last_error || '启动后的预热链路失败，交易闸门保持关闭，需要检查回填与 compute 日志。';
+            } else if (warmup.phase === 'pending' || warmup.phase === 'running') {
+                blocker.tone = 'warn';
+                blocker.title = `Startup Warmup ${warmup.ready_symbols}/${warmup.symbols_total}`;
+                blocker.copy = `正在为 ${warmup.required_interval} 建立启动状态，trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。`;
+            } else if (warmup.trade_symbols_total > 0 && !warmup.gate_open) {
+                blocker.tone = 'warn';
+                blocker.title = `Trading Gate Closed · ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`;
+                blocker.copy = `目标池还没有全部预热完成，pending: ${(warmup.pending_symbols || []).slice(0, 4).join(', ') || 'n/a'}。`;
             } else if (dataHealth.last_bar_age_min != null && dataHealth.last_bar_age_min > 30) {
                 blocker.tone = 'error';
                 blocker.title = `bars 停在 ${dataHealth.last_bar_label}`;
@@ -1076,6 +1121,7 @@
                     latestBar ? `bar ${getRecordBarLabel(latestBar)}` : 'bars missing',
                     latestBar ? `write ${String(getComputedTimeLabel(latestBar)).slice(0, 19)}` : 'write --',
                     latestBar && !latestBarExtra.computed_at_us && !latestBarExtra.computed_at_cn ? 'bar extra 缺失' : '',
+                    `warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}`,
                     latestIndicator ? `indicator ${latestIndicator.symbol || '--'} ${latestIndicator.interval || '--'} · ${String(getComputedTimeLabel(latestIndicator)).slice(0, 19)}` : 'indicator missing',
                     latestSignal ? `signal ${latestSignal.symbol || '--'} ${String(latestSignal.direction || '--').toUpperCase()} · ${latestSignal.status || '--'}` : 'signal 暂无',
                 ].filter(Boolean).join(' · ')
@@ -1120,6 +1166,7 @@
         function renderHero(summary, health, status, runtimeConfig, twoFactorState, latestBar) {
             const computeHealth = normalizeComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
+            const warmup = normalizeWarmup(status);
             const dataStatus = dataHealth.status || 'no_data';
             const computeStatus = computeHealth.status || 'unknown';
             const gatewayRunning = Boolean(status?.gateway?.running || status?.gateway?.reachable);
@@ -1130,6 +1177,7 @@
                 { label: `Data ${String(dataStatus).toUpperCase()}`, tone: chipTone(dataStatus) },
                 { label: `Gateway ${gatewayRunning ? 'ACTIVE' : 'OFFLINE'}`, tone: gatewayRunning ? 'chip-ok' : 'chip-error' },
                 { label: `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`, tone: sessionAuthenticated ? 'chip-ok' : 'chip-warn' },
+                { label: `Warmup ${warmup.gate_open ? 'READY' : String(warmup.phase || 'idle').toUpperCase()}`, tone: warmup.gate_open ? 'chip-ok' : chipTone(warmup.phase) },
                 { label: `2FA ${twoFactorStatus.toUpperCase()}`, tone: sessionAuthenticated ? 'chip-ok' : chipTone(twoFactorStatus) },
                 { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
@@ -1151,7 +1199,7 @@
                 || status?.order_tracker?.running
             );
             const authSummary = sessionAuthenticated
-                ? 'session authenticated'
+                ? `session authenticated · warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}`
                 : !runtimeStarted
                     ? 'runtime stopped · waiting manual start'
                 : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`;
@@ -1162,6 +1210,7 @@
         function renderRuntimeDetail(summary, health, status, twoFactorState, latestBar, latestIndicator, latestSignal) {
             const computeHealth = normalizeComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
+            const warmup = normalizeWarmup(status);
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
             const latestBarWrite = latestBar ? String(getComputedTimeLabel(latestBar)).slice(0, 19) : '--';
             const latestIndicatorCalc = latestIndicator ? String(getComputedTimeLabel(latestIndicator)).slice(0, 19) : '--';
@@ -1187,10 +1236,18 @@
                 ['Close Compute Runs', String(status?.realtime_compute?.runs || 0)],
                 ['Close Compute Queue', String(status?.realtime_compute?.queue_size || 0)],
                 ['Close Compute Last', formatTimeLabel(status?.realtime_compute?.last_run)],
+                ['Warmup Phase', String(warmup.phase || '--').toUpperCase()],
+                ['Trading Gate', warmup.gate_open ? 'OPEN' : 'CLOSED'],
+                ['Warmup Reason', String(warmup.gate_reason || '--')],
+                ['Warmup Trade', `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`],
+                ['Warmup Monitor', `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`],
+                ['Warmup Start', formatTimeLabel(warmup.started_at)],
+                ['Warmup Finish', formatTimeLabel(warmup.finished_at)],
                 ['Market Date', String(status?.market_universe?.market_date || '--')],
                 ['Last Daily Reset', formatTimeLabel(status?.market_universe?.last_daily_reset)],
                 ['Watchlist Pool', String(status?.market_universe?.watchlist_pool_count || 0)],
                 ['Today Targets', String(status?.market_universe?.active_target_count || 0)],
+                ['Trade Targets', Array.isArray(status?.market_universe?.active_trade_symbols) ? status.market_universe.active_trade_symbols.join(', ') || '--' : '--'],
                 ['Target Date', String(status?.market_universe?.active_target_date || '--')],
                 ['Last Target Refresh', formatTimeLabel(status?.market_universe?.last_target_refresh)],
                 ['Last Pool Backfill', formatTimeLabel(status?.market_universe?.last_watchlist_backfill)],
@@ -1298,6 +1355,7 @@
             const latestIndicatorMs = Number(latestIndicator?.bar_time_ms || 0) || 0;
             const latestSignalMs = Number(latestSignal?.bar_time_ms || 0) || 0;
             const dataHealth = deriveDataHealth(latestBar);
+            const warmup = normalizeWarmup(status);
             const latestBarExtra = getExtraObject(latestBar);
             const indicatorExtra = getExtraObject(latestIndicator);
             const signalExtra = getExtraObject(latestSignal);
@@ -1338,6 +1396,11 @@
                     label: 'Latest Signal',
                     value: latestSignal ? `${latestSignal.symbol || '--'} ${String(latestSignal.direction || '--').toUpperCase()}` : '--',
                     copy: latestSignal ? `${getRecordBarLabel(latestSignal)} · ${latestSignal.status || '--'}` : '最近没有新 signal',
+                },
+                {
+                    label: 'Warmup Gate',
+                    value: warmup.gate_open ? 'OPEN' : String(warmup.phase || 'idle').toUpperCase(),
+                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total} monitor`,
                 }
             ];
 
@@ -1366,6 +1429,13 @@
                 notes.push({ tone: 'warn', text: '当前 runtime service 没有真正拉起；这种状态下会看到 Session 待认证，但根因通常是服务停止或刚重启后未恢复。' });
             } else if (!isAuthenticated) {
                 notes.push({ tone: 'warn', text: 'Gateway 已在线，但 IBKR Session 仍未认证，新的 bars/高周期 bars 不会持续刷新。' });
+            }
+            if (warmup.phase === 'pending' || warmup.phase === 'running') {
+                notes.push({ tone: 'warn', text: `启动预热进行中：${warmup.ready_symbols}/${warmup.symbols_total} ready，trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}。` });
+            } else if (warmup.phase === 'failed') {
+                notes.push({ tone: 'error', text: `warmup 失败：${warmup.last_error || '需要检查回填与 compute 日志。'}` });
+            } else if (warmup.trade_symbols_total > 0 && !warmup.gate_open) {
+                notes.push({ tone: 'warn', text: `交易闸门关闭：还有 ${(warmup.pending_symbols || []).join(', ') || '部分目标'} 未完成 ${warmup.required_interval} 预热。` });
             }
             if (latestBar && String(latestBar.environment || '').trim() === '') {
                 notes.push({ tone: 'warn', text: '检测到 legacy 空 environment bars，已需要迁移到 live 才能保证页面与 compute 一致。' });

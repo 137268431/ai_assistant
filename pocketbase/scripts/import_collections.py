@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
-"""Import one or more PocketBase collection schemas via the superuser API."""
+"""Import one or more PocketBase collection schemas via the superuser API.
+
+Examples:
+  python3 pocketbase/scripts/import_collections.py \
+    pocketbase/pb_table/schema_ibkr_backtest_reverse_signals.json \
+    --base-url http://127.0.0.1:8090 \
+    --email admin@example.com \
+    --password secret
+
+  python3 pocketbase/scripts/import_collections.py \
+    --bundle ibkr_backtest \
+    --base-url http://127.0.0.1:8090 \
+    --email admin@example.com \
+    --password secret
+"""
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -12,6 +27,8 @@ from pathlib import Path
 
 import requests
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+SCHEMA_ROOT = SCRIPT_DIR.parent / "pb_table"
 VALID_COLLECTION_ID = re.compile(r"^[A-Za-z0-9]{15}$")
 ALLOWED_KEYS = {
     "id",
@@ -42,6 +59,17 @@ ALLOWED_KEYS = {
     "verificationTemplate",
     "resetPasswordTemplate",
     "confirmEmailChangeTemplate",
+}
+SCHEMA_BUNDLES = {
+    "ibkr_backtest": (
+        "schema_ibkr_backtest_batches.json",
+        "schema_ibkr_backtest_runs.json",
+        "schema_ibkr_backtest_trades.json",
+        "schema_ibkr_backtest_indicators.json",
+        "schema_ibkr_backtest_signals.json",
+        "schema_ibkr_backtest_targets.json",
+        "schema_ibkr_backtest_reverse_signals.json",
+    ),
 }
 
 
@@ -103,12 +131,75 @@ def import_collections(session: requests.Session, base_url: str, collections: li
         raise RuntimeError(f"import failed: {resp.status_code} {detail}")
 
 
+def expand_schema_inputs(raw_inputs: list[str]) -> list[Path]:
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for raw_value in raw_inputs:
+        raw_text = str(raw_value or "").strip()
+        if not raw_text:
+            continue
+        matches: list[Path] = []
+        if any(token in raw_text for token in ("*", "?", "[")):
+            matches = [Path(item) for item in sorted(glob.glob(raw_text))]
+        else:
+            candidate = Path(raw_text)
+            if candidate.is_dir():
+                matches = sorted(path for path in candidate.iterdir() if path.suffix.lower() == ".json")
+            else:
+                matches = [candidate]
+        if not matches:
+            raise FileNotFoundError(f"schema input not found: {raw_text}")
+        for match in matches:
+            path = match.resolve()
+            if path in seen:
+                continue
+            seen.add(path)
+            resolved.append(path)
+    return resolved
+
+
+def merge_schema_paths(*groups: list[Path]) -> list[Path]:
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for group in groups:
+        for path in group:
+            normalized = path.resolve()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            resolved.append(normalized)
+    return resolved
+
+
+def resolve_bundle_paths(bundle_names: list[str]) -> list[Path]:
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for bundle_name in bundle_names:
+        normalized_name = str(bundle_name or "").strip()
+        if normalized_name not in SCHEMA_BUNDLES:
+            supported = ", ".join(sorted(SCHEMA_BUNDLES))
+            raise ValueError(f"unknown bundle: {normalized_name} (supported: {supported})")
+        for filename in SCHEMA_BUNDLES[normalized_name]:
+            path = (SCHEMA_ROOT / filename).resolve()
+            if path in seen:
+                continue
+            seen.add(path)
+            resolved.append(path)
+    return resolved
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "schemas",
-        nargs="+",
-        help="One or more schema json files to import",
+        nargs="*",
+        help="Schema files, directories, or globs to import",
+    )
+    parser.add_argument(
+        "--bundle",
+        action="append",
+        default=[],
+        help=f"Named schema bundle to import (supported: {', '.join(sorted(SCHEMA_BUNDLES))})",
     )
     parser.add_argument(
         "--base-url",
@@ -130,18 +221,40 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Delete collections/fields missing from the import payload",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve inputs and print the collection names without importing",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if not args.email or not args.password:
-        print("PB superuser email/password are required", file=sys.stderr)
+    schema_paths = merge_schema_paths(
+        resolve_bundle_paths(args.bundle),
+        expand_schema_inputs(args.schemas),
+    )
+    if not schema_paths:
+        print("at least one schema path or --bundle is required", file=sys.stderr)
         return 2
 
     collections = []
-    for schema_path in args.schemas:
-        collections.extend(load_schema_file(Path(schema_path)))
+    for schema_path in schema_paths:
+        collections.extend(load_schema_file(schema_path))
+
+    if args.dry_run:
+        print(f"resolved {len(schema_paths)} schema file(s)")
+        for schema_path in schema_paths:
+            print(f"- file: {schema_path}")
+        print(f"prepared {len(collections)} collection schema(s)")
+        for collection in collections:
+            print(f"- collection: {collection['name']}")
+        return 0
+
+    if not args.email or not args.password:
+        print("PB superuser email/password are required", file=sys.stderr)
+        return 2
 
     session = requests.Session()
     auth_superuser(session, args.base_url, args.email, args.password)

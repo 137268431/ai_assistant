@@ -21,42 +21,49 @@ function cfg(key, value, defaultValue, displayName, groupName, sortOrder, descri
 }
 
 const configData = [
-  cfg('ibkr_trading_enabled', 'TRUE', 'TRUE', '交易总开关', '核心交易', 100, 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
-  cfg('ibkr_signal_source', 'both', 'both', '信号来源', '核心交易', 110, 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
-  cfg('position_limit_max', '3', '3', '当日持仓上限', '核心交易', 120, '当日成功下单计数达到该上限后，新的交易信号将被拒绝'),
-  cfg('eod_close_time', '15:55', '15:55', 'EOD 平仓时间', '核心交易', 130, '到达该 ET 时间后自动执行日终平仓'),
-  cfg('eod_keep_symbols', 'BOXX,IBKR', 'BOXX,IBKR', 'EOD 保留标的', '核心交易', 140, '日终平仓时跳过这些标的，逗号分隔；默认保留 BOXX 与 IBKR'),
-  cfg('watchlist_interval_min', '5', '5', '标的同步间隔', '任务调度', 440, '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
-  cfg('ibkr_target_refresh_sec', '60', '60', '目标订阅刷新秒数', '任务调度', 441, '按 ibkr_targets 刷新当日实时订阅列表'),
-  cfg('ibkr_target_subscription_limit', '60', '60', '目标订阅上限', '任务调度', 442, '当日 ibkr_targets 进入 websocket 实时订阅的最大标的数'),
-  cfg('ibkr_watchlist_backfill_interval_min', '30', '30', '底池回补间隔', '任务调度', 443, '非目标标的按批次执行 5m 增量回补的间隔'),
-  cfg('ibkr_watchlist_backfill_batch_size', '12', '12', '底池回补批次', '任务调度', 444, '每轮底池回补最多处理多少个非目标标的'),
-  cfg('ibkr_watchlist_backfill_stale_min', '20', '20', '底池回补滞后阈值', '任务调度', 445, '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
-  cfg('trade_window_start_time', '09:35', '09:35', '交易开始时间', '任务调度', 446, '信号允许进入交易校验的开始时间，ET 时区'),
-  cfg('trade_window_end_time', '15:30', '15:30', '交易结束时间', '任务调度', 447, '超过该时间后不再接受新交易信号，ET 时区'),
-  cfg('order_window_end_time', '15:00', '15:00', '下单截止时间', '任务调度', 448, '超过该时间后新信号不再进入下单环节，ET 时区'),
-  cfg('signal_validity_minutes', '30', '30', '信号有效期', '任务调度', 450, '超过此时间的信号将被忽略'),
-  cfg('order_validity_minutes', '30', '30', '订单有效期', '任务调度', 460, 'Init/Submitted 状态的订单超过此时间自动标记为 Canceled'),
-  cfg('pb_scheduler_enabled', 'TRUE', 'TRUE', 'PB 前端定时刷新', '任务调度', 470, '仅控制 PB 前端页面的定时刷新，IBKR 算法调度不受此开关影响'),
-  cfg('signal_poll_interval_sec', '120', '120', '信号轮询秒数', '任务调度', 480, 'IBKR Compute 轮询 pending 信号和反转处理的间隔秒数'),
+  cfg('ibkr_trading_enabled', 'TRUE', 'TRUE', '交易总开关', '运行总控', 100, 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
+  cfg('ibkr_compute_enabled', 'TRUE', 'TRUE', 'Compute 调度开关', '运行总控', 110, '控制自动 compute / scan 调度；关闭后不再自动计算指标和执行盘前扫描'),
+  cfg('pb_scheduler_enabled', 'TRUE', 'TRUE', 'PB 调度总开关', '运行总控', 120, '控制 PocketBase cron 调度；关闭后信号过期、订单过期、健康巡检、状态提醒等定时任务都会停止'),
 
-  cfg('system_status_chat_id', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '状态群 Chat ID', '通知中心', 515, '正常状态提醒、2FA 卡片与日常运行反馈默认发送到这里'),
-  cfg('system_alert_chat_id', 'oc_91aa4f84bc6fedb125b1a263d91d4104', 'oc_91aa4f84bc6fedb125b1a263d91d4104', '告警群 Chat ID', '通知中心', 516, '所有 warning / error 级别且影响系统运行的异常默认发送到这里'),
-  cfg('signal_chat_id', 'oc_edb26dcc52938b7833ac9f32ae6b1620', 'oc_edb26dcc52938b7833ac9f32ae6b1620', '信号群 Chat ID', '通知中心', 517, '新信号卡片默认发送到这里'),
-  cfg('order_chat_id', 'oc_5ca4585e1fd108c2c662dfc358684945', 'oc_5ca4585e1fd108c2c662dfc358684945', '订单群 Chat ID', '通知中心', 518, '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
-  cfg('reverse_chat_id', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转群 Chat ID', '通知中心', 519, '反转信号与反转执行卡片默认发送到这里'),
-  cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态通知', '通知中心', 520, '开盘、重启等状态通知开关'),
-  cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '通知中心', 540, '收盘后发送当日交易汇总'),
-  cfg('manual_stop_notify_enabled', 'TRUE', 'TRUE', '手动停止通知', '通知中心', 550, '手动停止算法时发送通知'),
-  cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '健康检查通知', '通知中心', 560, '盘前、盘中、盘后健康状态汇报'),
-  cfg('inspection_notify_enabled', 'TRUE', 'TRUE', '巡检告警', '通知中心', 570, '孤立持仓、恢复异常等巡检告警'),
-  cfg('reverse_signal_threshold', '6', '6', '反转通知阈值', '通知中心', 580, '仅当反转评分达到该阈值时发送反转卡片通知'),
+  cfg('ibkr_signal_source', 'both', 'both', '信号来源', '信号与反转', 200, 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
+  cfg('signal_poll_interval_sec', '120', '120', '信号轮询秒数', '信号与反转', 210, 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
+  cfg('signal_validity_minutes', '30', '30', '信号有效期', '信号与反转', 220, '超过此时间的 pending / awaiting_confirm 信号将被自动标记为 expired'),
+  cfg('reverse_signal_threshold', '6', '6', '反转通知阈值', '信号与反转', 230, '仅当反转评分达到该阈值时发送反转卡片通知'),
 
-  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'IBKR Compute 地址', 'PB / IBKR 服务', 905, 'PocketBase 代理与运行页访问的公开 Compute 地址'),
-  cfg('ibkr_compute_enabled', 'TRUE', 'TRUE', 'IBKR Compute 服务开关', 'PB / IBKR 服务', 910, '控制定时指标计算和盘前扫描'),
-  cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'IBKR K线发布开关', 'PB / IBKR 服务', 920, '控制 BarPublisher 是否向 PB 推送 OHLCV 数据'),
+  cfg('trade_window_start_time', '09:35', '09:35', '交易开始时间', '交易窗口', 300, '信号允许进入交易校验的开始时间，ET 时区'),
+  cfg('trade_window_end_time', '15:30', '15:30', '交易结束时间', '交易窗口', 310, '超过该时间后不再接受新交易信号，ET 时区'),
+  cfg('order_window_end_time', '15:00', '15:00', '下单截止时间', '交易窗口', 320, '超过该时间后新信号不再进入下单环节，ET 时区'),
 
-  cfg('market_index_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '大盘指数标的', '市场分析', 1000, '用于监控和关联分析的大盘指数代码，逗号分隔')
+  cfg('position_limit_max', '3', '3', '当日持仓上限', '交易风控', 400, '当日成功下单计数达到该上限后，新的交易信号将被拒绝'),
+  cfg('order_validity_minutes', '30', '30', '订单有效期', '交易风控', 410, 'Init / Submitted 状态的订单超过此时间自动标记为 Canceled'),
+
+  cfg('eod_close_time', '15:55', '15:55', 'EOD 平仓时间', '日终规则', 500, '到达该 ET 时间后自动执行日终平仓'),
+  cfg('eod_keep_symbols', 'BOXX,IBKR', 'BOXX,IBKR', 'EOD 保留标的', '日终规则', 510, '日终平仓时跳过这些标的，逗号分隔；默认保留 BOXX 与 IBKR'),
+
+  cfg('watchlist_interval_min', '5', '5', '标的同步间隔', '标的订阅', 600, '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
+  cfg('ibkr_target_refresh_sec', '60', '60', '目标订阅刷新秒数', '标的订阅', 610, '按 ibkr_targets 刷新当日实时订阅列表'),
+  cfg('ibkr_target_subscription_limit', '60', '60', '目标订阅上限', '标的订阅', 620, '当日 ibkr_targets 进入 websocket 实时订阅的最大标的数'),
+
+  cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'K线发布开关', '行情链路', 700, '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
+  cfg('ibkr_watchlist_backfill_interval_min', '30', '30', '底池回补间隔', '行情链路', 710, '非目标标的按批次执行 5m 增量回补的间隔'),
+  cfg('ibkr_watchlist_backfill_batch_size', '12', '12', '底池回补批次', '行情链路', 720, '每轮底池回补最多处理多少个非目标标的'),
+  cfg('ibkr_watchlist_backfill_stale_min', '20', '20', '底池回补滞后阈值', '行情链路', 730, '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
+
+  cfg('system_status_chat_id', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '状态群 Chat ID', '通知路由', 600, '正常状态提醒、2FA 卡片与日常运行反馈默认发送到这里'),
+  cfg('system_alert_chat_id', 'oc_91aa4f84bc6fedb125b1a263d91d4104', 'oc_91aa4f84bc6fedb125b1a263d91d4104', '告警群 Chat ID', '通知路由', 610, '所有 warning / error 级别且影响系统运行的异常默认发送到这里'),
+  cfg('signal_chat_id', 'oc_edb26dcc52938b7833ac9f32ae6b1620', 'oc_edb26dcc52938b7833ac9f32ae6b1620', '信号群 Chat ID', '通知路由', 620, '新信号卡片默认发送到这里'),
+  cfg('order_chat_id', 'oc_5ca4585e1fd108c2c662dfc358684945', 'oc_5ca4585e1fd108c2c662dfc358684945', '订单群 Chat ID', '通知路由', 630, '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
+  cfg('reverse_chat_id', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转群 Chat ID', '通知路由', 640, '反转信号与反转执行卡片默认发送到这里'),
+
+  cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态通知', '系统通知', 900, '开盘、重启、心跳和状态提醒通知开关'),
+  cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '系统通知', 910, '收盘后发送当日交易汇总'),
+  cfg('manual_stop_notify_enabled', 'TRUE', 'TRUE', '手动停止通知', '系统通知', 920, '手动停止算法时发送通知'),
+  cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '健康检查通知', '系统通知', 930, '盘前、盘中、盘后健康状态汇报'),
+  cfg('inspection_notify_enabled', 'TRUE', 'TRUE', '巡检告警', '系统通知', 940, '孤立持仓、恢复异常、数据缺口等巡检告警'),
+
+  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址'),
+
+  cfg('market_index_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '大盘指数标的', '市场分析', 1100, '用于监控和关联分析的大盘指数代码，逗号分隔')
 ];
 
 const watchlistData = [
