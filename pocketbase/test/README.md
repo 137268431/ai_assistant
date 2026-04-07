@@ -35,11 +35,13 @@
 
 ### 1. 信号进入 PB
 
-TradingView 调用 `POST /webhook/tv`：
+正式链路使用 `POST /api/custom/ibkr/signal`：
 
 - 写入 `ibkr_signals`
 - 如需人工确认，则飞书卡片先停在 `awaiting_confirm`
 - 如已存在反向持仓或反向挂单，可额外生成 `reverse_signals`
+
+兼容链路 `POST /webhook/tv` 仍保留给 TradingView webhook，但不再是 `pb-flow.sh` 的主测试入口
 
 ### 2. IBKR 认领信号并创建 Init 交易组
 
@@ -199,6 +201,24 @@ IBKR 完成后回写 `POST /api/custom/ibkr/reverse/ack`：
 | `B` | 查询 `reverse/list`，查看归一化后的 reverse 关系字段 |
 | `C` | 先 `dispatch execute`，再模拟 IBKR `reverse/ack` |
 | `H` | 发送反向新信号，验证 `webhook/tv -> reverse_signals(signal_conflict)` 自动链路 |
+| `I` | 调用官方 `signals/pending`，验证 IBKR 拉取待执行信号链路 |
+| `J` | 查询 `screener`，验证盘前/可操作标的聚合结果 |
+| `K` | 查询 `data_quality summary/list`，验证 bars 巡检结果落库 |
+| `L` | 触发 `data_quality/rescan`，验证 bars 巡检重扫链路 |
+| `M` | 触发 `data_quality/repair`，验证 bars 修复链路 |
+| `U` | 查询 `healthz/statusz`，验证 IBKR 栈健康状态 |
+| `W` | 查询 `backtest/status`，验证回测任务状态链路 |
+
+---
+
+## 当前刻意未自动化的高风险链路
+
+以下两条链路与正式数据表强绑定，如果直接在真实 `symbol/date` 上自动写入，容易污染生产数据，因此当前只建议单独、受控地验证：
+
+- `POST /api/custom/ibkr/bars`
+- `POST /api/custom/ibkr/targets/upsert`
+
+如果后续要把它们也并入 `pb-flow.sh`，建议先增加独立测试环境或测试专用 symbol / environment。
 
 ---
 

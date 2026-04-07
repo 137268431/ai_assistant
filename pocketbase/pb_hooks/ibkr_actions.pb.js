@@ -92,6 +92,45 @@ function ibkrActionsBuildProxyMeta(payload, route, upstream) {
 }
 globalThis.ibkrActionsBuildProxyMeta = ibkrActionsBuildProxyMeta
 
+function ibkrActionsInspectRequestedRuntimeEnvironment(environment) {
+    const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+    const requestedEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    const computeBase = getIbkrComputeInternalUrl(requestedEnvironment, "http://127.0.0.1:5100")
+    const runtimeUpstream = `${computeBase}/ibkr/status`
+    const resp = $http.send({
+        url: runtimeUpstream,
+        method: "GET",
+        timeout: 8,
+    })
+    const runtimePayload = globalThis.ibkrActionsParseHttpJson(resp.raw)
+    const actualRuntimeEnvironment = String(runtimePayload.environment || requestedEnvironment).trim().toLowerCase() || requestedEnvironment
+    return {
+        requested_environment: requestedEnvironment,
+        actual_runtime_environment: actualRuntimeEnvironment,
+        runtime_environment_mismatch: actualRuntimeEnvironment !== requestedEnvironment,
+        runtime_payload: runtimePayload,
+        proxy_upstream_runtime: runtimeUpstream,
+    }
+}
+globalThis.ibkrActionsInspectRequestedRuntimeEnvironment = ibkrActionsInspectRequestedRuntimeEnvironment
+
+function ibkrActionsBuildRuntimeEnvironmentMismatchPayload(environmentInfo, route) {
+    const requestedEnvironment = String(environmentInfo && environmentInfo.requested_environment || "live").trim().toLowerCase() || "live"
+    const actualRuntimeEnvironment = String(environmentInfo && environmentInfo.actual_runtime_environment || requestedEnvironment).trim().toLowerCase() || requestedEnvironment
+    return {
+        ok: false,
+        error: `当前 ${requestedEnvironment.toUpperCase()} 页面没有独立 runtime；实际运行中的是 ${actualRuntimeEnvironment.toUpperCase()}，请切到对应环境页面执行此动作。`,
+        requested_environment: requestedEnvironment,
+        actual_runtime_environment: actualRuntimeEnvironment,
+        runtime_environment_mismatch: true,
+        proxy_source: "pocketbase_ibkr_hook",
+        proxy_hook: "ibkr_actions.pb.js",
+        proxy_route: route,
+        proxy_upstream_runtime: environmentInfo && environmentInfo.proxy_upstream_runtime ? environmentInfo.proxy_upstream_runtime : "",
+    }
+}
+globalThis.ibkrActionsBuildRuntimeEnvironmentMismatchPayload = ibkrActionsBuildRuntimeEnvironmentMismatchPayload
+
 function ibkrActionsToNumber(value, fallback) {
     const num = Number(value)
     return Number.isFinite(num) ? num : (fallback != null ? fallback : 0)
@@ -1083,6 +1122,10 @@ function ibkrActionsPrepareSignalLifecycle(prepared, existingRecord, environment
     }
 }
 
+if (typeof globalThis !== "undefined") {
+    globalThis.__ibkrActionsPrepareSignalLifecycle = ibkrActionsPrepareSignalLifecycle
+}
+
 function ibkrActionsSyncSignalNotification(record, previousStatus) {
     if (!record) return
     const currentStatus = String(record.get("status") || "").trim()
@@ -1111,10 +1154,15 @@ function ibkrActionsSyncSignalNotification(record, previousStatus) {
     }
 }
 
+if (typeof globalThis !== "undefined") {
+    globalThis.__ibkrActionsSyncSignalNotification = ibkrActionsSyncSignalNotification
+}
+
 routerAdd("POST", "/api/custom/ibkr/signal", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+    const signalLifecycle = require(`${__hooks}/lib/ibkr_signal_lifecycle.js`)
     const environment = String(d.environment || "live").trim().toLowerCase() || "live"
     const prepared = actionHelpers.buildSignalData(d, environment)
     if (!prepared.ok) {
@@ -1126,10 +1174,10 @@ routerAdd("POST", "/api/custom/ibkr/signal", (c) => {
         try {
             existing = $app.findFirstRecordByFilter("ibkr_signals", prepared.filter, prepared.params)
         } catch (_) {}
-        ibkrActionsPrepareSignalLifecycle(prepared, existing, environment)
+        signalLifecycle.prepareSignalLifecycle(prepared, existing, environment)
         const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
         if (result.action !== "skipped") {
-            ibkrActionsSyncSignalNotification(result.record, existing ? String(existing.get("status") || "").trim() : "")
+            signalLifecycle.syncSignalNotification(result.record, existing ? String(existing.get("status") || "").trim() : "")
         }
         return c.json(200, {
             ok: true,
@@ -1150,6 +1198,7 @@ routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
     const d = reqInfo.body || reqInfo.data || {}
     const items = Array.isArray(d.items) ? d.items : []
     const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+    const signalLifecycle = require(`${__hooks}/lib/ibkr_signal_lifecycle.js`)
     const defaultEnvironment = String(d.environment || "live").trim().toLowerCase() || "live"
 
     if (!items.length) {
@@ -1172,7 +1221,7 @@ routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
             try {
                 existing = $app.findFirstRecordByFilter("ibkr_signals", prepared.filter, prepared.params)
             } catch (_) {}
-            ibkrActionsPrepareSignalLifecycle(prepared, existing, environment)
+            signalLifecycle.prepareSignalLifecycle(prepared, existing, environment)
             const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
             if (result.action === "created") {
                 created++
@@ -1182,7 +1231,7 @@ routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
                 skipped++
             }
             if (result.action !== "skipped") {
-                ibkrActionsSyncSignalNotification(result.record, existing ? String(existing.get("status") || "").trim() : "")
+                signalLifecycle.syncSignalNotification(result.record, existing ? String(existing.get("status") || "").trim() : "")
             }
         } catch (err) {
             errors++
@@ -2481,6 +2530,53 @@ routerAdd("POST", "/api/custom/ibkr/screener/targets", (c) => {
 // ══════════════════════════════════════
 // IBKR Compute 代理端点 (PB页面调用 → 转发到Python服务)
 // ══════════════════════════════════════
+function parseHookJson(rawValue) {
+    const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
+    if (!raw) return {}
+    try {
+        return JSON.parse(raw)
+    } catch (_) {
+        return { ok: false, raw: raw }
+    }
+}
+
+function inspectRequestedRuntimeEnvironment(environment) {
+    const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+    const requestedEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    const computeBase = getIbkrComputeInternalUrl(requestedEnvironment, "http://127.0.0.1:5100")
+    const runtimeUpstream = `${computeBase}/ibkr/status`
+    const resp = $http.send({
+        url: runtimeUpstream,
+        method: "GET",
+        timeout: 8,
+    })
+    const runtimePayload = parseHookJson(resp.raw)
+    const actualRuntimeEnvironment = String(runtimePayload.environment || requestedEnvironment).trim().toLowerCase() || requestedEnvironment
+    return {
+        requested_environment: requestedEnvironment,
+        actual_runtime_environment: actualRuntimeEnvironment,
+        runtime_environment_mismatch: actualRuntimeEnvironment !== requestedEnvironment,
+        runtime_payload: runtimePayload,
+        proxy_upstream_runtime: runtimeUpstream,
+    }
+}
+
+function buildRuntimeEnvironmentMismatchPayload(environmentInfo, route) {
+    const requestedEnvironment = String(environmentInfo && environmentInfo.requested_environment || "live").trim().toLowerCase() || "live"
+    const actualRuntimeEnvironment = String(environmentInfo && environmentInfo.actual_runtime_environment || requestedEnvironment).trim().toLowerCase() || requestedEnvironment
+    return {
+        ok: false,
+        error: `当前 ${requestedEnvironment.toUpperCase()} 页面没有独立 runtime；实际运行中的是 ${actualRuntimeEnvironment.toUpperCase()}，请切到对应环境页面执行此动作。`,
+        requested_environment: requestedEnvironment,
+        actual_runtime_environment: actualRuntimeEnvironment,
+        runtime_environment_mismatch: true,
+        proxy_source: "pocketbase_ibkr_hook",
+        proxy_hook: "ibkr_actions.pb.js",
+        proxy_route: route,
+        proxy_upstream_runtime: environmentInfo && environmentInfo.proxy_upstream_runtime ? environmentInfo.proxy_upstream_runtime : "",
+    }
+}
+
 routerAdd("POST", "/api/custom/ibkr/proxy", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
@@ -2743,11 +2839,15 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
 
         const computeData = buildStatuszComputePayload(computePayload, includeEngines)
         const runtimeData = buildStatuszRuntimePayload(runtimePayload)
+        const actualRuntimeEnvironment = String(runtimeData.environment || computeData.environment || environment).trim().toLowerCase() || environment
         const response = {
             ...computeData,
             ...(runtimeData && runtimeData.ok !== false ? runtimeData : {}),
             compute: computeData,
             runtime: runtimeData,
+            requested_environment: environment,
+            actual_runtime_environment: actualRuntimeEnvironment,
+            runtime_environment_mismatch: actualRuntimeEnvironment !== environment,
             ok: !computeError && !runtimeError && computeData.ok !== false && (runtimeData.ok !== false || Object.keys(runtimeData).length === 0),
             status: !computeError && !runtimeError
                 ? "running"
@@ -2899,11 +2999,16 @@ routerAdd("GET", "/api/custom/ibkr/runtime/config", (c) => {
 
 routerAdd("POST", "/api/custom/ibkr/start", (c) => {
     const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/start`
     try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/start"))
+        }
         const resp = $http.send({
             url: upstream,
             method: "POST",
@@ -2936,11 +3041,16 @@ routerAdd("POST", "/api/custom/ibkr/start", (c) => {
 
 routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
     const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/stop`
     try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/stop"))
+        }
         const resp = $http.send({
             url: upstream,
             method: "POST",
@@ -3253,6 +3363,7 @@ routerAdd("POST", "/api/custom/ibkr/positions/close", (c) => {
 
 routerAdd("POST", "/api/custom/ibkr/emergency-stop", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
     const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const reqInfo = c.requestInfo()
@@ -3286,6 +3397,15 @@ routerAdd("POST", "/api/custom/ibkr/emergency-stop", (c) => {
     const selected = configActions[action]
     if (!selected) {
         return c.json(400, { ok: false, error: "Unsupported emergency action", action: action })
+    }
+
+    if (["runtime", "compute", "all"].indexOf(action) !== -1) {
+        try {
+            const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+            if (environmentInfo.runtime_environment_mismatch) {
+                return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/emergency-stop"))
+            }
+        } catch (_) {}
     }
 
     const updated = []
@@ -3414,8 +3534,15 @@ routerAdd("POST", "/api/custom/ibkr/recover", (c) => {
 
 routerAdd("POST", "/api/custom/ibkr/reauth", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
     const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
+    try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/reauth"))
+        }
+    } catch (_) {}
     try {
         $http.send({ url: `${computeBaseUrl}/ibkr/stop`, method: "POST", timeout: 30 })
     } catch (_) {}
@@ -3466,6 +3593,14 @@ routerAdd("GET", "/api/custom/ibkr/2fa/status", (c) => {
             runtime = {}
         }
         state = normalizeStateWithRuntime(state, runtime)
+        const actualRuntimeEnvironment = String(runtime.environment || environment).trim().toLowerCase() || environment
+        state.requested_environment = environment
+        state.actual_runtime_environment = actualRuntimeEnvironment
+        state.runtime_environment_mismatch = actualRuntimeEnvironment !== environment
+        if (state.runtime_environment_mismatch) {
+            state.message = `当前 ${environment.toUpperCase()} 页面没有独立 runtime；实际运行中的是 ${actualRuntimeEnvironment.toUpperCase()}，2FA 动作已阻止。`
+            state.last_result = `当前显示的是 ${actualRuntimeEnvironment.toUpperCase()} 运行态。`
+        }
     } catch (err) {
         state.runtime_status_error = err.message || String(err)
     }
@@ -3482,12 +3617,17 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const { getStatePayload, normalizeStateWithRuntime, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const forceReset = d.force_reset === true || ["1", "true", "yes", "on"].includes(String(d.force_reset || "").trim().toLowerCase())
     const forceNew = d.force_new === true || ["1", "true", "yes", "on"].includes(String(d.force_new || "").trim().toLowerCase())
 
     try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/2fa/request"))
+        }
         let runtime = {}
         let runtimeStatusError = ""
         try {
@@ -3507,6 +3647,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
         }
 
         const currentState = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
+        currentState.requested_environment = environment
+        currentState.actual_runtime_environment = String((runtime && runtime.environment) || environment).trim().toLowerCase() || environment
+        currentState.runtime_environment_mismatch = currentState.actual_runtime_environment !== environment
         if (
             currentState.runtime_authenticated
             && currentState.gateway_reachable
@@ -3538,6 +3681,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
             forceNew: forceNew,
         })
         const state = normalizeStateWithRuntime(result.state || {}, runtime)
+        state.requested_environment = environment
+        state.actual_runtime_environment = String((runtime && runtime.environment) || environment).trim().toLowerCase() || environment
+        state.runtime_environment_mismatch = state.actual_runtime_environment !== environment
         if (runtimeStatusError) state.runtime_status_error = runtimeStatusError
         let message = ""
         if (state.runtime_authenticated && state.gateway_reachable && Number(state.gateway_status_code || 0) !== 401) {
@@ -3612,10 +3758,15 @@ routerAdd("POST", "/api/custom/ibkr/2fa/respond", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const { submit2faResponse } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
 
     try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/2fa/respond"))
+        }
         const result = submit2faResponse({
             environment: environment,
             response_code: String(d.response_code || "").trim(),

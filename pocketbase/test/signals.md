@@ -4,7 +4,8 @@
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| `POST` | `/webhook/tv` | 接收 TradingView 信号或指标 |
+| `POST` | `/api/custom/ibkr/signal` | 正式 IBKR 信号写入入口，会写 `ibkr_signals` 并触发飞书通知链 |
+| `POST` | `/webhook/tv` | TradingView 兼容入口，主要写 `tv_signals` / `tv_indicators` |
 | `GET` | `/api/custom/ibkr/signals/pending?date=YYYY-MM-DD` | IBKR 拉取待执行信号 |
 | `POST` | `/api/custom/ibkr/signals/ack` | IBKR 确认信号并创建交易组骨架 |
 | `POST` | `/webhook/feishu/callback` | 飞书确认 / 拒绝信号 |
@@ -142,6 +143,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/signals/ack" \
 
 `pb-flow.sh` 中：
 
-- 步骤 `1` 发送信号
+- 步骤 `1` 通过 `/api/custom/ibkr/signal` 发送正式 IBKR 信号
 - 步骤 `3` / `4` 模拟飞书确认或拒绝
 - 步骤 `5` 调用 `signals/ack` 创建带正式关系字段的 Entry / TP / SL Init
+- 步骤 `I` 调用官方 `signals/pending` 接口验证 IBKR 拉取链路

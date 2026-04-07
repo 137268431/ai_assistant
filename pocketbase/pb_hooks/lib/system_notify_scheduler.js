@@ -310,6 +310,108 @@ function buildStartupGraceLabel(snapshot) {
     return `${parts.join(" / ")} / grace ${Math.round(COMPUTE_STARTUP_GRACE_MS / 1000)}s`
 }
 
+function buildStatusAssessment(snapshot, startupGraceActive) {
+    const blockingIssues = []
+    const watchItems = []
+
+    if (!snapshot || !snapshot.compute) {
+        return {
+            level: "warning",
+            kind: "broken",
+            summary: "当前系统状态无法正确判断，状态快照缺失。",
+        }
+    }
+
+    if (snapshot.compute.status !== "running") {
+        blockingIssues.push(`Compute=${snapshot.compute.status || "unknown"}`)
+    }
+
+    if (!snapshot.session.authenticated) {
+        if (startupGraceActive) {
+            watchItems.push("IBKR 会话尚未完成认证")
+        } else {
+            blockingIssues.push("IBKR 会话未认证")
+        }
+    }
+
+    if (!snapshot.websocket.connected) {
+        if (startupGraceActive) {
+            watchItems.push("WebSocket 尚未连接")
+        } else {
+            blockingIssues.push("WebSocket 未连接")
+        }
+    } else if (!snapshot.websocket.ready) {
+        watchItems.push("WebSocket 已连接但未 ready")
+    }
+
+    if (snapshot.latest_bar.bar_time_ms <= 0) {
+        if (startupGraceActive) {
+            watchItems.push("最新 5m bars 尚未建立")
+        } else {
+            blockingIssues.push("缺少最新 5m bars")
+        }
+    } else if (snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
+        if (startupGraceActive) {
+            watchItems.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
+        } else {
+            blockingIssues.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
+        }
+    }
+
+    if (snapshot.latest_indicator.bar_time_ms <= 0) {
+        if (startupGraceActive) {
+            watchItems.push("指标流尚未建立")
+        } else {
+            blockingIssues.push("缺少最新指标")
+        }
+    } else if (snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
+        if (startupGraceActive) {
+            watchItems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
+        } else {
+            blockingIssues.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
+        }
+    }
+
+    if (!snapshot.account.ok) {
+        watchItems.push("账户快照不可用")
+    }
+
+    if (startupGraceActive) {
+        const graceLabel = buildStartupGraceLabel(snapshot)
+        watchItems.unshift(`系统处于启动宽限期（${graceLabel}）`)
+    }
+
+    if (blockingIssues.length > 0) {
+        return {
+            level: "warning",
+            kind: "broken",
+            summary: `当前系统状态不正确，需要处理：${blockingIssues.join("；")}。`,
+        }
+    }
+
+    if (watchItems.length > 0) {
+        return {
+            level: "warning",
+            kind: "watch",
+            summary: `当前系统状态未完全就绪，暂不判定为正确：${watchItems.join("；")}。`,
+        }
+    }
+
+    if (!snapshot.trading_enabled) {
+        return {
+            level: "info",
+            kind: "healthy_paused",
+            summary: "当前系统状态正确，行情与执行链路正常；交易开关关闭，属于只观察模式。",
+        }
+    }
+
+    return {
+        level: "info",
+        kind: "healthy",
+        summary: "当前系统状态正确，Compute、认证、WebSocket、bars 与指标链路正常。",
+    }
+}
+
 function shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment) {
     if (!isStatusSummaryMinute(currentMinute)) {
         return false
@@ -476,16 +578,11 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
         try {
             const snapshot = buildStatusSnapshot(environment, times)
             const startupGraceActive = isStartupGraceActive(snapshot)
-            const statusHasIssue = (
-                snapshot.compute.status !== "running"
-                || !snapshot.session.authenticated
-                || !snapshot.websocket.connected
-                || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
-                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
-            )
-            const level = statusHasIssue && !startupGraceActive ? "warning" : "info"
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const level = assessment.level
 
             const detail = {
+                "状态结论": assessment.summary,
                 "检查时间": times.us,
                 "Compute": snapshot.compute.status || "unknown",
                 "认证": snapshot.session.authenticated ? "ok" : "pending",
@@ -513,11 +610,15 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
                 detail["启动窗口"] = buildStartupGraceLabel(snapshot)
             }
 
-            detail["摘要模式"] = startupGraceActive
-                ? "状态摘要 / 启动宽限"
-                : (level === "warning" ? "状态摘要 / 需关注" : "状态摘要 / 已合并心跳")
+            detail["摘要模式"] = assessment.kind === "healthy"
+                ? "状态摘要 / 已合并心跳"
+                : (assessment.kind === "healthy_paused"
+                    ? "状态摘要 / 观察模式"
+                    : (assessment.kind === "watch" ? "状态摘要 / 待观察" : "状态摘要 / 需关注"))
 
-            const title = level === "warning" ? "IBKR 系统状态摘要（需关注）" : "IBKR 系统状态摘要"
+            const title = assessment.kind === "watch"
+                ? "IBKR 系统状态摘要（待观察）"
+                : (level === "warning" ? "IBKR 系统状态摘要（需关注）" : "IBKR 系统状态摘要")
             const notified = feishuSystem.notifySystemEvent("status_change", level, "pb", title, detail, environment)
             writeSystemEvent("status_change", level, "pb", title, detail, environment, notified)
             console.log(`${prefix} status reminder ${environment}: level=${level}, notified=${notified}`)

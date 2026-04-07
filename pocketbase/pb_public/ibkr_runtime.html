@@ -1048,6 +1048,7 @@
         let currentEnvironment = getCurrentRuntimeEnvironment();
         let refreshTimer = null;
         let actionPending = false;
+        let latestRuntimeStatus = {};
         let latestTwoFactorState = {};
         let latestRuntimeLoadId = 0;
         let hasLoadedRuntimeData = false;
@@ -1265,6 +1266,22 @@
             return `environment = "${escapeQueryValue(currentEnvironment)}"`;
         }
 
+        function getRuntimeEnvironmentMismatch(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
+            const requested = String(currentEnvironment || '').trim().toLowerCase() || 'live';
+            const actual = String(
+                status?.actual_runtime_environment
+                || status?.environment
+                || twoFactorState?.actual_runtime_environment
+                || ''
+            ).trim().toLowerCase();
+            if (!actual || actual === requested) return null;
+            return {
+                requested,
+                actual,
+                message: `当前 ${getEnvironmentLabel(requested)} 页面没有独立 runtime；实际运行中的是 ${getEnvironmentLabel(actual)}。2FA / start / stop 等动作已阻止，请切到对应环境页面。`
+            };
+        }
+
         function summarizeAction(action, payload) {
             if (!payload || typeof payload !== 'object') {
                 return `${action} 已执行。`;
@@ -1376,9 +1393,14 @@
             const totalEngines = Number(status?.total_engines || 0) || 0;
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toLowerCase();
             const challengeCode = String(twoFactorState?.challenge_code || '').trim();
+            const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
 
             const blocker = { tone: 'info', kicker: 'Primary Blocker', title: '运行链路可控', copy: '当前没有硬阻塞，继续观察 bars → indicators → signals 是否连续刷新。' };
-            if (!gatewayActive) {
+            if (runtimeMismatch) {
+                blocker.tone = 'error';
+                blocker.title = `Runtime 环境错配 · ${getEnvironmentLabel(runtimeMismatch.actual)}`;
+                blocker.copy = runtimeMismatch.message;
+            } else if (!gatewayActive) {
                 blocker.tone = 'error';
                 blocker.title = 'Gateway 当前离线';
                 blocker.copy = '先恢复网关或重启 IBKR 服务，否则 2FA、bars、订单和信号链路都会停住。';
@@ -1505,11 +1527,16 @@
                 || status?.websocket?.running
                 || status?.order_tracker?.running
             );
+            const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
             const authSummary = sessionAuthenticated
-                ? `session authenticated · warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}`
+                ? (runtimeMismatch
+                    ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
+                    : `session authenticated · warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}`)
                 : !runtimeStarted
                     ? 'runtime stopped · waiting manual start'
-                : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`;
+                : (runtimeMismatch
+                    ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
+                    : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`);
             document.getElementById('authInfo').textContent = authSummary;
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
         }
@@ -1585,8 +1612,11 @@
             const mode = String(twoFactorState?.mode || '').trim();
             const challengeCode = String(twoFactorState?.challenge_code || '').trim();
             const canSubmit = status === 'waiting_response' && !!challengeCode;
+            const runtimeMismatch = getRuntimeEnvironmentMismatch(latestRuntimeStatus, twoFactorState);
             let helper = twoFactorState?.last_result || '当前没有等待中的 Challenge。';
-            if (status === 'success') {
+            if (runtimeMismatch) {
+                helper = runtimeMismatch.message;
+            } else if (status === 'success') {
                 helper = twoFactorState?.message || '当前 Gateway 会话已认证，无需提交 Response Code。';
             } else if (status === 'requested') {
                 helper = '这一步只是把 2FA 卡片发到或刷新到飞书，还没有真正开始验证。需要去飞书点击“开始 2FA 验证”。';
@@ -1605,7 +1635,7 @@
                         <span class="mini-tag"><span class="mini-label">MODE</span>${escapeHtml(mode || '--')}</span>
                         <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(String(twoFactorState?.source || '--'))}</span>
                     </div>
-                    <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || (status === 'success' ? '当前无需 Challenge' : '当前未检测到 Challenge'))}</div>
+                    <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || (runtimeMismatch ? `当前实际 runtime: ${String(runtimeMismatch.actual || '--').toUpperCase()}` : (status === 'success' ? '当前无需 Challenge' : '当前未检测到 Challenge')))}</div>
                     <div class="challenge-copy">${escapeHtml(helper)}</div>
                     <label class="response-label" for="challengeResponseInput">Response Code</label>
                     <div class="response-row">
@@ -2118,6 +2148,7 @@
 
                 const runtimeConfig = Array.isArray(runtimeConfigResp?.items) ? runtimeConfigResp.items : [];
                 const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
+                latestRuntimeStatus = status || {};
                 const twoFactorState = twoFactorResp?.state || {};
                 const barsItems = toArray(barsResp);
                 const indicatorItems = toArray(indicatorsResp);
@@ -2156,6 +2187,12 @@
 
         async function submitTwoFactorResponse() {
             if (!initRuntimeAuth()) return;
+            const runtimeMismatch = getRuntimeEnvironmentMismatch();
+            if (runtimeMismatch) {
+                document.getElementById('lastAction').textContent = runtimeMismatch.message;
+                showToast(runtimeMismatch.message);
+                return;
+            }
             const input = document.getElementById('challengeResponseInput');
             const button = document.getElementById('challengeResponseSubmit');
             const responseCode = normalizeCode(input?.value || '');
@@ -2197,6 +2234,13 @@
 
         async function handleRuntimeAction(action) {
             if (actionPending) return;
+            const guardedActions = new Set(['start', 'stop', 'reauth', 'reauth_force_new', 'emergency_runtime', 'emergency_compute', 'emergency_all']);
+            const runtimeMismatch = getRuntimeEnvironmentMismatch();
+            if (runtimeMismatch && guardedActions.has(action)) {
+                document.getElementById('lastAction').textContent = runtimeMismatch.message;
+                showToast(runtimeMismatch.message);
+                return;
+            }
             if (action === 'recompute' && !window.confirm('确认执行 recompute？这会重置内存引擎缓存并重新跑一次 compute。')) {
                 return;
             }

@@ -67,6 +67,14 @@
             color: var(--text);
         }
 
+        .summary-hint {
+            grid-column: 1 / -1;
+            margin-top: -2px;
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
         .status-tabs {
             display: flex;
             gap: 6px;
@@ -614,6 +622,13 @@
         let resolvedLegacySearch = '';
         let pendingLegacySearchResolution = false;
         let signalValidityMinutes = 30;
+        let currentOrdersRequestId = 0;
+        let isLoadingOrders = false;
+        let isOrdersDatasetPartial = false;
+        const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+        const ORDERS_FETCH_PAGE_SIZE = 200;
+        const ORDERS_FETCH_MAX_PAGES = 40;
+        const configValueCache = {};
 
         function pickConfigValue(records, fallbackValue) {
             const priority = { '': 0, global: 1, [currentEnvironment]: 2 };
@@ -633,12 +648,47 @@
         }
 
         async function loadConfigValue(key, fallbackValue) {
-            const result = await pb.collection('config').getFullList({
+            const cacheKey = `${currentEnvironment}:${key}`;
+            const cached = configValueCache[cacheKey];
+            if (cached && cached.expiresAt > Date.now()) {
+                return cached.value;
+            }
+            const result = await apiFetch('config', {
                 filter: `key = "${escapeFilterValue(key)}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
                 sort: '-updated',
-                $autoCancel: false
+                perPage: 200,
+                page: 1
             });
-            return pickConfigValue(result, fallbackValue);
+            const value = pickConfigValue(Array.isArray(result?.items) ? result.items : [], fallbackValue);
+            configValueCache[cacheKey] = {
+                value,
+                expiresAt: Date.now() + CONFIG_CACHE_TTL_MS
+            };
+            return value;
+        }
+
+        async function fetchCollectionFullList(collection, options = {}) {
+            const perPage = Math.max(1, Math.min(Number(options.perPage || 200), 200));
+            const maxPages = Math.max(1, Number(options.maxPages || ORDERS_FETCH_MAX_PAGES));
+            const startPage = Math.max(1, Number(options.startPage || 1));
+            const items = [];
+
+            for (let page = startPage; page <= maxPages; page += 1) {
+                const result = await apiFetch(collection, {
+                    filter: options.filter || '',
+                    sort: options.sort || '',
+                    perPage,
+                    page
+                });
+                if (options.requestId && options.requestId !== currentOrdersRequestId) {
+                    return null;
+                }
+                const pageItems = Array.isArray(result?.items) ? result.items : [];
+                items.push(...pageItems);
+                if (pageItems.length < perPage) break;
+            }
+
+            return items;
         }
 
         function parseJsonLike(value) {
@@ -703,6 +753,24 @@
                 }
                 signalValidityMinutes = 30;
             }
+        }
+
+        function getOrdersTimeRange() {
+            const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
+            return {
+                startTimeMs,
+                endTimeMs: startTimeMs + 24 * 60 * 60 * 1000
+            };
+        }
+
+        function buildOrdersFilter() {
+            const { startTimeMs, endTimeMs } = getOrdersTimeRange();
+            return `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
+        }
+
+        function formatCountValue(value) {
+            const count = Number(value || 0);
+            return isOrdersDatasetPartial ? `${count}+` : `${count}`;
         }
 
         function shouldShowEntryCountdown(order) {
@@ -1081,6 +1149,7 @@
         }
 
         function loadMoreGroups() {
+            if (isOrdersDatasetPartial) return;
             currentPage += 1;
             displayedGroups = filterGroups(allGroups).slice(0, currentPage * itemsPerPage);
             renderGroups();
@@ -1089,6 +1158,12 @@
 
         function updateLoadMoreButton() {
             const btn = document.getElementById('loadMoreBtn');
+            if (isOrdersDatasetPartial) {
+                btn.style.display = displayedGroups.length > 0 ? 'block' : 'none';
+                btn.textContent = '后台补齐中...';
+                btn.disabled = true;
+                return;
+            }
             const filtered = filterGroups(allGroups);
             const hasMore = displayedGroups.length < filtered.length;
             btn.style.display = hasMore ? 'block' : 'none';
@@ -1101,9 +1176,10 @@
             const summary = document.getElementById('summaryBar');
             const openGroups = filtered.filter((group) => !group.exitOrder && group.status !== 'Canceled' && group.status !== 'Closed').length;
             summary.innerHTML = `
-                <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${filtered.length}</div></div>
-                <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">${filtered.reduce((sum, group) => sum + group.orders.length, 0)}</div></div>
-                <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">${openGroups}</div></div>
+                <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${formatCountValue(filtered.length)}</div></div>
+                <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">${formatCountValue(filtered.reduce((sum, group) => sum + group.orders.length, 0))}</div></div>
+                <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">${formatCountValue(openGroups)}</div></div>
+                ${isOrdersDatasetPartial ? '<div class="summary-hint">首屏已加载，剩余订单后台补齐中</div>' : ''}
             `;
         }
 
@@ -1116,7 +1192,7 @@
             document.querySelectorAll('.status-tab').forEach((button) => {
                 const status = button.dataset.status;
                 const valueNode = button.querySelector('.count-value');
-                if (valueNode) valueNode.textContent = counts[status] || 0;
+                if (valueNode) valueNode.textContent = formatCountValue(counts[status] || 0);
             });
         }
 
@@ -1129,7 +1205,7 @@
             document.querySelectorAll('.dir-tab').forEach((button) => {
                 const direction = button.dataset.dir;
                 const valueNode = button.querySelector('.count-value');
-                if (valueNode) valueNode.textContent = counts[direction] || 0;
+                if (valueNode) valueNode.textContent = formatCountValue(counts[direction] || 0);
             });
         }
 
@@ -1139,6 +1215,7 @@
             if (filterTradeGroupId) notes.push(`trade_group_id=${filterTradeGroupId}`);
             if (currentSearch) notes.push(`search=${currentSearch}`);
             if (resolvedLegacySearch) notes.push(`resolved_from=${resolvedLegacySearch}`);
+            if (isOrdersDatasetPartial) notes.push('dataset=首屏快照');
             document.getElementById('filterNote').innerHTML = notes.length
                 ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
                 : '';
@@ -1228,6 +1305,7 @@
                                 <span class="status-badge ${statusClass(group.status)}">${escapeHtml(ORDER_STATUS_TEXT[group.status] || group.status || '-')}</span>
                                 ${group.exitOrder ? `<span class="chip highlight-chip">${escapeHtml(getRoleText(group.exitOrder.role, group.exitOrder.order_type))} 成交</span>` : ''}
                                 ${group.relationAlert ? `<span class="chip warn-chip">存在孤儿单</span>` : ''}
+                                ${isOrdersDatasetPartial ? '<span class="chip">数据补齐中</span>' : ''}
                             </div>
                             <div class="group-subtitle">${escapeHtml(exitText)}</div>
                         </div>
@@ -1264,8 +1342,8 @@
                             <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}', '${encodeURIComponent(group.signal_id || '')}')">📜 交易组明细</button>
                         </div>
                         <div class="action-row">
-                            ${canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
-                            ${canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓整组</button>` : ''}
+                            ${!isOrdersDatasetPartial && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
+                            ${!isOrdersDatasetPartial && canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓整组</button>` : ''}
                         </div>
                     </div>
                 </div>
@@ -1287,29 +1365,85 @@
             updateCountdowns();
         }
 
-        const loadOrders = guardedLoader(async function() {
-            try {
-                const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
-                const endTimeMs = startTimeMs + 24 * 60 * 60 * 1000;
-                const records = await pb.collection('orders').getFullList({
-                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-bar_time_ms,-created',
-                    $autoCancel: false
-                });
+        function applyOrdersDataset(records, { partial = false, requestId = 0 } = {}) {
+            if (requestId && requestId !== currentOrdersRequestId) return;
 
-                allOrders = records.map(normalizeOrder);
-                allGroups = buildTradeGroups(allOrders);
-                if (pendingLegacySearchResolution) {
-                    applyResolvedSearchContext(resolveLegacySearchContext(allOrders, currentSearch));
-                    pendingLegacySearchResolution = false;
+            allOrders = (Array.isArray(records) ? records : []).map(normalizeOrder);
+            allGroups = buildTradeGroups(allOrders);
+            isOrdersDatasetPartial = partial;
+
+            if (!partial && pendingLegacySearchResolution) {
+                applyResolvedSearchContext(resolveLegacySearchContext(allOrders, currentSearch));
+                pendingLegacySearchResolution = false;
+            }
+
+            resetPagination();
+            renderFilterNote();
+            updateSummaryBar();
+            updateStatusTabCounts();
+            updateDirectionTabCounts();
+            renderGroups();
+            updateLoadMoreButton();
+        }
+
+        async function hydrateRemainingOrders(baseFilter, initialItems, requestId) {
+            try {
+                const remainingItems = await fetchCollectionFullList('orders', {
+                    filter: baseFilter,
+                    sort: '-bar_time_ms,-created',
+                    perPage: ORDERS_FETCH_PAGE_SIZE,
+                    startPage: 2,
+                    maxPages: ORDERS_FETCH_MAX_PAGES,
+                    requestId
+                });
+                if (!remainingItems || requestId !== currentOrdersRequestId) return;
+                applyOrdersDataset([...(initialItems || []), ...remainingItems], { partial: false, requestId });
+            } catch (error) {
+                console.error('后台补齐订单失败:', error);
+            }
+        }
+
+        async function loadOrders({ showLoadingState = true } = {}) {
+            if (isLoadingOrders) return;
+            isLoadingOrders = true;
+            const requestId = ++currentOrdersRequestId;
+
+            try {
+                const baseFilter = buildOrdersFilter();
+                const shouldUseStagedLoad = !currentSearch && !filterSignalId && !filterTradeGroupId;
+
+                if (showLoadingState) {
+                    showLoading('加载中...');
                 }
-                resetPagination();
-                renderFilterNote();
-                updateSummaryBar();
-                updateStatusTabCounts();
-                updateDirectionTabCounts();
-                renderGroups();
-                updateLoadMoreButton();
+
+                if (shouldUseStagedLoad) {
+                    const firstPage = await apiFetch('orders', {
+                        filter: baseFilter,
+                        sort: '-bar_time_ms,-created',
+                        perPage: ORDERS_FETCH_PAGE_SIZE,
+                        page: 1
+                    });
+                    if (requestId !== currentOrdersRequestId) return;
+
+                    const firstPageItems = Array.isArray(firstPage?.items) ? firstPage.items : [];
+                    const hasMorePages = Number(firstPage?.totalItems || 0) > firstPageItems.length;
+                    applyOrdersDataset(firstPageItems, { partial: hasMorePages, requestId });
+
+                    if (hasMorePages) {
+                        hydrateRemainingOrders(baseFilter, firstPageItems, requestId);
+                    }
+                    return;
+                }
+
+                const records = await fetchCollectionFullList('orders', {
+                    filter: baseFilter,
+                    sort: '-bar_time_ms,-created',
+                    perPage: ORDERS_FETCH_PAGE_SIZE,
+                    maxPages: ORDERS_FETCH_MAX_PAGES,
+                    requestId
+                });
+                if (!records || requestId !== currentOrdersRequestId) return;
+                applyOrdersDataset(records, { partial: false, requestId });
             } catch (error) {
                 console.error('加载订单失败:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -1322,8 +1456,13 @@
                         <div class="empty-text">加载失败: ${escapeHtml(error.message || 'unknown error')}</div>
                     </div>
                 `;
+            } finally {
+                isLoadingOrders = false;
+                if (showLoadingState) {
+                    hideLoading();
+                }
             }
-        }, '加载中...');
+        }
 
         function onSearchChange(value) {
             currentSearch = value.trim();
@@ -1367,7 +1506,7 @@
             try {
                 await fetch(buildPageUrl('/webhook/order/close', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }));
                 showToast('已发送平仓整组请求');
-                loadOrders();
+                loadOrders({ showLoadingState: false });
             } catch (error) {
                 showToast(`平仓失败: ${error.message}`);
             }
@@ -1378,7 +1517,7 @@
             try {
                 await fetch(buildPageUrl('/webhook/order/cancel', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }));
                 showToast('已发送取消主单请求');
-                loadOrders();
+                loadOrders({ showLoadingState: false });
             } catch (error) {
                 showToast(`取消失败: ${error.message}`);
             }
@@ -1463,7 +1602,7 @@
             const btn = document.getElementById('refreshBtn');
             btn.classList.add('spinning');
             setTimeout(() => btn.classList.remove('spinning'), 600);
-            loadOrders();
+            loadOrders({ showLoadingState: false });
         }
 
         function changeRefreshInterval(seconds) {
@@ -1473,7 +1612,10 @@
                 refreshTimer = null;
             }
             if (currentInterval > 0) {
-                refreshTimer = setInterval(loadOrders, currentInterval * 1000);
+                refreshTimer = setInterval(() => {
+                    if (document.hidden) return;
+                    loadOrders({ showLoadingState: false });
+                }, currentInterval * 1000);
             }
         }
 
@@ -1538,6 +1680,11 @@
             await loadSignalValidityConfig();
             await loadOrders();
             changeRefreshInterval(30);
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && currentInterval > 0) {
+                    loadOrders({ showLoadingState: false });
+                }
+            });
             setInterval(updateCountdowns, 1000);
         });
 

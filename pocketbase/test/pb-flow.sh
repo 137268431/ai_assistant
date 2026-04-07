@@ -181,7 +181,7 @@ show_menu() {
     echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                        📡 信号流程                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[1]${NC} 发送信号到PB      ${CYAN}│${NC}  ${MAGENTA}[2]${NC} 查询信号状态(pending)         ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[1]${NC} 发送IBKR信号     ${CYAN}│${NC}  ${MAGENTA}[2]${NC} 查询信号状态(pending/confirm) ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[3]${NC} 飞书-确认信号    ${CYAN}│${NC}  ${MAGENTA}[4]${NC} 飞书-拒绝信号             ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  ${MAGENTA}[5]${NC} IBKR确认信号→创建交易组Init(signals/ack)                         ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
@@ -198,7 +198,14 @@ show_menu() {
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        📊 指标数据                                  ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  ${MAGENTA}[D]${NC} 发送指标数据(webhook/tv indicator)                              ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[D]${NC} 发送IBKR指标数据                                          ${CYAN}║${NC}"
+    echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║                        🔎 关键链路                                  ║${NC}"
+    echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[I]${NC} IBKR拉取Pending  ${CYAN}│${NC}  ${MAGENTA}[J]${NC} 查询盘前Screener          ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[K]${NC} 数据质量摘要/详情 ${CYAN}│${NC}  ${MAGENTA}[L]${NC} 数据质量重扫              ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[M]${NC} 数据质量修复     ${CYAN}│${NC}  ${MAGENTA}[U]${NC} 健康状态/Statusz         ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${MAGENTA}[W]${NC} Backtest状态                                             ${CYAN}║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║                        🔧 工具                                      ║${NC}"
     echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════════════╣${NC}"
@@ -285,13 +292,18 @@ check_today_test_data() {
     local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/reverse_signals/records?filter=date='${us_date}'&perPage=100" "" "检查-查询反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
 
-    if [ "$sig_count" -gt 0 ] || [ "$ord_count" -gt 0 ] || [ "$det_count" -gt 0 ] || [ "$rev_count" -gt 0 ]; then
+    # 查询指标
+    local ind_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_indicators/records?filter=(script_tag~'pb_flow_indicator_'&&symbol='${TEST_SYMBOL}'&&us_time~'${us_date}')&perPage=100" "" "检查-查询指标")
+    local ind_count=$(echo "$ind_response" | jq '.items | length' 2>/dev/null || echo "0")
+
+    if [ "$sig_count" -gt 0 ] || [ "$ord_count" -gt 0 ] || [ "$det_count" -gt 0 ] || [ "$rev_count" -gt 0 ] || [ "$ind_count" -gt 0 ]; then
         echo ""
         echo -e "${YELLOW}发现 ${TEST_SYMBOL} 今日测试数据 (US日期: ${us_date}):${NC}"
         [ "$sig_count" -gt 0 ] && echo -e "  ${YELLOW}信号:${NC} $sig_count 条"
         [ "$ord_count" -gt 0 ] && echo -e "  ${YELLOW}订单:${NC} $ord_count 条"
         [ "$det_count" -gt 0 ] && echo -e "  ${YELLOW}订单详情:${NC} $det_count 条"
         [ "$rev_count" -gt 0 ] && echo -e "  ${YELLOW}反转信号:${NC} $rev_count 条"
+        [ "$ind_count" -gt 0 ] && echo -e "  ${YELLOW}指标:${NC} $ind_count 条"
         return 1
     fi
     return 0
@@ -382,12 +394,32 @@ cleanup_today_data() {
         fi
     fi
 
+    # ── 指标 ──
+    local ind_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_indicators/records?filter=(script_tag~'pb_flow_indicator_')&perPage=200" "" "清理-查询所有指标")
+    local ind_count=$(echo "$ind_response" | jq '.items | length' 2>/dev/null || echo "0")
+    local deleted_ind=0
+
+    if [ "$ind_count" -gt 0 ]; then
+        local deleted_ind_ids=$(echo "$ind_response" | jq -r '.items[].id' 2>/dev/null)
+        [ -n "$deleted_ind_ids" ] && deleted_ind=$(echo "$deleted_ind_ids" | wc -l | tr -d ' ')
+        if [ "$deleted_ind" -gt 0 ]; then
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${CYAN}🗑️  删除指标 ($deleted_ind 条):${NC}"
+            echo "$ind_response" | jq -r '.items[] | "\(.symbol) @ \(.bar_time_ms)"' 2>/dev/null | while read iid; do
+                [ -n "$iid" ] && echo -e "    ${RED}✗${NC} $iid"
+            done
+            for ind_id in $deleted_ind_ids; do
+                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_indicators/records/${ind_id}" "" "删除指标" > /dev/null 2>&1
+            done
+        fi
+    fi
+
     # 清理缓存
     rm -f /tmp/pb_sig_* /tmp/pb_ord_* /tmp/pb_rev_* /tmp/pb_trade_group_id /tmp/pb_entry_* /tmp/pb_tp_* /tmp/pb_sl_* 2>/dev/null
 
     echo ""
     echo -e "${GREEN}✓ 清理完成（所有日期）${NC}"
-    echo -e "  信号: ${GREEN}${deleted_sig:-0}${NC} | 订单: ${GREEN}${deleted_ord:-0}${NC} | 订单详情: ${GREEN}${deleted_det:-0}${NC} | 反转信号: ${GREEN}${deleted_rev:-0}${NC}"
+    echo -e "  信号: ${GREEN}${deleted_sig:-0}${NC} | 订单: ${GREEN}${deleted_ord:-0}${NC} | 订单详情: ${GREEN}${deleted_det:-0}${NC} | 反转信号: ${GREEN}${deleted_rev:-0}${NC} | 指标: ${GREEN}${deleted_ind:-0}${NC}"
 }
 
 # 提示并清理
@@ -414,7 +446,7 @@ prompt_cleanup() {
 # 1. 发送信号到 PB
 test_1_send_signal() {
     echo ""
-    echo -e "${MAGENTA}═══ 📡 步骤1: 发送信号到 PB ═══${NC}"
+    echo -e "${MAGENTA}═══ 📡 步骤1: 发送 IBKR 信号到 PB ═══${NC}"
 
     # 先检查并清理
     prompt_cleanup || true
@@ -428,10 +460,12 @@ test_1_send_signal() {
     local limit_price=$(echo "$data" | cut -d'|' -f6)
     local us_time=$(echo "$data" | cut -d'|' -f7)
     local cn_time=$(echo "$data" | cut -d'|' -f8)
+    local us_date=$(echo "$us_time" | cut -d' ' -f1)
+    [ -z "$us_date" ] && us_date=$(get_us_date)
+    local script_tag="pb_flow_signal_test"
 
     local json=$(cat <<EOF
 {
-  "type": "signal",
   "symbol": "${TEST_SYMBOL}",
   "direction": "${TEST_DIRECTION}",
   "entry": ${entry_price},
@@ -442,16 +476,24 @@ test_1_send_signal() {
   "rr": "1.5:1",
   "signal": "test_signal",
   "exchange": "NASDAQ",
-  "interval": "5",
+  "interval": "5m",
   "signal_id": "${signal_id}",
+  "reason": "测试信号",
   "us_time": "${us_time}",
   "cn_time": "${cn_time}",
+  "date": "${us_date}",
+  "bar_time_ms": ${timestamp_ms},
+  "bar_index": 1000,
+  "script_tag": "${script_tag}",
+  "chart_tf": "5",
+  "status": "pending",
+  "source": "ibkr",
   "extra": {
     "reason": "测试信号",
     "bar_time_ms": ${timestamp_ms},
     "bar_index": 1000,
     "chart_tf": "5",
-    "script_tag": "test_script_v1",
+    "script_tag": "${script_tag}",
     "atr": 0.5,
     "atr_pct": 0.25,
     "day_change_pct": 1.5,
@@ -480,12 +522,12 @@ EOF
 
     echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${MAGENTA}📤 发送信号${NC}"
-    echo -e "  ${CYAN}curl -X POST ${BASE_URL}/webhook/tv${NC}"
+    echo -e "  ${CYAN}curl -X POST ${BASE_URL}/api/custom/ibkr/signal${NC}"
     echo -e "  ${CYAN}Body:${NC}"
     echo "$json" | jq '.' 2>/dev/null || echo "$json"
     echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    response=$(do_curl "POST" "${BASE_URL}/webhook/tv" "$json")
+    response=$(do_curl "POST" "${BASE_URL}/api/custom/ibkr/signal" "$json")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -528,10 +570,12 @@ test_h_send_conflict_signal() {
     local limit_price=$(echo "$data" | cut -d'|' -f6)
     local us_time=$(echo "$data" | cut -d'|' -f7)
     local cn_time=$(echo "$data" | cut -d'|' -f8)
+    local us_date=$(echo "$us_time" | cut -d' ' -f1)
+    [ -z "$us_date" ] && us_date=$(get_us_date)
+    local script_tag="pb_flow_signal_conflict_test"
 
     local json=$(cat <<EOF
 {
-  "type": "signal",
   "symbol": "${TEST_SYMBOL}",
   "direction": "${conflict_direction}",
   "entry": ${entry_price},
@@ -542,16 +586,24 @@ test_h_send_conflict_signal() {
   "rr": "1.5:1",
   "signal": "test_signal_conflict",
   "exchange": "NASDAQ",
-  "interval": "5",
+  "interval": "5m",
   "signal_id": "${signal_id}",
+  "reason": "测试反向新信号",
   "us_time": "${us_time}",
   "cn_time": "${cn_time}",
+  "date": "${us_date}",
+  "bar_time_ms": ${timestamp_ms},
+  "bar_index": 1001,
+  "script_tag": "${script_tag}",
+  "chart_tf": "5",
+  "status": "pending",
+  "source": "ibkr",
   "extra": {
     "reason": "测试反向新信号",
     "bar_time_ms": ${timestamp_ms},
     "bar_index": 1001,
     "chart_tf": "5",
-    "script_tag": "test_signal_conflict",
+    "script_tag": "${script_tag}",
     "atr": 0.5,
     "atr_pct": 0.25,
     "day_change_pct": -1.2,
@@ -577,7 +629,7 @@ EOF
     [ -n "$entry_unique_id" ] && echo -e "  当前交易组: ${GREEN}${entry_unique_id}${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    response=$(curl_exec "POST" "${BASE_URL}/webhook/tv" "$json" "发送反向新信号")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/signal" "$json" "发送反向新信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -1645,7 +1697,7 @@ EOF
 # D. 发送指标数据
 test_d_send_indicator() {
     echo ""
-    echo -e "${MAGENTA}═══ 📊 D: 发送指标数据 ═══${NC}"
+    echo -e "${MAGENTA}═══ 📊 D: 发送 IBKR 指标数据 ═══${NC}"
 
     local datetime="${TEST_DATE} ${TEST_TIME}"
     local ts=$(TZ=Asia/Shanghai date -j -f "%Y-%m-%d %H:%M:%S" "${datetime}" +%s 2>/dev/null) || ts=$(date +%s)
@@ -1731,10 +1783,9 @@ test_d_send_indicator() {
 
     local json=$(cat <<EOF
 {
-  "type": "indicator",
   "symbol": "${TEST_SYMBOL}",
   "exchange": "NASDAQ",
-  "interval": "5",
+  "interval": "5m",
   "script_tag": "${script_tag}",
   "us_time": "${us_time}",
   "cn_time": "${cn_time}",
@@ -1799,13 +1850,15 @@ test_d_send_indicator() {
     "sd_lower": ${sd_lower},
     "sd_upper": ${sd_upper},
     "ema_bull_touch": ${ema_bull_touch},
-    "ema_bear_touch": ${ema_bear_touch}
+    "ema_bear_touch": ${ema_bear_touch},
+    "chart_tf": "5",
+    "source": "ibkr_compute"
   }
 }
 EOF
 )
 
-    response=$(curl_exec "POST" "${BASE_URL}/webhook/tv" "$json" "发送指标数据")
+    response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/indicator" "$json" "发送指标数据")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
@@ -1844,6 +1897,141 @@ test_f_list_orders() {
 
     # 过滤：unique_id 包含 _sig 或 symbol = TEST_SYMBOL
     local response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?sort=-created&filter=((unique_id~'_sig'||unique_id~'_test'||trade_group_id~'_sig'||entry_order_unique_id~'_sig')&&symbol='${TEST_SYMBOL}')&perPage=100" "" "查询测试订单")
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+}
+
+# I. IBKR 拉取官方 pending signals
+test_i_pull_pending_signals() {
+    echo ""
+    echo -e "${CYAN}═══ 🔎 I: IBKR 拉取 Pending Signals ═══${NC}"
+
+    local us_date=$(get_us_date)
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}📤 当前操作:${NC}"
+    echo -e "  market_date(US): ${GREEN}${us_date}${NC}"
+    echo -e "  symbol: ${GREEN}${TEST_SYMBOL}${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    local response=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/signals/pending?date=${us_date}" "" "IBKR 拉取待执行信号")
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+
+    local count=$(echo "$response" | jq '.ibkr_signals | length' 2>/dev/null || echo "0")
+    log_info "official pending 接口返回: ${count} 条"
+
+    if [ "$count" -gt 0 ]; then
+        local latest_sig=$(echo "$response" | jq -r --arg sym "${TEST_SYMBOL}" '(.ibkr_signals[] | select(.symbol == $sym) | .signal_id) // empty' 2>/dev/null | head -n1)
+        [ -z "$latest_sig" ] && latest_sig=$(echo "$response" | jq -r '.ibkr_signals[0].signal_id // empty' 2>/dev/null)
+        if [ -n "$latest_sig" ]; then
+            local latest_data=$(echo "$response" | jq -r --arg sid "$latest_sig" '.ibkr_signals[] | select(.signal_id == $sid) | "\(.entry)|\(.stop_loss)|\(.take_profit)|\(.bar_time_ms)|\(.limit_price)|\(.us_time)|\(.cn_time)"' 2>/dev/null | head -n1)
+            cache_set "pb_sig_latest" "$latest_sig"
+            [ -n "$latest_data" ] && cache_set "pb_sig_data" "$latest_data"
+            log_info "已更新 pending 缓存: ${latest_sig}"
+        fi
+    fi
+}
+
+# J. 查询盘前/可操作 Screener
+test_j_query_screener() {
+    echo ""
+    echo -e "${CYAN}═══ 🔎 J: 查询盘前 Screener ═══${NC}"
+
+    local us_date=$(get_us_date)
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}📤 当前操作:${NC}"
+    echo -e "  market_date(US): ${GREEN}${us_date}${NC}"
+    echo -e "  symbol: ${GREEN}${TEST_SYMBOL}${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    local response=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/screener?market_date=${us_date}&symbols=${TEST_SYMBOL}&limit=20" "" "查询 Screener")
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+
+    local total=$(echo "$response" | jq '.summary.total // 0' 2>/dev/null || echo "0")
+    local operable=$(echo "$response" | jq '.summary.operable // 0' 2>/dev/null || echo "0")
+    log_info "screener total=${total}, operable=${operable}"
+}
+
+# K. 查询 bars 数据质量
+test_k_query_data_quality() {
+    echo ""
+    echo -e "${CYAN}═══ 🔎 K: 查询 Data Quality ═══${NC}"
+
+    local us_date=$(get_us_date)
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}📤 当前操作:${NC}"
+    echo -e "  market_date(US): ${GREEN}${us_date}${NC}"
+    echo -e "  symbol: ${GREEN}${TEST_SYMBOL}${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    local summary=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/data_quality/summary?market_date=${us_date}" "" "查询数据质量摘要")
+    echo "$summary" | jq '.' 2>/dev/null || echo "$summary"
+
+    local detail=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/data_quality/list?market_date=${us_date}&symbol=${TEST_SYMBOL}&per_page=20" "" "查询当前标的数据质量")
+    echo "$detail" | jq '.' 2>/dev/null || echo "$detail"
+}
+
+# L. 触发 bars 数据质量重扫
+test_l_rescan_data_quality() {
+    echo ""
+    echo -e "${MAGENTA}═══ 🔎 L: 触发 Data Quality 重扫 ═══${NC}"
+
+    local us_date=$(get_us_date)
+    local json=$(cat <<EOF
+{
+  "symbols": ["${TEST_SYMBOL}"],
+  "market_date": "${us_date}",
+  "scan_scope": "manual",
+  "persist": true,
+  "repair": false
+}
+EOF
+)
+
+    local response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/data_quality/rescan" "$json" "触发数据质量重扫")
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+}
+
+# M. 触发 bars 数据质量修复
+test_m_repair_data_quality() {
+    echo ""
+    echo -e "${MAGENTA}═══ 🔎 M: 触发 Data Quality 修复 ═══${NC}"
+    echo -e "${RED}⚠️ 警告: 该操作可能触发真实 bars 修复，请确认当前 symbol/date 可安全修复${NC}"
+    echo -n "确认继续? [y/N], 按 Enter 确认: "
+    read confirm
+    [[ ! "$confirm" =~ ^[yY]$ ]] && { log_info "已取消"; return 0; }
+
+    local us_date=$(get_us_date)
+    local json=$(cat <<EOF
+{
+  "symbols": ["${TEST_SYMBOL}"],
+  "market_date": "${us_date}",
+  "scan_scope": "manual",
+  "persist": true
+}
+EOF
+)
+
+    local response=$(curl_exec "POST" "${BASE_URL}/api/custom/ibkr/data_quality/repair" "$json" "触发数据质量修复")
+    echo "$response" | jq '.' 2>/dev/null || echo "$response"
+}
+
+# U. 查询 IBKR 健康状态
+test_u_ibkr_health() {
+    echo ""
+    echo -e "${CYAN}═══ 🔎 U: 查询 IBKR 健康状态 ═══${NC}"
+
+    local health=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/healthz" "" "查询 healthz")
+    echo "$health" | jq '.' 2>/dev/null || echo "$health"
+
+    local status=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/statusz" "" "查询 statusz")
+    echo "$status" | jq '.' 2>/dev/null || echo "$status"
+}
+
+# W. 查询 Backtest 状态
+test_w_backtest_status() {
+    echo ""
+    echo -e "${CYAN}═══ 🔎 W: 查询 Backtest 状态 ═══${NC}"
+
+    local response=$(curl_exec "GET" "${BASE_URL}/api/custom/ibkr/backtest/status" "" "查询 backtest 状态")
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
@@ -2036,6 +2224,13 @@ main() {
             C|c) echo -e "${MAGENTA}确认逆向信号${NC}" ;;
             H|h) echo -e "${MAGENTA}发送反向新信号${NC}" ;;
             D|d) echo -e "${MAGENTA}发送指标数据${NC}" ;;
+            I|i) echo -e "${MAGENTA}IBKR 拉取 Pending Signals${NC}" ;;
+            J|j) echo -e "${MAGENTA}查询盘前 Screener${NC}" ;;
+            K|k) echo -e "${MAGENTA}查询 Data Quality${NC}" ;;
+            L|l) echo -e "${MAGENTA}触发 Data Quality 重扫${NC}" ;;
+            M|m) echo -e "${MAGENTA}触发 Data Quality 修复${NC}" ;;
+            U|u) echo -e "${MAGENTA}查询 IBKR 健康状态${NC}" ;;
+            W|w) echo -e "${MAGENTA}查询 Backtest 状态${NC}" ;;
             E|e) echo -e "${CYAN}查询所有信号${NC}" ;;
             F|f) echo -e "${CYAN}查询所有订单${NC}" ;;
             X|x) echo -e "${YELLOW}清理所有测试数据${NC}" ;;
@@ -2078,6 +2273,13 @@ main() {
             C|c) test_c_ack_reverse ;;
             H|h) test_h_send_conflict_signal ;;
             D|d) test_d_send_indicator ;;
+            I|i) test_i_pull_pending_signals ;;
+            J|j) test_j_query_screener ;;
+            K|k) test_k_query_data_quality ;;
+            L|l) test_l_rescan_data_quality ;;
+            M|m) test_m_repair_data_quality ;;
+            U|u) test_u_ibkr_health ;;
+            W|w) test_w_backtest_status ;;
             E|e) test_e_list_signals ;;
             F|f) test_f_list_orders ;;
             X|x) cleanup_today_data ;;
