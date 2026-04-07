@@ -250,6 +250,46 @@ function requireAuth(fromPage) {
   }
 }
 
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+async function fetchWithRetry(url, options = {}, retryOptions = {}) {
+  const {
+    attempts = 3,
+    retryDelayMs = 400,
+    retryOnStatuses = [408, 425, 429, 500, 502, 503, 504],
+  } = retryOptions || {};
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= Math.max(1, Number(attempts) || 1); attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        cache: 'no-store',
+        ...options,
+      });
+      if (
+        attempt < attempts &&
+        retryOnStatuses.includes(response.status) &&
+        response.status !== 401 &&
+        response.status !== 403
+      ) {
+        await sleepMs(retryDelayMs * attempt);
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) {
+        throw error;
+      }
+      await sleepMs(retryDelayMs * attempt);
+    }
+  }
+
+  throw lastError || new Error('Request failed');
+}
+
 // ── API 请求封装 ──
 async function apiFetch(collection, params = {}) {
   const token = getToken();
@@ -283,7 +323,10 @@ async function apiFetch(collection, params = {}) {
     options.body = JSON.stringify(params.body);
   }
 
-  const res = await fetch(url, options);
+  const res = await fetchWithRetry(url, options, {
+    attempts: 3,
+    retryDelayMs: 500
+  });
 
   // 401/403 自动跳转登录
   if (res.status === 401 || res.status === 403) {
@@ -320,9 +363,11 @@ function renderNav(activePage) {
     { path: '/index.html', icon: '🏠', label: '首页' },
     { path: '/ibkr_signals.html', aliases: ['/ibkr_reverse_signals.html'], icon: '📡', label: '信号' },
     { path: '/ibkr_orders.html', aliases: ['/ibkr_order_details.html'], icon: '📋', label: '订单' },
+    { path: '/ibkr_account.html', icon: '💼', label: '账户' },
     { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html', '/ibkr_stats.html'], icon: '📈', label: '指标' },
+    { path: '/ibkr_screener.html', aliases: ['/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '筛选' },
     { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
-    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_account.html'], icon: '🖥️', label: '系统' }
+    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_data_quality.html'], icon: '🖥️', label: '系统' }
   ];
 
   return `
@@ -1749,6 +1794,7 @@ if (typeof module !== 'undefined' && module.exports) {
     BASE_URL,
     getToken,
     requireAuth,
+    fetchWithRetry,
     apiFetch,
     showToast,
     renderNav,

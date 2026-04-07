@@ -16,6 +16,8 @@ class Config:
         "ibkr_watchlist_backfill_interval_min": "30",
         "ibkr_watchlist_backfill_batch_size": "12",
         "ibkr_watchlist_backfill_stale_min": "20",
+        "ibkr_watchlist_integrity_enabled": "true",
+        "ibkr_watchlist_integrity_batch_size": "8",
         "ibkr_history_repair_enabled": "true",
         "ibkr_history_repair_min_bars_5m": "260",
         "ibkr_history_repair_gap_lookback": "80",
@@ -31,6 +33,7 @@ class Config:
         "ibkr_scan_schedule": "7:00-10:00",
         "ibkr_publish_batch_size": "10",
         "ibkr_signal_source": "both",
+        "signal_manual_confirm_enabled": "true",
         "ibkr_trading_enabled": "true",
     }
 

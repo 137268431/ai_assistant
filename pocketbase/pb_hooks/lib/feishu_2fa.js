@@ -590,6 +590,9 @@ function request2faApproval(options) {
     var currentMessageId = currentData.message_id || ""
     var lastRequestPushMs = toNumber(currentData.last_request_push_ms, 0)
     var activeCardExists = isActiveStatus(currentStatus) && !!currentMessageId
+    var renotifyRemainingMs = activeCardExists && lastRequestPushMs > 0
+        ? Math.max(0, REQUEST_RENOTIFY_COOLDOWN_MS - (Date.now() - lastRequestPushMs))
+        : 0
     var shouldRenotify = (
         activeCardExists &&
         (Date.now() - lastRequestPushMs) >= REQUEST_RENOTIFY_COOLDOWN_MS
@@ -639,6 +642,9 @@ function request2faApproval(options) {
         status: saved.data.status || "requested",
         message_id: delivered.message_id,
         state: saved.data,
+        skipped: !!delivered.skipped,
+        skipped_reason: delivered.skipped_reason || "",
+        renotify_remaining_ms: renotifyRemainingMs,
         error: delivered.result && delivered.result.success ? "" : (delivered.result.error || "send_failed"),
     }
 }

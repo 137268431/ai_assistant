@@ -45,6 +45,56 @@ function valuesEqual(left, right) {
     return JSON.stringify(normalizeForCompare(left)) === JSON.stringify(normalizeForCompare(right))
 }
 
+function normalizeSignalSourceMeta(rawValue) {
+    const raw = String(rawValue || "").trim().toLowerCase()
+    if (["tv", "tradingview", "webhook_tv", "tv_webhook", "signal"].includes(raw)) {
+        return {
+            route_source: "tradingview",
+            signal_source: "tradingview_webhook",
+            signal_source_label: "TradingView Webhook",
+            signal_source_detail: "来自 TradingView webhook 信号",
+        }
+    }
+    if (["ibkr_compute_timeline", "timeline", "chart_timeline"].includes(raw)) {
+        return {
+            route_source: "ibkr_compute",
+            signal_source: "ibkr_compute_timeline",
+            signal_source_label: "IBKR 图表回放",
+            signal_source_detail: "来自缓存 bars 时间线重算",
+        }
+    }
+    if (["history_repair", "recompute", "backfill_recompute"].includes(raw)) {
+        return {
+            route_source: "ibkr_compute",
+            signal_source: "ibkr_history_recompute",
+            signal_source_label: "IBKR 历史重算",
+            signal_source_detail: "来自历史回补/重算链路",
+        }
+    }
+    if (["manual", "manual_order", "runtime_page", "account_page"].includes(raw)) {
+        return {
+            route_source: "manual",
+            signal_source: "manual_order",
+            signal_source_label: "手动触发",
+            signal_source_detail: "来自账户页/人工操作",
+        }
+    }
+    if (["ibkr_runtime", "ibkr_compute_realtime", "ibkr_compute", "ibkr"].includes(raw)) {
+        return {
+            route_source: "ibkr_compute",
+            signal_source: "ibkr_compute_realtime",
+            signal_source_label: "IBKR 实时计算",
+            signal_source_detail: "来自 IBKR 实盘 bars 收盘计算",
+        }
+    }
+    return {
+        route_source: raw || "unknown",
+        signal_source: raw || "unknown",
+        signal_source_label: raw ? raw.toUpperCase() : "未知来源",
+        signal_source_detail: "",
+    }
+}
+
 function recordNeedsUpdate(record, data) {
     return Object.keys(data || {}).some((key) => !valuesEqual(record.get(key), data[key]))
 }
@@ -109,10 +159,19 @@ function buildIndicatorData(d, environment) {
 function buildSignalData(d, environment) {
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const signalId = String(d.signal_id || "").trim()
+    const incomingExtra = d.extra && typeof d.extra === "object" && !Array.isArray(d.extra) ? d.extra : {}
 
     if (!symbol || !signalId) {
         return { ok: false, error: "Missing symbol or signal_id" }
     }
+
+    const sourceMeta = normalizeSignalSourceMeta(
+        d.signal_source
+        || incomingExtra.signal_source
+        || d.source
+        || incomingExtra.source
+        || "ibkr_compute"
+    )
 
     return {
         ok: true,
@@ -143,13 +202,64 @@ function buildSignalData(d, environment) {
             script_tag: String(d.script_tag || "").trim(),
             chart_tf: String(d.chart_tf || "").trim(),
             extra: {
-                ...(d.extra || {}),
-                source: (d.extra && d.extra.source) ? d.extra.source : "ibkr_compute",
+                ...incomingExtra,
+                source: sourceMeta.route_source,
+                signal_source: String(incomingExtra.signal_source || d.signal_source || sourceMeta.signal_source),
+                signal_source_label: String(incomingExtra.signal_source_label || d.signal_source_label || sourceMeta.signal_source_label),
+                signal_source_detail: String(incomingExtra.signal_source_detail || d.signal_source_detail || sourceMeta.signal_source_detail),
                 environment: environment,
             },
             status: String(d.status || "pending"),
             note: String(d.note || ""),
         },
+    }
+}
+
+function buildBarIntegrityData(d, environment) {
+    const symbol = String(d.symbol || "").trim().toUpperCase()
+    const marketDate = String(d.market_date || "").trim()
+    const interval = String(d.interval || "5m").trim() || "5m"
+    const scanScope = String(d.scan_scope || "manual").trim() || "manual"
+
+    if (!symbol || !marketDate) {
+        return { ok: false, error: "Missing symbol or market_date" }
+    }
+
+    return {
+        ok: true,
+        symbol: symbol,
+        market_date: marketDate,
+        interval: interval,
+        filter: "environment = {:env} && market_date = {:date} && symbol = {:sym} && interval = {:tf}",
+        params: { env: environment, date: marketDate, sym: symbol, tf: interval },
+        data: {
+            environment: environment,
+            market_date: marketDate,
+            symbol: symbol,
+            interval: interval,
+            scan_scope: scanScope,
+            status: String(d.status || "ok").trim() || "ok",
+            needs_repair: Boolean(d.needs_repair),
+            safe_repair: Boolean(d.safe_repair),
+            bar_count: Number(d.bar_count) || 0,
+            latest_bar_time_ms: Math.trunc(Number(d.latest_bar_time_ms) || 0),
+            latest_bar_us_time: String(d.latest_bar_us_time || "").trim(),
+            oldest_loaded_ms: Math.trunc(Number(d.oldest_loaded_ms) || 0),
+            gap_count: Number(d.gap_count) || 0,
+            duplicate_count: Number(d.duplicate_count) || 0,
+            bad_ohlc_count: Number(d.bad_ohlc_count) || 0,
+            missing_intervals: Array.isArray(d.missing_intervals) ? d.missing_intervals : [],
+            stale_intervals: Array.isArray(d.stale_intervals) ? d.stale_intervals : [],
+            gap_examples: Array.isArray(d.gap_examples) ? d.gap_examples : [],
+            duplicate_examples: Array.isArray(d.duplicate_examples) ? d.duplicate_examples : [],
+            bad_ohlc_examples: Array.isArray(d.bad_ohlc_examples) ? d.bad_ohlc_examples : [],
+            repair_attempts: Number(d.repair_attempts) || 0,
+            last_scan_at: String(d.last_scan_at || "").trim(),
+            last_repair_at: String(d.last_repair_at || "").trim(),
+            last_repair_result: d.last_repair_result || {},
+            extra: d.extra || {},
+        },
+        increment_repair_attempts: Boolean(d.increment_repair_attempts),
     }
 }
 
@@ -189,6 +299,7 @@ const exported = {
     upsertRecord,
     buildIndicatorData,
     buildSignalData,
+    buildBarIntegrityData,
     upsertConfigValue,
 }
 

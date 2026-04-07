@@ -17,6 +17,180 @@ var getSignalActionsDataEnvironment = function(data) {
     return getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
 }
 
+var signalActionsParseHttpJson = function(rawValue) {
+    const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
+    if (!raw) return {}
+    try {
+        return JSON.parse(raw)
+    } catch (_) {
+        return { raw: raw }
+    }
+}
+
+var signalActionsResolveCancelableOrderId = function(record) {
+    if (!record) return ""
+    const candidates = [
+        String(record.get("broker_order_id") || "").trim(),
+        String(record.get("order_id") || "").trim(),
+    ]
+    for (let i = 0; i < candidates.length; i++) {
+        const value = candidates[i]
+        if (/^\d+$/.test(value)) {
+            return value
+        }
+    }
+    return ""
+}
+
+var signalActionsCancelBrokerOrder = function(environment, orderId) {
+    const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
+    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
+    try {
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify({
+                order_id: String(orderId || "").trim(),
+                environment: environment,
+            }),
+            headers: { "Content-Type": "application/json" },
+        })
+        const payload = signalActionsParseHttpJson(resp.raw)
+        return {
+            ok: !!(payload && payload.ok),
+            statusCode: Number(resp && resp.statusCode) || 200,
+            payload: payload,
+            upstream: upstream,
+        }
+    } catch (err) {
+        return {
+            ok: false,
+            statusCode: 502,
+            payload: { ok: false, error: err.message || String(err) },
+            upstream: upstream,
+        }
+    }
+}
+
+var signalActionsCancelOrderGroupRecords = function(options) {
+    const opts = options || {}
+    const records = Array.isArray(opts.records) ? opts.records : []
+    const environment = String(opts.environment || "live").trim().toLowerCase() || "live"
+    const appendOrderDetail = opts.appendOrderDetail
+    const applyOrderStatusMeta = opts.applyOrderStatusMeta
+    const applyOrderRelationship = opts.applyOrderRelationship
+    const getOrderExtra = opts.getOrderExtra
+    const mergeOrderExtra = opts.mergeOrderExtra
+    const notifyOrder = opts.notifyOrder
+    const source = opts.source || "signal_actions"
+    const reason = opts.reason || "manual_cancel"
+
+    const cancelIds = []
+    records.forEach((record) => {
+        const status = String(record.get("status") || "")
+        if (status === "Canceled" || status === "Closed" || status === "Filled") {
+            return
+        }
+        const cancelId = signalActionsResolveCancelableOrderId(record)
+        if (cancelId && cancelIds.indexOf(cancelId) === -1) {
+            cancelIds.push(cancelId)
+        }
+    })
+
+    const cancelledOrderIds = []
+    const failedOrderIds = []
+    for (let i = 0; i < cancelIds.length; i++) {
+        const orderId = cancelIds[i]
+        const result = signalActionsCancelBrokerOrder(environment, orderId)
+        if (result.ok) {
+            cancelledOrderIds.push(orderId)
+        } else {
+            failedOrderIds.push({
+                order_id: orderId,
+                error: (result.payload && (result.payload.error || result.payload.message)) || `status_${result.statusCode || 500}`,
+            })
+        }
+    }
+
+    if (failedOrderIds.length > 0) {
+        return {
+            ok: false,
+            cancelled_order_ids: cancelledOrderIds,
+            failed_order_ids: failedOrderIds,
+        }
+    }
+
+    const primaryRecord = records.find((record) => String(record.get("role") || "") === "entry") || records[0] || null
+    const tradeGroupId = primaryRecord
+        ? (primaryRecord.get("trade_group_id") || primaryRecord.get("entry_order_unique_id") || primaryRecord.get("unique_id") || "")
+        : ""
+
+    records.forEach((groupRecord) => {
+        const currentStatus = groupRecord.get("status")
+        if (currentStatus === "Canceled" || currentStatus === "Closed" || currentStatus === "Filled") {
+            return
+        }
+        groupRecord.set("status", "Canceled")
+        applyOrderRelationship(groupRecord, {
+            relation_status: "closed",
+            status: "Canceled",
+        }, false)
+        const metaResult = applyOrderStatusMeta(groupRecord, {
+            status: "Canceled",
+            previous_status: currentStatus,
+            source: source,
+            reason: reason,
+        }, false)
+        const eventTimes = metaResult.eventTimes
+        $app.save(groupRecord)
+        try {
+            appendOrderDetail(groupRecord, {
+                environment: environment,
+                status: "Canceled",
+                source: source,
+                reason: reason,
+                us_time: eventTimes.us_time,
+                cn_time: eventTimes.cn_time,
+                bar_time_ms: eventTimes.bar_time_ms,
+                extra: {
+                    previous_status: currentStatus,
+                    action: "cancel",
+                    trade_group_id: tradeGroupId,
+                    cancelled_order_ids: cancelledOrderIds,
+                },
+            })
+        } catch (detailErr) {
+            console.error("[SignalActions] 写入 order_details 失败:", detailErr)
+        }
+    })
+
+    if (primaryRecord && typeof notifyOrder === "function" && typeof getOrderExtra === "function" && typeof mergeOrderExtra === "function") {
+        try {
+            const orderExtra = getOrderExtra(primaryRecord)
+            const syncResult = notifyOrder("canceled", primaryRecord, {
+                messageId: orderExtra.feishu_order_message_id || "",
+                message: cancelledOrderIds.length > 0 ? "主单已撤销，关联挂单已收尾" : "交易组已取消",
+            })
+            if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
+                mergeOrderExtra(primaryRecord, {
+                    feishu_order_message_id: syncResult.message_id,
+                    feishu_order_card_version: 2,
+                }, true)
+            }
+        } catch (notifyErr) {
+            console.error("[SignalActions] 同步订单卡片失败:", notifyErr)
+        }
+    }
+
+    return {
+        ok: true,
+        trade_group_id: tradeGroupId,
+        cancelled_order_ids: cancelledOrderIds,
+        failed_order_ids: failedOrderIds,
+    }
+}
+
 routerAdd("GET", "/webhook/signal/confirm", (c) => {
     const { appendOrderDetail } = require(`${__hooks}/lib/order_events.js`)
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
@@ -45,6 +219,12 @@ routerAdd("GET", "/webhook/signal/confirm", (c) => {
             return c.html(200, h.fn(h.title, h.msg, symbol))
         }
         record.set("status", "pending")
+        record.set("note", "")
+        mergeSignalExtra(record, {
+            confirmed_by: "manual",
+            confirmed_at: new Date().toISOString(),
+            status_reason: "confirmed_by_user",
+        }, false)
         $app.save(record)
         try {
             const signalExtra = getSignalExtra(record)
@@ -69,7 +249,9 @@ routerAdd("GET", "/webhook/signal/confirm", (c) => {
 })
 
 routerAdd("GET", "/webhook/signal/cancel", (c) => {
+    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
+    const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { ok, warn, fail, info } = require(`${__hooks}/lib/_page.js`)
     const signalId = c.request.url.query().get("id") || ""
     const environment = getSignalActionsRequestEnvironment(c)
@@ -94,13 +276,55 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
             const h = statusHints[currentStatus] || { fn: warn, title: "无法操作", msg: "状态: " + currentStatus }
             return c.html(200, h.fn(h.title, h.msg, symbol))
         }
+
+        let cancelSummary = { ok: true, cancelled_order_ids: [], failed_order_ids: [] }
+        if (currentStatus === "pending") {
+            const relatedRecords = $app.findRecordsByFilter(
+                "orders",
+                "signal_id = {:sid} && environment = {:env}",
+                "-created",
+                100,
+                0,
+                { sid: record.get("signal_id") || signalId, env: environment }
+            ) || []
+            if (relatedRecords.length > 0) {
+                cancelSummary = signalActionsCancelOrderGroupRecords({
+                    records: relatedRecords,
+                    environment: environment,
+                    appendOrderDetail: appendOrderDetail,
+                    applyOrderStatusMeta: applyOrderStatusMeta,
+                    applyOrderRelationship: applyOrderRelationship,
+                    getOrderExtra: getOrderExtra,
+                    mergeOrderExtra: mergeOrderExtra,
+                    notifyOrder: notifyOrder,
+                    source: "webhook/signal/cancel",
+                    reason: `信号拒绝触发撤单 ${record.get("signal_id") || signalId}`,
+                })
+            }
+        }
+
         record.set("status", "rejected")
+        record.set(
+            "note",
+            cancelSummary.ok
+                ? "manual_rejected"
+                : `manual_rejected_with_cancel_failures:${cancelSummary.failed_order_ids.length}`
+        )
+        mergeSignalExtra(record, {
+            rejected_by: "manual",
+            rejected_at: new Date().toISOString(),
+            status_reason: cancelSummary.ok ? "manual_rejected" : "manual_rejected_with_cancel_failures",
+            cancel_order_failures: cancelSummary.failed_order_ids,
+            cancelled_order_ids: cancelSummary.cancelled_order_ids,
+        }, false)
         $app.save(record)
         try {
             const signalExtra = getSignalExtra(record)
             const syncResult = notifySignalStatus("rejected", record, {
                 messageId: signalExtra.feishu_signal_message_id || "",
-                message: "信号已拒绝，暂不执行",
+                message: cancelSummary.ok
+                    ? "信号已拒绝，暂不执行"
+                    : `信号已拒绝，但仍有 ${cancelSummary.failed_order_ids.length} 条账户订单撤销失败`,
             })
             if (syncResult.success && syncResult.message_id && syncResult.message_id !== signalExtra.feishu_signal_message_id) {
                 mergeSignalExtra(record, {
@@ -110,6 +334,9 @@ routerAdd("GET", "/webhook/signal/cancel", (c) => {
             }
         } catch (syncErr) {
             console.error("[SignalAction] 同步拒绝卡片失败:", syncErr)
+        }
+        if (!cancelSummary.ok) {
+            return c.html(500, fail("信号已拒绝", `账户撤单失败 ${cancelSummary.failed_order_ids.length} 条`, symbol))
         }
         return c.html(200, fail("信号已拒绝", "拒绝成功", symbol))
     } catch (err) {
@@ -698,55 +925,23 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
             0,
             { gid: tradeGroupId, env: environment }
         ) || [record]
-        relatedRecords.forEach((groupRecord) => {
-            const currentStatus = groupRecord.get("status")
-            if (currentStatus === "Canceled" || currentStatus === "Closed" || currentStatus === "Filled") {
-                return
-            }
-            groupRecord.set("status", "Canceled")
-            applyOrderRelationship(groupRecord, {
-                relation_status: "closed",
-                status: "Canceled",
-            }, false)
-            const metaResult = applyOrderStatusMeta(groupRecord, {
-                status: "Canceled",
-                previous_status: currentStatus,
-                source: "webhook/order/cancel",
-                reason: "页面取消主单",
-            }, false)
-            const eventTimes = metaResult.eventTimes
-            $app.save(groupRecord)
-            try {
-                appendOrderDetail(groupRecord, {
-                    environment: environment,
-                    status: "Canceled",
-                    source: "webhook/order/cancel",
-                    reason: "页面取消主单",
-                    us_time: eventTimes.us_time,
-                    cn_time: eventTimes.cn_time,
-                    bar_time_ms: eventTimes.bar_time_ms,
-                    extra: {
-                        previous_status: currentStatus,
-                        action: "cancel",
-                        trade_group_id: tradeGroupId,
-                    },
-                })
-            } catch (detailErr) {
-                console.error("[OrderAction] 写入 order_details 失败:", detailErr)
-            }
+        const cancelSummary = signalActionsCancelOrderGroupRecords({
+            records: relatedRecords,
+            environment: environment,
+            appendOrderDetail: appendOrderDetail,
+            applyOrderStatusMeta: applyOrderStatusMeta,
+            applyOrderRelationship: applyOrderRelationship,
+            getOrderExtra: getOrderExtra,
+            mergeOrderExtra: mergeOrderExtra,
+            notifyOrder: notifyOrder,
+            source: "webhook/order/cancel",
+            reason: "页面取消主单",
         })
-        const orderExtra = getOrderExtra(record)
-        const syncResult = notifyOrder("canceled", record, {
-            messageId: orderExtra.feishu_order_message_id || "",
-            message: "主单已取消，保护单已收尾",
-        })
-        if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
-            mergeOrderExtra(record, {
-                feishu_order_message_id: syncResult.message_id,
-                feishu_order_card_version: 2,
-            }, true)
+        if (!cancelSummary.ok) {
+            console.error("[OrderAction] IBKR 撤单失败:", JSON.stringify(cancelSummary.failed_order_ids || []))
+            return c.html(500, fail("订单取消失败", `账户撤单失败 ${cancelSummary.failed_order_ids.length} 条`, symbol))
         }
-        console.log("[OrderAction] 交易组已取消:", tradeGroupId)
+        console.log("[OrderAction] 交易组已取消:", tradeGroupId, "cancelled_order_ids=", (cancelSummary.cancelled_order_ids || []).join(",") || "-")
         return c.html(200, ok("订单已取消", "状态已更新", symbol))
     } catch (err) {
         console.error("[OrderAction] 取消失败:", err)

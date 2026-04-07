@@ -111,13 +111,23 @@ class DataBackfill:
         if delay > 0:
             time.sleep(delay)
 
-    def _request_history_json(self, conid: int, symbol: str, interval: str, period: str, bar_size: str) -> Dict:
+    def _request_history_json(
+        self,
+        conid: int,
+        symbol: str,
+        interval: str,
+        period: str,
+        bar_size: str,
+        start_time: str = "",
+    ) -> Dict:
         params = {
             "conid": conid,
             "period": period,
             "bar": bar_size,
             "outsideRth": "true",
         }
+        if start_time:
+            params["startTime"] = str(start_time)
 
         for attempt in range(self.max_retries + 1):
             self._wait_for_request_slot()
@@ -216,10 +226,15 @@ class DataBackfill:
             "symbol": str(symbol or "").upper(),
             "interval": normalized,
             "stored_bar_count": 0,
+            "scanned_row_count": 0,
             "latest_stored_ms": 0,
             "oldest_loaded_ms": 0,
             "gap_count": 0,
             "gap_examples": [],
+            "duplicate_count": 0,
+            "duplicate_examples": [],
+            "bad_ohlc_count": 0,
+            "bad_ohlc_examples": [],
         }
         if not self.pb_client:
             return snapshot
@@ -227,8 +242,8 @@ class DataBackfill:
         safe_symbol = snapshot["symbol"].replace('"', '\\"')
         safe_interval = normalized.replace('"', '\\"')
         safe_environment = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
-        bars_needed = max(1, int(min_bars or 0), int(gap_lookback or 0))
-        max_pages = max(1, min(5, (bars_needed + 199) // 200))
+        bars_needed = max(1, int(min_bars or 0), int(gap_lookback or 0), 400)
+        max_pages = max(1, min(8, (bars_needed + 199) // 200))
 
         try:
             rows = self.pb_client.get_all_records(
@@ -254,8 +269,51 @@ class DataBackfill:
             return snapshot
 
         snapshot["stored_bar_count"] = len(rows)
+        snapshot["scanned_row_count"] = len(rows)
         snapshot["latest_stored_ms"] = int(rows[0].get("bar_time_ms", 0) or 0)
         snapshot["oldest_loaded_ms"] = int(rows[-1].get("bar_time_ms", 0) or 0)
+
+        seen_bar_times = set()
+        for row in rows:
+            bar_time_ms = int(row.get("bar_time_ms", 0) or 0)
+            if bar_time_ms > 0:
+                if bar_time_ms in seen_bar_times:
+                    snapshot["duplicate_count"] += 1
+                    if len(snapshot["duplicate_examples"]) < 4:
+                        snapshot["duplicate_examples"].append({
+                            "bar_time_ms": bar_time_ms,
+                            "us_time": str(row.get("us_time", "") or ""),
+                        })
+                else:
+                    seen_bar_times.add(bar_time_ms)
+
+            try:
+                open_px = float(row.get("open", 0) or 0)
+                high_px = float(row.get("high", 0) or 0)
+                low_px = float(row.get("low", 0) or 0)
+                close_px = float(row.get("close", 0) or 0)
+            except Exception:
+                open_px = high_px = low_px = close_px = 0.0
+
+            invalid_ohlc = (
+                open_px <= 0
+                or high_px <= 0
+                or low_px <= 0
+                or close_px <= 0
+                or high_px < max(open_px, close_px, low_px)
+                or low_px > min(open_px, close_px, high_px)
+            )
+            if invalid_ohlc:
+                snapshot["bad_ohlc_count"] += 1
+                if len(snapshot["bad_ohlc_examples"]) < 4:
+                    snapshot["bad_ohlc_examples"].append({
+                        "bar_time_ms": bar_time_ms,
+                        "us_time": str(row.get("us_time", "") or ""),
+                        "open": open_px,
+                        "high": high_px,
+                        "low": low_px,
+                        "close": close_px,
+                    })
 
         recent_rows = list(reversed(rows[: max(3, int(gap_lookback or 0))]))
         expected_ms = interval_to_ms(normalized)

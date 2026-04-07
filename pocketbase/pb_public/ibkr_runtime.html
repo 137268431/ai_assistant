@@ -496,6 +496,106 @@
             color: var(--muted);
             font-family: 'JetBrains Mono', monospace;
         }
+        .cron-time-details {
+            border: 1px dashed rgba(255,255,255,0.08);
+            border-radius: 10px;
+            background: rgba(255,255,255,0.02);
+            padding: 8px 10px;
+        }
+        .cron-time-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            cursor: pointer;
+            list-style: none;
+        }
+        .cron-time-summary::-webkit-details-marker {
+            display: none;
+        }
+        .cron-time-summary::after {
+            content: '+';
+            flex: 0 0 auto;
+            color: var(--accent);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.2;
+        }
+        .cron-time-details[open] .cron-time-summary::after {
+            content: '-';
+        }
+        .cron-time-primary {
+            color: var(--text);
+            line-height: 1.5;
+        }
+        .cron-time-toggle {
+            flex: 0 0 auto;
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.4;
+        }
+        .cron-time-list {
+            display: grid;
+            gap: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed rgba(255,255,255,0.08);
+        }
+        .cron-time-item {
+            display: grid;
+            grid-template-columns: 28px 1fr;
+            gap: 8px;
+            align-items: start;
+        }
+        .cron-time-name {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.5;
+        }
+        .cron-time-text {
+            color: var(--text);
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .cron-exp-details {
+            display: inline-block;
+            min-width: 0;
+        }
+        .cron-exp-summary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            list-style: none;
+            color: var(--accent);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.4;
+        }
+        .cron-exp-summary::-webkit-details-marker {
+            display: none;
+        }
+        .cron-exp-summary::after {
+            content: '+';
+            color: var(--muted);
+        }
+        .cron-exp-details[open] .cron-exp-summary::after {
+            content: '-';
+        }
+        .cron-exp-text {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px dashed rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.02);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.5;
+            word-break: break-word;
+        }
         .cron-chip-row {
             display: flex;
             flex-wrap: wrap;
@@ -556,7 +656,8 @@
         .pill-running,
         .pill-ok,
         .pill-filled,
-        .pill-online { color: #48BB78; }
+        .pill-online,
+        .pill-success { color: #48BB78; }
         .pill-short,
         .pill-error,
         .pill-offline,
@@ -565,9 +666,13 @@
         .pill-pending,
         .pill-warning,
         .pill-delayed,
+        .pill-requested,
+        .pill-triggered,
         .pill-awaiting_confirm,
+        .pill-waiting_confirm,
         .pill-waiting_response,
-        .pill-submitted { color: #F6AD55; }
+        .pill-submitted,
+        .pill-timeout { color: #F6AD55; }
         .pill-neutral,
         .pill-expired,
         .pill-init,
@@ -631,6 +736,74 @@
             background: rgba(72, 187, 120, 0.08);
         }
 
+        .page-loading-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 120;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(8, 11, 16, 0.78);
+            backdrop-filter: blur(10px);
+            transition: opacity 0.24s ease, visibility 0.24s ease;
+        }
+        .page-loading-overlay.is-hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+        .page-loading-card {
+            width: min(440px, 100%);
+            padding: 20px 18px;
+            border-radius: 18px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background:
+                radial-gradient(circle at top right, rgba(99,179,237,0.16), transparent 36%),
+                linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.94));
+            box-shadow: 0 24px 56px rgba(2, 8, 23, 0.28);
+        }
+        .page-loading-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .page-loading-copy {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        .page-loading-bars {
+            display: grid;
+            gap: 10px;
+            margin-top: 16px;
+        }
+        .page-loading-bar {
+            position: relative;
+            height: 10px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(255,255,255,0.06);
+        }
+        .page-loading-bar::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            transform: translateX(-100%);
+            background: linear-gradient(90deg, transparent, rgba(99,179,237,0.42), transparent);
+            animation: runtimeLoadingShimmer 1.35s infinite;
+        }
+        .page-loading-bar:nth-child(2)::after {
+            animation-delay: 0.18s;
+        }
+        .page-loading-bar:nth-child(3)::after {
+            animation-delay: 0.36s;
+        }
+        @keyframes runtimeLoadingShimmer {
+            100% { transform: translateX(100%); }
+        }
+
         @media (max-width: 720px) {
             .hero {
                 padding: 18px 16px;
@@ -652,6 +825,18 @@
     </style>
 </head>
 <body>
+    <div class="page-loading-overlay" id="pageLoading">
+        <div class="page-loading-card">
+            <div class="page-loading-title" id="pageLoadingTitle">控制台加载中</div>
+            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 runtime 状态、2FA、链路表和最近事件，请稍候。</div>
+            <div class="page-loading-bars">
+                <div class="page-loading-bar"></div>
+                <div class="page-loading-bar"></div>
+                <div class="page-loading-bar"></div>
+            </div>
+        </div>
+    </div>
+
     <div id="nav"></div>
 
     <div class="page-shell">
@@ -687,8 +872,12 @@
                     <span class="action-copy">停止当前运行中的 IBKR 服务线程，便于重新触发 2FA。</span>
                 </button>
                 <button class="action-btn action-accent" onclick="handleRuntimeAction('reauth')">
-                    <span class="action-label">发送 2FA 卡片</span>
-                    <span class="action-copy">只更新飞书里的同一张卡片，等你点击按钮后再开始验证。</span>
+                    <span class="action-label">请求 / 复用 2FA 卡片</span>
+                    <span class="action-copy">优先复用飞书里的活动卡片；当前已认证会直接提示无需 2FA。</span>
+                </button>
+                <button class="action-btn action-accent" onclick="handleRuntimeAction('reauth_force_new')">
+                    <span class="action-label">重发新 2FA 卡片</span>
+                    <span class="action-copy">旧卡片找不到、过期或想强制新发提醒时使用。</span>
                 </button>
                 <button class="action-btn action-accent" onclick="handleRuntimeAction('compute')">
                     <span class="action-label">执行 Compute</span>
@@ -701,6 +890,10 @@
                 <button class="action-btn" onclick="handleRuntimeAction('recompute')">
                     <span class="action-label">重算历史缓存</span>
                     <span class="action-copy">清空内存引擎缓存后重新跑 compute，用于核对链路回放。</span>
+                </button>
+                <button class="action-btn" onclick="window.location.href = buildPageUrl('/ibkr_data_quality.html', {}, { environment: currentEnvironment })">
+                    <span class="action-label">打开数据质量</span>
+                    <span class="action-copy">查看 watchlist / active targets 的 bars 缺口、重复、坏 OHLC 与修复结果。</span>
                 </button>
                 <button class="action-btn" onclick="loadRuntimeData(true)">
                     <span class="action-label">手动刷新</span>
@@ -856,6 +1049,22 @@
         let refreshTimer = null;
         let actionPending = false;
         let latestTwoFactorState = {};
+        let latestRuntimeLoadId = 0;
+        let hasLoadedRuntimeData = false;
+
+        function setRuntimeLoading(active, title, copy) {
+            const overlay = document.getElementById('pageLoading');
+            if (!overlay) return;
+            if (title) {
+                const titleEl = document.getElementById('pageLoadingTitle');
+                if (titleEl) titleEl.textContent = title;
+            }
+            if (copy) {
+                const copyEl = document.getElementById('pageLoadingCopy');
+                if (copyEl) copyEl.textContent = copy;
+            }
+            overlay.classList.toggle('is-hidden', !active);
+        }
 
         function initRuntimeAuth() {
             const token = getToken();
@@ -888,7 +1097,14 @@
                 headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
             };
             if (body) options.body = JSON.stringify(body);
-            const response = await fetch(buildPageUrl(path, {}, { environment: currentEnvironment }), options);
+            const response = await fetchWithRetry(
+                buildPageUrl(path, {}, { environment: currentEnvironment }),
+                options,
+                {
+                    attempts: 3,
+                    retryDelayMs: 500
+                }
+            );
             if (response.status === 401 || response.status === 403) {
                 handleAuthError();
                 throw new Error('Authentication failed');
@@ -924,11 +1140,11 @@
         function statusClass(value) {
             const text = String(value || '').trim().toLowerCase();
             if (!text) return 'pill-neutral';
-            if (['ready', 'open'].includes(text)) return 'pill-ok';
+            if (['ready', 'open', 'success'].includes(text)) return text === 'success' ? 'pill-success' : 'pill-ok';
             if (['warming', 'blocked', 'degraded', 'closed'].includes(text)) return 'pill-warning';
             if (['stopped'].includes(text)) return 'pill-error';
             if (['running', 'ok', 'online', 'filled', 'long', 'buy', 'active', 'executed'].includes(text)) return `pill-${text}`;
-            if (['warning', 'delayed', 'pending', 'awaiting_confirm', 'waiting_response', 'submitted'].includes(text)) return `pill-${text}`;
+            if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_confirm', 'waiting_response', 'submitted', 'timeout'].includes(text)) return `pill-${text}`;
             if (['error', 'offline', 'cancelled', 'rejected', 'short', 'sell', 'failed'].includes(text)) return `pill-${text}`;
             if (['expired', 'init', 'candidate'].includes(text)) return 'pill-neutral';
             return 'pill-neutral';
@@ -939,8 +1155,8 @@
             if (['ready', 'open'].includes(text)) return 'chip-ok';
             if (['warming', 'blocked', 'degraded', 'closed'].includes(text)) return 'chip-warn';
             if (['stopped'].includes(text)) return 'chip-error';
-            if (['running', 'ok', 'online'].includes(text)) return 'chip-ok';
-            if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_response'].includes(text)) return 'chip-warn';
+            if (['running', 'ok', 'online', 'success'].includes(text)) return 'chip-ok';
+            if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_confirm', 'waiting_response', 'timeout'].includes(text)) return 'chip-warn';
             if (['error', 'offline', 'failed', 'rejected'].includes(text)) return 'chip-error';
             return 'chip-muted';
         }
@@ -1052,6 +1268,15 @@
         function summarizeAction(action, payload) {
             if (!payload || typeof payload !== 'object') {
                 return `${action} 已执行。`;
+            }
+            if (action === 'reauth' || action === 'reauth_force_new') {
+                if (payload.message) return payload.message;
+                if (payload?.state?.runtime_authenticated && payload?.state?.gateway_reachable && Number(payload?.state?.gateway_status_code || 0) !== 401) {
+                    return '当前 Gateway 会话已认证，无需再次确认。';
+                }
+                return action === 'reauth_force_new'
+                    ? '已强制发送新的 2FA 卡片，请在飞书点击按钮触发验证。'
+                    : '已请求 2FA 卡片，请在飞书点击按钮触发验证。';
             }
             if (action === 'compute' || action === 'scan' || action === 'recompute') {
                 const pieces = [];
@@ -1361,7 +1586,13 @@
             const challengeCode = String(twoFactorState?.challenge_code || '').trim();
             const canSubmit = status === 'waiting_response' && !!challengeCode;
             let helper = twoFactorState?.last_result || '当前没有等待中的 Challenge。';
-            if (canSubmit) {
+            if (status === 'success') {
+                helper = twoFactorState?.message || '当前 Gateway 会话已认证，无需提交 Response Code。';
+            } else if (status === 'requested') {
+                helper = '这一步只是把 2FA 卡片发到或刷新到飞书，还没有真正开始验证。需要去飞书点击“开始 2FA 验证”。';
+            } else if (status === 'triggered') {
+                helper = twoFactorState?.last_result || '登录流程已经触发，等待 IBKR 返回手机确认或 Challenge/Response。';
+            } else if (canSubmit) {
                 helper = '当前已切到 Challenge/Response。仅在手机上点确认不会完成验证；请在 IBKR App 的 Two-Factor Authentication 中输入上方 Challenge，拿到 Response Code 后回到这里提交。';
             } else if (status === 'waiting_confirm') {
                 helper = '当前是手机推送模式，只需要点手机通知确认；如果页面后续切成 Challenge/Response，手机确认将不再够用，这里会出现 Challenge 与响应码输入框。';
@@ -1374,7 +1605,7 @@
                         <span class="mini-tag"><span class="mini-label">MODE</span>${escapeHtml(mode || '--')}</span>
                         <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(String(twoFactorState?.source || '--'))}</span>
                     </div>
-                    <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || '当前未检测到 Challenge')}</div>
+                    <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || (status === 'success' ? '当前无需 Challenge' : '当前未检测到 Challenge'))}</div>
                     <div class="challenge-copy">${escapeHtml(helper)}</div>
                     <label class="response-label" for="challengeResponseInput">Response Code</label>
                     <div class="response-row">
@@ -1385,7 +1616,7 @@
                             inputmode="numeric"
                             autocomplete="off"
                             spellcheck="false"
-                            placeholder="${canSubmit ? '输入 Response Code' : '等待 Challenge'}"
+                            placeholder="${canSubmit ? '输入 Response Code' : (status === 'success' ? '当前无需 Response Code' : '等待 Challenge')}"
                             ${canSubmit ? '' : 'disabled'}
                         />
                         <button id="challengeResponseSubmit" class="response-btn" onclick="submitTwoFactorResponse()" ${canSubmit ? '' : 'disabled'}>提交响应码</button>
@@ -1402,6 +1633,7 @@
                 'ibkr_bar_publish_enabled',
                 'ibkr_trading_enabled',
                 'ibkr_signal_source',
+                'signal_manual_confirm_enabled',
                 'position_limit_max',
                 'eod_close_time',
                 'eod_keep_symbols',
@@ -1463,20 +1695,34 @@
                                 <div class="cron-card-copy">${escapeHtml(definition.function_summary || '--')}</div>
                                 <div class="cron-card-meta">
                                     <div class="cron-card-row">
-                                        <span class="label">UTC 周期</span>
-                                        <span>${escapeHtml(definition.cycle_label || '--')}</span>
-                                    </div>
-                                    <div class="cron-card-row">
-                                        <span class="label">北京时间</span>
-                                        <span>${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '--')}</span>
-                                    </div>
-                                    <div class="cron-card-row">
-                                        <span class="label">美东时间</span>
-                                        <span>${escapeHtml(definition.et_cycle_label || definition.cycle_label || '--')}</span>
+                                        <span class="label">时区</span>
+                                        <div>
+                                            <details class="cron-time-details">
+                                                <summary class="cron-time-summary">
+                                                    <span class="cron-time-primary">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '--')}</span>
+                                                    <span class="cron-time-toggle">UTC / ET</span>
+                                                </summary>
+                                                <div class="cron-time-list">
+                                                    <div class="cron-time-item">
+                                                        <span class="cron-time-name">UTC</span>
+                                                        <span class="cron-time-text">${escapeHtml(definition.cycle_label || '--')}</span>
+                                                    </div>
+                                                    <div class="cron-time-item">
+                                                        <span class="cron-time-name">ET</span>
+                                                        <span class="cron-time-text">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '--')}</span>
+                                                    </div>
+                                                </div>
+                                            </details>
+                                        </div>
                                     </div>
                                     <div class="cron-card-row">
                                         <span class="label">Cron</span>
-                                        <span class="mono">${escapeHtml(definition.cron_expr || '--')}</span>
+                                        <div>
+                                            <details class="cron-exp-details">
+                                                <summary class="cron-exp-summary">查看表达式</summary>
+                                                <div class="cron-exp-text">${escapeHtml(definition.cron_expr || '--')}</div>
+                                            </details>
+                                        </div>
                                     </div>
                                     <div class="cron-card-row">
                                         <span class="label">窗口</span>
@@ -1645,9 +1891,16 @@
 
         function renderEngineTable(status) {
             const engines = status?.engines && typeof status.engines === 'object' ? Object.entries(status.engines) : [];
-            document.getElementById('engineHint').textContent = `${status?.ready_engines || 0}/${status?.total_engines || 0} ready`;
+            const readySummary = `${status?.ready_engines || 0}/${status?.total_engines || 0} ready`;
+            const hasEngineSummaryOnly = Boolean(status?.engines_available) && !Boolean(status?.engines_included);
+            document.getElementById('engineHint').textContent = hasEngineSummaryOnly
+                ? `${readySummary} · loading detail`
+                : readySummary;
             if (!engines.length) {
-                document.getElementById('engineTable').innerHTML = renderEmpty('当前没有预热引擎');
+                const message = status?.engine_detail_error
+                    ? `引擎明细加载失败：${status.engine_detail_error}`
+                    : (hasEngineSummaryOnly ? '引擎明细加载中...' : '当前没有预热引擎');
+                document.getElementById('engineTable').innerHTML = renderEmpty(message);
                 return;
             }
             const rows = engines.sort((a, b) => {
@@ -1673,6 +1926,26 @@
                     <tbody>${rows}</tbody>
                 </table>
             `;
+        }
+
+        async function loadEngineDetail(loadId, fallbackStatus) {
+            const baseStatus = fallbackStatus && typeof fallbackStatus === 'object' ? fallbackStatus : {};
+            if (baseStatus.engines_included || Number(baseStatus.total_engines || 0) <= 0) {
+                renderEngineTable(baseStatus);
+                return;
+            }
+
+            try {
+                const fullStatus = await requestRuntimeJson('/api/custom/ibkr/statusz?full=1');
+                if (loadId !== latestRuntimeLoadId) return;
+                renderEngineTable(fullStatus);
+            } catch (error) {
+                if (loadId !== latestRuntimeLoadId) return;
+                renderEngineTable({
+                    ...baseStatus,
+                    engine_detail_error: error.message || String(error)
+                });
+            }
         }
 
         function renderBarsTable(items) {
@@ -1817,11 +2090,20 @@
 
         async function loadRuntimeData(showToastOnSuccess = false) {
             if (!initRuntimeAuth()) return;
+            const loadId = ++latestRuntimeLoadId;
+            const isInitialLoad = !hasLoadedRuntimeData;
+            if (isInitialLoad) {
+                setRuntimeLoading(
+                    true,
+                    '控制台加载中',
+                    `正在拉取 ${getEnvironmentLabel(currentEnvironment)} 环境的 runtime、2FA、配置与最近链路数据。`
+                );
+            }
             try {
                 const envFilter = buildEnvironmentFilter();
                 const [health, status, summary, cronResp, twoFactorResp, runtimeConfigResp, barsResp, indicatorsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     requestRuntimeJson('/api/custom/ibkr/healthz'),
-                    requestRuntimeJson('/api/custom/ibkr/statusz'),
+                    requestRuntimeJson('/api/custom/ibkr/statusz?lite=1'),
                     requestRuntimeJson('/api/custom/system/summaryz?lite=1'),
                     requestRuntimeJson('/api/custom/system/cronz').catch(() => ({ items: [] })),
                     requestRuntimeJson('/api/custom/ibkr/2fa/status'),
@@ -1832,6 +2114,7 @@
                     apiFetch('orders', { filter: envFilter, sort: '-created', perPage: 8 }),
                     apiFetch('system_events', { filter: envFilter, sort: '-created', perPage: 8 })
                 ]);
+                if (loadId !== latestRuntimeLoadId) return;
 
                 const runtimeConfig = Array.isArray(runtimeConfigResp?.items) ? runtimeConfigResp.items : [];
                 const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
@@ -1850,6 +2133,7 @@
                 renderConfigDetail(summary, runtimeConfig, cronDefinitions);
                 renderPipelinePanel(summary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
                 renderEngineTable(status);
+                void loadEngineDetail(loadId, status);
                 renderBarsTable(barsItems);
                 renderIndicatorsTable(indicatorItems);
                 renderSignalsTable(signalItems);
@@ -1862,6 +2146,11 @@
                 document.getElementById('refreshInfo').textContent = '加载失败';
                 document.getElementById('lastAction').textContent = `加载失败：${error.message || error}`;
                 showToast(`加载失败: ${error.message || error}`);
+            } finally {
+                if (isInitialLoad) {
+                    hasLoadedRuntimeData = true;
+                    setRuntimeLoading(false);
+                }
             }
         }
 
@@ -1944,6 +2233,17 @@
                         message: '已从 PocketBase Runtime 页面请求 2FA，请在飞书中点击按钮触发验证。'
                     }
                 },
+                reauth_force_new: {
+                    path: '/api/custom/ibkr/2fa/request',
+                    body: {
+                        environment: currentEnvironment,
+                        reason: 'manual_reauth',
+                        source: 'runtime_page',
+                        force_reset: true,
+                        force_new: true,
+                        message: '已从 PocketBase Runtime 页面强制重发新的 2FA 卡片，请在飞书中点击按钮触发验证。'
+                    }
+                },
                 compute: { path: '/api/custom/ibkr/proxy', body: { action: 'compute', environment: currentEnvironment } },
                 scan: { path: '/api/custom/ibkr/proxy', body: { action: 'scan', environment: currentEnvironment } },
                 recompute: { path: '/api/custom/ibkr/proxy', body: { action: 'recompute', environment: currentEnvironment } },
@@ -2001,10 +2301,10 @@
                     active: true
                 },
                 {
-                    path: '/ibkr_account.html',
-                    kicker: 'Account',
-                    label: '账户',
-                    copy: '真实持仓 / 挂单 / 操作'
+                    path: '/ibkr_data_quality.html',
+                    kicker: 'Quality',
+                    label: '数据质量',
+                    copy: 'bars 缺口 / 重复 / 安全修复'
                 }
             ]);
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();

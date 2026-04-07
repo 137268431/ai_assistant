@@ -574,7 +574,74 @@
             }
         }
 
-        // 加载大盘指数数据（从 ibkr_indicators 表获取）
+        function toNumericOrNull(value) {
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function getMetricValue(record, fieldName) {
+            if (!record || typeof record !== 'object') return null;
+            const directValue = toNumericOrNull(record[fieldName]);
+            if (directValue != null) return directValue;
+            const extraValue = toNumericOrNull(record.extra?.[fieldName]);
+            return extraValue != null ? extraValue : null;
+        }
+
+        function getMarketDateFromRecord(record) {
+            const usTime = String(record?.us_time || '').trim();
+            if (usTime) {
+                return usTime.split(' ')[0];
+            }
+            const barTimeMs = Number(record?.bar_time_ms || 0);
+            if (barTimeMs > 0) {
+                return formatBarTimeMsToET(barTimeMs).split(' ')[0];
+            }
+            return '';
+        }
+
+        function computePctChange(currentValue, referenceValue) {
+            const current = toNumericOrNull(currentValue);
+            const reference = toNumericOrNull(referenceValue);
+            if (current == null || reference == null || reference <= 0) return null;
+            return Math.round((((current - reference) / reference) * 100) * 100) / 100;
+        }
+
+        function buildBarFallbackMetrics(currentClose, dailyBars, marketDate) {
+            if (!Array.isArray(dailyBars) || dailyBars.length === 0) {
+                return null;
+            }
+
+            const normalizedHistory = [];
+            const seenDates = new Set();
+            dailyBars.forEach((row) => {
+                const close = toNumericOrNull(row?.close);
+                const date = getMarketDateFromRecord(row);
+                if (close == null || close <= 0 || !date || seenDates.has(date)) {
+                    return;
+                }
+                seenDates.add(date);
+                normalizedHistory.push({ close, date });
+            });
+
+            const history = normalizedHistory.filter((row) => !marketDate || row.date < marketDate);
+            if (!history.length) {
+                return null;
+            }
+
+            return {
+                day_change_pct: computePctChange(currentClose, history[0]?.close),
+                prev_close_change_pct: computePctChange(history[0]?.close, history[1]?.close),
+                change_7d: computePctChange(currentClose, history[4]?.close),
+            };
+        }
+
+        function formatSignedPercent(value) {
+            const num = toNumericOrNull(value);
+            if (num == null) return '--';
+            return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
+        }
+
+        // 加载大盘指数数据（优先 ibkr_indicators，缺失时回退到 bars）
         async function loadMarketIndex() {
             const container = document.getElementById('marketIndexGrid');
             if (!container) return;
@@ -594,9 +661,9 @@
                 const promises = symbols.map(async (symbol) => {
                     try {
                         const envFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(symbol)}"`;
-                        const [indicatorResp, barResp] = await Promise.all([
+                        const [indicatorResp, barResp, dailyResp] = await Promise.all([
                             apiFetch('ibkr_indicators', {
-                                filter: `${envFilter} && interval = "5m"`,
+                                filter: `${envFilter} && (interval = "5" || interval = "5m")`,
                                 sort: '-bar_time_ms',
                                 perPage: 1
                             }).catch(() => ({ items: [] })),
@@ -604,14 +671,20 @@
                                 filter: `${envFilter} && interval = "5m"`,
                                 sort: '-bar_time_ms',
                                 perPage: 1
+                            }).catch(() => ({ items: [] })),
+                            apiFetch('ibkr_bars', {
+                                filter: `${envFilter} && interval = "1d"`,
+                                sort: '-bar_time_ms',
+                                perPage: 8
                             }).catch(() => ({ items: [] }))
                         ]);
                         return {
                             indicator: Array.isArray(indicatorResp.items) ? (indicatorResp.items[0] || null) : null,
                             bar: Array.isArray(barResp.items) ? (barResp.items[0] || null) : null,
+                            dailyBars: Array.isArray(dailyResp.items) ? dailyResp.items : [],
                         };
                     } catch (_) {
-                        return { indicator: null, bar: null };
+                        return { indicator: null, bar: null, dailyBars: [] };
                     }
                 });
 
@@ -624,21 +697,27 @@
                     const bundle = results[index] || {};
                     const indicator = bundle.indicator || null;
                     const bar = bundle.bar || null;
-                    const data = indicator || bar;
+                    const dailyBars = Array.isArray(bundle.dailyBars) ? bundle.dailyBars : [];
+                    const data = indicator || bar || dailyBars[0] || null;
                     if (data) {
                         hasData = true;
-                        const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? 0);
-                        const changePct = indicator ? Number(indicator.day_change_pct ?? indicator?.extra?.day_change_pct ?? 0) : null;
-                        const change7d = indicator ? Number(indicator.change_7d ?? indicator?.extra?.change_7d ?? 0) : null;
-                        const yesterdayChangePct = indicator ? Number(indicator.prev_close_change_pct ?? indicator?.extra?.prev_close_change_pct ?? 0) : null;
+                        const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? dailyBars[0]?.close ?? 0);
+                        const marketDate = getMarketDateFromRecord(bar || indicator || dailyBars[0] || null);
+                        const barFallbackMetrics = buildBarFallbackMetrics(price, dailyBars, marketDate);
+                        const changePct = getMetricValue(indicator, 'day_change_pct') ?? barFallbackMetrics?.day_change_pct ?? null;
+                        const change7d = getMetricValue(indicator, 'change_7d') ?? barFallbackMetrics?.change_7d ?? null;
+                        const yesterdayChangePct = getMetricValue(indicator, 'prev_close_change_pct') ?? barFallbackMetrics?.prev_close_change_pct ?? null;
                         const lastBarMs = Number(data.bar_time_ms || 0) || 0;
                         const ageMin = lastBarMs ? Math.max(0, Math.round((Date.now() - lastBarMs) / 60000)) : null;
                         const updateText = data.us_time || '--';
                         const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
-                        const changeText = changePct == null ? '--' : ((changePct > 0 ? '+' : '') + changePct.toFixed(2) + '%');
-                        const yesterdayText = yesterdayChangePct == null ? '--' : ((yesterdayChangePct > 0 ? '+' : '') + yesterdayChangePct.toFixed(2) + '%');
-                        const change7dText = change7d == null ? '--' : ((change7d > 0 ? '+' : '') + change7d.toFixed(2) + '%');
+                        const changeText = formatSignedPercent(changePct);
+                        const yesterdayText = formatSignedPercent(yesterdayChangePct);
+                        const change7dText = formatSignedPercent(change7d);
                         const change7dClass = change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral');
+                        const dataSourceText = indicator
+                            ? 'IND 5m'
+                            : (bar && barFallbackMetrics ? 'BAR 5m + 1D' : (bar ? 'BAR 5m' : 'BAR 1D'));
 
                         // VIX 恐慌指数特殊处理
                         let vixBadge = '';
@@ -665,7 +744,7 @@
                                     <div>1D-: ${yesterdayText}</div>
                                     <div class="${change7dClass}">7D: ${change7dText}</div>
                                 </div>
-                                <div class="market-index-meta">${indicator ? 'IND 5m' : 'BAR 5m'} · ${updateText}<br>${ageMin == null ? '--' : `${ageMin}m ago`}</div>
+                                <div class="market-index-meta">${dataSourceText} · ${updateText}<br>${ageMin == null ? '--' : `${ageMin}m ago`}</div>
                             </div>
                         `;
                     } else {

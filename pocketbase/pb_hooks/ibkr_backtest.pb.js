@@ -27,9 +27,9 @@ routerAdd("POST", "/api/custom/ibkr/backtest/run", (c) => {
     try {
         const reqInfo = c.requestInfo()
         const data = reqInfo.body || reqInfo.data || {}
-        const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const environment = getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/backtest/run`
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/backtest/run`
         const resp = $http.send({
             url: upstream,
             method: "POST",
@@ -67,9 +67,9 @@ routerAdd("GET", "/api/custom/ibkr/backtest/status", (c) => {
     }
 
     try {
-        const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/backtest/status`
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/backtest/status`
         const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
         return c.json(resp.statusCode || 200, buildMeta(parseJson(resp.raw || "{}"), upstream))
     } catch (err) {
@@ -103,9 +103,9 @@ routerAdd("POST", "/api/custom/ibkr/backtest/cancel", (c) => {
     try {
         const reqInfo = c.requestInfo()
         const data = reqInfo.body || reqInfo.data || {}
-        const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const environment = getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/backtest/cancel`
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/backtest/cancel`
         const resp = $http.send({
             url: upstream,
             method: "POST",
@@ -152,10 +152,10 @@ routerAdd("GET", "/api/custom/ibkr/backtest/replay", (c) => {
     }
 
     try {
-        const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
         const query = c.request.url.query()
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/backtest/replay${buildQuery({
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/backtest/replay${buildQuery({
             run_id: query.get("run_id") || "",
             symbol: query.get("symbol") || "",
             center_bar_ms: query.get("center_bar_ms") || "",
@@ -194,9 +194,9 @@ routerAdd("POST", "/api/custom/ibkr/backtest/cleanup", (c) => {
     try {
         const reqInfo = c.requestInfo()
         const data = reqInfo.body || reqInfo.data || {}
-        const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const environment = getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/backtest/cleanup`
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/backtest/cleanup`
         const resp = $http.send({
             url: upstream,
             method: "POST",

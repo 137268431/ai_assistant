@@ -6,10 +6,14 @@ IBKR Compute — 指标计算 HTTP 服务
   POST /compute     — 读最新 ibkr_bars, 更新引擎, 写 ibkr_indicators / ibkr_signals
   POST /scan        — 盘前扫描, 写 ibkr_targets
   POST /recompute   — 全量重算 (清空缓存, 从 ibkr_bars 历史重建)
+  POST /chart/timeline — 基于 ibkr_bars 现算图表指标 / 信号时间线
+  GET  /contracts/search — 通过 IBKR API 搜索可用合约候选
+  GET  /screener    — 基于 watchlist/bars/indicators/targets 聚合盘前筛选数据
   GET  /health      — 健康检查
   GET  /status      — 引擎状态
 """
 
+import json
 import os
 import time
 import traceback
@@ -23,12 +27,14 @@ from ibkr_compute.backtest import BacktestService
 from ibkr_compute.core.config import Config
 from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
+from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
     HIGHER_INTERVALS,
     build_runtime_timestamps,
+    classify_session,
     build_signal_id,
     interval_to_chart_tf,
     interval_to_ms,
@@ -90,15 +96,63 @@ LEGACY_EMPTY_FALLBACKS = {"ibkr_positions", "ibkr_session"}
 ROLLUP_BATCH_SIZE = 100
 INDICATOR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_INDICATOR_BATCH_SIZE", "60")))
 SIGNAL_BATCH_SIZE = max(1, int(os.environ.get("IBKR_SIGNAL_BATCH_SIZE", "30")))
+CHART_TIMELINE_VISIBLE_LIMIT = max(200, int(os.environ.get("IBKR_CHART_TIMELINE_VISIBLE_LIMIT", "3000")))
 COMPUTE_CURSOR_STATE_KEY = "compute_cursors"
 COMPUTE_CURSOR_STATE_DATE = "global"
 IBKR_RUNTIME_CONTROL_STATE_KEY = "ibkr_runtime_control"
 IBKR_RUNTIME_CONTROL_STATE_DATE = "global"
+DEFAULT_TRADE_WINDOW_START = (9, 35)
+DEFAULT_TRADE_WINDOW_END = (15, 30)
+DEFAULT_ORDER_WINDOW_END = (15, 0)
 
 
 def current_market_date(now: datetime | None = None) -> str:
     et_now = now.astimezone(timezone(timedelta(hours=-4))) if now else datetime.now(timezone(timedelta(hours=-4)))
     return et_now.strftime("%Y-%m-%d")
+
+
+def get_environment_time_window(environment: str, key: str, default: tuple[int, int]) -> tuple[int, int]:
+    raw_value = str(
+        cfg.get_for_environment(key, environment, f"{default[0]:02d}:{default[1]:02d}") or ""
+    ).strip()
+    try:
+        hour_text, minute_text = raw_value.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except Exception:
+        pass
+    return default
+
+
+def resolve_initial_signal_state(environment: str, bar_ms: int) -> tuple[str, str]:
+    manual_confirm_enabled = cfg.get_bool_for_environment(
+        "signal_manual_confirm_enabled",
+        environment,
+        True,
+    )
+
+    if bar_ms <= 0:
+        return (
+            ("awaiting_confirm", "manual_confirmation_required")
+            if manual_confirm_enabled
+            else ("pending", "")
+        )
+
+    signal_time = ms_to_et(bar_ms)
+    current = (signal_time.hour, signal_time.minute)
+    trade_start = get_environment_time_window(environment, "trade_window_start_time", DEFAULT_TRADE_WINDOW_START)
+    trade_end = get_environment_time_window(environment, "trade_window_end_time", DEFAULT_TRADE_WINDOW_END)
+    order_end = get_environment_time_window(environment, "order_window_end_time", DEFAULT_ORDER_WINDOW_END)
+
+    if not (trade_start <= current <= trade_end):
+        return "rejected", "outside_trade_window"
+    if not (trade_start <= current <= order_end):
+        return "rejected", "outside_order_window"
+    if manual_confirm_enabled:
+        return "awaiting_confirm", "manual_confirmation_required"
+    return "pending", ""
 
 
 def build_bar_environment_filter(environment: str, include_legacy_empty: bool = False) -> str:
@@ -568,6 +622,458 @@ def get_daily_change_fields(environment: str, symbol: str, current_close: float,
     }
 
 
+def coerce_float(value, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:
+        return default
+    return number
+
+
+def coerce_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_json_object(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def load_effective_watchlist(environment: str) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    rows = pb.get_all_records(
+        "watchlist",
+        filter=(
+            f'environment = "{runtime_environment}" '
+            '|| environment = "global" '
+            '|| environment = ""'
+        ),
+        sort="-updated",
+        max_pages=30,
+    )
+    merged = {}
+    applied = {}
+    priority = {"": 0, "global": 1, runtime_environment: 2}
+    for row in rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if not symbol:
+            continue
+        row_environment = str(row.get("environment", "") or "").strip().lower()
+        rank = priority.get(row_environment, -1)
+        if rank < 0:
+            continue
+        if symbol in applied and applied[symbol] > rank:
+            continue
+        applied[symbol] = rank
+        merged[symbol] = row
+    return merged
+
+
+def parse_market_date_bounds_ms(market_date: str) -> tuple[int, int]:
+    et = timezone(timedelta(hours=-4))
+    start_dt = datetime.strptime(str(market_date or "").strip(), "%Y-%m-%d").replace(
+        tzinfo=et,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    end_dt = start_dt + timedelta(days=1)
+    return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
+
+
+def build_tradability_assessment(row: dict) -> tuple[int, list[str]]:
+    score = 0
+    notes = []
+
+    price = coerce_float(row.get("price"))
+    avg_10d_volume = coerce_float(row.get("avg_10d_volume"))
+    premarket_volume = coerce_float(row.get("premarket_volume"))
+    today_volume = coerce_float(row.get("today_volume"))
+    atr_pct = abs(coerce_float(row.get("atr_pct")))
+    day_change_pct = abs(coerce_float(row.get("day_change_pct")))
+    freshness_min = row.get("freshness_min")
+    target_score = coerce_float(row.get("target_score"))
+
+    if 2 <= price <= 80:
+        score += 12
+        notes.append("价位适中")
+    elif 1 <= price <= 150:
+        score += 6
+
+    if avg_10d_volume >= 5_000_000:
+        score += 18
+        notes.append("10日均量>500万")
+    elif avg_10d_volume >= 1_000_000:
+        score += 12
+        notes.append("10日均量>100万")
+    elif avg_10d_volume >= 500_000:
+        score += 6
+
+    if premarket_volume >= 500_000:
+        score += 18
+        notes.append("盘前量能>50万")
+    elif premarket_volume >= 100_000:
+        score += 12
+        notes.append("盘前量能>10万")
+    elif today_volume >= 300_000:
+        score += 8
+        notes.append("当日成交活跃")
+
+    if 2 <= atr_pct <= 12:
+        score += 16
+        notes.append("ATR波动充足")
+    elif 1 <= atr_pct <= 20:
+        score += 8
+
+    if day_change_pct >= 2:
+        score += 12
+        notes.append("日内波动>2%")
+    elif day_change_pct >= 0.8:
+        score += 6
+
+    if isinstance(freshness_min, int):
+        if freshness_min <= 20:
+            score += 14
+            notes.append("bars新鲜")
+        elif freshness_min <= 60:
+            score += 8
+        elif freshness_min <= 180:
+            score += 3
+
+    if target_score >= 10:
+        score += 10
+        notes.append("已入目标池")
+    elif target_score >= 5:
+        score += 6
+
+    if str(row.get("direction_bias") or "").strip().lower() in {"long", "short"}:
+        score += 4
+
+    return min(100, score), notes
+
+
+def build_screener_payload(
+    environment: str,
+    market_date: str | None = None,
+    symbols=None,
+    limit: int = 0,
+) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    selected_symbols = normalize_symbols(symbols)
+    selected_set = set(selected_symbols)
+    market_date = str(market_date or current_market_date()).strip() or current_market_date()
+    market_start_ms, market_end_ms = parse_market_date_bounds_ms(market_date)
+    now_ms = int(time.time() * 1000)
+
+    refresh_daily_close_cache([runtime_environment])
+    watchlist_map = load_effective_watchlist(runtime_environment)
+    metadata_map = refresh_symbol_metadata()
+
+    universe_symbols = selected_symbols or sorted(watchlist_map.keys())
+    if selected_set and not universe_symbols:
+        universe_symbols = sorted(selected_set)
+    universe_set = set(universe_symbols)
+
+    target_rows = pb.get_all_records(
+        "ibkr_targets",
+        filter=f'date = "{market_date}" && environment = "{runtime_environment}"',
+        sort="-updated",
+        max_pages=20,
+    )
+    target_by_symbol = {}
+    for row in target_rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if symbol and symbol not in target_by_symbol:
+            target_by_symbol[symbol] = row
+            if symbol not in universe_set and not selected_set:
+                universe_symbols.append(symbol)
+                universe_set.add(symbol)
+
+    if not universe_symbols:
+        timestamps = build_runtime_timestamps()
+        return {
+            "ok": True,
+            "environment": runtime_environment,
+            "market_date": market_date,
+            **timestamps,
+            "summary": {
+                "total": 0,
+                "with_live_bars": 0,
+                "operable": 0,
+                "candidate_targets": 0,
+                "active_targets": 0,
+            },
+            "filters": {
+                "exchanges": [],
+                "industries": [],
+                "target_statuses": [],
+                "direction_biases": [],
+            },
+            "items": [],
+        }
+
+    symbol_filter = build_symbol_filter(universe_symbols)
+    lookback_daily_ms = max(0, market_start_ms - interval_to_ms("1d") * 20)
+    daily_filter_parts = [
+        'interval = "1d"',
+        build_bar_environment_filter(runtime_environment, include_legacy_empty=True),
+        f"bar_time_ms >= {lookback_daily_ms}",
+        f"bar_time_ms < {market_end_ms}",
+    ]
+    if symbol_filter:
+        daily_filter_parts.append(symbol_filter)
+    daily_rows = pb.get_all_records(
+        "ibkr_bars",
+        filter=" && ".join(daily_filter_parts),
+        sort="bar_time_ms",
+        max_pages=100,
+    )
+
+    intraday_filter_parts = [
+        'interval = "5m"',
+        build_bar_environment_filter(runtime_environment, include_legacy_empty=True),
+        f"bar_time_ms >= {market_start_ms}",
+        f"bar_time_ms < {market_end_ms}",
+    ]
+    if symbol_filter:
+        intraday_filter_parts.append(symbol_filter)
+    intraday_rows = pb.get_all_records(
+        "ibkr_bars",
+        filter=" && ".join(intraday_filter_parts),
+        sort="bar_time_ms",
+        max_pages=400,
+    )
+
+    indicator_filter_parts = [
+        f'interval = "{interval_to_chart_tf("5m")}"',
+        f'environment = "{runtime_environment}"',
+        f"bar_time_ms >= {max(0, market_start_ms - interval_to_ms('1d') * 5)}",
+    ]
+    if symbol_filter:
+        indicator_filter_parts.append(symbol_filter)
+    indicator_rows = pb.get_all_records(
+        "ibkr_indicators",
+        filter=" && ".join(indicator_filter_parts),
+        sort="-bar_time_ms",
+        max_pages=120,
+    )
+
+    daily_bars_by_symbol = {}
+    fallback_daily_by_symbol = {}
+    for row in daily_rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if symbol not in universe_set:
+            continue
+        bar_ms = coerce_int(row.get("bar_time_ms"))
+        close = coerce_float(row.get("close"))
+        if bar_ms <= 0 or close <= 0:
+            continue
+        daily_bars_by_symbol.setdefault(symbol, []).append(row)
+        row_date = ms_to_et(bar_ms).strftime("%Y-%m-%d")
+        if row_date < market_date:
+            fallback_daily_by_symbol[symbol] = row
+
+    latest_intraday_by_symbol = {}
+    volume_stats_by_symbol = {}
+    for row in intraday_rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if symbol not in universe_set:
+            continue
+        bar_ms = coerce_int(row.get("bar_time_ms"))
+        if bar_ms <= 0:
+            continue
+        volume = coerce_float(row.get("volume"))
+        session_type = str(row.get("session_type", "") or "").strip().lower() or classify_session(
+            bar_time_ms=bar_ms
+        )
+        latest_intraday_by_symbol[symbol] = row
+        stats = volume_stats_by_symbol.setdefault(symbol, {"premarket": 0.0, "today": 0.0})
+        stats["today"] += volume
+        if session_type == "premarket":
+            stats["premarket"] += volume
+
+    latest_indicator_by_symbol = {}
+    for row in indicator_rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if symbol not in universe_set or symbol in latest_indicator_by_symbol:
+            continue
+        latest_indicator_by_symbol[symbol] = row
+
+    items = []
+    exchange_values = set()
+    industry_values = set()
+    target_status_values = set()
+    direction_bias_values = set()
+    candidate_targets = 0
+    active_targets = 0
+
+    for symbol in universe_symbols:
+        base_meta = watchlist_map.get(symbol) or metadata_map.get(symbol) or {}
+        latest_intraday = latest_intraday_by_symbol.get(symbol)
+        latest_daily = fallback_daily_by_symbol.get(symbol)
+        latest_target = target_by_symbol.get(symbol)
+        latest_indicator = latest_indicator_by_symbol.get(symbol)
+        indicator_extra = parse_json_object((latest_indicator or {}).get("extra"))
+
+        intraday_bar_ms = coerce_int((latest_intraday or {}).get("bar_time_ms"))
+        daily_bar_ms = coerce_int((latest_daily or {}).get("bar_time_ms"))
+        price = coerce_float((latest_intraday or {}).get("close"))
+        price_source = "5m"
+        if price <= 0:
+            price = coerce_float((latest_daily or {}).get("close"))
+            price_source = "1d_close" if price > 0 else ""
+
+        compare_bar_ms = intraday_bar_ms or market_start_ms
+        latest_bar_time_ms = intraday_bar_ms or daily_bar_ms
+        latest_us_time = str((latest_intraday or {}).get("us_time") or (latest_daily or {}).get("us_time") or "")
+        latest_session_type = str((latest_intraday or {}).get("session_type") or "").strip().lower()
+        if intraday_bar_ms > 0 and not latest_session_type:
+            latest_session_type = classify_session(bar_time_ms=intraday_bar_ms)
+
+        daily_history = [
+            row
+            for row in daily_bars_by_symbol.get(symbol, [])
+            if ms_to_et(coerce_int(row.get("bar_time_ms"))).strftime("%Y-%m-%d") < market_date
+        ]
+        last_10_daily = daily_history[-10:]
+        avg_10d_volume = (
+            round(
+                sum(coerce_float(row.get("volume")) for row in last_10_daily) / len(last_10_daily),
+                2,
+            )
+            if last_10_daily else 0.0
+        )
+
+        daily_fields = get_daily_change_fields(runtime_environment, symbol, price, compare_bar_ms) if price > 0 else {
+            "day_change_pct": 0.0,
+            "prev_close_change_pct": 0.0,
+            "change_7d": 0.0,
+        }
+
+        target_status = str((latest_target or {}).get("status") or "").strip().lower()
+        direction_bias = str((latest_target or {}).get("direction_bias") or "neutral").strip().lower() or "neutral"
+        target_score = round(coerce_float((latest_target or {}).get("score")), 2)
+        scan_reason = str((latest_target or {}).get("scan_reason") or "").strip()
+        if target_status == "candidate":
+            candidate_targets += 1
+        elif target_status == "active":
+            active_targets += 1
+
+        volume_stats = volume_stats_by_symbol.get(symbol, {})
+        freshness_min = None
+        if intraday_bar_ms > 0:
+            freshness_min = max(0, int((now_ms - intraday_bar_ms) // 60000))
+
+        exchange = (
+            str((base_meta or {}).get("exchange") or (latest_intraday or {}).get("exchange") or (latest_target or {}).get("exchange") or "")
+            .strip()
+            .upper()
+        )
+        industry = str((base_meta or {}).get("industry") or "").strip()
+        note = str((base_meta or {}).get("note") or "").strip()
+        atr_pct = round(coerce_float(indicator_extra.get("atr_pct", (latest_indicator or {}).get("atr_pct"))), 2)
+
+        row = {
+            "symbol": symbol,
+            "exchange": exchange,
+            "industry": industry,
+            "note": note,
+            "price": round(price, 4) if price > 0 else 0.0,
+            "price_source": price_source,
+            "atr_pct": atr_pct,
+            "avg_10d_volume": avg_10d_volume,
+            "premarket_volume": round(coerce_float(volume_stats.get("premarket")), 2),
+            "today_volume": round(coerce_float(volume_stats.get("today")), 2),
+            "latest_bar_time_ms": latest_bar_time_ms,
+            "latest_intraday_bar_time_ms": intraday_bar_ms,
+            "latest_us_time": latest_us_time,
+            "latest_session_type": latest_session_type,
+            "freshness_min": freshness_min,
+            "has_live_bar": intraday_bar_ms > 0,
+            "target_status": target_status,
+            "target_score": target_score,
+            "direction_bias": direction_bias,
+            "scan_reason": scan_reason,
+            **daily_fields,
+        }
+        tradability_score, operable_reasons = build_tradability_assessment(row)
+        row["tradability_score"] = tradability_score
+        row["operable_reasons"] = operable_reasons
+        row["is_operable"] = bool(
+            row["has_live_bar"]
+            and row["price"] > 0
+            and row["avg_10d_volume"] >= 500_000
+            and row["tradability_score"] >= 60
+            and isinstance(row["freshness_min"], int)
+            and row["freshness_min"] <= 90
+        )
+        items.append(row)
+
+        if exchange:
+            exchange_values.add(exchange)
+        if industry:
+            industry_values.add(industry)
+        if target_status:
+            target_status_values.add(target_status)
+        if direction_bias:
+            direction_bias_values.add(direction_bias)
+
+    items.sort(
+        key=lambda item: (
+            0 if item.get("is_operable") else 1,
+            -coerce_float(item.get("tradability_score")),
+            -coerce_float(item.get("target_score")),
+            -coerce_float(item.get("premarket_volume")),
+            -coerce_float(item.get("avg_10d_volume")),
+            item.get("symbol", ""),
+        )
+    )
+    if limit > 0:
+        items = items[:limit]
+
+    timestamps = build_runtime_timestamps()
+    return {
+        "ok": True,
+        "environment": runtime_environment,
+        "market_date": market_date,
+        **timestamps,
+        "summary": {
+            "total": len(items),
+            "with_live_bars": sum(1 for item in items if item.get("has_live_bar")),
+            "operable": sum(1 for item in items if item.get("is_operable")),
+            "candidate_targets": candidate_targets,
+            "active_targets": active_targets,
+            "avg_premarket_volume": round(
+                sum(coerce_float(item.get("premarket_volume")) for item in items) / len(items),
+                2,
+            ) if items else 0.0,
+        },
+        "filters": {
+            "exchanges": sorted(exchange_values),
+            "industries": sorted(industry_values),
+            "target_statuses": sorted(target_status_values),
+            "direction_biases": sorted(direction_bias_values),
+        },
+        "items": items,
+    }
+
+
 def is_recent_signal_bar(bar_time_ms: int, interval: str) -> bool:
     now_ms = int(time.time() * 1000)
     return bar_time_ms >= now_ms - max(interval_to_ms(interval) * 3, 15 * 60 * 1000)
@@ -808,6 +1314,7 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
     bar_ms = int(bar.get("bar_time_ms", 0) or 0)
     symbol_meta = refresh_symbol_metadata().get(symbol, {})
     signal_type = str(signal.get("signal", "") or "")
+    initial_status, initial_status_reason = resolve_initial_signal_state(environment, bar_ms)
     signal_extra = dict(signal.get("extra") or {})
     signal_extra.update({
         "industry": symbol_meta.get("industry", ""),
@@ -820,6 +1327,14 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
         "atr": signal_extra.get("atr_raw", signal_extra.get("atr", 0)),
         "environment": environment,
         "source": "ibkr_compute",
+        "signal_source": "ibkr_compute_realtime",
+        "signal_source_label": "IBKR 实时计算",
+        "signal_source_detail": "来自 IBKR 实盘 bars 收盘计算",
+        "source_kind": "computed",
+        "computed_from": "ibkr_bars",
+        "status_reason": initial_status_reason,
+        "initial_status": initial_status,
+        "initial_status_reason": initial_status_reason,
         **build_runtime_timestamps(),
     })
 
@@ -848,8 +1363,260 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
         "bar_index": engine.bar_count,
         "script_tag": IBKR_SCRIPT_TAG,
         "chart_tf": chart_tf,
-        "status": "pending",
+        "status": initial_status,
+        "note": initial_status_reason,
         "extra": signal_extra,
+    }
+
+
+def load_chart_timeline_source_bars(
+    environment: str,
+    symbol: str,
+    interval: str,
+    start_ms: int = 0,
+    end_ms: int = 0,
+) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_interval = normalize_interval(interval)
+    warmup_bars = int(BOOTSTRAP_LOOKBACK_BARS.get(normalized_interval, 260) or 260)
+    visible_pages = max(1, (CHART_TIMELINE_VISIBLE_LIMIT + 199) // 200 + 1)
+    warmup_pages = max(1, (warmup_bars + 199) // 200 + 1)
+
+    base_filter_parts = [
+        f'symbol = "{normalized_symbol}"',
+        f'interval = "{normalized_interval}"',
+        build_bar_environment_filter(runtime_environment, include_legacy_empty=True),
+    ]
+    if end_ms > 0:
+        base_filter_parts.append(f"bar_time_ms <= {int(end_ms)}")
+
+    visible_filter_parts = list(base_filter_parts)
+    if start_ms > 0:
+        visible_filter_parts.append(f"bar_time_ms >= {int(start_ms)}")
+
+    visible_rows = pb.get_all_records(
+        "ibkr_bars",
+        filter=" && ".join(visible_filter_parts),
+        sort="bar_time_ms",
+        max_pages=visible_pages,
+    )
+    if len(visible_rows) > CHART_TIMELINE_VISIBLE_LIMIT:
+        visible_rows = visible_rows[-CHART_TIMELINE_VISIBLE_LIMIT:]
+
+    warmup_rows = []
+    warmup_anchor_ms = int(visible_rows[0].get("bar_time_ms", 0) or 0) if visible_rows else 0
+    if warmup_bars > 0 and warmup_anchor_ms > 0:
+        warmup_filter_parts = list(base_filter_parts)
+        warmup_filter_parts.append(f"bar_time_ms < {warmup_anchor_ms}")
+        warmup_rows = pb.get_all_records(
+            "ibkr_bars",
+            filter=" && ".join(warmup_filter_parts),
+            sort="-bar_time_ms",
+            max_pages=warmup_pages,
+        )
+        warmup_rows = list(reversed(warmup_rows[:warmup_bars]))
+
+    return {
+        "source_rows": warmup_rows + visible_rows,
+        "visible_rows": visible_rows,
+        "warmup_limit": warmup_bars,
+        "warmup_used": len(warmup_rows),
+    }
+
+
+def build_chart_indicator_row(environment: str, symbol: str, interval: str, row: dict) -> dict:
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_interval = normalize_interval(interval)
+    chart_tf = interval_to_chart_tf(normalized_interval)
+    bar_ms = int(row.get("bar_time_ms", 0) or 0)
+    daily_fields = get_daily_change_fields(environment, normalized_symbol, float(row.get("close", 0) or 0), bar_ms)
+    timestamps = build_runtime_timestamps()
+    indicator = {
+        **{key: value for key, value in (row or {}).items() if key != "signal"},
+        **daily_fields,
+        **timestamps,
+        "environment": environment,
+        "symbol": normalized_symbol,
+        "interval": chart_tf,
+        "chart_tf": chart_tf,
+        "source": "ibkr_compute_timeline",
+        "source_kind": "computed",
+        "computed_from": "ibkr_bars",
+    }
+    return indicator
+
+
+def build_chart_signal_row(environment: str, symbol: str, interval: str, row: dict) -> dict | None:
+    raw_signal = row.get("signal")
+    if not raw_signal:
+        return None
+
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_interval = normalize_interval(interval)
+    chart_tf = interval_to_chart_tf(normalized_interval)
+    bar_ms = int(row.get("bar_time_ms", 0) or 0)
+    bar_index = int(row.get("bar_index", row.get("bar_count", 0)) or 0)
+    daily_fields = get_daily_change_fields(environment, normalized_symbol, float(row.get("close", 0) or 0), bar_ms)
+    signal_type = str(raw_signal.get("signal", "") or "")
+    signal_extra = dict(raw_signal.get("extra") or {})
+    signal_extra.update(
+        {
+            **daily_fields,
+            **build_runtime_timestamps(),
+            "chart_tf": chart_tf,
+            "bar_time_ms": bar_ms,
+            "bar_index": bar_index,
+            "close": round(float(row.get("close", 0) or 0), 2),
+            "atr": signal_extra.get("atr_raw", signal_extra.get("atr", row.get("atr", 0))),
+            "atr_pct": row.get("atr_pct", signal_extra.get("atr_pct", 0)),
+            "environment": environment,
+            "source": "ibkr_compute_timeline",
+            "signal_source": "ibkr_compute_timeline",
+            "signal_source_label": "IBKR 图表回放",
+            "signal_source_detail": "来自缓存 bars 时间线重算",
+            "computed_from": "ibkr_bars",
+        }
+    )
+
+    rr_value = raw_signal.get("rr", "")
+    rr_text = f"{float(rr_value):.1f}:1" if isinstance(rr_value, (int, float)) else str(rr_value or "")
+
+    return {
+        "environment": environment,
+        "symbol": normalized_symbol,
+        "signal_id": build_signal_id(normalized_symbol, bar_ms, signal_type),
+        "direction": raw_signal.get("direction", ""),
+        "signal": signal_type,
+        "limit_price": round(float(row.get("close", 0) or 0), 2),
+        "entry": raw_signal.get("entry", 0),
+        "stop_loss": raw_signal.get("stop_loss", 0),
+        "take_profit": raw_signal.get("take_profit", 0),
+        "rr": rr_text,
+        "shares": raw_signal.get("shares", 0),
+        "exchange": str(row.get("exchange", "") or "").upper(),
+        "interval": chart_tf,
+        "chart_tf": chart_tf,
+        "reason": raw_signal.get("reason", ""),
+        "us_time": row.get("us_time", ""),
+        "cn_time": row.get("cn_time", ""),
+        "date": str(row.get("us_time", "") or "")[:10],
+        "bar_time_ms": bar_ms,
+        "bar_index": bar_index,
+        "status": "computed",
+        "source": "ibkr_compute_timeline",
+        "source_kind": "computed",
+        "computed_from": "ibkr_bars",
+        "extra": signal_extra,
+    }
+
+
+def build_chart_timeline_payload(
+    environment: str,
+    symbol: str,
+    interval: str,
+    start_ms: int = 0,
+    end_ms: int = 0,
+    include_signals: bool = True,
+) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_interval = normalize_interval(interval)
+    chart_tf = interval_to_chart_tf(normalized_interval)
+
+    refresh_daily_close_cache([runtime_environment])
+    source = load_chart_timeline_source_bars(
+        runtime_environment,
+        normalized_symbol,
+        normalized_interval,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
+    source_rows = source.get("source_rows") or []
+    visible_rows = source.get("visible_rows") or []
+
+    if not visible_rows:
+        return {
+            "ok": True,
+            "bars": [],
+            "indicator_timeline": [],
+            "latest_indicator": None,
+            "signals": [],
+            "meta": {
+                "environment": runtime_environment,
+                "symbol": normalized_symbol,
+                "interval": chart_tf,
+                "start_ms": int(start_ms or 0),
+                "end_ms": int(end_ms or 0),
+                "visible_bar_count": 0,
+                "source_bar_count": len(source_rows),
+                "warmup_bars": int(source.get("warmup_limit", 0) or 0),
+                "warmup_used": int(source.get("warmup_used", 0) or 0),
+                "signal_mode": "computed" if include_signals and normalized_interval == "5m" else "disabled",
+                "reason": "no_visible_bars",
+            },
+        }
+
+    timeline = build_runtime_timeline(
+        normalized_symbol,
+        normalized_interval,
+        source_rows,
+        include_signals=include_signals,
+        visible_start_ms=int(start_ms or 0),
+        visible_end_ms=int(end_ms or 0),
+    )
+    timeline_rows = timeline.get("rows") or []
+    bars = [
+        {
+            "environment": runtime_environment,
+            "symbol": normalized_symbol,
+            "interval": chart_tf,
+            "exchange": str(row.get("exchange", "") or "").upper(),
+            "bar_time_ms": int(row.get("bar_time_ms", 0) or 0),
+            "us_time": row.get("us_time", ""),
+            "cn_time": row.get("cn_time", ""),
+            "session_type": row.get("session_type", "regular"),
+            "open": round(float(row.get("open", 0) or 0), 4),
+            "high": round(float(row.get("high", 0) or 0), 4),
+            "low": round(float(row.get("low", 0) or 0), 4),
+            "close": round(float(row.get("close", 0) or 0), 4),
+            "volume": round(float(row.get("volume", 0) or 0), 4),
+        }
+        for row in timeline_rows
+    ]
+    indicators = [
+        build_chart_indicator_row(runtime_environment, normalized_symbol, normalized_interval, row)
+        for row in timeline_rows
+    ]
+    signals = []
+    if include_signals and normalized_interval == "5m":
+        signals = [
+            signal
+            for signal in (
+                build_chart_signal_row(runtime_environment, normalized_symbol, normalized_interval, row)
+                for row in timeline_rows
+            )
+            if signal
+        ]
+
+    return {
+        "ok": True,
+        "bars": bars,
+        "indicator_timeline": indicators,
+        "latest_indicator": indicators[-1] if indicators else None,
+        "signals": signals,
+        "meta": {
+            "environment": runtime_environment,
+            "symbol": normalized_symbol,
+            "interval": chart_tf,
+            "start_ms": int(start_ms or 0),
+            "end_ms": int(end_ms or 0),
+            "visible_bar_count": len(bars),
+            "source_bar_count": len(source_rows),
+            "warmup_bars": int(source.get("warmup_limit", 0) or 0),
+            "warmup_used": int(source.get("warmup_used", 0) or 0),
+            "signal_mode": "computed" if include_signals and normalized_interval == "5m" else "disabled",
+        },
     }
 
 
@@ -1249,6 +2016,114 @@ def backtest_cancel():
     return jsonify(result), status_code
 
 
+@app.route("/chart/timeline", methods=["POST"])
+def chart_timeline():
+    payload = request.get_json(silent=True) or {}
+    environment = str(payload.get("environment") or "live").strip().lower() or "live"
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    interval = normalize_interval(payload.get("interval") or "5m")
+    start_ms = int(payload.get("start_ms") or 0)
+    end_ms = int(payload.get("end_ms") or 0)
+    include_signals = bool(payload.get("include_signals", True))
+
+    if environment not in SUPPORTED_COMPUTE_ENVIRONMENTS:
+        return jsonify({"ok": False, "error": "invalid_environment", "environment": environment}), 400
+    if not symbol:
+        return jsonify({"ok": False, "error": "missing_symbol"}), 400
+    if interval not in COMPUTE_INTERVALS:
+        return jsonify({"ok": False, "error": "invalid_interval", "interval": interval}), 400
+    if start_ms > 0 and end_ms > 0 and start_ms > end_ms:
+        return jsonify({"ok": False, "error": "invalid_range", "start_ms": start_ms, "end_ms": end_ms}), 400
+
+    result = build_chart_timeline_payload(
+        environment,
+        symbol,
+        interval,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        include_signals=include_signals,
+    )
+    return jsonify(result), 200
+
+
+@app.route("/contracts/search", methods=["GET"])
+def contracts_search():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    query = str(request.args.get("q") or "").strip()
+    limit = min(24, max(1, coerce_int(request.args.get("limit"), 12)))
+    if not query:
+        return jsonify({"ok": False, "error": "missing_query"}), 400
+    if not hasattr(service, "conid_resolver") or service.conid_resolver is None:
+        return jsonify({"ok": False, "error": "IBKR contract resolver unavailable"}), 503
+
+    _maybe_restore_ibkr_service(service)
+    service_status = service.status() if hasattr(service, "status") else {}
+    try:
+        items = service.conid_resolver.search_contracts(query, limit=limit)
+        return jsonify(
+            {
+                "ok": True,
+                "query": query,
+                "limit": limit,
+                "count": len(items),
+                "items": items,
+                "environment": _ibkr_service_environment(service),
+                "session_authenticated": bool((service_status.get("session") or {}).get("authenticated")),
+                "gateway_running": bool((service_status.get("gateway") or {}).get("running")),
+            }
+        ), 200
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(exc),
+                "query": query,
+                "limit": limit,
+                "environment": _ibkr_service_environment(service),
+                "session_authenticated": bool((service_status.get("session") or {}).get("authenticated")),
+            }
+        ), 500
+
+
+@app.route("/screener", methods=["GET"])
+def screener():
+    environment = str(request.args.get("environment") or "live").strip().lower() or "live"
+    market_date = str(request.args.get("market_date") or current_market_date()).strip() or current_market_date()
+    symbols = normalize_symbols(str(request.args.get("symbols") or "").split(","))
+    limit = coerce_int(request.args.get("limit"), 0)
+
+    if environment not in SUPPORTED_COMPUTE_ENVIRONMENTS:
+        return jsonify({"ok": False, "error": "invalid_environment", "environment": environment}), 400
+    try:
+        params = {
+            "environment": environment,
+            "market_date": market_date,
+        }
+        if symbols:
+            params["symbols"] = ",".join(symbols)
+        if limit > 0:
+            params["limit"] = str(limit)
+        response = requests.get(
+            f"{PB_BASE_URL.rstrip('/')}/api/custom/ibkr/screener",
+            params=params,
+            timeout=30,
+        )
+        return Response(
+            response.text,
+            status=response.status_code,
+            mimetype="application/json",
+        )
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid_market_date", "market_date": market_date}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc), "environment": environment, "market_date": market_date}), 500
+
+
 @app.route("/backtest/replay", methods=["GET"])
 def backtest_replay():
     run_id = str(request.args.get("run_id") or "").strip()
@@ -1316,6 +2191,77 @@ def status():
         "last_compute": datetime.fromtimestamp(last_compute_time).isoformat() if last_compute_time else None,
         "last_scan": datetime.fromtimestamp(last_scan_time).isoformat() if last_scan_time else None,
         "backtest": backtest_service.status(),
+    })
+
+
+def _resolve_data_quality_symbols(service, payload: dict) -> list[str]:
+    requested_symbols = normalize_symbols(payload.get("symbols"))
+    if requested_symbols:
+        return requested_symbols
+
+    scan_scope = str(payload.get("scan_scope") or "manual").strip().lower()
+    batch_size = max(1, int(payload.get("batch_size") or 0) or 8)
+    if scan_scope == "active_target":
+        try:
+            status_payload = service.status()
+            return normalize_symbols(((status_payload.get("market_universe") or {}).get("active_target_symbols") or []))
+        except Exception:
+            return []
+    if scan_scope == "watchlist":
+        try:
+            service.config.refresh()
+            service._refresh_watchlist_pool(force=True)
+            return normalize_symbols((service._watchlist_symbols or [])[:batch_size])
+        except Exception:
+            return []
+    return []
+
+
+@app.route("/ibkr/data-quality/scan", methods=["POST"])
+def ibkr_data_quality_scan():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    symbols = _resolve_data_quality_symbols(service, payload)
+    scan_scope = str(payload.get("scan_scope") or "manual").strip().lower() or "manual"
+    persist = bool(payload.get("persist", True))
+    repair = bool(payload.get("repair", False))
+    result = service.scan_bar_integrity(
+        symbols,
+        scan_scope=scan_scope,
+        persist=persist,
+        repair=repair,
+    )
+    return jsonify({
+        "ok": True,
+        "symbols": symbols,
+        "scan_scope": scan_scope,
+        **result,
+    })
+
+
+@app.route("/ibkr/data-quality/repair", methods=["POST"])
+def ibkr_data_quality_repair():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    symbols = _resolve_data_quality_symbols(service, payload)
+    scan_scope = str(payload.get("scan_scope") or "manual").strip().lower() or "manual"
+    result = service.scan_bar_integrity(
+        symbols,
+        scan_scope=scan_scope,
+        persist=bool(payload.get("persist", True)),
+        repair=True,
+    )
+    return jsonify({
+        "ok": True,
+        "symbols": symbols,
+        "scan_scope": scan_scope,
+        **result,
     })
 
 
@@ -1530,6 +2476,27 @@ def _extract_summary_text(summary_map: dict, *keys: str) -> str:
     return ""
 
 
+def _extract_live_order_text(order: dict, *keys: str) -> str:
+    for key in keys:
+        value = order.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _coerce_live_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _normalize_live_position(position: dict) -> dict:
     quantity = float(_coerce_float(position.get("position"), 0.0) or 0.0)
     market_price = float(_coerce_float(position.get("mktPrice"), 0.0) or 0.0)
@@ -1557,6 +2524,8 @@ def _normalize_live_position(position: dict) -> dict:
 
 def _normalize_live_order(order: dict) -> dict:
     status = str(order.get("status") or "").strip()
+    parent_id = str(order.get("parentId") or "").strip()
+    order_type = str(order.get("orderType") or order.get("orderDesc") or "").strip().upper()
     total_quantity = float(
         _coerce_float(
             order.get("totalSize")
@@ -1574,21 +2543,40 @@ def _normalize_live_order(order: dict) -> dict:
 
     closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}
     normalized_status = status.upper()
+    if not parent_id:
+        role = "entry"
+    elif "STP" in order_type or "STOP" in order_type:
+        role = "stop_loss"
+    elif "LMT" in order_type or "LIMIT" in order_type:
+        role = "take_profit"
+    else:
+        role = "child"
 
     return {
         "order_id": str(order.get("orderId") or order.get("id") or "").strip(),
-        "parent_id": str(order.get("parentId") or "").strip(),
+        "parent_id": parent_id,
         "symbol": str(order.get("ticker") or order.get("symbol") or order.get("contractDesc") or "").strip().upper(),
+        "conid": int(_coerce_float(order.get("conid"), 0) or 0),
         "side": str(order.get("side") or "").strip().upper(),
         "status": status,
-        "order_type": str(order.get("orderType") or order.get("orderDesc") or "").strip().upper(),
+        "role": role,
+        "order_type": order_type,
+        "order_description": _extract_live_order_text(order, "orderDesc", "description", "description1"),
         "price": float(_coerce_float(order.get("price"), 0.0) or 0.0),
+        "trigger_price": float(_coerce_float(order.get("auxPrice"), 0.0) or 0.0),
         "avg_price": float(_coerce_float(order.get("avgPrice"), 0.0) or 0.0),
         "total_quantity": total_quantity,
         "filled_quantity": filled_quantity,
         "remaining_quantity": float(remaining_quantity or 0.0),
         "time_in_force": str(order.get("tif") or order.get("timeInForce") or "").strip().upper(),
         "account": str(order.get("acct") or order.get("acctId") or "").strip(),
+        "currency": str(order.get("currency") or "USD").strip().upper(),
+        "asset_class": _extract_live_order_text(order, "secType", "assetClass").upper(),
+        "listing_exchange": _extract_live_order_text(order, "listingExchange", "exchange"),
+        "submitted_time": _extract_live_order_text(order, "submittedTime", "submitTime", "createdTime", "createTime"),
+        "last_execution_time": _extract_live_order_text(order, "lastExecutionTime", "lastFillTime", "lastExecutionTime_r"),
+        "good_till_date": _extract_live_order_text(order, "goodTillDate"),
+        "outside_rth": _coerce_live_bool(order.get("outsideRth"), False),
         "can_cancel": bool(normalized_status and normalized_status not in closed_statuses),
         "can_modify": bool(normalized_status and normalized_status not in closed_statuses),
         "raw": order,

@@ -3,8 +3,14 @@ PocketBase REST API 客户端 (用于 ibkr_compute 服务)
 """
 
 import os
+import json
+import time
 import requests
 from typing import Dict, Any, List, Optional
+
+PB_RETRY_ATTEMPTS = max(1, int(os.environ.get("PB_RETRY_ATTEMPTS", "7")))
+PB_RETRY_BACKOFF_SECONDS = max(0.2, float(os.environ.get("PB_RETRY_BACKOFF_SECONDS", "0.5")))
+PB_RETRY_STATUS_CODES = {502, 503, 504}
 
 
 class PBClient:
@@ -15,6 +21,37 @@ class PBClient:
         if token:
             self.session.headers["Authorization"] = token
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        timeout: int = 15,
+        **kwargs,
+    ) -> requests.Response:
+        backoff_seconds = PB_RETRY_BACKOFF_SECONDS
+        last_error = None
+        for attempt in range(1, PB_RETRY_ATTEMPTS + 1):
+            try:
+                resp = self.session.request(method.upper(), url, timeout=timeout, **kwargs)
+                if resp.status_code in PB_RETRY_STATUS_CODES and attempt < PB_RETRY_ATTEMPTS:
+                    time.sleep(backoff_seconds)
+                    backoff_seconds = min(backoff_seconds * 2, 5.0)
+                    continue
+                resp.raise_for_status()
+                return resp
+            except requests.exceptions.RequestException as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                retryable = status_code is None or status_code in PB_RETRY_STATUS_CODES
+                last_error = exc
+                if not retryable or attempt >= PB_RETRY_ATTEMPTS:
+                    raise
+                time.sleep(backoff_seconds)
+                backoff_seconds = min(backoff_seconds * 2, 5.0)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"pb_request_failed:{method.upper()}:{url}")
+
     def get_records(self, collection: str, filter: str = None, sort: str = None,
                     per_page: int = 200, page: int = 1) -> List[Dict[str, Any]]:
         params = {"perPage": per_page, "page": page}
@@ -23,8 +60,7 @@ class PBClient:
         if sort:
             params["sort"] = sort
         url = f"{self.base_url}/api/collections/{collection}/records"
-        resp = self.session.get(url, params=params, timeout=15)
-        resp.raise_for_status()
+        resp = self._request("GET", url, params=params, timeout=15)
         return resp.json().get("items", [])
 
     def get_all_records(self, collection: str, filter: str = None, sort: str = None,
@@ -40,22 +76,19 @@ class PBClient:
 
     def create_record(self, collection: str, data: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/api/collections/{collection}/records"
-        resp = self.session.post(url, json=data, timeout=15)
-        resp.raise_for_status()
+        resp = self._request("POST", url, json=data, timeout=15)
         return resp.json()
 
     def update_record(self, collection: str, record_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/api/collections/{collection}/records/{record_id}"
-        resp = self.session.patch(url, json=data, timeout=15)
-        resp.raise_for_status()
+        resp = self._request("PATCH", url, json=data, timeout=15)
         return resp.json()
 
     def delete_record(self, collection: str, record_id: str) -> bool:
         url = f"{self.base_url}/api/collections/{collection}/records/{record_id}"
-        resp = self.session.delete(url, timeout=15)
+        resp = self._request("DELETE", url, timeout=15)
         if resp.status_code in (200, 204):
             return True
-        resp.raise_for_status()
         return True
 
     def get_first_record(
@@ -77,10 +110,9 @@ class PBClient:
     ) -> Dict[str, Any]:
         url = f"{self.base_url}/api/custom/{endpoint}"
         if method.upper() == "GET":
-            resp = self.session.get(url, params=params or {}, timeout=timeout)
+            resp = self._request("GET", url, params=params or {}, timeout=timeout)
         else:
-            resp = self.session.post(url, json=data or {}, timeout=timeout)
-        resp.raise_for_status()
+            resp = self._request("POST", url, json=data or {}, timeout=timeout)
         return resp.json()
 
     def upsert_indicator(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -101,8 +133,85 @@ class PBClient:
     def upsert_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/scan", method="POST", data=data)
 
+    def upsert_bar_integrity_items(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return self.call_custom_api(
+            "ibkr/data_quality/upsert",
+            method="POST",
+            data={"items": items},
+            timeout=30,
+        )
+
+    def rescan_bar_integrity(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.call_custom_api("ibkr/data_quality/rescan", method="POST", data=data, timeout=30)
+
+    def repair_bar_integrity(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.call_custom_api("ibkr/data_quality/repair", method="POST", data=data, timeout=30)
+
     def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/orders/upsert", method="POST", data=data)
+
+    def ack_ibkr_signal(
+        self,
+        signal_id: str,
+        status: str = "executed",
+        note: str = "",
+        order: Optional[Dict[str, Any]] = None,
+        child_orders: Optional[List[Dict[str, Any]]] = None,
+        environment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        runtime_environment = environment or os.environ.get("IBKR_ENVIRONMENT", "live")
+        payload: Dict[str, Any] = {
+            "signal_id": signal_id,
+            "status": status,
+            "note": note,
+            "environment": runtime_environment,
+        }
+        if order:
+            payload["order"] = order
+        if child_orders:
+            payload["child_orders"] = child_orders
+
+        try:
+            return self.call_custom_api("ibkr/signals/ack", method="POST", data=payload, timeout=15)
+        except Exception:
+            # Fallback: ensure the signal is not left pending if the custom hook is temporarily unavailable.
+            safe_signal_id = str(signal_id or "").replace('"', '\\"')
+            safe_environment = str(runtime_environment or "live").replace('"', '\\"')
+            record = self.get_first_record(
+                "ibkr_signals",
+                filter=(
+                    f'signal_id = "{safe_signal_id}" && '
+                    f'environment = "{safe_environment}"'
+                ),
+            )
+            if not record or not record.get("id"):
+                raise
+
+            patch: Dict[str, Any] = {
+                "status": status,
+                "note": note,
+            }
+            existing_extra = record.get("extra") or {}
+            if isinstance(existing_extra, str):
+                try:
+                    existing_extra = json.loads(existing_extra)
+                except Exception:
+                    existing_extra = {}
+            if not isinstance(existing_extra, dict):
+                existing_extra = {}
+            patch["extra"] = {
+                **existing_extra,
+                "signal_ack_fallback": True,
+                "signal_ack_fallback_at": int(time.time() * 1000),
+            }
+            updated = self.update_record("ibkr_signals", record["id"], patch)
+            return {
+                "success": True,
+                "signal_id": signal_id,
+                "status": status,
+                "fallback": True,
+                "record": updated,
+            }
 
     def get_state(
         self,

@@ -344,6 +344,106 @@
             color: var(--text);
             word-break: break-word;
         }
+        .cron-time-details {
+            border: 1px dashed rgba(255,255,255,0.08);
+            border-radius: 10px;
+            background: rgba(255,255,255,0.02);
+            padding: 7px 8px;
+        }
+        .cron-time-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            cursor: pointer;
+            list-style: none;
+        }
+        .cron-time-summary::-webkit-details-marker {
+            display: none;
+        }
+        .cron-time-summary::after {
+            content: '+';
+            flex: 0 0 auto;
+            color: var(--accent);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.2;
+        }
+        .cron-time-details[open] .cron-time-summary::after {
+            content: '-';
+        }
+        .cron-time-primary {
+            color: var(--text);
+            line-height: 1.5;
+        }
+        .cron-time-toggle {
+            flex: 0 0 auto;
+            color: var(--muted);
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.4;
+        }
+        .cron-time-list {
+            display: grid;
+            gap: 5px;
+            margin-top: 7px;
+            padding-top: 7px;
+            border-top: 1px dashed rgba(255,255,255,0.08);
+        }
+        .cron-time-item {
+            display: grid;
+            grid-template-columns: 24px 1fr;
+            gap: 6px;
+            align-items: start;
+        }
+        .cron-time-name {
+            color: var(--muted);
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.5;
+        }
+        .cron-time-text {
+            color: var(--text);
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .cron-exp-details {
+            display: inline-block;
+            min-width: 0;
+        }
+        .cron-exp-summary {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            list-style: none;
+            color: var(--accent);
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.4;
+        }
+        .cron-exp-summary::-webkit-details-marker {
+            display: none;
+        }
+        .cron-exp-summary::after {
+            content: '+';
+            color: var(--muted);
+        }
+        .cron-exp-details[open] .cron-exp-summary::after {
+            content: '-';
+        }
+        .cron-exp-text {
+            margin-top: 7px;
+            padding: 7px 8px;
+            border-radius: 10px;
+            border: 1px dashed rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.02);
+            color: var(--text);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.5;
+            word-break: break-word;
+        }
         .cron-tags {
             display: flex;
             flex-wrap: wrap;
@@ -364,6 +464,74 @@
             padding: 20px;
             color: var(--muted);
             font-size: 12px;
+        }
+
+        .page-loading-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 120;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(8, 11, 16, 0.78);
+            backdrop-filter: blur(10px);
+            transition: opacity 0.24s ease, visibility 0.24s ease;
+        }
+        .page-loading-overlay.is-hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+        .page-loading-card {
+            width: min(440px, 100%);
+            padding: 20px 18px;
+            border-radius: 18px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background:
+                radial-gradient(circle at top right, rgba(99,179,237,0.16), transparent 36%),
+                linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.94));
+            box-shadow: 0 24px 56px rgba(2, 8, 23, 0.28);
+        }
+        .page-loading-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .page-loading-copy {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        .page-loading-bars {
+            display: grid;
+            gap: 10px;
+            margin-top: 16px;
+        }
+        .page-loading-bar {
+            position: relative;
+            height: 10px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(255,255,255,0.06);
+        }
+        .page-loading-bar::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            transform: translateX(-100%);
+            background: linear-gradient(90deg, transparent, rgba(99,179,237,0.42), transparent);
+            animation: systemLoadingShimmer 1.35s infinite;
+        }
+        .page-loading-bar:nth-child(2)::after {
+            animation-delay: 0.18s;
+        }
+        .page-loading-bar:nth-child(3)::after {
+            animation-delay: 0.36s;
+        }
+        @keyframes systemLoadingShimmer {
+            100% { transform: translateX(100%); }
         }
 
         .backtest-grid {
@@ -411,6 +579,18 @@
     </style>
 </head>
 <body>
+    <div class="page-loading-overlay" id="pageLoading">
+        <div class="page-loading-card">
+            <div class="page-loading-title" id="pageLoadingTitle">系统概览加载中</div>
+            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 healthz / summaryz / cron / events / 回测统计，请稍候。</div>
+            <div class="page-loading-bars">
+                <div class="page-loading-bar"></div>
+                <div class="page-loading-bar"></div>
+                <div class="page-loading-bar"></div>
+            </div>
+        </div>
+    </div>
+
     <div id="nav"></div>
 
     <div class="page-shell">
@@ -511,6 +691,21 @@
         let refreshTimer = null;
         let currentEnvironment = getCurrentRuntimeEnvironment();
         let currentFocus = '';
+        let hasLoadedSystemData = false;
+
+        function setSystemLoading(active, title, copy) {
+            const overlay = document.getElementById('pageLoading');
+            if (!overlay) return;
+            if (title) {
+                const titleEl = document.getElementById('pageLoadingTitle');
+                if (titleEl) titleEl.textContent = title;
+            }
+            if (copy) {
+                const copyEl = document.getElementById('pageLoadingCopy');
+                if (copyEl) copyEl.textContent = copy;
+            }
+            overlay.classList.toggle('is-hidden', !active);
+        }
 
         function initSystemAuth() {
             const token = getToken();
@@ -528,6 +723,18 @@
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
+        }
+
+        function withTimeout(promise, ms, label) {
+            const timeoutMs = Math.max(1000, Number(ms) || 0);
+            return Promise.race([
+                promise,
+                new Promise((_, reject) => {
+                    setTimeout(() => {
+                        reject(new Error(`${label || 'request'} timed out after ${timeoutMs}ms`));
+                    }, timeoutMs);
+                })
+            ]);
         }
 
         function normalizeBooleanText(value, fallback = 'TRUE') {
@@ -571,13 +778,22 @@
 
         async function loadSystemData(showToastOnSuccess = false) {
             if (!initSystemAuth()) return;
+            const isInitialLoad = !hasLoadedSystemData;
+            if (isInitialLoad) {
+                setSystemLoading(
+                    true,
+                    '系统概览加载中',
+                    `正在拉取 ${getEnvironmentLabel(currentEnvironment)} 环境的健康状态、freshness、配置与最近事件。`
+                );
+            }
             try {
                 const freshnessIntervals = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
+                const requestTimeoutMs = 8000;
                 const softErrors = [];
                 const safeRequestSystemJson = async (label, path, fallback = {}) => {
                     try {
-                        return await requestSystemJson(path);
+                        return await withTimeout(requestSystemJson(path), requestTimeoutMs, label);
                     } catch (error) {
                         softErrors.push(`${label}: ${error.message || error}`);
                         return fallback;
@@ -585,7 +801,7 @@
                 };
                 const safeApiFetch = async (label, collection, params, fallback = { items: [] }) => {
                     try {
-                        return await apiFetch(collection, params);
+                        return await withTimeout(apiFetch(collection, params), requestTimeoutMs, label);
                     } catch (error) {
                         softErrors.push(`${label}: ${error.message || error}`);
                         return fallback;
@@ -651,6 +867,11 @@
                 console.error('System 加载失败:', err);
                 document.getElementById('refreshInfo').textContent = '加载失败';
                 showToast(`加载失败: ${err.message || err}`);
+            } finally {
+                if (isInitialLoad) {
+                    hasLoadedSystemData = true;
+                    setSystemLoading(false);
+                }
             }
         }
 
@@ -849,20 +1070,34 @@
                                 <div class="cron-copy">${escapeHtml(definition.function_summary || '--')}</div>
                                 <div class="cron-meta">
                                     <div class="cron-meta-row">
-                                        <span class="cron-meta-label">UTC 周期</span>
-                                        <span class="cron-meta-value">${escapeHtml(definition.cycle_label || '--')}</span>
-                                    </div>
-                                    <div class="cron-meta-row">
-                                        <span class="cron-meta-label">北京时间</span>
-                                        <span class="cron-meta-value">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '--')}</span>
-                                    </div>
-                                    <div class="cron-meta-row">
-                                        <span class="cron-meta-label">美东时间</span>
-                                        <span class="cron-meta-value">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '--')}</span>
+                                        <span class="cron-meta-label">时区</span>
+                                        <div class="cron-meta-value">
+                                            <details class="cron-time-details">
+                                                <summary class="cron-time-summary">
+                                                    <span class="cron-time-primary">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '--')}</span>
+                                                    <span class="cron-time-toggle">UTC / ET</span>
+                                                </summary>
+                                                <div class="cron-time-list">
+                                                    <div class="cron-time-item">
+                                                        <span class="cron-time-name">UTC</span>
+                                                        <span class="cron-time-text">${escapeHtml(definition.cycle_label || '--')}</span>
+                                                    </div>
+                                                    <div class="cron-time-item">
+                                                        <span class="cron-time-name">ET</span>
+                                                        <span class="cron-time-text">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '--')}</span>
+                                                    </div>
+                                                </div>
+                                            </details>
+                                        </div>
                                     </div>
                                     <div class="cron-meta-row">
                                         <span class="cron-meta-label">Cron</span>
-                                        <span class="cron-meta-value">${escapeHtml(definition.cron_expr || '--')}</span>
+                                        <div class="cron-meta-value">
+                                            <details class="cron-exp-details">
+                                                <summary class="cron-exp-summary">查看表达式</summary>
+                                                <div class="cron-exp-text">${escapeHtml(definition.cron_expr || '--')}</div>
+                                            </details>
+                                        </div>
                                     </div>
                                     <div class="cron-meta-row">
                                         <span class="cron-meta-label">窗口</span>
@@ -896,6 +1131,7 @@
 
             [
                 'ibkr_signal_source',
+                'signal_manual_confirm_enabled',
                 'position_limit_max',
                 'eod_close_time',
                 'eod_keep_symbols',
@@ -1059,10 +1295,10 @@
                     copy: '启动 / 2FA / compute / flow trace'
                 },
                 {
-                    path: '/ibkr_account.html',
-                    kicker: 'Account',
-                    label: '账户',
-                    copy: '真实持仓 / 挂单 / 操作'
+                    path: '/ibkr_data_quality.html',
+                    kicker: 'Quality',
+                    label: '数据质量',
+                    copy: 'bars 缺口 / 重复 / 安全修复'
                 }
             ]);
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();

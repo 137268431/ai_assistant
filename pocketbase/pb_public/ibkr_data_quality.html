@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IBKR Data Quality</title>
+  <script src="/common.js"></script>
+  <style>
+    :root {
+      --bg: #09111f;
+      --surface: rgba(10, 18, 33, 0.88);
+      --surface-2: rgba(18, 30, 53, 0.92);
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #e6eefc;
+      --muted: #8ba4c4;
+      --accent: #5eead4;
+      --warn: #f6ad55;
+      --danger: #fc8181;
+      --success: #68d391;
+      --shadow: 0 18px 48px rgba(3, 7, 18, 0.32);
+    }
+
+    body {
+      background:
+        radial-gradient(circle at top right, rgba(94, 234, 212, 0.1), transparent 32%),
+        radial-gradient(circle at top left, rgba(99, 179, 237, 0.12), transparent 28%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .page-shell {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 20px 18px 120px;
+    }
+
+    .hero, .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero {
+      padding: 22px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .hero-kicker {
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .hero-title {
+      font-size: 28px;
+      line-height: 1.25;
+      font-weight: 700;
+      max-width: 860px;
+    }
+
+    .hero-copy {
+      margin-top: 10px;
+      color: var(--muted);
+      line-height: 1.6;
+      max-width: 880px;
+    }
+
+    .hero-meta {
+      display: grid;
+      gap: 8px;
+      min-width: 220px;
+      justify-items: end;
+    }
+
+    .meta-line {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .summary-grid, .action-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+    }
+
+    .summary-card {
+      padding: 16px;
+      border-radius: 18px;
+      background: var(--surface-2);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+    }
+
+    .summary-label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .summary-value {
+      margin-top: 10px;
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .summary-copy {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .panel {
+      margin-top: 16px;
+      padding: 20px;
+    }
+
+    .panel-title {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .panel-copy {
+      margin-top: 6px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .filters {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(8, 14, 24, 0.8);
+      color: var(--text);
+      padding: 10px 12px;
+    }
+
+    .action-grid {
+      margin-top: 16px;
+    }
+
+    .action-btn {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 16px;
+      background: rgba(8, 14, 24, 0.82);
+      color: var(--text);
+      padding: 14px 16px;
+      text-align: left;
+      cursor: pointer;
+      transition: transform 0.16s ease, border-color 0.16s ease;
+    }
+
+    .action-btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(94, 234, 212, 0.4);
+    }
+
+    .action-btn strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 4px;
+    }
+
+    .action-btn span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .table-wrap {
+      margin-top: 16px;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1120px;
+    }
+
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(148, 163, 184, 0.14);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .status-ok { color: var(--success); background: rgba(104, 211, 145, 0.14); }
+    .status-warn { color: var(--warn); background: rgba(246, 173, 85, 0.16); }
+    .status-error, .status-repair_failed { color: var(--danger); background: rgba(252, 129, 129, 0.14); }
+    .status-repaired { color: var(--accent); background: rgba(94, 234, 212, 0.14); }
+
+    .pill-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-flex;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: rgba(148, 163, 184, 0.14);
+      color: var(--muted);
+    }
+
+    .small-copy {
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .mini-btn, .mini-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      padding: 7px 10px;
+      font-size: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(8, 14, 24, 0.7);
+      color: var(--text);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .mini-btn[disabled] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .loading, .empty {
+      padding: 18px 0 4px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 720px) {
+      .page-shell {
+        padding: 14px 12px 108px;
+      }
+
+      .hero {
+        padding: 18px;
+      }
+
+      .hero-top {
+        flex-direction: column;
+      }
+
+      .hero-title {
+        font-size: 23px;
+      }
+
+      .hero-meta {
+        justify-items: start;
+      }
+    }
+  </style>
+  <script>document.write(getCommonStyles())</script>
+</head>
+<body>
+  <div id="nav"></div>
+
+  <div class="page-shell">
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
+
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="hero-kicker">IBKR Bars Integrity</div>
+          <div class="hero-title">把 watchlist 和 active targets 的 5m 数据完整性、rollup 同步、修复结果统一落到 PocketBase 里。</div>
+          <div class="hero-copy">这里会展示每个 symbol 的缺口、重复 bar、坏 OHLC、15m/30m/1h/4h/1d rollup 缺失或滞后，以及最近一次自动修复的结果。页面可直接触发重扫和安全修复。</div>
+        </div>
+        <div class="hero-meta">
+          <div id="environmentHeader"></div>
+          <div class="meta-line" id="refreshInfo">等待加载...</div>
+          <div class="meta-line" id="summaryInfo">扫描结果待加载</div>
+        </div>
+      </div>
+      <div class="summary-grid" id="summaryGrid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">过滤与动作</div>
+      <div class="panel-copy">支持按环境、日期、范围、状态、symbol 过滤。没有指定 symbol 时，手动重扫/修复会按当前范围执行。</div>
+      <div class="filters">
+        <div class="field">
+          <label for="marketDate">Market Date</label>
+          <input id="marketDate" type="date" />
+        </div>
+        <div class="field">
+          <label for="scanScope">Scope</label>
+          <select id="scanScope">
+            <option value="">全部</option>
+            <option value="active_target">active_target</option>
+            <option value="watchlist">watchlist</option>
+            <option value="manual">manual</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="statusFilter">Status</label>
+          <select id="statusFilter">
+            <option value="">全部</option>
+            <option value="ok">ok</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+            <option value="repaired">repaired</option>
+            <option value="repair_failed">repair_failed</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="symbolFilter">Symbol</label>
+          <input id="symbolFilter" type="text" placeholder="AAPL / SPY / VIX" />
+        </div>
+        <div class="field">
+          <label for="needsRepairFilter">Needs Repair</label>
+          <select id="needsRepairFilter">
+            <option value="">全部</option>
+            <option value="true">仅待修复</option>
+            <option value="false">仅正常</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="batchSize">Batch Size</label>
+          <input id="batchSize" type="number" min="1" max="100" step="1" value="8" />
+        </div>
+      </div>
+      <div class="action-grid">
+        <button class="action-btn" onclick="applyFilters()">
+          <strong>应用过滤</strong>
+          <span>刷新 summary/list，并把当前过滤条件写入 URL。</span>
+        </button>
+        <button class="action-btn" onclick="runGlobalAction('rescan')">
+          <strong>手动重扫</strong>
+          <span>当前 symbol 存在时只扫该 symbol；否则按当前 scope 扫一批。</span>
+        </button>
+        <button class="action-btn" onclick="runGlobalAction('repair')">
+          <strong>安全修复</strong>
+          <span>只修复 bars 缺口、bar 数不足、rollup 缺失/滞后，不自动删重复和坏 OHLC。</span>
+        </button>
+        <button class="action-btn" onclick="loadDataQuality(true)">
+          <strong>刷新页面</strong>
+          <span>重新读取 summary/list，校验最新自动巡检与修复回写状态。</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">巡检明细</div>
+      <div class="panel-copy">状态为 <code>warn</code> 表示可安全修复的缺口类问题；<code>error</code> 表示发现重复或坏 OHLC，需要人工审查。</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Status</th>
+              <th>Scope</th>
+              <th>Bars</th>
+              <th>Gaps</th>
+              <th>Duplicates / Bad OHLC</th>
+              <th>Rollup</th>
+              <th>Latest</th>
+              <th>Repair</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="qualityTable">
+            <tr><td colspan="10" class="loading">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    let currentEnvironment = getCurrentRuntimeEnvironment();
+    let currentPage = 1;
+    const perPage = 50;
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function initAuth() {
+      try {
+        requireAuth(`${location.pathname}${location.search}`);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function currentFilters() {
+      return {
+        market_date: document.getElementById('marketDate').value || '',
+        scan_scope: document.getElementById('scanScope').value || '',
+        status: document.getElementById('statusFilter').value || '',
+        symbol: String(document.getElementById('symbolFilter').value || '').trim().toUpperCase(),
+        needs_repair: document.getElementById('needsRepairFilter').value || '',
+        batch_size: Number(document.getElementById('batchSize').value || 8) || 8
+      };
+    }
+
+    async function requestQualityJson(path, { method = 'GET', body = null } = {}) {
+      const token = getToken();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const response = await fetch(`${BASE_URL}${path}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : null
+      });
+      const text = await response.text();
+      let payload = {};
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch (_) {
+        payload = { ok: false, raw: text };
+      }
+      if (response.status === 401 || response.status === 403) {
+        handleAuthError();
+        throw new Error('Authentication failed');
+      }
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || `Request failed (${response.status})`);
+      }
+      return payload;
+    }
+
+    function buildQuery(params) {
+      const query = new URLSearchParams();
+      Object.entries(params || {}).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          query.set(key, String(value));
+        }
+      });
+      const text = query.toString();
+      return text ? `?${text}` : '';
+    }
+
+    function setFiltersFromUrl() {
+      const query = new URLSearchParams(window.location.search);
+      document.getElementById('marketDate').value = query.get('market_date') || '';
+      document.getElementById('scanScope').value = query.get('scan_scope') || '';
+      document.getElementById('statusFilter').value = query.get('status') || '';
+      document.getElementById('symbolFilter').value = query.get('symbol') || '';
+      document.getElementById('needsRepairFilter').value = query.get('needs_repair') || '';
+      document.getElementById('batchSize').value = query.get('batch_size') || '8';
+      currentPage = Math.max(1, Number(query.get('page') || 1) || 1);
+    }
+
+    function applyFilters() {
+      const filters = currentFilters();
+      currentPage = 1;
+      const url = buildPageUrl('/ibkr_data_quality.html', {
+        ...filters,
+        page: currentPage
+      }, { environment: currentEnvironment });
+      window.location.href = url;
+    }
+
+    function statusClass(status) {
+      return `status-${String(status || 'ok').replace(/[^a-z_]/gi, '')}`;
+    }
+
+    function formatList(values) {
+      return Array.isArray(values) && values.length ? values.join(', ') : '无';
+    }
+
+    function renderSummary(summary) {
+      const grid = document.getElementById('summaryGrid');
+      const statusCounts = summary.status_counts || {};
+      const cards = [
+        { label: 'TOTAL', value: summary.total || 0, copy: `symbols ${Array.isArray(summary.symbols) ? summary.symbols.length : 0}` },
+        { label: 'NEEDS REPAIR', value: summary.needs_repair || 0, copy: 'bars 缺口 / bar 数不足 / rollup 缺失或滞后' },
+        { label: 'MANUAL REVIEW', value: summary.manual_review || 0, copy: '重复 bar 或坏 OHLC，不自动删数据' },
+        { label: 'WARN', value: statusCounts.warn || 0, copy: '可安全修复的问题' },
+        { label: 'ERROR', value: statusCounts.error || 0, copy: '需人工检查的数据异常' },
+        { label: 'REPAIRED', value: statusCounts.repaired || 0, copy: `最近修复 ${summary.latest_repair_at || '--'}` }
+      ];
+      grid.innerHTML = cards.map((item) => `
+        <div class="summary-card">
+          <div class="summary-label">${escapeHtml(item.label)}</div>
+          <div class="summary-value">${escapeHtml(item.value)}</div>
+          <div class="summary-copy">${escapeHtml(item.copy)}</div>
+        </div>
+      `).join('');
+      document.getElementById('summaryInfo').textContent = `最近扫描 ${summary.latest_scan_at || '--'} · 最近修复 ${summary.latest_repair_at || '--'}`;
+    }
+
+    function renderRows(items) {
+      const tbody = document.getElementById('qualityTable');
+      if (!Array.isArray(items) || !items.length) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty">当前过滤条件下没有记录</td></tr>';
+        return;
+      }
+      tbody.innerHTML = items.map((item) => {
+        const missingIntervals = formatList(item.missing_intervals);
+        const staleIntervals = formatList(item.stale_intervals);
+        const gapExamples = Array.isArray(item.gap_examples) && item.gap_examples.length
+          ? item.gap_examples.map((row) => `${row.prev_us_time || '--'} → ${row.next_us_time || '--'} (${row.missing_points || 1})`).join(' ; ')
+          : '无';
+        const canRepair = Boolean(item.safe_repair);
+        return `
+          <tr>
+            <td>
+              <strong>${escapeHtml(item.symbol || '--')}</strong><br>
+              <span class="small-copy">${escapeHtml(item.market_date || '--')} · ${escapeHtml(item.interval || '5m')}</span>
+            </td>
+            <td>
+              <span class="status-chip ${statusClass(item.status)}">${escapeHtml(item.status || 'ok')}</span><br>
+              <span class="small-copy">${item.needs_repair ? 'needs_repair' : 'clean'}</span>
+            </td>
+            <td>
+              ${escapeHtml(item.scan_scope || '--')}<br>
+              <span class="small-copy">attempts ${escapeHtml(item.repair_attempts || 0)}</span>
+            </td>
+            <td>
+              <strong>${escapeHtml(item.bar_count || 0)}</strong><br>
+              <span class="small-copy">oldest ${item.oldest_loaded_ms ? escapeHtml(formatBarTimeMsToET(item.oldest_loaded_ms)) : '--'}</span>
+            </td>
+            <td>
+              <strong>${escapeHtml(item.gap_count || 0)}</strong><br>
+              <span class="small-copy">${escapeHtml(gapExamples)}</span>
+            </td>
+            <td>
+              <div class="pill-row">
+                <span class="pill">dup ${escapeHtml(item.duplicate_count || 0)}</span>
+                <span class="pill">bad ${escapeHtml(item.bad_ohlc_count || 0)}</span>
+              </div>
+            </td>
+            <td>
+              <div class="pill-row">
+                <span class="pill">missing ${escapeHtml(missingIntervals)}</span>
+                <span class="pill">stale ${escapeHtml(staleIntervals)}</span>
+              </div>
+            </td>
+            <td>
+              ${item.latest_bar_us_time ? escapeHtml(item.latest_bar_us_time) : '--'}<br>
+              <span class="small-copy">${item.latest_bar_time_ms ? `${Math.max(0, Math.round((Date.now() - Number(item.latest_bar_time_ms || 0)) / 60000))} min ago` : 'no latest bar'}</span>
+            </td>
+            <td>
+              ${item.last_repair_at ? escapeHtml(item.last_repair_at) : '--'}<br>
+              <span class="small-copy">${escapeHtml((item.last_repair_result && JSON.stringify(item.last_repair_result)) || 'no repair result')}</span>
+            </td>
+            <td>
+              <div class="row-actions">
+                <button class="mini-btn" onclick="runRowAction('rescan', '${escapeHtml(item.symbol || '')}')">Rescan</button>
+                <button class="mini-btn" onclick="runRowAction('repair', '${escapeHtml(item.symbol || '')}')" ${canRepair ? '' : 'disabled'}>Repair</button>
+                <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: item.interval || '5m' }, { environment: currentEnvironment })}">Chart</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function loadDataQuality(showToastOnSuccess = false) {
+      if (!initAuth()) return;
+      const filters = currentFilters();
+      try {
+        const [summaryResp, listResp] = await Promise.all([
+          requestQualityJson(`/api/custom/ibkr/data_quality/summary${buildQuery({
+            environment: currentEnvironment,
+            market_date: filters.market_date,
+            scan_scope: filters.scan_scope
+          })}`),
+          requestQualityJson(`/api/custom/ibkr/data_quality/list${buildQuery({
+            environment: currentEnvironment,
+            market_date: filters.market_date,
+            scan_scope: filters.scan_scope,
+            status: filters.status,
+            symbol: filters.symbol,
+            needs_repair: filters.needs_repair,
+            page: currentPage,
+            per_page: perPage,
+            sort: '-updated'
+          })}`)
+        ]);
+
+        renderSummary(summaryResp.summary || {});
+        renderRows(Array.isArray(listResp.items) ? listResp.items : []);
+        document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()}`;
+        if (showToastOnSuccess) showToast('数据质量页面已刷新');
+      } catch (error) {
+        console.error('loadDataQuality failed:', error);
+        document.getElementById('refreshInfo').textContent = '加载失败';
+        document.getElementById('qualityTable').innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
+        showToast(`加载失败: ${error.message || error}`);
+      }
+    }
+
+    async function runGlobalAction(action) {
+      const filters = currentFilters();
+      const body = {
+        environment: currentEnvironment,
+        scan_scope: filters.scan_scope || 'watchlist',
+        batch_size: filters.batch_size,
+        persist: true
+      };
+      if (filters.symbol) body.symbols = [filters.symbol];
+      const endpoint = action === 'repair'
+        ? '/api/custom/ibkr/data_quality/repair'
+        : '/api/custom/ibkr/data_quality/rescan';
+      try {
+        const payload = await requestQualityJson(endpoint, { method: 'POST', body });
+        const summary = payload.summary || {};
+        showToast(`${action === 'repair' ? '修复' : '重扫'}完成: ${summary.symbols ? summary.symbols.length : 0} 个标的`);
+        await loadDataQuality(false);
+      } catch (error) {
+        showToast(`${action} 失败: ${error.message || error}`);
+      }
+    }
+
+    async function runRowAction(action, symbol) {
+      const filters = currentFilters();
+      const endpoint = action === 'repair'
+        ? '/api/custom/ibkr/data_quality/repair'
+        : '/api/custom/ibkr/data_quality/rescan';
+      try {
+        await requestQualityJson(endpoint, {
+          method: 'POST',
+          body: {
+            environment: currentEnvironment,
+            scan_scope: filters.scan_scope || 'manual',
+            symbols: [String(symbol || '').trim().toUpperCase()],
+            persist: true
+          }
+        });
+        showToast(`${symbol} ${action === 'repair' ? '修复' : '重扫'}完成`);
+        await loadDataQuality(false);
+      } catch (error) {
+        showToast(`${symbol} ${action} 失败: ${error.message || error}`);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      if (!initAuth()) return;
+      setFiltersFromUrl();
+      document.getElementById('nav').innerHTML = renderNav('/ibkr_data_quality.html');
+      document.getElementById('contextBar').innerHTML = renderPageContextBar('🧩 数据质量', {
+        description: 'bars 完整性 / rollup 同步 / 修复回写'
+      });
+      document.getElementById('pageBridge').innerHTML = renderPageBridge([
+        {
+          path: '/ibkr_system.html',
+          kicker: 'Monitor',
+          label: '总览',
+          copy: '健康 / freshness / config'
+        },
+        {
+          path: '/ibkr_runtime.html',
+          kicker: 'Console',
+          label: '控制台',
+          copy: '启动 / 2FA / compute'
+        },
+        {
+          path: '/ibkr_data_quality.html',
+          kicker: 'Quality',
+          label: '数据质量',
+          copy: 'bars integrity / safe repair',
+          active: true
+        }
+      ]);
+      document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
+      await loadDataQuality(false);
+    });
+
+    window.onEnvironmentChange = function(environment) {
+      currentEnvironment = environment;
+      applyFilters();
+    };
+  </script>
+</body>
+</html>

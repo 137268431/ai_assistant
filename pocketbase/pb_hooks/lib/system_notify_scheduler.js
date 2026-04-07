@@ -7,6 +7,7 @@ const HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
 const HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const BAR_STALE_WARN_MIN = 10
 const INDICATOR_STALE_WARN_MIN = 10
+const COMPUTE_STARTUP_GRACE_MS = 3 * 60 * 1000
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
 
 function toNumber(value, fallback) {
@@ -66,8 +67,8 @@ function saveStateData(stateKey, environment, dateToken, patch) {
 
 function fetchComputeJson(path, timeoutSeconds, environment) {
     try {
-        const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
-        const computeBaseUrl = getIbkrComputePublicUrl(environment || "live", "https://qc.lzw-glory.top")
+        const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+        const computeBaseUrl = getIbkrComputeInternalUrl(environment || "live", "http://127.0.0.1:5100")
         const resp = $http.send({ url: `${computeBaseUrl}${path}`, method: "GET", timeout: timeoutSeconds || 5 })
         if (resp.statusCode === 200) {
             const raw = typeof resp.raw === "string" ? resp.raw : String(resp.raw || "")
@@ -213,6 +214,11 @@ function buildStatusSnapshot(environment, times) {
             error: String(health.error || status.error || ""),
             ready_engines: toNumber(status.ready_engines, 0),
             total_engines: toNumber(status.total_engines, 0),
+            uptime_s: toNumber(health.uptime_s, 0),
+        },
+        runtime: {
+            starting: Boolean(runtime.starting === true),
+            warmup_phase: String(runtime.warmup && runtime.warmup.phase || ""),
         },
         session: {
             authenticated: Boolean(runtime.session && runtime.session.authenticated === true),
@@ -252,6 +258,68 @@ function buildStatusSnapshot(environment, times) {
     }
 }
 
+function isStatusSummaryNotifyEnabled(environment) {
+    const envUtils = require(`${__hooks}/lib/environment.js`)
+    const runtimeModes = require(`${__hooks}/lib/runtime_modes.js`)
+    return runtimeModes.isEnabledConfigValue(
+        envUtils.getConfigValue("status_notify_enabled", "TRUE", environment)
+    )
+}
+
+function isStatusSummaryMinute(minute) {
+    return minute === 0 || minute === 30
+}
+
+function hasHeartbeatIssue(snapshot) {
+    return (
+        snapshot.compute.status !== "running"
+        || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+        || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+    )
+}
+
+function isStartupGraceActive(snapshot) {
+    if (!snapshot || !snapshot.compute) return false
+    const warmupPhase = String(snapshot.runtime && snapshot.runtime.warmup_phase || "").trim().toLowerCase()
+    if (warmupPhase === "pending" || warmupPhase === "running") {
+        return true
+    }
+    if (snapshot.compute.status === "running" && snapshot.runtime && snapshot.runtime.starting) {
+        return true
+    }
+    const uptimeMs = toNumber(snapshot.compute.uptime_s, 0) * 1000
+    return uptimeMs > 0 && uptimeMs < COMPUTE_STARTUP_GRACE_MS
+}
+
+function buildStartupGraceLabel(snapshot) {
+    const uptimeS = toNumber(snapshot && snapshot.compute && snapshot.compute.uptime_s, 0)
+    const warmupPhase = String(snapshot && snapshot.runtime && snapshot.runtime.warmup_phase || "").trim()
+    const parts = []
+    if (snapshot && snapshot.runtime && snapshot.runtime.starting) {
+        parts.push("runtime starting")
+    }
+    if (uptimeS > 0) {
+        parts.push(`uptime ${Math.round(uptimeS)}s`)
+    }
+    if (warmupPhase) {
+        parts.push(`warmup ${warmupPhase}`)
+    }
+    if (!parts.length) {
+        parts.push("startup grace active")
+    }
+    return `${parts.join(" / ")} / grace ${Math.round(COMPUTE_STARTUP_GRACE_MS / 1000)}s`
+}
+
+function shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment) {
+    if (!isStatusSummaryMinute(currentMinute)) {
+        return false
+    }
+    if (hasHeartbeatIssue(snapshot)) {
+        return true
+    }
+    return isStatusSummaryNotifyEnabled(environment)
+}
+
 function runSystemHeartbeatTick(logPrefix, cronId) {
     const prefix = logPrefix || "[IBKRSystemNotify]"
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
@@ -259,16 +327,21 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
     const times = getTimeStrings()
     const environments = listNotifyEnvironments(cronId)
-    const nowMs = Date.now()
+    const now = new Date()
+    const nowMs = now.getTime()
     const currentHourToken = times.us.slice(0, 13)
+    const currentMinute = now.getMinutes()
 
-    console.log(`${prefix} heartbeat tick: minute=${new Date().getMinutes()}, environments=${environments.join(",") || "-"}`)
+    console.log(`${prefix} heartbeat tick: minute=${currentMinute}, environments=${environments.join(",") || "-"}`)
 
     for (let i = 0; i < environments.length; i++) {
         const environment = environments[i]
         try {
             const snapshot = buildStatusSnapshot(environment, times)
             const state = getStateData(HEARTBEAT_STATE_KEY, environment, times.date).data || {}
+            const startupGraceActive = isStartupGraceActive(snapshot)
+            const startupGraceLabel = startupGraceActive ? buildStartupGraceLabel(snapshot) : ""
+            const mergeHeartbeatIntoSummary = shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment)
             const patch = {
                 last_checked_at: times.us,
                 last_compute_status: snapshot.compute.status || "",
@@ -277,23 +350,37 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
 
             if (snapshot.compute.status !== "running") {
                 const fingerprint = `compute:${snapshot.compute.status}:${snapshot.compute.error || ""}`
+                if (startupGraceActive) {
+                    patch.last_issue_hash = ""
+                    patch.last_issue_ms = 0
+                    patch.last_issue_at = ""
+                    patch.last_startup_grace_at = times.us
+                    patch.last_startup_grace_reason = startupGraceLabel
+                    console.log(`${prefix} heartbeat ${environment}: compute offline suppressed during startup grace (${startupGraceLabel})`)
+                    saveStateData(HEARTBEAT_STATE_KEY, environment, times.date, patch)
+                    continue
+                }
                 const shouldNotify = (
                     fingerprint !== String(state.last_issue_hash || "")
                     || nowMs - toNumber(state.last_issue_ms, 0) >= HEARTBEAT_ALERT_COOLDOWN_MS
                 )
                 if (shouldNotify) {
-                    const detail = {
-                        "检查时间": times.us,
-                        "Compute": snapshot.compute.status || "unknown",
-                        "错误": snapshot.compute.error || "n/a",
-                        "建议": "检查 systemctl status ibkr-compute",
-                    }
-                    const notified = feishuSystem.notifySystemEvent("heartbeat", "error", "pb", "IBKR Compute 服务离线", detail, environment)
-                    writeSystemEvent("heartbeat", "error", "pb", "IBKR Compute 服务离线", detail, environment, notified)
                     patch.last_issue_hash = fingerprint
                     patch.last_issue_ms = nowMs
                     patch.last_issue_at = times.us
-                    console.log(`${prefix} heartbeat ${environment}: compute offline, notified=${notified}`)
+                    if (mergeHeartbeatIntoSummary) {
+                        console.log(`${prefix} heartbeat ${environment}: compute offline merged into status summary`)
+                    } else {
+                        const detail = {
+                            "检查时间": times.us,
+                            "Compute": snapshot.compute.status || "unknown",
+                            "错误": snapshot.compute.error || "n/a",
+                            "建议": "检查 systemctl status ibkr-compute",
+                        }
+                        const notified = feishuSystem.notifySystemEvent("heartbeat", "error", "pb", "IBKR Compute 服务离线", detail, environment)
+                        writeSystemEvent("heartbeat", "error", "pb", "IBKR Compute 服务离线", detail, environment, notified)
+                        console.log(`${prefix} heartbeat ${environment}: compute offline, notified=${notified}`)
+                    }
                 }
                 saveStateData(HEARTBEAT_STATE_KEY, environment, times.date, patch)
                 continue
@@ -304,31 +391,55 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                 || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
             ) {
                 const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}`
+                if (startupGraceActive) {
+                    patch.last_issue_hash = ""
+                    patch.last_issue_ms = 0
+                    patch.last_issue_at = ""
+                    patch.last_startup_grace_at = times.us
+                    patch.last_startup_grace_reason = startupGraceLabel
+                    console.log(`${prefix} heartbeat ${environment}: data warning suppressed during startup grace (${startupGraceLabel})`)
+                    saveStateData(HEARTBEAT_STATE_KEY, environment, times.date, patch)
+                    continue
+                }
                 const shouldNotify = (
                     fingerprint !== String(state.last_issue_hash || "")
                     || nowMs - toNumber(state.last_issue_ms, 0) >= HEARTBEAT_ALERT_COOLDOWN_MS
                 )
                 if (shouldNotify) {
-                    const detail = {
-                        "检查时间": times.us,
-                        "最新5m": snapshot.latest_bar.label,
-                        "指标状态": snapshot.latest_indicator.label,
-                        "WebSocket": snapshot.websocket.label,
-                    }
-                    const notified = feishuSystem.notifySystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment)
-                    writeSystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment, notified)
                     patch.last_issue_hash = fingerprint
                     patch.last_issue_ms = nowMs
                     patch.last_issue_at = times.us
-                    console.log(`${prefix} heartbeat ${environment}: data warning, notified=${notified}`)
+                    if (mergeHeartbeatIntoSummary) {
+                        console.log(`${prefix} heartbeat ${environment}: data warning merged into status summary`)
+                    } else {
+                        const detail = {
+                            "检查时间": times.us,
+                            "最新5m": snapshot.latest_bar.label,
+                            "指标状态": snapshot.latest_indicator.label,
+                            "WebSocket": snapshot.websocket.label,
+                        }
+                        const notified = feishuSystem.notifySystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment)
+                        writeSystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment, notified)
+                        console.log(`${prefix} heartbeat ${environment}: data warning, notified=${notified}`)
+                    }
                 }
             } else {
                 patch.last_issue_hash = ""
                 patch.last_issue_ms = 0
                 patch.last_issue_at = ""
+                patch.last_startup_grace_at = ""
+                patch.last_startup_grace_reason = ""
             }
 
-            const shouldSendOkHeartbeat = new Date().getMinutes() < 5 && String(state.last_ok_hour || "") !== currentHourToken
+            const suppressOkHeartbeatForSummary = currentMinute < 5 && isStatusSummaryNotifyEnabled(environment)
+            if (suppressOkHeartbeatForSummary) {
+                console.log(`${prefix} heartbeat ${environment}: ok heartbeat merged into status summary`)
+            }
+            const shouldSendOkHeartbeat = (
+                currentMinute < 5
+                && !suppressOkHeartbeatForSummary
+                && String(state.last_ok_hour || "") !== currentHourToken
+            )
             if (shouldSendOkHeartbeat) {
                 const detail = {
                     "状态": "ok",
@@ -337,8 +448,8 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                     "WebSocket": snapshot.websocket.label,
                     "最新5m": snapshot.latest_bar.label,
                 }
-                const notified = feishuSystem.notifySystemEvent("heartbeat", "info", "pb", "PocketBase 心跳 - ok", detail, environment)
-                writeSystemEvent("heartbeat", "info", "pb", "PocketBase 心跳 - ok", detail, environment, notified)
+                const notified = feishuSystem.notifySystemEvent("heartbeat", "info", "pb", "IBKR 系统心跳（兜底）", detail, environment)
+                writeSystemEvent("heartbeat", "info", "pb", "IBKR 系统心跳（兜底）", detail, environment, notified)
                 patch.last_ok_hour = currentHourToken
                 console.log(`${prefix} heartbeat ${environment}: ok, notified=${notified}`)
             }
@@ -364,13 +475,15 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
         const environment = environments[i]
         try {
             const snapshot = buildStatusSnapshot(environment, times)
-            const level = (
+            const startupGraceActive = isStartupGraceActive(snapshot)
+            const statusHasIssue = (
                 snapshot.compute.status !== "running"
                 || !snapshot.session.authenticated
                 || !snapshot.websocket.connected
                 || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
                 || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
-            ) ? "warning" : "info"
+            )
+            const level = statusHasIssue && !startupGraceActive ? "warning" : "info"
 
             const detail = {
                 "检查时间": times.us,
@@ -390,11 +503,21 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
                 "目标池": `${snapshot.today.targets} targets / active ${snapshot.active_target_count || 0}`,
                 "交易开关": snapshot.trading_enabled ? "true" : "false",
             }
+            if (snapshot.compute.uptime_s > 0) detail["Compute Uptime"] = `${Math.round(snapshot.compute.uptime_s)}s`
+            if (snapshot.runtime.warmup_phase) detail["Warmup"] = snapshot.runtime.warmup_phase
             if (snapshot.auth.mode) detail["验证模式"] = snapshot.auth.mode
             if (snapshot.auth.last_result) detail["2FA反馈"] = snapshot.auth.last_result
             if (snapshot.auth.last_error) detail["2FA异常"] = snapshot.auth.last_error
 
-            const title = level === "warning" ? "IBKR 系统状态提醒（需关注）" : "IBKR 系统状态提醒"
+            if (startupGraceActive) {
+                detail["启动窗口"] = buildStartupGraceLabel(snapshot)
+            }
+
+            detail["摘要模式"] = startupGraceActive
+                ? "状态摘要 / 启动宽限"
+                : (level === "warning" ? "状态摘要 / 需关注" : "状态摘要 / 已合并心跳")
+
+            const title = level === "warning" ? "IBKR 系统状态摘要（需关注）" : "IBKR 系统状态摘要"
             const notified = feishuSystem.notifySystemEvent("status_change", level, "pb", title, detail, environment)
             writeSystemEvent("status_change", level, "pb", title, detail, environment, notified)
             console.log(`${prefix} status reminder ${environment}: level=${level}, notified=${notified}`)

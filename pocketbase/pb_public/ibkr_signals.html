@@ -772,6 +772,7 @@
         let refreshTimer = null;
         let currentInterval = 30;
         let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentSignalsRequestId = 0;
 
         // Pagination
         let currentPage = 1;
@@ -782,6 +783,8 @@
 
         // Signal validity configuration (from config table, default 30 minutes)
         let signalValidityMinutes = 30;
+        const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+        const configValueCache = {};
 
         function pickConfigValue(records, fallbackValue) {
             const priority = { '': 0, global: 1, [currentEnvironment]: 2 };
@@ -801,12 +804,22 @@
         }
 
         async function loadConfigValue(key, fallbackValue) {
+            const cacheKey = `${currentEnvironment}:${key}`;
+            const cached = configValueCache[cacheKey];
+            if (cached && cached.expiresAt > Date.now()) {
+                return cached.value;
+            }
             const result = await fetchCollectionFullList('config', {
                 filter: `key = "${escapeFilterValue(key)}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
                 sort: '-updated',
                 maxPages: 2
             });
-            return pickConfigValue(result, fallbackValue);
+            const value = pickConfigValue(result, fallbackValue);
+            configValueCache[cacheKey] = {
+                value,
+                expiresAt: Date.now() + CONFIG_CACHE_TTL_MS,
+            };
+            return value;
         }
 
         async function fetchCollectionFullList(collection, options = {}) {
@@ -909,6 +922,44 @@
             };
         }
 
+        function getSignalTimeRange() {
+            if (rangeStartDate && rangeEndDate) {
+                return {
+                    startTime: `${rangeStartDate} 00:00:00`,
+                    endTime: `${rangeEndDate} 23:59:59`,
+                    startTimeMs: new Date(`${rangeStartDate}T00:00:00Z`).getTime(),
+                    endTimeMs: new Date(`${rangeEndDate}T23:59:59Z`).getTime(),
+                };
+            }
+
+            const date = new Date(`${currentDate}T00:00:00Z`);
+            return {
+                startTime: `${currentDate} 00:00:00`,
+                endTime: `${currentDate} 23:59:59`,
+                startTimeMs: date.getTime(),
+                endTimeMs: date.getTime() + 86400000,
+            };
+        }
+
+        function normalizeIndicatorIntervalValue(value) {
+            const normalized = normalizeChartInterval(value, '5m');
+            const map = {
+                '5m': '5',
+                '15m': '15',
+                '30m': '30',
+                '1h': '60',
+                '4h': '240',
+                '1d': 'D'
+            };
+            return map[normalized] || '5';
+        }
+
+        function buildSignalIndicatorKey(signal) {
+            const symbol = String(signal?.symbol || '').trim().toUpperCase();
+            const interval = normalizeIndicatorIntervalValue(signal?.interval);
+            return symbol ? `${symbol}|${interval}` : '';
+        }
+
         function formatSignalInterval(interval) {
             const raw = String(interval || '').trim();
             if (!raw) return '';
@@ -965,10 +1016,11 @@
         // 防止重复加载的标志
         let isLoadingSignals = false;
 
-        async function loadSignals() {
+        async function loadSignals({ refreshCounts = true, showLoadingState = true } = {}) {
             // 防止重复调用
             if (isLoadingSignals) return;
             isLoadingSignals = true;
+            const requestId = ++currentSignalsRequestId;
 
             // 重置为第一页
             currentPage = 1;
@@ -983,16 +1035,7 @@
                     console.warn('[Signals] 无法读取 signal_validity_minutes 配置，使用默认值 30 分钟:', e);
                     signalValidityMinutes = 30;
                 }
-                let startTime, endTime;
-
-                // 优先使用日期范围
-                if (rangeStartDate && rangeEndDate) {
-                    startTime = `${rangeStartDate} 00:00:00`;
-                    endTime = `${rangeEndDate} 23:59:59`;
-                } else {
-                    startTime = `${currentDate} 00:00:00`;
-                    endTime = `${currentDate} 23:59:59`;
-                }
+                const { startTime, endTime } = getSignalTimeRange();
 
                 // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
                 const conditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
@@ -1023,33 +1066,55 @@
                 const page = currentPage;
                 const perPage = 10;
 
-                showLoading('加载中...');
+                if (showLoadingState) {
+                    showLoading('加载中...');
+                }
                 const result = await apiFetch('ibkr_signals', {
                     filter,
                     sort: '-created',
                     perPage,
                     page
                 });
+                if (requestId !== currentSignalsRequestId) return;
 
                 allSignals = result.items;
+                signalIndicatorsMap = {};
+                reverseSignalsMap = {};
+                ordersMap = {};
 
                 // 更新分页状态
                 hasMore = result.items.length === perPage;
                 totalItems = result.totalItems;
                 displayedSignals = allSignals;
 
-                // 加载反向信号、指标和订单
-                await loadReverseSignalsMap();
-                await loadSignalIndicators();
-                await loadOrdersMap();
-                signalTabCountRecords = await loadSignalsForTabCounts();
-
                 renderFilterNote();
                 renderSignals();
-                updateCountdowns();
                 updateLoadMoreButton();
-                await updateStatusTabCounts();
-                await updateDirectionTabCounts();
+
+                // 技术指标改为后台补齐，不阻塞首屏。
+                loadSignalIndicatorsForSignals(allSignals, { replace: true, requestId })
+                    .then(() => {
+                        if (requestId !== currentSignalsRequestId) return;
+                        renderSignals();
+                        updateCountdowns();
+                    })
+                    .catch((error) => {
+                        console.error('后台加载指标失败:', error);
+                    });
+
+                // Tab 数量仍保留，但不再跟随每次自动刷新全量重查。
+                if (refreshCounts) {
+                    loadSignalsForTabCounts()
+                        .then((records) => {
+                            if (requestId !== currentSignalsRequestId) return;
+                            signalTabCountRecords = records;
+                            updateStatusTabCounts();
+                            updateDirectionTabCounts();
+                        })
+                        .catch((error) => {
+                            console.error('加载 tab 统计失败:', error);
+                        });
+                }
             } catch (error) {
                 console.error('加载失败:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -1059,7 +1124,9 @@
                 showToast('加载失败: ' + error.message);
             } finally {
                 isLoadingSignals = false;
-                hideLoading();
+                if (showLoadingState) {
+                    hideLoading();
+                }
             }
         }
 
@@ -1088,60 +1155,75 @@
             loadSignals();
         }
 
-        async function loadSignalIndicators() {
-            signalIndicatorsMap = {};
-
-            // 获取第一页信号的 unique symbols
-            const symbols = [...new Set(allSignals.map(s => s.symbol))];
-            if (symbols.length === 0) return;
-
-            try {
-                // 确定时间范围（美国时区）
-                let startTimeMs, endTimeMs;
-                if (rangeStartDate && rangeEndDate) {
-                    // 日期范围模式
-                    const startDate = new Date(rangeStartDate + 'T00:00:00Z');
-                    const endDate = new Date(rangeEndDate + 'T23:59:59Z');
-                    startTimeMs = startDate.getTime();
-                    endTimeMs = endDate.getTime();
-                } else {
-                    // 单日期模式
-                    const date = new Date(currentDate + 'T00:00:00Z');
-                    startTimeMs = date.getTime();
-                    endTimeMs = date.getTime() + 86400000; // 加一天
-                }
-
-                const latestBySymbol = {};
-                for (const symbolChunk of chunkArray(symbols, 12)) {
-                    const symbolFilter = symbolChunk.map(s => `symbol = "${escapeFilterValue(s)}"`).join(' || ');
-                    const rows = await fetchCollectionFullList('ibkr_indicators', {
-                        filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                        sort: '-bar_time_ms,-created',
-                        maxPages: 4
-                    });
-                    rows.forEach((item) => {
-                        if (!latestBySymbol[item.symbol]) {
-                            latestBySymbol[item.symbol] = item;
-                        }
-                    });
-                }
-
-                // 处理结果
-                Object.keys(latestBySymbol).forEach(symbol => {
-                    const data = latestBySymbol[symbol];
-                    // 复用 common.js 中的 normalizeIndicatorRecord，确保所有字段齐全
-                    const normalized = normalizeIndicatorRecord(data);
-
-                    // Map 到所有使用该 symbol 的信号
-                    allSignals.forEach(signal => {
-                        if (signal.symbol === symbol) {
-                            signalIndicatorsMap[signal.id] = normalized;
-                        }
-                    });
-                });
-            } catch (error) {
-                console.error('加载指标失败:', error);
+        async function loadSignalIndicatorsForSignals(signals, { replace = false, requestId = 0 } = {}) {
+            const records = Array.isArray(signals) ? signals : [];
+            if (replace) {
+                signalIndicatorsMap = {};
             }
+            if (!records.length) return;
+
+            const { startTimeMs, endTimeMs } = getSignalTimeRange();
+            const uniquePairs = [];
+            const pairSet = new Set();
+
+            records.forEach((signal) => {
+                const symbol = String(signal?.symbol || '').trim().toUpperCase();
+                if (!symbol) return;
+                const interval = normalizeIndicatorIntervalValue(signal?.interval);
+                const key = `${symbol}|${interval}`;
+                if (pairSet.has(key)) return;
+                pairSet.add(key);
+                uniquePairs.push({ symbol, interval, key });
+            });
+
+            if (!uniquePairs.length) return;
+
+            const latestByPair = {};
+            for (const pairChunk of chunkArray(uniquePairs, 8)) {
+                const pairFilter = pairChunk
+                    .map((item) => `(symbol = "${escapeFilterValue(item.symbol)}" && interval = "${escapeFilterValue(item.interval)}")`)
+                    .join(' || ');
+                const expectedKeys = new Set(pairChunk.map((item) => item.key));
+                const perPage = Math.min(200, pairChunk.length * 12);
+                const chunkLatestByPair = {};
+
+                for (let page = 1; page <= 2; page += 1) {
+                    const result = await apiFetch('ibkr_indicators', {
+                        filter: `environment = "${currentEnvironment}" && (${pairFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-bar_time_ms,-created',
+                        perPage,
+                        page
+                    });
+                    if (requestId && requestId !== currentSignalsRequestId) return;
+
+                    const rows = Array.isArray(result?.items) ? result.items : [];
+                    rows.forEach((item) => {
+                        const key = `${String(item.symbol || '').trim().toUpperCase()}|${normalizeIndicatorIntervalValue(item.interval)}`;
+                        if (!chunkLatestByPair[key]) {
+                            chunkLatestByPair[key] = normalizeIndicatorRecord(item);
+                        }
+                    });
+
+                    if (Object.keys(chunkLatestByPair).length >= expectedKeys.size) {
+                        break;
+                    }
+                    if (rows.length < perPage) {
+                        break;
+                    }
+                }
+
+                Object.assign(latestByPair, chunkLatestByPair);
+            }
+
+            if (requestId && requestId !== currentSignalsRequestId) return;
+
+            const nextMap = replace ? {} : { ...signalIndicatorsMap };
+            records.forEach((signal) => {
+                const key = buildSignalIndicatorKey(signal);
+                if (!key || !latestByPair[key]) return;
+                nextMap[signal.id] = latestByPair[key];
+            });
+            signalIndicatorsMap = nextMap;
         }
 
         // 加载反向信号映射（按 symbol 分组）
@@ -1508,16 +1590,8 @@
             try {
                 // 先增加页码再请求
                 currentPage++;
-
-                let startTime, endTime;
-
-                if (rangeStartDate && rangeEndDate) {
-                    startTime = `${rangeStartDate} 00:00:00`;
-                    endTime = `${rangeEndDate} 23:59:59`;
-                } else {
-                    startTime = `${currentDate} 00:00:00`;
-                    endTime = `${currentDate} 23:59:59`;
-                }
+                const requestId = currentSignalsRequestId;
+                const { startTime, endTime } = getSignalTimeRange();
 
                 // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
                 const conditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
@@ -1550,18 +1624,24 @@
                     perPage: itemsPerPage,
                     page: currentPage
                 });
+                const newSignals = Array.isArray(result?.items) ? result.items : [];
 
-                allSignals = [...allSignals, ...result.items];
-                hasMore = result.items.length === itemsPerPage;
+                allSignals = [...allSignals, ...newSignals];
+                hasMore = newSignals.length === itemsPerPage;
                 totalItems = result.totalItems;
 
                 displayedSignals = allSignals;
-                await loadReverseSignalsMap();
-                await loadSignalIndicators();
-                await loadOrdersMap();
                 renderFilterNote();
                 renderSignals();
                 updateLoadMoreButton();
+                loadSignalIndicatorsForSignals(newSignals, { replace: false, requestId })
+                    .then(() => {
+                        if (requestId !== currentSignalsRequestId) return;
+                        renderSignals();
+                    })
+                    .catch((error) => {
+                        console.error('加载更多指标失败:', error);
+                    });
             } catch (error) {
                 console.error('加载更多失败:', error);
                 showToast('加载失败: ' + error.message);
@@ -1707,15 +1787,6 @@
                 // 构建大盘关联徽章
                 const marketIndexBadges = buildMarketIndexBadges(signal);
 
-                // 构建反向信号关联徽章 - 从反向信号映射中根据 symbol 查找
-                const signalIdReverseSignals = reverseSignalsMap[signal.symbol] || [];
-                const hasReverseSignal = signalIdReverseSignals.length > 0;
-                const reverseSignalBadge = hasReverseSignal ? `<span class="indicator-badge badge-reverse">🔄 反向信号</span>` : '';
-
-                // 构建订单关联徽章 - 根据 signal_id 查找
-                const signalOrders = ordersMap[signal.signal_id] || [];
-                const orderBadge = getSignalOrderStatusBadge(signalOrders);
-
                 // 当日 / 前一日 / 近7日涨幅
                 let dayChangePct = '';
                 let dayChangeClass = '';
@@ -1816,13 +1887,6 @@
                             </div>
                         ` : ''}
 
-                        ${reverseSignalBadge || orderBadge ? `
-                            <div class="indicator-badges">
-                                ${reverseSignalBadge}
-                                ${orderBadge}
-                            </div>
-                        ` : ''}
-
                         <div class="signal-actions" style="display:flex;flex-direction:column;gap:8px;">
                             <div class="action-btns-row">
                                 <button class="action-btn btn-view${latestIndicator ? '' : ' disabled'}" onclick="showIndicatorDetails('${signal.id}')" ${latestIndicator ? '' : 'disabled'}>
@@ -1831,11 +1895,11 @@
                                 <button class="action-btn btn-view${hasChartContext ? '' : ' disabled'}" onclick="openSignalChartPage('${signal.id}')" ${hasChartContext ? '' : 'disabled'}>
                                     📉 图表页${hasChartContext ? '' : '(无)'}
                                 </button>
-                                <button class="action-btn btn-view${hasReverseSignal ? '' : ' disabled'}" onclick="viewReverseSignal('${signal.signal_id}')" ${hasReverseSignal ? '' : 'disabled'}>
-                                    🔄 反向信号${hasReverseSignal ? '' : '(无)'}
+                                <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick="viewReverseSignal('${signal.signal_id}')" ${signal.signal_id ? '' : 'disabled'}>
+                                    🔄 反向信号
                                 </button>
-                                <button class="action-btn btn-view${signalOrders.length > 0 ? '' : ' disabled'}" onclick="viewSignalOrders('${signal.signal_id}')" ${signalOrders.length > 0 ? '' : 'disabled'}>
-                                    📋 订单${signalOrders.length > 0 ? `(${signalOrders.length})` : '(无)'}
+                                <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick="viewSignalOrders('${signal.signal_id}')" ${signal.signal_id ? '' : 'disabled'}>
+                                    📋 订单
                                 </button>
                             </div>
                             ${isAwaitingConfirm ? `
@@ -1898,12 +1962,14 @@
         async function confirmSignal(id) {
             if (!confirm('确认执行此信号？')) return;
             try {
-                // awaiting_confirm → pending（已确认，等待 IBKR Compute 执行）
-                // pending → executed（IBKR Compute 直接执行）
-                const signal = allSignals.find(s => s.id === id);
-                const newStatus = (signal?.status === 'awaiting_confirm') ? 'pending' : 'executed';
-                await pb.collection('ibkr_signals').update(id, { status: newStatus });
-                showToast(newStatus === 'pending' ? '✓ 信号已确认，等待执行' : '✓ 信号已执行');
+                const resp = await fetch(`/webhook/signal/confirm?id=${encodeURIComponent(id)}&environment=${encodeURIComponent(currentEnvironment)}`, {
+                    method: 'GET',
+                    credentials: 'include'
+                });
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                showToast('✓ 信号已确认，等待执行');
                 await loadSignals();
             } catch (error) {
                 console.error('确认失败:', error);
@@ -1914,7 +1980,13 @@
         async function cancelSignal(id) {
             if (!confirm('确认拒绝此信号？')) return;
             try {
-                await pb.collection('ibkr_signals').update(id, { status: 'rejected' });
+                const resp = await fetch(`/webhook/signal/cancel?id=${encodeURIComponent(id)}&environment=${encodeURIComponent(currentEnvironment)}`, {
+                    method: 'GET',
+                    credentials: 'include'
+                });
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
                 showToast('✓ 信号已拒绝');
                 await loadSignals();
             } catch (error) {
@@ -1928,13 +2000,6 @@
                 showToast('无法找到关联订单');
                 return;
             }
-            const orders = ordersMap[signalId] || [];
-
-            if (orders.length === 0) {
-                showToast('暂无关联订单');
-                return;
-            }
-
             location.href = buildPageUrl('/ibkr_orders.html', { signal_id: signalId, date: currentDate });
         }
 
@@ -1986,7 +2051,7 @@
             const btn = document.getElementById('refreshBtn');
             btn.classList.add('spinning');
             setTimeout(() => btn.classList.remove('spinning'), 600);
-            loadSignals();
+            loadSignals({ refreshCounts: true, showLoadingState: false });
         }
 
         function changeRefreshInterval(seconds) {
@@ -2000,7 +2065,10 @@
 
             // 设置新的定时器（不弹提示）
             if (currentInterval > 0) {
-                refreshTimer = setInterval(loadSignals, currentInterval * 1000);
+                refreshTimer = setInterval(() => {
+                    if (document.hidden) return;
+                    loadSignals({ refreshCounts: false, showLoadingState: false });
+                }, currentInterval * 1000);
             }
         }
 
@@ -2060,10 +2128,16 @@
                 }
             ]);
 
-            await loadSignals();
+            await loadSignals({ refreshCounts: true, showLoadingState: true });
 
             // 初始化定时刷新（默认30秒）
             changeRefreshInterval(30);
+
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && currentInterval > 0) {
+                    loadSignals({ refreshCounts: false, showLoadingState: false });
+                }
+            });
 
             // 设置倒计时更新定时器（每秒更新一次）
             setInterval(updateCountdowns, 1000);

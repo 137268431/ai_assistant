@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import sqlite3
 import statistics
 import threading
 import time
@@ -12,7 +14,10 @@ from typing import Any, Dict, List, Optional
 
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
+from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.market.conid_resolver import ConidResolver
+from ibkr_compute.market.data_backfill import DataBackfill
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
     ET,
@@ -54,6 +59,7 @@ MAX_BACKTEST_WARMUP_BARS = 2000
 SCAN_INTERVALS = tuple(COMPUTE_INTERVALS)
 BACKTEST_IMPROVEMENT_NOTIFY_THRESHOLD = 0.05
 BACKTEST_IMPROVEMENT_SHARPE_THRESHOLD = 0.1
+BACKTEST_SQLITE_PATH = os.environ.get("PB_SQLITE_PATH", "/opt/pocketbase/pb_data/data.db")
 
 TV_INDICATOR_EXTRA_FIELDS = (
     "open",
@@ -158,6 +164,13 @@ class BacktestCancelled(Exception):
 class BacktestService:
     def __init__(self, pb_client: PBClient):
         self.pb = pb_client
+        self.data_backfill = DataBackfill() if pb_client else None
+        self.conid_resolver = ConidResolver(pb_client=pb_client) if pb_client else None
+        if self.conid_resolver is not None:
+            try:
+                self.conid_resolver.load_cache_from_pb()
+            except Exception:
+                pass
         self._lock = threading.RLock()
         self._thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
@@ -471,8 +484,9 @@ class BacktestService:
         slippage_bps = max(0.0, float(payload.get("slippage_bps") or 2.0))
         force_flat_eod = True
         max_symbols = max(1, min(DEFAULT_MAX_SYMBOLS, int(payload.get("max_symbols") or DEFAULT_MAX_SYMBOLS)))
-        compare_with_tv = bool(payload.get("compare_with_tv", True))
-        compare_tv_signals = bool(payload.get("compare_tv_signals", False))
+        compare_with_tv = self._normalize_bool(payload.get("compare_with_tv"), True)
+        compare_tv_signals = self._normalize_bool(payload.get("compare_tv_signals"), False)
+        persist_backtest_indicators = self._normalize_bool(payload.get("persist_backtest_indicators"), True)
         warmup_bars = self._normalize_positive_int(
             payload.get("warmup_bars") or payload.get("preheat_bars"),
             default=BACKTEST_WARMUP_BARS,
@@ -518,6 +532,7 @@ class BacktestService:
             "max_symbols": max_symbols,
             "compare_with_tv": compare_with_tv,
             "compare_tv_signals": compare_tv_signals,
+            "persist_backtest_indicators": persist_backtest_indicators,
             "warmup_bars": warmup_bars,
             "scan_warmup_bars": scan_warmup_bars,
             "premarket_cutoff_time": premarket_cutoff_time,
@@ -530,6 +545,7 @@ class BacktestService:
                 "warmup_bars": warmup_bars,
                 "scan_warmup_bars": scan_warmup_bars,
                 "premarket_cutoff_time": premarket_cutoff_time,
+                "persist_backtest_indicators": persist_backtest_indicators,
             },
             "variants": variants,
             "strategy_tag": strategy_tag,
@@ -606,6 +622,22 @@ class BacktestService:
                 continue
             items.append(symbol)
         return items
+
+    def _normalize_bool(self, raw_value: Any, default: bool = False) -> bool:
+        if raw_value is None:
+            return bool(default)
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, (int, float)):
+            return bool(raw_value)
+        text = str(raw_value or "").strip().lower()
+        if not text:
+            return bool(default)
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        return bool(default)
 
     def _normalize_positive_int(self, raw_value: Any, default: int, minimum: int = 0, maximum: int = MAX_BACKTEST_WARMUP_BARS) -> int:
         try:
@@ -984,6 +1016,7 @@ class BacktestService:
             "strategy_tag": request["strategy_tag"],
             "compare_with_tv": bool(request.get("compare_with_tv", True)),
             "compare_tv_signals": bool(request.get("compare_tv_signals", False)),
+            "persist_backtest_indicators": bool(request.get("persist_backtest_indicators", True)),
             "warmup_bars": int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
             "scan_warmup_bars": int(request.get("scan_warmup_bars", request.get("warmup_bars", BACKTEST_WARMUP_BARS)) or BACKTEST_WARMUP_BARS),
             "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
@@ -1657,7 +1690,11 @@ class BacktestService:
         metrics["analysis_summary"] = analysis_report.get("summary") or {}
 
         self._set_progress_context("running", "persist", "saving trades and metrics", 92, progress_context)
-        backtest_indicator_capture = self._persist_backtest_indicators(run_id, all_indicator_rows)
+        if bool(request.get("persist_backtest_indicators", True)):
+            backtest_indicator_capture = self._persist_backtest_indicators(run_id, all_indicator_rows)
+        else:
+            backtest_indicator_capture = self._empty_capture_summary(BACKTEST_INDICATOR_COLLECTION, run_id, "disabled")
+            backtest_indicator_capture["attempted_count"] = len(all_indicator_rows)
         metrics["backtest_indicator_capture"] = backtest_indicator_capture
         backtest_signal_capture = self._persist_backtest_signals(run_id, all_signal_rows)
         metrics["backtest_signal_capture"] = backtest_signal_capture
@@ -1988,6 +2025,202 @@ class BacktestService:
         end = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=ET) + timedelta(days=1) - timedelta(milliseconds=1)
         return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
+    def _format_backfill_start_time(self, anchor_ms: int) -> str:
+        return ms_to_et(anchor_ms).strftime("%Y%m%d-%H:%M:%S")
+
+    def _backfill_symbol_history(
+        self,
+        symbol: str,
+        source_environment: str,
+        start_ms: int,
+        end_ms: int,
+        interval: str = "5m",
+    ) -> dict:
+        if (
+            not self.pb
+            or self.data_backfill is None
+            or self.conid_resolver is None
+            or start_ms <= 0
+            or end_ms <= 0
+            or end_ms < start_ms
+        ):
+            return {"ok": False, "reason": "backfill_unavailable"}
+
+        normalized_interval = normalize_interval(interval)
+        if normalized_interval != "5m":
+            return {"ok": False, "reason": "unsupported_interval"}
+
+        try:
+            conid = int(self.conid_resolver.resolve(symbol) or 0)
+        except Exception:
+            conid = 0
+        if conid <= 0:
+            return {"ok": False, "reason": "conid_unresolved"}
+
+        interval_ms = interval_to_ms(normalized_interval)
+        period = "4d"
+        bar_size = "5min"
+        anchor_ms = int(end_ms)
+        earliest_needed_ms = int(start_ms)
+        batches = 0
+        fetched_rows = []
+        seen_bar_ms = set()
+        max_batches = 240
+
+        while anchor_ms >= earliest_needed_ms and batches < max_batches:
+            start_time = self._format_backfill_start_time(anchor_ms)
+            payload = self.data_backfill._request_history_json(
+                conid,
+                symbol,
+                normalized_interval,
+                period,
+                bar_size,
+                start_time=start_time,
+            )
+            bars = list(payload.get("data") or [])
+            if not bars:
+                break
+
+            batches += 1
+            oldest_batch_ms = 0
+            for bar in bars:
+                raw_bar_time = int(bar.get("t", 0) or 0)
+                bar_time_ms = raw_bar_time if raw_bar_time > 1_000_000_000_000 else raw_bar_time * 1000
+                if bar_time_ms <= 0:
+                    continue
+                if oldest_batch_ms <= 0 or bar_time_ms < oldest_batch_ms:
+                    oldest_batch_ms = bar_time_ms
+                if bar_time_ms in seen_bar_ms:
+                    continue
+                seen_bar_ms.add(bar_time_ms)
+                if bar_time_ms < earliest_needed_ms or bar_time_ms > end_ms:
+                    continue
+                fetched_rows.append({
+                    "symbol": symbol,
+                    "environment": source_environment,
+                    "exchange": "",
+                    "interval": normalized_interval,
+                    "open": float(bar.get("o", 0) or 0),
+                    "high": float(bar.get("h", 0) or 0),
+                    "low": float(bar.get("l", 0) or 0),
+                    "close": float(bar.get("c", 0) or 0),
+                    "volume": float(bar.get("v", 0) or 0),
+                    "bar_time_ms": bar_time_ms,
+                    "us_time": format_us_time(bar_time_ms),
+                    "cn_time": format_cn_time(bar_time_ms),
+                    "session_type": classify_session(bar_time_ms=bar_time_ms),
+                    "source": "backfill",
+                    "extra": {
+                        "source": "ibkr_history_backfill",
+                        "conid": conid,
+                        "interval": normalized_interval,
+                        "outside_rth": True,
+                        "request_period": period,
+                        "request_bar": bar_size,
+                        "request_start_time": start_time,
+                        "backfill_scope": "backtest_range",
+                        **build_runtime_timestamps(),
+                    },
+                })
+
+            if oldest_batch_ms <= 0 or oldest_batch_ms <= earliest_needed_ms:
+                break
+            next_anchor_ms = oldest_batch_ms - interval_ms
+            if next_anchor_ms >= anchor_ms:
+                break
+            anchor_ms = next_anchor_ms
+
+        fetched_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+        return {
+            "ok": bool(fetched_rows),
+            "reason": "ok" if fetched_rows else "no_rows_fetched",
+            "fetched_rows": len(fetched_rows),
+            "batches": batches,
+            "rows": fetched_rows,
+        }
+
+    def _merge_backfill_rows(self, rows: list[dict], fetched_rows: list[dict]) -> list[dict]:
+        merged = {}
+        for row in rows or []:
+            bar_ms = int(row.get("bar_time_ms", 0) or 0)
+            if bar_ms > 0:
+                merged[bar_ms] = row
+        for row in fetched_rows or []:
+            bar_ms = int(row.get("bar_time_ms", 0) or 0)
+            if bar_ms > 0 and bar_ms not in merged:
+                merged[bar_ms] = row
+        return [merged[key] for key in sorted(merged)]
+
+    def _load_bar_rows_from_sqlite(
+        self,
+        symbol: str,
+        source_environment: str,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        before_bar_time_ms: int | None = None,
+        descending: bool = False,
+        limit: int | None = None,
+    ) -> list[dict]:
+        db_path = str(BACKTEST_SQLITE_PATH or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return []
+
+        conditions = [
+            "symbol = ?",
+            "interval = '5m'",
+            "environment = ?",
+        ]
+        params: list[Any] = [symbol, source_environment]
+        if start_ms is not None:
+            conditions.append("bar_time_ms >= ?")
+            params.append(int(start_ms))
+        if end_ms is not None:
+            conditions.append("bar_time_ms <= ?")
+            params.append(int(end_ms))
+        if before_bar_time_ms is not None:
+            conditions.append("bar_time_ms < ?")
+            params.append(int(before_bar_time_ms))
+
+        sql = (
+            "SELECT symbol, exchange, interval, open, high, low, close, volume, "
+            "session_type, us_time, cn_time, bar_time_ms "
+            "FROM ibkr_bars "
+            f"WHERE {' AND '.join(conditions)} "
+            f"ORDER BY bar_time_ms {'DESC' if descending else 'ASC'}"
+        )
+        if limit is not None and int(limit or 0) > 0:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            traceback.print_exc()
+            return []
+
+        normalized = []
+        for row in rows or []:
+            normalized.append(
+                {
+                    "symbol": str(row["symbol"] or ""),
+                    "exchange": str(row["exchange"] or ""),
+                    "interval": str(row["interval"] or "5m"),
+                    "open": float(row["open"] or 0),
+                    "high": float(row["high"] or 0),
+                    "low": float(row["low"] or 0),
+                    "close": float(row["close"] or 0),
+                    "volume": float(row["volume"] or 0),
+                    "session_type": str(row["session_type"] or ""),
+                    "us_time": str(row["us_time"] or ""),
+                    "cn_time": str(row["cn_time"] or ""),
+                    "bar_time_ms": int(row["bar_time_ms"] or 0),
+                }
+            )
+        return normalized
+
     def _load_symbol_bars(
         self,
         symbol: str,
@@ -1997,15 +2230,39 @@ class BacktestService:
         session_mode: str,
     ) -> list[dict]:
         start_ms, end_ms = self._date_to_ms_range(date_from, date_to)
-        rows = self.pb.get_all_records(
-            "ibkr_bars",
-            filter=(
-                f'symbol = "{symbol}" && interval = "5m" && environment = "{source_environment}" '
-                f"&& bar_time_ms >= {start_ms} && bar_time_ms <= {end_ms}"
-            ),
-            sort="bar_time_ms",
-            max_pages=DEFAULT_MAX_PAGES,
+        rows = self._load_bar_rows_from_sqlite(
+            symbol,
+            source_environment,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            descending=False,
         )
+        if not rows and self.pb:
+            rows = self.pb.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{symbol}" && interval = "5m" && environment = "{source_environment}" '
+                    f"&& bar_time_ms >= {start_ms} && bar_time_ms <= {end_ms}"
+                ),
+                sort="bar_time_ms",
+                max_pages=DEFAULT_MAX_PAGES,
+            )
+        if rows:
+            first_bar_ms = int(rows[0].get("bar_time_ms", 0) or 0)
+            last_bar_ms = int(rows[-1].get("bar_time_ms", 0) or 0)
+        else:
+            first_bar_ms = 0
+            last_bar_ms = 0
+        if not rows or first_bar_ms > start_ms or last_bar_ms < end_ms - interval_to_ms("5m"):
+            warmup_lookback_ms = interval_to_ms("5m") * (BACKTEST_WARMUP_BARS + 20)
+            repair = self._backfill_symbol_history(
+                symbol,
+                source_environment,
+                max(0, start_ms - warmup_lookback_ms),
+                end_ms,
+                interval="5m",
+            )
+            rows = self._merge_backfill_rows(rows, list((repair or {}).get("rows") or []))
         normalized = []
         seen = set()
         for row in rows:
@@ -2045,15 +2302,34 @@ class BacktestService:
     ) -> list[dict]:
         if not self.pb or before_bar_time_ms <= 0 or limit <= 0:
             return []
-        rows = self.pb.get_all_records(
-            "ibkr_bars",
-            filter=(
-                f'symbol = "{symbol}" && interval = "5m" && environment = "{source_environment}" '
-                f"&& bar_time_ms < {before_bar_time_ms}"
-            ),
-            sort="-bar_time_ms",
-            max_pages=max(4, min(20, math.ceil(limit / 200) + 2)),
+        rows = self._load_bar_rows_from_sqlite(
+            symbol,
+            source_environment,
+            before_bar_time_ms=before_bar_time_ms,
+            descending=True,
+            limit=max(limit + 20, BACKTEST_WARMUP_BARS + 20),
         )
+        if not rows:
+            rows = self.pb.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{symbol}" && interval = "5m" && environment = "{source_environment}" '
+                    f"&& bar_time_ms < {before_bar_time_ms}"
+                ),
+                sort="-bar_time_ms",
+                max_pages=max(4, min(20, math.ceil(limit / 200) + 2)),
+            )
+        if len(rows) < limit:
+            warmup_start_ms = max(0, before_bar_time_ms - (interval_to_ms("5m") * max(limit + 20, BACKTEST_WARMUP_BARS + 20)))
+            repair = self._backfill_symbol_history(
+                symbol,
+                source_environment,
+                warmup_start_ms,
+                max(0, before_bar_time_ms - interval_to_ms("5m")),
+                interval="5m",
+            )
+            rows = self._merge_backfill_rows(rows, list((repair or {}).get("rows") or []))
+            rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0), reverse=True)
         normalized = []
         seen = set()
         for row in rows:
@@ -2503,19 +2779,29 @@ class BacktestService:
             previous_day = current_day
 
             if pending_signal and open_position is None:
-                open_position = self._open_position(symbol, bar, pending_signal, commission_per_share, slippage_bps)
-                self._mark_backtest_signal_status(
-                    signal_index,
-                    pending_signal.get("signal_id"),
-                    "executed",
-                    "opened_next_bar",
-                    {
-                        "entry_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
-                        "entry_us_time": str(bar.get("us_time", "") or ""),
-                        "entry_cn_time": str(bar.get("cn_time", "") or ""),
-                    },
+                filled_position = self._check_pending_entry_fill(
+                    symbol,
+                    bar,
+                    pending_signal,
+                    commission_per_share,
+                    slippage_bps,
                 )
-                pending_signal = None
+                if filled_position:
+                    open_position = filled_position
+                    self._mark_backtest_signal_status(
+                        signal_index,
+                        pending_signal.get("signal_id"),
+                        "executed",
+                        "entry_limit_filled",
+                        {
+                            "entry_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+                            "entry_us_time": str(bar.get("us_time", "") or ""),
+                            "entry_cn_time": str(bar.get("cn_time", "") or ""),
+                            "entry_price": round(float(open_position.get("entry_price", 0) or 0), 4),
+                            "entry_limit_price": round(float(open_position.get("entry_limit_price", 0) or 0), 4),
+                        },
+                    )
+                    pending_signal = None
 
             if open_position:
                 closed = self._check_exit(open_position, bar, commission_per_share, slippage_bps)
@@ -2551,7 +2837,117 @@ class BacktestService:
                     indicator_audit,
                 )
             )
-            if open_position:
+            signal = signal_gen.update(snapshot)
+            trading_day_enabled = allowed_trade_days is None or current_day in allowed_trade_days
+            preexisting_pending_signal = pending_signal if pending_signal and open_position is None else None
+            preexisting_open_position = open_position
+            signal_conflict_emitted = False
+
+            if signal and int(signal.get("shares", 0) or 0) > 0:
+                signal_payload = self._build_tv_signal_compare_payload(
+                    symbol,
+                    bar,
+                    engine.bar_count,
+                    signal,
+                    request["source_environment"],
+                    daily_fields,
+                )
+                if symbol_tv_parity is not None and compare_tv_signals:
+                    self._compare_generated_signal(symbol_tv_parity, signal_payload)
+                signal_row = self._build_backtest_signal_row(request, bar, signal_payload)
+                signal_row["status"] = "generated"
+                signal_rows.append(signal_row)
+                signal_id = str(signal_row.get("signal_id", "") or "")
+                if signal_id:
+                    signal_index[signal_id] = signal_row
+                if not trading_day_enabled:
+                    self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "symbol_not_selected_for_day")
+                else:
+                    active_target = preexisting_pending_signal if preexisting_pending_signal else preexisting_open_position
+                    active_state = "pending_entry" if preexisting_pending_signal else ("filled_position" if preexisting_open_position else "")
+                    active_direction = str((active_target or {}).get("direction", "") or "").strip().lower()
+                    new_direction = str(signal_payload.get("direction", "") or "").strip().lower()
+                    if active_target or index >= len(bars) - 1:
+                        if active_target and active_direction and new_direction and new_direction != active_direction:
+                            reverse_row = self._build_backtest_reverse_signal_row(
+                                request,
+                                symbol,
+                                bar,
+                                engine.bar_count,
+                                snapshot,
+                                daily_fields,
+                                active_target,
+                                target_state=active_state,
+                                reverse_kind="signal_conflict",
+                                source="signal",
+                                origin_signal_payload=signal_payload,
+                            )
+                            reverse_key = self._build_backtest_reverse_key(reverse_row)
+                            if reverse_row and reverse_key not in reverse_index:
+                                reverse_rows.append(reverse_row)
+                                reverse_index.add(reverse_key)
+                                signal_conflict_emitted = True
+                                if preexisting_pending_signal and active_state == "pending_entry":
+                                    pending_signal = self._apply_backtest_pending_reverse_action(
+                                        pending_signal,
+                                        reverse_row,
+                                        signal_index,
+                                    )
+                                elif preexisting_open_position and active_state == "filled_position":
+                                    open_position, reverse_trade = self._apply_backtest_position_reverse_action(
+                                        open_position,
+                                        reverse_row,
+                                        bar,
+                                        commission_per_share,
+                                        slippage_bps,
+                                    )
+                                    if reverse_trade:
+                                        trades.append(reverse_trade)
+                        if active_target:
+                            drop_reason = "active_target_exists"
+                            if active_direction and new_direction and new_direction != active_direction:
+                                drop_reason = "signal_conflict_active_target"
+                            self._mark_backtest_signal_status(signal_index, signal_id, "dropped", drop_reason)
+                        elif index >= len(bars) - 1:
+                            self._mark_backtest_signal_status(signal_index, signal_id, "dropped", "last_bar_no_entry")
+                    else:
+                        pending_signal = self._build_backtest_pending_signal(
+                            symbol,
+                            bar,
+                            signal,
+                            signal_payload,
+                        )
+
+                        if force_flat_eod and index < len(bars) - 1:
+                            next_day = str(bars[index + 1].get("us_time", "") or "")[:10]
+                            if next_day != current_day:
+                                self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "force_flat_eod")
+                                pending_signal = None
+
+            if not signal_conflict_emitted and preexisting_pending_signal and pending_signal and open_position is None:
+                reverse_row = self._build_backtest_reverse_signal_row(
+                    request,
+                    symbol,
+                    bar,
+                    engine.bar_count,
+                    snapshot,
+                    daily_fields,
+                    pending_signal,
+                    target_state="pending_entry",
+                    reverse_kind="indicator_conflict",
+                    source="indicator",
+                )
+                reverse_key = self._build_backtest_reverse_key(reverse_row)
+                if reverse_row and reverse_key not in reverse_index:
+                    reverse_rows.append(reverse_row)
+                    reverse_index.add(reverse_key)
+                    pending_signal = self._apply_backtest_pending_reverse_action(
+                        pending_signal,
+                        reverse_row,
+                        signal_index,
+                    )
+
+            if not signal_conflict_emitted and preexisting_open_position and open_position:
                 reverse_row = self._build_backtest_reverse_signal_row(
                     request,
                     symbol,
@@ -2560,53 +2956,23 @@ class BacktestService:
                     snapshot,
                     daily_fields,
                     open_position,
+                    target_state="filled_position",
+                    reverse_kind="indicator_conflict",
+                    source="indicator",
                 )
                 reverse_key = self._build_backtest_reverse_key(reverse_row)
                 if reverse_row and reverse_key not in reverse_index:
                     reverse_rows.append(reverse_row)
                     reverse_index.add(reverse_key)
-
-            signal = signal_gen.update(snapshot)
-            trading_day_enabled = allowed_trade_days is None or current_day in allowed_trade_days
-            if not signal or open_position is not None or index >= len(bars) - 1:
-                continue
-            if int(signal.get("shares", 0) or 0) <= 0:
-                continue
-            signal_payload = self._build_tv_signal_compare_payload(
-                symbol,
-                bar,
-                engine.bar_count,
-                signal,
-                request["source_environment"],
-                daily_fields,
-            )
-            if symbol_tv_parity is not None and compare_tv_signals:
-                self._compare_generated_signal(symbol_tv_parity, signal_payload)
-            signal_row = self._build_backtest_signal_row(request, bar, signal_payload)
-            signal_row["status"] = "generated"
-            signal_rows.append(signal_row)
-            signal_id = str(signal_row.get("signal_id", "") or "")
-            if signal_id:
-                signal_index[signal_id] = signal_row
-            if not trading_day_enabled:
-                self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "symbol_not_selected_for_day")
-                continue
-            pending_signal = {
-                **signal,
-                "signal_id": signal_payload.get("signal_id", build_signal_id(symbol, int(bar["bar_time_ms"]), str(signal.get("signal", "")))),
-                "signal_bar_ms": int(bar["bar_time_ms"]),
-                "signal_us_time": bar.get("us_time", ""),
-                "signal_cn_time": bar.get("cn_time", ""),
-                "signal_close": float(bar.get("close", 0) or 0),
-                "reason": str(signal.get("reason", "") or ""),
-                "chart_tf": interval_to_chart_tf("5m"),
-            }
-
-            if force_flat_eod and index < len(bars) - 1:
-                next_day = str(bars[index + 1].get("us_time", "") or "")[:10]
-                if next_day != current_day:
-                    self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "force_flat_eod")
-                    pending_signal = None
+                    open_position, reverse_trade = self._apply_backtest_position_reverse_action(
+                        open_position,
+                        reverse_row,
+                        bar,
+                        commission_per_share,
+                        slippage_bps,
+                    )
+                    if reverse_trade:
+                        trades.append(reverse_trade)
 
         if open_position:
             trades.append(self._close_position(open_position, bars[-1], commission_per_share, slippage_bps, "last_bar"))
@@ -2921,14 +3287,266 @@ class BacktestService:
         target_state = str(reverse_row.get("target_state", "") or "").strip()
         action_type = str(reverse_row.get("action_type", "") or "").strip()
         direction = str(reverse_row.get("direction", "") or "").strip()
+        reverse_kind = str(reverse_row.get("reverse_kind", "") or "").strip()
+        origin_signal_id = str(reverse_row.get("origin_signal_id", "") or "").strip()
+        new_direction = str(self._parse_object(reverse_row.get("extra")).get("new_direction", "") or "").strip()
         return "|".join(
             [
                 signal_id or trade_group_id or str(reverse_row.get("symbol", "") or "").strip().upper(),
                 direction,
                 target_state,
                 action_type,
+                reverse_kind,
+                origin_signal_id,
+                new_direction,
             ]
         )
+
+    def _build_backtest_pending_signal(
+        self,
+        symbol: str,
+        bar: dict,
+        signal: dict,
+        signal_payload: dict,
+    ) -> dict:
+        signal_id = signal_payload.get("signal_id", build_signal_id(symbol, int(bar["bar_time_ms"]), str(signal.get("signal", ""))))
+        return {
+            **signal,
+            "symbol": symbol,
+            "signal_id": signal_id,
+            "signal_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+            "signal_us_time": str(bar.get("us_time", "") or ""),
+            "signal_cn_time": str(bar.get("cn_time", "") or ""),
+            "signal_close": float(bar.get("close", 0) or 0),
+            "reason": str(signal.get("reason", "") or ""),
+            "chart_tf": interval_to_chart_tf("5m"),
+            "entry_price": float(signal.get("entry", 0) or 0),
+            "target_price": float(signal.get("take_profit", 0) or 0),
+            "stop_price": float(signal.get("stop_loss", 0) or 0),
+            "pending_since_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+            "pending_since_us_time": str(bar.get("us_time", "") or ""),
+        }
+
+    def _check_pending_entry_fill(
+        self,
+        symbol: str,
+        bar: dict,
+        pending_signal: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+    ) -> Optional[dict]:
+        direction = str(pending_signal.get("direction", "") or "").strip().lower()
+        entry_price = float(
+            pending_signal.get("entry_price", pending_signal.get("entry", 0)) or 0
+        )
+        if direction not in {"long", "short"} or entry_price <= 0:
+            return None
+
+        bar_open = float(bar.get("open", 0) or 0)
+        bar_high = float(bar.get("high", 0) or 0)
+        bar_low = float(bar.get("low", 0) or 0)
+        raw_fill_price = 0.0
+        if direction == "long":
+            if bar_open > 0 and bar_open <= entry_price:
+                raw_fill_price = bar_open
+            elif bar_low <= entry_price <= max(bar_high, bar_open):
+                raw_fill_price = entry_price
+        else:
+            if bar_open > 0 and bar_open >= entry_price:
+                raw_fill_price = bar_open
+            elif min(bar_low, bar_open) <= entry_price <= bar_high:
+                raw_fill_price = entry_price
+
+        if raw_fill_price <= 0:
+            return None
+        return self._open_position(
+            symbol,
+            bar,
+            pending_signal,
+            commission_per_share,
+            slippage_bps,
+            raw_fill_price=raw_fill_price,
+        )
+
+    def _calculate_position_progress(self, target: dict, current_price: float) -> dict:
+        direction = str(target.get("direction", "") or "").strip().lower()
+        entry_price = float(target.get("entry_price", target.get("entry", 0)) or 0)
+        target_price = float(target.get("target_price", target.get("take_profit", 0)) or 0)
+        if direction not in {"long", "short"} or entry_price <= 0 or target_price <= 0:
+            return {"favorable_move": 0.0, "target_move": 0.0, "progress_ratio": 0.0}
+
+        if direction == "long":
+            favorable_move = current_price - entry_price
+            target_move = target_price - entry_price
+        else:
+            favorable_move = entry_price - current_price
+            target_move = entry_price - target_price
+        progress_ratio = (favorable_move / target_move) if abs(target_move) > 1e-9 else 0.0
+        return {
+            "favorable_move": round(float(favorable_move or 0), 4),
+            "target_move": round(float(target_move or 0), 4),
+            "progress_ratio": round(float(progress_ratio or 0), 4),
+        }
+
+    def _compute_adjusted_stop_price(self, target: dict, current_price: float) -> float:
+        direction = str(target.get("direction", "") or "").strip().lower()
+        entry_price = float(target.get("entry_price", target.get("entry", 0)) or 0)
+        stop_price = float(target.get("stop_price", target.get("stop_loss", 0)) or 0)
+        if direction not in {"long", "short"} or entry_price <= 0 or stop_price <= 0:
+            return 0.0
+        price_buffer = max(0.01, current_price * 0.001)
+        if direction == "long":
+            favorable_move = max(0.0, current_price - entry_price)
+            tightened = entry_price + (favorable_move * 0.35)
+            candidate = max(stop_price, tightened)
+            candidate = min(candidate, current_price - price_buffer)
+        else:
+            favorable_move = max(0.0, entry_price - current_price)
+            tightened = entry_price - (favorable_move * 0.35)
+            candidate = min(stop_price, tightened)
+            candidate = max(candidate, current_price + price_buffer)
+        return round(float(candidate or 0), 4)
+
+    def _compute_adjusted_take_profit_price(self, target: dict, current_price: float) -> float:
+        direction = str(target.get("direction", "") or "").strip().lower()
+        entry_price = float(target.get("entry_price", target.get("entry", 0)) or 0)
+        take_profit = float(target.get("target_price", target.get("take_profit", 0)) or 0)
+        if direction not in {"long", "short"} or entry_price <= 0 or take_profit <= 0:
+            return 0.0
+        price_buffer = max(0.01, current_price * 0.001)
+        if direction == "long":
+            if take_profit <= current_price:
+                return round(take_profit, 4)
+            gap = take_profit - current_price
+            candidate = current_price + max(price_buffer, gap * 0.35)
+            candidate = min(take_profit, max(entry_price + price_buffer, candidate))
+        else:
+            if take_profit >= current_price:
+                return round(take_profit, 4)
+            gap = current_price - take_profit
+            candidate = current_price - max(price_buffer, gap * 0.35)
+            candidate = max(take_profit, min(entry_price - price_buffer, candidate))
+        return round(float(candidate or 0), 4)
+
+    def _build_backtest_reverse_price_patch(self, target: dict, action_type: str, current_price: float) -> dict:
+        if action_type == "adjust_sl":
+            old_sl = float(target.get("stop_price", target.get("stop_loss", 0)) or 0)
+            new_sl = self._compute_adjusted_stop_price(target, current_price)
+            if old_sl > 0 and new_sl > 0 and abs(new_sl - old_sl) >= 0.0001:
+                return {
+                    "old_sl": round(old_sl, 4),
+                    "new_sl": round(new_sl, 4),
+                    "stop_loss": round(new_sl, 4),
+                }
+        if action_type == "adjust_tp":
+            old_tp = float(target.get("target_price", target.get("take_profit", 0)) or 0)
+            new_tp = self._compute_adjusted_take_profit_price(target, current_price)
+            if old_tp > 0 and new_tp > 0 and abs(new_tp - old_tp) >= 0.0001:
+                return {
+                    "old_tp": round(old_tp, 4),
+                    "new_tp": round(new_tp, 4),
+                    "take_profit": round(new_tp, 4),
+                }
+        return {}
+
+    def _resolve_reverse_signal_conflict_action(self, target_state: str, progress_ratio: float) -> str:
+        if target_state == "pending_entry":
+            return "cancel"
+        safe_progress = float(progress_ratio or 0)
+        if safe_progress >= 0.7:
+            return "adjust_tp"
+        if safe_progress >= 0.3:
+            return "adjust_sl"
+        return "close"
+
+    def _build_backtest_signal_conflict_analysis(
+        self,
+        target: dict,
+        target_state: str,
+        origin_signal_payload: dict,
+        current_price: float,
+    ) -> dict:
+        progress = self._calculate_position_progress(target, current_price)
+        action_type = self._resolve_reverse_signal_conflict_action(
+            target_state,
+            progress.get("progress_ratio", 0),
+        )
+        score_map = {
+            "cancel": 2.0,
+            "adjust_sl": 4.0,
+            "adjust_tp": 5.0,
+            "close": 7.0,
+        }
+        triggered_signals = ["信号反转"]
+        price_patch = self._build_backtest_reverse_price_patch(target, action_type, current_price)
+        return {
+            "score": score_map.get(action_type, 2.0),
+            "action_type": action_type,
+            "triggered_signals": triggered_signals,
+            "progress": progress,
+            "price_patch": price_patch,
+            "current_price": round(float(current_price or 0), 4),
+            "new_direction": str(origin_signal_payload.get("direction", "") or "").strip().lower(),
+        }
+
+    def _apply_backtest_pending_reverse_action(
+        self,
+        pending_signal: dict | None,
+        reverse_row: dict | None,
+        signal_index: dict,
+    ) -> dict | None:
+        if not pending_signal or not reverse_row:
+            return pending_signal
+        action_type = str(reverse_row.get("action_type", "") or "").strip().lower()
+        reverse_kind = str(reverse_row.get("reverse_kind", "") or "").strip().lower()
+        if action_type == "cancel":
+            self._mark_backtest_signal_status(
+                signal_index,
+                pending_signal.get("signal_id"),
+                "dropped",
+                f"reverse_{reverse_kind}_{action_type}",
+                {
+                    "reverse_action_type": action_type,
+                    "reverse_kind": reverse_kind,
+                },
+            )
+            return None
+        return pending_signal
+
+    def _apply_backtest_position_reverse_action(
+        self,
+        position: dict | None,
+        reverse_row: dict | None,
+        bar: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+    ) -> tuple[dict | None, dict | None]:
+        if not position or not reverse_row:
+            return position, None
+        action_type = str(reverse_row.get("action_type", "") or "").strip().lower()
+        extra = self._parse_object(reverse_row.get("extra"))
+        reverse_kind = str(reverse_row.get("reverse_kind", "") or "").strip().lower()
+        if action_type == "close":
+            trade = self._close_position(position, bar, commission_per_share, slippage_bps, f"reverse_{reverse_kind}_close")
+            trade_extra = self._parse_object(trade.get("extra"))
+            trade_extra.update(
+                {
+                    "reverse_action_type": action_type,
+                    "reverse_kind": reverse_kind,
+                    "origin_signal_id": str(reverse_row.get("origin_signal_id", "") or ""),
+                }
+            )
+            trade["extra"] = trade_extra
+            return None, trade
+        if action_type == "adjust_sl":
+            new_sl = float(extra.get("new_sl", 0) or 0)
+            if new_sl > 0:
+                position["stop_price"] = new_sl
+        elif action_type == "adjust_tp":
+            new_tp = float(extra.get("new_tp", 0) or 0)
+            if new_tp > 0:
+                position["target_price"] = new_tp
+        return position, None
 
     def _build_backtest_reverse_signal_row(
         self,
@@ -2938,47 +3556,118 @@ class BacktestService:
         bar_index: int,
         snapshot: dict,
         daily_fields: dict,
-        position: dict,
+        target: dict,
+        target_state: str = "filled_position",
+        reverse_kind: str = "indicator_conflict",
+        source: str = "indicator",
+        origin_signal_payload: dict | None = None,
     ) -> dict | None:
-        direction = str(position.get("direction", "") or "").strip().lower()
+        direction = str(target.get("direction", "") or "").strip().lower()
         if direction not in {"long", "short"}:
             return None
-        analysis = self._analyze_backtest_reverse_snapshot(snapshot, direction)
+        bar_time_ms = int(bar.get("bar_time_ms", 0) or 0)
+        if reverse_kind == "signal_conflict":
+            if not origin_signal_payload:
+                return None
+            new_direction = str(origin_signal_payload.get("direction", "") or "").strip().lower()
+            if not new_direction or new_direction == direction:
+                return None
+            analysis = self._build_backtest_signal_conflict_analysis(
+                target,
+                target_state,
+                origin_signal_payload,
+                float(snapshot.get("close", bar.get("close", 0)) or 0),
+            )
+        else:
+            analysis = self._analyze_backtest_reverse_snapshot(snapshot, direction)
+            if float(analysis.get("score", 0) or 0) <= 0 or not list(analysis.get("triggered_signals") or []):
+                return None
+            if target_state == "pending_entry":
+                pending_since_ms = int(target.get("pending_since_bar_ms", target.get("signal_bar_ms", 0)) or 0)
+                pending_age_bars = 0
+                pending_same_day = False
+                if pending_since_ms > 0:
+                    pending_age_bars = max(
+                        0,
+                        int((bar_time_ms - pending_since_ms) / max(1, interval_to_ms("5m"))),
+                    )
+                    pending_same_day = (
+                        ms_to_et(pending_since_ms).strftime("%Y-%m-%d")
+                        == ms_to_et(bar_time_ms).strftime("%Y-%m-%d")
+                    )
+                reverse_score = float(analysis.get("score", 0) or 0)
+                if pending_age_bars < 2:
+                    return None
+                pending_late_session = False
+                if pending_same_day:
+                    pending_bar_et = ms_to_et(bar_time_ms)
+                    pending_late_session = pending_bar_et.hour > 16 or (
+                        pending_bar_et.hour == 16 and pending_bar_et.minute >= 45
+                    )
+                # Same-day pending entries should usually wait for a true opposite signal.
+                # Only let indicator conflicts cancel them before the close when the reverse is exceptionally strong.
+                if pending_same_day:
+                    if reverse_score < 6 and not pending_late_session:
+                        return None
+                elif reverse_score < 3:
+                    return None
+                analysis["pending_age_bars"] = pending_age_bars
+                analysis["pending_same_day"] = pending_same_day
+                analysis["pending_late_session"] = pending_late_session
+            analysis["action_type"] = self._resolve_reverse_indicator_action(
+                float(analysis.get("score", 0) or 0),
+                target_state,
+            )
+            if not analysis.get("action_type"):
+                return None
+            analysis["price_patch"] = self._build_backtest_reverse_price_patch(
+                target,
+                str(analysis.get("action_type", "") or ""),
+                float(analysis.get("close", snapshot.get("close", 0)) or 0),
+            )
+            analysis["new_direction"] = ""
+
         score = float(analysis.get("score", 0) or 0)
         triggered_signals = list(analysis.get("triggered_signals") or [])
-        if score <= 0 or not triggered_signals:
+        action_type = str(analysis.get("action_type", "") or "").strip().lower()
+        if score <= 0 or not triggered_signals or not action_type:
             return None
 
-        target_state = "filled_position"
-        action_type = self._resolve_reverse_indicator_action(score, target_state)
-        if not action_type:
-            return None
-
-        signal_id = str(position.get("signal_id", "") or "").strip()
-        trade_group_id = signal_id or f"{symbol}_{int(position.get('entry_bar_ms', 0) or 0)}"
+        signal_id = str(target.get("signal_id", "") or "").strip()
+        trade_group_id = signal_id or f"{symbol}_{int(target.get('entry_bar_ms', target.get('signal_bar_ms', 0)) or 0)}"
         strength = self._map_reverse_strength(score)
-        bar_time_ms = int(bar.get("bar_time_ms", 0) or 0)
-        close_value = float(analysis.get("close", snapshot.get("close", 0)) or 0)
+        close_value = float(analysis.get("current_price", analysis.get("close", snapshot.get("close", 0))) or 0)
+        entry_price = round(float(target.get("entry_price", target.get("entry", 0)) or 0), 4)
+        take_profit = round(float(target.get("target_price", target.get("take_profit", 0)) or 0), 4)
+        stop_loss = round(float(target.get("stop_price", target.get("stop_loss", 0)) or 0), 4)
+        order_status = "Submitted" if target_state == "pending_entry" else "Filled"
+        relation_status = "backtest_entry_pending" if target_state == "pending_entry" else "backtest_position_open"
+        reverse_source = source or ("signal" if reverse_kind == "signal_conflict" else "indicator")
+        price_patch = dict(analysis.get("price_patch") or {})
+        new_direction = str(analysis.get("new_direction", "") or "").strip().lower()
+        origin_signal_id = signal_id
+        if origin_signal_payload is not None:
+            origin_signal_id = str(origin_signal_payload.get("signal_id", "") or "").strip() or signal_id
         extra = {
             "environment": BACKTEST_ENVIRONMENT,
             "source_environment": request.get("source_environment") or "",
-            "reverse_kind": "indicator_conflict",
+            "reverse_kind": reverse_kind,
             "target_state": target_state,
-            "order_status": "Filled",
-            "relation_status": "backtest_position_open",
+            "order_status": order_status,
+            "relation_status": relation_status,
             "position_side": direction,
             "current_direction": direction,
             "signal_id": signal_id,
-            "origin_signal_id": signal_id,
+            "origin_signal_id": origin_signal_id,
             "trade_group_id": trade_group_id,
             "entry_order_unique_id": trade_group_id,
             "order_unique_id": trade_group_id,
             "broker_order_id": "",
             "order_id": "",
-            "entry_price": round(float(position.get("entry_price", 0) or 0), 4),
-            "quantity": int(position.get("shares", 0) or 0),
-            "take_profit": round(float(position.get("target_price", 0) or 0), 4),
-            "stop_loss": round(float(position.get("stop_price", 0) or 0), 4),
+            "entry_price": entry_price,
+            "quantity": int(target.get("shares", 0) or 0),
+            "take_profit": take_profit,
+            "stop_loss": stop_loss,
             "crsi": round(float(analysis.get("crsi", 0) or 0), 4),
             "obv_rsi": round(float(analysis.get("obv_rsi", 0) or 0), 4),
             "vwap_dist": round(float(analysis.get("vwap_dist", 0) or 0), 4),
@@ -2987,9 +3676,9 @@ class BacktestService:
             "chart_tf": interval_to_chart_tf("5m"),
             "bar_index": int(bar_index or 0),
             "bar_time_ms": bar_time_ms,
-            "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
-            "signal_us_time": str(position.get("signal_us_time", "") or ""),
-            "signal_close": round(float(position.get("signal_close", 0) or 0), 4),
+            "signal_bar_ms": int(target.get("signal_bar_ms", 0) or 0),
+            "signal_us_time": str(target.get("signal_us_time", "") or ""),
+            "signal_close": round(float(target.get("signal_close", 0) or 0), 4),
             "simulated_only": True,
             "backtest_compare_with_tv": bool(request.get("compare_with_tv", True)),
             "backtest_compare_tv_signals": bool(request.get("compare_tv_signals", False)),
@@ -2997,14 +3686,32 @@ class BacktestService:
             **(daily_fields or {}),
             **build_runtime_timestamps(),
         }
-        reason = f"indicator_conflict({target_state}) -> {', '.join(triggered_signals)}"
+        if new_direction:
+            extra["new_direction"] = new_direction
+        if price_patch:
+            extra.update(price_patch)
+        if analysis.get("pending_age_bars") is not None:
+            extra["pending_age_bars"] = int(analysis.get("pending_age_bars", 0) or 0)
+        if analysis.get("pending_same_day") is not None:
+            extra["pending_same_day"] = bool(analysis.get("pending_same_day"))
+        if analysis.get("pending_late_session") is not None:
+            extra["pending_late_session"] = bool(analysis.get("pending_late_session"))
+        if reverse_kind == "signal_conflict":
+            progress = analysis.get("progress") or {}
+            if progress:
+                extra["progress_ratio"] = round(float(progress.get("progress_ratio", 0) or 0), 4)
+                extra["favorable_move"] = round(float(progress.get("favorable_move", 0) or 0), 4)
+                extra["target_move"] = round(float(progress.get("target_move", 0) or 0), 4)
+            reason = f"signal_conflict({target_state}) -> new_signal={str(origin_signal_payload.get('signal', '') or '')}"
+        else:
+            reason = f"indicator_conflict({target_state}) -> {', '.join(triggered_signals)}"
         return {
             "symbol": symbol,
             "direction": direction,
-            "reverse_kind": "indicator_conflict",
-            "source": "indicator",
+            "reverse_kind": reverse_kind,
+            "source": reverse_source,
             "target_state": target_state,
-            "target_order_status": "Filled",
+            "target_order_status": order_status,
             "strength": strength,
             "score": round(score, 4),
             "triggered_signals": triggered_signals,
@@ -3013,7 +3720,7 @@ class BacktestService:
             "reason": reason,
             "priority": max(1, min(10, int(round(score)) or 1)),
             "signal_id": signal_id,
-            "origin_signal_id": signal_id,
+            "origin_signal_id": origin_signal_id,
             "trade_group_id": trade_group_id,
             "date": str(bar.get("us_time", "") or "")[:10],
             "bar_time_ms": bar_time_ms,
@@ -3674,11 +4381,19 @@ class BacktestService:
             summary["status"] = "error"
         return summary
 
-    def _open_position(self, symbol: str, bar: dict, signal: dict, commission_per_share: float, slippage_bps: float) -> dict:
+    def _open_position(
+        self,
+        symbol: str,
+        bar: dict,
+        signal: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+        raw_fill_price: float | None = None,
+    ) -> dict:
         direction = str(signal.get("direction", "") or "")
         shares = max(0, int(signal.get("shares", 0) or 0))
-        base_open = float(bar.get("open", 0) or 0)
-        fill_price = self._apply_slippage(base_open, direction, is_entry=True, bps=slippage_bps)
+        entry_reference = float(raw_fill_price if raw_fill_price is not None else bar.get("open", 0) or 0)
+        fill_price = self._apply_slippage(entry_reference, direction, is_entry=True, bps=slippage_bps)
         return {
             "symbol": symbol,
             "direction": direction,
@@ -3689,8 +4404,9 @@ class BacktestService:
             "entry_us_time": str(bar.get("us_time", "") or ""),
             "entry_cn_time": str(bar.get("cn_time", "") or ""),
             "entry_price": round(fill_price, 4),
-            "target_price": float(signal.get("take_profit", 0) or 0),
-            "stop_price": float(signal.get("stop_loss", 0) or 0),
+            "entry_limit_price": float(signal.get("entry_price", signal.get("entry", 0)) or 0),
+            "target_price": float(signal.get("target_price", signal.get("take_profit", 0)) or 0),
+            "stop_price": float(signal.get("stop_price", signal.get("stop_loss", 0)) or 0),
             "shares": shares,
             "bars_held": 0,
             "entry_commission": round(shares * commission_per_share, 4),
@@ -3977,33 +4693,27 @@ class BacktestService:
             self.pb.create_record(TRADE_COLLECTION, payload)
 
     def _build_replay_timeline(self, symbol: str, bars: list[dict], params: dict) -> list[dict]:
-        engine = IndicatorEngine(symbol, "5m", params=params)
-        signal_gen = SignalGenerator(symbol, "5m", params=params)
-        timeline = []
-        previous_day = ""
-        for bar in bars:
-            current_day = str(bar.get("us_time", "") or "")[:10]
-            if previous_day and current_day != previous_day:
-                signal_gen.daily_reset()
-            previous_day = current_day
-            snapshot = engine.update(bar)
-            signal = None
-            if snapshot and engine.is_ready():
-                signal = signal_gen.update(snapshot)
-            timeline.append(
-                {
-                    "bar_time_ms": int(bar.get("bar_time_ms", 0) or 0),
-                    "us_time": bar.get("us_time", ""),
-                    "session_type": bar.get("session_type", "regular"),
-                    "open": round(float(bar.get("open", 0) or 0), 4),
-                    "high": round(float(bar.get("high", 0) or 0), 4),
-                    "low": round(float(bar.get("low", 0) or 0), 4),
-                    "close": round(float(bar.get("close", 0) or 0), 4),
-                    "atr": round(float((snapshot or {}).get("atr", 0) or 0), 4),
-                    "sd_zone": (snapshot or {}).get("sd_zone", ""),
-                    "sd_trend": (snapshot or {}).get("sd_trend", 0),
-                    "dtp_phase": (snapshot or {}).get("dtp_phase", ""),
-                    "signal": signal,
-                }
-            )
-        return timeline
+        timeline = build_runtime_timeline(
+            symbol,
+            "5m",
+            bars,
+            params=params,
+            include_signals=True,
+        )
+        return [
+            {
+                "bar_time_ms": int(row.get("bar_time_ms", 0) or 0),
+                "us_time": row.get("us_time", ""),
+                "session_type": row.get("session_type", "regular"),
+                "open": round(float(row.get("open", 0) or 0), 4),
+                "high": round(float(row.get("high", 0) or 0), 4),
+                "low": round(float(row.get("low", 0) or 0), 4),
+                "close": round(float(row.get("close", 0) or 0), 4),
+                "atr": round(float(row.get("atr", 0) or 0), 4),
+                "sd_zone": row.get("sd_zone", ""),
+                "sd_trend": row.get("sd_trend", 0),
+                "dtp_phase": row.get("dtp_phase", ""),
+                "signal": row.get("signal"),
+            }
+            for row in timeline.get("rows", [])
+        ]

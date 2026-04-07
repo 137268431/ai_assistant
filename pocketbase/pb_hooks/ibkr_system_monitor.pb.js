@@ -97,8 +97,8 @@ function parseUsTimeMs(value) {
 
 function fetchComputeJson(path, timeoutSeconds, environment) {
     try {
-        const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
-        const computeBaseUrl = getIbkrComputePublicUrl(environment || "live", "https://qc.lzw-glory.top")
+        const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+        const computeBaseUrl = getIbkrComputeInternalUrl(environment || "live", "http://127.0.0.1:5100")
         const resp = $http.send({ url: `${computeBaseUrl}${path}`, method: "GET", timeout: timeoutSeconds || 5 })
         if (resp.statusCode === 200) {
             return parseHttpJson(resp)
@@ -560,7 +560,7 @@ routerAdd("GET", "/api/custom/system/cronz", (c) => {
 
 routerAdd("GET", "/api/custom/system/healthz", (c) => {
     try {
-        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputePublicUrl, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
         let compute = {
             status: "offline",
@@ -575,7 +575,7 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
         }
         let runtime = {}
         try {
-            const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
+            const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
             const healthResp = $http.send({ url: `${computeBaseUrl}/health`, method: "GET", timeout: 5 })
             const healthData = JSON.parse(healthResp.raw || "{}")
             const statusResp = $http.send({ url: `${computeBaseUrl}/status`, method: "GET", timeout: 5 })
@@ -649,7 +649,7 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
 
 routerAdd("GET", "/api/custom/system/summaryz", (c) => {
     try {
-        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputePublicUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputeInternalUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
         const times = getTimeStrings()
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
@@ -673,7 +673,7 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             last_scan: null,
         }
         try {
-            const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
+            const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
             const healthResp = $http.send({ url: `${computeBaseUrl}/health`, method: "GET", timeout: 5 })
             const healthData = JSON.parse(healthResp.raw || "{}")
             const statusResp = $http.send({ url: `${computeBaseUrl}/status`, method: "GET", timeout: 5 })

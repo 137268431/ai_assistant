@@ -496,6 +496,123 @@
     word-break: break-word;
   }
 
+  .cron-time-details {
+    border: 1px dashed rgba(255,255,255,0.08);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.02);
+    padding: 8px 10px;
+  }
+
+  .cron-time-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .cron-time-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .cron-time-summary::after {
+    content: '+';
+    flex: 0 0 auto;
+    color: var(--accent);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.2;
+  }
+
+  .cron-time-details[open] .cron-time-summary::after {
+    content: '-';
+  }
+
+  .cron-time-primary {
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  .cron-time-toggle {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.4;
+  }
+
+  .cron-time-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed rgba(255,255,255,0.08);
+  }
+
+  .cron-time-item {
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 8px;
+    align-items: start;
+  }
+
+  .cron-time-name {
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.5;
+  }
+
+  .cron-time-text {
+    color: var(--text);
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .cron-exp-details {
+    display: inline-block;
+    min-width: 0;
+  }
+
+  .cron-exp-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    list-style: none;
+    color: var(--accent);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.4;
+  }
+
+  .cron-exp-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .cron-exp-summary::after {
+    content: '+';
+    color: var(--muted);
+  }
+
+  .cron-exp-details[open] .cron-exp-summary::after {
+    content: '-';
+  }
+
+  .cron-exp-text {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px dashed rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02);
+    color: var(--text);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
   .cron-tags {
     display: flex;
     flex-wrap: wrap;
@@ -559,6 +676,7 @@ const LEGACY_KEY_REDIRECTS = {
 const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_trading_enabled',
   'ibkr_signal_source',
+  'signal_manual_confirm_enabled',
   'position_limit_max',
   'eod_close_time',
   'eod_keep_symbols',
@@ -569,6 +687,8 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_watchlist_backfill_interval_min',
   'ibkr_watchlist_backfill_batch_size',
   'ibkr_watchlist_backfill_stale_min',
+  'ibkr_watchlist_integrity_enabled',
+  'ibkr_watchlist_integrity_batch_size',
   'trade_window_start_time',
   'trade_window_end_time',
   'order_window_end_time',
@@ -609,6 +729,7 @@ const CONFIG_META = {
   pb_scheduler_enabled: meta('PB 调度总开关', '运行总控', 120, 'TRUE', '控制 PocketBase cron 调度；关闭后信号过期、订单过期、健康巡检、状态提醒等定时任务都会停止'),
 
   ibkr_signal_source: meta('信号来源', '信号与反转', 200, 'both', 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
+  signal_manual_confirm_enabled: meta('人工确认开关', '信号与反转', 205, 'TRUE', 'TRUE 时新 ibkr_signals 先进入 awaiting_confirm 并发送飞书卡片；FALSE 时信号直接进入 pending，允许 Compute 自动执行'),
   signal_poll_interval_sec: meta('信号轮询秒数', '信号与反转', 210, '120', 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
   signal_validity_minutes: meta('信号有效期', '信号与反转', 220, '30', '超过此时间的 pending / awaiting_confirm 信号将被自动标记为 expired'),
   reverse_signal_threshold: meta('反转通知阈值', '信号与反转', 230, '6', '仅当反转评分达到该阈值时发送反转卡片通知'),
@@ -632,6 +753,8 @@ const CONFIG_META = {
   ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '行情链路', 710, '30', '非目标标的按批次执行 5m 增量回补的间隔'),
   ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '行情链路', 720, '12', '每轮底池回补最多处理多少个非目标标的'),
   ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '行情链路', 730, '20', '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
+  ibkr_watchlist_integrity_enabled: meta('底池完整性巡检', '行情链路', 740, 'TRUE', '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
+  ibkr_watchlist_integrity_batch_size: meta('底池巡检批次', '行情链路', 750, '8', '每轮底池完整性巡检最多处理多少个非目标标的'),
 
   system_status_chat_id: meta('状态群 Chat ID', '通知路由', 600, 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '正常状态提醒、2FA 卡片与日常运行反馈默认发送到这里'),
   system_alert_chat_id: meta('告警群 Chat ID', '通知路由', 610, 'oc_91aa4f84bc6fedb125b1a263d91d4104', '所有 warning / error 级别且影响系统运行的异常默认发送到这里'),
@@ -639,10 +762,10 @@ const CONFIG_META = {
   order_chat_id: meta('订单群 Chat ID', '通知路由', 630, 'oc_5ca4585e1fd108c2c662dfc358684945', '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
   reverse_chat_id: meta('反转群 Chat ID', '通知路由', 640, 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转信号与反转执行卡片默认发送到这里'),
 
-  status_notify_enabled: meta('状态通知', '系统通知', 900, 'TRUE', '开盘、重启、心跳和状态提醒通知开关'),
+  status_notify_enabled: meta('状态摘要通知', '系统通知', 900, 'TRUE', ':00 / :30 的状态摘要会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
   daily_summary_notify_enabled: meta('日报通知', '系统通知', 910, 'TRUE', '收盘后发送当日交易汇总'),
   manual_stop_notify_enabled: meta('手动停止通知', '系统通知', 920, 'TRUE', '手动停止算法时发送通知'),
-  health_check_notify_enabled: meta('健康检查通知', '系统通知', 930, 'TRUE', '盘前、盘中、盘后健康状态汇报'),
+  health_check_notify_enabled: meta('兜底心跳通知', '系统通知', 930, 'TRUE', '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),
   inspection_notify_enabled: meta('巡检告警', '系统通知', 940, 'TRUE', '孤立持仓、恢复异常、数据缺口等巡检告警'),
 
   ibkr_compute_public_url: meta('Compute 公网地址', '服务接入', 1000, 'https://qc.lzw-glory.top', 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址'),
@@ -668,6 +791,7 @@ const GROUP_ORDER = [
 
 const BOOLEAN_CONFIG_KEYS = new Set([
   'ibkr_trading_enabled',
+  'signal_manual_confirm_enabled',
   'status_notify_enabled',
   'daily_summary_notify_enabled',
   'manual_stop_notify_enabled',
@@ -687,6 +811,7 @@ const NUMERIC_CONFIG_RULES = {
   ibkr_watchlist_backfill_interval_min: { min: '5', max: '240', step: '5' },
   ibkr_watchlist_backfill_batch_size: { min: '1', max: '100', step: '1' },
   ibkr_watchlist_backfill_stale_min: { min: '5', max: '240', step: '5' },
+  ibkr_watchlist_integrity_batch_size: { min: '1', max: '100', step: '1' },
   signal_validity_minutes: { min: '5', max: '120', step: '5' },
   order_validity_minutes: { min: '5', max: '120', step: '5' },
   signal_poll_interval_sec: { min: '15', max: '600', step: '15' },
@@ -1050,7 +1175,7 @@ function renderCronOverview() {
         <div>
           <div class="cron-overview-title">PB Cron 总览</div>
           <div class="cron-overview-subtitle">
-            当前作用域 ${getConfigScopeLabel(configEnvironment)} 下可查看每个 PocketBase cron 的 UTC 周期、北京时间、美东时间、功能、绑定开关和实际生效状态。
+            当前作用域 ${getConfigScopeLabel(configEnvironment)} 下默认展示北京时间，展开后可查看 UTC / 美东时间，以及功能、绑定开关和实际生效状态。
           </div>
         </div>
         <div class="cron-overview-badge">${pbCronDefinitions.length} 个 Cron</div>
@@ -1069,20 +1194,34 @@ function renderCronOverview() {
               </div>
               <div class="cron-meta">
                 <div class="cron-meta-row">
-                  <div class="cron-meta-label">UTC 周期</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.cycle_label || '-')}</div>
-                </div>
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">北京时间</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '-')}</div>
-                </div>
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">美东时间</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '-')}</div>
+                  <div class="cron-meta-label">时区</div>
+                  <div class="cron-meta-value">
+                    <details class="cron-time-details">
+                      <summary class="cron-time-summary">
+                        <span class="cron-time-primary">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '-')}</span>
+                        <span class="cron-time-toggle">UTC / ET</span>
+                      </summary>
+                      <div class="cron-time-list">
+                        <div class="cron-time-item">
+                          <span class="cron-time-name">UTC</span>
+                          <span class="cron-time-text">${escapeHtml(definition.cycle_label || '-')}</span>
+                        </div>
+                        <div class="cron-time-item">
+                          <span class="cron-time-name">ET</span>
+                          <span class="cron-time-text">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '-')}</span>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
                 </div>
                 <div class="cron-meta-row">
                   <div class="cron-meta-label">Cron</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.cron_expr || '-')}</div>
+                  <div class="cron-meta-value">
+                    <details class="cron-exp-details">
+                      <summary class="cron-exp-summary">查看表达式</summary>
+                      <div class="cron-exp-text">${escapeHtml(definition.cron_expr || '-')}</div>
+                    </details>
+                  </div>
                 </div>
                 <div class="cron-meta-row">
                   <div class="cron-meta-label">窗口</div>

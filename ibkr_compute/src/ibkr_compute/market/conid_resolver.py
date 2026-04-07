@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 STOCK_SEARCH_BATCH_SIZE = max(1, int(os.environ.get("IBKR_CONID_BATCH_SIZE", "25")))
+CONTRACT_SEARCH_LIMIT = max(1, int(os.environ.get("IBKR_CONTRACT_SEARCH_LIMIT", "12")))
 INDEX_HINTS = {
     "VIX": {
         "preferred_sec_types": {"IND", "INDEX"},
@@ -94,6 +95,179 @@ class ConidResolver:
             logger.error("IBKR stocks search failed for %s: %s", symbol, e)
             return None
 
+    @staticmethod
+    def _coerce_conid(value) -> Optional[int]:
+        try:
+            conid = int(value)
+        except (TypeError, ValueError):
+            return None
+        return conid if conid > 0 else None
+
+    @staticmethod
+    def _first_text(*values) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _normalize_sec_type(value: str) -> str:
+        sec_type = str(value or "").strip().upper()
+        if sec_type == "INDEX":
+            return "IND"
+        return sec_type
+
+    def _collect_sec_types(self, item: dict, *fallbacks: str) -> List[str]:
+        sec_types: List[str] = []
+
+        def add(value):
+            normalized = self._normalize_sec_type(value)
+            if normalized and normalized not in sec_types:
+                sec_types.append(normalized)
+
+        for fallback in fallbacks:
+            add(fallback)
+
+        add(item.get("assetClass"))
+        sections = item.get("sections")
+        for section in sections if isinstance(sections, list) else []:
+            if not isinstance(section, dict):
+                continue
+            add(section.get("secType"))
+            add(section.get("assetClass"))
+
+        return sec_types
+
+    def _asset_class_from_sec_types(self, sec_types: List[str], fallback: str = "") -> str:
+        if sec_types:
+            return str(sec_types[0]).upper()
+        return self._normalize_sec_type(fallback)
+
+    def _build_stock_candidate(self, symbol: str, item: dict, contract: dict) -> Optional[dict]:
+        conid = self._coerce_conid(contract.get("conid"))
+        if not conid:
+            return None
+
+        sec_types = self._collect_sec_types(item, "STK")
+        exchange = self._first_text(
+            contract.get("exchange"),
+            item.get("listingExchange"),
+            item.get("exchange"),
+            item.get("exchangeName"),
+        ).upper()
+        company_name = self._first_text(
+            contract.get("name"),
+            item.get("name"),
+            item.get("companyName"),
+            item.get("companyHeader"),
+            item.get("chineseName"),
+        )
+        description = self._first_text(
+            item.get("name"),
+            item.get("companyName"),
+            contract.get("description"),
+            company_name,
+        )
+        normalized_symbol = self._first_text(
+            contract.get("symbol"),
+            item.get("symbol"),
+            item.get("ticker"),
+            symbol,
+        ).upper()
+        is_us = bool(contract.get("isUS"))
+        score = self._score_contract(contract)
+        if normalized_symbol == str(symbol or "").strip().upper():
+            score += 180
+
+        return {
+            "symbol": normalized_symbol,
+            "conid": conid,
+            "exchange": exchange,
+            "asset_class": self._asset_class_from_sec_types(sec_types, item.get("assetClass")),
+            "sec_types": sec_types,
+            "company_name": company_name,
+            "description": description,
+            "is_us": is_us,
+            "score": score,
+            "sources": ["trsrv/stocks"],
+        }
+
+    def _build_secdef_candidate(self, query: str, item: dict, hint: Optional[dict] = None) -> Optional[dict]:
+        score, conid = self._score_secdef_item(query, item, hint=hint)
+        if not conid:
+            return None
+
+        sec_types = self._collect_sec_types(item)
+        exchange = self._first_text(
+            item.get("listingExchange"),
+            item.get("exchange"),
+            item.get("exchangeName"),
+        ).upper()
+        symbol = self._first_text(item.get("symbol"), item.get("ticker"), query).upper()
+        company_name = self._first_text(
+            item.get("companyName"),
+            item.get("companyHeader"),
+            item.get("name"),
+        )
+        description = self._first_text(
+            item.get("description"),
+            item.get("name"),
+            company_name,
+            exchange,
+        )
+        is_us = bool(item.get("isUS"))
+        if not is_us and exchange in {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "SMART"}:
+            is_us = True
+
+        return {
+            "symbol": symbol,
+            "conid": conid,
+            "exchange": exchange,
+            "asset_class": self._asset_class_from_sec_types(sec_types, item.get("assetClass")),
+            "sec_types": sec_types,
+            "company_name": company_name,
+            "description": description,
+            "is_us": is_us,
+            "score": int(score),
+            "sources": ["iserver/secdef/search"],
+        }
+
+    def _search_stocks_candidates(self, symbol: str) -> List[dict]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return []
+
+        try:
+            load_cookies(self._session)
+            resp = self._session.get(
+                self._api_url("/trsrv/stocks"),
+                params={"symbols": normalized_symbol},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            save_cookies(self._session)
+            if not isinstance(payload, dict):
+                return []
+
+            items = payload.get(normalized_symbol) or payload.get(normalized_symbol.upper()) or []
+            candidates = []
+            for item in items if isinstance(items, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                contracts = item.get("contracts")
+                for contract in contracts if isinstance(contracts, list) else []:
+                    if not isinstance(contract, dict):
+                        continue
+                    candidate = self._build_stock_candidate(normalized_symbol, item, contract)
+                    if candidate:
+                        candidates.append(candidate)
+            return candidates
+        except Exception as e:
+            logger.warning("IBKR stocks candidate search failed for %s: %s", normalized_symbol, e)
+            return []
+
     def _score_contract(self, contract: dict) -> int:
         exchange = str(contract.get("exchange") or "").upper()
         is_us = bool(contract.get("isUS"))
@@ -128,6 +302,81 @@ class ConidResolver:
                     best_score = score
                     best_conid = int(conid)
         return best_conid
+
+    def _score_sort_key(self, query: str, candidate: dict):
+        normalized_query = str(query or "").strip().upper()
+        symbol = str(candidate.get("symbol") or "").strip().upper()
+        sec_types = {
+            self._normalize_sec_type(value)
+            for value in (candidate.get("sec_types") or [])
+            if str(value or "").strip()
+        }
+        equity_like = 1 if sec_types & {"STK", "ETF"} else 0
+        return (
+            1 if symbol == normalized_query else 0,
+            equity_like,
+            1 if candidate.get("is_us") else 0,
+            float(candidate.get("score") or 0.0),
+            1 if str(candidate.get("exchange") or "").strip().upper() in {"NASDAQ", "NYSE"} else 0,
+            symbol,
+        )
+
+    def _merge_candidates(self, query: str, candidates: List[dict], limit: int) -> List[dict]:
+        merged: Dict[int, dict] = {}
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            conid = self._coerce_conid(item.get("conid"))
+            if not conid:
+                continue
+
+            sec_types = []
+            for sec_type in item.get("sec_types") or []:
+                normalized = self._normalize_sec_type(sec_type)
+                if normalized and normalized not in sec_types:
+                    sec_types.append(normalized)
+
+            prepared = {
+                "symbol": str(item.get("symbol") or "").strip().upper(),
+                "conid": conid,
+                "exchange": str(item.get("exchange") or "").strip().upper(),
+                "asset_class": self._normalize_sec_type(item.get("asset_class") or ""),
+                "sec_types": sec_types,
+                "company_name": str(item.get("company_name") or "").strip(),
+                "description": str(item.get("description") or "").strip(),
+                "is_us": bool(item.get("is_us")),
+                "score": int(item.get("score") or 0),
+                "sources": list(dict.fromkeys(
+                    str(source).strip() for source in (item.get("sources") or []) if str(source).strip()
+                )),
+            }
+
+            existing = merged.get(conid)
+            if not existing:
+                merged[conid] = prepared
+                continue
+
+            if self._score_sort_key(query, prepared) > self._score_sort_key(query, existing):
+                existing["symbol"] = prepared["symbol"] or existing["symbol"]
+                existing["exchange"] = prepared["exchange"] or existing["exchange"]
+                existing["company_name"] = prepared["company_name"] or existing["company_name"]
+                existing["description"] = prepared["description"] or existing["description"]
+                existing["asset_class"] = prepared["asset_class"] or existing["asset_class"]
+
+            existing["is_us"] = bool(existing["is_us"] or prepared["is_us"])
+            existing["score"] = max(int(existing.get("score") or 0), int(prepared.get("score") or 0))
+            for sec_type in prepared["sec_types"]:
+                if sec_type not in existing["sec_types"]:
+                    existing["sec_types"].append(sec_type)
+            if not existing.get("asset_class"):
+                existing["asset_class"] = self._asset_class_from_sec_types(existing["sec_types"])
+            for source in prepared["sources"]:
+                if source not in existing["sources"]:
+                    existing["sources"].append(source)
+
+        items = list(merged.values())
+        items.sort(key=lambda candidate: self._score_sort_key(query, candidate), reverse=True)
+        return items[: max(1, int(limit or CONTRACT_SEARCH_LIMIT))]
 
     def _batched(self, symbols: Iterable[str], batch_size: int) -> List[List[str]]:
         batch = []
@@ -315,6 +564,86 @@ class ConidResolver:
             logger.error("IBKR secdef search failed for %s: %s", symbol, last_error)
         return None
 
+    def _search_secdef_candidates(self, query: str, hint: Optional[dict] = None) -> List[dict]:
+        text = str(query or "").strip()
+        if not text:
+            return []
+
+        preferred_sec_types = []
+        for sec_type in list((hint or {}).get("preferred_sec_types") or []):
+            normalized = self._normalize_sec_type(sec_type)
+            if normalized and normalized not in preferred_sec_types:
+                preferred_sec_types.append(normalized)
+        if not preferred_sec_types:
+            preferred_sec_types = ["STK", "ETF", "IND"]
+
+        attempts = []
+        for sec_type in preferred_sec_types:
+            attempts.append({"symbol": text, "name": False, "secType": sec_type})
+        attempts.append({"symbol": text, "name": False})
+        for sec_type in preferred_sec_types:
+            attempts.append({"symbol": text, "name": True, "secType": sec_type})
+        attempts.append({"symbol": text, "name": True})
+
+        results: List[dict] = []
+        seen_requests = set()
+        for payload in attempts:
+            signature = tuple(sorted(payload.items()))
+            if signature in seen_requests:
+                continue
+            seen_requests.add(signature)
+            try:
+                load_cookies(self._session)
+                resp = self._session.post(
+                    self._api_url("/iserver/secdef/search"),
+                    json=payload,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                batch = resp.json()
+                save_cookies(self._session)
+            except Exception as exc:
+                logger.debug("IBKR secdef candidate search failed for %s payload=%s: %s", text, payload, exc)
+                continue
+
+            if not isinstance(batch, list):
+                continue
+
+            for item in batch:
+                if not isinstance(item, dict):
+                    continue
+                candidate = self._build_secdef_candidate(text, item, hint=hint)
+                if candidate:
+                    results.append(candidate)
+
+        if results:
+            return results
+
+        try:
+            load_cookies(self._session)
+            resp = self._session.get(
+                self._api_url("/iserver/secdef/search"),
+                params={"symbol": text},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            save_cookies(self._session)
+            if not isinstance(batch, list):
+                return []
+
+            fallback = []
+            for item in batch:
+                if not isinstance(item, dict):
+                    continue
+                candidate = self._build_secdef_candidate(text, item, hint=hint)
+                if candidate:
+                    fallback.append(candidate)
+            return fallback
+        except Exception as exc:
+            logger.warning("IBKR secdef candidate GET search failed for %s: %s", text, exc)
+            return []
+
     def _save_to_pb(self, symbol: str, conid: int):
         if not self.pb_client:
             return
@@ -374,6 +703,27 @@ class ConidResolver:
         if unresolved:
             logger.warning("Conid resolve missed symbols: %s", ",".join(unresolved))
         return result
+
+    def search_contracts(self, query: str, limit: int = CONTRACT_SEARCH_LIMIT) -> List[dict]:
+        text = str(query or "").strip()
+        if not text:
+            return []
+
+        normalized_symbol = text.upper()
+        hint = INDEX_HINTS.get(normalized_symbol)
+        candidates: List[dict] = []
+
+        candidates.extend(self._search_stocks_candidates(normalized_symbol))
+        candidates.extend(self._search_secdef_candidates(text, hint=hint))
+
+        merged = self._merge_candidates(text, candidates, limit)
+        best = merged[0] if merged else None
+        best_conid = self._coerce_conid(best.get("conid")) if isinstance(best, dict) else None
+        if best_conid and str(best.get("symbol") or "").strip().upper() == normalized_symbol:
+            self._cache[normalized_symbol] = best_conid
+            self._save_to_pb(normalized_symbol, best_conid)
+
+        return merged
 
     def get_reverse(self, conid: int) -> Optional[str]:
         for symbol, cid in self._cache.items():

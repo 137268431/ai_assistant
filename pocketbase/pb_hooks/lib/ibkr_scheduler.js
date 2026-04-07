@@ -1,3 +1,5 @@
+const COMPUTE_STARTUP_GRACE_MS = 3 * 60 * 1000
+
 function getIbkrSchedulerEnvironments(cronId) {
     const { getConfigValue, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const { getActiveRuntimeEnvironments, isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
@@ -25,6 +27,28 @@ function parseSchedulerPayload(rawValue) {
     }
 }
 
+function fetchSchedulerJson(url, timeoutSeconds) {
+    try {
+        const resp = $http.send({
+            url: url,
+            method: "GET",
+            timeout: timeoutSeconds || 5,
+        })
+        return {
+            ok: resp.statusCode === 200,
+            status: resp.statusCode,
+            payload: parseSchedulerPayload(resp.raw),
+        }
+    } catch (err) {
+        return {
+            ok: false,
+            status: 0,
+            error: err.message || String(err),
+            payload: {},
+        }
+    }
+}
+
 function runIbkrScheduledAction(action, timeoutSeconds, logPrefix, cronId) {
     const prefix = logPrefix || "[IBKRComputeCron]"
     let environments = []
@@ -42,15 +66,48 @@ function runIbkrScheduledAction(action, timeoutSeconds, logPrefix, cronId) {
     }
 
     try {
-        const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
-        const computeBaseUrl = getIbkrComputePublicUrl(environments[0], "https://qc.lzw-glory.top")
+        const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+        const computeBaseUrl = getIbkrComputeInternalUrl(environments[0], "http://127.0.0.1:5100")
+        const effectiveTimeout = action === "compute"
+            ? Math.max(Number(timeoutSeconds || 0) || 0, 90)
+            : (timeoutSeconds || 30)
+
+        if (action === "compute") {
+            const healthSnapshot = fetchSchedulerJson(`${computeBaseUrl}/health`, 5)
+            const runtimeSnapshot = fetchSchedulerJson(`${computeBaseUrl}/ibkr/status`, 5)
+            const uptimeS = Number(healthSnapshot.payload && healthSnapshot.payload.uptime_s || 0) || 0
+            const runtimeStarting = Boolean(runtimeSnapshot.payload && runtimeSnapshot.payload.starting === true)
+            const warmupPhase = String(runtimeSnapshot.payload && runtimeSnapshot.payload.warmup && runtimeSnapshot.payload.warmup.phase || "").trim().toLowerCase()
+            const startupGraceActive = (
+                runtimeStarting
+                || warmupPhase === "pending"
+                || warmupPhase === "running"
+                || (uptimeS > 0 && (uptimeS * 1000) < COMPUTE_STARTUP_GRACE_MS)
+            )
+            if (startupGraceActive) {
+                console.log(
+                    `${prefix} ${action}: startup grace active, skip dispatch, uptime_s=${Math.round(uptimeS)}, runtime_starting=${runtimeStarting}, warmup_phase=${warmupPhase || "-"}`
+                )
+                return {
+                    ok: true,
+                    skipped: true,
+                    reason: "startup_grace",
+                    environments: environments,
+                    upstream: `${computeBaseUrl}/${action}`,
+                    uptime_s: uptimeS,
+                    runtime_starting: runtimeStarting,
+                    warmup_phase: warmupPhase,
+                }
+            }
+        }
+
         const upstream = `${computeBaseUrl}/${action}`
         const resp = $http.send({
             url: upstream,
             method: "POST",
             body: JSON.stringify({ source: "cron", environments: environments }),
             headers: { "Content-Type": "application/json" },
-            timeout: timeoutSeconds || 30,
+            timeout: effectiveTimeout,
         })
         const payload = parseSchedulerPayload(resp.raw)
 

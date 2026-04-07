@@ -26,7 +26,7 @@ from ibkr_compute.market.data_writer import DataWriter
 from ibkr_compute.market.data_backfill import DataBackfill
 from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
-from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, bucket_start_ms, interval_to_ms
+from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, bucket_start_ms, format_us_time, interval_to_ms
 from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.order.order_tracker import OrderTracker
 from ibkr_compute.order.order_modifier import OrderModifier
@@ -49,6 +49,9 @@ GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 DEFAULT_SIGNAL_POLL_INTERVAL = 120
 DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
+BAR_INTEGRITY_STATE_KEY = "ibkr_bar_integrity_cursor"
+BAR_INTEGRITY_STATE_DATE = "global"
+DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE = 8
 
 
 class IBKRTradingService:
@@ -135,6 +138,10 @@ class IBKRTradingService:
         self._last_pipeline_repair_at = 0.0
         self._last_pipeline_repair_symbols = []
         self._watchlist_backfill_cursor = 0
+        self._watchlist_integrity_cursor = 0
+        self._last_watchlist_integrity_at = 0.0
+        self._last_watchlist_integrity_symbols = []
+        self._last_watchlist_integrity_repair_symbols = []
         self._subscription_lock = threading.Lock()
         self._warmup_lock = threading.Lock()
         self._compute_queue = queue.Queue()
@@ -756,6 +763,7 @@ class IBKRTradingService:
             self.conid_resolver.load_cache_from_pb()
             self._reset_for_new_market_day(force=True)
             self._refresh_watchlist_pool(force=True)
+            self._restore_watchlist_integrity_cursor()
             self.ws_client.start()
             time.sleep(2)
             self._refresh_target_subscriptions(force=True, reason="startup")
@@ -931,6 +939,12 @@ class IBKRTradingService:
         self._last_history_repair_symbols = []
         self._last_pipeline_repair_at = 0.0
         self._last_pipeline_repair_symbols = []
+        self._watchlist_integrity_cursor = 0
+        self._last_watchlist_integrity_at = 0.0
+        self._last_watchlist_integrity_symbols = []
+        self._last_watchlist_integrity_repair_symbols = []
+        if previous_date and previous_date != current_date:
+            self._persist_watchlist_integrity_cursor()
         return True
 
     def _environment_watchlist_filter(self) -> str:
@@ -1257,6 +1271,77 @@ class IBKRTradingService:
                     break
                 time.sleep(1)
 
+    def _bar_integrity_market_date(self) -> str:
+        return str(self._current_market_date or self._market_date())
+
+    def _bar_integrity_cursor_payload(self) -> dict:
+        return {
+            "market_date": self._bar_integrity_market_date(),
+            "cursor": int(self._watchlist_integrity_cursor or 0),
+            "last_scan_at": (
+                datetime.fromtimestamp(self._last_watchlist_integrity_at, ET).isoformat()
+                if self._last_watchlist_integrity_at else ""
+            ),
+            "last_symbols": list(self._last_watchlist_integrity_symbols),
+            "watchlist_pool_count": len(self._watchlist_symbols),
+        }
+
+    def _persist_watchlist_integrity_cursor(self):
+        try:
+            self.pb.upsert_state(
+                BAR_INTEGRITY_STATE_KEY,
+                ENVIRONMENT,
+                self._bar_integrity_cursor_payload(),
+                date=BAR_INTEGRITY_STATE_DATE,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist watchlist integrity cursor: %s", exc)
+
+    def _restore_watchlist_integrity_cursor(self):
+        try:
+            record = self.pb.get_state(
+                BAR_INTEGRITY_STATE_KEY,
+                ENVIRONMENT,
+                date=BAR_INTEGRITY_STATE_DATE,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load watchlist integrity cursor: %s", exc)
+            return
+
+        payload = record.get("data") if isinstance(record, dict) else {}
+        if not isinstance(payload, dict):
+            return
+        if str(payload.get("market_date") or "") != self._bar_integrity_market_date():
+            self._watchlist_integrity_cursor = 0
+            return
+
+        try:
+            self._watchlist_integrity_cursor = max(0, int(payload.get("cursor", 0) or 0))
+        except Exception:
+            self._watchlist_integrity_cursor = 0
+
+    def _watchlist_integrity_candidates(self):
+        with self._subscription_lock:
+            active_symbols = set(self._active_subscription_symbols)
+
+        pool = [symbol for symbol in self._watchlist_symbols if symbol not in active_symbols]
+        if not pool:
+            return []
+
+        batch_size = max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_integrity_batch_size",
+                ENVIRONMENT,
+                DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE,
+            ),
+        )
+        start = self._watchlist_integrity_cursor % len(pool)
+        ordered = pool[start:] + pool[:start]
+        self._watchlist_integrity_cursor = (start + batch_size) % max(len(pool), 1)
+        self._persist_watchlist_integrity_cursor()
+        return ordered[:batch_size]
+
     def _watchlist_backfill_candidates(self):
         with self._subscription_lock:
             active_symbols = set(self._active_subscription_symbols)
@@ -1294,47 +1379,28 @@ class IBKRTradingService:
             logger.info("Active target repair skipped while session is unauthenticated")
             return
 
-        repair_plan = self._build_history_repair_plan(list(self._active_subscription_symbols))
-        if not repair_plan:
+        result = self.scan_bar_integrity(
+            list(self._active_subscription_symbols),
+            scan_scope="active_target",
+            persist=True,
+            repair=True,
+        )
+        summary = result.get("summary") or {}
+        repair_symbols = list(summary.get("attempted_repair_symbols") or summary.get("repair_candidate_symbols") or [])
+        if not repair_symbols:
             logger.info("Active target repair skipped: no repair needed")
             return
 
-        repair_symbols = sorted(repair_plan.keys())
-        history_symbols = [
-            symbol for symbol, snapshot in repair_plan.items()
-            if bool(snapshot.get("needs_history_fetch"))
-        ]
         self._last_active_repair_at = time.time()
         self._last_active_repair_symbols = repair_symbols
         self._last_active_repair_reasons = {
-            symbol: str(repair_plan[symbol].get("repair_reason") or "")
+            symbol: str((summary.get("initial_repair_reasons") or summary.get("repair_reasons") or {}).get(symbol) or "")
             for symbol in repair_symbols
         }
-        logger.info(
-            "Running active target repair for %d symbols: %s",
-            len(repair_symbols),
-            ", ".join(
-                f"{symbol}({repair_plan[symbol]['repair_reason']})"
-                for symbol in repair_symbols
-            ),
-        )
-
-        conid_map = self.conid_resolver.resolve_bulk(history_symbols) if history_symbols else {}
-        if history_symbols and conid_map:
-            symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
-            self.data_backfill.backfill_all(
-                conid_map,
-                symbol_meta=symbol_meta,
-                intervals=["5m"],
-                repair_symbols=list(conid_map.keys()),
-            )
-            self.data_writer.flush()
+        history_symbols = list(summary.get("history_fetch_symbols") or [])
+        if history_symbols:
             self._last_history_repair_at = self._last_active_repair_at
-            self._last_history_repair_symbols = repair_symbols
-        elif history_symbols:
-            logger.warning("Active target repair skipped history fetch: unresolved conids for %s", ",".join(history_symbols))
-
-        self._run_symbol_pipeline_repair(repair_symbols, source="history_repair")
+            self._last_history_repair_symbols = history_symbols
 
     def _watchlist_backfill_loop(self):
         logger.info("Watchlist backfill loop started")
@@ -1373,19 +1439,327 @@ class IBKRTradingService:
 
         if not eligible:
             logger.info("Watchlist backfill skipped: batch is fresh enough")
+        else:
+            conid_map = self.conid_resolver.resolve_bulk(eligible)
+            if not conid_map:
+                logger.warning("Watchlist backfill skipped: no conids resolved")
+            else:
+                symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
+                logger.info("Running incremental watchlist backfill for %d symbols", len(conid_map))
+                self.data_backfill.backfill_all(conid_map, symbol_meta=symbol_meta, intervals=["5m"])
+                self.data_writer.flush()
+                self._last_backfill_at = time.time()
+                self._last_backfill_symbols = sorted(conid_map.keys())
+
+        if not self.config.get_bool_for_environment("ibkr_watchlist_integrity_enabled", ENVIRONMENT, True):
             return
 
-        conid_map = self.conid_resolver.resolve_bulk(eligible)
-        if not conid_map:
-            logger.warning("Watchlist backfill skipped: no conids resolved")
+        integrity_candidates = self._watchlist_integrity_candidates()
+        if not integrity_candidates:
+            logger.info("Watchlist integrity scan skipped: empty candidate batch")
             return
 
-        symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
-        logger.info("Running incremental watchlist backfill for %d symbols", len(conid_map))
-        self.data_backfill.backfill_all(conid_map, symbol_meta=symbol_meta, intervals=["5m"])
-        self.data_writer.flush()
-        self._last_backfill_at = time.time()
-        self._last_backfill_symbols = sorted(conid_map.keys())
+        result = self.scan_bar_integrity(
+            integrity_candidates,
+            scan_scope="watchlist",
+            persist=True,
+            repair=True,
+        )
+        summary = result.get("summary") or {}
+        self._last_watchlist_integrity_at = time.time()
+        self._last_watchlist_integrity_symbols = list(summary.get("symbols") or integrity_candidates)
+        self._last_watchlist_integrity_repair_symbols = list(
+            summary.get("attempted_repair_symbols")
+            or summary.get("initial_repair_symbols")
+            or summary.get("repair_candidate_symbols")
+            or []
+        )
+        self._persist_watchlist_integrity_cursor()
+
+    def _collect_bar_integrity_snapshot(
+        self,
+        symbol: str,
+        min_bars: int,
+        gap_lookback: int,
+        rollup_repair_enabled: bool,
+    ) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        snapshot = self.data_backfill.get_integrity_snapshot(
+            normalized_symbol,
+            "5m",
+            min_bars=min_bars,
+            gap_lookback=gap_lookback,
+        )
+        derived_sync = self._inspect_derived_interval_sync(normalized_symbol) if rollup_repair_enabled else {
+            "symbol": normalized_symbol,
+            "latest_5m_ms": int(snapshot.get("latest_stored_ms", 0) or 0),
+            "missing_intervals": [],
+            "stale_intervals": [],
+            "latest_interval_ms": {},
+            "expected_closed_ms": {},
+        }
+
+        reasons = []
+        if int(snapshot.get("stored_bar_count", 0) or 0) < min_bars:
+            reasons.append(f"bars<{min_bars}")
+        if int(snapshot.get("gap_count", 0) or 0) > 0:
+            reasons.append(f"gaps={int(snapshot.get('gap_count', 0) or 0)}")
+        if int(snapshot.get("duplicate_count", 0) or 0) > 0:
+            reasons.append(f"duplicates={int(snapshot.get('duplicate_count', 0) or 0)}")
+        if int(snapshot.get("bad_ohlc_count", 0) or 0) > 0:
+            reasons.append(f"bad_ohlc={int(snapshot.get('bad_ohlc_count', 0) or 0)}")
+        if derived_sync["missing_intervals"]:
+            reasons.append(f"rollup_missing={','.join(derived_sync['missing_intervals'])}")
+        if derived_sync["stale_intervals"]:
+            reasons.append(f"rollup_stale={','.join(derived_sync['stale_intervals'])}")
+
+        needs_history_fetch = (
+            int(snapshot.get("stored_bar_count", 0) or 0) < min_bars
+            or int(snapshot.get("gap_count", 0) or 0) > 0
+        )
+        needs_manual_review = (
+            int(snapshot.get("duplicate_count", 0) or 0) > 0
+            or int(snapshot.get("bad_ohlc_count", 0) or 0) > 0
+        )
+        needs_pipeline_repair = bool(
+            needs_history_fetch
+            or derived_sync["missing_intervals"]
+            or derived_sync["stale_intervals"]
+        )
+        integrity_status = "ok"
+        if needs_manual_review:
+            integrity_status = "error"
+        elif needs_pipeline_repair:
+            integrity_status = "warn"
+
+        snapshot["derived_sync"] = derived_sync
+        snapshot["needs_history_fetch"] = needs_history_fetch
+        snapshot["needs_manual_review"] = needs_manual_review
+        snapshot["needs_pipeline_repair"] = needs_pipeline_repair
+        snapshot["needs_repair"] = needs_pipeline_repair
+        snapshot["safe_repair"] = needs_pipeline_repair and not needs_manual_review
+        snapshot["repair_reason"] = ",".join(reasons)
+        snapshot["integrity_status"] = integrity_status
+        return snapshot
+
+    def _build_bar_integrity_row(self, snapshot: dict, scan_scope: str, repair_state: dict | None = None) -> dict:
+        symbol = str(snapshot.get("symbol") or "").strip().upper()
+        derived_sync = snapshot.get("derived_sync") or {}
+        missing_intervals = list(derived_sync.get("missing_intervals") or [])
+        stale_intervals = list(derived_sync.get("stale_intervals") or [])
+        repair_state = repair_state or {}
+        repair_attempted = bool(repair_state.get("attempted"))
+
+        status = str(snapshot.get("integrity_status") or "ok")
+        if repair_attempted:
+            if bool(snapshot.get("needs_pipeline_repair")):
+                status = "repair_failed"
+            elif status == "ok":
+                status = "repaired"
+
+        return {
+            "environment": ENVIRONMENT,
+            "market_date": self._bar_integrity_market_date(),
+            "symbol": symbol,
+            "interval": "5m",
+            "scan_scope": str(scan_scope or "manual"),
+            "status": status,
+            "needs_repair": bool(snapshot.get("needs_pipeline_repair")),
+            "safe_repair": bool(snapshot.get("safe_repair")),
+            "bar_count": int(snapshot.get("stored_bar_count", 0) or 0),
+            "latest_bar_time_ms": int(snapshot.get("latest_stored_ms", 0) or 0),
+            "latest_bar_us_time": str(format_us_time(int(snapshot.get("latest_stored_ms", 0) or 0)) or "") if int(snapshot.get("latest_stored_ms", 0) or 0) > 0 else "",
+            "oldest_loaded_ms": int(snapshot.get("oldest_loaded_ms", 0) or 0),
+            "gap_count": int(snapshot.get("gap_count", 0) or 0),
+            "duplicate_count": int(snapshot.get("duplicate_count", 0) or 0),
+            "bad_ohlc_count": int(snapshot.get("bad_ohlc_count", 0) or 0),
+            "missing_intervals": missing_intervals,
+            "stale_intervals": stale_intervals,
+            "gap_examples": list(snapshot.get("gap_examples") or []),
+            "duplicate_examples": list(snapshot.get("duplicate_examples") or []),
+            "bad_ohlc_examples": list(snapshot.get("bad_ohlc_examples") or []),
+            "repair_attempts": 1 if repair_attempted else 0,
+            "increment_repair_attempts": repair_attempted,
+            "last_scan_at": self._now_iso(),
+            "last_repair_at": self._now_iso() if repair_attempted else "",
+            "last_repair_result": {
+                **(repair_state.get("result") or {}),
+                "attempted": repair_attempted,
+            } if repair_attempted else {},
+            "extra": {
+                "repair_reason": str(snapshot.get("repair_reason") or ""),
+                "needs_history_fetch": bool(snapshot.get("needs_history_fetch")),
+                "needs_manual_review": bool(snapshot.get("needs_manual_review")),
+                "derived_sync": derived_sync,
+                "scanned_row_count": int(snapshot.get("scanned_row_count", 0) or 0),
+                "scan_scope": str(scan_scope or "manual"),
+                "source": "ibkr_service",
+            },
+        }
+
+    def _run_bar_integrity_repairs(self, snapshots: dict[str, dict], source: str) -> dict:
+        repair_symbols = [
+            symbol for symbol, snapshot in snapshots.items()
+            if bool(snapshot.get("safe_repair"))
+        ]
+        history_symbols = [
+            symbol for symbol in repair_symbols
+            if bool((snapshots.get(symbol) or {}).get("needs_history_fetch"))
+        ]
+        per_symbol = {
+            symbol: {
+                "attempted": symbol in repair_symbols,
+                "result": {
+                    "source": source,
+                    "history_needed": bool((snapshots.get(symbol) or {}).get("needs_history_fetch")),
+                    "pipeline_needed": bool((snapshots.get(symbol) or {}).get("needs_pipeline_repair")),
+                },
+            }
+            for symbol in snapshots.keys()
+        }
+        if not repair_symbols:
+            return {
+                "repair_symbols": [],
+                "history_symbols": [],
+                "per_symbol": per_symbol,
+            }
+
+        backfill_result = {}
+        unresolved_history = []
+        conid_map = self.conid_resolver.resolve_bulk(history_symbols) if history_symbols else {}
+        if history_symbols:
+            unresolved_history = [symbol for symbol in history_symbols if symbol not in conid_map]
+            for symbol in unresolved_history:
+                per_symbol[symbol]["result"]["history_error"] = "conid_unresolved"
+            if conid_map:
+                symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
+                backfill_result = self.data_backfill.backfill_all(
+                    conid_map,
+                    symbol_meta=symbol_meta,
+                    intervals=["5m"],
+                    repair_symbols=list(conid_map.keys()),
+                )
+                self.data_writer.flush()
+                self._last_history_repair_at = time.time()
+                self._last_history_repair_symbols = sorted(conid_map.keys())
+                for symbol in conid_map.keys():
+                    per_symbol[symbol]["result"]["history_written"] = int(
+                        ((backfill_result.get(symbol) or {}).get("5m", 0) or 0)
+                    )
+
+        pipeline_result = self._run_symbol_pipeline_repair(repair_symbols, source=source)
+        pipeline_ok = bool(pipeline_result.get("ok", False))
+        for symbol in repair_symbols:
+            per_symbol[symbol]["result"]["pipeline_ok"] = pipeline_ok
+            per_symbol[symbol]["result"]["pipeline"] = {
+                "processed": int(((pipeline_result.get("compute") or {}).get("processed", 0) or 0)),
+                "errors": int(((pipeline_result.get("compute") or {}).get("errors", 0) or 0)),
+                "rollup_written": int(((pipeline_result.get("rollup") or {}).get("written", 0) or 0)),
+            }
+
+        return {
+            "repair_symbols": sorted(repair_symbols),
+            "history_symbols": sorted(history_symbols),
+            "unresolved_history_symbols": sorted(unresolved_history),
+            "per_symbol": per_symbol,
+        }
+
+    def scan_bar_integrity(
+        self,
+        symbols,
+        scan_scope: str = "manual",
+        persist: bool = True,
+        repair: bool = False,
+    ) -> dict:
+        normalized_symbols = sorted({str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()})
+        if not normalized_symbols:
+            return {"ok": True, "rows": [], "summary": {"symbols": [], "repair_candidate_symbols": []}}
+
+        self.config.refresh()
+        min_bars = max(60, self.config.get_int_for_environment("ibkr_history_repair_min_bars_5m", ENVIRONMENT, 260))
+        gap_lookback = max(20, self.config.get_int_for_environment("ibkr_history_repair_gap_lookback", ENVIRONMENT, 80))
+        rollup_repair_enabled = self.config.get_bool_for_environment(
+            "ibkr_history_repair_rollup_enabled",
+            ENVIRONMENT,
+            True,
+        )
+
+        snapshots = {
+            symbol: self._collect_bar_integrity_snapshot(
+                symbol,
+                min_bars=min_bars,
+                gap_lookback=gap_lookback,
+                rollup_repair_enabled=rollup_repair_enabled,
+            )
+            for symbol in normalized_symbols
+        }
+        initial_repair_symbols = sorted(
+            symbol for symbol, snapshot in snapshots.items()
+            if bool(snapshot.get("needs_pipeline_repair"))
+        )
+        initial_repair_reasons = {
+            symbol: str((snapshot.get("repair_reason") or ""))
+            for symbol, snapshot in snapshots.items()
+            if str(snapshot.get("repair_reason") or "")
+        }
+        repair_summary = {"repair_symbols": [], "history_symbols": [], "per_symbol": {}}
+        if repair:
+            repair_summary = self._run_bar_integrity_repairs(snapshots, source=f"{scan_scope}_integrity")
+            for symbol in repair_summary.get("repair_symbols") or []:
+                snapshots[symbol] = self._collect_bar_integrity_snapshot(
+                    symbol,
+                    min_bars=min_bars,
+                    gap_lookback=gap_lookback,
+                    rollup_repair_enabled=rollup_repair_enabled,
+                )
+
+        rows = [
+            self._build_bar_integrity_row(
+                snapshots[symbol],
+                scan_scope=scan_scope,
+                repair_state=(repair_summary.get("per_symbol") or {}).get(symbol),
+            )
+            for symbol in normalized_symbols
+        ]
+        if persist and rows:
+            try:
+                self.pb.upsert_bar_integrity_items(rows)
+            except Exception as exc:
+                logger.warning("Failed to persist bar integrity rows: %s", exc)
+
+        summary = {
+            "symbols": normalized_symbols,
+            "scan_scope": scan_scope,
+            "attempted_repair_symbols": sorted(repair_summary.get("repair_symbols") or []),
+            "repair_candidate_symbols": sorted(
+                symbol for symbol, snapshot in snapshots.items()
+                if bool(snapshot.get("needs_pipeline_repair"))
+            ),
+            "initial_repair_symbols": initial_repair_symbols,
+            "initial_repair_reasons": initial_repair_reasons,
+            "manual_review_symbols": sorted(
+                symbol for symbol, snapshot in snapshots.items()
+                if bool(snapshot.get("needs_manual_review"))
+            ),
+            "history_fetch_symbols": sorted(repair_summary.get("history_symbols") or []),
+            "repair_reasons": {
+                symbol: str((snapshots.get(symbol) or {}).get("repair_reason") or "")
+                for symbol in normalized_symbols
+                if str((snapshots.get(symbol) or {}).get("repair_reason") or "")
+            },
+            "status_counts": {
+                "ok": sum(1 for row in rows if row.get("status") == "ok"),
+                "warn": sum(1 for row in rows if row.get("status") == "warn"),
+                "error": sum(1 for row in rows if row.get("status") == "error"),
+                "repaired": sum(1 for row in rows if row.get("status") == "repaired"),
+                "repair_failed": sum(1 for row in rows if row.get("status") == "repair_failed"),
+            },
+        }
+        return {
+            "ok": True,
+            "rows": rows,
+            "summary": summary,
+        }
 
     def _build_history_repair_plan(self, symbols: list[str]) -> dict[str, dict]:
         if not symbols:
@@ -1403,41 +1777,13 @@ class IBKRTradingService:
         plan = {}
 
         for symbol in sorted({str(item or "").upper() for item in symbols if str(item or "").strip()}):
-            snapshot = self.data_backfill.get_integrity_snapshot(
+            snapshot = self._collect_bar_integrity_snapshot(
                 symbol,
-                "5m",
                 min_bars=min_bars,
                 gap_lookback=gap_lookback,
+                rollup_repair_enabled=rollup_repair_enabled,
             )
-            derived_sync = self._inspect_derived_interval_sync(symbol) if rollup_repair_enabled else {
-                "symbol": symbol,
-                "latest_5m_ms": int(snapshot.get("latest_stored_ms", 0) or 0),
-                "missing_intervals": [],
-                "stale_intervals": [],
-                "latest_interval_ms": {},
-                "expected_closed_ms": {},
-            }
-            reasons = []
-            if int(snapshot.get("stored_bar_count", 0) or 0) < min_bars:
-                reasons.append(f"bars<{min_bars}")
-            if int(snapshot.get("gap_count", 0) or 0) > 0:
-                reasons.append(f"gaps={int(snapshot.get('gap_count', 0) or 0)}")
-            if derived_sync["missing_intervals"]:
-                reasons.append(f"rollup_missing={','.join(derived_sync['missing_intervals'])}")
-            if derived_sync["stale_intervals"]:
-                reasons.append(f"rollup_stale={','.join(derived_sync['stale_intervals'])}")
-            if reasons:
-                snapshot["derived_sync"] = derived_sync
-                snapshot["needs_history_fetch"] = (
-                    int(snapshot.get("stored_bar_count", 0) or 0) < min_bars
-                    or int(snapshot.get("gap_count", 0) or 0) > 0
-                )
-                snapshot["needs_pipeline_repair"] = bool(
-                    snapshot["needs_history_fetch"]
-                    or derived_sync["missing_intervals"]
-                    or derived_sync["stale_intervals"]
-                )
-                snapshot["repair_reason"] = ",".join(reasons)
+            if bool(snapshot.get("needs_pipeline_repair")):
                 plan[symbol] = snapshot
         return plan
 
@@ -1482,9 +1828,22 @@ class IBKRTradingService:
             result["latest_interval_ms"][interval] = latest_interval_ms
 
             current_bucket_ms = bucket_start_ms(latest_5m_ms, interval)
-            expected_closed_ms = max(0, current_bucket_ms - interval_to_ms(interval))
+            previous_source_row = self.pb.get_first_record(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{normalized_symbol}" && '
+                    'interval = "5m" && '
+                    f'bar_time_ms < {int(current_bucket_ms)} && '
+                    f'{self._build_bar_environment_filter()}'
+                ),
+                sort="-bar_time_ms",
+            )
+            previous_source_ms = int((previous_source_row or {}).get("bar_time_ms", 0) or 0)
+            expected_closed_ms = bucket_start_ms(previous_source_ms, interval) if previous_source_ms > 0 else 0
             result["expected_closed_ms"][interval] = expected_closed_ms
 
+            if expected_closed_ms <= 0:
+                continue
             if latest_interval_ms <= 0:
                 result["missing_intervals"].append(interval)
             elif latest_interval_ms < expected_closed_ms:
@@ -1672,6 +2031,14 @@ class IBKRTradingService:
             if result.get("ok"):
                 logger.info("Order placed: %s %s bracket_group=%s",
                             symbol, sig["direction"], result.get("bracket_group"))
+                try:
+                    self._ack_signal_after_order_submission(sig, result)
+                except Exception as ack_err:
+                    logger.error(
+                        "Signal ack failed after order placement: %s signal_id=%s",
+                        ack_err,
+                        sig.get("signal_id"),
+                    )
                 self.signal_processor.register_position(symbol, {
                     "direction": sig["direction"],
                     "bracket_group": result.get("bracket_group"),
@@ -1681,6 +2048,89 @@ class IBKRTradingService:
                 logger.error("Order failed: %s - %s", symbol, result.get("error"))
 
             self.signal_router.mark_processed(sig["signal_id"])
+
+    def _ack_signal_after_order_submission(self, sig: dict, result: dict):
+        raw = sig.get("raw") or {}
+        order_ids = result.get("order_ids") or []
+        entry_order_id = str(order_ids[0]) if len(order_ids) > 0 and order_ids[0] else ""
+        tp_order_id = str(order_ids[1]) if len(order_ids) > 1 and order_ids[1] else ""
+        sl_order_id = str(order_ids[2]) if len(order_ids) > 2 and order_ids[2] else ""
+        entry_unique_id = result.get("entry_coid") or result.get("bracket_group") or ""
+        tp_unique_id = result.get("tp_coid") or ""
+        sl_unique_id = result.get("sl_coid") or ""
+        trade_group_id = result.get("bracket_group") or entry_unique_id
+        bar_time_ms = int(raw.get("bar_time_ms") or 0)
+        us_time = raw.get("us_time") or sig.get("signal_time") or ""
+        cn_time = raw.get("cn_time") or ""
+
+        child_orders = []
+        if tp_unique_id:
+            child_orders.append({
+                "unique_id": tp_unique_id,
+                "order_id": tp_order_id,
+                "broker_order_id": tp_order_id,
+                "order_type": "TakeProfit",
+                "role": "take_profit",
+                "relation_status": "planned",
+                "parent_order_unique_id": entry_unique_id,
+                "sibling_order_unique_id": sl_unique_id,
+                "limit_price": sig["take_profit"],
+                "status": "Init",
+            })
+        if sl_unique_id:
+            child_orders.append({
+                "unique_id": sl_unique_id,
+                "order_id": sl_order_id,
+                "broker_order_id": sl_order_id,
+                "order_type": "StopLoss",
+                "role": "stop_loss",
+                "relation_status": "planned",
+                "parent_order_unique_id": entry_unique_id,
+                "sibling_order_unique_id": tp_unique_id,
+                "limit_price": sig["stop_loss"],
+                "status": "Init",
+            })
+
+        ack_payload = {
+            "unique_id": entry_unique_id,
+            "order_id": entry_order_id,
+            "broker_order_id": entry_order_id,
+            "order_type": "Entry",
+            "role": "entry",
+            "relation_status": "active",
+            "direction": sig["direction"],
+            "position_side": sig["direction"],
+            "quantity": sig["shares"],
+            "limit_price": sig["entry"],
+            "status": "Submitted",
+            "stop_loss": sig["stop_loss"],
+            "take_profit": sig["take_profit"],
+            "trade_group_id": trade_group_id,
+            "entry_order_unique_id": entry_unique_id,
+            "us_time": us_time,
+            "cn_time": cn_time,
+            "bar_time_ms": bar_time_ms,
+            "extra": {
+                "source": "ibkr_compute",
+                "reason": "order_submitted_by_ibkr_compute",
+                "ack_source": "ibkr_service",
+            },
+        }
+
+        ack_result = self.pb.ack_ibkr_signal(
+            signal_id=sig["signal_id"],
+            status="executed",
+            note="order_submitted_by_ibkr_compute",
+            order=ack_payload,
+            child_orders=child_orders,
+            environment=ENVIRONMENT,
+        )
+        logger.info(
+            "Signal acked after order submission: signal_id=%s status=%s fallback=%s",
+            sig.get("signal_id"),
+            ack_result.get("status", "unknown"),
+            ack_result.get("fallback", False),
+        )
 
     def _on_order_fill(self, order: dict):
         logger.info("Order filled: %s", order.get("ticker"))
@@ -1815,11 +2265,23 @@ class IBKRTradingService:
                 "last_active_repair_symbols": list(self._last_active_repair_symbols),
                 "last_active_repair_reasons": dict(self._last_active_repair_reasons),
                 "watchlist_backfill_interval_min": self.config.get_int_for_environment("ibkr_watchlist_backfill_interval_min", ENVIRONMENT, 30),
+                "watchlist_integrity_enabled": self.config.get_bool_for_environment("ibkr_watchlist_integrity_enabled", ENVIRONMENT, True),
+                "watchlist_integrity_batch_size": self.config.get_int_for_environment(
+                    "ibkr_watchlist_integrity_batch_size",
+                    ENVIRONMENT,
+                    DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE,
+                ),
                 "last_watchlist_backfill": (
                     datetime.fromtimestamp(self._last_backfill_at, ET).isoformat()
                     if self._last_backfill_at else None
                 ),
                 "last_watchlist_backfill_symbols": list(self._last_backfill_symbols),
+                "last_watchlist_integrity": (
+                    datetime.fromtimestamp(self._last_watchlist_integrity_at, ET).isoformat()
+                    if self._last_watchlist_integrity_at else None
+                ),
+                "last_watchlist_integrity_symbols": list(self._last_watchlist_integrity_symbols),
+                "last_watchlist_integrity_repair_symbols": list(self._last_watchlist_integrity_repair_symbols),
                 "last_history_repair": (
                     datetime.fromtimestamp(self._last_history_repair_at, ET).isoformat()
                     if self._last_history_repair_at else None

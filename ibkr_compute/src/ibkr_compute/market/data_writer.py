@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 BAR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_BAR_BATCH_SIZE", "40")))
 BAR_FLUSH_INTERVAL_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_INTERVAL", "2.0")))
+BAR_FLUSH_RETRY_ATTEMPTS = max(1, int(os.environ.get("IBKR_BAR_FLUSH_RETRY_ATTEMPTS", "4")))
+BAR_FLUSH_RETRY_BACKOFF_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_RETRY_BACKOFF_SECONDS", "1.0")))
 
 
 class DataWriter:
@@ -60,28 +62,54 @@ class DataWriter:
         self._pending_batch = []
         return batch
 
+    def _requeue_batch(self, batch) -> None:
+        if not batch:
+            return
+        with self._lock:
+            self._pending_batch = list(batch) + self._pending_batch
+
     def _flush_batch(self, batch) -> bool:
         if not batch:
             return True
 
-        try:
-            result = self.pb_client.upsert_bars(batch)
-            if not result.get("ok", False):
-                raise RuntimeError(result.get("error") or "bar_upsert_failed")
+        backoff_seconds = BAR_FLUSH_RETRY_BACKOFF_SECONDS
+        last_error = None
+        for attempt in range(1, BAR_FLUSH_RETRY_ATTEMPTS + 1):
+            try:
+                result = self.pb_client.upsert_bars(batch)
+                if not result.get("ok", False):
+                    raise RuntimeError(result.get("error") or "bar_upsert_failed")
 
-            changed = int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
-            skipped = int(result.get("skipped", 0) or 0)
-            self._write_count += changed
-            self._skip_count += skipped if skipped > 0 else max(0, len(batch) - changed)
-            return True
-        except Exception as e:
-            logger.error(
-                "Failed to write %d bars batch: %s",
-                len(batch),
-                e,
-            )
-            self._error_count += len(batch)
-            return False
+                changed = int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
+                skipped = int(result.get("skipped", 0) or 0)
+                self._write_count += changed
+                self._skip_count += skipped if skipped > 0 else max(0, len(batch) - changed)
+                return True
+            except Exception as exc:
+                last_error = exc
+                if attempt < BAR_FLUSH_RETRY_ATTEMPTS:
+                    logger.warning(
+                        "Retrying %d bars batch write (%d/%d): %s",
+                        len(batch),
+                        attempt,
+                        BAR_FLUSH_RETRY_ATTEMPTS,
+                        exc,
+                    )
+                    time.sleep(backoff_seconds)
+                    backoff_seconds = min(backoff_seconds * 2, 5.0)
+                    continue
+                logger.error(
+                    "Failed to write %d bars batch after %d attempts: %s",
+                    len(batch),
+                    BAR_FLUSH_RETRY_ATTEMPTS,
+                    exc,
+                )
+
+        self._error_count += len(batch)
+        self._requeue_batch(batch)
+        if last_error is not None:
+            logger.warning("Re-queued %d bars batch after persistent write failure", len(batch))
+        return False
 
     def flush(self) -> bool:
         batch = None

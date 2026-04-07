@@ -882,6 +882,8 @@
         let selectedRunId = '';
         let selectedRun = null;
         let selectedTrades = [];
+        let selectedTargets = [];
+        let selectedTargetsLoading = false;
         let selectedReplayRows = [];
         let equityChart = null;
         let replayChart = null;
@@ -1021,6 +1023,27 @@
             };
         }
 
+        function normalizeBacktestTargetRecord(record) {
+            const extra = parseMaybeJson(record.extra, {});
+            const rank = Number(record.rank || extra.selection_rank || 0);
+            const score = Number(record.score || 0);
+            return {
+                ...record,
+                extra,
+                symbol: String(record.symbol || '').trim().toUpperCase(),
+                exchange: String(record.exchange || '').trim().toUpperCase(),
+                date: String(record.date || '').trim().slice(0, 10),
+                direction_bias: String(record.direction_bias || 'neutral').trim().toLowerCase() || 'neutral',
+                scan_reason: String(record.scan_reason || '').trim(),
+                status: String(record.status || '').trim().toLowerCase() || 'active',
+                rank: Number.isFinite(rank) ? rank : 0,
+                score: Number.isFinite(score) ? score : 0,
+                bar_time_ms: Number(record.bar_time_ms || 0),
+                us_time: String(record.us_time || '').trim(),
+                cn_time: String(record.cn_time || '').trim(),
+            };
+        }
+
         function statusTone(status) {
             const value = String(status || '').toLowerCase();
             if (value === 'completed' || value === 'pass' || value === 'ok') return 'pill-ok';
@@ -1084,6 +1107,140 @@
         function getStrategyParamsText(run) {
             const params = run?.params?.strategy_params || {};
             return Object.keys(params).length ? JSON.stringify(params, null, 2) : '{}';
+        }
+
+        function groupTargetsByDate(items, run) {
+            const dailyRows = Array.isArray(run?.extra?.historical_targeting?.daily) ? run.extra.historical_targeting.daily : [];
+            const dailyMap = new Map(
+                dailyRows.map((item) => [String(item?.date || ''), item || {}]),
+            );
+            const groups = new Map();
+            items.forEach((item) => {
+                const date = String(item?.date || '--');
+                if (!groups.has(date)) {
+                    groups.set(date, {
+                        date,
+                        summary: dailyMap.get(date) || null,
+                        items: [],
+                    });
+                }
+                groups.get(date).items.push(item);
+            });
+            return Array.from(groups.values())
+                .map((group) => ({
+                    ...group,
+                    items: group.items.sort((a, b) => {
+                        const rankDelta = Number(a.rank || 9999) - Number(b.rank || 9999);
+                        if (rankDelta !== 0) return rankDelta;
+                        const scoreDelta = Number(b.score || 0) - Number(a.score || 0);
+                        if (scoreDelta !== 0) return scoreDelta;
+                        return String(a.symbol || '').localeCompare(String(b.symbol || ''));
+                    }),
+                }))
+                .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+        }
+
+        function buildBacktestTargetReplayCard(run) {
+            const capture = run?.extra?.backtest_target_capture || run?.metrics?.backtest_target_capture || {};
+            const historicalTargeting = run?.extra?.historical_targeting || run?.metrics?.historical_targeting || {};
+            const groups = groupTargetsByDate(selectedTargets, run);
+            const selectedSymbolCount = Number(
+                historicalTargeting.selected_symbol_count
+                || new Set(selectedTargets.map((item) => String(item?.symbol || '').trim()).filter(Boolean)).size
+                || 0,
+            );
+            const targetCount = Number(
+                run?.metrics?.backtest_target_count
+                || capture.saved_count
+                || historicalTargeting.target_row_count
+                || selectedTargets.length
+                || 0,
+            );
+            const status = selectedTargetsLoading
+                ? 'running'
+                : String(capture.status || (targetCount > 0 ? 'ok' : 'empty')).toLowerCase();
+            const enabled = String(run?.symbol_source || '').toLowerCase() === 'daily_scan_replay' || targetCount > 0;
+
+            if (!enabled && !selectedTargets.length) {
+                return `
+                    <div class="detail-card">
+                        <div class="subhead">Historical Targets</div>
+                        <div class="empty-state">当前 run 未启用历史盘前选股回放，所以不会生成 <span class="mono">ibkr_backtest_targets</span> 明细。</div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="detail-card">
+                    <div class="subhead">Historical Targets</div>
+                    <div class="foot-note">这里展示历史盘前选股回放落到 <span class="mono">ibkr_backtest_targets</span> 的结果。回测是否允许开仓仍以 run 生成时的 selection plan 为准，这个面板用于审计每日选股和快速回放。</div>
+                    <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
+                    <div class="detail-list">
+                        <div class="detail-item"><div class="detail-item-label">Collection</div><div class="detail-item-value mono">${escapeHtml(capture.collection || 'ibkr_backtest_targets')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Rows</div><div class="detail-item-value">${escapeHtml(String(targetCount))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Trade Dates</div><div class="detail-item-value">${escapeHtml(String(historicalTargeting.target_date_count || groups.length || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Selected Symbols</div><div class="detail-item-value">${escapeHtml(String(selectedSymbolCount))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Universe Mode</div><div class="detail-item-value">${escapeHtml(historicalTargeting.universe_mode || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Cutoff</div><div class="detail-item-value">${escapeHtml(historicalTargeting.premarket_cutoff_time || run?.extra?.premarket_cutoff_time || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Scan Session</div><div class="detail-item-value">${escapeHtml(historicalTargeting.scan_session_mode || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Scan Warmup</div><div class="detail-item-value">${escapeHtml(String(historicalTargeting.scan_warmup_bars || run?.extra?.scan_warmup_bars || '--'))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Saved / Errors</div><div class="detail-item-value">${escapeHtml(String(capture.saved_count || 0))} / ${escapeHtml(String(capture.error_count || 0))}</div></div>
+                    </div>
+                    ${selectedTargetsLoading ? '<div class="empty-state" style="margin-top: 14px;">正在读取历史 targets 明细...</div>' : ''}
+                    ${!selectedTargetsLoading && groups.length ? groups.map((group) => {
+                        const summary = group.summary || {};
+                        const first = group.items[0] || {};
+                        const universeSize = Number(summary.universe_size || first?.extra?.universe_size || 0);
+                        const selectedCount = Number(summary.selected_count || group.items.length || 0);
+                        const readyCount = Number(summary.ready_symbol_count || 0);
+                        const candidateCount = Number(summary.candidate_count || 0);
+                        return `
+                            <div class="subhead" style="margin-top: 18px;">${escapeHtml(group.date)}</div>
+                            <div class="foot-note">
+                                selected ${escapeHtml(String(selectedCount))}
+                                ${candidateCount ? ` / candidates ${escapeHtml(String(candidateCount))}` : ''}
+                                ${readyCount ? ` · ready ${escapeHtml(String(readyCount))}` : ''}
+                                ${universeSize ? ` · universe ${escapeHtml(String(universeSize))}` : ''}
+                            </div>
+                            <div class="table-wrap" style="margin-top: 10px;">
+                                <table class="data-table" style="min-width: 900px;">
+                                    <thead>
+                                        <tr>
+                                            <th>Rank</th>
+                                            <th>Symbol</th>
+                                            <th>Score</th>
+                                            <th>Bias</th>
+                                            <th>Reason</th>
+                                            <th>Cutoff</th>
+                                            <th>Universe</th>
+                                            <th>Replay</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${group.items.map((item) => `
+                                            <tr>
+                                                <td class="mono">${escapeHtml(String(item.rank || '--'))}</td>
+                                                <td class="mono">${escapeHtml(item.symbol || '--')}${item.exchange ? `<br><span style="color: var(--muted);">${escapeHtml(item.exchange)}</span>` : ''}</td>
+                                                <td>${escapeHtml(formatNumber(item.score || 0, 4))}</td>
+                                                <td>${item.direction_bias === 'short'
+                                                    ? '<span class="tag short">SHORT</span>'
+                                                    : item.direction_bias === 'long'
+                                                        ? '<span class="tag long">LONG</span>'
+                                                        : `<span class="tag">${escapeHtml((item.direction_bias || 'neutral').toUpperCase())}</span>`}</td>
+                                                <td>${escapeHtml(item.scan_reason || '--')}</td>
+                                                <td class="mono">${escapeHtml(item.us_time || '--')}${item.cn_time ? `<br><span style="color: var(--muted);">${escapeHtml(item.cn_time)}</span>` : ''}</td>
+                                                <td>${escapeHtml(String(item?.extra?.universe_size || universeSize || '--'))}</td>
+                                                <td><button class="btn ghost" type="button" onclick="replayTarget('${escapeHtml(item.symbol || '')}', ${Number(item.bar_time_ms || 0)})">回放</button></td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `;
+                    }).join('') : ''}
+                    ${!selectedTargetsLoading && !groups.length ? '<div class="empty-state" style="margin-top: 14px;">当前 run 没有读取到历史盘前 target 明细。</div>' : ''}
+                </div>
+            `;
         }
 
         function buildBacktestIndicatorCaptureCard(run) {
@@ -1694,6 +1851,7 @@
                 </div>
                 ${buildRunAnalysisCard(selectedRun)}
                 ${buildBacktestIndicatorCaptureCard(selectedRun)}
+                ${buildBacktestTargetReplayCard(selectedRun)}
                 ${buildBacktestReverseCaptureCard(selectedRun)}
                 ${buildTvParityCard(selectedRun)}
                 <div class="detail-card">
@@ -1722,6 +1880,9 @@
             }
             selectedTrades.forEach((trade) => {
                 if (trade.symbol) symbols.add(String(trade.symbol).trim().toUpperCase());
+            });
+            selectedTargets.forEach((item) => {
+                if (item.symbol) symbols.add(String(item.symbol).trim().toUpperCase());
             });
             const items = Array.from(symbols).sort();
             if (!items.length) {
@@ -1936,6 +2097,7 @@
                 renderTrades();
                 return;
             }
+            const activeRunId = runId;
             const filter = `run_id = "${escapeFilterValue(runId)}"`;
             const items = await apiFetchAll('ibkr_backtest_trades', {
                 filter,
@@ -1943,14 +2105,60 @@
                 perPage: 200,
                 maxPages: 12,
             });
+            if (selectedRunId !== activeRunId) {
+                return;
+            }
             selectedTrades = items.map(normalizeTradeRecord);
             renderTrades();
+        }
+
+        async function loadRunTargets(runId, { showToastOnError = false } = {}) {
+            if (!runId) {
+                selectedTargets = [];
+                selectedTargetsLoading = false;
+                buildReplaySymbolOptions();
+                renderRunDetail();
+                return;
+            }
+            const activeRunId = runId;
+            selectedTargets = [];
+            selectedTargetsLoading = true;
+            renderRunDetail();
+            try {
+                const filter = `run_id = "${escapeFilterValue(runId)}"`;
+                const items = await apiFetchAll('ibkr_backtest_targets', {
+                    filter,
+                    sort: '-date,rank,symbol',
+                    perPage: 200,
+                    maxPages: 20,
+                });
+                if (selectedRunId !== activeRunId) {
+                    return;
+                }
+                selectedTargets = items.map(normalizeBacktestTargetRecord);
+            } catch (error) {
+                console.error('loadRunTargets failed:', error);
+                if (selectedRunId === activeRunId) {
+                    selectedTargets = [];
+                    if (showToastOnError) {
+                        showToast(`读取回测 targets 失败: ${error.message || error}`);
+                    }
+                }
+            } finally {
+                if (selectedRunId === activeRunId) {
+                    selectedTargetsLoading = false;
+                    buildReplaySymbolOptions();
+                    renderRunDetail();
+                }
+            }
         }
 
         async function refreshSelectedRun(showToastOnSuccess = false) {
             if (!selectedRunId) {
                 selectedRun = null;
                 selectedTrades = [];
+                selectedTargets = [];
+                selectedTargetsLoading = false;
                 renderMetrics();
                 renderRunDetail();
                 renderTrades();
@@ -1959,9 +2167,14 @@
             }
             const found = runList.find((run) => run.id === selectedRunId);
             selectedRun = found || null;
+            selectedTargets = [];
+            selectedTargetsLoading = Boolean(selectedRun);
             renderMetrics();
             renderRunDetail();
-            await loadRunTrades(selectedRunId);
+            await Promise.all([
+                loadRunTrades(selectedRunId),
+                loadRunTargets(selectedRunId),
+            ]);
             if (showToastOnSuccess && selectedRun) {
                 showToast(`已刷新 ${selectedRun.name || selectedRun.id}`);
             }
@@ -2113,6 +2326,8 @@
                 selectedRunId = '';
                 selectedRun = null;
                 selectedTrades = [];
+                selectedTargets = [];
+                selectedTargetsLoading = false;
                 renderReplay([]);
                 await refreshDashboard(false);
             } catch (error) {
@@ -2143,6 +2358,8 @@
                     selectedRunId = '';
                     selectedRun = null;
                     selectedTrades = [];
+                    selectedTargets = [];
+                    selectedTargetsLoading = false;
                     renderReplay([]);
                 }
                 selectedBatchId = '';
@@ -2170,12 +2387,24 @@
         async function selectRun(runId) {
             selectedRunId = runId;
             selectedRun = runList.find((run) => run.id === runId) || null;
+            selectedTargets = [];
+            selectedTargetsLoading = Boolean(selectedRun);
             renderRuns();
             renderMetrics();
             renderRunDetail();
-            await loadRunTrades(runId);
+            await Promise.all([
+                loadRunTrades(runId),
+                loadRunTargets(runId, { showToastOnError: true }),
+            ]);
             renderReplay([]);
             document.getElementById('replayCenterBar').value = '';
+        }
+
+        async function replayTarget(symbol, barTimeMs) {
+            buildReplaySymbolOptions();
+            document.getElementById('replaySymbol').value = symbol || document.getElementById('replaySymbol').value;
+            document.getElementById('replayCenterBar').value = String(barTimeMs || '');
+            await loadReplayForSelection();
         }
 
         async function loadReplayForSelection() {
@@ -2227,6 +2456,7 @@
         window.refreshSelectedBatch = refreshSelectedBatch;
         window.loadReplayForSelection = loadReplayForSelection;
         window.replayTrade = replayTrade;
+        window.replayTarget = replayTarget;
         window.syncSymbolSourceUI = syncSymbolSourceUI;
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;

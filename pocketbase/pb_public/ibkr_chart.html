@@ -742,7 +742,7 @@
             <div class="hero-top">
                 <div>
                     <div class="hero-title" id="heroTitle">IBKR 图表工作台</div>
-                    <div class="hero-copy">做成类似 TradingView 的全屏分析页：主图展示 K 线 / EMA / VWAP / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。默认从 PocketBase 当前环境里读取最近的指标上下文，也可以手动切换标的和周期。</div>
+                    <div class="hero-copy">做成类似 TradingView 的全屏分析页：主图展示 K 线 / EMA / VWAP / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。图表指标与信号统一基于当前环境的 <code>ibkr_bars</code> 实时重算，也可以手动切换标的和周期。</div>
                 </div>
                 <div class="hero-status" id="heroStatus"></div>
             </div>
@@ -774,12 +774,12 @@
             <div class="panel-header">
                 <div>
                     <div class="panel-title" id="chartPanelTitle">图表加载中</div>
-                    <div class="panel-copy">主图覆盖信号散点；5m 之外通常不展示信号点，只保留价格与指标轨迹。</div>
+                    <div class="panel-copy">主图的指标与信号点按当前 bars 实时重算；5m 之外通常不展示信号点，只保留价格与指标轨迹。</div>
                 </div>
                 <div class="panel-meta" id="chartMeta">--</div>
             </div>
             <div id="chartCanvas" class="chart-stage"></div>
-            <div class="chart-note" id="chartNote">等待拉取 bars / indicators / signals ...</div>
+            <div class="chart-note" id="chartNote">等待基于 bars 实时重算图表 ...</div>
         </div>
 
         <div class="rail" id="infoRail"></div>
@@ -887,28 +887,6 @@
             return durationMs > 0 && endMs > 0 ? Math.max(0, endMs - durationMs) : 0;
         }
 
-        function getRangePerPage(interval, rangeKey) {
-            if (normalizeRangeKey(rangeKey, interval) === 'all') return 3000;
-            const barsPerDay = {
-                '5m': 78,
-                '15m': 26,
-                '30m': 13,
-                '1h': 7,
-                '4h': 2,
-                '1d': 1,
-            };
-            const tradingDays = {
-                '1d': 1,
-                '3d': 3,
-                '1w': 5,
-                '1m': 22,
-            };
-            const normalizedInterval = normalizeInterval(interval || '5m');
-            const normalizedRange = normalizeRangeKey(rangeKey, normalizedInterval);
-            const estimate = (barsPerDay[normalizedInterval] || 80) * (tradingDays[normalizedRange] || 1);
-            return Math.max(80, Math.min(estimate + 24, 2500));
-        }
-
         function buildIntervalAliases(interval) {
             const normalized = normalizeInterval(interval || '5m');
             const map = {
@@ -930,17 +908,6 @@
                 });
             });
             return `(${conditions.join(' || ')})`;
-        }
-
-        function buildHistoryFilter({ environment, symbol = '', interval, endMs = 0, startMs = 0 }) {
-            const parts = [
-                `environment = "${escapeQueryValue(environment)}"`,
-                `symbol = "${escapeQueryValue(symbol)}"`,
-                buildIntervalFilterExpression(interval, ['interval'])
-            ];
-            if (startMs > 0) parts.push(`bar_time_ms >= ${startMs}`);
-            if (endMs > 0) parts.push(`bar_time_ms <= ${endMs}`);
-            return parts.join(' && ');
         }
 
         function toChartValue(value) {
@@ -1065,6 +1032,7 @@
                 || extra.broker_order_id
                 || ''
             ).trim();
+            if (isComputedSignal(signal) && !tradeGroupId && !orderId) return '';
             if (!signalId && !tradeGroupId && !orderId) return '';
             const params = { date: fallbackDate || deriveItemDate(signal) };
             if (signalId) params.signal_id = signalId;
@@ -1090,7 +1058,6 @@
                 interval: currentInterval,
                 range: currentRangeKey,
                 bar_time_ms: currentAnchorMs || '',
-                indicator_id: currentIndicatorId || '',
             }, { environment: currentEnvironment });
             window.history.replaceState({}, '', url);
         }
@@ -1109,6 +1076,59 @@
                 }
             }
             throw lastError || new Error(`Failed to fetch ${collection}`);
+        }
+
+        function getAuthHeaders(extra = {}) {
+            const headers = { ...extra };
+            const token = getToken();
+            if (token) headers.Authorization = `Bearer ${token}`;
+            return headers;
+        }
+
+        async function requestChartJson(path, { method = 'GET', body = null } = {}, maxRetries = 1) {
+            let lastError = null;
+            for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+                try {
+                    const options = {
+                        method,
+                        headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
+                    };
+                    if (body) options.body = JSON.stringify(body);
+                    const response = await fetch(buildPageUrl(path, {}, { environment: currentEnvironment }), options);
+                    if (response.status === 401 || response.status === 403) {
+                        clearToken();
+                        location.href = `/login.html?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`;
+                        throw new Error('Authentication failed');
+                    }
+                    const text = await response.text();
+                    let data = {};
+                    try {
+                        data = text ? JSON.parse(text) : {};
+                    } catch (_) {
+                        data = { ok: false, raw: text };
+                    }
+                    if (!response.ok) {
+                        throw new Error(data.message || data.error || `Request failed (${response.status})`);
+                    }
+                    if (data && data.ok === false) {
+                        throw new Error(data.error || data.message || 'Request failed');
+                    }
+                    return data;
+                } catch (error) {
+                    lastError = error;
+                    const message = String(error?.message || error || '');
+                    const retryable = message.includes('502') || message.includes('Failed to fetch');
+                    if (!retryable || attempt === maxRetries) break;
+                    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+                }
+            }
+            throw lastError || new Error(`Failed to request ${path}`);
+        }
+
+        function isComputedSignal(signal) {
+            const status = String(signal?.status || '').trim().toLowerCase();
+            const sourceKind = String(signal?.source_kind || signal?.extra?.source_kind || '').trim().toLowerCase();
+            return status === 'computed' || sourceKind === 'computed';
         }
 
         async function resolveInitialContext() {
@@ -1138,23 +1158,6 @@
             }
 
             if (currentSymbol) return;
-
-            try {
-                const latestIndicatorResp = await fetchWithRetry('ibkr_indicators', {
-                    filter: `environment = "${escapeQueryValue(currentEnvironment)}" && ${buildIntervalFilterExpression('5m', ['interval'])}`,
-                    sort: '-bar_time_ms',
-                    perPage: 1
-                });
-                const latestIndicator = normalizeIndicatorRecord(Array.isArray(latestIndicatorResp?.items) ? latestIndicatorResp.items[0] : null);
-                if (latestIndicator) {
-                    currentSymbol = String(latestIndicator.symbol || '').trim().toUpperCase();
-                    currentInterval = normalizeInterval(latestIndicator.interval || '5m');
-                    if (!hasExplicitRange) currentRangeKey = getDefaultRangeKey(currentInterval);
-                    currentAnchorMs = Number(latestIndicator.bar_time_ms || 0) || 0;
-                    currentIndicatorId = String(latestIndicator.id || '').trim();
-                    return;
-                }
-            } catch (_) {}
 
             const latestBarResp = await fetchWithRetry('ibkr_bars', {
                 filter: `environment = "${escapeQueryValue(currentEnvironment)}" && ${buildIntervalFilterExpression('5m', ['interval'])}`,
@@ -1315,12 +1318,16 @@
             const bar = ctx?.bar || null;
             const indicator = ctx?.indicator || null;
             const signalDate = deriveItemDate(signal);
-            const signalUrl = buildPageUrl('/ibkr_signals.html', { signal_id: signal.signal_id || '', date: signalDate }, { environment: currentEnvironment });
-            const orderUrl = buildPageUrl('/ibkr_orders.html', signal.signal_id ? { signal_id: signal.signal_id, date: signalDate } : { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
+            const signalUrl = buildPageUrl('/ibkr_signals.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
+            const orderUrl = buildPageUrl('/ibkr_orders.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(signal, signalDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
             const reason = signal.reason || signal.note || signal.extra?.reason || '暂无原因说明';
             const computedAt = signal.extra?.computed_at_us || signal.extra?.computed_at_cn || signal.updated || signal.created || '--';
+            const statusText = isComputedSignal(signal) ? 'COMPUTED' : String(signal.status || '--').toUpperCase();
+            const sourceNote = isComputedSignal(signal)
+                ? '当前信号点由 ibkr_bars 实时重算，未必对应历史信号台账。'
+                : '当前信号来自历史台账记录。';
 
             content.innerHTML = `
                 <div class="drawer-head">
@@ -1335,7 +1342,7 @@
                 <div class="drawer-grid">
                     <div class="drawer-metric">
                         <div class="drawer-label">Direction / Status</div>
-                        <div class="drawer-value"><span class="signal-badge ${getSignalBadgeClass(signal)}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span><br>${escapeHtml(String(signal.status || '--').toUpperCase())}</div>
+                        <div class="drawer-value"><span class="signal-badge ${getSignalBadgeClass(signal)}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span><br>${escapeHtml(statusText)}</div>
                     </div>
                     <div class="drawer-metric">
                         <div class="drawer-label">Entry / RR</div>
@@ -1354,6 +1361,11 @@
                 <div class="drawer-block">
                     <div class="drawer-block-title">Reason</div>
                     <div class="drawer-copy">${escapeHtml(reason)}</div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Source</div>
+                    <div class="drawer-copy">${escapeHtml(sourceNote)}</div>
                 </div>
 
                 <div class="drawer-grid">
@@ -1376,8 +1388,8 @@
                 </div>
 
                 <div class="drawer-actions">
-                    <a class="mini-link" href="${signalUrl}">打开信号页</a>
-                    <a class="mini-link" href="${orderUrl}">打开订单页</a>
+                    <a class="mini-link" href="${signalUrl}">历史信号页</a>
+                    <a class="mini-link" href="${orderUrl}">历史订单页</a>
                     ${orderDetailsUrl ? `<a class="mini-link" href="${orderDetailsUrl}">打开订单明细</a>` : ''}
                     <a class="mini-link" href="${accountUrl}">打开账户页</a>
                 </div>
@@ -1435,8 +1447,8 @@
             const focusSignalMatches = focus?.signalMatches || [];
             const activeSignalKey = String(focusSignal?.signal_id || focusSignal?.id || '');
             const focusDate = deriveItemDate(focusSignal || focusBar || latestBar);
-            const signalUrl = buildPageUrl('/ibkr_signals.html', focusSignal?.signal_id ? { signal_id: focusSignal.signal_id, date: focusDate } : { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
-            const ordersUrl = buildPageUrl('/ibkr_orders.html', focusSignal?.signal_id ? { signal_id: focusSignal.signal_id, date: focusDate } : { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
+            const signalUrl = buildPageUrl('/ibkr_signals.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
+            const ordersUrl = buildPageUrl('/ibkr_orders.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(focusSignal, focusDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
 
@@ -1455,20 +1467,20 @@
                     </div>
                     <div class="focus-actions">
                         ${focusSignal ? `<button class="mini-link mini-link-btn" type="button" onclick="openFocusedSignalDrawer()">信号详情</button>` : ''}
-                        <a class="mini-link" href="${signalUrl}">${focusSignal?.signal_id ? '定位信号' : '查看信号'}</a>
-                        <a class="mini-link" href="${ordersUrl}">${focusSignal?.signal_id ? '关联订单' : '查看订单'}</a>
+                        <a class="mini-link" href="${signalUrl}">历史信号页</a>
+                        <a class="mini-link" href="${ordersUrl}">历史订单页</a>
                         ${orderDetailsUrl ? `<a class="mini-link" href="${orderDetailsUrl}">订单明细</a>` : ''}
                         <a class="mini-link" href="${accountUrl}">账户页</a>
                     </div>
-                    <div class="rail-sub">点击图表 K 线，或点右侧 Recent Signals，可在当前时间窗里切换焦点。</div>
+                    <div class="rail-sub">点击图表 K 线，或点右侧 Recent Signals，可在当前时间窗里切换焦点。图上的信号点来自 bars 实时重算。</div>
                 </div>
                 <div class="rail-card">
                     <div class="rail-kicker">Snapshot</div>
                     <div class="rail-value">${latest ? formatPrice(latest.close) : '--'}</div>
                     <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}<br>${escapeHtml(latest?.us_time || latestBar?.us_time || '--')}</div>
                     <div class="link-row">
-                        <a class="mini-link" href="${buildPageUrl('/ibkr_indicators.html', { date: new Date().toISOString().slice(0, 10) }, { environment: currentEnvironment })}">返回指标</a>
-                        <a class="mini-link" href="${buildPageUrl('/ibkr_signals.html', {}, { environment: currentEnvironment })}">查看信号</a>
+                        <a class="mini-link" href="${buildPageUrl('/ibkr_indicators.html', { date: new Date().toISOString().slice(0, 10) }, { environment: currentEnvironment })}">历史指标页</a>
+                        <a class="mini-link" href="${buildPageUrl('/ibkr_signals.html', {}, { environment: currentEnvironment })}">历史信号页</a>
                     </div>
                 </div>
                 <div class="rail-card">
@@ -1491,7 +1503,7 @@
                         <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(String(latestSignal.signal || latestSignal.direction || '--')) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
                     </div>
-                    <div class="rail-sub">当前只在 5m 周期叠加 ibkr_signals 买卖点；其它周期专注指标与价格结构。</div>
+                    <div class="rail-sub">当前只在 5m 周期叠加按 bars 实时重算的买卖点；其它周期专注指标与价格结构。</div>
                 </div>
                 <div class="rail-card">
                     <div class="rail-kicker">Recent Signals</div>
@@ -1510,7 +1522,7 @@
                                 <span class="signal-badge ${String(signal.direction || '').toLowerCase() === 'short' ? 'short' : 'long'}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
                             </div>
                         `;
-                        }).join('') || '<div class="signal-item"><div class="signal-side"><div class="signal-title">暂无信号</div><div class="signal-meta">当前时间窗没有匹配的 ibkr_signals</div></div></div>'}
+                        }).join('') || '<div class="signal-item"><div class="signal-side"><div class="signal-title">暂无信号</div><div class="signal-meta">当前时间窗没有实时重算出的信号</div></div></div>'}
                     </div>
                 </div>
             `;
@@ -1577,8 +1589,8 @@
                     chartInstance.dispose();
                     chartInstance = null;
                 }
-                canvas.innerHTML = '<div class="chart-empty">当前没有可绘制的 bars / indicators 历史数据。<br>请先确认 ibkr_bars 与 ibkr_indicators 已经写入该标的该周期。</div>';
-                note.textContent = '建议从指标页选择一个已有数据的 symbol 打开图表页。';
+                canvas.innerHTML = '<div class="chart-empty">当前没有可绘制的 bars 数据。<br>请先确认 ibkr_bars 已经写入该标的该周期。</div>';
+                note.textContent = '图表指标与信号基于 ibkr_bars 实时重算；如果 bars 为空，图表不会展示。';
                 return;
             }
 
@@ -1611,10 +1623,10 @@
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)} 图表页`;
             document.getElementById('chartMeta').textContent = `${sortedBars.length} bars · ${indicators.length} ind · ${signals.length} signals · ${latest?.us_time || sortedBars[sortedBars.length - 1]?.us_time || '--'}`;
             note.textContent = !indicators.length
-                ? '当前窗口只有价格 bars，没有匹配到 indicators；EMA / VWAP / Osc 将暂时不可见。'
+                ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
-                ? `可用上方图层按钮切换 EMA / VWAP / Signals / Volume；当前主图${chartLayerState.signals ? '已叠加' : '未叠加'} ibkr_signals 散点。`
-                : '当前为非 5m 周期，主图只展示价格结构与指标轨迹；仍可用图层按钮切换 EMA / VWAP / Volume。';
+                ? `可用上方图层按钮切换 EMA / VWAP / Signals / Volume；当前主图${chartLayerState.signals ? '已叠加' : '未叠加'}实时重算信号点。`
+                : '当前为非 5m 周期，主图只展示 bars 实时重算出的价格结构与指标轨迹；仍可用图层按钮切换 EMA / VWAP / Volume。';
 
             if (chartInstance) {
                 chartInstance.dispose();
@@ -1752,52 +1764,44 @@
             document.getElementById('cursorStrip').innerHTML = '';
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} 图表页`;
             document.getElementById('chartMeta').textContent = '数据加载中';
-            document.getElementById('chartNote').textContent = '正在拉取 bars / indicators / signals ...';
+            document.getElementById('chartNote').textContent = '正在基于 ibkr_bars 实时重算指标 / 信号 ...';
             document.getElementById('chartCanvas').innerHTML = '<div class="chart-empty">图表数据加载中...</div>';
-            document.getElementById('infoRail').innerHTML = '<div class="rail-card"><div class="rail-kicker">Loading</div><div class="rail-sub">正在拉取该标的的历史 bars / indicators / signals ...</div></div>';
+            document.getElementById('infoRail').innerHTML = '<div class="rail-card"><div class="rail-kicker">Loading</div><div class="rail-sub">正在基于该标的的 ibkr_bars 实时重算图表 ...</div></div>';
 
             const cappedMs = currentAnchorMs || Date.now();
             const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
-            const baseFilter = buildHistoryFilter({
-                environment: currentEnvironment,
-                symbol: currentSymbol,
-                interval: currentInterval,
-                startMs: rangeStartMs,
-                endMs: cappedMs,
-            });
-            const perPage = getRangePerPage(currentInterval, currentRangeKey);
 
             try {
-                const [latestResp, barsResp, indicatorsResp] = await Promise.all([
-                    fetchWithRetry('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage: 1 }).catch(() => ({ items: [] })),
-                    fetchWithRetry('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage }),
-                    fetchWithRetry('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage }).catch(() => ({ items: [] })),
-                ]);
+                const timelineResp = await requestChartJson('/api/custom/ibkr/proxy', {
+                    method: 'POST',
+                    body: {
+                        action: 'chart/timeline',
+                        environment: currentEnvironment,
+                        symbol: currentSymbol,
+                        interval: currentInterval,
+                        start_ms: rangeStartMs,
+                        end_ms: cappedMs,
+                        include_signals: currentInterval === '5m'
+                    }
+                }, 2);
 
-                const bars = Array.isArray(barsResp?.items) ? barsResp.items.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0)) : [];
-                const indicators = Array.isArray(indicatorsResp?.items)
-                    ? indicatorsResp.items.map((item) => normalizeIndicatorRecord(item)).sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                const bars = Array.isArray(timelineResp?.bars)
+                    ? timelineResp.bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
                     : [];
-                const latestIndicator = normalizeIndicatorRecord(Array.isArray(latestResp?.items) ? latestResp.items[0] : null) || (indicators.length ? indicators[indicators.length - 1] : null);
-                const minMs = Number(bars[0]?.bar_time_ms || 0) || 0;
-                const maxMs = Number(bars[bars.length - 1]?.bar_time_ms || cappedMs) || cappedMs;
-
-                let signals = [];
-                if (currentInterval === '5m' && minMs > 0) {
-                    const signalsResp = await fetchWithRetry('ibkr_signals', {
-                        filter: `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(currentSymbol)}" && (interval = "5" || interval = "5m" || chart_tf = "5" || chart_tf = "5m") && bar_time_ms >= ${minMs} && bar_time_ms <= ${maxMs}`,
-                        sort: 'bar_time_ms',
-                        perPage: 200
-                    }).catch(() => ({ items: [] }));
-                    signals = Array.isArray(signalsResp?.items) ? signalsResp.items : [];
-                }
+                const indicators = Array.isArray(timelineResp?.indicator_timeline)
+                    ? timelineResp.indicator_timeline.map((item) => normalizeIndicatorRecord(item)).sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                    : [];
+                const signals = Array.isArray(timelineResp?.signals)
+                    ? timelineResp.signals.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                    : [];
+                const latestIndicator = normalizeIndicatorRecord(timelineResp?.latest_indicator || null) || (indicators.length ? indicators[indicators.length - 1] : null);
 
                 if (latestIndicator) {
-                    currentIndicatorId = String(latestIndicator.id || currentIndicatorId || '').trim();
                     currentAnchorMs = Number(latestIndicator.bar_time_ms || currentAnchorMs) || currentAnchorMs;
                 } else if (bars.length) {
                     currentAnchorMs = Number(bars[bars.length - 1]?.bar_time_ms || currentAnchorMs) || currentAnchorMs;
                 }
+                currentIndicatorId = '';
 
                 lastPayload = { latestIndicator, bars, indicators, signals };
                 renderHeroStatus(lastPayload);
@@ -1813,8 +1817,8 @@
                 document.getElementById('heroStatus').innerHTML = `<span class="hero-chip">加载失败</span>`;
                 document.getElementById('summaryStrip').innerHTML = '';
                 document.getElementById('chartMeta').textContent = '加载失败';
-                document.getElementById('chartCanvas').innerHTML = `<div class="chart-empty">加载失败：${escapeHtml(error.message || 'unknown error')}<br>请确认该标的在当前环境已有 ` + '`ibkr_bars` / `ibkr_indicators`' + ` 数据。</div>`;
-                document.getElementById('chartNote').textContent = '你也可以从指标页重新点击“图表页”，直接携带已有上下文打开。';
+                document.getElementById('chartCanvas').innerHTML = `<div class="chart-empty">加载失败：${escapeHtml(error.message || 'unknown error')}<br>请确认该标的在当前环境已有 <code>ibkr_bars</code> 数据。</div>`;
+                document.getElementById('chartNote').textContent = '图表页只依赖 ibkr_bars；历史指标页和信号页仅作为记录与状态流转使用。';
                 document.getElementById('infoRail').innerHTML = `<div class="rail-card"><div class="rail-kicker">Load Error</div><div class="rail-sub">${escapeHtml(error.message || 'unknown error')}</div></div>`;
             }
         }

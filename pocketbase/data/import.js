@@ -26,7 +26,7 @@ const configData = [
   cfg('pb_scheduler_enabled', 'TRUE', 'TRUE', 'PB 调度总开关', '运行总控', 120, '控制 PocketBase cron 调度；关闭后信号过期、订单过期、健康巡检、状态提醒等定时任务都会停止'),
   cfg('pb_cron_signal_expiry_enabled', 'TRUE', 'TRUE', '信号过期清理', 'PB Cron 调度', 130, '扫描 pending / awaiting_confirm 信号，超时后自动标记为 expired。Cron: */5 * * * *；周期: 每 5 分钟；时间窗口: 全天。受 PB 调度总开关和本开关共同控制。'),
   cfg('pb_cron_order_expiry_enabled', 'TRUE', 'TRUE', '订单过期取消', 'PB Cron 调度', 131, '扫描 Init / Submitted 订单，超时后自动标记为 Canceled。Cron: */5 * * * *；周期: 每 5 分钟；时间窗口: 全天。受 PB 调度总开关和本开关共同控制。'),
-  cfg('pb_cron_ibkr_compute_runtime_enabled', 'TRUE', 'TRUE', 'Compute + 心跳状态提醒', 'PB Cron 调度', 132, '触发 compute 调度，并串行执行健康检查通知与状态提醒。Cron: */5 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:55 每 5 分钟；时间窗口: 整点附带 ok 心跳，:00 / :30 附带状态提醒。通知是否真正发送，还受 health_check_notify_enabled / status_notify_enabled 控制。'),
+  cfg('pb_cron_ibkr_compute_runtime_enabled', 'TRUE', 'TRUE', 'Compute + 状态摘要', 'PB Cron 调度', 132, '触发 compute 调度，并串行执行系统健康检查与状态摘要通知。Cron: */5 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:55 每 5 分钟；时间窗口: 整点发送合并状态摘要，:30 再发送一次状态摘要；同轮心跳/健康检查并入摘要，异常巡检告警仍即时单发。状态摘要在 :00 / :30 合并同轮心跳和健康检查结果；若状态摘要关闭，整点 ok 心跳才会回退到 health_check_notify_enabled；warning / error 仍受 inspection_notify_enabled 控制。'),
   cfg('pb_cron_ibkr_scan_runtime_enabled', 'TRUE', 'TRUE', '盘前 Scan', 'PB Cron 调度', 133, '触发开盘前 scan 调度，刷新当天候选信号与市场扫描结果。Cron: */5 7-9 * * 1-5；周期: 工作日 UTC 07:00-09:55 每 5 分钟；时间窗口: 盘前窗口。受 PB 调度总开关、Compute 开关和本开关共同控制。'),
   cfg('pb_cron_ibkr_auth_pending_guard_enabled', 'TRUE', 'TRUE', '2FA 长时间未恢复巡检', 'PB Cron 调度', 134, '巡检 Session / 2FA 长时间未恢复状态，并在需要时发出系统告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 PB 调度总开关和本开关共同控制。'),
   cfg('pb_cron_system_data_gap_guard_enabled', 'TRUE', 'TRUE', '数据缺口巡检', 'PB Cron 调度', 135, '巡检 bars / indicators / 序列缺口，并在检测到市场活动异常时发出告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 PB 调度总开关、Compute 开关和本开关共同控制。'),
@@ -57,6 +57,8 @@ const configData = [
   cfg('ibkr_watchlist_backfill_interval_min', '30', '30', '底池回补间隔', '行情链路', 710, '非目标标的按批次执行 5m 增量回补的间隔'),
   cfg('ibkr_watchlist_backfill_batch_size', '12', '12', '底池回补批次', '行情链路', 720, '每轮底池回补最多处理多少个非目标标的'),
   cfg('ibkr_watchlist_backfill_stale_min', '20', '20', '底池回补滞后阈值', '行情链路', 730, '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
+  cfg('ibkr_watchlist_integrity_enabled', 'TRUE', 'TRUE', '底池完整性巡检', '行情链路', 740, '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
+  cfg('ibkr_watchlist_integrity_batch_size', '8', '8', '底池巡检批次', '行情链路', 750, '每轮底池完整性巡检最多处理多少个非目标标的'),
 
   cfg('system_status_chat_id', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '状态群 Chat ID', '通知路由', 600, '正常状态提醒、2FA 卡片与日常运行反馈默认发送到这里'),
   cfg('system_alert_chat_id', 'oc_91aa4f84bc6fedb125b1a263d91d4104', 'oc_91aa4f84bc6fedb125b1a263d91d4104', '告警群 Chat ID', '通知路由', 610, '所有 warning / error 级别且影响系统运行的异常默认发送到这里'),
@@ -64,10 +66,10 @@ const configData = [
   cfg('order_chat_id', 'oc_5ca4585e1fd108c2c662dfc358684945', 'oc_5ca4585e1fd108c2c662dfc358684945', '订单群 Chat ID', '通知路由', 630, '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
   cfg('reverse_chat_id', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转群 Chat ID', '通知路由', 640, '反转信号与反转执行卡片默认发送到这里'),
 
-  cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态通知', '系统通知', 900, '开盘、重启、心跳和状态提醒通知开关'),
+  cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态摘要通知', '系统通知', 900, '开盘、重启和定时系统状态摘要通知开关；:00 / :30 会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
   cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '系统通知', 910, '收盘后发送当日交易汇总'),
   cfg('manual_stop_notify_enabled', 'TRUE', 'TRUE', '手动停止通知', '系统通知', 920, '手动停止算法时发送通知'),
-  cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '健康检查通知', '系统通知', 930, '盘前、盘中、盘后健康状态汇报'),
+  cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '兜底心跳通知', '系统通知', 930, '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),
   cfg('inspection_notify_enabled', 'TRUE', 'TRUE', '巡检告警', '系统通知', 940, '孤立持仓、恢复异常、数据缺口等巡检告警'),
 
   cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址'),

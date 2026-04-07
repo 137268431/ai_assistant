@@ -49,6 +49,56 @@ cronAdd("signal_expiry_check", "*/5 * * * *", () => {
         let environmentCount = 0
         for (const record of expired) {
             try {
+                const signalId = String(record.get("signal_id") || "")
+                if (signalId) {
+                    const relatedOrders = $app.findRecordsByFilter(
+                        "orders",
+                        "signal_id = {:sid} && environment = {:env}",
+                        "-created",
+                        20,
+                        0,
+                        { sid: signalId, env: environment }
+                    ) || []
+                    const legacyOrders = $app.findRecordsByFilter(
+                        "ibkr_orders",
+                        "signal_id = {:sid}",
+                        "-created",
+                        20,
+                        0,
+                        { sid: signalId }
+                    ) || []
+                    if (relatedOrders.length > 0 || legacyOrders.length > 0) {
+                        const orderRefs = relatedOrders
+                            .map((orderRecord) => String(orderRecord.get("unique_id") || orderRecord.get("order_id") || ""))
+                            .concat(
+                                legacyOrders.map((orderRecord) => String(orderRecord.get("cOID") || orderRecord.get("orderId") || ""))
+                            )
+                            .filter((value) => !!value)
+                        const oldStatus = record.get("status")
+                        record.set("status", "executed")
+                        mergeSignalExtra(record, {
+                            status_repaired_by: "signal_expiry_check",
+                            status_repaired_at: new Date().toISOString(),
+                            status_repair_reason: "orders_detected_before_expiry",
+                            linked_order_unique_ids: orderRefs,
+                        }, false)
+                        $app.save(record)
+                        const signalExtra = getSignalExtra(record)
+                        const syncResult = notifySignalStatus("executed", record, {
+                            messageId: signalExtra.feishu_signal_message_id || "",
+                            message: `检测到关联订单，已自动修正信号状态（${orderRefs.length} 条订单）`,
+                        })
+                        if (syncResult.success && syncResult.message_id && syncResult.message_id !== signalExtra.feishu_signal_message_id) {
+                            mergeSignalExtra(record, {
+                                feishu_signal_message_id: syncResult.message_id,
+                                feishu_signal_card_version: 1,
+                            }, true)
+                        }
+                        console.log(`[SignalExpiry] ${environment}: 检测到关联订单，已自动修正为 executed: signal_id=${signalId}, previous_status=${oldStatus}, orders=${orderRefs.join(",") || "-"}`)
+                        continue
+                    }
+                }
+
                 const oldStatus = record.get("status")
                 record.set("status", "expired")
                 $app.save(record)

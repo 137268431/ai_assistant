@@ -140,6 +140,51 @@ function mergeSignalExtra(record, patch, saveAfterMerge) {
     return merged
 }
 
+function resolveSignalSourceInfo(extra, topLevelSource, topLevelSourceKind) {
+    var sourceKey = String(
+        (extra && (extra.signal_source || extra.source))
+        || topLevelSource
+        || ""
+    ).trim().toLowerCase()
+    var sourceKind = String((extra && extra.source_kind) || topLevelSourceKind || "").trim().toLowerCase()
+    var info = {
+        key: sourceKey || "unknown",
+        label: "",
+        detail: ""
+    }
+
+    if (sourceKey === "tradingview_webhook" || sourceKey === "tradingview" || sourceKey === "tv" || sourceKey === "webhook_tv") {
+        info.label = "TradingView Webhook"
+        info.detail = "来自 TradingView webhook 信号"
+    } else if (sourceKey === "ibkr_compute_timeline" || sourceKey === "timeline" || sourceKey === "chart_timeline") {
+        info.label = "IBKR 图表回放"
+        info.detail = "来自缓存 bars 时间线重算"
+    } else if (sourceKey === "ibkr_history_recompute" || sourceKey === "history_repair" || sourceKey === "recompute") {
+        info.label = "IBKR 历史重算"
+        info.detail = "来自历史回补/重算链路"
+    } else if (sourceKey === "manual_order" || sourceKey === "manual" || sourceKey === "runtime_page" || sourceKey === "account_page") {
+        info.label = "手动触发"
+        info.detail = "来自账户页/人工操作"
+    } else if (sourceKey === "ibkr_compute_realtime" || sourceKey === "ibkr_compute" || sourceKey === "ibkr_runtime" || sourceKey === "ibkr") {
+        info.label = "IBKR 实时计算"
+        info.detail = "来自 IBKR 实盘 bars 收盘计算"
+    } else if (sourceKind === "computed") {
+        info.label = "计算生成"
+        info.detail = "来自系统计算链路"
+    }
+
+    if (extra && extra.signal_source_label) {
+        info.label = String(extra.signal_source_label)
+    }
+    if (extra && extra.signal_source_detail) {
+        info.detail = String(extra.signal_source_detail)
+    }
+    if (!info.label) {
+        info.label = sourceKey ? sourceKey.toUpperCase() : "未知来源"
+    }
+    return info
+}
+
 function getSignalStatusInfo(status) {
     var map = {
         expired: { emoji: "⏰", text: "已过期" },
@@ -172,6 +217,7 @@ function buildSignalDisplayData(recordOrData) {
     var extra = getSignalExtra(recordOrData)
     var environment = get("environment") || extra.environment || envUtils.LIVE_ENVIRONMENT
     var bar_time_ms = Number(get("bar_time_ms") || extra.bar_time_ms || 0) || 0
+    var sourceInfo = resolveSignalSourceInfo(extra, get("source"), get("source_kind"))
 
     var reason = extra.reason || get("reason") || ""
     var changeDisplay = "N/A"
@@ -273,6 +319,9 @@ function buildSignalDisplayData(recordOrData) {
         bar_time_ms: bar_time_ms,
         page_date: resolveSignalPageDate(signal_id, bar_time_ms, us_time, cn_time),
         reason: reason,
+        sourceKey: sourceInfo.key,
+        sourceLabel: sourceInfo.label,
+        sourceDetail: sourceInfo.detail,
         changeDisplay: changeDisplay,
         tpProfit: tpProfit,
         slLoss: slLoss,
@@ -318,6 +367,13 @@ function buildSignalInfoElements(d) {
 
     var infoElements = []
     infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**信号ID:** " + d.signal_id } })
+    if (d.sourceLabel) {
+        var sourceContent = "**来源:** " + d.sourceLabel
+        if (d.sourceDetail) {
+            sourceContent += "\n**由来:** " + d.sourceDetail
+        }
+        infoElements.push({ tag: "div", text: { tag: "lark_md", content: sourceContent } })
+    }
     if (d.reason) {
         infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } })
     }
