@@ -670,6 +670,8 @@
                 entry_order_unique_id: raw.entry_order_unique_id || extra.entry_order_unique_id || '',
                 order_unique_id: raw.order_unique_id || extra.order_unique_id || '',
                 broker_order_id: raw.broker_order_id || raw.order_id || extra.broker_order_id || extra.order_id || '',
+                interval: raw.interval || extra.interval || extra.chart_tf || extra.timeframe || '',
+                bar_time_ms: toNumber(raw.bar_time_ms ?? extra.bar_time_ms, 0),
                 score: toNumber(raw.score, toNumber(extra.score, 0)),
                 priority: toNumber(raw.priority, toNumber(extra.priority, 0)),
                 quantity: toNumber(raw.quantity, toNumber(extra.quantity, 0)),
@@ -958,6 +960,9 @@
             if (signal.signal_id || signal.origin_signal_id) {
                 buttons.push(`<button class="action-btn btn-details" onclick="viewSignal('${encodeURIComponent(signal.signal_id || signal.origin_signal_id)}')">📡 查看信号</button>`);
             }
+            if (signal.symbol) {
+                buttons.push(`<button class="action-btn btn-details" onclick="viewChartPage('${encodeURIComponent(signal.id)}')">📉 图表页</button>`);
+            }
             if (signal.trade_group_id) {
                 buttons.push(`<button class="action-btn btn-details" onclick="viewTradeGroup('${encodeURIComponent(signal.trade_group_id)}', '${encodeURIComponent(signal.signal_id || signal.origin_signal_id || '')}')">📜 交易组明细</button>`);
             } else if (signal.signal_id || signal.origin_signal_id) {
@@ -1102,6 +1107,58 @@
             location.href = buildPageUrl('/ibkr_orders.html', { signal_id: decoded, date: currentDate });
         }
 
+        function normalizeChartInterval(value, fallback = '5m') {
+            const text = String(value || '').trim().toLowerCase();
+            const map = {
+                '5': '5m',
+                '5m': '5m',
+                '15': '15m',
+                '15m': '15m',
+                '30': '30m',
+                '30m': '30m',
+                '60': '1h',
+                '60m': '1h',
+                '1h': '1h',
+                '1hr': '1h',
+                '240': '4h',
+                '240m': '4h',
+                '4h': '4h',
+                '1d': '1d',
+                'd': '1d',
+                'day': '1d'
+            };
+            return map[text] || fallback;
+        }
+
+        function buildReverseChartParams(signal) {
+            if (!signal) return null;
+            const extra = signal.extra || {};
+            const symbol = String(signal.symbol || extra.symbol || '').trim().toUpperCase();
+            if (!symbol) return null;
+            return {
+                symbol,
+                interval: normalizeChartInterval(signal.interval || extra.interval || extra.chart_tf || extra.timeframe, '5m'),
+                bar_time_ms: Number(signal.bar_time_ms || extra.bar_time_ms || 0) || '',
+                indicator_id: String(extra.indicator_id || '').trim()
+            };
+        }
+
+        function normalizeDateParam(value, fallback = '') {
+            const text = String(value || '').trim();
+            return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
+        }
+
+        function viewChartPage(reverseId) {
+            const decoded = decodeURIComponent(reverseId);
+            const signal = allSignals.find((item) => item.id === decoded);
+            const params = buildReverseChartParams(signal);
+            if (!params) {
+                showToast('暂无图表上下文');
+                return;
+            }
+            location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
+        }
+
         function viewTradeGroup(tradeGroupId, signalId) {
             const decodedTradeGroup = decodeURIComponent(tradeGroupId);
             const decodedSignal = signalId ? decodeURIComponent(signalId) : '';
@@ -1166,7 +1223,7 @@
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
 
             const urlParams = new URLSearchParams(window.location.search);
-            const urlDate = urlParams.get('date');
+            const urlDate = normalizeDateParam(urlParams.get('date'));
             const reverseId = urlParams.get('reverse_id');
             const signalId = urlParams.get('signal_id');
             const orderId = urlParams.get('order_id');

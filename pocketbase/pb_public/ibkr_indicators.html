@@ -352,6 +352,12 @@
             border: 1px solid rgba(72,187,120,0.24);
         }
 
+        .btn-pagechart {
+            background: rgba(99,179,237,0.16);
+            color: var(--accent);
+            border: 1px solid rgba(99,179,237,0.24);
+        }
+
         .chart-modal-overlay {
             position: fixed;
             inset: 0;
@@ -828,7 +834,8 @@
                         </div>
                         <div class="indicator-actions">
                             <button class="action-btn btn-view" type="button" onclick="showIndicatorDetailsFromButton(event, '${escapeHtml(indicator.id)}')">详情</button>
-                            <button class="action-btn btn-chart" type="button" onclick="openIndicatorChart(event, '${escapeHtml(indicator.id)}')">图表</button>
+                            <button class="action-btn btn-chart" type="button" onclick="openIndicatorChart(event, '${escapeHtml(indicator.id)}')">快览</button>
+                            <button class="action-btn btn-pagechart" type="button" onclick="openIndicatorChartPage(event, '${escapeHtml(indicator.id)}')">图表页</button>
                         </div>
                     </div>
                 `;
@@ -1053,6 +1060,19 @@
                 document.getElementById('indicatorChartCanvas').innerHTML = `<div class="chart-empty">加载失败: ${escapeHtml(error.message || 'unknown error')}</div>`;
                 document.getElementById('indicatorChartNote').textContent = '请检查 ibkr_bars / ibkr_indicators / ibkr_signals 是否已有该标的历史数据。';
             }
+        }
+
+        function openIndicatorChartPage(event, indicatorId) {
+            if (event) event.stopPropagation();
+            const indicator = allIndicators.find((item) => item.id === indicatorId);
+            if (!indicator) return;
+            const params = {
+                symbol: indicator.symbol || '',
+                interval: indicator.interval || '',
+                bar_time_ms: indicator.bar_time_ms || '',
+                indicator_id: indicator.id || '',
+            };
+            window.location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
         }
 
         window.closeIndicatorChart = function() {

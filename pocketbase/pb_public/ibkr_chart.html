@@ -1,0 +1,1361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IBKR 图表 - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        .hero {
+            padding: 8px 16px 14px;
+        }
+
+        .hero-card {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: linear-gradient(145deg, rgba(11, 17, 28, 0.98), rgba(15, 23, 38, 0.96));
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
+            padding: 18px;
+        }
+
+        .hero-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .hero-title {
+            font-size: 26px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            background: linear-gradient(135deg, #7dd3fc, #86efac 72%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-copy {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.8;
+            max-width: 760px;
+        }
+
+        .hero-status {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .hero-chip {
+            border: 1px solid rgba(99,179,237,0.16);
+            border-radius: 999px;
+            background: rgba(20, 28, 46, 0.88);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 8px 12px;
+        }
+
+        .toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            gap: 14px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .symbol-form {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .symbol-input {
+            width: 120px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(99,179,237,0.18);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--text);
+            font-size: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            text-transform: uppercase;
+        }
+
+        .symbol-input:focus {
+            border-color: rgba(99,179,237,0.42);
+            box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+        }
+
+        .toolbar-btn {
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(99,179,237,0.18);
+            background: rgba(20, 28, 46, 0.92);
+            color: var(--text);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .toolbar-btn.primary {
+            background: linear-gradient(180deg, rgba(99,179,237,0.22), rgba(255,255,255,0.04));
+            color: #d7f0ff;
+        }
+
+        .tf-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .tf-btn {
+            padding: 9px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+
+        .tf-btn.active {
+            border-color: rgba(72,187,120,0.42);
+            background: rgba(72,187,120,0.14);
+            color: #bbf7d0;
+            transform: translateY(-1px);
+        }
+
+        .summary-strip {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 14px;
+        }
+
+        .layer-strip {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .cursor-strip {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .summary-chip {
+            border-radius: 10px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(8, 12, 20, 0.78);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 8px 10px;
+        }
+
+        .layer-btn {
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(8, 12, 20, 0.82);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 8px 11px;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+
+        .layer-btn.active {
+            color: #e2eaf4;
+            border-color: rgba(99,179,237,0.28);
+            background: rgba(99,179,237,0.14);
+            transform: translateY(-1px);
+        }
+
+        .cursor-card {
+            border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(8, 12, 20, 0.76);
+            padding: 10px 12px;
+        }
+
+        .cursor-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 5px;
+        }
+
+        .cursor-value {
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1.45;
+        }
+
+        .workspace {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 320px;
+            gap: 14px;
+            padding: 0 16px 16px;
+            align-items: start;
+        }
+
+        .panel {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(11, 17, 28, 0.98), rgba(15, 23, 38, 0.96));
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.24);
+        }
+
+        .chart-panel {
+            overflow: hidden;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 16px 18px 12px;
+            border-bottom: 1px solid rgba(99,179,237,0.08);
+            flex-wrap: wrap;
+        }
+
+        .panel-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .panel-copy {
+            font-size: 11px;
+            color: var(--muted);
+            line-height: 1.7;
+        }
+
+        .panel-meta {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .chart-stage {
+            height: 72vh;
+            min-height: 620px;
+            width: 100%;
+        }
+
+        .chart-empty {
+            min-height: 360px;
+            display: grid;
+            place-items: center;
+            color: var(--muted);
+            font-size: 13px;
+            padding: 30px 18px;
+            text-align: center;
+            line-height: 1.8;
+        }
+
+        .chart-note {
+            padding: 0 18px 16px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.8;
+        }
+
+        .rail {
+            display: grid;
+            gap: 12px;
+        }
+
+        .rail-card {
+            border: 1px solid rgba(99,179,237,0.1);
+            border-radius: 16px;
+            background: rgba(10, 16, 26, 0.86);
+            padding: 14px;
+        }
+
+        .rail-kicker {
+            color: var(--muted);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 8px;
+        }
+
+        .rail-value {
+            color: var(--text);
+            font-size: 24px;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+
+        .rail-sub {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.7;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .metric-item {
+            border-radius: 12px;
+            background: rgba(20, 28, 46, 0.72);
+            padding: 10px;
+        }
+
+        .metric-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 4px;
+        }
+
+        .metric-value {
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .signal-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .signal-item {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            border-radius: 12px;
+            background: rgba(20, 28, 46, 0.72);
+            padding: 10px;
+            align-items: center;
+        }
+
+        .signal-item.interactive {
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+        }
+
+        .signal-item.interactive:hover,
+        .signal-item.interactive.active {
+            border-color: rgba(99,179,237,0.22);
+            background: rgba(24, 36, 58, 0.9);
+            transform: translateY(-1px);
+        }
+
+        .signal-side {
+            display: grid;
+            gap: 2px;
+            min-width: 0;
+        }
+
+        .signal-title {
+            font-size: 12px;
+            color: var(--text);
+            font-weight: 700;
+        }
+
+        .signal-meta {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .signal-badge {
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .signal-badge.long {
+            background: rgba(72,187,120,0.16);
+            color: #bbf7d0;
+            border: 1px solid rgba(72,187,120,0.24);
+        }
+
+        .signal-badge.short {
+            background: rgba(252,129,129,0.14);
+            color: #fecaca;
+            border: 1px solid rgba(252,129,129,0.24);
+        }
+
+        .link-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .focus-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .mini-link {
+            border-radius: 999px;
+            padding: 7px 10px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            text-decoration: none;
+            color: var(--accent);
+            border: 1px solid rgba(99,179,237,0.18);
+            background: rgba(8,12,20,0.92);
+        }
+
+        @media (max-width: 1080px) {
+            .workspace {
+                grid-template-columns: 1fr;
+            }
+
+            .chart-stage {
+                height: 62vh;
+                min-height: 520px;
+            }
+
+            .cursor-strip {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 768px) {
+            .hero {
+                padding: 6px 12px 10px;
+            }
+
+            .hero-card,
+            .panel {
+                border-radius: 16px;
+            }
+
+            .hero-card {
+                padding: 14px;
+            }
+
+            .hero-title {
+                font-size: 22px;
+            }
+
+            .workspace {
+                gap: 10px;
+                padding: 0 12px 12px;
+            }
+
+            .chart-stage {
+                height: 54vh;
+                min-height: 420px;
+            }
+
+            .panel-header {
+                padding: 14px 14px 10px;
+            }
+
+            .chart-note {
+                padding: 0 14px 14px;
+            }
+
+            .metric-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .cursor-strip {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .hero-title {
+                font-size: 20px;
+            }
+
+            .symbol-form {
+                width: 100%;
+            }
+
+            .symbol-input {
+                width: 100%;
+            }
+
+            .toolbar-btn {
+                flex: 1;
+            }
+
+            .chart-stage {
+                height: 50vh;
+                min-height: 360px;
+            }
+
+            .metric-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .cursor-strip {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
+
+    <section class="hero">
+        <div class="hero-card">
+            <div class="hero-top">
+                <div>
+                    <div class="hero-title" id="heroTitle">IBKR 图表工作台</div>
+                    <div class="hero-copy">做成类似 TradingView 的全屏分析页：主图展示 K 线 / EMA / VWAP / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。默认从 PocketBase 当前环境里读取最近的指标上下文，也可以手动切换标的和周期。</div>
+                </div>
+                <div class="hero-status" id="heroStatus"></div>
+            </div>
+            <div class="toolbar">
+                <div class="symbol-form">
+                    <input id="chartSymbolInput" class="symbol-input" type="text" placeholder="AAPL" maxlength="12">
+                    <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
+                    <button class="toolbar-btn" type="button" onclick="reloadChartPage()">刷新图表</button>
+                </div>
+                <div class="tf-group" id="timeframeGroup"></div>
+            </div>
+            <div class="summary-strip" id="summaryStrip"></div>
+            <div class="layer-strip" id="layerStrip"></div>
+            <div class="cursor-strip" id="cursorStrip"></div>
+        </div>
+    </section>
+
+    <section class="workspace">
+        <div class="panel chart-panel">
+            <div class="panel-header">
+                <div>
+                    <div class="panel-title" id="chartPanelTitle">图表加载中</div>
+                    <div class="panel-copy">主图覆盖信号散点；5m 之外通常不展示信号点，只保留价格与指标轨迹。</div>
+                </div>
+                <div class="panel-meta" id="chartMeta">--</div>
+            </div>
+            <div id="chartCanvas" class="chart-stage"></div>
+            <div class="chart-note" id="chartNote">等待拉取 bars / indicators / signals ...</div>
+        </div>
+
+        <div class="rail" id="infoRail"></div>
+    </section>
+
+    <div id="nav"></div>
+
+    <script>
+        const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
+        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentSymbol = '';
+        let currentInterval = '5m';
+        let currentAnchorMs = 0;
+        let currentIndicatorId = '';
+        let chartInstance = null;
+        let lastPayload = null;
+        let selectedBarIndex = -1;
+        let selectedSignalId = '';
+        let hoverBarIndex = -1;
+        let chartLayerState = {
+            ema: true,
+            vwap: true,
+            signals: true,
+            volume: true,
+        };
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function normalizeInterval(value, fallback = '5m') {
+            const text = String(value || '').trim().toLowerCase();
+            const map = {
+                '5': '5m',
+                '5m': '5m',
+                '15': '15m',
+                '15m': '15m',
+                '30': '30m',
+                '30m': '30m',
+                '60': '1h',
+                '60m': '1h',
+                '1h': '1h',
+                '1hr': '1h',
+                '240': '4h',
+                '240m': '4h',
+                '4h': '4h',
+                '1d': '1d',
+                'd': '1d',
+                'day': '1d'
+            };
+            const normalized = map[text] || text;
+            return SUPPORTED_INTERVALS.includes(normalized) ? normalized : fallback;
+        }
+
+        function getIntervalLabel(interval) {
+            const map = {
+                '5m': '5分钟',
+                '15m': '15分钟',
+                '30m': '30分钟',
+                '1h': '1小时',
+                '4h': '4小时',
+                '1d': '1天',
+            };
+            return map[String(interval || '').trim().toLowerCase()] || String(interval || '--');
+        }
+
+        function formatPrice(value) {
+            const num = Number(value);
+            return Number.isFinite(num) ? `$${num.toFixed(2)}` : '--';
+        }
+
+        function formatNumber(value, digits = 2) {
+            const num = Number(value);
+            return Number.isFinite(num) ? num.toFixed(digits) : '--';
+        }
+
+        function formatPercent(value, digits = 2) {
+            const num = Number(value);
+            return Number.isFinite(num) ? `${num > 0 ? '+' : ''}${num.toFixed(digits)}%` : '--';
+        }
+
+        function signedColor(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num === 0) return 'var(--text)';
+            return num > 0 ? 'var(--long)' : 'var(--short)';
+        }
+
+        function getTrendText(value) {
+            const num = Number(value || 0);
+            if (num > 0) return '📈 多头';
+            if (num < 0) return '📉 空头';
+            return '➡️ 中性';
+        }
+
+        function formatSignalTime(item) {
+            if (item?.us_time) return String(item.us_time);
+            const ms = Number(item?.bar_time_ms || 0);
+            return ms ? formatBarTimeMsToET(ms) : '--';
+        }
+
+        function deriveItemDate(item) {
+            const fromUs = String(item?.us_time || '').trim();
+            if (/^\d{4}-\d{2}-\d{2}/.test(fromUs)) return fromUs.slice(0, 10);
+            const ms = Number(item?.bar_time_ms || 0);
+            if (ms > 0) return new Date(ms).toISOString().slice(0, 10);
+            return new Date().toISOString().slice(0, 10);
+        }
+
+        function parseQueryContext() {
+            const params = new URLSearchParams(window.location.search || '');
+            return {
+                symbol: String(params.get('symbol') || '').trim().toUpperCase(),
+                interval: normalizeInterval(params.get('interval') || '5m'),
+                barTimeMs: Number(params.get('bar_time_ms') || 0) || 0,
+                indicatorId: String(params.get('indicator_id') || '').trim(),
+            };
+        }
+
+        function updateQueryState() {
+            const url = buildPageUrl('/ibkr_chart.html', {
+                symbol: currentSymbol,
+                interval: currentInterval,
+                bar_time_ms: currentAnchorMs || '',
+                indicator_id: currentIndicatorId || '',
+            }, { environment: currentEnvironment });
+            window.history.replaceState({}, '', url);
+        }
+
+        async function fetchWithRetry(collection, params, maxRetries = 2) {
+            let lastError = null;
+            for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+                try {
+                    return await apiFetch(collection, params);
+                } catch (error) {
+                    lastError = error;
+                    const message = String(error?.message || error || '');
+                    const retryable = message.includes('502') || message.includes('Failed to fetch');
+                    if (!retryable || attempt === maxRetries) break;
+                    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+                }
+            }
+            throw lastError || new Error(`Failed to fetch ${collection}`);
+        }
+
+        async function resolveInitialContext() {
+            const query = parseQueryContext();
+            currentIndicatorId = query.indicatorId;
+            currentSymbol = query.symbol;
+            currentInterval = query.interval;
+            currentAnchorMs = query.barTimeMs;
+
+            if (currentIndicatorId) {
+                try {
+                    const indicatorResp = await fetchWithRetry('ibkr_indicators', {
+                        filter: `id = "${escapeQueryValue(currentIndicatorId)}" && environment = "${escapeQueryValue(currentEnvironment)}"`,
+                        perPage: 1
+                    });
+                    const indicator = Array.isArray(indicatorResp?.items) ? indicatorResp.items[0] : null;
+                    if (indicator) {
+                        currentSymbol = String(indicator.symbol || currentSymbol).trim().toUpperCase();
+                        currentInterval = normalizeInterval(indicator.interval || currentInterval, currentInterval || '5m');
+                        currentAnchorMs = Number(indicator.bar_time_ms || currentAnchorMs) || currentAnchorMs;
+                        return;
+                    }
+                } catch (_) {}
+            }
+
+            if (currentSymbol) return;
+
+            try {
+                const latestIndicatorResp = await fetchWithRetry('ibkr_indicators', {
+                    filter: `environment = "${escapeQueryValue(currentEnvironment)}" && interval = "5m"`,
+                    sort: '-bar_time_ms',
+                    perPage: 1
+                });
+                const latestIndicator = Array.isArray(latestIndicatorResp?.items) ? latestIndicatorResp.items[0] : null;
+                if (latestIndicator) {
+                    currentSymbol = String(latestIndicator.symbol || '').trim().toUpperCase();
+                    currentInterval = normalizeInterval(latestIndicator.interval || '5m');
+                    currentAnchorMs = Number(latestIndicator.bar_time_ms || 0) || 0;
+                    currentIndicatorId = String(latestIndicator.id || '').trim();
+                    return;
+                }
+            } catch (_) {}
+
+            const latestBarResp = await fetchWithRetry('ibkr_bars', {
+                filter: `environment = "${escapeQueryValue(currentEnvironment)}" && interval = "5m"`,
+                sort: '-bar_time_ms',
+                perPage: 1
+            }).catch(() => ({ items: [] }));
+            const latestBar = Array.isArray(latestBarResp?.items) ? latestBarResp.items[0] : null;
+            currentSymbol = String(latestBar?.symbol || 'SPY').trim().toUpperCase();
+            currentInterval = normalizeInterval(latestBar?.interval || '5m');
+            currentAnchorMs = Number(latestBar?.bar_time_ms || 0) || 0;
+        }
+
+        function renderHeroStatus(payload) {
+            const latest = payload?.latestIndicator || null;
+            const chips = [
+                `<span class="hero-chip">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>`,
+                `<span class="hero-chip">${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>`,
+                `<span class="hero-chip">最后bar ${escapeHtml(latest?.us_time || (payload?.bars?.length ? payload.bars[payload.bars.length - 1]?.us_time || '--' : '--'))}</span>`
+            ];
+            document.getElementById('heroStatus').innerHTML = chips.join('');
+        }
+
+        function renderTimeframeGroup() {
+            document.getElementById('timeframeGroup').innerHTML = SUPPORTED_INTERVALS.map((interval) => `
+                <button class="tf-btn ${interval === currentInterval ? 'active' : ''}" type="button" onclick="selectChartInterval('${interval}')">${escapeHtml(getIntervalLabel(interval))}</button>
+            `).join('');
+        }
+
+        function renderSummaryStrip(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const signals = Array.isArray(payload?.signals) ? payload.signals : [];
+            const latest = payload?.latestIndicator || null;
+            const chips = [
+                `bars ${bars.length}`,
+                `signals ${signals.length}`,
+                `trend ${latest ? getTrendText(latest.trend_dir) : '--'}`,
+                `EMA ${latest?.ema_bullish ? 'bull' : latest?.ema_bearish ? 'bear' : 'neutral'}`,
+                `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`,
+                `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`
+            ];
+            document.getElementById('summaryStrip').innerHTML = chips.map((item) => `<span class="summary-chip">${escapeHtml(item)}</span>`).join('');
+        }
+
+        function buildContext(payload, index, signalId = '') {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) return null;
+            const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
+            const indicatorMap = new Map(indicators.map((item) => [Number(item?.bar_time_ms || 0), item]));
+            const signals = Array.isArray(payload?.signals) ? payload.signals : [];
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), bars.length - 1);
+            const bar = bars[safeIndex] || null;
+            const signalMatches = signals.filter((item) => Number(item?.bar_time_ms || 0) === Number(bar?.bar_time_ms || 0));
+            const activeSignal = signalMatches.find((item) => String(item?.signal_id || item?.id || '') === String(signalId || ''))
+                || signalMatches[0]
+                || null;
+            return {
+                index: safeIndex,
+                bar,
+                indicator: indicatorMap.get(Number(bar?.bar_time_ms || 0)) || payload?.latestIndicator || null,
+                signalMatches,
+                activeSignal,
+            };
+        }
+
+        function renderCursorStrip(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) {
+                document.getElementById('cursorStrip').innerHTML = '';
+                return;
+            }
+            const fallbackIndex = selectedBarIndex >= 0 ? selectedBarIndex : bars.length - 1;
+            const activeIndex = hoverBarIndex >= 0 ? hoverBarIndex : fallbackIndex;
+            const context = buildContext(payload, activeIndex, selectedSignalId);
+            const bar = context?.bar || null;
+            const indicator = context?.indicator || null;
+            const signal = context?.activeSignal || null;
+            document.getElementById('cursorStrip').innerHTML = `
+                <div class="cursor-card">
+                    <div class="cursor-label">Cursor Time</div>
+                    <div class="cursor-value">${escapeHtml(bar?.us_time || '--')}</div>
+                </div>
+                <div class="cursor-card">
+                    <div class="cursor-label">OHLC</div>
+                    <div class="cursor-value">${bar ? `${escapeHtml(formatPrice(bar.open))} / ${escapeHtml(formatPrice(bar.high))} / ${escapeHtml(formatPrice(bar.low))} / ${escapeHtml(formatPrice(bar.close))}` : '--'}</div>
+                </div>
+                <div class="cursor-card">
+                    <div class="cursor-label">EMA / VWAP</div>
+                    <div class="cursor-value">${indicator ? `20 ${escapeHtml(formatPrice(indicator.ema_fast))} · 50 ${escapeHtml(formatPrice(indicator.ema_slow))}<br>100 ${escapeHtml(formatPrice(indicator.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator.vwap))}` : '--'}</div>
+                </div>
+                <div class="cursor-card">
+                    <div class="cursor-label">Signal / Osc</div>
+                    <div class="cursor-value">${signal ? `${escapeHtml(String(signal.signal || signal.direction || '--'))}<br>${escapeHtml(String(signal.direction || '--').toUpperCase())}` : '暂无信号'}${indicator ? `<br>CRSI ${escapeHtml(formatNumber(indicator.crsi))} · OBV ${escapeHtml(formatNumber(indicator.obv_rsi))}` : ''}</div>
+                </div>
+            `;
+        }
+
+        function renderLayerStrip() {
+            const defs = [
+                { key: 'ema', label: 'EMA 组' },
+                { key: 'vwap', label: 'VWAP' },
+                { key: 'signals', label: 'Signals' },
+                { key: 'volume', label: 'Volume' },
+            ];
+            document.getElementById('layerStrip').innerHTML = defs.map((item) => `
+                <button class="layer-btn ${chartLayerState[item.key] ? 'active' : ''}" type="button" onclick="toggleChartLayer('${item.key}')">
+                    ${escapeHtml(item.label)}
+                </button>
+            `).join('');
+        }
+
+        function findBarIndexByTime(bars, barTimeMs) {
+            const target = Number(barTimeMs || 0);
+            if (!target) return -1;
+            return bars.findIndex((item) => Number(item?.bar_time_ms || 0) === target);
+        }
+
+        function getFocusContext(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) return null;
+            const safeIndex = Math.min(Math.max(selectedBarIndex >= 0 ? selectedBarIndex : bars.length - 1, 0), bars.length - 1);
+            return buildContext(payload, safeIndex, selectedSignalId);
+        }
+
+        function syncChartTooltip(index) {
+            if (!chartInstance || !Number.isInteger(index) || index < 0) return;
+            chartInstance.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: index });
+        }
+
+        function syncCursorIndex(index) {
+            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), lastPayload.bars.length - 1);
+            hoverBarIndex = safeIndex;
+            renderCursorStrip(lastPayload);
+        }
+
+        function focusBarIndex(index, signalId = '') {
+            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), lastPayload.bars.length - 1);
+            selectedBarIndex = safeIndex;
+            selectedSignalId = signalId ? decodeURIComponent(signalId) : '';
+            renderInfoRail(lastPayload);
+            renderCursorStrip(lastPayload);
+            syncChartTooltip(safeIndex);
+        }
+
+        function renderInfoRail(payload) {
+            const latest = payload?.latestIndicator || null;
+            const signals = Array.isArray(payload?.signals) ? payload.signals.slice().sort((a, b) => Number(b.bar_time_ms || 0) - Number(a.bar_time_ms || 0)) : [];
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const longCount = signals.filter((item) => String(item.direction || '').toLowerCase() === 'long').length;
+            const shortCount = signals.filter((item) => String(item.direction || '').toLowerCase() === 'short').length;
+            const latestBar = bars.length ? bars[bars.length - 1] : null;
+            const timeRange = bars.length ? `${bars[0]?.us_time || '--'} -> ${latestBar?.us_time || '--'}` : '--';
+            const latestSignal = signals[0] || null;
+            const focus = getFocusContext(payload);
+            const focusBar = focus?.bar || latestBar || null;
+            const focusIndicator = focus?.indicator || latest || null;
+            const focusSignal = focus?.activeSignal || null;
+            const focusSignalMatches = focus?.signalMatches || [];
+            const activeSignalKey = String(focusSignal?.signal_id || focusSignal?.id || '');
+            const focusDate = deriveItemDate(focusSignal || focusBar || latestBar);
+            const signalUrl = buildPageUrl('/ibkr_signals.html', focusSignal?.signal_id ? { signal_id: focusSignal.signal_id, date: focusDate } : { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
+            const ordersUrl = buildPageUrl('/ibkr_orders.html', focusSignal?.signal_id ? { signal_id: focusSignal.signal_id, date: focusDate } : { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
+            const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
+
+            document.getElementById('infoRail').innerHTML = `
+                <div class="rail-card">
+                    <div class="rail-kicker">Focus</div>
+                    <div class="rail-value">${focusBar ? formatPrice(focusBar.close) : '--'}</div>
+                    <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}<br>${escapeHtml(focusBar?.us_time || '--')}</div>
+                    <div class="metric-grid">
+                        <div class="metric-item"><div class="metric-label">Open / High</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.open))} / ${escapeHtml(formatPrice(focusBar.high))}` : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Low / Close</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.low))} / ${escapeHtml(formatPrice(focusBar.close))}` : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Volume</div><div class="metric-value">${focusBar ? escapeHtml(formatNumber(focusBar.volume || 0, 0)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">VWAP Dist</div><div class="metric-value" style="color:${signedColor(focusIndicator?.vwap_dist)}">${focusIndicator ? escapeHtml(formatPercent(focusIndicator.vwap_dist)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">CRSI / OBV RSI</div><div class="metric-value">${focusIndicator ? `${escapeHtml(formatNumber(focusIndicator.crsi))} / ${escapeHtml(formatNumber(focusIndicator.obv_rsi))}` : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(String(focusSignal.signal || focusSignal.direction || '--')) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
+                    </div>
+                    <div class="focus-actions">
+                        <a class="mini-link" href="${signalUrl}">${focusSignal?.signal_id ? '定位信号' : '查看信号'}</a>
+                        <a class="mini-link" href="${ordersUrl}">${focusSignal?.signal_id ? '关联订单' : '查看订单'}</a>
+                        <a class="mini-link" href="${accountUrl}">账户页</a>
+                    </div>
+                    <div class="rail-sub">点击图表 K 线，或点右侧 Recent Signals，可在当前时间窗里切换焦点。</div>
+                </div>
+                <div class="rail-card">
+                    <div class="rail-kicker">Snapshot</div>
+                    <div class="rail-value">${latest ? formatPrice(latest.close) : '--'}</div>
+                    <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}<br>${escapeHtml(latest?.us_time || latestBar?.us_time || '--')}</div>
+                    <div class="link-row">
+                        <a class="mini-link" href="${buildPageUrl('/ibkr_indicators.html', { date: new Date().toISOString().slice(0, 10) }, { environment: currentEnvironment })}">返回指标</a>
+                        <a class="mini-link" href="${buildPageUrl('/ibkr_signals.html', {}, { environment: currentEnvironment })}">查看信号</a>
+                    </div>
+                </div>
+                <div class="rail-card">
+                    <div class="rail-kicker">Structure</div>
+                    <div class="metric-grid">
+                        <div class="metric-item"><div class="metric-label">趋势</div><div class="metric-value">${latest ? escapeHtml(getTrendText(latest.trend_dir)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">EMA 状态</div><div class="metric-value">${latest?.ema_bullish ? '📈 多头' : latest?.ema_bearish ? '📉 空头' : '➡️ 中性'}</div></div>
+                        <div class="metric-item"><div class="metric-label">VWAP 偏离</div><div class="metric-value" style="color:${signedColor(latest?.vwap_dist)}">${latest ? escapeHtml(formatPercent(latest.vwap_dist)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">ATR %</div><div class="metric-value">${latest ? escapeHtml(formatPercent(latest.atr_pct)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">CRSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.crsi)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">OBV RSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.obv_rsi)) : '--'}</div></div>
+                    </div>
+                    <div class="rail-sub">时间范围: ${escapeHtml(timeRange)}</div>
+                </div>
+                <div class="rail-card">
+                    <div class="rail-kicker">Signal Flow</div>
+                    <div class="metric-grid">
+                        <div class="metric-item"><div class="metric-label">多头信号</div><div class="metric-value">${longCount}</div></div>
+                        <div class="metric-item"><div class="metric-label">空头信号</div><div class="metric-value">${shortCount}</div></div>
+                        <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(String(latestSignal.signal || latestSignal.direction || '--')) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
+                    </div>
+                    <div class="rail-sub">当前只在 5m 周期叠加 ibkr_signals 买卖点；其它周期专注指标与价格结构。</div>
+                </div>
+                <div class="rail-card">
+                    <div class="rail-kicker">Recent Signals</div>
+                    <div class="signal-list">
+                        ${signals.slice(0, 5).map((signal) => {
+                            const signalKey = String(signal.signal_id || signal.id || '');
+                            const encodedSignalKey = encodeURIComponent(signalKey);
+                            const signalMs = Number(signal.bar_time_ms || 0) || 0;
+                            const isActive = activeSignalKey && activeSignalKey === signalKey;
+                            return `
+                            <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
+                                <div class="signal-side">
+                                    <div class="signal-title">${escapeHtml(signal.signal || signal.direction || '--')}</div>
+                                    <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}</div>
+                                </div>
+                                <span class="signal-badge ${String(signal.direction || '').toLowerCase() === 'short' ? 'short' : 'long'}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
+                            </div>
+                        `;
+                        }).join('') || '<div class="signal-item"><div class="signal-side"><div class="signal-title">暂无信号</div><div class="signal-meta">当前时间窗没有匹配的 ibkr_signals</div></div></div>'}
+                    </div>
+                </div>
+            `;
+        }
+
+        function formatChartLabel(item) {
+            if (item?.us_time) return String(item.us_time).slice(5, 16);
+            const ms = Number(item?.bar_time_ms || 0);
+            if (!ms) return '--';
+            const date = new Date(ms);
+            if (Number.isNaN(date.getTime())) return '--';
+            return `${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
+        }
+
+        function buildSignalScatter(signals, bars, priceResolver, color) {
+            const indexByMs = new Map(bars.map((bar, index) => [Number(bar.bar_time_ms || 0), index]));
+            return signals.map((signal) => {
+                const barMs = Number(signal.bar_time_ms || 0);
+                const xIndex = indexByMs.get(barMs);
+                if (xIndex === undefined) return null;
+                const yValue = Number(priceResolver(signal) || 0);
+                if (!Number.isFinite(yValue) || yValue <= 0) return null;
+                return {
+                    value: [xIndex, yValue],
+                    itemStyle: { color },
+                    name: signal.signal || signal.direction || '',
+                    signal_id: signal.signal_id || '',
+                };
+            }).filter(Boolean);
+        }
+
+        function renderChart(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars.slice() : [];
+            const indicators = Array.isArray(payload?.indicators) ? payload.indicators.slice() : [];
+            const signals = Array.isArray(payload?.signals) ? payload.signals.slice() : [];
+            const latest = payload?.latestIndicator || null;
+            const canvas = document.getElementById('chartCanvas');
+            const note = document.getElementById('chartNote');
+
+            if (!bars.length) {
+                if (chartInstance) {
+                    chartInstance.dispose();
+                    chartInstance = null;
+                }
+                canvas.innerHTML = '<div class="chart-empty">当前没有可绘制的 bars / indicators 历史数据。<br>请先确认 ibkr_bars 与 ibkr_indicators 已经写入该标的该周期。</div>';
+                note.textContent = '建议从指标页选择一个已有数据的 symbol 打开图表页。';
+                return;
+            }
+
+            const sortedBars = bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0));
+            const indicatorMap = new Map(indicators.map((item) => [Number(item.bar_time_ms || 0), item]));
+            const barMap = new Map(sortedBars.map((item) => [Number(item.bar_time_ms || 0), item]));
+            const categories = sortedBars.map((bar) => formatChartLabel(bar));
+            const candle = sortedBars.map((bar) => [Number(bar.open || 0), Number(bar.close || 0), Number(bar.low || 0), Number(bar.high || 0)]);
+            const emaFast = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_fast ?? null));
+            const emaSlow = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_slow ?? null));
+            const emaTrend = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_trend ?? null));
+            const vwap = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap ?? null));
+            const crsi = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi ?? null));
+            const obvRsi = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.obv_rsi ?? null));
+            const atrPct = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.atr_pct ?? null));
+            const volume = sortedBars.map((bar) => Number(bar.volume || 0));
+            const longSignals = buildSignalScatter(
+                signals.filter((item) => String(item.direction || '').toLowerCase() === 'long'),
+                sortedBars,
+                (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
+                '#48BB78'
+            );
+            const shortSignals = buildSignalScatter(
+                signals.filter((item) => String(item.direction || '').toLowerCase() === 'short'),
+                sortedBars,
+                (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
+                '#FC8181'
+            );
+
+            document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)} 图表页`;
+            document.getElementById('chartMeta').textContent = `${sortedBars.length} bars · ${signals.length} signals · ${latest?.us_time || sortedBars[sortedBars.length - 1]?.us_time || '--'}`;
+            note.textContent = currentInterval === '5m'
+                ? `可用上方图层按钮切换 EMA / VWAP / Signals / Volume；当前主图${chartLayerState.signals ? '已叠加' : '未叠加'} ibkr_signals 散点。`
+                : '当前为非 5m 周期，主图只展示价格结构与指标轨迹；仍可用图层按钮切换 EMA / VWAP / Volume。';
+
+            if (chartInstance) {
+                chartInstance.dispose();
+            }
+            canvas.innerHTML = '';
+            chartInstance = echarts.init(canvas);
+            const series = [
+                { name: 'Price', type: 'candlestick', data: candle, itemStyle: { color: '#48BB78', color0: '#FC8181', borderColor: '#48BB78', borderColor0: '#FC8181' } },
+                ...(chartLayerState.ema ? [
+                    { name: 'EMA 20', type: 'line', data: emaFast, symbol: 'none', smooth: true, lineStyle: { width: 1.3, color: '#63B3ED' } },
+                    { name: 'EMA 50', type: 'line', data: emaSlow, symbol: 'none', smooth: true, lineStyle: { width: 1.2, color: '#F6AD55' } },
+                    { name: 'EMA 100', type: 'line', data: emaTrend, symbol: 'none', smooth: true, lineStyle: { width: 1.1, color: '#A78BFA' } },
+                ] : []),
+                ...(chartLayerState.vwap ? [
+                    { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', smooth: true, lineStyle: { width: 1.1, color: '#68D391' } },
+                ] : []),
+                ...(currentInterval === '5m' && chartLayerState.signals ? [
+                    { name: 'LONG Signal', type: 'scatter', data: longSignals, symbolSize: 11 },
+                    { name: 'SHORT Signal', type: 'scatter', data: shortSignals, symbolSize: 11 },
+                ] : []),
+                { name: 'CRSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: crsi, symbol: 'none', lineStyle: { width: 1.2, color: '#48BB78' }, markLine: { symbol: 'none', lineStyle: { color: 'rgba(246,173,85,0.45)' }, data: [{ yAxis: 80 }, { yAxis: 20 }] } },
+                { name: 'OBV RSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: obvRsi, symbol: 'none', lineStyle: { width: 1.2, color: '#F6AD55' } },
+                ...(chartLayerState.volume ? [
+                    { name: 'Volume', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: volume, itemStyle: { color: 'rgba(99,179,237,0.42)' } },
+                ] : []),
+                { name: 'ATR %', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: atrPct, symbol: 'none', lineStyle: { width: 1.2, color: '#FC8181' } }
+            ];
+            chartInstance.setOption({
+                animation: false,
+                backgroundColor: 'transparent',
+                toolbox: {
+                    right: 10,
+                    top: 8,
+                    feature: {
+                        dataZoom: { yAxisIndex: 'none' },
+                        restore: {},
+                    },
+                    iconStyle: { borderColor: '#8BA4C4' }
+                },
+                legend: {
+                    type: 'scroll',
+                    top: 8,
+                    left: 10,
+                    textStyle: { color: '#8BA4C4', fontSize: 10 }
+                },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'cross' },
+                    backgroundColor: 'rgba(8,12,20,0.96)',
+                    borderColor: 'rgba(99,179,237,0.16)',
+                    textStyle: { color: '#E2EAF4' }
+                },
+                axisPointer: {
+                    link: [{ xAxisIndex: 'all' }]
+                },
+                grid: [
+                    { left: 52, right: 62, top: 52, height: '50%' },
+                    { left: 52, right: 62, top: '60%', height: '13%' },
+                    { left: 52, right: 62, top: '79%', height: '12%' }
+                ],
+                dataZoom: [
+                    { type: 'inside', xAxisIndex: [0, 1, 2], start: 55, end: 100 },
+                    { type: 'slider', xAxisIndex: [0, 1, 2], bottom: 10, height: 18, borderColor: 'rgba(99,179,237,0.12)', textStyle: { color: '#8BA4C4' } }
+                ],
+                xAxis: [
+                    { type: 'category', data: categories, scale: true, boundaryGap: true, axisLine: { lineStyle: { color: '#30435E' } }, axisLabel: { color: '#8BA4C4', fontSize: 10 }, splitLine: { show: false } },
+                    { type: 'category', gridIndex: 1, data: categories, axisLabel: { show: false }, axisLine: { lineStyle: { color: '#30435E' } }, splitLine: { show: false } },
+                    { type: 'category', gridIndex: 2, data: categories, axisLabel: { color: '#8BA4C4', fontSize: 10 }, axisLine: { lineStyle: { color: '#30435E' } }, splitLine: { show: false } }
+                ],
+                yAxis: [
+                    { scale: true, splitLine: { lineStyle: { color: 'rgba(99,179,237,0.06)' } }, axisLabel: { color: '#8BA4C4', fontSize: 10 } },
+                    { gridIndex: 1, min: 0, max: 100, splitLine: { lineStyle: { color: 'rgba(99,179,237,0.06)' } }, axisLabel: { color: '#8BA4C4', fontSize: 10 } },
+                    { gridIndex: 2, splitLine: { show: false }, axisLabel: { color: '#8BA4C4', fontSize: 10 } },
+                    { gridIndex: 2, position: 'right', splitLine: { show: false }, axisLabel: { color: '#8BA4C4', fontSize: 10, formatter: '{value}%' } }
+                ],
+                series
+            });
+            chartInstance.off('updateAxisPointer');
+            chartInstance.off('click');
+            chartInstance.on('updateAxisPointer', (params) => {
+                const axisInfo = Array.isArray(params?.axesInfo) ? params.axesInfo[0] : null;
+                const axisValue = Number(axisInfo?.value);
+                if (Number.isInteger(axisValue) && axisValue >= 0) {
+                    syncCursorIndex(axisValue);
+                }
+            });
+            chartInstance.on('click', (params) => {
+                const index = Number.isInteger(params?.dataIndex)
+                    ? params.dataIndex
+                    : (Array.isArray(params?.value) && Number.isInteger(params.value[0]) ? params.value[0] : -1);
+                if (index < 0) return;
+                const signalKey = params?.data?.signal_id ? String(params.data.signal_id) : '';
+                focusBarIndex(index, signalKey);
+                syncCursorIndex(index);
+            });
+
+            const focus = getFocusContext(payload);
+            if (focus) {
+                selectedBarIndex = focus.index;
+                if (!selectedSignalId && focus.activeSignal) {
+                    selectedSignalId = String(focus.activeSignal.signal_id || focus.activeSignal.id || '');
+                }
+                renderInfoRail(payload);
+                hoverBarIndex = focus.index;
+                renderCursorStrip(payload);
+                syncChartTooltip(focus.index);
+            }
+        }
+
+        async function loadChartWorkspace() {
+            requireAuth(`${window.location.pathname}${window.location.search}`);
+            if (!currentSymbol) {
+                await resolveInitialContext();
+            }
+
+            const input = document.getElementById('chartSymbolInput');
+            if (input && currentSymbol) input.value = currentSymbol;
+            renderTimeframeGroup();
+            renderLayerStrip();
+            document.getElementById('cursorStrip').innerHTML = '';
+            document.getElementById('chartPanelTitle').textContent = `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} 图表页`;
+            document.getElementById('chartMeta').textContent = '数据加载中';
+            document.getElementById('chartNote').textContent = '正在拉取 bars / indicators / signals ...';
+            document.getElementById('chartCanvas').innerHTML = '<div class="chart-empty">图表数据加载中...</div>';
+            document.getElementById('infoRail').innerHTML = '<div class="rail-card"><div class="rail-kicker">Loading</div><div class="rail-sub">正在拉取该标的的历史 bars / indicators / signals ...</div></div>';
+
+            const cappedMs = currentAnchorMs || Date.now();
+            const baseFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(currentSymbol)}" && interval = "${escapeQueryValue(currentInterval)}" && bar_time_ms <= ${cappedMs}`;
+
+            try {
+                const [latestResp, barsResp, indicatorsResp] = await Promise.all([
+                    fetchWithRetry('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage: 1 }).catch(() => ({ items: [] })),
+                    fetchWithRetry('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage: 240 }),
+                    fetchWithRetry('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage: 240 }).catch(() => ({ items: [] })),
+                ]);
+
+                const bars = Array.isArray(barsResp?.items) ? barsResp.items.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0)) : [];
+                const indicators = Array.isArray(indicatorsResp?.items) ? indicatorsResp.items.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0)) : [];
+                const latestIndicator = (Array.isArray(latestResp?.items) ? latestResp.items[0] : null) || (indicators.length ? indicators[indicators.length - 1] : null);
+                const minMs = Number(bars[0]?.bar_time_ms || 0) || 0;
+                const maxMs = Number(bars[bars.length - 1]?.bar_time_ms || cappedMs) || cappedMs;
+
+                let signals = [];
+                if (currentInterval === '5m' && minMs > 0) {
+                    const signalsResp = await fetchWithRetry('ibkr_signals', {
+                        filter: `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(currentSymbol)}" && (interval = "5" || interval = "5m" || chart_tf = "5" || chart_tf = "5m") && bar_time_ms >= ${minMs} && bar_time_ms <= ${maxMs}`,
+                        sort: 'bar_time_ms',
+                        perPage: 200
+                    }).catch(() => ({ items: [] }));
+                    signals = Array.isArray(signalsResp?.items) ? signalsResp.items : [];
+                }
+
+                if (latestIndicator) {
+                    currentIndicatorId = String(latestIndicator.id || currentIndicatorId || '').trim();
+                    currentAnchorMs = Number(latestIndicator.bar_time_ms || currentAnchorMs) || currentAnchorMs;
+                } else if (bars.length) {
+                    currentAnchorMs = Number(bars[bars.length - 1]?.bar_time_ms || currentAnchorMs) || currentAnchorMs;
+                }
+
+                lastPayload = { latestIndicator, bars, indicators, signals };
+                renderHeroStatus(lastPayload);
+                renderSummaryStrip(lastPayload);
+                renderInfoRail(lastPayload);
+                renderChart(lastPayload);
+                updateQueryState();
+            } catch (error) {
+                if (chartInstance) {
+                    chartInstance.dispose();
+                    chartInstance = null;
+                }
+                document.getElementById('heroStatus').innerHTML = `<span class="hero-chip">加载失败</span>`;
+                document.getElementById('summaryStrip').innerHTML = '';
+                document.getElementById('chartMeta').textContent = '加载失败';
+                document.getElementById('chartCanvas').innerHTML = `<div class="chart-empty">加载失败：${escapeHtml(error.message || 'unknown error')}<br>请确认该标的在当前环境已有 ` + '`ibkr_bars` / `ibkr_indicators`' + ` 数据。</div>`;
+                document.getElementById('chartNote').textContent = '你也可以从指标页重新点击“图表页”，直接携带已有上下文打开。';
+                document.getElementById('infoRail').innerHTML = `<div class="rail-card"><div class="rail-kicker">Load Error</div><div class="rail-sub">${escapeHtml(error.message || 'unknown error')}</div></div>`;
+            }
+        }
+
+        window.selectChartInterval = async function(interval) {
+            currentInterval = normalizeInterval(interval, currentInterval);
+            currentAnchorMs = 0;
+            currentIndicatorId = '';
+            selectedBarIndex = -1;
+            selectedSignalId = '';
+            hoverBarIndex = -1;
+            await loadChartWorkspace();
+        };
+
+        window.toggleChartLayer = function(layer) {
+            if (!Object.prototype.hasOwnProperty.call(chartLayerState, layer)) return;
+            chartLayerState[layer] = !chartLayerState[layer];
+            renderLayerStrip();
+            if (lastPayload) renderChart(lastPayload);
+        };
+
+        window.focusSignalBar = function(barTimeMs, signalId = '') {
+            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const index = findBarIndexByTime(lastPayload.bars, barTimeMs);
+            if (index < 0) {
+                showToast('当前窗口未包含该信号');
+                return;
+            }
+            focusBarIndex(index, signalId);
+        };
+
+        window.loadSymbolFromInput = async function() {
+            const value = String(document.getElementById('chartSymbolInput')?.value || '').trim().toUpperCase();
+            if (!value) {
+                showToast('先输入 symbol');
+                return;
+            }
+            currentSymbol = value;
+            currentAnchorMs = 0;
+            currentIndicatorId = '';
+            selectedBarIndex = -1;
+            selectedSignalId = '';
+            hoverBarIndex = -1;
+            await loadChartWorkspace();
+        };
+
+        window.reloadChartPage = async function() {
+            await loadChartWorkspace();
+        };
+
+        window.onEnvironmentChange = async function(environment) {
+            currentEnvironment = environment;
+            currentAnchorMs = 0;
+            currentIndicatorId = '';
+            selectedBarIndex = -1;
+            selectedSignalId = '';
+            hoverBarIndex = -1;
+            await resolveInitialContext();
+            await loadChartWorkspace();
+        };
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            document.getElementById('nav').innerHTML = renderNav('/ibkr_chart.html');
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { description: '全屏分析 / 类 TradingView / bars → indicators → signals' });
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_indicators.html',
+                    kicker: 'Indicators',
+                    label: '指标列表',
+                    copy: '浏览 / 快览 / 打开图表页'
+                },
+                {
+                    path: '/ibkr_chart.html',
+                    params: { symbol: currentSymbol, interval: currentInterval },
+                    kicker: 'Chart',
+                    label: '图表页',
+                    copy: '主图 / 副图 / 时间周期 / 信号散点',
+                    active: true
+                },
+                {
+                    path: '/ibkr_signals.html',
+                    kicker: 'Signals',
+                    label: '信号',
+                    copy: '确认图表与信号流转'
+                },
+                {
+                    path: '/ibkr_orders.html',
+                    kicker: 'Orders',
+                    label: '订单',
+                    copy: '从信号跳到订单执行'
+                },
+                {
+                    path: '/ibkr_account.html',
+                    kicker: 'Account',
+                    label: '账户',
+                    copy: '从图表回到账户与持仓'
+                }
+            ]);
+
+            document.getElementById('chartSymbolInput').addEventListener('keydown', async (event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                await loadSymbolFromInput();
+            });
+
+            renderLayerStrip();
+            await resolveInitialContext();
+            await loadChartWorkspace();
+
+            window.addEventListener('resize', () => {
+                if (chartInstance) chartInstance.resize();
+            });
+        });
+    </script>
+</body>
+</html>

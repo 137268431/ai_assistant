@@ -405,6 +405,11 @@
             border-color: rgba(99,179,237,0.26);
         }
 
+        .action-btn.view {
+            color: #7dd3fc;
+            border-color: rgba(125,211,252,0.28);
+        }
+
         .empty-state,
         .blocker {
             padding: 18px;
@@ -865,6 +870,7 @@
                         <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
                     </div>
                     <div class="record-actions">
+                        <button class="action-btn view" type="button" onclick="openAccountChart('${escapeHtml(position.symbol || '')}')">图表页</button>
                         <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction }).replace(/'/g, "&#39;")})'>市价平仓</button>
                     </div>
                 </div>
@@ -906,6 +912,7 @@
                         <div class="metric-item"><div class="metric-label">Remaining</div><div class="metric-value">${escapeHtml(formatQty(order.remaining_quantity))}</div></div>
                     </div>
                     <div class="record-actions">
+                        <button class="action-btn view" type="button" onclick="openAccountChart('${escapeHtml(order.symbol || '')}')">图表页</button>
                         ${order.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder('${escapeHtml(order.order_id)}', ${Number(order.price || 0)}, ${Number(order.total_quantity || 0)})">改单</button>` : ''}
                         ${order.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder('${escapeHtml(order.order_id)}')">撤单</button>` : ''}
                     </div>
@@ -991,6 +998,15 @@
                 return;
             }
             await runAction('改单', '/api/custom/ibkr/orders/modify', body, `订单 ${orderId} 改单请求已发送`);
+        }
+
+        function openAccountChart(symbol) {
+            const normalized = String(symbol || '').trim().toUpperCase();
+            if (!normalized) {
+                showToast('缺少 symbol');
+                return;
+            }
+            window.location.href = buildPageUrl('/ibkr_chart.html', { symbol: normalized, interval: '5m' }, { environment: currentEnvironment });
         }
 
         async function closePosition(position) {
@@ -1095,6 +1111,7 @@
         window.cancelAllOrders = cancelAllOrders;
         window.cancelOrder = cancelOrder;
         window.modifyOrder = modifyOrder;
+        window.openAccountChart = openAccountChart;
         window.closePosition = closePosition;
         window.loadAccountSnapshot = loadAccountSnapshot;
         window.goRuntime = goRuntime;

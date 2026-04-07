@@ -1260,6 +1260,7 @@
                     <div class="action-panel">
                         <div class="action-row">
                             ${group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : ''}
+                            ${group.symbol ? `<button class="action-btn btn-secondary" onclick="openTradeGroupChart('${encodeURIComponent(group.trade_group_id)}')">📉 图表页</button>` : ''}
                             <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}', '${encodeURIComponent(group.signal_id || '')}')">📜 交易组明细</button>
                         </div>
                         <div class="action-row">
@@ -1388,6 +1389,66 @@
             location.href = buildPageUrl('/ibkr_signals.html', { signal_id: decoded, date: currentDate });
         }
 
+        function normalizeChartInterval(value, fallback = '5m') {
+            const text = String(value || '').trim().toLowerCase();
+            const map = {
+                '5': '5m',
+                '5m': '5m',
+                '15': '15m',
+                '15m': '15m',
+                '30': '30m',
+                '30m': '30m',
+                '60': '1h',
+                '60m': '1h',
+                '1h': '1h',
+                '1hr': '1h',
+                '240': '4h',
+                '240m': '4h',
+                '4h': '4h',
+                '1d': '1d',
+                'd': '1d',
+                'day': '1d'
+            };
+            return map[text] || fallback;
+        }
+
+        function normalizeDateParam(value, fallback = '') {
+            const text = String(value || '').trim();
+            return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
+        }
+
+        function buildGroupChartParams(group) {
+            if (!group) return null;
+            const anchorOrder = group.primaryOrder || group.latestEvent || group.orders?.[0] || null;
+            const anchorExtra = anchorOrder?.extra || {};
+            const latestExtra = group.latestEvent?.extra || {};
+            const symbol = String(group.symbol || anchorOrder?.symbol || '').trim().toUpperCase();
+            if (!symbol) return null;
+            return {
+                symbol,
+                interval: normalizeChartInterval(
+                    anchorOrder?.interval
+                    || anchorExtra.interval
+                    || anchorExtra.chart_tf
+                    || latestExtra.interval
+                    || latestExtra.chart_tf,
+                    '5m'
+                ),
+                bar_time_ms: Number(anchorOrder?.bar_time_ms || group.latestEvent?.bar_time_ms || anchorExtra.bar_time_ms || latestExtra.bar_time_ms || 0) || ''
+            };
+        }
+
+        function openTradeGroupChart(groupId) {
+            const decoded = decodeURIComponent(groupId);
+            const group = allGroups.find((item) => item.trade_group_id === decoded || item.group_id === decoded);
+            const params = buildGroupChartParams(group);
+            if (!params) {
+                showToast('暂无图表上下文');
+                return;
+            }
+            location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
+        }
+
         function viewTradeGroup(groupId, signalId = '') {
             const decoded = decodeURIComponent(groupId);
             const decodedSignalId = signalId ? decodeURIComponent(signalId) : '';
@@ -1443,7 +1504,7 @@
             filterSignalId = params.get('signal_id') || '';
             filterTradeGroupId = params.get('trade_group_id') || '';
             currentSearch = params.get('search') || '';
-            currentDate = params.get('date') || currentDate;
+            currentDate = normalizeDateParam(params.get('date'), currentDate);
             if ((filterSignalId || filterTradeGroupId) && currentSearch) {
                 currentSearch = '';
             }
