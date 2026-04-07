@@ -18,6 +18,7 @@ class Config:
         "ibkr_history_repair_enabled": "true",
         "ibkr_history_repair_min_bars_5m": "260",
         "ibkr_history_repair_gap_lookback": "80",
+        "ibkr_history_repair_rollup_enabled": "true",
         "signal_validity_minutes": "30",
         "trade_window_start_time": "09:35",
         "trade_window_end_time": "15:30",

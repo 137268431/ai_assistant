@@ -226,7 +226,7 @@ function notifySystemEvent(eventType, level, source, title, detail, environment)
     }
 
     var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment)
-    var success = feishuApp.sendMessage("interactive", card, getTargetChatId(eventType, level, runtimeEnvironment), "chat_id")
+    var success = feishuApp.sendMessage("interactive", card, getTargetChatId(eventType, level, runtimeEnvironment), "chat_id", runtimeEnvironment)
     if (!success) {
         console.error("[FeishuSystem] 发送失败: " + title)
     }

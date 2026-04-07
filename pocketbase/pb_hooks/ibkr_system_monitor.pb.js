@@ -221,9 +221,9 @@ function loadTodayOverview(environment, times) {
 }
 
 function loadAuthAttentionSummary(environment, runtimeStatus) {
-    const { getStatePayload } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
     const statePayload = getStatePayload(environment)
-    const state = statePayload.data || {}
+    const state = normalizeStateWithRuntime(statePayload.data || {}, runtimeStatus || {})
     const status = String(state.status || "").trim().toLowerCase()
     const hasRequest = Boolean(
         toNumber(state.request_count, 0) > 0
@@ -763,7 +763,21 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
 
 cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {
     const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
-    runIbkrScheduledAction("compute", 60, "[IBKRComputeCron]")
+    try {
+        runIbkrScheduledAction("compute", 60, "[IBKRComputeCron]")
+    } catch (err) {
+        console.log(`[IBKRComputeCron] compute dispatch error: ${err.message || err}`)
+    }
+    try {
+        const systemNotify = require(`${__hooks}/lib/system_notify_scheduler.js`)
+        systemNotify.runSystemHeartbeatTick("[IBKRComputeCron]")
+        const minute = new Date().getMinutes()
+        if (minute === 0 || minute === 30) {
+            systemNotify.runSystemStatusReminderTick("[IBKRComputeCron]")
+        }
+    } catch (err) {
+        console.log(`[IBKRComputeCron] system notify error: ${err.message || err}`)
+    }
 })
 
 cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
@@ -771,134 +785,7 @@ cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
     runIbkrScheduledAction("scan", 60, "[IBKRComputeCron]")
 })
 
-cronAdd("system_heartbeat", "*/5 4-20 * * 1-5", () => {
-    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
-    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
-    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
-    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-    const times = getTimeStrings()
-    const backtestKeys = getRuntimeKeys()
-    const environments = getActiveRuntimeEnvironments(backtestKeys)
-    const compute = loadComputeSnapshot("live")
-
-    if (compute.status !== "running") {
-        for (let i = 0; i < environments.length; i++) {
-            const environment = environments[i]
-            if (!getComputeEnabledForEnvironment(environment, backtestKeys)) continue
-            feishuSystem.notifyAlert("ibkr_compute", "IBKR Compute 服务离线", {
-                "检查时间": times.us,
-                "建议": "检查 systemctl status ibkr-compute",
-            }, environment)
-            writeSystemEvent("alert", "error", "ibkr_compute", "IBKR Compute 服务离线", { check_time: times.us }, environment, true)
-        }
-        return
-    }
-
-    for (let i = 0; i < environments.length; i++) {
-        const environment = environments[i]
-        try {
-            const bars = $app.findRecordsByFilter("ibkr_bars", "environment = {:env}", "-bar_time_ms", 1, 0, { env: environment }) || []
-            if (bars.length > 0) {
-                const ageMin = Math.round((Date.now() - Number(bars[0].get("bar_time_ms") || 0)) / 60000)
-                if (ageMin > 10) {
-                    feishuSystem.notifyWarning("ibkr_compute", "IBKR 数据延迟", {
-                        "延迟": ageMin + " 分钟",
-                        "最后标的": bars[0].get("symbol") || "",
-                        "检查时间": times.us,
-                    }, environment)
-                }
-            }
-        } catch (_) {}
-
-        if (new Date().getMinutes() < 5 && (getComputeEnabledForEnvironment(environment, backtestKeys) || getTradingEnabledForEnvironment(environment, backtestKeys))) {
-            feishuSystem.notifyHeartbeat("pb", "ok", {
-                environment: environment,
-                ibkr_compute: "running",
-                trading: getTradingEnabledForEnvironment(environment, backtestKeys) ? "true" : "false",
-            })
-        }
-    }
-})
-
-cronAdd("system_status_reminder", "0,30 4-20 * * 1-5", () => {
-    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
-    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
-    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
-    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-    const times = getTimeStrings()
-    const runtimeKeys = getRuntimeKeys()
-    const environments = getActiveRuntimeEnvironments(runtimeKeys)
-
-    for (let i = 0; i < environments.length; i++) {
-        const environment = environments[i]
-        if (!getComputeEnabledForEnvironment(environment, runtimeKeys) && !getTradingEnabledForEnvironment(environment, runtimeKeys)) {
-            continue
-        }
-
-        const compute = loadComputeSnapshot(environment)
-        const runtime = loadRuntimeSnapshot(environment)
-        const freshness = loadFreshness(environment)
-        const gaps = loadDataGapSummary(environment, times)
-        const overview = loadTodayOverview(environment, times)
-        const auth = loadAuthAttentionSummary(environment, runtime)
-        const latest5m = freshness["5m"] || {}
-        const level = (
-            compute.status !== "running"
-            || !(runtime.session && runtime.session.authenticated === true)
-            || !(runtime.websocket && runtime.websocket.connected === true)
-            || gaps.has_issue
-        ) ? "warning" : "info"
-
-        const detail = {
-            "检查时间": times.us,
-            "Compute": compute.status || "unknown",
-            "认证": runtime.session && runtime.session.authenticated === true ? "ok" : "pending",
-            "WebSocket": runtime.websocket && runtime.websocket.connected === true
-                ? ("connected / ready=" + (runtime.websocket.ready === true ? "true" : "false"))
-                : "offline",
-            "2FA状态": auth.has_request
-                ? `${auth.status}${auth.age_min > 0 ? ` / ${auth.age_min}m` : ""}`
-                : (runtime.session && runtime.session.authenticated === true ? "ok" : "none"),
-            "消息数": String(toNumber(runtime.websocket && runtime.websocket.message_count, 0)),
-            "Tick数": String(toNumber(runtime.bar_aggregator && runtime.bar_aggregator.total_ticks, 0)),
-            "引擎就绪": `${toNumber(compute.ready_engines, 0)}/${toNumber(compute.total_engines, 0)}`,
-            "最新5m": latest5m.last_bar_time_ms
-                ? `${latest5m.symbol || "-"} / ${latest5m.age_min || 0}m / ${latest5m.last_bar_time_ms}`
-                : "no_data_today",
-            "bars缺口": String(gaps.bar_lag_count || 0),
-            "指标滞后": String(gaps.indicator_lag_count || 0),
-            "序列缺口": String(gaps.sequence_gap_count || 0),
-            "今日概况": `bars ${overview.today.bars} / ind ${overview.today.indicators} / sig ${overview.today.signals} / ord ${overview.today.orders}`,
-            "实时账户": overview.account.ok
-                ? `pos ${overview.account.positions} / open ${overview.account.open_orders} / netliq ${overview.account.net_liquidation.toFixed(2)}`
-                : "unavailable",
-            "目标池": `${overview.targets} targets / active ${toNumber(runtime.market_universe && runtime.market_universe.active_target_count, 0)}`,
-            "交易开关": getTradingEnabledForEnvironment(environment, runtimeKeys) ? "true" : "false",
-        }
-        if (gaps.latest_bar_us_time) {
-            detail["最新bar时间"] = gaps.latest_bar_us_time
-        }
-        if (auth.mode) {
-            detail["验证模式"] = auth.mode
-        }
-        if (auth.last_result) {
-            detail["2FA反馈"] = auth.last_result
-        }
-        if (auth.last_error) {
-            detail["2FA异常"] = auth.last_error
-        }
-        if (gaps.bar_lag_symbols && gaps.bar_lag_symbols.length > 0) {
-            detail["bars异常样本"] = gaps.bar_lag_symbols.slice(0, 8).join(", ")
-        }
-        if (gaps.indicator_lag_symbols && gaps.indicator_lag_symbols.length > 0) {
-            detail["指标异常样本"] = gaps.indicator_lag_symbols.slice(0, 8).join(", ")
-        }
-
-        const title = level === "warning" ? "IBKR 系统状态提醒（需关注）" : "IBKR 系统状态提醒"
-        const notified = feishuSystem.notifySystemEvent("heartbeat", level, "pb", title, detail, environment)
-        writeSystemEvent("heartbeat", level, "pb", title, detail, environment, notified)
-    }
-})
+// System heartbeat / status reminder piggyback on ibkr_compute_runtime via lib/system_notify_scheduler.js
 
 cronAdd("ibkr_auth_pending_guard", "*/10 4-20 * * 1-5", () => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
@@ -1067,7 +954,7 @@ cronAdd("system_data_gap_guard", "*/10 4-20 * * 1-5", () => {
 
 cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
     const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
-    const { getStatePayload, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const { getStatePayload, normalizeStateWithRuntime, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environments = getActiveRuntimeEnvironments(getRuntimeKeys())
     const nowMs = Date.now()
 
@@ -1094,7 +981,7 @@ cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
             }
 
             const statePayload = getStatePayload(environment)
-            const state = statePayload.data || {}
+            const state = normalizeStateWithRuntime(statePayload.data || {}, runtimeStatus || {})
             const status = String(state.status || "").trim().toLowerCase()
             const lastPushMs = Number(state.last_request_push_ms || 0) || 0
 

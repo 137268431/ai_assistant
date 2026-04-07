@@ -1,0 +1,406 @@
+/**
+ * system_notify_scheduler.js
+ * 健康检查通知 / 状态提醒的共享执行逻辑
+ */
+
+const HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
+const HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+const BAR_STALE_WARN_MIN = 10
+const INDICATOR_STALE_WARN_MIN = 10
+const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
+
+function toNumber(value, fallback) {
+    const num = Number(value)
+    return Number.isFinite(num) ? num : (fallback || 0)
+}
+
+function parseShiftedTimeMs(value, offsetMinutes) {
+    const text = String(value || "").trim()
+    if (!text) return 0
+    const parsed = Date.parse(text.replace(" ", "T") + "Z")
+    if (!Number.isFinite(parsed)) return 0
+    return parsed - (Number(offsetMinutes || 0) * 60000)
+}
+
+function parseUsTimeMs(value) {
+    return parseShiftedTimeMs(value, -4 * 60)
+}
+
+function getStateRecord(stateKey, environment, dateToken) {
+    try {
+        return $app.findFirstRecordByFilter(
+            "ibkr_state",
+            "state_key = {:k} && date = {:d} && environment = {:env}",
+            { k: stateKey, d: dateToken, env: environment }
+        )
+    } catch (_) {
+        return null
+    }
+}
+
+function getStateData(stateKey, environment, dateToken) {
+    const record = getStateRecord(stateKey, environment, dateToken)
+    if (!record) return { record: null, data: {} }
+    let data = record.get("data") || {}
+    if (!data || typeof data !== "object") {
+        data = {}
+    }
+    return { record: record, data: data }
+}
+
+function saveStateData(stateKey, environment, dateToken, patch) {
+    const current = getStateData(stateKey, environment, dateToken)
+    const collection = $app.findCollectionByNameOrId("ibkr_state")
+    const record = current.record || new Record(collection, {})
+    const next = {
+        ...(current.data || {}),
+        ...(patch || {}),
+    }
+    record.set("state_key", stateKey)
+    record.set("date", dateToken)
+    record.set("environment", environment)
+    record.set("data", next)
+    $app.save(record)
+    return next
+}
+
+function fetchComputeJson(path, timeoutSeconds, environment) {
+    try {
+        const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
+        const computeBaseUrl = getIbkrComputePublicUrl(environment || "live", "https://qc.lzw-glory.top")
+        const resp = $http.send({ url: `${computeBaseUrl}${path}`, method: "GET", timeout: timeoutSeconds || 5 })
+        if (resp.statusCode === 200) {
+            const raw = typeof resp.raw === "string" ? resp.raw : String(resp.raw || "")
+            return raw ? JSON.parse(raw) : {}
+        }
+        return { ok: false, status: "error", code: resp.statusCode }
+    } catch (err) {
+        return { ok: false, status: "offline", error: err.message || String(err) }
+    }
+}
+
+function countCollectionRows(collectionName, filterStr, params) {
+    try {
+        const rows = $app.findRecordsByFilter(collectionName, filterStr, "", 0, 0, params || {}) || []
+        return rows.length
+    } catch (_) {
+        return 0
+    }
+}
+
+function loadLatestBar(environment) {
+    try {
+        const rows = $app.findRecordsByFilter(
+            "ibkr_bars",
+            "environment = {:env} && interval = '5m'",
+            "-bar_time_ms",
+            1,
+            0,
+            { env: environment }
+        ) || []
+        if (!rows.length) return { bar_time_ms: 0, symbol: "", us_time: "", age_min: 0 }
+        const row = rows[0]
+        const barTimeMs = toNumber(row.get("bar_time_ms"), 0)
+        return {
+            bar_time_ms: barTimeMs,
+            symbol: String(row.get("symbol") || ""),
+            us_time: String(row.get("us_time") || ""),
+            age_min: barTimeMs > 0 ? Math.max(0, Math.round((Date.now() - barTimeMs) / 60000)) : 0,
+        }
+    } catch (_) {
+        return { bar_time_ms: 0, symbol: "", us_time: "", age_min: 0 }
+    }
+}
+
+function loadLatestIndicator(environment) {
+    try {
+        const rows = $app.findRecordsByFilter(
+            "ibkr_indicators",
+            "environment = {:env} && interval = '5'",
+            "-bar_time_ms",
+            1,
+            0,
+            { env: environment }
+        ) || []
+        if (!rows.length) return { bar_time_ms: 0, symbol: "", us_time: "" }
+        const row = rows[0]
+        return {
+            bar_time_ms: toNumber(row.get("bar_time_ms"), 0),
+            symbol: String(row.get("symbol") || ""),
+            us_time: String(row.get("us_time") || ""),
+        }
+    } catch (_) {
+        return { bar_time_ms: 0, symbol: "", us_time: "" }
+    }
+}
+
+function loadTodayCounts(environment, times) {
+    return {
+        bars: countCollectionRows("ibkr_bars", "created >= {:t} && environment = {:env}", { t: times.todayStart, env: environment }),
+        indicators: countCollectionRows("ibkr_indicators", "created >= {:t} && environment = {:env}", { t: times.todayStart, env: environment }),
+        signals: countCollectionRows("ibkr_signals", "created >= {:t} && environment = {:env}", { t: times.todayStart, env: environment }),
+        orders: countCollectionRows("orders", "created >= {:t} && environment = {:env}", { t: times.todayStart, env: environment }),
+        targets: countCollectionRows("ibkr_targets", "date = {:d} && environment = {:env}", { d: times.date, env: environment }),
+    }
+}
+
+function load2faSummary(environment, runtimeStatus) {
+    const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const statePayload = getStatePayload(environment)
+    const state = normalizeStateWithRuntime(statePayload.data || {}, runtimeStatus || {})
+    const status = String(state.status || "").trim().toLowerCase()
+    const hasRequest = Boolean(
+        toNumber(state.request_count, 0) > 0
+        || state.requested_at
+        || state.triggered_at
+        || state.message_id
+    )
+    const startedMs = Math.max(parseUsTimeMs(state.triggered_at), parseUsTimeMs(state.requested_at))
+    const ageMin = startedMs > 0 ? Math.max(0, Math.round((Date.now() - startedMs) / 60000)) : 0
+    const pending = hasRequest && ["requested", "triggered", "waiting_confirm", "waiting_response"].indexOf(status) !== -1
+    const runtimeAuthenticated = Boolean(runtimeStatus.session && runtimeStatus.session.authenticated === true)
+    const label = pending
+        ? `${status || "requested"}${ageMin > 0 ? ` / ${ageMin}m` : ""}`
+        : (runtimeAuthenticated ? "ok" : (status || "none"))
+    return {
+        label: label,
+        mode: String(state.mode || ""),
+        last_result: String(state.last_result || ""),
+        last_error: String(state.last_error || ""),
+    }
+}
+
+function listNotifyEnvironments() {
+    const envUtils = require(`${__hooks}/lib/environment.js`)
+    const runtimeModes = require(`${__hooks}/lib/runtime_modes.js`)
+    const environments = runtimeModes.getActiveRuntimeEnvironments(RUNTIME_KEYS)
+    return environments.filter((environment) => {
+        const schedulerEnabled = runtimeModes.isEnabledConfigValue(envUtils.getConfigValue("pb_scheduler_enabled", "TRUE", environment))
+        if (!schedulerEnabled) return false
+        return runtimeModes.getComputeEnabledForEnvironment(environment, RUNTIME_KEYS)
+            || runtimeModes.getTradingEnabledForEnvironment(environment, RUNTIME_KEYS)
+    })
+}
+
+function buildStatusSnapshot(environment, times) {
+    const runtimeModes = require(`${__hooks}/lib/runtime_modes.js`)
+    const health = fetchComputeJson("/health", 5, environment)
+    const status = fetchComputeJson("/status", 8, environment)
+    const runtime = fetchComputeJson("/ibkr/status", 8, environment)
+    const account = fetchComputeJson("/ibkr/account", 10, environment)
+    const latestBar = loadLatestBar(environment)
+    const latestIndicator = loadLatestIndicator(environment)
+    const today = loadTodayCounts(environment, times)
+    const auth = load2faSummary(environment, runtime)
+    const indicatorLagMin = latestBar.bar_time_ms > 0
+        ? (
+            latestIndicator.bar_time_ms > 0
+                ? Math.max(0, Math.round((latestBar.bar_time_ms - latestIndicator.bar_time_ms) / 60000))
+                : 999
+        )
+        : 0
+    const websocketConnected = Boolean(runtime.websocket && runtime.websocket.connected === true)
+    const websocketReady = Boolean(runtime.websocket && runtime.websocket.ready === true)
+
+    return {
+        environment: environment,
+        compute: {
+            status: String(health.status || status.status || "unknown"),
+            error: String(health.error || status.error || ""),
+            ready_engines: toNumber(status.ready_engines, 0),
+            total_engines: toNumber(status.total_engines, 0),
+        },
+        session: {
+            authenticated: Boolean(runtime.session && runtime.session.authenticated === true),
+        },
+        websocket: {
+            connected: websocketConnected,
+            ready: websocketReady,
+            message_count: toNumber(runtime.websocket && runtime.websocket.message_count, 0),
+            label: websocketConnected
+                ? `connected / ready=${websocketReady ? "true" : "false"}`
+                : "offline",
+        },
+        total_ticks: toNumber(runtime.bar_aggregator && runtime.bar_aggregator.total_ticks, 0),
+        latest_bar: {
+            ...latestBar,
+            label: latestBar.bar_time_ms > 0
+                ? `${latestBar.symbol || "-"} / ${latestBar.age_min || 0}m / ${latestBar.us_time || "-"}`
+                : "no_data_today",
+        },
+        latest_indicator: {
+            ...latestIndicator,
+            lag_min: indicatorLagMin,
+            label: latestIndicator.bar_time_ms > 0
+                ? `${latestIndicator.symbol || "-"} / lag ${indicatorLagMin}m / ${latestIndicator.us_time || "-"}`
+                : "missing",
+        },
+        today: today,
+        account: {
+            ok: Boolean(account && account.ok !== false),
+            positions: toNumber(account.counts && account.counts.open_positions, 0),
+            open_orders: toNumber(account.counts && account.counts.open_orders, 0),
+            net_liquidation: toNumber(account.summary && account.summary.net_liquidation, 0),
+        },
+        active_target_count: toNumber(runtime.market_universe && runtime.market_universe.active_target_count, 0),
+        trading_enabled: runtimeModes.getTradingEnabledForEnvironment(environment, RUNTIME_KEYS),
+        auth: auth,
+    }
+}
+
+function runSystemHeartbeatTick(logPrefix) {
+    const prefix = logPrefix || "[IBKRSystemNotify]"
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const times = getTimeStrings()
+    const environments = listNotifyEnvironments()
+    const nowMs = Date.now()
+    const currentHourToken = times.us.slice(0, 13)
+
+    console.log(`${prefix} heartbeat tick: minute=${new Date().getMinutes()}, environments=${environments.join(",") || "-"}`)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        try {
+            const snapshot = buildStatusSnapshot(environment, times)
+            const state = getStateData(HEARTBEAT_STATE_KEY, environment, times.date).data || {}
+            const patch = {
+                last_checked_at: times.us,
+                last_compute_status: snapshot.compute.status || "",
+                last_bar_time_ms: snapshot.latest_bar.bar_time_ms || 0,
+            }
+
+            if (snapshot.compute.status !== "running") {
+                const fingerprint = `compute:${snapshot.compute.status}:${snapshot.compute.error || ""}`
+                const shouldNotify = (
+                    fingerprint !== String(state.last_issue_hash || "")
+                    || nowMs - toNumber(state.last_issue_ms, 0) >= HEARTBEAT_ALERT_COOLDOWN_MS
+                )
+                if (shouldNotify) {
+                    const detail = {
+                        "检查时间": times.us,
+                        "Compute": snapshot.compute.status || "unknown",
+                        "错误": snapshot.compute.error || "n/a",
+                        "建议": "检查 systemctl status ibkr-compute",
+                    }
+                    const notified = feishuSystem.notifySystemEvent("heartbeat", "error", "pb", "IBKR Compute 服务离线", detail, environment)
+                    writeSystemEvent("heartbeat", "error", "pb", "IBKR Compute 服务离线", detail, environment, notified)
+                    patch.last_issue_hash = fingerprint
+                    patch.last_issue_ms = nowMs
+                    patch.last_issue_at = times.us
+                    console.log(`${prefix} heartbeat ${environment}: compute offline, notified=${notified}`)
+                }
+                saveStateData(HEARTBEAT_STATE_KEY, environment, times.date, patch)
+                continue
+            }
+
+            if (
+                snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+            ) {
+                const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}`
+                const shouldNotify = (
+                    fingerprint !== String(state.last_issue_hash || "")
+                    || nowMs - toNumber(state.last_issue_ms, 0) >= HEARTBEAT_ALERT_COOLDOWN_MS
+                )
+                if (shouldNotify) {
+                    const detail = {
+                        "检查时间": times.us,
+                        "最新5m": snapshot.latest_bar.label,
+                        "指标状态": snapshot.latest_indicator.label,
+                        "WebSocket": snapshot.websocket.label,
+                    }
+                    const notified = feishuSystem.notifySystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment)
+                    writeSystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment, notified)
+                    patch.last_issue_hash = fingerprint
+                    patch.last_issue_ms = nowMs
+                    patch.last_issue_at = times.us
+                    console.log(`${prefix} heartbeat ${environment}: data warning, notified=${notified}`)
+                }
+            } else {
+                patch.last_issue_hash = ""
+                patch.last_issue_ms = 0
+                patch.last_issue_at = ""
+            }
+
+            const shouldSendOkHeartbeat = new Date().getMinutes() < 5 && String(state.last_ok_hour || "") !== currentHourToken
+            if (shouldSendOkHeartbeat) {
+                const detail = {
+                    "状态": "ok",
+                    "ibkr_compute": "running",
+                    "trading": snapshot.trading_enabled ? "true" : "false",
+                    "WebSocket": snapshot.websocket.label,
+                    "最新5m": snapshot.latest_bar.label,
+                }
+                const notified = feishuSystem.notifySystemEvent("heartbeat", "info", "pb", "PocketBase 心跳 - ok", detail, environment)
+                writeSystemEvent("heartbeat", "info", "pb", "PocketBase 心跳 - ok", detail, environment, notified)
+                patch.last_ok_hour = currentHourToken
+                console.log(`${prefix} heartbeat ${environment}: ok, notified=${notified}`)
+            }
+
+            saveStateData(HEARTBEAT_STATE_KEY, environment, times.date, patch)
+        } catch (err) {
+            console.log(`${prefix} heartbeat ${environment} error: ${err.message || err}`)
+        }
+    }
+}
+
+function runSystemStatusReminderTick(logPrefix) {
+    const prefix = logPrefix || "[IBKRSystemNotify]"
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const times = getTimeStrings()
+    const environments = listNotifyEnvironments()
+
+    console.log(`${prefix} status reminder tick: environments=${environments.join(",") || "-"}`)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        try {
+            const snapshot = buildStatusSnapshot(environment, times)
+            const level = (
+                snapshot.compute.status !== "running"
+                || !snapshot.session.authenticated
+                || !snapshot.websocket.connected
+                || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+            ) ? "warning" : "info"
+
+            const detail = {
+                "检查时间": times.us,
+                "Compute": snapshot.compute.status || "unknown",
+                "认证": snapshot.session.authenticated ? "ok" : "pending",
+                "WebSocket": snapshot.websocket.label,
+                "2FA状态": snapshot.auth.label,
+                "消息数": String(snapshot.websocket.message_count || 0),
+                "Tick数": String(snapshot.total_ticks || 0),
+                "引擎就绪": `${snapshot.compute.ready_engines || 0}/${snapshot.compute.total_engines || 0}`,
+                "最新5m": snapshot.latest_bar.label,
+                "指标状态": snapshot.latest_indicator.label,
+                "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
+                "实时账户": snapshot.account.ok
+                    ? `pos ${snapshot.account.positions} / open ${snapshot.account.open_orders} / netliq ${snapshot.account.net_liquidation.toFixed(2)}`
+                    : "unavailable",
+                "目标池": `${snapshot.today.targets} targets / active ${snapshot.active_target_count || 0}`,
+                "交易开关": snapshot.trading_enabled ? "true" : "false",
+            }
+            if (snapshot.auth.mode) detail["验证模式"] = snapshot.auth.mode
+            if (snapshot.auth.last_result) detail["2FA反馈"] = snapshot.auth.last_result
+            if (snapshot.auth.last_error) detail["2FA异常"] = snapshot.auth.last_error
+
+            const title = level === "warning" ? "IBKR 系统状态提醒（需关注）" : "IBKR 系统状态提醒"
+            const notified = feishuSystem.notifySystemEvent("status_change", level, "pb", title, detail, environment)
+            writeSystemEvent("status_change", level, "pb", title, detail, environment, notified)
+            console.log(`${prefix} status reminder ${environment}: level=${level}, notified=${notified}`)
+        } catch (err) {
+            console.log(`${prefix} status reminder ${environment} error: ${err.message || err}`)
+        }
+    }
+}
+
+module.exports = {
+    runSystemHeartbeatTick,
+    runSystemStatusReminderTick,
+}

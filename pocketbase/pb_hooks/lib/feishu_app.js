@@ -17,8 +17,29 @@ var FEISHU_CHAT_ID_REVERSE = "oc_2931e2b8501df3a9d869d7aebceb8fe2"
 var _cachedToken = null
 var _tokenExpireTime = 0
 
+function normalizeFeishuEnvironment(environment) {
+    return envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+}
+
+function isFeishuSuppressed(environment) {
+    return normalizeFeishuEnvironment(environment) === envUtils.PAPER_ENVIRONMENT
+}
+
+function buildSuppressedResult(environment, action) {
+    var runtimeEnvironment = normalizeFeishuEnvironment(environment)
+    console.log("[FeishuApp] 发送跳过:", action || "message", "environment:", runtimeEnvironment)
+    return {
+        success: true,
+        skipped: true,
+        suppressed: true,
+        environment: runtimeEnvironment,
+        message_id: "",
+        reason: "paper_environment_disabled"
+    }
+}
+
 function getConfiguredChatId(configKey, fallbackChatId, environment) {
-    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+    var runtimeEnvironment = normalizeFeishuEnvironment(environment)
     var configured = envUtils.getConfigValue(configKey, fallbackChatId, runtimeEnvironment)
     return String(configured || fallbackChatId).trim() || fallbackChatId
 }
@@ -79,7 +100,11 @@ function getAppAccessToken() {
     }
 }
 
-function sendMessageDetailed(msgType, content, receiveId, receiveIdType) {
+function sendMessageDetailed(msgType, content, receiveId, receiveIdType, environment) {
+    if (isFeishuSuppressed(environment)) {
+        return buildSuppressedResult(environment, msgType)
+    }
+
     var token = getAppAccessToken()
     if (!token) {
         console.error("[FeishuApp] 缺少 Token，无法发送消息")
@@ -123,11 +148,16 @@ function sendMessageDetailed(msgType, content, receiveId, receiveIdType) {
     }
 }
 
-function sendMessage(msgType, content, receiveId, receiveIdType) {
-    return sendMessageDetailed(msgType, content, receiveId, receiveIdType).success
+function sendMessage(msgType, content, receiveId, receiveIdType, environment) {
+    var result = sendMessageDetailed(msgType, content, receiveId, receiveIdType, environment)
+    return !!(result && result.success && !result.suppressed)
 }
 
-function updateMessageCard(messageId, card) {
+function updateMessageCard(messageId, card, environment) {
+    if (isFeishuSuppressed(environment)) {
+        return buildSuppressedResult(environment, "update_card")
+    }
+
     var token = getAppAccessToken()
     if (!token) {
         console.error("[FeishuApp] 缺少 Token，无法更新卡片")
@@ -180,7 +210,7 @@ function getChatIdByType(type, environment) {
 }
 
 function sendTextToChat(text, environment) {
-    return sendMessage("text", { text: text }, getSignalChatId(environment), "chat_id")
+    return sendMessage("text", { text: text }, getSignalChatId(environment), "chat_id", environment)
 }
 
 function sendPostToChat(title, content, type, environment) {
@@ -192,23 +222,23 @@ function sendPostToChat(title, content, type, environment) {
             }
         }
     }
-    return sendMessage("post", postContent, getChatIdByType(type, environment), "chat_id")
+    return sendMessage("post", postContent, getChatIdByType(type, environment), "chat_id", environment)
 }
 
 function sendCardToChat(card, environment) {
-    return sendMessage("interactive", card, getSignalChatId(environment), "chat_id")
+    return sendMessage("interactive", card, getSignalChatId(environment), "chat_id", environment)
 }
 
 function sendCardToChatDetailed(card, environment) {
-    return sendMessageDetailed("interactive", card, getSignalChatId(environment), "chat_id")
+    return sendMessageDetailed("interactive", card, getSignalChatId(environment), "chat_id", environment)
 }
 
 function sendCardToChatByType(card, type, environment) {
-    return sendMessage("interactive", card, getChatIdByType(type, environment), "chat_id")
+    return sendMessage("interactive", card, getChatIdByType(type, environment), "chat_id", environment)
 }
 
 function sendCardToChatByTypeDetailed(card, type, environment) {
-    return sendMessageDetailed("interactive", card, getChatIdByType(type, environment), "chat_id")
+    return sendMessageDetailed("interactive", card, getChatIdByType(type, environment), "chat_id", environment)
 }
 
 function notifyError(title, content, environment) {
@@ -218,7 +248,7 @@ function notifyError(title, content, environment) {
     }
     var success = sendMessage("post", {
         post: { zh_cn: { title: "", content: postContent } }
-    }, getErrorChatId(environment), "chat_id")
+    }, getErrorChatId(environment), "chat_id", environment)
     console.log("[FeishuApp] 异常通知发送:", success ? "成功" : "失败")
     return success
 }

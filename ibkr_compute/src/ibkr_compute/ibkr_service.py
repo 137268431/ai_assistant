@@ -26,6 +26,7 @@ from ibkr_compute.market.data_writer import DataWriter
 from ibkr_compute.market.data_backfill import DataBackfill
 from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
+from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, bucket_start_ms, interval_to_ms
 from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.order.order_tracker import OrderTracker
 from ibkr_compute.order.order_modifier import OrderModifier
@@ -127,6 +128,8 @@ class IBKRTradingService:
         self._last_backfill_symbols = []
         self._last_history_repair_at = 0.0
         self._last_history_repair_symbols = []
+        self._last_pipeline_repair_at = 0.0
+        self._last_pipeline_repair_symbols = []
         self._watchlist_backfill_cursor = 0
         self._subscription_lock = threading.Lock()
         self._warmup_lock = threading.Lock()
@@ -610,19 +613,13 @@ class IBKRTradingService:
                 if readiness["trading_gate_open"]:
                     self._last_history_repair_at = time.time()
                     self._last_history_repair_symbols = sorted(pending_map.keys())
-                after_backfill_result = self._trigger_realtime_compute(source="warmup_backfill")
+                after_backfill_result = self._run_symbol_pipeline_repair(
+                    list(pending_map.keys()),
+                    source="warmup_backfill",
+                )
                 compute_result["after_backfill"] = after_backfill_result
                 if after_backfill_result.get("ok") is False:
                     last_error = str(after_backfill_result.get("error") or "warmup_compute_failed")
-                remaining_symbols = self._collect_warmup_readiness(snapshot)["pending_symbols"]
-                if remaining_symbols:
-                    post_backfill_storage = compute_server.materialize_engines_from_storage(
-                        ENVIRONMENT,
-                        remaining_symbols,
-                        DEFAULT_WARMUP_REQUIRED_INTERVAL,
-                    )
-                    if post_backfill_storage:
-                        compute_result["post_backfill_storage"] = post_backfill_storage
         except Exception as exc:
             last_error = str(exc)
             logger.error("Warmup cycle failed: %s", exc)
@@ -1278,17 +1275,22 @@ class IBKRTradingService:
 
         repair_plan = self._build_history_repair_plan(list(self._active_subscription_symbols))
         if repair_plan:
-            conid_map = self.conid_resolver.resolve_bulk(list(repair_plan.keys()))
-            if conid_map:
+            repair_symbols = sorted(repair_plan.keys())
+            history_symbols = [
+                symbol for symbol, snapshot in repair_plan.items()
+                if bool(snapshot.get("needs_history_fetch"))
+            ]
+            logger.info(
+                "Running active pipeline repair for %d symbols: %s",
+                len(repair_symbols),
+                ", ".join(
+                    f"{symbol}({repair_plan[symbol]['repair_reason']})"
+                    for symbol in repair_symbols
+                ),
+            )
+            conid_map = self.conid_resolver.resolve_bulk(history_symbols) if history_symbols else {}
+            if history_symbols and conid_map:
                 symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
-                logger.info(
-                    "Running active history repair for %d symbols: %s",
-                    len(conid_map),
-                    ", ".join(
-                        f"{symbol}({repair_plan[symbol]['repair_reason']})"
-                        for symbol in sorted(conid_map.keys())
-                    ),
-                )
                 self.data_backfill.backfill_all(
                     conid_map,
                     symbol_meta=symbol_meta,
@@ -1299,19 +1301,12 @@ class IBKRTradingService:
                 self._last_backfill_at = time.time()
                 self._last_backfill_symbols = sorted(conid_map.keys())
                 self._last_history_repair_at = self._last_backfill_at
-                self._last_history_repair_symbols = sorted(conid_map.keys())
+                self._last_history_repair_symbols = repair_symbols
+            elif history_symbols:
+                logger.warning("History repair skipped fetch: unresolved conids for %s", ",".join(history_symbols))
 
-                try:
-                    from ibkr_compute.api import server as compute_server
-
-                    compute_server.materialize_engines_from_storage(
-                        ENVIRONMENT,
-                        list(conid_map.keys()),
-                        DEFAULT_WARMUP_REQUIRED_INTERVAL,
-                    )
-                    self._trigger_realtime_compute(source="history_repair")
-                except Exception as exc:
-                    logger.warning("History repair compute refresh failed: %s", exc)
+            if repair_symbols:
+                self._run_symbol_pipeline_repair(repair_symbols, source="history_repair")
                 return
 
         candidates = self._watchlist_backfill_candidates()
@@ -1352,6 +1347,11 @@ class IBKRTradingService:
 
         min_bars = max(60, self.config.get_int_for_environment("ibkr_history_repair_min_bars_5m", ENVIRONMENT, 260))
         gap_lookback = max(20, self.config.get_int_for_environment("ibkr_history_repair_gap_lookback", ENVIRONMENT, 80))
+        rollup_repair_enabled = self.config.get_bool_for_environment(
+            "ibkr_history_repair_rollup_enabled",
+            ENVIRONMENT,
+            True,
+        )
         plan = {}
 
         for symbol in sorted({str(item or "").upper() for item in symbols if str(item or "").strip()}):
@@ -1361,15 +1361,121 @@ class IBKRTradingService:
                 min_bars=min_bars,
                 gap_lookback=gap_lookback,
             )
+            derived_sync = self._inspect_derived_interval_sync(symbol) if rollup_repair_enabled else {
+                "symbol": symbol,
+                "latest_5m_ms": int(snapshot.get("latest_stored_ms", 0) or 0),
+                "missing_intervals": [],
+                "stale_intervals": [],
+                "latest_interval_ms": {},
+                "expected_closed_ms": {},
+            }
             reasons = []
             if int(snapshot.get("stored_bar_count", 0) or 0) < min_bars:
                 reasons.append(f"bars<{min_bars}")
             if int(snapshot.get("gap_count", 0) or 0) > 0:
                 reasons.append(f"gaps={int(snapshot.get('gap_count', 0) or 0)}")
+            if derived_sync["missing_intervals"]:
+                reasons.append(f"rollup_missing={','.join(derived_sync['missing_intervals'])}")
+            if derived_sync["stale_intervals"]:
+                reasons.append(f"rollup_stale={','.join(derived_sync['stale_intervals'])}")
             if reasons:
+                snapshot["derived_sync"] = derived_sync
+                snapshot["needs_history_fetch"] = (
+                    int(snapshot.get("stored_bar_count", 0) or 0) < min_bars
+                    or int(snapshot.get("gap_count", 0) or 0) > 0
+                )
+                snapshot["needs_pipeline_repair"] = bool(
+                    snapshot["needs_history_fetch"]
+                    or derived_sync["missing_intervals"]
+                    or derived_sync["stale_intervals"]
+                )
                 snapshot["repair_reason"] = ",".join(reasons)
                 plan[symbol] = snapshot
         return plan
+
+    def _inspect_derived_interval_sync(self, symbol: str) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        result = {
+            "symbol": normalized_symbol,
+            "latest_5m_ms": 0,
+            "missing_intervals": [],
+            "stale_intervals": [],
+            "latest_interval_ms": {},
+            "expected_closed_ms": {},
+        }
+        if not normalized_symbol:
+            return result
+
+        base_row = self.pb.get_first_record(
+            "ibkr_bars",
+            filter=(
+                f'symbol = "{normalized_symbol}" && '
+                'interval = "5m" && '
+                f'{self._build_bar_environment_filter()}'
+            ),
+            sort="-bar_time_ms",
+        )
+        latest_5m_ms = int((base_row or {}).get("bar_time_ms", 0) or 0)
+        result["latest_5m_ms"] = latest_5m_ms
+        if latest_5m_ms <= 0:
+            return result
+
+        for interval in HIGHER_INTERVALS:
+            row = self.pb.get_first_record(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{normalized_symbol}" && '
+                    f'interval = "{interval}" && '
+                    f'{self._build_bar_environment_filter()}'
+                ),
+                sort="-bar_time_ms",
+            )
+            latest_interval_ms = int((row or {}).get("bar_time_ms", 0) or 0)
+            result["latest_interval_ms"][interval] = latest_interval_ms
+
+            current_bucket_ms = bucket_start_ms(latest_5m_ms, interval)
+            expected_closed_ms = max(0, current_bucket_ms - interval_to_ms(interval))
+            result["expected_closed_ms"][interval] = expected_closed_ms
+
+            if latest_interval_ms <= 0:
+                result["missing_intervals"].append(interval)
+            elif latest_interval_ms < expected_closed_ms:
+                result["stale_intervals"].append(interval)
+
+        return result
+
+    def _build_bar_environment_filter(self) -> str:
+        runtime_environment = str(ENVIRONMENT or "").strip().lower() or "live"
+        clauses = [f'environment = "{runtime_environment}"']
+        if runtime_environment == "live":
+            clauses.append('environment = ""')
+        return f"({' || '.join(clauses)})" if len(clauses) > 1 else clauses[0]
+
+    def _run_symbol_pipeline_repair(self, symbols: list[str], source: str) -> dict:
+        normalized_symbols = sorted({str(symbol or "").upper() for symbol in symbols if str(symbol or "").strip()})
+        if not normalized_symbols:
+            return {"ok": True, "symbols": []}
+        try:
+            from ibkr_compute.api import server as compute_server
+
+            result = compute_server.repair_symbol_pipeline_from_storage(
+                ENVIRONMENT,
+                normalized_symbols,
+            )
+            self._last_pipeline_repair_at = time.time()
+            self._last_pipeline_repair_symbols = normalized_symbols
+            logger.info(
+                "Pipeline repair finished (%s): symbols=%s processed=%s rollup_written=%s errors=%s",
+                source,
+                ",".join(normalized_symbols),
+                ((result.get("compute") or {}).get("processed", 0)),
+                ((result.get("rollup") or {}).get("written", 0)),
+                ((result.get("compute") or {}).get("errors", 0)),
+            )
+            return result
+        except Exception as exc:
+            logger.warning("Pipeline repair failed (%s): %s", source, exc)
+            return {"ok": False, "symbols": normalized_symbols, "error": str(exc)}
 
     def _trigger_realtime_compute(self, source: str = "bar_close") -> dict:
         try:
@@ -1661,6 +1767,11 @@ class IBKRTradingService:
                     if self._last_history_repair_at else None
                 ),
                 "last_history_repair_symbols": list(self._last_history_repair_symbols),
+                "last_pipeline_repair": (
+                    datetime.fromtimestamp(self._last_pipeline_repair_at, ET).isoformat()
+                    if self._last_pipeline_repair_at else None
+                ),
+                "last_pipeline_repair_symbols": list(self._last_pipeline_repair_symbols),
             },
         }
 

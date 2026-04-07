@@ -109,6 +109,27 @@ def build_bar_environment_filter(environment: str, include_legacy_empty: bool = 
     return f"({' || '.join(clauses)})" if len(clauses) > 1 else clauses[0]
 
 
+def normalize_symbols(symbols) -> list[str]:
+    normalized = []
+    seen = set()
+    if isinstance(symbols, str):
+        symbols = [symbols]
+    for raw_symbol in (symbols or []):
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        normalized.append(symbol)
+    return normalized
+
+
+def build_symbol_filter(symbols) -> str:
+    normalized = normalize_symbols(symbols)
+    if not normalized:
+        return ""
+    return "(" + " || ".join(f'symbol = "{symbol}"' for symbol in normalized) + ")"
+
+
 def normalize_bar_environment(bar: dict, environment: str) -> dict:
     payload = dict(bar)
     payload["environment"] = str(environment or "live").strip().lower() or "live"
@@ -322,15 +343,7 @@ def bootstrap_engine_state(
 def materialize_engines_from_storage(environment: str, symbols, interval: str = "5m") -> dict:
     runtime_environment = str(environment or "live").strip().lower() or "live"
     normalized_interval = normalize_interval(interval)
-    normalized_symbols = []
-    seen = set()
-    for raw_symbol in (symbols or []):
-        symbol = str(raw_symbol or "").strip().upper()
-        if not symbol or symbol in seen:
-            continue
-        seen.add(symbol)
-        normalized_symbols.append(symbol)
-
+    normalized_symbols = normalize_symbols(symbols)
     if not normalized_symbols:
         return {}
 
@@ -394,6 +407,42 @@ def materialize_engines_from_storage(environment: str, symbols, interval: str = 
         }
 
     return results
+
+
+def reset_compute_state_for_symbols(environment: str, symbols, intervals=None) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_symbols = set(normalize_symbols(symbols))
+    interval_filter = {normalize_interval(interval) for interval in (intervals or INTERVALS)}
+    removed = {"engines": 0, "signal_gens": 0, "cursors": 0, "bootstraps": 0}
+
+    if not normalized_symbols:
+        return removed
+
+    for key in list(engines.keys()):
+        env, symbol, interval = key
+        if env == runtime_environment and symbol in normalized_symbols and interval in interval_filter:
+            engines[key].reset()
+            removed["engines"] += 1
+
+    for key in list(signal_gens.keys()):
+        env, symbol, interval = key
+        if env == runtime_environment and symbol in normalized_symbols and interval in interval_filter:
+            signal_gens[key].daily_reset()
+            removed["signal_gens"] += 1
+
+    for key in list(last_processed_ms.keys()):
+        env, symbol, interval = key
+        if env == runtime_environment and symbol in normalized_symbols and interval in interval_filter:
+            last_processed_ms.pop(key, None)
+            removed["cursors"] += 1
+
+    for key in list(engine_bootstrap_checked):
+        env, symbol, interval = key
+        if env == runtime_environment and symbol in normalized_symbols and interval in interval_filter:
+            engine_bootstrap_checked.discard(key)
+            removed["bootstraps"] += 1
+
+    return removed
 
 
 
@@ -532,11 +581,18 @@ def get_fetch_since_ms(environment: str, interval: str) -> int:
     return 0
 
 
-def has_interval_bars(environment: str, interval: str) -> bool:
+def has_interval_bars(environment: str, interval: str, symbols=None) -> bool:
+    symbol_filter = build_symbol_filter(symbols)
+    filter_parts = [
+        f'interval = "{interval}"',
+        build_bar_environment_filter(environment, include_legacy_empty=True),
+    ]
+    if symbol_filter:
+        filter_parts.append(symbol_filter)
     try:
         rows = pb.get_records(
             "ibkr_bars",
-            filter=f'interval = "{interval}" && {build_bar_environment_filter(environment, include_legacy_empty=True)}',
+            filter=" && ".join(filter_parts),
             sort="-bar_time_ms",
             per_page=1,
             page=1,
@@ -547,17 +603,33 @@ def has_interval_bars(environment: str, interval: str) -> bool:
         return False
 
 
-def rebuild_higher_timeframe_bars(environment: str) -> dict:
+def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None) -> dict:
+    normalized_symbols = normalize_symbols(symbols)
+    target_intervals = [normalize_interval(interval) for interval in (intervals or HIGHER_INTERVALS)]
+    target_intervals = [interval for interval in target_intervals if interval in HIGHER_INTERVALS]
+    symbol_filter = build_symbol_filter(normalized_symbols)
+    filter_parts = [
+        'interval = "5m"',
+        build_bar_environment_filter(environment, include_legacy_empty=True),
+    ]
+    if symbol_filter:
+        filter_parts.append(symbol_filter)
     base_rows = pb.get_all_records(
         "ibkr_bars",
-        filter=f'interval = "5m" && {build_bar_environment_filter(environment, include_legacy_empty=True)}',
+        filter=" && ".join(filter_parts),
         sort="bar_time_ms",
         max_pages=1000,
     )
     if not base_rows:
-        return {"processed_5m": 0, "written": 0, "errors": 0}
+        return {
+            "processed_5m": 0,
+            "written": 0,
+            "errors": 0,
+            "symbols": normalized_symbols,
+            "intervals": target_intervals,
+        }
 
-    builder = TimeframeBarBuilder(target_intervals=HIGHER_INTERVALS)
+    builder = TimeframeBarBuilder(target_intervals=target_intervals)
     batch = []
     written = 0
     errors = 0
@@ -590,17 +662,37 @@ def rebuild_higher_timeframe_bars(environment: str) -> dict:
                 flush_batch()
 
     flush_batch()
-    return {"processed_5m": len(rows), "written": written, "errors": errors}
+    return {
+        "processed_5m": len(rows),
+        "written": written,
+        "errors": errors,
+        "symbols": normalized_symbols,
+        "intervals": target_intervals,
+    }
 
 
-def ensure_higher_timeframe_bars(environments, force: bool = False):
+def ensure_higher_timeframe_bars(environments, force: bool = False, symbols=None):
+    normalized_symbols = normalize_symbols(symbols)
     results = {}
     for environment in environments:
+        if normalized_symbols:
+            rollup_result = rebuild_higher_timeframe_bars(
+                environment,
+                symbols=normalized_symbols,
+                intervals=HIGHER_INTERVALS,
+            )
+            rollup_result["targeted"] = True
+            results[environment] = rollup_result
+            continue
+
         if not force and environment in rollup_bootstrap_checked:
             results[environment] = {"skipped": True, "reason": "already_checked", "written": 0, "errors": 0}
             continue
 
-        missing_intervals = [interval for interval in HIGHER_INTERVALS if force or not has_interval_bars(environment, interval)]
+        missing_intervals = [
+            interval for interval in HIGHER_INTERVALS
+            if force or not has_interval_bars(environment, interval)
+        ]
         if not missing_intervals:
             rollup_bootstrap_checked.add(environment)
             results[environment] = {"skipped": True, "reason": "already_present", "written": 0, "errors": 0}
@@ -613,13 +705,19 @@ def ensure_higher_timeframe_bars(environments, force: bool = False):
     return results
 
 
-def fetch_interval_bars(environment: str, interval: str):
+def fetch_interval_bars(environment: str, interval: str, symbols=None, full_scan: bool = False):
+    symbol_filter = build_symbol_filter(symbols)
+    filter_parts = [
+        f'interval = "{interval}"',
+        build_bar_environment_filter(environment, include_legacy_empty=True),
+    ]
+    if symbol_filter:
+        filter_parts.append(symbol_filter)
+    if not full_scan:
+        filter_parts.append(f"bar_time_ms >= {get_fetch_since_ms(environment, interval)}")
     rows = pb.get_all_records(
         "ibkr_bars",
-        filter=(
-            f'interval = "{interval}" && {build_bar_environment_filter(environment, include_legacy_empty=True)} '
-            f"&& bar_time_ms >= {get_fetch_since_ms(environment, interval)}"
-        ),
+        filter=" && ".join(filter_parts),
         sort="bar_time_ms",
         max_pages=500,
     )
@@ -628,6 +726,48 @@ def fetch_interval_bars(environment: str, interval: str):
             int(row.get("bar_time_ms", 0) or 0) for row in rows
         )
     return rows
+
+
+def repair_symbol_pipeline_from_storage(environment: str, symbols) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_symbols = normalize_symbols(symbols)
+    if not normalized_symbols:
+        return {"ok": True, "symbols": [], "rollup": {}, "compute": {}, "reset": {}}
+
+    rollup_result = rebuild_higher_timeframe_bars(
+        runtime_environment,
+        symbols=normalized_symbols,
+        intervals=HIGHER_INTERVALS,
+    )
+    reset_result = reset_compute_state_for_symbols(
+        runtime_environment,
+        normalized_symbols,
+        intervals=INTERVALS,
+    )
+    compute_payload = {}
+    with app.test_request_context(
+        "/compute",
+        method="POST",
+        json={
+            "source": "history_repair",
+            "environments": [runtime_environment],
+            "symbols": normalized_symbols,
+            "force_rollup": True,
+        },
+    ):
+        response = compute()
+        try:
+            compute_payload = response.get_json() or {}
+        except Exception:
+            compute_payload = {}
+
+    return {
+        "ok": bool(compute_payload.get("ok", True)),
+        "symbols": normalized_symbols,
+        "rollup": rollup_result,
+        "reset": reset_result,
+        "compute": compute_payload,
+    }
 
 
 def build_indicator_payload(environment: str, symbol: str, interval: str, bar: dict, engine: IndicatorEngine, snapshot: dict):
@@ -788,6 +928,14 @@ def get_requested_environments(defaults=None):
     return list(defaults or DEFAULT_COMPUTE_ENVIRONMENTS)
 
 
+def get_requested_symbols(payload=None):
+    payload = payload if isinstance(payload, dict) else (request.get_json(silent=True) or {})
+    requested = payload.get("symbols")
+    if requested is None:
+        requested = payload.get("symbol")
+    return normalize_symbols(requested)
+
+
 @app.route("/api/collections/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
 def proxy_legacy_pb_collections(subpath):
     raw_path = str(subpath or "").lstrip("/")
@@ -861,7 +1009,10 @@ def compute():
     with compute_lock:
         cfg.refresh()
         payload = request.get_json(silent=True) or {}
-        skip_persisted_cursor = str(payload.get("source") or "").strip().lower() == "recompute"
+        source = str(payload.get("source") or "").strip().lower()
+        requested_symbols = get_requested_symbols(payload)
+        targeted_rebuild = bool(requested_symbols) and source in {"history_repair", "recompute", "targeted_recompute"}
+        skip_persisted_cursor = source in {"recompute", "history_repair", "targeted_recompute"}
         requested_environments = get_requested_environments()
         enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
         if not enabled_environments:
@@ -877,7 +1028,7 @@ def compute():
         processed = 0
         signals_found = 0
         errors = 0
-        force_rollup = bool(payload.get("force_rollup")) or str(payload.get("source") or "") == "recompute"
+        force_rollup = bool(payload.get("force_rollup")) or source in {"recompute", "history_repair", "targeted_recompute"}
         indicator_batch = []
         signal_batch = []
         dirty_cursor_environments = set()
@@ -900,17 +1051,28 @@ def compute():
             signal_batch = []
 
         refresh_symbol_metadata()
-        rollup_results = ensure_higher_timeframe_bars(enabled_environments, force=force_rollup)
+        rollup_results = ensure_higher_timeframe_bars(
+            enabled_environments,
+            force=force_rollup,
+            symbols=requested_symbols if targeted_rebuild else None,
+        )
         errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
         refresh_daily_close_cache(enabled_environments)
 
         try:
             for environment in enabled_environments:
+                if targeted_rebuild:
+                    reset_compute_state_for_symbols(environment, requested_symbols, intervals=INTERVALS)
                 if not skip_persisted_cursor:
                     load_persisted_compute_cursors(environment)
                 market_index_symbols = get_market_index_symbols(environment)
                 for interval in INTERVALS:
-                    interval_bars = fetch_interval_bars(environment, interval)
+                    interval_bars = fetch_interval_bars(
+                        environment,
+                        interval,
+                        symbols=requested_symbols if requested_symbols else None,
+                        full_scan=targeted_rebuild,
+                    )
                     if not interval_bars:
                         continue
 
@@ -993,6 +1155,7 @@ def compute():
             "ok": True,
             "requested_environments": requested_environments,
             "environments": sorted(enabled_environments),
+            "symbols": requested_symbols,
             "processed": processed,
             "signals": signals_found,
             "errors": errors,

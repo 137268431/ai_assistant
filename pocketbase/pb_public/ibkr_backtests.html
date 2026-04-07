@@ -1131,6 +1131,70 @@
             `;
         }
 
+        function buildRunAnalysisCard(run) {
+            const report = run?.extra?.analysis_report || {};
+            const summary = report.summary || run?.metrics?.analysis_summary || {};
+            const recommendation = report.recommendation || {};
+            const comparison = report.baseline_comparison || {};
+            const strengths = Array.isArray(recommendation.strengths) ? recommendation.strengths : [];
+            const risks = Array.isArray(recommendation.risks) ? recommendation.risks : [];
+            const suggestions = Array.isArray(recommendation.suggestions) ? recommendation.suggestions : [];
+            const verdict = String(summary.verdict || recommendation.verdict || 'mixed').toLowerCase();
+            const baselineExists = Boolean(comparison.baseline_exists);
+            const improved = Boolean(summary.improved_vs_baseline || comparison.improved_vs_baseline);
+            const strengthsHtml = strengths.map((item) => escapeHtml(item)).join('<br>');
+            const risksHtml = risks.map((item) => escapeHtml(item)).join('<br>');
+            const suggestionsHtml = suggestions.map((item) => escapeHtml(item)).join('<br>');
+
+            return `
+                <div class="detail-card">
+                    <div class="subhead">回测分析</div>
+                    <div class="foot-note">系统会结合收益、回撤、成交率、反转动作和 TV 对齐结果，自动产出这期回测的判断与优化方向。</div>
+                    <div style="margin: 10px 0 14px;">${detailStatusTag(verdict)}</div>
+                    <div class="note-box">${escapeHtml(summary.headline || recommendation.headline || '当前 run 尚未产出分析摘要。')}</div>
+                    <div class="detail-list" style="margin-top: 14px;">
+                        <div class="detail-item"><div class="detail-item-label">Improved vs Baseline</div><div class="detail-item-value ${improved ? 'positive' : ''}">${escapeHtml(improved ? 'YES' : 'NO')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Baseline Run</div><div class="detail-item-value mono">${escapeHtml(comparison.baseline_run_id || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Delta Return</div><div class="detail-item-value ${classForValue(comparison.delta_return_pct || 0)}">${baselineExists ? escapeHtml(formatPct(comparison.delta_return_pct || 0)) : '--'}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Delta Sharpe</div><div class="detail-item-value ${classForValue(comparison.delta_sharpe || 0)}">${baselineExists ? escapeHtml(formatNumber(comparison.delta_sharpe || 0, 2)) : '--'}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Scope Similarity</div><div class="detail-item-value">${baselineExists ? escapeHtml(`${formatNumber((comparison.scope_similarity?.overlap_ratio || 0) * 100, 0)}% overlap`) : '--'}</div></div>
+                    </div>
+                    ${strengths.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优势</strong><br>${strengthsHtml}</div>` : ''}
+                    ${risks.length ? `<div class="note-box" style="margin-top: 14px;"><strong>风险</strong><br>${risksHtml}</div>` : ''}
+                    ${suggestions.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优化建议</strong><br>${suggestionsHtml}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 run 还没有生成优化建议。</div>'}
+                </div>
+            `;
+        }
+
+        function buildExperimentAnalysisCard(batch) {
+            const analysis = batch?.extra?.experiment_analysis || {};
+            const summary = analysis.summary || {};
+            const comparison = analysis.comparison || {};
+            const suggestions = Array.isArray(analysis.suggestions) ? analysis.suggestions : [];
+            const improved = Boolean(summary.improved_vs_historical || comparison.improved_vs_historical);
+            const suggestionsHtml = suggestions.map((item) => escapeHtml(item)).join('<br>');
+
+            if (!batch) {
+                return '';
+            }
+
+            return `
+                <div class="detail-card">
+                    <div class="subhead">Experiment Analysis</div>
+                    <div class="foot-note">系统会在参数扫描完成后，对最佳变体、次优变体和同周期历史基准做对比，帮助判断是否值得替换当前候选方案。</div>
+                    <div class="note-box" style="margin-top: 12px;">${escapeHtml(summary.headline || '当前 experiment 尚未产出分析结论。')}</div>
+                    <div class="detail-list" style="margin-top: 14px;">
+                        <div class="detail-item"><div class="detail-item-label">Best Variant</div><div class="detail-item-value">${escapeHtml(summary.best_variant_label || comparison.best_variant_label || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Improved vs Historical</div><div class="detail-item-value ${improved ? 'positive' : ''}">${escapeHtml(improved ? 'YES' : 'NO')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Delta vs Historical</div><div class="detail-item-value ${classForValue(comparison.delta_vs_historical_return_pct || 0)}">${comparison.historical_baseline_run_id ? escapeHtml(formatPct(comparison.delta_vs_historical_return_pct || 0)) : '--'}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Delta vs 2nd Best</div><div class="detail-item-value ${classForValue(comparison.delta_vs_second_best_return_pct || 0)}">${comparison.delta_vs_second_best_return_pct !== undefined ? escapeHtml(formatPct(comparison.delta_vs_second_best_return_pct || 0)) : '--'}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Historical Baseline</div><div class="detail-item-value mono">${escapeHtml(comparison.historical_baseline_run_id || '--')}</div></div>
+                    </div>
+                    ${suggestions.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优化方向</strong><br>${suggestionsHtml}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 experiment 还没有生成优化方向。</div>'}
+                </div>
+            `;
+        }
+
         function buildTvParityCard(run) {
             const tvParity = run?.extra?.tv_parity || {};
             const summary = tvParity.summary || run?.metrics?.tv_parity || {};
@@ -1386,6 +1450,7 @@
                     <div class="subhead">Variants JSON</div>
                     <div class="note-box mono">${escapeHtml(getBatchVariantsText(selectedBatch))}</div>
                 </div>
+                ${buildExperimentAnalysisCard(selectedBatch)}
                 <div class="detail-card">
                     <div class="subhead">Leaderboard</div>
                     ${leaderboard.length ? `
@@ -1627,6 +1692,7 @@
                     <div class="subhead">Error / Notes</div>
                     <div class="note-box">${escapeHtml(selectedRun.error || 'No error. This run completed without runtime exceptions.')}</div>
                 </div>
+                ${buildRunAnalysisCard(selectedRun)}
                 ${buildBacktestIndicatorCaptureCard(selectedRun)}
                 ${buildBacktestReverseCaptureCard(selectedRun)}
                 ${buildTvParityCard(selectedRun)}
@@ -1641,6 +1707,7 @@
                         backtest_target_capture: extra.backtest_target_capture || {},
                         backtest_reverse_capture: extra.backtest_reverse_capture || {},
                         historical_targeting: extra.historical_targeting || {},
+                        analysis_report: extra.analysis_report || {},
                     }, null, 2))}</div>
                 </div>
             `;

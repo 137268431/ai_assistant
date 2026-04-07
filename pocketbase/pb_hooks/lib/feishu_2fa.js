@@ -186,6 +186,61 @@ function getStatePayload(environment) {
     }
 }
 
+function normalizeStateWithRuntime(stateData, runtimeStatus) {
+    var state = { ...(stateData || {}) }
+    var runtime = runtimeStatus || {}
+    var runtimeStarted = Boolean(
+        runtime.starting
+        || (runtime.session && runtime.session.running)
+        || (runtime.websocket && runtime.websocket.running)
+        || (runtime.order_tracker && runtime.order_tracker.running)
+    )
+    var runtimeAuthenticated = Boolean(runtime.session && runtime.session.authenticated)
+    var gatewayReachable = Boolean(runtime.gateway && (runtime.gateway.running || runtime.gateway.reachable))
+    var gatewayStatusCode = Number(runtime.gateway && runtime.gateway.status_code || 0) || 0
+
+    state.runtime_started = runtimeStarted
+    state.runtime_authenticated = runtimeAuthenticated
+    state.gateway_status_code = gatewayStatusCode
+    state.gateway_reachable = gatewayReachable
+
+    if (runtimeAuthenticated && gatewayReachable && gatewayStatusCode !== 401) {
+        state.status = "success"
+        state.message = "Gateway 会话有效，无需再次确认。"
+        state.last_result = "运行态会话正常。"
+        state.last_error = ""
+        state.mode = ""
+        state.challenge_code = ""
+        state.challenge_detected_at = ""
+        state.response_code = ""
+        state.response_status = ""
+        state.response_received_at = ""
+        state.response_submitted_at = ""
+        state.page_title = ""
+        state.page_url = ""
+        state.gateway_trace = ""
+        state.browser_authenticated = true
+        state.gateway_authenticated = true
+        state.backend_authenticated = true
+        return state
+    }
+
+    if (!runtimeAuthenticated || gatewayStatusCode === 401) {
+        state.gateway_authenticated = false
+        state.backend_authenticated = false
+        if (!runtimeStarted) {
+            state.browser_authenticated = false
+        }
+        if (String(state.status || "").trim().toLowerCase() === "success") {
+            state.status = "requested"
+            state.message = "旧 Gateway 认证已失效，请重新触发 2FA。"
+            state.last_result = "旧 Gateway 认证已失效，等待重新触发 2FA。"
+        }
+    }
+
+    return state
+}
+
 function saveState(environment, patch, options) {
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var times = timeUtils.getTimeStrings()
@@ -478,12 +533,12 @@ function deliverCard(savedState, options) {
 
         var result = null
         if (messageId && !opts.forceNew) {
-            result = feishuApp.updateMessageCard(messageId, card)
+            result = feishuApp.updateMessageCard(messageId, card, effectiveState.environment)
             if (!result.success && allowReplace) {
-                result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.getSystemChatId(effectiveState.environment), "chat_id")
+                result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.getSystemChatId(effectiveState.environment), "chat_id", effectiveState.environment)
             }
         } else {
-            result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.getSystemChatId(effectiveState.environment), "chat_id")
+            result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.getSystemChatId(effectiveState.environment), "chat_id", effectiveState.environment)
         }
 
         if (result && result.success) {
@@ -738,6 +793,21 @@ function report2faResult(options) {
         patch.last_error = String(opts.error)
     } else if (status === "success") {
         patch.last_error = ""
+        patch.mode = ""
+        patch.challenge_code = ""
+        patch.challenge_detected_at = ""
+        patch.response_code = ""
+        patch.response_status = ""
+        patch.response_received_at = ""
+        patch.response_submitted_at = ""
+        patch.page_title = ""
+        patch.page_url = ""
+        patch.gateway_trace = ""
+        patch.browser_authenticated = true
+        patch.gateway_authenticated = true
+        patch.backend_authenticated = true
+        patch.runtime_authenticated = true
+        patch.runtime_started = true
     }
 
     var saved = saveState(runtimeEnvironment, patch)
@@ -887,6 +957,7 @@ function handle2faCardCallback(c, options) {
 module.exports = {
     IBKR_2FA_STATE_KEY: IBKR_2FA_STATE_KEY,
     getStatePayload: getStatePayload,
+    normalizeStateWithRuntime: normalizeStateWithRuntime,
     build2faCard: build2faCard,
     request2faApproval: request2faApproval,
     trigger2faFlow: trigger2faFlow,

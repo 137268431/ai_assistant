@@ -480,7 +480,7 @@ function notifySignalStatus(action, signal, options) {
     var messageId = opts.messageId || ""
     var signalData = buildSignalDisplayData(signal)
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(signalData.environment || "", envUtils.LIVE_ENVIRONMENT)
-    var result = messageId ? feishuApp.updateMessageCard(messageId, card) : feishuApp.sendCardToChatDetailed(card, runtimeEnvironment)
+    var result = messageId ? feishuApp.updateMessageCard(messageId, card, runtimeEnvironment) : feishuApp.sendCardToChatDetailed(card, runtimeEnvironment)
     console.log("[FeishuSignal] 信号卡片同步:", result.success ? "成功" : "失败", "action:", action, "message_id:", result.message_id || messageId || "-")
     return result
 }

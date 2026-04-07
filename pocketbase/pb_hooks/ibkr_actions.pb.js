@@ -1327,10 +1327,10 @@ routerAdd("POST", "/api/custom/ibkr/reauth", (c) => {
 
 routerAdd("GET", "/api/custom/ibkr/2fa/status", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { getStatePayload } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
     const payload = getStatePayload(environment)
-    const state = { ...(payload.data || {}) }
+    let state = { ...(payload.data || {}) }
 
     try {
         const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
@@ -1345,33 +1345,7 @@ routerAdd("GET", "/api/custom/ibkr/2fa/status", (c) => {
         } catch (_) {
             runtime = {}
         }
-        const runtimeStarted = Boolean(
-            runtime.starting
-            || (runtime.session && runtime.session.running)
-            || (runtime.websocket && runtime.websocket.running)
-            || (runtime.order_tracker && runtime.order_tracker.running)
-        )
-        const runtimeAuthenticated = Boolean(runtime.session && runtime.session.authenticated)
-        const gatewayReachable = Boolean(runtime.gateway && (runtime.gateway.running || runtime.gateway.reachable))
-        const gatewayStatusCode = Number(runtime.gateway && runtime.gateway.status_code || 0) || 0
-
-        state.runtime_started = runtimeStarted
-        state.runtime_authenticated = runtimeAuthenticated
-        state.gateway_status_code = gatewayStatusCode
-        state.gateway_reachable = gatewayReachable
-
-        if (!runtimeAuthenticated || gatewayStatusCode === 401) {
-            state.gateway_authenticated = false
-            state.backend_authenticated = false
-            if (!runtimeStarted) {
-                state.browser_authenticated = false
-            }
-            if (String(state.status || "").trim().toLowerCase() === "success") {
-                state.status = "requested"
-                state.message = "旧 Gateway 认证已失效，请重新触发 2FA。"
-                state.last_result = "旧 Gateway 认证已失效，等待重新触发 2FA。"
-            }
-        }
+        state = normalizeStateWithRuntime(state, runtime)
     } catch (err) {
         state.runtime_status_error = err.message || String(err)
     }
