@@ -1482,21 +1482,6 @@
 
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('nav').innerHTML = renderNav('/ibkr_orders.html');
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                {
-                    path: '/ibkr_orders.html',
-                    kicker: 'Orders',
-                    label: '关系视图',
-                    copy: '交易组 / 当前状态 / 操作',
-                    active: true
-                },
-                {
-                    path: '/ibkr_order_details.html',
-                    kicker: 'Timeline',
-                    label: '订单明细',
-                    copy: '事件时间线 / 关系展开'
-                }
-            ]);
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
             document.getElementById('datePicker').innerHTML = renderDatePicker();
 
@@ -1510,6 +1495,40 @@
             }
             reconcileSearchAndFilters();
             pendingLegacySearchResolution = Boolean(currentSearch) && !filterSignalId && !filterTradeGroupId;
+            const executionParams = { date: currentDate };
+            if (filterSignalId) executionParams.signal_id = filterSignalId;
+            if (filterTradeGroupId) executionParams.trade_group_id = filterTradeGroupId;
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_signals.html',
+                    params: executionParams,
+                    kicker: 'Signals',
+                    label: '主信号',
+                    copy: '待确认 / 执行 / 指标快照'
+                },
+                {
+                    path: '/ibkr_reverse_signals.html',
+                    params: executionParams,
+                    kicker: 'Reverse',
+                    label: '反转信号',
+                    copy: '平仓 / 取消 / 调整流转'
+                },
+                {
+                    path: '/ibkr_orders.html',
+                    params: executionParams,
+                    kicker: 'Orders',
+                    label: '订单',
+                    copy: '执行分组 / 当前状态 / 操作',
+                    active: true
+                },
+                {
+                    path: '/ibkr_order_details.html',
+                    params: executionParams,
+                    kicker: 'Timeline',
+                    label: '订单明细',
+                    copy: '事件时间线 / 关系展开'
+                }
+            ]);
 
             document.getElementById('searchInput').value = currentSearch;
             const dateInput = document.getElementById('customDate');

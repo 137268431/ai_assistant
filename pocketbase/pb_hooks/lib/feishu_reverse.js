@@ -348,7 +348,9 @@ function getMessageId(recordOrData) {
 
 function notifyReverseSignal(recordOrData, options) {
     var card = buildReverseCard(recordOrData, options || {})
-    var result = feishuApp.sendCardToChatByTypeDetailed(card, "reverse")
+    var reverse = reverseUtils.normalizeReverseRecord(recordOrData)
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(reverse.environment || "", envUtils.LIVE_ENVIRONMENT)
+    var result = feishuApp.sendCardToChatByTypeDetailed(card, "reverse", runtimeEnvironment)
     if (result.success && result.message_id) {
         persistMessageId(recordOrData, result.message_id)
     }
@@ -358,7 +360,9 @@ function notifyReverseSignal(recordOrData, options) {
 function notifyReverseStatus(action, recordOrData, options) {
     var card = buildReverseCard(recordOrData, options || {})
     var messageId = (options && options.messageId) || getMessageId(recordOrData)
-    var result = messageId ? feishuApp.updateMessageCard(messageId, card) : feishuApp.sendCardToChatByTypeDetailed(card, "reverse")
+    var reverse = reverseUtils.normalizeReverseRecord(recordOrData)
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(reverse.environment || "", envUtils.LIVE_ENVIRONMENT)
+    var result = messageId ? feishuApp.updateMessageCard(messageId, card) : feishuApp.sendCardToChatByTypeDetailed(card, "reverse", runtimeEnvironment)
     if (result.success && (result.message_id || messageId)) {
         persistMessageId(recordOrData, result.message_id || messageId)
     }

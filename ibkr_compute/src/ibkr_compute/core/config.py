@@ -15,6 +15,14 @@ class Config:
         "ibkr_watchlist_backfill_interval_min": "30",
         "ibkr_watchlist_backfill_batch_size": "12",
         "ibkr_watchlist_backfill_stale_min": "20",
+        "signal_validity_minutes": "30",
+        "trade_window_start_time": "09:35",
+        "trade_window_end_time": "15:30",
+        "order_window_end_time": "15:00",
+        "position_limit_max": "3",
+        "eod_close_time": "15:55",
+        "eod_keep_symbols": "",
+        "signal_poll_interval_sec": "120",
         "ibkr_scan_schedule": "7:00-10:00",
         "ibkr_publish_batch_size": "10",
         "ibkr_signal_source": "both",
@@ -97,6 +105,18 @@ class Config:
     def get_bool_for_environment(self, key: str, environment: str, default: bool = False) -> bool:
         val = self.get_for_environment(key, environment, str(default).lower())
         return str(val).lower() in ("true", "1", "yes")
+
+    def get_int_for_environment(self, key: str, environment: str, default: int = 0) -> int:
+        try:
+            return int(self.get_for_environment(key, environment, str(default)))
+        except (ValueError, TypeError):
+            return default
+
+    def get_float_for_environment(self, key: str, environment: str, default: float = 0.0) -> float:
+        try:
+            return float(self.get_for_environment(key, environment, str(default)))
+        except (ValueError, TypeError):
+            return default
 
     @property
     def compute_enabled(self) -> bool:

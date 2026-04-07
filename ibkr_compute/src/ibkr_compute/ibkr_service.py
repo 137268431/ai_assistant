@@ -46,7 +46,7 @@ ET = timezone(timedelta(hours=-4))
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://localhost:8090")
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
-SIGNAL_POLL_INTERVAL = 120
+DEFAULT_SIGNAL_POLL_INTERVAL = 120
 
 
 class IBKRTradingService:
@@ -85,6 +85,7 @@ class IBKRTradingService:
         self.order_lifecycle = OrderLifecycle(
             gateway_url=GATEWAY_URL, pb_client=self.pb,
             order_modifier=self.order_modifier,
+            config=self.config, environment=ENVIRONMENT,
         )
 
         self.signal_router = SignalRouter(
@@ -395,7 +396,7 @@ class IBKRTradingService:
         return defaults.get(symbol, {"exchange": "SMART", "industry": "INDEX"})
 
     def _refresh_watchlist_pool(self, force: bool = False):
-        refresh_minutes = max(1, self.config.get_int("watchlist_interval_min", 5))
+        refresh_minutes = max(1, self.config.get_int_for_environment("watchlist_interval_min", ENVIRONMENT, 5))
         now = time.time()
         if (
             not force
@@ -460,7 +461,7 @@ class IBKRTradingService:
         logger.info("Watchlist pool refreshed: %d symbols", len(self._watchlist_symbols))
 
     def _get_target_subscription_limit(self) -> int:
-        return max(0, self.config.get_int("ibkr_target_subscription_limit", 60))
+        return max(0, self.config.get_int_for_environment("ibkr_target_subscription_limit", ENVIRONMENT, 60))
 
     def _today_target_rows(self):
         today = datetime.now(ET).strftime("%Y-%m-%d")
@@ -610,7 +611,7 @@ class IBKRTradingService:
 
     def _refresh_target_subscriptions(self, force: bool = False, reason: str = "loop"):
         self._reset_for_new_market_day(force=False)
-        refresh_seconds = max(15, self.config.get_int("ibkr_target_refresh_sec", 60))
+        refresh_seconds = max(15, self.config.get_int_for_environment("ibkr_target_refresh_sec", ENVIRONMENT, 60))
         now = time.time()
         if not force and (now - self._last_target_refresh_at) < refresh_seconds:
             return
@@ -656,7 +657,7 @@ class IBKRTradingService:
             except Exception as exc:
                 logger.error("Target subscription loop error: %s", exc)
 
-            sleep_seconds = max(15, self.config.get_int("ibkr_target_refresh_sec", 60))
+            sleep_seconds = max(15, self.config.get_int_for_environment("ibkr_target_refresh_sec", ENVIRONMENT, 60))
             for _ in range(sleep_seconds):
                 if not self._running:
                     break
@@ -670,7 +671,7 @@ class IBKRTradingService:
         if not pool:
             return []
 
-        batch_size = max(1, self.config.get_int("ibkr_watchlist_backfill_batch_size", 12))
+        batch_size = max(1, self.config.get_int_for_environment("ibkr_watchlist_backfill_batch_size", ENVIRONMENT, 12))
         start = self._watchlist_backfill_cursor % len(pool)
         ordered = pool[start:] + pool[:start]
         self._watchlist_backfill_cursor = (start + batch_size) % max(len(pool), 1)
@@ -685,7 +686,7 @@ class IBKRTradingService:
             except Exception as exc:
                 logger.error("Watchlist backfill loop error: %s", exc)
 
-            sleep_seconds = max(300, self.config.get_int("ibkr_watchlist_backfill_interval_min", 30) * 60)
+            sleep_seconds = max(300, self.config.get_int_for_environment("ibkr_watchlist_backfill_interval_min", ENVIRONMENT, 30) * 60)
             for _ in range(sleep_seconds):
                 if not self._running:
                     break
@@ -698,7 +699,7 @@ class IBKRTradingService:
             logger.info("Watchlist backfill skipped: no non-target symbols in pool")
             return
 
-        stale_minutes = max(5, self.config.get_int("ibkr_watchlist_backfill_stale_min", 20))
+        stale_minutes = max(5, self.config.get_int_for_environment("ibkr_watchlist_backfill_stale_min", ENVIRONMENT, 20))
         now_ms = int(time.time() * 1000)
         stale_ms = stale_minutes * 60 * 1000
         eligible = []
@@ -807,10 +808,15 @@ class IBKRTradingService:
             self._compute_queue.put(queued_bars)
 
     def _signal_loop(self):
-        logger.info("Signal processing loop started (interval=%ds)", SIGNAL_POLL_INTERVAL)
+        signal_poll_interval = DEFAULT_SIGNAL_POLL_INTERVAL
+        last_logged_interval = None
         while self._running:
             try:
                 self.config.refresh()
+                signal_poll_interval = max(15, self.config.get_int_for_environment("signal_poll_interval_sec", ENVIRONMENT, DEFAULT_SIGNAL_POLL_INTERVAL))
+                if signal_poll_interval != last_logged_interval:
+                    logger.info("Signal processing loop running (interval=%ds)", signal_poll_interval)
+                    last_logged_interval = signal_poll_interval
                 if self.session_keeper.is_authenticated:
                     self._process_signals()
                     self.reverse_handler.check_and_process()
@@ -818,7 +824,8 @@ class IBKRTradingService:
                     logger.info("Skip signal/reverse processing while session is unauthenticated")
             except Exception as e:
                 logger.error("Signal loop error: %s", e)
-            self._signal_wakeup.wait(timeout=SIGNAL_POLL_INTERVAL)
+                signal_poll_interval = DEFAULT_SIGNAL_POLL_INTERVAL
+            self._signal_wakeup.wait(timeout=signal_poll_interval)
             self._signal_wakeup.clear()
 
     def _process_signals(self):

@@ -118,7 +118,14 @@ function hasConfigOverride(key, environment) {
     }
 }
 
-function getConfigValue(key, defaultValue, environment) {
+function rankConfigEnvironment(recordEnvironment, runtimeEnvironment) {
+    const normalized = String(recordEnvironment || "").trim().toLowerCase()
+    if (normalized === runtimeEnvironment) return 2
+    if (normalized === GLOBAL_ENVIRONMENT || normalized === "") return 1
+    return -1
+}
+
+function getEffectiveConfigRecord(key, environment) {
     const runtimeEnvironment = normalizeRuntimeEnvironment(environment, LIVE_ENVIRONMENT)
     let records = []
     try {
@@ -142,14 +149,58 @@ function getConfigValue(key, defaultValue, environment) {
     let bestRank = -1
     for (let i = 0; i < records.length; i++) {
         const record = records[i]
-        const env = String(record.get("environment") || "").trim().toLowerCase()
-        const rank = env === runtimeEnvironment ? 2 : (env === GLOBAL_ENVIRONMENT ? 1 : 0)
+        const rank = rankConfigEnvironment(record.get("environment"), runtimeEnvironment)
         if (rank > bestRank) {
             best = record
             bestRank = rank
         }
     }
+    return best
+}
+
+function getConfigValue(key, defaultValue, environment) {
+    const best = getEffectiveConfigRecord(key, environment)
     return best ? String(best.get("value") || defaultValue) : defaultValue
+}
+
+function listEffectiveConfigRecords(environment) {
+    const runtimeEnvironment = normalizeRuntimeEnvironment(environment, LIVE_ENVIRONMENT)
+    let records = []
+    try {
+        records = $app.findRecordsByFilter(
+            "config",
+            "environment = {:env} || environment = 'global' || environment = ''",
+            "-updated",
+            500,
+            0,
+            { env: runtimeEnvironment }
+        ) || []
+    } catch (_) {
+        records = []
+    }
+
+    const bestByKey = {}
+    const keyOrder = []
+    for (let i = 0; i < records.length; i++) {
+        const record = records[i]
+        const key = String(record.get("key") || "").trim()
+        if (!key) continue
+
+        const rank = rankConfigEnvironment(record.get("environment"), runtimeEnvironment)
+        if (rank < 0) continue
+
+        if (!bestByKey[key]) {
+            bestByKey[key] = { record, rank }
+            keyOrder.push(key)
+            continue
+        }
+
+        if (rank > bestByKey[key].rank) {
+            bestByKey[key] = { record, rank }
+        }
+    }
+
+    return keyOrder.map((key) => bestByKey[key].record)
 }
 
 function getIbkrComputePublicUrl(environment, defaultValue) {
@@ -173,7 +224,9 @@ const exported = {
     addEnvironmentToDetail,
     attachEnvironment,
     hasConfigOverride,
+    getEffectiveConfigRecord,
     getConfigValue,
+    listEffectiveConfigRecords,
     getIbkrComputePublicUrl,
 }
 

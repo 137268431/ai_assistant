@@ -476,6 +476,7 @@
         </div>
     </div>
 
+    <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
     <div class="content">
@@ -1107,7 +1108,8 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 指标', { description: '技术快照 / 快览 / 进入图表' });
             document.getElementById('pageBridge').innerHTML = renderPageBridge([
                 {
                     path: '/ibkr_indicators.html',

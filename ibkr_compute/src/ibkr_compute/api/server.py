@@ -67,11 +67,14 @@ SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
 DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
 IBKR_SCRIPT_TAG = os.environ.get("IBKR_SCRIPT_TAG", "IBKR_SAC_v1_20260403")
 BOOTSTRAP_LOOKBACK_BARS = {
-    "5m": 192,
-    "15m": 192,
-    "30m": 192,
-    "1h": 192,
-    "4h": 192,
+    # Intraday engines need at least 200 bars to satisfy DTP readiness after restart.
+    # Keep a small warmup margin so fresh indicators resume immediately instead of
+    # waiting for several new bars after every deploy/restart.
+    "5m": 260,
+    "15m": 260,
+    "30m": 260,
+    "1h": 260,
+    "4h": 260,
     "1d": 260,
 }
 LEGACY_COLLECTION_MAP = {

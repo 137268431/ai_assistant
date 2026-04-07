@@ -702,7 +702,9 @@ function notifyOrder(action, order, options) {
     var card = buildOrderCard(order, {
         message: opts.message || getOrderStatusInfo(status || "").message
     })
-    var result = messageId ? feishuApp.updateMessageCard(messageId, card) : feishuApp.sendCardToChatByTypeDetailed(card, "order")
+    var orderData = buildOrderDisplayData(order)
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(orderData.environment || "", envUtils.LIVE_ENVIRONMENT)
+    var result = messageId ? feishuApp.updateMessageCard(messageId, card) : feishuApp.sendCardToChatByTypeDetailed(card, "order", runtimeEnvironment)
     var effectiveMessageId = result.message_id || messageId || ""
     if (result.success && effectiveMessageId) {
         persistTradeGroupCardMessageId(order, effectiveMessageId)
@@ -722,7 +724,9 @@ function notifyNewOrder(order, options) {
     }
 
     var card = buildOrderCard(order, { message: opts.message })
-    var result = feishuApp.sendCardToChatByTypeDetailed(card, "order")
+    var orderData = buildOrderDisplayData(order)
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(orderData.environment || "", envUtils.LIVE_ENVIRONMENT)
+    var result = feishuApp.sendCardToChatByTypeDetailed(card, "order", runtimeEnvironment)
     if (result.success && result.message_id) {
         persistTradeGroupCardMessageId(order, result.message_id)
     }

@@ -634,7 +634,7 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
 
 routerAdd("GET", "/api/custom/system/summaryz", (c) => {
     try {
-        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputePublicUrl, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputePublicUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
         const times = getTimeStrings()
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
@@ -694,7 +694,7 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
         }
 
         try {
-            const configs = $app.findRecordsByFilter("config", "environment = {:env} || environment = 'global' || environment = ''", "", 200, 0, { env: environment }) || []
+            const configs = listEffectiveConfigRecords(environment)
             for (let i = 0; i < configs.length; i++) {
                 const key = configs[i].get("key")
                 if (key) {

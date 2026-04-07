@@ -16,12 +16,10 @@ logger = logging.getLogger(__name__)
 
 ET = timezone(timedelta(hours=-4))
 
-TRADE_WINDOW_START = (9, 35)
-TRADE_WINDOW_END = (15, 30)
-ORDER_WINDOW_END = (15, 0)
-SIGNAL_EXPIRY_MINUTES = 60
-MAX_POSITIONS = 3
-MAX_DAILY_SL = 3
+DEFAULT_TRADE_WINDOW_START = (9, 35)
+DEFAULT_TRADE_WINDOW_END = (15, 30)
+DEFAULT_ORDER_WINDOW_END = (15, 0)
+DEFAULT_SIGNAL_EXPIRY_MINUTES = 30
 
 
 class SignalProcessor:
@@ -68,13 +66,49 @@ class SignalProcessor:
             "ibkr_trading_enabled", self.environment, True
         )
 
+    def _get_time_window(self, key: str, default: Tuple[int, int]) -> Tuple[int, int]:
+        raw_value = str(
+            self.config.get_for_environment(
+                key, self.environment, f"{default[0]:02d}:{default[1]:02d}"
+            )
+            or ""
+        ).strip()
+        try:
+            hour_text, minute_text = raw_value.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            pass
+        return default
+
+    def _trade_window_start(self) -> Tuple[int, int]:
+        return self._get_time_window("trade_window_start_time", DEFAULT_TRADE_WINDOW_START)
+
+    def _trade_window_end(self) -> Tuple[int, int]:
+        return self._get_time_window("trade_window_end_time", DEFAULT_TRADE_WINDOW_END)
+
+    def _order_window_end(self) -> Tuple[int, int]:
+        return self._get_time_window("order_window_end_time", DEFAULT_ORDER_WINDOW_END)
+
+    def _signal_validity_minutes(self) -> int:
+        return max(
+            1,
+            self.config.get_int_for_environment(
+                "signal_validity_minutes",
+                self.environment,
+                DEFAULT_SIGNAL_EXPIRY_MINUTES,
+            ),
+        )
+
     def _in_trade_window(self, et_now: datetime) -> bool:
         current = (et_now.hour, et_now.minute)
-        return TRADE_WINDOW_START <= current <= TRADE_WINDOW_END
+        return self._trade_window_start() <= current <= self._trade_window_end()
 
     def _in_order_window(self, et_now: datetime) -> bool:
         current = (et_now.hour, et_now.minute)
-        return TRADE_WINDOW_START <= current <= ORDER_WINDOW_END
+        return self._trade_window_start() <= current <= self._order_window_end()
 
     def _is_signal_expired(self, signal: dict, et_now: datetime) -> bool:
         signal_time_str = signal.get("signal_time", "")
@@ -92,7 +126,7 @@ class SignalProcessor:
                 signal_time = signal_time.replace(tzinfo=ET)
 
             age_minutes = (et_now - signal_time).total_seconds() / 60
-            return age_minutes > SIGNAL_EXPIRY_MINUTES
+            return age_minutes > self._signal_validity_minutes()
         except Exception:
             return False
 
@@ -139,4 +173,8 @@ class SignalProcessor:
             "active_positions": len(self._active_positions),
             "positions": list(self._active_positions.keys()),
             "ibkr_trading_enabled": self._is_trading_enabled(),
+            "trade_window_start_time": f"{self._trade_window_start()[0]:02d}:{self._trade_window_start()[1]:02d}",
+            "trade_window_end_time": f"{self._trade_window_end()[0]:02d}:{self._trade_window_end()[1]:02d}",
+            "order_window_end_time": f"{self._order_window_end()[0]:02d}:{self._order_window_end()[1]:02d}",
+            "signal_validity_minutes": self._signal_validity_minutes(),
         }

@@ -757,18 +757,11 @@ routerAdd("GET", "/api/custom/ibkr/account_snapshot", (c) => {
 })
 
 routerAdd("GET", "/api/custom/ibkr/runtime/config", (c) => {
-    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { getRuntimeEnvironmentFromRequest, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
     const items = []
     try {
-        const records = $app.findRecordsByFilter(
-            "config",
-            "environment = {:env} || environment = 'global' || environment = ''",
-            "-updated",
-            500,
-            0,
-            { env: environment }
-        ) || []
+        const records = listEffectiveConfigRecords(environment)
 
         for (let i = 0; i < records.length; i++) {
             items.push({

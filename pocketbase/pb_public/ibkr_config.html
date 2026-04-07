@@ -422,58 +422,86 @@ const LEGACY_KEY_REDIRECTS = {
 const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_trading_enabled',
   'ibkr_signal_source',
+  'position_limit_max',
+  'eod_close_time',
+  'eod_keep_symbols',
   'watchlist_interval_min',
   'ibkr_target_refresh_sec',
   'ibkr_target_subscription_limit',
   'ibkr_watchlist_backfill_interval_min',
   'ibkr_watchlist_backfill_batch_size',
   'ibkr_watchlist_backfill_stale_min',
+  'trade_window_start_time',
+  'trade_window_end_time',
+  'order_window_end_time',
   'signal_validity_minutes',
   'order_validity_minutes',
   'pb_scheduler_enabled',
+  'signal_poll_interval_sec',
   'system_status_chat_id',
   'system_alert_chat_id',
+  'signal_chat_id',
+  'order_chat_id',
+  'reverse_chat_id',
   'status_notify_enabled',
   'daily_summary_notify_enabled',
   'manual_stop_notify_enabled',
   'health_check_notify_enabled',
   'inspection_notify_enabled',
+  'reverse_signal_threshold',
   'ibkr_compute_public_url',
   'ibkr_compute_enabled',
   'ibkr_bar_publish_enabled',
   'market_index_symbols'
 ])
 
-function meta(displayName, groupName, sortOrder, defaultValue = '') {
-  return { display_name: displayName, group_name: groupName, sort_order: sortOrder, default_value: defaultValue }
+function meta(displayName, groupName, sortOrder, defaultValue = '', description = '') {
+  return {
+    display_name: displayName,
+    group_name: groupName,
+    sort_order: sortOrder,
+    default_value: defaultValue,
+    description
+  }
 }
 
 const CONFIG_META = {
-  ibkr_trading_enabled: meta('交易总开关', '核心交易', 100, 'TRUE'),
-  ibkr_signal_source: meta('信号来源', '核心交易', 110, 'both'),
-  watchlist_interval_min: meta('标的同步间隔', '任务调度', 440, '5'),
-  ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '任务调度', 441, '60'),
-  ibkr_target_subscription_limit: meta('目标订阅上限', '任务调度', 442, '60'),
-  ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '任务调度', 443, '30'),
-  ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '任务调度', 444, '12'),
-  ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '任务调度', 445, '20'),
-  signal_validity_minutes: meta('信号有效期', '任务调度', 450, '30'),
-  order_validity_minutes: meta('订单有效期', '任务调度', 460, '30'),
-  pb_scheduler_enabled: meta('PB 前端定时刷新', '任务调度', 470, 'TRUE'),
+  ibkr_trading_enabled: meta('交易总开关', '核心交易', 100, 'TRUE', 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
+  ibkr_signal_source: meta('信号来源', '核心交易', 110, 'both', 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
+  position_limit_max: meta('当日持仓上限', '核心交易', 120, '3', '当日成功下单计数达到该上限后，新的交易信号将被拒绝'),
+  eod_close_time: meta('EOD 平仓时间', '核心交易', 130, '15:55', '到达该 ET 时间后自动执行日终平仓'),
+  eod_keep_symbols: meta('EOD 保留标的', '核心交易', 140, 'BOXX,IBKR', '日终平仓时跳过这些标的，逗号分隔；默认保留 BOXX 与 IBKR'),
+  watchlist_interval_min: meta('标的同步间隔', '任务调度', 440, '5', '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
+  ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '任务调度', 441, '60', '按 ibkr_targets 刷新当日实时订阅列表'),
+  ibkr_target_subscription_limit: meta('目标订阅上限', '任务调度', 442, '60', '当日 ibkr_targets 进入 websocket 实时订阅的最大标的数'),
+  ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '任务调度', 443, '30', '非目标标的按批次执行 5m 增量回补的间隔'),
+  ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '任务调度', 444, '12', '每轮底池回补最多处理多少个非目标标的'),
+  ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '任务调度', 445, '20', '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
+  trade_window_start_time: meta('交易开始时间', '任务调度', 446, '09:35', '信号允许进入交易校验的开始时间，ET 时区'),
+  trade_window_end_time: meta('交易结束时间', '任务调度', 447, '15:30', '超过该时间后不再接受新交易信号，ET 时区'),
+  order_window_end_time: meta('下单截止时间', '任务调度', 448, '15:00', '超过该时间后新信号不再进入下单环节，ET 时区'),
+  signal_validity_minutes: meta('信号有效期', '任务调度', 450, '30', '超过此时间的信号将被忽略'),
+  order_validity_minutes: meta('订单有效期', '任务调度', 460, '30', 'Init/Submitted 状态的订单超过此时间自动标记为 Canceled'),
+  pb_scheduler_enabled: meta('PB 前端定时刷新', '任务调度', 470, 'TRUE', '仅控制 PB 前端页面的定时刷新，IBKR 算法调度不受此开关影响'),
+  signal_poll_interval_sec: meta('信号轮询秒数', '任务调度', 480, '120', 'IBKR Compute 轮询 pending 信号和反转处理的间隔秒数'),
 
-  system_status_chat_id: meta('状态群 Chat ID', '通知中心', 515, 'oc_b7b52fc28816d90e27ce50ca7922a9ac'),
-  system_alert_chat_id: meta('告警群 Chat ID', '通知中心', 516, 'oc_91aa4f84bc6fedb125b1a263d91d4104'),
-  status_notify_enabled: meta('状态通知', '通知中心', 520, 'TRUE'),
-  daily_summary_notify_enabled: meta('日报通知', '通知中心', 540, 'TRUE'),
-  manual_stop_notify_enabled: meta('手动停止通知', '通知中心', 550, 'TRUE'),
-  health_check_notify_enabled: meta('健康检查通知', '通知中心', 560, 'TRUE'),
-  inspection_notify_enabled: meta('巡检告警', '通知中心', 570, 'TRUE'),
+  system_status_chat_id: meta('状态群 Chat ID', '通知中心', 515, 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '正常状态提醒、2FA 卡片与日常运行反馈默认发送到这里'),
+  system_alert_chat_id: meta('告警群 Chat ID', '通知中心', 516, 'oc_91aa4f84bc6fedb125b1a263d91d4104', '所有 warning / error 级别且影响系统运行的异常默认发送到这里'),
+  signal_chat_id: meta('信号群 Chat ID', '通知中心', 517, 'oc_edb26dcc52938b7833ac9f32ae6b1620', '新信号卡片默认发送到这里'),
+  order_chat_id: meta('订单群 Chat ID', '通知中心', 518, 'oc_5ca4585e1fd108c2c662dfc358684945', '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
+  reverse_chat_id: meta('反转群 Chat ID', '通知中心', 519, 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转信号与反转执行卡片默认发送到这里'),
+  status_notify_enabled: meta('状态通知', '通知中心', 520, 'TRUE', '开盘、重启等状态通知开关'),
+  daily_summary_notify_enabled: meta('日报通知', '通知中心', 540, 'TRUE', '收盘后发送当日交易汇总'),
+  manual_stop_notify_enabled: meta('手动停止通知', '通知中心', 550, 'TRUE', '手动停止算法时发送通知'),
+  health_check_notify_enabled: meta('健康检查通知', '通知中心', 560, 'TRUE', '盘前、盘中、盘后健康状态汇报'),
+  inspection_notify_enabled: meta('巡检告警', '通知中心', 570, 'TRUE', '孤立持仓、恢复异常等巡检告警'),
+  reverse_signal_threshold: meta('反转通知阈值', '通知中心', 580, '6', '仅当反转评分达到该阈值时发送反转卡片通知'),
 
-  ibkr_compute_public_url: meta('IBKR Compute 地址', 'PB / IBKR 服务', 905, 'https://qc.lzw-glory.top'),
-  ibkr_compute_enabled: meta('IBKR Compute 服务开关', 'PB / IBKR 服务', 910, 'TRUE'),
-  ibkr_bar_publish_enabled: meta('IBKR K线发布开关', 'PB / IBKR 服务', 920, 'TRUE'),
+  ibkr_compute_public_url: meta('IBKR Compute 地址', 'PB / IBKR 服务', 905, 'https://qc.lzw-glory.top', 'PocketBase 代理与运行页访问的公开 Compute 地址'),
+  ibkr_compute_enabled: meta('IBKR Compute 服务开关', 'PB / IBKR 服务', 910, 'TRUE', '控制定时指标计算和盘前扫描'),
+  ibkr_bar_publish_enabled: meta('IBKR K线发布开关', 'PB / IBKR 服务', 920, 'TRUE', '控制 BarPublisher 是否向 PB 推送 OHLCV 数据'),
 
-  market_index_symbols: meta('大盘指数标的', '市场分析', 1000, 'SPY,QQQ,VIX')
+  market_index_symbols: meta('大盘指数标的', '市场分析', 1000, 'SPY,QQQ,VIX', '用于监控和关联分析的大盘指数代码，逗号分隔')
 }
 
 const BOOLEAN_CONFIG_KEYS = new Set([
@@ -489,6 +517,7 @@ const BOOLEAN_CONFIG_KEYS = new Set([
 ])
 
 const NUMERIC_CONFIG_RULES = {
+  position_limit_max: { min: '1', max: '20', step: '1' },
   watchlist_interval_min: { min: '1', max: '60', step: '1' },
   ibkr_target_refresh_sec: { min: '15', max: '300', step: '15' },
   ibkr_target_subscription_limit: { min: '1', max: '200', step: '1' },
@@ -496,7 +525,9 @@ const NUMERIC_CONFIG_RULES = {
   ibkr_watchlist_backfill_batch_size: { min: '1', max: '100', step: '1' },
   ibkr_watchlist_backfill_stale_min: { min: '5', max: '240', step: '5' },
   signal_validity_minutes: { min: '5', max: '120', step: '5' },
-  order_validity_minutes: { min: '5', max: '120', step: '5' }
+  order_validity_minutes: { min: '5', max: '120', step: '5' },
+  signal_poll_interval_sec: { min: '15', max: '600', step: '15' },
+  reverse_signal_threshold: { min: '1', max: '10', step: '1' }
 }
 
 const SELECT_CONFIGS = {
@@ -589,11 +620,18 @@ function getVisibleConfigs() {
     })
     .map(config => {
       const fallbackMeta = CONFIG_META[config.key] || meta(config.key, '其他 / 未归类', 9999)
-      const sortOrder = Number.isFinite(Number(config.sort_order)) ? Number(config.sort_order) : fallbackMeta.sort_order
+      const metaSortOrder = Number(fallbackMeta.sort_order)
+      const recordSortOrder = Number(config.sort_order)
+      const sortOrder = Number.isFinite(metaSortOrder)
+        ? metaSortOrder
+        : (Number.isFinite(recordSortOrder) ? recordSortOrder : 9999)
 
-      config._display_name = config.display_name || fallbackMeta.display_name || config.key
-      config._group_name = config.group_name || fallbackMeta.group_name || '其他 / 未归类'
+      config._display_name = fallbackMeta.display_name || config.display_name || config.key
+      config._group_name = fallbackMeta.group_name || config.group_name || '其他 / 未归类'
       config._sort_order = sortOrder
+      config._description = config.description || fallbackMeta.description || ''
+      config._default_value = fallbackMeta.default_value ?? config.default_value ?? ''
+      config.default_value = config._default_value
       return config
     })
     .sort((a, b) => {
@@ -604,27 +642,15 @@ function getVisibleConfigs() {
 
 function getGroupedConfigs() {
   const visibleConfigs = getVisibleConfigs()
-  const groupedConfigs = []
-  let currentGroupName = ''
-  let currentGroupItems = []
+  const groups = new Map()
 
   visibleConfigs.forEach(config => {
-    if (config._group_name !== currentGroupName) {
-      if (currentGroupItems.length > 0) {
-        groupedConfigs.push([currentGroupName, currentGroupItems])
-      }
-      currentGroupName = config._group_name
-      currentGroupItems = [config]
-    } else {
-      currentGroupItems.push(config)
-    }
+    const groupName = config._group_name || '其他 / 未归类'
+    if (!groups.has(groupName)) groups.set(groupName, [])
+    groups.get(groupName).push(config)
   })
 
-  if (currentGroupItems.length > 0) {
-    groupedConfigs.push([currentGroupName, currentGroupItems])
-  }
-
-  return groupedConfigs
+  return Array.from(groups.entries())
 }
 
 function getTabs(groupedConfigs) {
@@ -639,6 +665,7 @@ function getTabs(groupedConfigs) {
 }
 
 function renderTabs(tabs) {
+  const activeTabInfo = tabs.find(tab => tab.id === activeTab)
   return `
     <div class="config-toolbar">
       <div class="config-tabs">
@@ -656,7 +683,7 @@ function renderTabs(tabs) {
       <div class="config-tab-summary">
         ${activeTab === 'all'
           ? `当前显示全部功能配置，共 ${tabs[0]?.count || 0} 项`
-          : `当前功能页：${activeTab}`}
+          : `当前功能页：${activeTab} · ${activeTabInfo?.count || 0} 项`}
       </div>
     </div>
   `
@@ -712,18 +739,21 @@ function render() {
   const displayGroups = activeTab === 'all'
     ? groupedConfigs
     : groupedConfigs.filter(([groupName]) => groupName === activeTab)
+  const showSectionHeader = activeTab === 'all' || displayGroups.length > 1
 
   let html = ''
   html += renderTabs(tabs)
 
   for (const [groupName, groupItems] of displayGroups) {
-    html += `
-      <div class="config-section">
+    html += `<div class="config-section">`
+    if (showSectionHeader) {
+      html += `
         <div class="section-title">
           <span>${groupName}</span>
           <span class="section-count">${groupItems.length} 项</span>
         </div>
-    `
+      `
+    }
 
     for (const config of groupItems) {
       const key = config.key
@@ -744,7 +774,7 @@ function render() {
             </div>
             <div class="config-default">默认: ${config.default_value ?? '-'}</div>
           </div>
-          <div class="config-desc">${config.description || ''}</div>
+          <div class="config-desc">${config._description || ''}</div>
           ${renderControl(config)}
           <div style="margin-top: 8px; text-align: right;">
             <button class="reset-btn" onclick="resetOne('${key}')" ${resetDisabled}>重置</button>
@@ -912,7 +942,7 @@ async function saveAll() {
             key: config.key,
             value: config.value,
             default_value: config.default_value ?? '',
-            description: config.description ?? '',
+            description: config.description || config._description || '',
             display_name: config.display_name || config._display_name || '',
             group_name: config.group_name || config._group_name || '',
             sort_order: config.sort_order ?? config._sort_order ?? 0,
@@ -1000,7 +1030,7 @@ async function resetAll() {
             key: config.key,
             value: config.default_value,
             default_value: config.default_value ?? '',
-            description: config.description ?? '',
+            description: config.description || config._description || '',
             display_name: config.display_name || config._display_name || '',
             group_name: config.group_name || config._group_name || '',
             sort_order: config.sort_order ?? config._sort_order ?? 0,

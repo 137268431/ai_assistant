@@ -4,6 +4,8 @@
  * 领域逻辑拆分到 feishu_signal.js / feishu_order.js
  */
 
+var envUtils = require(`${__hooks}/lib/environment.js`)
+
 var FEISHU_APP_ID = "cli_a936b8d2cc79dccb"
 var FEISHU_APP_SECRET = "ZZySOkZPaKBVkNhhk4upvfROPnXcSsry"
 
@@ -14,6 +16,28 @@ var FEISHU_CHAT_ID_REVERSE = "oc_2931e2b8501df3a9d869d7aebceb8fe2"
 
 var _cachedToken = null
 var _tokenExpireTime = 0
+
+function getConfiguredChatId(configKey, fallbackChatId, environment) {
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+    var configured = envUtils.getConfigValue(configKey, fallbackChatId, runtimeEnvironment)
+    return String(configured || fallbackChatId).trim() || fallbackChatId
+}
+
+function getSignalChatId(environment) {
+    return getConfiguredChatId("signal_chat_id", FEISHU_CHAT_ID_SIGNAL, environment)
+}
+
+function getOrderChatId(environment) {
+    return getConfiguredChatId("order_chat_id", FEISHU_CHAT_ID_ORDER, environment)
+}
+
+function getReverseChatId(environment) {
+    return getConfiguredChatId("reverse_chat_id", FEISHU_CHAT_ID_REVERSE, environment)
+}
+
+function getErrorChatId(environment) {
+    return getConfiguredChatId("system_alert_chat_id", FEISHU_CHAT_ID_ERROR, environment)
+}
 
 function getAppAccessToken() {
     var now = Date.now()
@@ -148,18 +172,18 @@ function updateMessageCard(messageId, card) {
     }
 }
 
-function getChatIdByType(type) {
-    if (type === "order") return FEISHU_CHAT_ID_ORDER
-    if (type === "reverse") return FEISHU_CHAT_ID_REVERSE
-    if (type === "error") return FEISHU_CHAT_ID_ERROR
-    return FEISHU_CHAT_ID_SIGNAL
+function getChatIdByType(type, environment) {
+    if (type === "order") return getOrderChatId(environment)
+    if (type === "reverse") return getReverseChatId(environment)
+    if (type === "error") return getErrorChatId(environment)
+    return getSignalChatId(environment)
 }
 
-function sendTextToChat(text) {
-    return sendMessage("text", { text: text }, FEISHU_CHAT_ID_SIGNAL, "chat_id")
+function sendTextToChat(text, environment) {
+    return sendMessage("text", { text: text }, getSignalChatId(environment), "chat_id")
 }
 
-function sendPostToChat(title, content, type) {
+function sendPostToChat(title, content, type, environment) {
     var postContent = {
         post: {
             zh_cn: {
@@ -168,43 +192,43 @@ function sendPostToChat(title, content, type) {
             }
         }
     }
-    return sendMessage("post", postContent, getChatIdByType(type), "chat_id")
+    return sendMessage("post", postContent, getChatIdByType(type, environment), "chat_id")
 }
 
-function sendCardToChat(card) {
-    return sendMessage("interactive", card, FEISHU_CHAT_ID_SIGNAL, "chat_id")
+function sendCardToChat(card, environment) {
+    return sendMessage("interactive", card, getSignalChatId(environment), "chat_id")
 }
 
-function sendCardToChatDetailed(card) {
-    return sendMessageDetailed("interactive", card, FEISHU_CHAT_ID_SIGNAL, "chat_id")
+function sendCardToChatDetailed(card, environment) {
+    return sendMessageDetailed("interactive", card, getSignalChatId(environment), "chat_id")
 }
 
-function sendCardToChatByType(card, type) {
-    return sendMessage("interactive", card, getChatIdByType(type), "chat_id")
+function sendCardToChatByType(card, type, environment) {
+    return sendMessage("interactive", card, getChatIdByType(type, environment), "chat_id")
 }
 
-function sendCardToChatByTypeDetailed(card, type) {
-    return sendMessageDetailed("interactive", card, getChatIdByType(type), "chat_id")
+function sendCardToChatByTypeDetailed(card, type, environment) {
+    return sendMessageDetailed("interactive", card, getChatIdByType(type, environment), "chat_id")
 }
 
-function notifyError(title, content) {
+function notifyError(title, content, environment) {
     var postContent = [[{ tag: "text", text: title }]]
     if (content) {
         postContent.push([{ tag: "text", text: content }])
     }
     var success = sendMessage("post", {
         post: { zh_cn: { title: "", content: postContent } }
-    }, FEISHU_CHAT_ID_ERROR, "chat_id")
+    }, getErrorChatId(environment), "chat_id")
     console.log("[FeishuApp] 异常通知发送:", success ? "成功" : "失败")
     return success
 }
 
-function notifySimple(message) {
-    return sendTextToChat(message)
+function notifySimple(message, environment) {
+    return sendTextToChat(message, environment)
 }
 
-function sendFeishuPost(title, content, type) {
-    return sendPostToChat(title, content, type)
+function sendFeishuPost(title, content, type, environment) {
+    return sendPostToChat(title, content, type, environment)
 }
 
 function sendFeishuCallbackResponse(c, data, updateToken) {

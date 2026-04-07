@@ -22,18 +22,24 @@ GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 ET = timezone(timedelta(hours=-4))
 
-EOD_CLOSE_HOUR = 15
-EOD_CLOSE_MINUTE = 55
-KEEP_SYMBOLS = set(os.environ.get("IBKR_EOD_KEEP_SYMBOLS", "").upper().split(","))
+DEFAULT_EOD_CLOSE_TIME = (15, 55)
+DEFAULT_POSITION_LIMIT_MAX = 3
+DEFAULT_KEEP_SYMBOLS = tuple(
+    symbol.strip().upper()
+    for symbol in os.environ.get("IBKR_EOD_KEEP_SYMBOLS", "").split(",")
+    if symbol.strip()
+)
 
 
 class OrderLifecycle:
     def __init__(self, gateway_url: str = None, account_id: str = None,
-                 pb_client=None, order_modifier=None):
+                 pb_client=None, order_modifier=None, config=None, environment: str = "live"):
         self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.order_modifier = order_modifier
+        self.config = config
+        self.environment = environment
 
         self._session = requests.Session()
         self._session.verify = False
@@ -46,6 +52,42 @@ class OrderLifecycle:
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
+
+    def _get_config_value(self, key: str, default: str) -> str:
+        if not self.config:
+            return default
+        return str(self.config.get_for_environment(key, self.environment, default) or default)
+
+    def _get_config_int(self, key: str, default: int) -> int:
+        if not self.config:
+            return default
+        return self.config.get_int_for_environment(key, self.environment, default)
+
+    def _eod_close_time(self) -> tuple[int, int]:
+        raw_value = self._get_config_value(
+            "eod_close_time",
+            f"{DEFAULT_EOD_CLOSE_TIME[0]:02d}:{DEFAULT_EOD_CLOSE_TIME[1]:02d}",
+        ).strip()
+        try:
+            hour_text, minute_text = raw_value.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            pass
+        return DEFAULT_EOD_CLOSE_TIME
+
+    def _position_limit_max(self) -> int:
+        return max(1, self._get_config_int("position_limit_max", DEFAULT_POSITION_LIMIT_MAX))
+
+    def _keep_symbols(self) -> set[str]:
+        raw_value = self._get_config_value("eod_keep_symbols", ",".join(DEFAULT_KEEP_SYMBOLS))
+        return {
+            symbol.strip().upper()
+            for symbol in str(raw_value or "").split(",")
+            if symbol.strip()
+        }
 
     def get_positions(self, acct_id: str = None) -> List[Dict]:
         acct = acct_id or self.account_id
@@ -95,7 +137,7 @@ class OrderLifecycle:
 
             if not position_qty or not conid:
                 continue
-            if symbol in KEEP_SYMBOLS:
+            if symbol in self._keep_symbols():
                 logger.info("Keeping EOD position: %s", symbol)
                 continue
 
@@ -155,7 +197,7 @@ class OrderLifecycle:
 
     @property
     def is_position_limit_reached(self) -> bool:
-        return self._daily_position_count >= 3
+        return self._daily_position_count >= self._position_limit_max()
 
     def _lifecycle_loop(self):
         logger.info("Order lifecycle monitor started")
@@ -165,9 +207,11 @@ class OrderLifecycle:
             if et_now.hour == 0 and et_now.minute < 5:
                 self.daily_reset()
 
-            if (et_now.hour == EOD_CLOSE_HOUR and
-                    et_now.minute >= EOD_CLOSE_MINUTE and
-                    not self._eod_closed_today):
+            eod_close_hour, eod_close_minute = self._eod_close_time()
+            if (
+                    (et_now.hour, et_now.minute) >= (eod_close_hour, eod_close_minute)
+                    and not self._eod_closed_today
+            ):
                 logger.info("EOD close triggered at %s", et_now.strftime("%H:%M:%S"))
                 self.eod_close_all()
 
@@ -227,11 +271,16 @@ class OrderLifecycle:
             self._thread = None
 
     def status(self) -> dict:
+        eod_close_hour, eod_close_minute = self._eod_close_time()
         return {
             "running": self._running,
+            "environment": self.environment,
             "eod_closed_today": self._eod_closed_today,
+            "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
+            "eod_keep_symbols": sorted(self._keep_symbols()),
             "daily_sl_count": self._daily_sl_count,
             "daily_position_count": self._daily_position_count,
+            "position_limit_max": self._position_limit_max(),
             "sl_circuit_breaker": self.is_sl_circuit_breaker,
             "position_limit_reached": self.is_position_limit_reached,
         }
