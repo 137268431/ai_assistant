@@ -66,7 +66,6 @@ class OrderPlacer:
                 "orderType": entry_order_type,
                 "side": side,
                 "quantity": quantity,
-                "price": entry_price,
                 "tif": "DAY",
             },
             {
@@ -92,6 +91,9 @@ class OrderPlacer:
                 "tif": "GTC",
             },
         ]
+
+        if entry_order_type != "MKT":
+            orders[0]["price"] = entry_price
 
         logger.info("Placing bracket order: %s %s %d@%.2f TP=%.2f SL=%.2f (acct=%s)",
                      symbol, direction, quantity, entry_price,

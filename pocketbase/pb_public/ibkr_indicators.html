@@ -8,6 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <script>document.write('<style>' + getIndicatorModalStyles() + '</style>');</script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     <style>
         .search-row {
             margin-bottom: 6px;
@@ -344,6 +345,118 @@
         .btn-view:active {
             background: #4299e1;
         }
+
+        .btn-chart {
+            background: rgba(72,187,120,0.18);
+            color: var(--long);
+            border: 1px solid rgba(72,187,120,0.24);
+        }
+
+        .chart-modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.82);
+            z-index: 1100;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 12px;
+        }
+
+        .chart-modal-overlay.show {
+            display: flex;
+        }
+
+        .chart-modal-content {
+            width: min(1080px, 100%);
+            max-height: 90vh;
+            overflow: auto;
+            border-radius: 18px;
+            border: 1px solid var(--border);
+            background: linear-gradient(180deg, rgba(8,12,20,0.98), rgba(14,20,32,0.98));
+            box-shadow: 0 26px 70px rgba(0, 0, 0, 0.42);
+            padding: 16px;
+        }
+
+        .chart-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .chart-modal-title {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .chart-modal-copy {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .chart-modal-close {
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            border-radius: 10px;
+            width: 36px;
+            height: 36px;
+            font-size: 20px;
+            cursor: pointer;
+        }
+
+        .chart-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .chart-summary-chip {
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(99,179,237,0.1);
+            border: 1px solid rgba(99,179,237,0.12);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .chart-canvas {
+            width: 100%;
+            height: 680px;
+            border-radius: 14px;
+            background: rgba(8,12,20,0.9);
+        }
+
+        .chart-empty {
+            display: grid;
+            place-items: center;
+            height: 320px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .chart-note {
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        @media (max-width: 760px) {
+            .chart-canvas {
+                height: 560px;
+            }
+            .indicator-actions {
+                flex-direction: column;
+            }
+        }
     </style>
 </head>
 <body>
@@ -390,6 +503,7 @@
 
     <!-- 技术指标详情浮层（由 common.js 动态注入） -->
     <div id="indicatorModalContainer"></div>
+    <div id="indicatorChartModalContainer"></div>
 
     <!-- Bottom Nav -->
     <div id="navContainer"></div>
@@ -409,6 +523,7 @@
         let hasMore = false;
         let totalItems = 0;
         let currentEnvironment = getCurrentRuntimeEnvironment();
+        let indicatorChartInstance = null;
 
         function renderFilterNote() {
             const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
@@ -711,6 +826,10 @@
                             <span>Interval ${escapeHtml(getIntervalLabel(indicator.interval) || '-')}</span>
                             <span>${escapeHtml(indicator.script_tag || '无脚本标记')}</span>
                         </div>
+                        <div class="indicator-actions">
+                            <button class="action-btn btn-view" type="button" onclick="showIndicatorDetailsFromButton(event, '${escapeHtml(indicator.id)}')">详情</button>
+                            <button class="action-btn btn-chart" type="button" onclick="openIndicatorChart(event, '${escapeHtml(indicator.id)}')">图表</button>
+                        </div>
                     </div>
                 `;
             }).join('');
@@ -721,6 +840,229 @@
             if (!indicator) return;
             showIndicatorModal(indicator);
         }
+
+        function showIndicatorDetailsFromButton(event, indicatorId) {
+            if (event) event.stopPropagation();
+            showIndicatorDetails(indicatorId);
+        }
+
+        function ensureIndicatorChartModal() {
+            if (document.getElementById('indicatorChartModal')) return;
+            document.getElementById('indicatorChartModalContainer').innerHTML = `
+                <div class="chart-modal-overlay" id="indicatorChartModal" onclick="if(event.target===this)window.closeIndicatorChart()">
+                    <div class="chart-modal-content">
+                        <div class="chart-modal-header">
+                            <div>
+                                <div class="chart-modal-title" id="indicatorChartTitle">指标图</div>
+                                <div class="chart-modal-copy">主图展示价格 / EMA / VWAP / 买卖点，副图展示 CRSI / OBV RSI / ATR / Volume。</div>
+                            </div>
+                            <button class="chart-modal-close" type="button" onclick="window.closeIndicatorChart()">×</button>
+                        </div>
+                        <div class="chart-summary" id="indicatorChartSummary"></div>
+                        <div class="chart-canvas" id="indicatorChartCanvas"><div class="chart-empty">图表加载中...</div></div>
+                        <div class="chart-note" id="indicatorChartNote"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function formatChartLabel(item) {
+            if (item?.us_time) return String(item.us_time).slice(5, 16);
+            const ms = Number(item?.bar_time_ms || 0);
+            if (!ms) return '--';
+            const date = new Date(ms);
+            if (Number.isNaN(date.getTime())) return '--';
+            return `${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
+        }
+
+        function buildSignalScatter(signals, bars, priceResolver, color) {
+            const indexByMs = new Map(bars.map((bar, index) => [Number(bar.bar_time_ms || 0), index]));
+            return signals.map((signal) => {
+                const barMs = Number(signal.bar_time_ms || 0);
+                const xIndex = indexByMs.get(barMs);
+                if (xIndex === undefined) return null;
+                const yValue = Number(priceResolver(signal) || 0);
+                if (!Number.isFinite(yValue) || yValue <= 0) return null;
+                return {
+                    value: [xIndex, yValue],
+                    itemStyle: { color },
+                    name: signal.signal || signal.direction || '',
+                    signal_id: signal.signal_id || '',
+                };
+            }).filter(Boolean);
+        }
+
+        function renderIndicatorChart(indicator, bars, indicators, signals) {
+            const title = document.getElementById('indicatorChartTitle');
+            const summary = document.getElementById('indicatorChartSummary');
+            const canvas = document.getElementById('indicatorChartCanvas');
+            const note = document.getElementById('indicatorChartNote');
+            const symbol = indicator.symbol || '--';
+            const interval = indicator.interval || '--';
+
+            title.textContent = `${symbol} · ${interval} 指标图`;
+
+            if (!Array.isArray(bars) || !bars.length) {
+                if (indicatorChartInstance) {
+                    indicatorChartInstance.dispose();
+                    indicatorChartInstance = null;
+                }
+                canvas.innerHTML = '<div class="chart-empty">暂无可绘制的 bars / indicators 历史数据</div>';
+                summary.innerHTML = '';
+                note.textContent = '图表需要先有 ibkr_bars 与 ibkr_indicators 的历史记录。';
+                return;
+            }
+
+            const sortedBars = bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0));
+            const indicatorMap = new Map((indicators || []).map((item) => [Number(item.bar_time_ms || 0), item]));
+            const barMap = new Map(sortedBars.map((item) => [Number(item.bar_time_ms || 0), item]));
+            const categories = sortedBars.map((bar) => formatChartLabel(bar));
+            const candle = sortedBars.map((bar) => [
+                Number(bar.open || 0),
+                Number(bar.close || 0),
+                Number(bar.low || 0),
+                Number(bar.high || 0),
+            ]);
+            const emaFast = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_fast ?? null));
+            const emaSlow = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_slow ?? null));
+            const emaTrend = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_trend ?? null));
+            const vwap = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap ?? null));
+            const crsi = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi ?? null));
+            const obvRsi = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.obv_rsi ?? null));
+            const atrPct = sortedBars.map((bar) => Number(indicatorMap.get(Number(bar.bar_time_ms || 0))?.atr_pct ?? null));
+            const volume = sortedBars.map((bar) => Number(bar.volume || 0));
+            const longSignals = buildSignalScatter(
+                (signals || []).filter((item) => String(item.direction || '').toLowerCase() === 'long'),
+                sortedBars,
+                (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
+                '#48BB78'
+            );
+            const shortSignals = buildSignalScatter(
+                (signals || []).filter((item) => String(item.direction || '').toLowerCase() === 'short'),
+                sortedBars,
+                (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
+                '#FC8181'
+            );
+
+            summary.innerHTML = [
+                `<span class="chart-summary-chip">${escapeHtml(symbol)} · ${escapeHtml(getIntervalLabel(interval) || interval)}</span>`,
+                `<span class="chart-summary-chip">${sortedBars.length} bars</span>`,
+                `<span class="chart-summary-chip">${(signals || []).length} signals</span>`,
+                `<span class="chart-summary-chip">${escapeHtml(sortedBars[0]?.us_time || '--')} → ${escapeHtml(sortedBars[sortedBars.length - 1]?.us_time || '--')}</span>`
+            ].join('');
+            note.textContent = '主图覆盖买卖点散点；5m 以外周期通常没有信号点，这时只展示价格与指标轨迹。';
+
+            if (indicatorChartInstance) {
+                indicatorChartInstance.dispose();
+            }
+            canvas.innerHTML = '';
+            indicatorChartInstance = echarts.init(canvas);
+            indicatorChartInstance.setOption({
+                animation: false,
+                backgroundColor: 'transparent',
+                legend: {
+                    type: 'scroll',
+                    top: 0,
+                    textStyle: { color: '#8BA4C4', fontSize: 10 }
+                },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'cross' },
+                    backgroundColor: 'rgba(8,12,20,0.96)',
+                    borderColor: 'rgba(99,179,237,0.16)',
+                    textStyle: { color: '#E2EAF4' }
+                },
+                axisPointer: {
+                    link: [{ xAxisIndex: 'all' }]
+                },
+                grid: [
+                    { left: 48, right: 56, top: 44, height: '48%' },
+                    { left: 48, right: 56, top: '58%', height: '14%' },
+                    { left: 48, right: 56, top: '78%', height: '14%' }
+                ],
+                dataZoom: [
+                    { type: 'inside', xAxisIndex: [0, 1, 2], start: 55, end: 100 },
+                    { type: 'slider', xAxisIndex: [0, 1, 2], bottom: 8, height: 18, borderColor: 'rgba(99,179,237,0.12)', textStyle: { color: '#8BA4C4' } }
+                ],
+                xAxis: [
+                    { type: 'category', data: categories, scale: true, boundaryGap: true, axisLine: { lineStyle: { color: '#30435E' } }, axisLabel: { color: '#8BA4C4', fontSize: 10 }, splitLine: { show: false } },
+                    { type: 'category', gridIndex: 1, data: categories, axisLabel: { show: false }, axisLine: { lineStyle: { color: '#30435E' } }, splitLine: { show: false } },
+                    { type: 'category', gridIndex: 2, data: categories, axisLabel: { color: '#8BA4C4', fontSize: 10 }, axisLine: { lineStyle: { color: '#30435E' } }, splitLine: { show: false } }
+                ],
+                yAxis: [
+                    { scale: true, splitLine: { lineStyle: { color: 'rgba(99,179,237,0.06)' } }, axisLabel: { color: '#8BA4C4', fontSize: 10 } },
+                    { gridIndex: 1, min: 0, max: 100, splitLine: { lineStyle: { color: 'rgba(99,179,237,0.06)' } }, axisLabel: { color: '#8BA4C4', fontSize: 10 } },
+                    { gridIndex: 2, splitLine: { show: false }, axisLabel: { color: '#8BA4C4', fontSize: 10 } },
+                    { gridIndex: 2, position: 'right', splitLine: { show: false }, axisLabel: { color: '#8BA4C4', fontSize: 10, formatter: '{value}%' } }
+                ],
+                series: [
+                    { name: 'Price', type: 'candlestick', data: candle, itemStyle: { color: '#48BB78', color0: '#FC8181', borderColor: '#48BB78', borderColor0: '#FC8181' } },
+                    { name: 'EMA 20', type: 'line', data: emaFast, symbol: 'none', smooth: true, lineStyle: { width: 1.3, color: '#63B3ED' } },
+                    { name: 'EMA 50', type: 'line', data: emaSlow, symbol: 'none', smooth: true, lineStyle: { width: 1.2, color: '#F6AD55' } },
+                    { name: 'EMA 100', type: 'line', data: emaTrend, symbol: 'none', smooth: true, lineStyle: { width: 1.1, color: '#A78BFA' } },
+                    { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', smooth: true, lineStyle: { width: 1.1, color: '#68D391' } },
+                    { name: 'LONG Signal', type: 'scatter', data: longSignals, symbolSize: 10 },
+                    { name: 'SHORT Signal', type: 'scatter', data: shortSignals, symbolSize: 10 },
+                    { name: 'CRSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: crsi, symbol: 'none', lineStyle: { width: 1.2, color: '#48BB78' }, markLine: { symbol: 'none', lineStyle: { color: 'rgba(246,173,85,0.4)' }, data: [{ yAxis: 80 }, { yAxis: 20 }] } },
+                    { name: 'OBV RSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: obvRsi, symbol: 'none', lineStyle: { width: 1.2, color: '#F6AD55' } },
+                    { name: 'Volume', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: volume, itemStyle: { color: 'rgba(99,179,237,0.42)' } },
+                    { name: 'ATR %', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: atrPct, symbol: 'none', lineStyle: { width: 1.2, color: '#FC8181' } }
+                ]
+            });
+        }
+
+        async function openIndicatorChart(event, indicatorId) {
+            if (event) event.stopPropagation();
+            const indicator = allIndicators.find((item) => item.id === indicatorId);
+            if (!indicator) return;
+
+            ensureIndicatorChartModal();
+            document.getElementById('indicatorChartModal').classList.add('show');
+            document.getElementById('indicatorChartTitle').textContent = `${indicator.symbol} · ${indicator.interval} 指标图`;
+            document.getElementById('indicatorChartSummary').innerHTML = '';
+            document.getElementById('indicatorChartCanvas').innerHTML = '<div class="chart-empty">图表加载中...</div>';
+            document.getElementById('indicatorChartNote').textContent = '正在拉取 bars / indicators / signals ...';
+
+            try {
+                const cappedMs = Number(indicator.bar_time_ms || Date.now()) || Date.now();
+                const baseFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(indicator.symbol)}" && interval = "${escapeQueryValue(indicator.interval)}" && bar_time_ms <= ${cappedMs}`;
+                const [barsResp, indicatorsResp] = await Promise.all([
+                    apiFetch('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage: 180 }),
+                    apiFetch('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage: 180 }),
+                ]);
+                const bars = Array.isArray(barsResp?.items) ? barsResp.items : [];
+                const indicatorsData = Array.isArray(indicatorsResp?.items) ? indicatorsResp.items : [];
+                const sortedBars = bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0));
+                const minMs = Number(sortedBars[0]?.bar_time_ms || 0) || 0;
+                const maxMs = Number(sortedBars[sortedBars.length - 1]?.bar_time_ms || cappedMs) || cappedMs;
+                let signals = [];
+                if (indicator.interval === '5m' && minMs > 0) {
+                    const signalsResp = await apiFetch('ibkr_signals', {
+                        filter: `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(indicator.symbol)}" && interval = "5m" && bar_time_ms >= ${minMs} && bar_time_ms <= ${maxMs}`,
+                        sort: 'bar_time_ms',
+                        perPage: 200
+                    }).catch(() => ({ items: [] }));
+                    signals = Array.isArray(signalsResp?.items) ? signalsResp.items : [];
+                }
+                renderIndicatorChart(indicator, sortedBars, indicatorsData, signals);
+            } catch (error) {
+                if (indicatorChartInstance) {
+                    indicatorChartInstance.dispose();
+                    indicatorChartInstance = null;
+                }
+                document.getElementById('indicatorChartCanvas').innerHTML = `<div class="chart-empty">加载失败: ${escapeHtml(error.message || 'unknown error')}</div>`;
+                document.getElementById('indicatorChartNote').textContent = '请检查 ibkr_bars / ibkr_indicators / ibkr_signals 是否已有该标的历史数据。';
+            }
+        }
+
+        window.closeIndicatorChart = function() {
+            const modal = document.getElementById('indicatorChartModal');
+            if (modal) modal.classList.remove('show');
+            if (indicatorChartInstance) {
+                indicatorChartInstance.dispose();
+                indicatorChartInstance = null;
+            }
+        };
 
         function manualRefresh() {
             const btn = document.getElementById('refreshBtn');
@@ -765,6 +1107,10 @@
                         });
                     }
                 }
+            });
+
+            window.addEventListener('resize', () => {
+                if (indicatorChartInstance) indicatorChartInstance.resize();
             });
         });
 

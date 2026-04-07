@@ -174,6 +174,109 @@
             word-break: break-word;
         }
 
+        .ticket-shell {
+            display: grid;
+            gap: 14px;
+        }
+
+        .ticket-copy {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+
+        .ticket-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .ticket-field {
+            display: grid;
+            gap: 6px;
+        }
+
+        .ticket-field.span-2 {
+            grid-column: span 2;
+        }
+
+        .ticket-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .ticket-input,
+        .ticket-select {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--text);
+            padding: 12px 14px;
+            font-size: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
+
+        .ticket-input:focus,
+        .ticket-select:focus {
+            border-color: rgba(99,179,237,0.45);
+            box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+        }
+
+        .ticket-input:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .ticket-preview {
+            border-radius: 14px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(14,20,32,0.7);
+            padding: 12px 14px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+
+        .ticket-preview strong {
+            color: var(--text);
+        }
+
+        .ticket-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .ticket-button {
+            flex: 1;
+            min-width: 160px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+            background: rgba(20,28,46,0.92);
+            color: var(--text);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .ticket-button.primary {
+            border-color: rgba(72,187,120,0.26);
+            background: linear-gradient(180deg, rgba(72,187,120,0.18), rgba(255,255,255,0.04));
+        }
+
+        .ticket-help {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.7;
+        }
+
         .section {
             margin: 0 16px 14px;
         }
@@ -344,6 +447,7 @@
             .ops-row,
             .summary-grid,
             .meta-grid,
+            .ticket-grid,
             .position-grid,
             .order-grid {
                 grid-template-columns: 1fr;
@@ -410,6 +514,64 @@
 
         <div class="summary-grid" id="summaryGrid"></div>
         <div class="meta-grid" id="metaGrid"></div>
+
+        <div class="section">
+            <div class="section-head">
+                <div>
+                    <div class="section-kicker">Order Ticket</div>
+                    <div class="section-title">直接下单</div>
+                </div>
+                <div class="section-copy mono" id="ticketMeta">BRACKET ONLY</div>
+            </div>
+            <div class="surface-card ticket-shell">
+                <div class="ticket-copy">这里直接发真实 IBKR Bracket Order：开仓 + 止盈 + 止损。默认只支持 `LMT` / `MKT` 两种入场方式，目的是把实盘控制入口集中在 PocketBase 里。</div>
+                <div class="ticket-grid">
+                    <label class="ticket-field">
+                        <span class="ticket-label">Symbol</span>
+                        <input class="ticket-input" id="ticketSymbol" type="text" placeholder="AAPL" oninput="renderTicketPreview()">
+                    </label>
+                    <label class="ticket-field">
+                        <span class="ticket-label">Direction</span>
+                        <select class="ticket-select" id="ticketDirection" onchange="renderTicketPreview()">
+                            <option value="long">LONG</option>
+                            <option value="short">SHORT</option>
+                        </select>
+                    </label>
+                    <label class="ticket-field">
+                        <span class="ticket-label">Quantity</span>
+                        <input class="ticket-input" id="ticketQuantity" type="number" min="1" step="1" placeholder="100" oninput="renderTicketPreview()">
+                    </label>
+                    <label class="ticket-field">
+                        <span class="ticket-label">Order Type</span>
+                        <select class="ticket-select" id="ticketOrderType" onchange="toggleEntryPriceField(); renderTicketPreview();">
+                            <option value="LMT">LMT</option>
+                            <option value="MKT">MKT</option>
+                        </select>
+                    </label>
+                    <label class="ticket-field">
+                        <span class="ticket-label">Entry Price</span>
+                        <input class="ticket-input" id="ticketEntryPrice" type="number" min="0" step="0.01" placeholder="182.45" oninput="renderTicketPreview()">
+                    </label>
+                    <label class="ticket-field">
+                        <span class="ticket-label">Take Profit</span>
+                        <input class="ticket-input" id="ticketTakeProfit" type="number" min="0" step="0.01" placeholder="186.00" oninput="renderTicketPreview()">
+                    </label>
+                    <label class="ticket-field">
+                        <span class="ticket-label">Stop Loss</span>
+                        <input class="ticket-input" id="ticketStopLoss" type="number" min="0" step="0.01" placeholder="179.80" oninput="renderTicketPreview()">
+                    </label>
+                    <div class="ticket-field span-2">
+                        <span class="ticket-label">Preview</span>
+                        <div class="ticket-preview" id="ticketPreview">等待输入下单参数...</div>
+                    </div>
+                </div>
+                <div class="ticket-actions">
+                    <button class="ticket-button primary" id="submitOrderButton" type="button" onclick="submitManualOrder()">提交 Bracket Order</button>
+                    <button class="ticket-button" id="resetOrderButton" type="button" onclick="resetManualOrderForm()">清空输入</button>
+                </div>
+                <div class="ticket-help">安全约束：未认证时不会提交；`LIVE` 环境会二次确认；`LMT` 要求 `止损 < 入场 < 止盈`（做多）或 `止盈 < 入场 < 止损`（做空）。</div>
+            </div>
+        </div>
 
         <div class="section">
             <div class="section-head">
@@ -543,13 +705,71 @@
 
         function setActionState(busy) {
             actionBusy = Boolean(busy);
-            ['refreshButton', 'cancelAllButton', 'runtimeButton'].forEach((id) => {
+            ['refreshButton', 'cancelAllButton', 'runtimeButton', 'submitOrderButton', 'resetOrderButton'].forEach((id) => {
                 const node = document.getElementById(id);
                 if (node) node.disabled = actionBusy;
             });
             document.querySelectorAll('.action-btn').forEach((node) => {
                 node.disabled = actionBusy;
             });
+        }
+
+        function getManualOrderState() {
+            return {
+                symbol: String(document.getElementById('ticketSymbol')?.value || '').trim().toUpperCase(),
+                direction: String(document.getElementById('ticketDirection')?.value || 'long').trim().toLowerCase(),
+                quantity: Number(document.getElementById('ticketQuantity')?.value || 0),
+                orderType: String(document.getElementById('ticketOrderType')?.value || 'LMT').trim().toUpperCase(),
+                entryPrice: Number(document.getElementById('ticketEntryPrice')?.value || 0),
+                takeProfit: Number(document.getElementById('ticketTakeProfit')?.value || 0),
+                stopLoss: Number(document.getElementById('ticketStopLoss')?.value || 0),
+            };
+        }
+
+        function toggleEntryPriceField() {
+            const orderType = String(document.getElementById('ticketOrderType')?.value || 'LMT').trim().toUpperCase();
+            const field = document.getElementById('ticketEntryPrice');
+            if (!field) return;
+            const disabled = orderType === 'MKT';
+            field.disabled = disabled;
+            if (disabled) field.value = '';
+        }
+
+        function renderTicketPreview() {
+            const preview = document.getElementById('ticketPreview');
+            const meta = document.getElementById('ticketMeta');
+            if (!preview || !meta) return;
+
+            const state = getManualOrderState();
+            meta.textContent = `${currentEnvironment.toUpperCase()} · ${state.orderType}`;
+
+            const lines = [];
+            if (state.symbol) {
+                lines.push(`<strong>${escapeHtml(state.symbol)}</strong> · ${escapeHtml(state.direction.toUpperCase())} · ${escapeHtml(String(state.quantity || 0))} shares`);
+            } else {
+                lines.push('等待输入 `symbol / direction / quantity`。');
+            }
+            lines.push(`入场方式: <strong>${escapeHtml(state.orderType)}</strong>${state.orderType === 'LMT' && Number.isFinite(state.entryPrice) && state.entryPrice > 0 ? ` · Entry ${escapeHtml(formatMoney(state.entryPrice))}` : state.orderType === 'MKT' ? ' · 市价触发' : ''}`);
+            lines.push(`止盈 / 止损: <strong>${Number.isFinite(state.takeProfit) && state.takeProfit > 0 ? escapeHtml(formatMoney(state.takeProfit)) : '--'}</strong> / <strong>${Number.isFinite(state.stopLoss) && state.stopLoss > 0 ? escapeHtml(formatMoney(state.stopLoss)) : '--'}</strong>`);
+
+            if (latestSnapshot && !latestSnapshot.session_authenticated) {
+                lines.push('<span style="color:var(--short)">当前会话未认证，先去控制台完成 2FA。</span>');
+            }
+
+            preview.innerHTML = lines.map((line) => `<div>${line}</div>`).join('');
+        }
+
+        function resetManualOrderForm() {
+            ['ticketSymbol', 'ticketQuantity', 'ticketEntryPrice', 'ticketTakeProfit', 'ticketStopLoss'].forEach((id) => {
+                const node = document.getElementById(id);
+                if (node) node.value = '';
+            });
+            const direction = document.getElementById('ticketDirection');
+            const orderType = document.getElementById('ticketOrderType');
+            if (direction) direction.value = 'long';
+            if (orderType) orderType.value = 'LMT';
+            toggleEntryPriceField();
+            renderTicketPreview();
         }
 
         function goRuntime() {
@@ -705,6 +925,7 @@
                 renderMeta(snapshot);
                 renderPositions(snapshot);
                 renderOrders(snapshot);
+                renderTicketPreview();
                 refreshInfo.textContent = `上次刷新：${formatTimeLabel(snapshot.fetched_at)}`;
                 if (showFeedback) showToast('账户状态已刷新');
             } catch (error) {
@@ -730,6 +951,7 @@
                     renderMeta(payload.snapshot);
                     renderPositions(payload.snapshot);
                     renderOrders(payload.snapshot);
+                    renderTicketPreview();
                     document.getElementById('refreshInfo').textContent = `上次刷新：${formatTimeLabel(payload.snapshot.fetched_at)}`;
                 }
                 showToast(successMessage || `${label} 已执行`);
@@ -790,12 +1012,96 @@
             );
         }
 
+        async function submitManualOrder() {
+            if (actionBusy) return;
+            const state = getManualOrderState();
+            if (!state.symbol) {
+                showToast('请输入 symbol');
+                return;
+            }
+            if (!Number.isFinite(state.quantity) || state.quantity <= 0 || Math.round(state.quantity) !== state.quantity) {
+                showToast('quantity 必须是正整数');
+                return;
+            }
+            if (state.direction !== 'long' && state.direction !== 'short') {
+                showToast('direction 无效');
+                return;
+            }
+            if (state.orderType !== 'LMT' && state.orderType !== 'MKT') {
+                showToast('order type 仅支持 LMT / MKT');
+                return;
+            }
+            if (state.orderType === 'LMT' && (!Number.isFinite(state.entryPrice) || state.entryPrice <= 0)) {
+                showToast('LMT 订单必须填写入场价格');
+                return;
+            }
+            if (!Number.isFinite(state.takeProfit) || state.takeProfit <= 0 || !Number.isFinite(state.stopLoss) || state.stopLoss <= 0) {
+                showToast('请填写有效的止盈和止损');
+                return;
+            }
+            if (state.direction === 'long' && state.takeProfit <= state.stopLoss) {
+                showToast('做多要求止盈高于止损');
+                return;
+            }
+            if (state.direction === 'short' && state.takeProfit >= state.stopLoss) {
+                showToast('做空要求止盈低于止损');
+                return;
+            }
+            if (state.orderType === 'LMT') {
+                if (state.direction === 'long' && !(state.stopLoss < state.entryPrice && state.entryPrice < state.takeProfit)) {
+                    showToast('做多 LMT 要求 止损 < 入场 < 止盈');
+                    return;
+                }
+                if (state.direction === 'short' && !(state.takeProfit < state.entryPrice && state.entryPrice < state.stopLoss)) {
+                    showToast('做空 LMT 要求 止盈 < 入场 < 止损');
+                    return;
+                }
+            }
+            if (latestSnapshot && !latestSnapshot.session_authenticated) {
+                showToast('当前会话未认证，请先完成 2FA');
+                return;
+            }
+
+            const summary = [
+                `${currentEnvironment.toUpperCase()} · ${state.symbol}`,
+                `${state.direction.toUpperCase()} ${state.quantity} shares`,
+                `${state.orderType}${state.orderType === 'LMT' ? ` @ ${formatMoney(state.entryPrice)}` : ''}`,
+                `TP ${formatMoney(state.takeProfit)} / SL ${formatMoney(state.stopLoss)}`
+            ].join('\n');
+
+            if (currentEnvironment === 'live') {
+                const confirmText = window.prompt(`这是 LIVE 真实下单。\n请输入 PLACE LIVE 确认：\n\n${summary}`, '');
+                if (confirmText !== 'PLACE LIVE') return;
+            } else if (!window.confirm(`确认提交真实 IBKR Bracket Order？\n\n${summary}`)) {
+                return;
+            }
+
+            await runAction(
+                '下单',
+                '/api/custom/ibkr/orders/place',
+                {
+                    symbol: state.symbol,
+                    direction: state.direction,
+                    quantity: state.quantity,
+                    order_type: state.orderType,
+                    entry_price: state.orderType === 'LMT' ? state.entryPrice : undefined,
+                    take_profit_price: state.takeProfit,
+                    stop_loss_price: state.stopLoss,
+                },
+                `${state.symbol} Bracket Order 已提交`
+            );
+        }
+
         window.cancelAllOrders = cancelAllOrders;
         window.cancelOrder = cancelOrder;
         window.modifyOrder = modifyOrder;
         window.closePosition = closePosition;
         window.loadAccountSnapshot = loadAccountSnapshot;
         window.goRuntime = goRuntime;
+        window.submitManualOrder = submitManualOrder;
+        window.resetManualOrderForm = resetManualOrderForm;
+        window.renderTicketPreview = renderTicketPreview;
+        window.toggleEntryPriceField = toggleEntryPriceField;
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
@@ -813,6 +1119,12 @@
                     copy: '健康 / freshness / stats'
                 },
                 {
+                    path: '/ibkr_stats.html',
+                    kicker: 'Stats',
+                    label: '统计',
+                    copy: '收益 / 信号 / 订单 / 平仓明细'
+                },
+                {
                     path: '/ibkr_runtime.html',
                     kicker: 'Console',
                     label: '控制台',
@@ -827,6 +1139,8 @@
                 }
             ]);
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
+            toggleEntryPriceField();
+            renderTicketPreview();
             await loadAccountSnapshot(false);
             refreshTimer = setInterval(() => loadAccountSnapshot(false), 20000);
         });

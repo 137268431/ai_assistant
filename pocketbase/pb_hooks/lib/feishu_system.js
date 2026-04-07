@@ -1,7 +1,8 @@
 /**
  * feishu_system.js
  * 系统状态/异常/心跳 飞书通知
- * 发送到错误群: oc_b7b52fc28816d90e27ce50ca7922a9ac
+ * 正常状态群默认: oc_b7b52fc28816d90e27ce50ca7922a9ac
+ * 异常告警群默认: oc_91aa4f84bc6fedb125b1a263d91d4104
  */
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
@@ -9,6 +10,7 @@ var envUtils = require(`${__hooks}/lib/environment.js`)
 
 var PB_HOST = "https://pb.lzw-glory.top"
 var SYSTEM_CHAT_ID = "oc_b7b52fc28816d90e27ce50ca7922a9ac"
+var ALERT_CHAT_ID = "oc_91aa4f84bc6fedb125b1a263d91d4104"
 
 var LEVEL_CONFIG = {
     info:    { emoji: "✅", color: "green",  template: "green" },
@@ -146,6 +148,68 @@ function buildSimpleCard(level, source, title, detailFields, environment) {
     return card
 }
 
+function isEnabledText(value) {
+    var text = String(value == null ? "" : value).trim().toLowerCase()
+    return text !== "false" && text !== "0" && text !== "off" && text !== "no"
+}
+
+function getConfigValue(key, defaultValue, environment) {
+    return envUtils.getConfigValue(key, defaultValue, environment)
+}
+
+function isFeishuNotificationEnabled(environment) {
+    var channel = String(getConfigValue("notification_channel", "feishu", environment) || "feishu").trim().toLowerCase()
+    return !channel || channel === "feishu" || channel === "all"
+}
+
+function getSystemChatId(environment) {
+    return String(getConfigValue("system_status_chat_id", SYSTEM_CHAT_ID, environment) || SYSTEM_CHAT_ID).trim() || SYSTEM_CHAT_ID
+}
+
+function getAlertChatId(environment) {
+    return String(getConfigValue("system_alert_chat_id", ALERT_CHAT_ID, environment) || ALERT_CHAT_ID).trim() || ALERT_CHAT_ID
+}
+
+function shouldNotifyEvent(eventType, level, source, title, environment) {
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+    var normalizedEventType = String(eventType || "status_change").trim().toLowerCase()
+    var normalizedLevel = String(level || "info").trim().toLowerCase()
+    var normalizedTitle = String(title || "")
+    var normalizedSource = String(source || "").trim().toLowerCase()
+
+    if (!isFeishuNotificationEnabled(runtimeEnvironment)) {
+        return false
+    }
+    if (normalizedEventType === "daily_report") {
+        return isEnabledText(getConfigValue("daily_summary_notify_enabled", "TRUE", runtimeEnvironment))
+    }
+    if (normalizedEventType === "heartbeat") {
+        if (normalizedLevel === "warning" || normalizedLevel === "error") {
+            return isEnabledText(getConfigValue("inspection_notify_enabled", "TRUE", runtimeEnvironment))
+        }
+        return isEnabledText(getConfigValue("health_check_notify_enabled", "TRUE", runtimeEnvironment))
+    }
+    if (normalizedLevel === "warning" || normalizedLevel === "error" || normalizedEventType === "alert") {
+        return isEnabledText(getConfigValue("inspection_notify_enabled", "TRUE", runtimeEnvironment))
+    }
+    if (
+        normalizedSource === "manual"
+        && (normalizedTitle.indexOf("停止") !== -1 || normalizedTitle.indexOf("急停") !== -1 || normalizedTitle.toLowerCase().indexOf("stop") !== -1)
+    ) {
+        return isEnabledText(getConfigValue("manual_stop_notify_enabled", "TRUE", runtimeEnvironment))
+    }
+    return isEnabledText(getConfigValue("status_notify_enabled", "TRUE", runtimeEnvironment))
+}
+
+function getTargetChatId(eventType, level, environment) {
+    var normalizedEventType = String(eventType || "status_change").trim().toLowerCase()
+    var normalizedLevel = String(level || "info").trim().toLowerCase()
+    if (normalizedLevel === "warning" || normalizedLevel === "error" || normalizedEventType === "alert") {
+        return getAlertChatId(environment)
+    }
+    return getSystemChatId(environment)
+}
+
 function notifySystemEvent(eventType, level, source, title, detail, environment) {
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var detailFields = []
@@ -158,8 +222,12 @@ function notifySystemEvent(eventType, level, source, title, detail, environment)
         detailFields.push({ label: "详情", value: detail })
     }
 
+    if (!shouldNotifyEvent(eventType, level, source, title, runtimeEnvironment)) {
+        return false
+    }
+
     var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment)
-    var success = feishuApp.sendMessage("interactive", card, SYSTEM_CHAT_ID, "chat_id")
+    var success = feishuApp.sendMessage("interactive", card, getTargetChatId(eventType, level, runtimeEnvironment), "chat_id")
     if (!success) {
         console.error("[FeishuSystem] 发送失败: " + title)
     }
@@ -208,5 +276,8 @@ module.exports = {
     notifyComputeStats: notifyComputeStats,
     notifyDailyReport: notifyDailyReport,
     buildSimpleCard: buildSimpleCard,
-    SYSTEM_CHAT_ID: SYSTEM_CHAT_ID
+    SYSTEM_CHAT_ID: SYSTEM_CHAT_ID,
+    ALERT_CHAT_ID: ALERT_CHAT_ID,
+    getSystemChatId: getSystemChatId,
+    getAlertChatId: getAlertChatId,
 }

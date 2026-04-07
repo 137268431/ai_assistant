@@ -149,6 +149,14 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
+        .market-index-meta {
+            margin-top: 6px;
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.4;
+        }
+
         .quick-stats {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -583,27 +591,27 @@
                     // 使用默认值
                 }
 
-                // 确定时间范围（美国时区，当天）
-                const today = new Date().toISOString().split('T')[0];
-                const startDate = new Date(today + 'T00:00:00Z');
-                const endDate = new Date(today + 'T23:59:59Z');
-                const startTimeMs = startDate.getTime();
-                const endTimeMs = endDate.getTime();
-
-                // 从 ibkr_indicators 表获取每个大盘的最新数据
                 const promises = symbols.map(async (symbol) => {
                     try {
-                        const records = await pb.collection('ibkr_indicators').getList(1, 1, {
-                            filter: `environment = "${currentEnvironment}" && symbol = "${symbol}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                            sort: '-bar_time_ms',
-                            $autoCancel: false
-                        });
-                        if (records.items.length > 0) {
-                            return records.items[0];
-                        }
-                        return null;
-                    } catch(e) {
-                        return null;
+                        const envFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(symbol)}"`;
+                        const [indicatorResp, barResp] = await Promise.all([
+                            apiFetch('ibkr_indicators', {
+                                filter: `${envFilter} && interval = "5m"`,
+                                sort: '-bar_time_ms',
+                                perPage: 1
+                            }).catch(() => ({ items: [] })),
+                            apiFetch('ibkr_bars', {
+                                filter: `${envFilter} && interval = "5m"`,
+                                sort: '-bar_time_ms',
+                                perPage: 1
+                            }).catch(() => ({ items: [] }))
+                        ]);
+                        return {
+                            indicator: Array.isArray(indicatorResp.items) ? (indicatorResp.items[0] || null) : null,
+                            bar: Array.isArray(barResp.items) ? (barResp.items[0] || null) : null,
+                        };
+                    } catch (_) {
+                        return { indicator: null, bar: null };
                     }
                 });
 
@@ -613,27 +621,33 @@
                 let html = '';
                 let hasData = false;
                 symbols.forEach((symbol, index) => {
-                    const data = results[index];
+                    const bundle = results[index] || {};
+                    const indicator = bundle.indicator || null;
+                    const bar = bundle.bar || null;
+                    const data = indicator || bar;
                     if (data) {
                         hasData = true;
-                        const price = data.extra?.close || data.close || 0;
-                        const changePct = data.extra?.day_change_pct || 0;
-                        const change7d = data.extra?.change_7d || 0;
-                        const yesterdayChangePct = data.extra?.prev_close_change_pct || 0;
+                        const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? 0);
+                        const changePct = indicator ? Number(indicator.day_change_pct ?? indicator?.extra?.day_change_pct ?? 0) : null;
+                        const change7d = indicator ? Number(indicator.change_7d ?? indicator?.extra?.change_7d ?? 0) : null;
+                        const yesterdayChangePct = indicator ? Number(indicator.prev_close_change_pct ?? indicator?.extra?.prev_close_change_pct ?? 0) : null;
+                        const lastBarMs = Number(data.bar_time_ms || 0) || 0;
+                        const ageMin = lastBarMs ? Math.max(0, Math.round((Date.now() - lastBarMs) / 60000)) : null;
+                        const updateText = data.us_time || '--';
                         const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
-                        const changeText = (changePct > 0 ? '+' : '') + changePct.toFixed(2) + '%';
-                        const yesterdayText = (yesterdayChangePct > 0 ? '+' : '') + yesterdayChangePct.toFixed(2) + '%';
-                        const change7dText = (change7d > 0 ? '+' : '') + change7d.toFixed(2) + '%';
+                        const changeText = changePct == null ? '--' : ((changePct > 0 ? '+' : '') + changePct.toFixed(2) + '%');
+                        const yesterdayText = yesterdayChangePct == null ? '--' : ((yesterdayChangePct > 0 ? '+' : '') + yesterdayChangePct.toFixed(2) + '%');
+                        const change7dText = change7d == null ? '--' : ((change7d > 0 ? '+' : '') + change7d.toFixed(2) + '%');
                         const change7dClass = change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral');
 
                         // VIX 恐慌指数特殊处理
                         let vixBadge = '';
                         let vixClass = '';
                         if (symbol === 'VIX') {
-                            if (changePct >= 20) {
+                            if (price >= 30) {
                                 vixBadge = '🔴 恐慌';
                                 vixClass = 'vix-panic';
-                            } else if (changePct >= 10) {
+                            } else if (price >= 20) {
                                 vixBadge = '🟡 紧张';
                                 vixClass = 'vix-tension';
                             } else {
@@ -651,6 +665,20 @@
                                     <div>1D-: ${yesterdayText}</div>
                                     <div class="${change7dClass}">7D: ${change7dText}</div>
                                 </div>
+                                <div class="market-index-meta">${indicator ? 'IND 5m' : 'BAR 5m'} · ${updateText}<br>${ageMin == null ? '--' : `${ageMin}m ago`}</div>
+                            </div>
+                        `;
+                    } else {
+                        html += `
+                            <div class="market-index-card">
+                                <div class="market-index-symbol">${symbol}</div>
+                                <div class="market-index-price">--</div>
+                                <div class="market-index-change neutral">
+                                    <div>1D: --</div>
+                                    <div>1D-: --</div>
+                                    <div>7D: --</div>
+                                </div>
+                                <div class="market-index-meta">暂无 5m 数据</div>
                             </div>
                         `;
                     }

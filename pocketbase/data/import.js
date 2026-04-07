@@ -57,6 +57,8 @@ const configData = [
 
   cfg('notification_channel', 'feishu', 'feishu', '通知渠道', '通知中心', 500, 'feishu=默认飞书，email=仅邮件，all=飞书+邮件；订单飞书由 PB 订单卡片触发'),
   cfg('alert_email', '137268431@qq.com', '137268431@qq.com', '邮件收件人', '通知中心', 510, '仅在通知渠道包含 email 时生效'),
+  cfg('system_status_chat_id', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '状态群 Chat ID', '通知中心', 515, '正常状态提醒、2FA 卡片与日常运行反馈默认发送到这里'),
+  cfg('system_alert_chat_id', 'oc_91aa4f84bc6fedb125b1a263d91d4104', 'oc_91aa4f84bc6fedb125b1a263d91d4104', '告警群 Chat ID', '通知中心', 516, '所有 warning / error 级别且影响系统运行的异常默认发送到这里'),
   cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态通知', '通知中心', 520, '开盘、重启等状态通知开关'),
   cfg('order_notify_enabled', 'TRUE', 'TRUE', '订单邮件补充通知', '通知中心', 530, '控制 IBKR 侧订单邮件补充通知；飞书订单卡片由 PB 同步触发'),
   cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '通知中心', 540, '收盘后发送当日交易汇总'),

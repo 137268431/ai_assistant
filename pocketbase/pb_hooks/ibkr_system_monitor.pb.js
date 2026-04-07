@@ -13,6 +13,9 @@ const BAR_LAG_ALERT_MS = 10 * 60 * 1000
 const INDICATOR_LAG_ALERT_MS = 10 * 60 * 1000
 const GAP_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const GAP_MONITOR_STATE_KEY = "system_gap_monitor"
+const AUTH_PENDING_ALERT_TRIGGER_MS = 15 * 60 * 1000
+const AUTH_PENDING_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+const AUTH_MONITOR_STATE_KEY = "system_auth_monitor"
 
 function getRuntimeKeys() {
     return ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
@@ -80,6 +83,18 @@ function parseHttpJson(resp) {
     return raw ? JSON.parse(raw) : {}
 }
 
+function parseShiftedTimeMs(value, offsetMinutes) {
+    const text = String(value || "").trim()
+    if (!text) return 0
+    const parsed = Date.parse(text.replace(" ", "T") + "Z")
+    if (!Number.isFinite(parsed)) return 0
+    return parsed - (Number(offsetMinutes || 0) * 60000)
+}
+
+function parseUsTimeMs(value) {
+    return parseShiftedTimeMs(value, -4 * 60)
+}
+
 function fetchComputeJson(path, timeoutSeconds, environment) {
     try {
         const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
@@ -125,26 +140,128 @@ function loadRuntimeSnapshot(environment) {
         const payload = fetchComputeJson("/ibkr/status", 8, environment)
         return {
             ok: payload.ok !== false,
+            starting: payload.starting,
             session: payload.session || {},
+            gateway: payload.gateway || {},
             websocket: payload.websocket || {},
             bar_aggregator: payload.bar_aggregator || {},
             order_tracker: payload.order_tracker || {},
             order_lifecycle: payload.order_lifecycle || {},
             signal_router: payload.signal_router || {},
             signal_processor: payload.signal_processor || {},
+            market_universe: payload.market_universe || {},
         }
     } catch (err) {
         console.log(`[IBKRSystemMonitor] loadRuntimeSnapshot(${environment}) error: ${err.message || err}`)
         return {
             ok: false,
+            starting: false,
             session: {},
+            gateway: {},
             websocket: {},
             bar_aggregator: {},
             order_tracker: {},
             order_lifecycle: {},
             signal_router: {},
             signal_processor: {},
+            market_universe: {},
         }
+    }
+}
+
+function countCollectionRows(collectionName, filterStr, params) {
+    try {
+        const rows = $app.findRecordsByFilter(collectionName, filterStr, "", 0, 0, params || {}) || []
+        return rows.length
+    } catch (_) {
+        return 0
+    }
+}
+
+function loadTodayOverview(environment, times) {
+    const todayStart = times && times.todayStart ? times.todayStart : `${times.date} 00:00:00`
+    const overview = {
+        today: {
+            bars: 0,
+            indicators: 0,
+            signals: 0,
+            orders: 0,
+            events: 0,
+            error_events: 0,
+        },
+        targets: loadTargetSymbols(environment, times.date).length,
+        account: {
+            ok: false,
+            account_id: "",
+            positions: 0,
+            open_orders: 0,
+            net_liquidation: 0,
+        },
+    }
+
+    overview.today.bars = countCollectionRows("ibkr_bars", "created >= {:t} && environment = {:env}", { t: todayStart, env: environment })
+    overview.today.indicators = countCollectionRows("ibkr_indicators", "created >= {:t} && environment = {:env}", { t: todayStart, env: environment })
+    overview.today.signals = countCollectionRows("ibkr_signals", "created >= {:t} && environment = {:env}", { t: todayStart, env: environment })
+    overview.today.orders = countCollectionRows("orders", "created >= {:t} && environment = {:env}", { t: todayStart, env: environment })
+    overview.today.events = countCollectionRows("system_events", "created >= {:t} && environment = {:env}", { t: todayStart, env: environment })
+    overview.today.error_events = countCollectionRows("system_events", "created >= {:t} && environment = {:env} && level = 'error'", { t: todayStart, env: environment })
+
+    const accountSnapshot = fetchComputeJson("/ibkr/account", 10, environment)
+    if (accountSnapshot && accountSnapshot.ok !== false) {
+        overview.account = {
+            ok: true,
+            account_id: String(accountSnapshot.account_id || ""),
+            positions: Number(accountSnapshot.counts && accountSnapshot.counts.open_positions || 0) || 0,
+            open_orders: Number(accountSnapshot.counts && accountSnapshot.counts.open_orders || 0) || 0,
+            net_liquidation: Number(accountSnapshot.summary && accountSnapshot.summary.net_liquidation || 0) || 0,
+        }
+    }
+
+    return overview
+}
+
+function loadAuthAttentionSummary(environment, runtimeStatus) {
+    const { getStatePayload } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const statePayload = getStatePayload(environment)
+    const state = statePayload.data || {}
+    const status = String(state.status || "").trim().toLowerCase()
+    const hasRequest = Boolean(
+        toNumber(state.request_count, 0) > 0
+        || state.requested_at
+        || state.triggered_at
+        || state.message_id
+    )
+    const runtimeStarted = Boolean(
+        runtimeStatus.starting
+        || (runtimeStatus.session && runtimeStatus.session.running)
+        || (runtimeStatus.websocket && runtimeStatus.websocket.running)
+        || (runtimeStatus.order_tracker && runtimeStatus.order_tracker.running)
+    )
+    const runtimeAuthenticated = Boolean(runtimeStatus.session && runtimeStatus.session.authenticated)
+    const gatewayReachable = Boolean(runtimeStatus.gateway && (runtimeStatus.gateway.running || runtimeStatus.gateway.reachable))
+    const gatewayStatusCode = Number(runtimeStatus.gateway && runtimeStatus.gateway.status_code || 0) || 0
+    const startedMs = Math.max(parseUsTimeMs(state.triggered_at), parseUsTimeMs(state.requested_at))
+    const ageMin = startedMs > 0 ? Math.max(0, Math.round((Date.now() - startedMs) / 60000)) : 0
+    const active = hasRequest && ["requested", "triggered", "waiting_confirm", "waiting_response"].indexOf(status) !== -1
+    const needsAttention = gatewayReachable && (!runtimeAuthenticated || gatewayStatusCode === 401 || !runtimeStarted)
+    const pendingTooLong = active && needsAttention && startedMs > 0 && (Date.now() - startedMs) >= AUTH_PENDING_ALERT_TRIGGER_MS
+
+    return {
+        status: status || "requested",
+        has_request: hasRequest,
+        active: active,
+        pending_too_long: pendingTooLong,
+        age_min: ageMin,
+        requested_at: String(state.requested_at || ""),
+        triggered_at: String(state.triggered_at || ""),
+        mode: String(state.mode || ""),
+        challenge_code: String(state.challenge_code || ""),
+        response_status: String(state.response_status || ""),
+        last_result: String(state.last_result || ""),
+        last_error: String(state.last_error || ""),
+        runtime_started: runtimeStarted,
+        runtime_authenticated: runtimeAuthenticated,
+        gateway_status_code: gatewayStatusCode,
     }
 }
 
@@ -726,6 +843,8 @@ cronAdd("system_status_reminder", "0,30 4-20 * * 1-5", () => {
         const runtime = loadRuntimeSnapshot(environment)
         const freshness = loadFreshness(environment)
         const gaps = loadDataGapSummary(environment, times)
+        const overview = loadTodayOverview(environment, times)
+        const auth = loadAuthAttentionSummary(environment, runtime)
         const latest5m = freshness["5m"] || {}
         const level = (
             compute.status !== "running"
@@ -741,18 +860,36 @@ cronAdd("system_status_reminder", "0,30 4-20 * * 1-5", () => {
             "WebSocket": runtime.websocket && runtime.websocket.connected === true
                 ? ("connected / ready=" + (runtime.websocket.ready === true ? "true" : "false"))
                 : "offline",
+            "2FA状态": auth.has_request
+                ? `${auth.status}${auth.age_min > 0 ? ` / ${auth.age_min}m` : ""}`
+                : (runtime.session && runtime.session.authenticated === true ? "ok" : "none"),
             "消息数": String(toNumber(runtime.websocket && runtime.websocket.message_count, 0)),
             "Tick数": String(toNumber(runtime.bar_aggregator && runtime.bar_aggregator.total_ticks, 0)),
+            "引擎就绪": `${toNumber(compute.ready_engines, 0)}/${toNumber(compute.total_engines, 0)}`,
             "最新5m": latest5m.last_bar_time_ms
                 ? `${latest5m.symbol || "-"} / ${latest5m.age_min || 0}m / ${latest5m.last_bar_time_ms}`
                 : "no_data_today",
             "bars缺口": String(gaps.bar_lag_count || 0),
             "指标滞后": String(gaps.indicator_lag_count || 0),
             "序列缺口": String(gaps.sequence_gap_count || 0),
+            "今日概况": `bars ${overview.today.bars} / ind ${overview.today.indicators} / sig ${overview.today.signals} / ord ${overview.today.orders}`,
+            "实时账户": overview.account.ok
+                ? `pos ${overview.account.positions} / open ${overview.account.open_orders} / netliq ${overview.account.net_liquidation.toFixed(2)}`
+                : "unavailable",
+            "目标池": `${overview.targets} targets / active ${toNumber(runtime.market_universe && runtime.market_universe.active_target_count, 0)}`,
             "交易开关": getTradingEnabledForEnvironment(environment, runtimeKeys) ? "true" : "false",
         }
         if (gaps.latest_bar_us_time) {
             detail["最新bar时间"] = gaps.latest_bar_us_time
+        }
+        if (auth.mode) {
+            detail["验证模式"] = auth.mode
+        }
+        if (auth.last_result) {
+            detail["2FA反馈"] = auth.last_result
+        }
+        if (auth.last_error) {
+            detail["2FA异常"] = auth.last_error
         }
         if (gaps.bar_lag_symbols && gaps.bar_lag_symbols.length > 0) {
             detail["bars异常样本"] = gaps.bar_lag_symbols.slice(0, 8).join(", ")
@@ -764,6 +901,97 @@ cronAdd("system_status_reminder", "0,30 4-20 * * 1-5", () => {
         const title = level === "warning" ? "IBKR 系统状态提醒（需关注）" : "IBKR 系统状态提醒"
         const notified = feishuSystem.notifySystemEvent("heartbeat", level, "pb", title, detail, environment)
         writeSystemEvent("heartbeat", level, "pb", title, detail, environment, notified)
+    }
+})
+
+cronAdd("ibkr_auth_pending_guard", "*/10 4-20 * * 1-5", () => {
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const times = getTimeStrings()
+    const runtimeKeys = getRuntimeKeys()
+    const environments = getActiveRuntimeEnvironments(runtimeKeys)
+    const nowMs = Date.now()
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        if (!getComputeEnabledForEnvironment(environment, runtimeKeys) && !getTradingEnabledForEnvironment(environment, runtimeKeys)) {
+            continue
+        }
+
+        const runtime = loadRuntimeSnapshot(environment)
+        const auth = loadAuthAttentionSummary(environment, runtime)
+        const nextState = {
+            last_auth_scan_at: times.us,
+            last_auth_status: auth.status || "",
+            last_auth_age_min: auth.age_min || 0,
+        }
+
+        if (!auth.pending_too_long) {
+            saveStateData(AUTH_MONITOR_STATE_KEY, environment, times.date, {
+                ...nextState,
+                last_auth_issue_at: "",
+            })
+            continue
+        }
+
+        const fingerprint = JSON.stringify({
+            status: auth.status || "",
+            mode: auth.mode || "",
+            age_bucket: Math.floor((auth.age_min || 0) / 5),
+            challenge: auth.challenge_code ? "yes" : "no",
+            response_status: auth.response_status || "",
+            gateway_status_code: auth.gateway_status_code || 0,
+            runtime_started: auth.runtime_started ? "yes" : "no",
+            runtime_authenticated: auth.runtime_authenticated ? "yes" : "no",
+        })
+        const state = getStateData(AUTH_MONITOR_STATE_KEY, environment, times.date).data || {}
+        const lastAlertHash = String(state.last_auth_alert_hash || "")
+        const lastAlertMs = toNumber(state.last_auth_alert_ms, 0)
+        const shouldNotify = (
+            fingerprint !== lastAlertHash
+            || lastAlertMs <= 0
+            || (nowMs - lastAlertMs) >= AUTH_PENDING_ALERT_COOLDOWN_MS
+        )
+
+        if (!shouldNotify) {
+            saveStateData(AUTH_MONITOR_STATE_KEY, environment, times.date, nextState)
+            continue
+        }
+
+        let title = "IBKR Session 长时间未恢复认证"
+        if (auth.status === "waiting_confirm") {
+            title = "IBKR 2FA 长时间未确认"
+        } else if (auth.status === "waiting_response") {
+            title = "IBKR 2FA Response 长时间未提交"
+        } else if (auth.status === "requested" || auth.status === "triggered") {
+            title = "IBKR 2FA 长时间未完成"
+        }
+
+        const detail = {
+            "检查时间": times.us,
+            "2FA状态": auth.status || "requested",
+            "持续时间": `${auth.age_min || 0} 分钟`,
+            "Runtime已启动": auth.runtime_started ? "yes" : "no",
+            "Session认证": auth.runtime_authenticated ? "yes" : "no",
+            "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
+        }
+        if (auth.mode) detail["验证模式"] = auth.mode
+        if (auth.challenge_code) detail["Challenge"] = auth.challenge_code
+        if (auth.response_status) detail["响应状态"] = auth.response_status
+        if (auth.triggered_at) detail["触发时间"] = auth.triggered_at
+        if (auth.last_result) detail["最近反馈"] = auth.last_result
+        if (auth.last_error) detail["最近错误"] = auth.last_error
+
+        const notified = feishuSystem.notifyWarning("ibkr_compute", title, detail, environment)
+        writeSystemEvent("alert", "warning", "ibkr_compute", title, detail, environment, notified)
+        saveStateData(AUTH_MONITOR_STATE_KEY, environment, times.date, {
+            ...nextState,
+            last_auth_issue_at: times.us,
+            last_auth_alert_ms: nowMs,
+            last_auth_alert_hash: fingerprint,
+        })
     }
 })
 

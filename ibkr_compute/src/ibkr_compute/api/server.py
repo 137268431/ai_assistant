@@ -1649,6 +1649,104 @@ def ibkr_modify_order():
     ), (200 if result.get("ok") else 500)
 
 
+@app.route("/ibkr/orders/place", methods=["POST"])
+def ibkr_place_order():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    runtime_environment = _ibkr_service_environment(service)
+    if runtime_environment == "backtest":
+        return jsonify({"ok": False, "error": "Backtest environment does not support live order placement"}), 400
+
+    service_status = service.status() if hasattr(service, "status") else {}
+    session_authenticated = bool((service_status.get("session") or {}).get("authenticated"))
+    service_running = bool(getattr(service, "is_running", False) or getattr(service, "is_starting", False))
+    if not service_running:
+        return jsonify({"ok": False, "error": "IBKR service is not running"}), 409
+    if not session_authenticated:
+        return jsonify({"ok": False, "error": "IBKR session is not authenticated"}), 409
+    if not hasattr(service, "order_placer") or not hasattr(service, "conid_resolver"):
+        return jsonify({"ok": False, "error": "IBKR order components are unavailable"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    direction = str(payload.get("direction") or "").strip().lower()
+    order_type = str(payload.get("order_type") or payload.get("entry_order_type") or "LMT").strip().upper()
+    quantity_value = _coerce_float(payload.get("quantity"))
+    conid = int(_coerce_float(payload.get("conid"), 0) or 0)
+    entry_price = _coerce_float(payload.get("entry_price"))
+    take_profit_price = _coerce_float(payload.get("take_profit_price"))
+    stop_loss_price = _coerce_float(payload.get("stop_loss_price"))
+
+    if not symbol:
+        return jsonify({"ok": False, "error": "Missing symbol"}), 400
+    if direction not in {"long", "short"}:
+        return jsonify({"ok": False, "error": "direction must be long or short"}), 400
+    if order_type not in {"LMT", "MKT"}:
+        return jsonify({"ok": False, "error": "order_type must be LMT or MKT"}), 400
+    if quantity_value is None or quantity_value <= 0 or abs(quantity_value - round(quantity_value)) > 1e-9:
+        return jsonify({"ok": False, "error": "quantity must be a positive integer"}), 400
+    if take_profit_price is None or take_profit_price <= 0 or stop_loss_price is None or stop_loss_price <= 0:
+        return jsonify({"ok": False, "error": "take_profit_price and stop_loss_price are required"}), 400
+    if order_type == "LMT" and (entry_price is None or entry_price <= 0):
+        return jsonify({"ok": False, "error": "entry_price is required for limit orders"}), 400
+
+    quantity = int(round(quantity_value))
+    if direction == "long" and take_profit_price <= stop_loss_price:
+        return jsonify({"ok": False, "error": "For long orders, take profit must be above stop loss"}), 400
+    if direction == "short" and take_profit_price >= stop_loss_price:
+        return jsonify({"ok": False, "error": "For short orders, take profit must be below stop loss"}), 400
+    if order_type == "LMT" and entry_price is not None:
+        if direction == "long" and not (stop_loss_price < entry_price < take_profit_price):
+            return jsonify({"ok": False, "error": "For long limit orders, stop < entry < take profit is required"}), 400
+        if direction == "short" and not (take_profit_price < entry_price < stop_loss_price):
+            return jsonify({"ok": False, "error": "For short limit orders, take profit < entry < stop is required"}), 400
+
+    if conid <= 0:
+        try:
+            conid = int(service.conid_resolver.resolve(symbol) or 0)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"Failed to resolve contract for {symbol}: {exc}"}), 500
+    if conid <= 0:
+        return jsonify({"ok": False, "error": f"Cannot resolve conid for {symbol}"}), 404
+
+    signal_id = f"MANUAL_{runtime_environment.upper()}_{symbol}_{int(time.time())}"
+    result = service.order_placer.place_bracket_order(
+        conid=conid,
+        symbol=symbol,
+        direction=direction,
+        quantity=quantity,
+        entry_price=float(entry_price or 0.0),
+        take_profit_price=float(take_profit_price),
+        stop_loss_price=float(stop_loss_price),
+        use_paper=_ibkr_service_uses_paper_account(service),
+        signal_id=signal_id,
+        entry_order_type=order_type,
+    )
+
+    time.sleep(0.75)
+    snapshot = _build_ibkr_account_snapshot(service)
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "action": "place_order",
+            "environment": runtime_environment,
+            "symbol": symbol,
+            "conid": conid,
+            "direction": direction,
+            "quantity": quantity,
+            "order_type": order_type,
+            "entry_price": float(entry_price or 0.0),
+            "take_profit_price": float(take_profit_price),
+            "stop_loss_price": float(stop_loss_price),
+            "signal_id": signal_id,
+            "result": result,
+            "snapshot": snapshot,
+        }
+    ), (200 if result.get("ok") else 500)
+
+
 @app.route("/ibkr/positions/close", methods=["POST"])
 def ibkr_close_position():
     service = get_ibkr_service()

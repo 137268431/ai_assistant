@@ -302,7 +302,7 @@
             <div class="page-header">
                 <div>
                     <div class="page-title">🖥️ IBKR 总览</div>
-                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、配置快照、最近事件，以及最近回测统计。所有动作控制、2FA 请求与链路回放集中放到控制台页面，避免两张页面职责混在一起。</div>
+                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、统计快照、最近事件，以及最近回测统计。动作控制与 2FA 放到控制台，真实账户和下单入口放到账户页，三张页面通过顶部桥接互相联动。</div>
                 </div>
                 <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
                     <div id="environmentHeader"></div>
@@ -325,7 +325,7 @@
                 </div>
             </div>
 
-            <div class="section">
+            <div class="section" id="todayStatsSection">
                 <div class="section-header">📊 今日统计</div>
                 <div class="section-body">
                     <div class="stats-mini" id="todayStats">
@@ -391,6 +391,7 @@
     <script>
         let refreshTimer = null;
         let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentFocus = '';
 
         function initSystemAuth() {
             const token = getToken();
@@ -443,19 +444,47 @@
             try {
                 const freshnessIntervals = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
+                const softErrors = [];
+                const safeRequestSystemJson = async (label, path, fallback = {}) => {
+                    try {
+                        return await requestSystemJson(path);
+                    } catch (error) {
+                        softErrors.push(`${label}: ${error.message || error}`);
+                        return fallback;
+                    }
+                };
+                const safeApiFetch = async (label, collection, params, fallback = { items: [] }) => {
+                    try {
+                        return await apiFetch(collection, params);
+                    } catch (error) {
+                        softErrors.push(`${label}: ${error.message || error}`);
+                        return fallback;
+                    }
+                };
+
                 const [health, summary, eventsResp, ...restResponses] = await Promise.all([
-                    requestSystemJson('/api/custom/system/healthz'),
-                    requestSystemJson('/api/custom/system/summaryz'),
-                    apiFetch('system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }),
+                    safeRequestSystemJson('healthz', '/api/custom/system/healthz', {
+                        ok: false,
+                        pb: { status: 'unknown' },
+                        ibkr_data: { status: 'unknown' },
+                        ibkr_compute: { status: 'unknown' },
+                        runtime: {}
+                    }),
+                    safeRequestSystemJson('summaryz', '/api/custom/system/summaryz', {
+                        today: {},
+                        ibkr_compute: {},
+                        config: {}
+                    }),
+                    safeApiFetch('system_events', 'system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }),
                     ...freshnessIntervals.map((interval) =>
-                        apiFetch('ibkr_bars', {
+                        safeApiFetch(`freshness:${interval}`, 'ibkr_bars', {
                             filter: `${envFilterBase} && interval = "${escapeQueryValue(interval)}"`,
                             sort: '-bar_time_ms',
                             perPage: 1
                         })
                     ),
-                    apiFetch('ibkr_backtest_batches', { filter: envFilterBase, sort: '-updated', perPage: 1 }),
-                    apiFetch('ibkr_backtest_runs', { filter: envFilterBase, sort: '-updated', perPage: 2 })
+                    safeApiFetch('ibkr_backtest_batches', 'ibkr_backtest_batches', { filter: envFilterBase, sort: '-updated', perPage: 1 }),
+                    safeApiFetch('ibkr_backtest_runs', 'ibkr_backtest_runs', { filter: envFilterBase, sort: '-updated', perPage: 2 })
                 ]);
                 const freshnessResponses = restResponses.slice(0, freshnessIntervals.length);
                 const backtestBatchResp = restResponses[freshnessIntervals.length] || {};
@@ -482,13 +511,25 @@
                 );
                 renderEvents(Array.isArray(eventsResp?.items) ? eventsResp.items : []);
 
-                document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()}`;
+                const refreshLabel = softErrors.length
+                    ? `更新: ${new Date().toLocaleTimeString()} · 部分降级`
+                    : `更新: ${new Date().toLocaleTimeString()}`;
+                document.getElementById('refreshInfo').textContent = refreshLabel;
                 if (showToastOnSuccess) showToast('System 数据已刷新');
             } catch (err) {
                 console.error('System 加载失败:', err);
                 document.getElementById('refreshInfo').textContent = '加载失败';
                 showToast(`加载失败: ${err.message || err}`);
             }
+        }
+
+        function applyFocusTarget() {
+            if (currentFocus !== 'stats') return;
+            const target = document.getElementById('todayStatsSection');
+            if (!target) return;
+            setTimeout(() => {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 120);
         }
 
         function renderStatus(health) {
@@ -759,6 +800,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initSystemAuth()) return;
+            currentFocus = String(new URLSearchParams(window.location.search).get('focus') || '').trim().toLowerCase();
             document.getElementById('nav').innerHTML = renderNav('/ibkr_system.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🖥️ IBKR 总览', { description: '健康 / freshness / 配置总览' });
             document.getElementById('pageBridge').innerHTML = renderPageBridge([
@@ -767,7 +809,13 @@
                     kicker: 'Monitor',
                     label: '总览',
                     copy: '健康 / freshness / config / stats',
-                    active: true
+                    active: currentFocus !== 'stats'
+                },
+                {
+                    path: '/ibkr_stats.html',
+                    kicker: 'Stats',
+                    label: '统计',
+                    copy: '收益 / 信号 / 订单 / 平仓明细'
                 },
                 {
                     path: '/ibkr_runtime.html',
@@ -785,12 +833,14 @@
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
             await loadSystemData(false);
+            applyFocusTarget();
             refreshTimer = setInterval(() => loadSystemData(false), 60000);
         });
 
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
-            window.location.href = buildPageUrl('/ibkr_system.html', {}, { environment: currentEnvironment });
+            const params = currentFocus === 'stats' ? { focus: 'stats' } : {};
+            window.location.href = buildPageUrl('/ibkr_system.html', params, { environment: currentEnvironment });
         };
     </script>
 </body>

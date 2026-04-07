@@ -1729,13 +1729,19 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initRuntimeAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 控制台', { description: '控制 / 调度 / 链路观察' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 控制台', { description: '控制 / 调度 / 链路观察 / 跳转账户与统计' });
             document.getElementById('pageBridge').innerHTML = renderPageBridge([
                 {
                     path: '/ibkr_system.html',
                     kicker: 'Monitor',
                     label: '总览',
                     copy: '健康 / freshness / config / stats'
+                },
+                {
+                    path: '/ibkr_stats.html',
+                    kicker: 'Stats',
+                    label: '统计',
+                    copy: '收益 / 信号 / 订单 / 平仓明细'
                 },
                 {
                     path: '/ibkr_runtime.html',

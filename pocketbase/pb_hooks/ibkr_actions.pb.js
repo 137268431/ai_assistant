@@ -89,6 +89,7 @@ function ibkrActionsBuildProxyMeta(payload, route, upstream) {
     base.proxy_upstream = upstream
     return base
 }
+globalThis.ibkrActionsBuildProxyMeta = ibkrActionsBuildProxyMeta
 
 function ibkrActionsHttpStatusCode(resp, fallback) {
     const code = Number(resp && resp.statusCode)
@@ -98,6 +99,7 @@ function ibkrActionsHttpStatusCode(resp, fallback) {
 function ibkrActionsSendJson(c, statusCode, payload) {
     return c.html(Number(statusCode) || 200, JSON.stringify(payload || {}))
 }
+globalThis.ibkrActionsSendJson = ibkrActionsSendJson
 
 function ibkrActionsFetchProxyPayload(route, upstream, method, body, timeoutSec) {
     const requestOptions = {
@@ -112,19 +114,20 @@ function ibkrActionsFetchProxyPayload(route, upstream, method, body, timeoutSec)
 
     const resp = $http.send(requestOptions)
     return {
-        statusCode: ibkrActionsHttpStatusCode(resp, 200),
+        statusCode: (Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200),
         payload: ibkrActionsBuildProxyMeta(ibkrActionsParseHttpJson(resp.raw), route, upstream),
     }
 }
+globalThis.ibkrActionsFetchProxyPayload = ibkrActionsFetchProxyPayload
 
 function ibkrActionsProxyRequest(c, route, upstream, method, body, timeoutSec) {
     try {
-        const result = ibkrActionsFetchProxyPayload(route, upstream, method, body, timeoutSec)
+        const result = globalThis.ibkrActionsFetchProxyPayload(route, upstream, method, body, timeoutSec)
         return ibkrActionsSendJson(c, result.statusCode, result.payload)
     } catch (err) {
         return c.json(
             502,
-            ibkrActionsBuildProxyMeta(
+            globalThis.ibkrActionsBuildProxyMeta(
                 { ok: false, status: "offline", error: err.message || String(err) },
                 route,
                 upstream
@@ -641,7 +644,7 @@ routerAdd("POST", "/api/custom/ibkr/proxy", (c) => {
             headers: { "Content-Type": "application/json" },
             timeout: 60,
         })
-        return ibkrActionsSendJson(c, ibkrActionsHttpStatusCode(resp, 200), withMeta(parsePayload(resp.raw), upstream))
+        return c.html((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), JSON.stringify(withMeta(parsePayload(resp.raw), upstream)))
     } catch (err) {
         console.error(`[IBKRActions] proxy ${action} error: ${err.message}`)
         const upstream = `${computeBaseUrl}/${action}`
@@ -782,11 +785,19 @@ routerAdd("GET", "/api/custom/ibkr/runtime/config", (c) => {
 })
 
 routerAdd("POST", "/api/custom/ibkr/start", (c) => {
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/start`
     try {
-        const resp = $http.send({ url: upstream, method: "POST", timeout: 30 })
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
         let payload = {}
         try {
             payload = JSON.parse(resp.raw || "{}")
@@ -797,7 +808,7 @@ routerAdd("POST", "/api/custom/ibkr/start", (c) => {
         payload.proxy_hook = "ibkr_actions.pb.js"
         payload.proxy_route = "/api/custom/ibkr/start"
         payload.proxy_upstream = upstream
-        return ibkrActionsSendJson(c, ibkrActionsHttpStatusCode(resp, 200), payload)
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
         return c.json(502, {
             ok: false,
@@ -811,11 +822,19 @@ routerAdd("POST", "/api/custom/ibkr/start", (c) => {
 })
 
 routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/stop`
     try {
-        const resp = $http.send({ url: upstream, method: "POST", timeout: 30 })
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
         let payload = {}
         try {
             payload = JSON.parse(resp.raw || "{}")
@@ -826,7 +845,7 @@ routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
         payload.proxy_hook = "ibkr_actions.pb.js"
         payload.proxy_route = "/api/custom/ibkr/stop"
         payload.proxy_upstream = upstream
-        return ibkrActionsSendJson(c, ibkrActionsHttpStatusCode(resp, 200), payload)
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
         return c.json(502, {
             ok: false,
@@ -844,10 +863,28 @@ routerAdd("GET", "/api/custom/ibkr/account", (c) => {
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/account`
     try {
-        const result = ibkrActionsFetchProxyPayload("/api/custom/ibkr/account", upstream, "GET", null, 20)
-        return c.json(result.statusCode, result.payload)
+        const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/account"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
-        return c.json(502, ibkrActionsBuildProxyMeta({ ok: false, status: "offline", error: err.message || String(err) }, "/api/custom/ibkr/account", upstream))
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/account",
+            proxy_upstream: upstream,
+        })
     }
 })
 
@@ -856,10 +893,28 @@ routerAdd("GET", "/api/custom/ibkr/positions", (c) => {
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/positions`
     try {
-        const result = ibkrActionsFetchProxyPayload("/api/custom/ibkr/positions", upstream, "GET", null, 20)
-        return c.json(result.statusCode, result.payload)
+        const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/positions"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
-        return c.json(502, ibkrActionsBuildProxyMeta({ ok: false, status: "offline", error: err.message || String(err) }, "/api/custom/ibkr/positions", upstream))
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/positions",
+            proxy_upstream: upstream,
+        })
     }
 })
 
@@ -868,10 +923,28 @@ routerAdd("GET", "/api/custom/ibkr/orders/live", (c) => {
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/live`
     try {
-        const result = ibkrActionsFetchProxyPayload("/api/custom/ibkr/orders/live", upstream, "GET", null, 20)
-        return c.json(result.statusCode, result.payload)
+        const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/orders/live"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
-        return c.json(502, ibkrActionsBuildProxyMeta({ ok: false, status: "offline", error: err.message || String(err) }, "/api/custom/ibkr/orders/live", upstream))
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/orders/live",
+            proxy_upstream: upstream,
+        })
     }
 })
 
@@ -882,10 +955,34 @@ routerAdd("POST", "/api/custom/ibkr/orders/cancel", (c) => {
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
     try {
-        const result = ibkrActionsFetchProxyPayload("/api/custom/ibkr/orders/cancel", upstream, "POST", d, 30)
-        return c.json(result.statusCode, result.payload)
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/orders/cancel"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
-        return c.json(502, ibkrActionsBuildProxyMeta({ ok: false, status: "offline", error: err.message || String(err) }, "/api/custom/ibkr/orders/cancel", upstream))
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/orders/cancel",
+            proxy_upstream: upstream,
+        })
     }
 })
 
@@ -896,10 +993,34 @@ routerAdd("POST", "/api/custom/ibkr/orders/cancel_all", (c) => {
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel_all`
     try {
-        const result = ibkrActionsFetchProxyPayload("/api/custom/ibkr/orders/cancel_all", upstream, "POST", d, 30)
-        return c.json(result.statusCode, result.payload)
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/orders/cancel_all"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
-        return c.json(502, ibkrActionsBuildProxyMeta({ ok: false, status: "offline", error: err.message || String(err) }, "/api/custom/ibkr/orders/cancel_all", upstream))
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/orders/cancel_all",
+            proxy_upstream: upstream,
+        })
     }
 })
 
@@ -910,10 +1031,72 @@ routerAdd("POST", "/api/custom/ibkr/orders/modify", (c) => {
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/modify`
     try {
-        const result = ibkrActionsFetchProxyPayload("/api/custom/ibkr/orders/modify", upstream, "POST", d, 30)
-        return c.json(result.statusCode, result.payload)
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/orders/modify"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
-        return c.json(502, ibkrActionsBuildProxyMeta({ ok: false, status: "offline", error: err.message || String(err) }, "/api/custom/ibkr/orders/modify", upstream))
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/orders/modify",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/orders/place", (c) => {
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/place`
+    try {
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/orders/place"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/orders/place",
+            proxy_upstream: upstream,
+        })
     }
 })
 
@@ -924,10 +1107,34 @@ routerAdd("POST", "/api/custom/ibkr/positions/close", (c) => {
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/positions/close`
     try {
-        const result = ibkrActionsFetchProxyPayload("/api/custom/ibkr/positions/close", upstream, "POST", d, 30)
-        return c.json(result.statusCode, result.payload)
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/positions/close"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
     } catch (err) {
-        return c.json(502, ibkrActionsBuildProxyMeta({ ok: false, status: "offline", error: err.message || String(err) }, "/api/custom/ibkr/positions/close", upstream))
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/positions/close",
+            proxy_upstream: upstream,
+        })
     }
 })
 
@@ -992,7 +1199,7 @@ routerAdd("POST", "/api/custom/ibkr/emergency-stop", (c) => {
             } catch (_) {
                 stopPayload = {}
             }
-            stopPayload.status_code = ibkrActionsHttpStatusCode(resp, 200)
+            stopPayload.status_code = (Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200)
         } catch (err) {
             stopPayload = { ok: false, error: err.message || String(err) }
         }
@@ -1112,7 +1319,7 @@ routerAdd("POST", "/api/custom/ibkr/reauth", (c) => {
         payload.proxy_hook = "ibkr_actions.pb.js"
         payload.proxy_route = "/api/custom/ibkr/reauth"
         payload.proxy_upstream = upstream
-        return ibkrActionsSendJson(c, ibkrActionsHttpStatusCode(resp, 200), payload)
+        return c.html((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), JSON.stringify(payload))
     } catch (err) {
         return c.json(502, {
             ok: false,

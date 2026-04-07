@@ -480,10 +480,10 @@ function deliverCard(savedState, options) {
         if (messageId && !opts.forceNew) {
             result = feishuApp.updateMessageCard(messageId, card)
             if (!result.success && allowReplace) {
-                result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.SYSTEM_CHAT_ID, "chat_id")
+                result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.getSystemChatId(effectiveState.environment), "chat_id")
             }
         } else {
-            result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.SYSTEM_CHAT_ID, "chat_id")
+            result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.getSystemChatId(effectiveState.environment), "chat_id")
         }
 
         if (result && result.success) {
