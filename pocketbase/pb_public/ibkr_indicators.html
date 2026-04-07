@@ -462,6 +462,41 @@
             gap: 8px;
         }
 
+        .chart-focus-group {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .chart-focus-btn {
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(8, 12, 20, 0.82);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 8px 11px;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+
+        .chart-focus-btn:disabled {
+            opacity: 0.42;
+            cursor: not-allowed;
+        }
+
+        .chart-focus-status {
+            padding: 8px 11px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(99,179,237,0.08);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
         .chart-layer-btn {
             border-radius: 999px;
             border: 1px solid rgba(99,179,237,0.14);
@@ -514,6 +549,34 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
+        .cursor-strip {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .cursor-card {
+            border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(8, 12, 20, 0.76);
+            padding: 10px 12px;
+        }
+
+        .cursor-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 5px;
+        }
+
+        .cursor-value {
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1.45;
+        }
+
         @media (max-width: 760px) {
             .chart-canvas {
                 height: 560px;
@@ -523,6 +586,9 @@
             }
             .chart-toolbar {
                 justify-content: flex-start;
+            }
+            .cursor-strip {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
             }
         }
     </style>
@@ -599,6 +665,11 @@
         let currentIndicatorChartContext = null;
         let currentIndicatorChartRangeKey = '1d';
         let indicatorChartLoadToken = 0;
+        let indicatorChartCategories = [];
+        let indicatorChartDomCleanup = null;
+        let indicatorChartSelectedBarIndex = -1;
+        let indicatorChartSelectedSignalId = '';
+        let indicatorChartHoverBarIndex = -1;
         let indicatorChartLayerState = {
             ema: true,
             vwap: true,
@@ -651,6 +722,11 @@
         function formatPrice(value) {
             const num = Number(value);
             return Number.isFinite(num) ? `$${num.toFixed(2)}` : '-';
+        }
+
+        function formatPercent(value) {
+            const num = Number(value);
+            return Number.isFinite(num) ? `${num.toFixed(2)}%` : '-';
         }
 
         function formatVolume(value) {
@@ -952,7 +1028,9 @@
                             <div class="chart-range-group" id="indicatorChartRangeGroup"></div>
                             <div class="chart-layer-group" id="indicatorChartLayerGroup"></div>
                         </div>
+                        <div class="chart-focus-group" id="indicatorChartFocusGroup"></div>
                         <div class="chart-canvas" id="indicatorChartCanvas"><div class="chart-empty">图表加载中...</div></div>
+                        <div class="cursor-strip" id="indicatorChartCursorStrip"></div>
                         <div class="chart-note" id="indicatorChartNote"></div>
                     </div>
                 </div>
@@ -1161,13 +1239,281 @@
             `).join('');
         }
 
+        function buildIndicatorChartContext(payload, index, signalId = '') {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) return null;
+            const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
+            const indicatorMap = new Map(indicators.map((item) => [Number(item?.bar_time_ms || 0), item]));
+            const signals = Array.isArray(payload?.signals) ? payload.signals : [];
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), bars.length - 1);
+            const bar = bars[safeIndex] || null;
+            const signalMatches = signals.filter((item) => Number(item?.bar_time_ms || 0) === Number(bar?.bar_time_ms || 0));
+            const activeSignal = signalMatches.find((item) => String(item?.signal_id || item?.id || '') === String(signalId || ''))
+                || signalMatches[0]
+                || null;
+            return {
+                index: safeIndex,
+                bar,
+                indicator: indicatorMap.get(Number(bar?.bar_time_ms || 0)) || payload?.latestIndicator || null,
+                signalMatches,
+                activeSignal,
+            };
+        }
+
+        function getIndicatorChartSelectedIndex(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) return -1;
+            const fallbackIndex = bars.length - 1;
+            const index = indicatorChartSelectedBarIndex >= 0 ? indicatorChartSelectedBarIndex : fallbackIndex;
+            return Math.min(Math.max(index, 0), bars.length - 1);
+        }
+
+        function resolveIndicatorChartDataIndex(candidate) {
+            if (Number.isInteger(candidate) && candidate >= 0) return candidate;
+            const numeric = Number(candidate);
+            if (Number.isInteger(numeric) && numeric >= 0) return numeric;
+            const text = String(candidate ?? '').trim();
+            if (!text || !indicatorChartCategories.length) return -1;
+            return indicatorChartCategories.indexOf(text);
+        }
+
+        function resolveIndicatorChartDataIndexFromParams(params) {
+            const list = Array.isArray(params) ? params : [params];
+            for (const item of list) {
+                const directIndex = resolveIndicatorChartDataIndex(item?.dataIndex);
+                if (directIndex >= 0) return directIndex;
+                const nameIndex = resolveIndicatorChartDataIndex(item?.name);
+                if (nameIndex >= 0) return nameIndex;
+                const axisValueIndex = resolveIndicatorChartDataIndex(item?.axisValue ?? item?.valueLabel ?? item?.value);
+                if (axisValueIndex >= 0) return axisValueIndex;
+                const rawValue = Array.isArray(item?.value) ? item.value[0] : item?.value;
+                const valueIndex = resolveIndicatorChartDataIndex(rawValue);
+                if (valueIndex >= 0) return valueIndex;
+            }
+            return -1;
+        }
+
+        function resolveIndicatorChartBarIndexFromPixel(point) {
+            if (!indicatorChartInstance || !Array.isArray(point)) return -1;
+            for (const xAxisIndex of [0, 1, 2]) {
+                try {
+                    const raw = indicatorChartInstance.convertFromPixel({ xAxisIndex }, point);
+                    const candidate = Array.isArray(raw) ? raw[0] : raw;
+                    const index = resolveIndicatorChartDataIndex(candidate);
+                    if (index >= 0) return index;
+                } catch (_) {
+                    continue;
+                }
+            }
+            return -1;
+        }
+
+        function getIndicatorChartEventPoint(event) {
+            const x = Number(event?.offsetX ?? event?.zrX);
+            const y = Number(event?.offsetY ?? event?.zrY);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            return [x, y];
+        }
+
+        function getIndicatorChartPointFromClientPosition(clientX, clientY) {
+            const container = document.getElementById('indicatorChartCanvas');
+            if (!container) return null;
+            const rect = container.getBoundingClientRect();
+            const x = Number(clientX) - rect.left;
+            const y = Number(clientY) - rect.top;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+            return [x, y];
+        }
+
+        function cleanupIndicatorChartDomInteractions() {
+            if (typeof indicatorChartDomCleanup === 'function') {
+                indicatorChartDomCleanup();
+            }
+            indicatorChartDomCleanup = null;
+        }
+
+        function attachIndicatorChartDomInteractions() {
+            cleanupIndicatorChartDomInteractions();
+            const container = document.getElementById('indicatorChartCanvas');
+            if (!container) return;
+
+            const handleHoverPoint = (point) => {
+                const index = point ? resolveIndicatorChartBarIndexFromPixel(point) : -1;
+                if (index < 0) return;
+                syncIndicatorChartCursorIndex(index);
+                syncIndicatorChartTooltip(index);
+            };
+
+            const onMouseMove = (event) => {
+                handleHoverPoint(getIndicatorChartPointFromClientPosition(event.clientX, event.clientY));
+            };
+            const onMouseLeave = () => {
+                indicatorChartHoverBarIndex = -1;
+                renderIndicatorChartCursorStrip(indicatorChartLastPayload);
+                if (indicatorChartInstance) {
+                    indicatorChartInstance.dispatchAction({ type: 'hideTip' });
+                }
+            };
+            const onClick = (event) => {
+                const point = getIndicatorChartPointFromClientPosition(event.clientX, event.clientY);
+                const index = point ? resolveIndicatorChartBarIndexFromPixel(point) : -1;
+                if (index < 0) return;
+                focusIndicatorChartBarIndex(index);
+            };
+            const onTouchStart = (event) => {
+                const touch = event.touches?.[0] || event.changedTouches?.[0];
+                if (!touch) return;
+                const point = getIndicatorChartPointFromClientPosition(touch.clientX, touch.clientY);
+                const index = point ? resolveIndicatorChartBarIndexFromPixel(point) : -1;
+                if (index < 0) return;
+                focusIndicatorChartBarIndex(index);
+            };
+
+            container.addEventListener('mousemove', onMouseMove);
+            container.addEventListener('mouseleave', onMouseLeave);
+            container.addEventListener('click', onClick);
+            container.addEventListener('touchstart', onTouchStart, { passive: true });
+
+            indicatorChartDomCleanup = () => {
+                container.removeEventListener('mousemove', onMouseMove);
+                container.removeEventListener('mouseleave', onMouseLeave);
+                container.removeEventListener('click', onClick);
+                container.removeEventListener('touchstart', onTouchStart);
+            };
+        }
+
+        function renderIndicatorChartCursorStrip(payload) {
+            const container = document.getElementById('indicatorChartCursorStrip');
+            if (!container) return;
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) {
+                container.innerHTML = '';
+                return;
+            }
+            const fallbackIndex = indicatorChartSelectedBarIndex >= 0 ? indicatorChartSelectedBarIndex : bars.length - 1;
+            const activeIndex = indicatorChartHoverBarIndex >= 0 ? indicatorChartHoverBarIndex : fallbackIndex;
+            const context = buildIndicatorChartContext(payload, activeIndex, indicatorChartSelectedSignalId);
+            const bar = context?.bar || null;
+            const indicator = context?.indicator || null;
+            const signal = context?.activeSignal || null;
+            container.innerHTML = `
+                <div class="cursor-card">
+                    <div class="cursor-label">Cursor Time</div>
+                    <div class="cursor-value">${escapeHtml(bar?.us_time || '--')}</div>
+                </div>
+                <div class="cursor-card">
+                    <div class="cursor-label">OHLC</div>
+                    <div class="cursor-value">${bar ? `${escapeHtml(formatPrice(bar.open))} / ${escapeHtml(formatPrice(bar.high))} / ${escapeHtml(formatPrice(bar.low))} / ${escapeHtml(formatPrice(bar.close))}` : '--'}</div>
+                </div>
+                <div class="cursor-card">
+                    <div class="cursor-label">EMA / VWAP</div>
+                    <div class="cursor-value">${indicator ? `20 ${escapeHtml(formatPrice(indicator.ema_fast))} · 50 ${escapeHtml(formatPrice(indicator.ema_slow))}<br>100 ${escapeHtml(formatPrice(indicator.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator.vwap))}` : '--'}</div>
+                </div>
+                <div class="cursor-card">
+                    <div class="cursor-label">Signal / Osc</div>
+                    <div class="cursor-value">${signal ? `${escapeHtml(String(signal.signal || signal.direction || '--'))}<br>${escapeHtml(String(signal.direction || '--').toUpperCase())}` : '暂无信号'}${indicator ? `<br>CRSI ${escapeHtml(formatNumber(indicator.crsi))} · OBV ${escapeHtml(formatNumber(indicator.obv_rsi))}` : ''}</div>
+                </div>
+            `;
+        }
+
+        function renderIndicatorChartFocusGroup(payload) {
+            const container = document.getElementById('indicatorChartFocusGroup');
+            if (!container) return;
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) {
+                container.innerHTML = '';
+                return;
+            }
+            const activeIndex = getIndicatorChartSelectedIndex(payload);
+            const activeBar = bars[activeIndex] || null;
+            container.innerHTML = `
+                <button class="chart-focus-btn" type="button" onclick="focusPreviousIndicatorChartBar()" ${activeIndex <= 0 ? 'disabled' : ''}>◀ Prev</button>
+                <button class="chart-focus-btn" type="button" onclick="focusNextIndicatorChartBar()" ${activeIndex >= bars.length - 1 ? 'disabled' : ''}>Next ▶</button>
+                <button class="chart-focus-btn" type="button" onclick="focusLatestIndicatorChartBar()" ${activeIndex >= bars.length - 1 ? 'disabled' : ''}>Latest</button>
+                <div class="chart-focus-status">Focus ${activeIndex + 1}/${bars.length} · ${escapeHtml(activeBar?.us_time || '--')}</div>
+            `;
+        }
+
+        function buildIndicatorChartTooltipHtml(payload, index) {
+            const context = buildIndicatorChartContext(payload, index, '');
+            const bar = context?.bar || null;
+            if (!bar) return '';
+            const indicator = context?.indicator || null;
+            const signal = context?.activeSignal || null;
+            const direction = String(signal?.direction || '').toLowerCase();
+            const signalColor = direction === 'short' ? '#FC8181' : '#48BB78';
+            return `
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.75;min-width:240px;">
+                    <div style="font-size:12px;font-weight:700;color:#E2EAF4;margin-bottom:6px;">${escapeHtml(bar.us_time || '--')}</div>
+                    <div>O ${escapeHtml(formatPrice(bar.open))} · H ${escapeHtml(formatPrice(bar.high))}</div>
+                    <div>L ${escapeHtml(formatPrice(bar.low))} · C ${escapeHtml(formatPrice(bar.close))}</div>
+                    <div>Vol ${escapeHtml(formatNumber(bar.volume || 0, 0))}</div>
+                    <div style="margin-top:6px;color:#8BA4C4;">EMA20 ${indicator ? escapeHtml(formatPrice(indicator.ema_fast)) : '--'} · EMA50 ${indicator ? escapeHtml(formatPrice(indicator.ema_slow)) : '--'}</div>
+                    <div style="color:#8BA4C4;">EMA100 ${indicator ? escapeHtml(formatPrice(indicator.ema_trend)) : '--'} · VWAP ${indicator ? escapeHtml(formatPrice(indicator.vwap)) : '--'}</div>
+                    <div style="color:#8BA4C4;">CRSI ${indicator ? escapeHtml(formatNumber(indicator.crsi)) : '--'} · OBV ${indicator ? escapeHtml(formatNumber(indicator.obv_rsi)) : '--'} · ATR ${indicator ? escapeHtml(formatPercent(indicator.atr_pct)) : '--'}</div>
+                    <div style="margin-top:6px;color:${signal ? signalColor : '#8BA4C4'};">${signal ? `${escapeHtml(String(signal.signal || signal.direction || '--'))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}` : 'No signal on this bar'}</div>
+                </div>
+            `;
+        }
+
+        function syncIndicatorChartTooltip(index) {
+            if (!indicatorChartInstance || !Number.isInteger(index) || index < 0) return;
+            indicatorChartInstance.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: index });
+        }
+
+        function syncIndicatorChartCursorIndex(index) {
+            if (!indicatorChartLastPayload || !Array.isArray(indicatorChartLastPayload.bars) || !indicatorChartLastPayload.bars.length) return;
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), indicatorChartLastPayload.bars.length - 1);
+            indicatorChartHoverBarIndex = safeIndex;
+            renderIndicatorChartCursorStrip(indicatorChartLastPayload);
+        }
+
+        function focusIndicatorChartBarIndex(index, signalId = '') {
+            if (!indicatorChartLastPayload || !Array.isArray(indicatorChartLastPayload.bars) || !indicatorChartLastPayload.bars.length) return;
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), indicatorChartLastPayload.bars.length - 1);
+            indicatorChartSelectedBarIndex = safeIndex;
+            indicatorChartSelectedSignalId = signalId ? decodeURIComponent(signalId) : '';
+            indicatorChartHoverBarIndex = safeIndex;
+            renderIndicatorChartCursorStrip(indicatorChartLastPayload);
+            renderIndicatorChartFocusGroup(indicatorChartLastPayload);
+            syncIndicatorChartTooltip(safeIndex);
+        }
+
+        function focusPreviousIndicatorChartBar() {
+            if (!indicatorChartLastPayload) return;
+            const currentIndex = getIndicatorChartSelectedIndex(indicatorChartLastPayload);
+            if (currentIndex <= 0) return;
+            focusIndicatorChartBarIndex(currentIndex - 1, indicatorChartSelectedSignalId);
+        }
+
+        function focusNextIndicatorChartBar() {
+            if (!indicatorChartLastPayload || !Array.isArray(indicatorChartLastPayload.bars)) return;
+            const currentIndex = getIndicatorChartSelectedIndex(indicatorChartLastPayload);
+            const maxIndex = indicatorChartLastPayload.bars.length - 1;
+            if (currentIndex < 0 || currentIndex >= maxIndex) return;
+            focusIndicatorChartBarIndex(currentIndex + 1, indicatorChartSelectedSignalId);
+        }
+
+        function focusLatestIndicatorChartBar() {
+            if (!indicatorChartLastPayload || !Array.isArray(indicatorChartLastPayload.bars) || !indicatorChartLastPayload.bars.length) return;
+            focusIndicatorChartBarIndex(indicatorChartLastPayload.bars.length - 1);
+        }
+
         function setIndicatorChartLoadingState(indicator, message = '正在拉取 bars / indicators / signals ...') {
             const intervalLabel = getIntervalLabel(indicator.interval) || indicator.interval || '--';
             const title = document.getElementById('indicatorChartTitle');
             const summary = document.getElementById('indicatorChartSummary');
             const canvas = document.getElementById('indicatorChartCanvas');
+            const focus = document.getElementById('indicatorChartFocusGroup');
+            const cursor = document.getElementById('indicatorChartCursorStrip');
             const note = document.getElementById('indicatorChartNote');
             indicatorChartLastPayload = null;
+            indicatorChartCategories = [];
+            cleanupIndicatorChartDomInteractions();
+            indicatorChartSelectedBarIndex = -1;
+            indicatorChartSelectedSignalId = '';
+            indicatorChartHoverBarIndex = -1;
             if (title) title.textContent = `${indicator.symbol || '--'} · ${intervalLabel} 指标图`;
             if (summary) {
                 summary.innerHTML = `
@@ -1182,6 +1528,8 @@
                 indicatorChartInstance = null;
             }
             if (canvas) canvas.innerHTML = '<div class="chart-empty">图表加载中...</div>';
+            if (focus) focus.innerHTML = '';
+            if (cursor) cursor.innerHTML = '';
             if (note) note.textContent = message;
         }
 
@@ -1203,10 +1551,14 @@
                     indicatorChartInstance.dispose();
                     indicatorChartInstance = null;
                 }
+                cleanupIndicatorChartDomInteractions();
                 canvas.innerHTML = '<div class="chart-empty">暂无可绘制的 bars / indicators 历史数据</div>';
                 summary.innerHTML = '';
                 renderIndicatorChartRangeGroup(interval);
                 renderIndicatorChartLayerGroup(interval);
+                indicatorChartCategories = [];
+                renderIndicatorChartFocusGroup({ bars: [] });
+                renderIndicatorChartCursorStrip({ bars: [] });
                 note.textContent = '图表需要先有 ibkr_bars 与 ibkr_indicators 的历史记录。';
                 return;
             }
@@ -1216,6 +1568,7 @@
             const indicatorMap = new Map(normalizedIndicators.map((item) => [Number(item.bar_time_ms || 0), item]));
             const barMap = new Map(sortedBars.map((item) => [Number(item.bar_time_ms || 0), item]));
             const categories = sortedBars.map((bar) => formatChartLabel(bar));
+            indicatorChartCategories = categories.slice();
             const candle = sortedBars.map((bar) => [
                 Number(bar.open || 0),
                 Number(bar.close || 0),
@@ -1256,12 +1609,13 @@
             note.textContent = !normalizedIndicators.length
                 ? '当前窗口只有价格 bars，没有匹配到 indicators；EMA / VWAP / Osc 将暂时不可见。'
                 : normalizedInterval === '5m'
-                ? `可用上方图层按钮切换 EMA / VWAP / Signals / Volume；当前主图${indicatorChartLayerState.signals ? '已叠加' : '未叠加'} ibkr_signals 散点。`
+                ? `可用上方图层按钮切换 EMA / VWAP / Signals / Volume；焦点可直接点图表或用 Prev / Next / Latest 切换。`
                 : '当前为非 5m 周期，主图只展示价格结构与指标轨迹；仍可用图层按钮切换 EMA / VWAP / Volume。';
 
             if (indicatorChartInstance) {
                 indicatorChartInstance.dispose();
             }
+            cleanupIndicatorChartDomInteractions();
             canvas.innerHTML = '';
             indicatorChartInstance = echarts.init(canvas);
             indicatorChartInstance.setOption({
@@ -1277,7 +1631,15 @@
                     axisPointer: { type: 'cross' },
                     backgroundColor: 'rgba(8,12,20,0.96)',
                     borderColor: 'rgba(99,179,237,0.16)',
-                    textStyle: { color: '#E2EAF4' }
+                    textStyle: { color: '#E2EAF4' },
+                    enterable: true,
+                    formatter(params) {
+                        const list = Array.isArray(params) ? params : [params];
+                        const index = resolveIndicatorChartDataIndexFromParams(list);
+                        if (index >= 0) syncIndicatorChartCursorIndex(index);
+                        if (!Number.isInteger(index) || index < 0) return '';
+                        return buildIndicatorChartTooltipHtml(indicatorChartLastPayload, index);
+                    }
                 },
                 axisPointer: {
                     link: [{ xAxisIndex: 'all' }]
@@ -1324,6 +1686,39 @@
                     { name: 'ATR %', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: atrPct, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#FC8181' } }
                 ]
             });
+            indicatorChartInstance.off('updateAxisPointer');
+            indicatorChartInstance.on('updateAxisPointer', (params) => {
+                const axisInfo = Array.isArray(params?.axesInfo) ? params.axesInfo : [];
+                const index = resolveIndicatorChartDataIndexFromParams(axisInfo);
+                if (index >= 0) {
+                    syncIndicatorChartCursorIndex(index);
+                }
+            });
+            const zr = indicatorChartInstance.getZr();
+            zr.off('mousemove');
+            zr.off('globalout');
+            zr.off('click');
+            zr.on('mousemove', (event) => {
+                const point = getIndicatorChartEventPoint(event);
+                const index = point ? resolveIndicatorChartBarIndexFromPixel(point) : -1;
+                if (index >= 0) syncIndicatorChartCursorIndex(index);
+            });
+            zr.on('globalout', () => {
+                indicatorChartHoverBarIndex = -1;
+                renderIndicatorChartCursorStrip(indicatorChartLastPayload);
+            });
+            zr.on('click', (event) => {
+                const point = getIndicatorChartEventPoint(event);
+                const index = point ? resolveIndicatorChartBarIndexFromPixel(point) : -1;
+                if (index < 0) return;
+                focusIndicatorChartBarIndex(index);
+                syncIndicatorChartCursorIndex(index);
+            });
+            indicatorChartSelectedBarIndex = sortedBars.length - 1;
+            indicatorChartHoverBarIndex = -1;
+            attachIndicatorChartDomInteractions();
+            renderIndicatorChartFocusGroup(indicatorChartLastPayload);
+            renderIndicatorChartCursorStrip(indicatorChartLastPayload);
         }
 
         async function loadIndicatorChart(indicator) {
@@ -1419,6 +1814,11 @@
             indicatorChartLastPayload = null;
             currentIndicatorChartContext = null;
             indicatorChartLoadToken += 1;
+            indicatorChartCategories = [];
+            cleanupIndicatorChartDomInteractions();
+            indicatorChartSelectedBarIndex = -1;
+            indicatorChartSelectedSignalId = '';
+            indicatorChartHoverBarIndex = -1;
             if (indicatorChartInstance) {
                 indicatorChartInstance.dispose();
                 indicatorChartInstance = null;

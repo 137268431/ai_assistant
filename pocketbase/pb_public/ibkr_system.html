@@ -257,6 +257,107 @@
         .val-on { color: #22c55e; }
         .val-off { color: #ef4444; }
         .val-neutral { color: var(--accent); }
+        .config-stack {
+            display: grid;
+            gap: 12px;
+        }
+        .config-block-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .config-divider {
+            height: 1px;
+            background: rgba(255,255,255,0.06);
+        }
+        .cron-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+        }
+        .cron-card {
+            background: var(--surface2);
+            border-radius: 10px;
+            padding: 10px;
+            min-width: 0;
+        }
+        .cron-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 6px;
+        }
+        .cron-card-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .cron-card-key {
+            margin-top: 4px;
+            font-size: 9px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            word-break: break-all;
+        }
+        .cron-state {
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            border: 1px solid var(--border);
+        }
+        .cron-state.on {
+            color: #22c55e;
+            border-color: rgba(34,197,94,0.28);
+            background: rgba(34,197,94,0.12);
+        }
+        .cron-state.off {
+            color: #ef4444;
+            border-color: rgba(239,68,68,0.28);
+            background: rgba(239,68,68,0.12);
+        }
+        .cron-copy {
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1.6;
+            margin-bottom: 6px;
+        }
+        .cron-meta {
+            display: grid;
+            gap: 4px;
+        }
+        .cron-meta-row {
+            display: grid;
+            grid-template-columns: 42px 1fr;
+            gap: 8px;
+            align-items: start;
+            font-size: 10px;
+        }
+        .cron-meta-label {
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .cron-meta-value {
+            color: var(--text);
+            word-break: break-word;
+        }
+        .cron-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .cron-tag {
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.05);
+            color: var(--muted);
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+        }
 
         .loading-text {
             text-align: center;
@@ -429,6 +530,17 @@
                 .replace(/'/g, '&#39;');
         }
 
+        function normalizeBooleanText(value, fallback = 'TRUE') {
+            const text = String(value ?? fallback).trim().toUpperCase();
+            if (!text) return String(fallback || 'TRUE').trim().toUpperCase();
+            return text;
+        }
+
+        function isTruthyConfigValue(value, fallback = 'TRUE') {
+            const text = normalizeBooleanText(value, fallback);
+            return !(text === 'FALSE' || text === '0' || text === 'OFF' || text === 'NO');
+        }
+
         function getAuthHeaders(extra = {}) {
             const headers = { ...extra };
             const token = getToken();
@@ -480,7 +592,7 @@
                     }
                 };
 
-                const [health, summary, eventsResp, ...restResponses] = await Promise.all([
+                const [health, summary, cronResp, eventsResp, ...restResponses] = await Promise.all([
                     safeRequestSystemJson('healthz', '/api/custom/system/healthz', {
                         ok: false,
                         pb: { status: 'unknown' },
@@ -493,6 +605,7 @@
                         ibkr_compute: {},
                         config: {}
                     }),
+                    safeRequestSystemJson('cronz', '/api/custom/system/cronz', { items: [] }),
                     safeApiFetch('system_events', 'system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }),
                     ...freshnessIntervals.map((interval) =>
                         safeApiFetch(`freshness:${interval}`, 'ibkr_bars', {
@@ -522,7 +635,7 @@
                 renderTodayStats(summary.today || {});
                 renderFreshness(freshnessItems);
                 renderEngines(summary.ibkr_compute || {});
-                renderConfig(summary);
+                renderConfig(summary, Array.isArray(cronResp?.items) ? cronResp.items : []);
                 renderBacktests(
                     Array.isArray(backtestBatchResp?.items) ? backtestBatchResp.items : [],
                     Array.isArray(backtestRunsResp?.items) ? backtestRunsResp.items : []
@@ -704,7 +817,71 @@
             el.innerHTML = html;
         }
 
-        function renderConfig(summary) {
+        function getCronEffectiveState(definition, configMap) {
+            const schedulerValue = configMap?.pb_scheduler_enabled ?? 'TRUE';
+            const cronValue = configMap?.[definition?.config_key] ?? definition?.default_value ?? 'TRUE';
+            const schedulerEnabled = isTruthyConfigValue(schedulerValue, 'TRUE');
+            const cronEnabled = isTruthyConfigValue(cronValue, definition?.default_value ?? 'TRUE');
+            return {
+                schedulerEnabled,
+                cronEnabled,
+                effectiveEnabled: schedulerEnabled && cronEnabled,
+            };
+        }
+
+        function renderCronSummary(definitions, configMap) {
+            if (!Array.isArray(definitions) || !definitions.length) {
+                return '<div class="loading-text" style="padding:10px 0 0">暂无 PB cron 定义</div>';
+            }
+            return `
+                <div class="cron-grid">
+                    ${definitions.map((definition) => {
+                        const state = getCronEffectiveState(definition, configMap);
+                        return `
+                            <div class="cron-card">
+                                <div class="cron-card-head">
+                                    <div>
+                                        <div class="cron-card-title">${escapeHtml(definition.display_name || definition.config_display_name || definition.id || 'PB Cron')}</div>
+                                        <div class="cron-card-key">${escapeHtml(definition.config_key || definition.id || '-')}</div>
+                                    </div>
+                                    <span class="cron-state ${state.effectiveEnabled ? 'on' : 'off'}">${state.effectiveEnabled ? 'ENABLED' : 'DISABLED'}</span>
+                                </div>
+                                <div class="cron-copy">${escapeHtml(definition.function_summary || '--')}</div>
+                                <div class="cron-meta">
+                                    <div class="cron-meta-row">
+                                        <span class="cron-meta-label">UTC 周期</span>
+                                        <span class="cron-meta-value">${escapeHtml(definition.cycle_label || '--')}</span>
+                                    </div>
+                                    <div class="cron-meta-row">
+                                        <span class="cron-meta-label">北京时间</span>
+                                        <span class="cron-meta-value">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '--')}</span>
+                                    </div>
+                                    <div class="cron-meta-row">
+                                        <span class="cron-meta-label">美东时间</span>
+                                        <span class="cron-meta-value">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '--')}</span>
+                                    </div>
+                                    <div class="cron-meta-row">
+                                        <span class="cron-meta-label">Cron</span>
+                                        <span class="cron-meta-value">${escapeHtml(definition.cron_expr || '--')}</span>
+                                    </div>
+                                    <div class="cron-meta-row">
+                                        <span class="cron-meta-label">窗口</span>
+                                        <span class="cron-meta-value">${escapeHtml(definition.window_label || '--')}</span>
+                                    </div>
+                                </div>
+                                <div class="cron-tags">
+                                    <span class="cron-tag">PB ${state.schedulerEnabled ? 'ON' : 'OFF'}</span>
+                                    <span class="cron-tag">THIS ${state.cronEnabled ? 'ON' : 'OFF'}</span>
+                                    <span class="cron-tag">${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        function renderConfig(summary, cronDefinitions) {
             const el = document.getElementById('configArea');
             const items = [
                 { label: 'TRADING', value: summary.ibkr_trading_enabled },
@@ -713,6 +890,9 @@
                 { label: 'BAR PUBLISH', value: summary.config?.ibkr_bar_publish_enabled || '--' },
                 { label: 'COMPUTE URL', value: summary.config?.ibkr_compute_public_url || '--' }
             ];
+            const configMap = { ...(summary.config || {}) };
+            if (summary.ibkr_trading_enabled !== undefined) configMap.ibkr_trading_enabled = summary.ibkr_trading_enabled;
+            if (summary.compute_enabled !== undefined) configMap.ibkr_compute_enabled = summary.compute_enabled;
 
             [
                 'ibkr_signal_source',
@@ -722,6 +902,7 @@
                 'watchlist_interval_min',
                 'ibkr_target_refresh_sec',
                 'ibkr_target_subscription_limit',
+                'ibkr_active_repair_interval_min',
                 'ibkr_watchlist_backfill_interval_min',
                 'ibkr_watchlist_backfill_batch_size',
                 'ibkr_watchlist_backfill_stale_min',
@@ -739,7 +920,7 @@
                 }
             });
 
-            el.innerHTML = `<div class="config-grid">${items.map((item) => {
+            const configGrid = `<div class="config-grid">${items.map((item) => {
                 let valClass = 'val-neutral';
                 let display = String(item.value ?? '--');
                 const normalized = display.trim().toLowerCase();
@@ -750,6 +931,16 @@
                     <span class="config-val ${valClass}">${escapeHtml(display)}</span>
                 </div>`;
             }).join('')}</div>`;
+
+            el.innerHTML = `
+                <div class="config-stack">
+                    <div class="config-block-label">关键配置</div>
+                    ${configGrid}
+                    <div class="config-divider"></div>
+                    <div class="config-block-label">PB Cron 摘要</div>
+                    ${renderCronSummary(cronDefinitions, configMap)}
+                </div>
+            `;
         }
 
         function renderEvents(events) {

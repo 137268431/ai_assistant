@@ -225,6 +225,11 @@ function notifySystemEvent(eventType, level, source, title, detail, environment)
         return false
     }
 
+    if (runtimeEnvironment === "paper") {
+        console.log("[FeishuSystem] 发送跳过: " + title + " environment=paper")
+        return false
+    }
+
     var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment)
     var success = feishuApp.sendMessage("interactive", card, getTargetChatId(eventType, level, runtimeEnvironment), "chat_id", runtimeEnvironment)
     if (!success) {

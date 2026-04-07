@@ -170,11 +170,15 @@ function load2faSummary(environment, runtimeStatus) {
     }
 }
 
-function listNotifyEnvironments() {
+function listNotifyEnvironments(cronId) {
     const envUtils = require(`${__hooks}/lib/environment.js`)
     const runtimeModes = require(`${__hooks}/lib/runtime_modes.js`)
+    const { isPbCronEnabled } = require(`${__hooks}/lib/pb_cron_registry.js`)
     const environments = runtimeModes.getActiveRuntimeEnvironments(RUNTIME_KEYS)
     return environments.filter((environment) => {
+        if (cronId && !isPbCronEnabled(cronId, environment)) {
+            return false
+        }
         const schedulerEnabled = runtimeModes.isEnabledConfigValue(envUtils.getConfigValue("pb_scheduler_enabled", "TRUE", environment))
         if (!schedulerEnabled) return false
         return runtimeModes.getComputeEnabledForEnvironment(environment, RUNTIME_KEYS)
@@ -248,13 +252,13 @@ function buildStatusSnapshot(environment, times) {
     }
 }
 
-function runSystemHeartbeatTick(logPrefix) {
+function runSystemHeartbeatTick(logPrefix, cronId) {
     const prefix = logPrefix || "[IBKRSystemNotify]"
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
     const times = getTimeStrings()
-    const environments = listNotifyEnvironments()
+    const environments = listNotifyEnvironments(cronId)
     const nowMs = Date.now()
     const currentHourToken = times.us.slice(0, 13)
 
@@ -346,13 +350,13 @@ function runSystemHeartbeatTick(logPrefix) {
     }
 }
 
-function runSystemStatusReminderTick(logPrefix) {
+function runSystemStatusReminderTick(logPrefix, cronId) {
     const prefix = logPrefix || "[IBKRSystemNotify]"
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
     const times = getTimeStrings()
-    const environments = listNotifyEnvironments()
+    const environments = listNotifyEnvironments(cronId)
 
     console.log(`${prefix} status reminder tick: environments=${environments.join(",") || "-"}`)
 

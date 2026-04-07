@@ -18,11 +18,21 @@ var _cachedToken = null
 var _tokenExpireTime = 0
 
 function normalizeFeishuEnvironment(environment) {
-    return envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+    var text = String(environment || "").trim().toLowerCase()
+    if (text === "paper" || text === "sim" || text === "simulated" || text === "simulation") {
+        return "paper"
+    }
+    if (text === "backtest" || text === "test") {
+        return "backtest"
+    }
+    if (text === "live" || text === "prod" || text === "production") {
+        return "live"
+    }
+    return envUtils.normalizeRuntimeEnvironment(environment || "", "live")
 }
 
 function isFeishuSuppressed(environment) {
-    return normalizeFeishuEnvironment(environment) === envUtils.PAPER_ENVIRONMENT
+    return normalizeFeishuEnvironment(environment) === "paper"
 }
 
 function buildSuppressedResult(environment, action) {

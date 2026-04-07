@@ -12,6 +12,7 @@ class Config:
         "ibkr_target_filter_on": "false",
         "ibkr_target_subscription_limit": "60",
         "ibkr_target_refresh_sec": "60",
+        "ibkr_active_repair_interval_min": "5",
         "ibkr_watchlist_backfill_interval_min": "30",
         "ibkr_watchlist_backfill_batch_size": "12",
         "ibkr_watchlist_backfill_stale_min": "20",

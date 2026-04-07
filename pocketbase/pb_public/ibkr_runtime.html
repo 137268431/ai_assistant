@@ -431,6 +431,77 @@
             color: var(--muted);
             font-family: 'JetBrains Mono', monospace;
         }
+        .config-stack {
+            display: grid;
+            gap: 12px;
+        }
+        .config-block-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+        }
+        .config-divider {
+            height: 1px;
+            background: rgba(255,255,255,0.06);
+        }
+        .cron-stack {
+            display: grid;
+            gap: 10px;
+        }
+        .cron-card {
+            padding: 12px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.03);
+        }
+        .cron-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        .cron-card-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .cron-card-key {
+            margin-top: 4px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--muted);
+            word-break: break-all;
+        }
+        .cron-card-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+        .cron-card-meta {
+            display: grid;
+            gap: 6px;
+        }
+        .cron-card-row {
+            display: grid;
+            grid-template-columns: 54px 1fr;
+            gap: 10px;
+            align-items: start;
+            font-size: 11px;
+        }
+        .cron-card-row .label {
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .cron-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
 
         .data-table-wrap {
             overflow-x: auto;
@@ -837,6 +908,17 @@
 
         function toArray(payload) {
             return Array.isArray(payload?.items) ? payload.items : [];
+        }
+
+        function normalizeBooleanText(value, fallback = 'TRUE') {
+            const text = String(value ?? fallback).trim().toUpperCase();
+            if (!text) return String(fallback || 'TRUE').trim().toUpperCase();
+            return text;
+        }
+
+        function isTruthyConfigValue(value, fallback = 'TRUE') {
+            const text = normalizeBooleanText(value, fallback);
+            return !(text === 'FALSE' || text === '0' || text === 'OFF' || text === 'NO');
         }
 
         function statusClass(value) {
@@ -1250,6 +1332,11 @@
                 ['Trade Targets', Array.isArray(status?.market_universe?.active_trade_symbols) ? status.market_universe.active_trade_symbols.join(', ') || '--' : '--'],
                 ['Target Date', String(status?.market_universe?.active_target_date || '--')],
                 ['Last Target Refresh', formatTimeLabel(status?.market_universe?.last_target_refresh)],
+                ['Active Repair Every', `${Number(status?.market_universe?.active_repair_interval_min || 0) || 0}m`],
+                ['Last Active Repair', formatTimeLabel(status?.market_universe?.last_active_repair)],
+                ['Active Repair Symbols', Array.isArray(status?.market_universe?.last_active_repair_symbols) ? status.market_universe.last_active_repair_symbols.join(', ') || '--' : '--'],
+                ['Active Repair Reasons', status?.market_universe?.last_active_repair_reasons ? Object.entries(status.market_universe.last_active_repair_reasons).map(([symbol, reason]) => `${symbol}: ${reason}`).join(' | ') || '--' : '--'],
+                ['Pool Backfill Every', `${Number(status?.market_universe?.watchlist_backfill_interval_min || 0) || 0}m`],
                 ['Last Pool Backfill', formatTimeLabel(status?.market_universe?.last_watchlist_backfill)],
                 ['Last Bar Time', dataHealth.last_bar_label || '--'],
                 ['Bar Write Time', latestBarWrite],
@@ -1307,7 +1394,7 @@
             `;
         }
 
-        function renderConfigDetail(summary, runtimeConfig) {
+        function getMergedConfigMap(summary, runtimeConfig) {
             const preferredKeys = [
                 'ibkr_compute_public_url',
                 'ibkr_compute_enabled',
@@ -1321,6 +1408,7 @@
                 'watchlist_interval_min',
                 'ibkr_target_refresh_sec',
                 'ibkr_target_subscription_limit',
+                'ibkr_active_repair_interval_min',
                 'ibkr_watchlist_backfill_interval_min',
                 'ibkr_watchlist_backfill_batch_size',
                 'ibkr_watchlist_backfill_stale_min',
@@ -1340,13 +1428,99 @@
             Object.entries(summary?.config || {}).forEach(([key, value]) => {
                 if (!(key in configMap)) configMap[key] = value;
             });
+            return { configMap, preferredKeys };
+        }
+
+        function getCronEffectiveState(definition, configMap) {
+            const schedulerValue = configMap?.pb_scheduler_enabled ?? 'TRUE';
+            const cronValue = configMap?.[definition?.config_key] ?? definition?.default_value ?? 'TRUE';
+            const schedulerEnabled = isTruthyConfigValue(schedulerValue, 'TRUE');
+            const cronEnabled = isTruthyConfigValue(cronValue, definition?.default_value ?? 'TRUE');
+            return {
+                schedulerEnabled,
+                cronEnabled,
+                effectiveEnabled: schedulerEnabled && cronEnabled,
+            };
+        }
+
+        function renderCronSummary(definitions, configMap) {
+            if (!Array.isArray(definitions) || !definitions.length) {
+                return renderEmpty('暂无 PB cron 定义');
+            }
+            return `
+                <div class="cron-stack">
+                    ${definitions.map((definition) => {
+                        const state = getCronEffectiveState(definition, configMap);
+                        return `
+                            <div class="cron-card">
+                                <div class="cron-card-head">
+                                    <div>
+                                        <div class="cron-card-title">${escapeHtml(definition.display_name || definition.config_display_name || definition.id || 'PB Cron')}</div>
+                                        <div class="cron-card-key">${escapeHtml(definition.config_key || definition.id || '-')}</div>
+                                    </div>
+                                    <span class="pill ${state.effectiveEnabled ? 'pill-ok' : 'pill-error'}">${state.effectiveEnabled ? 'ENABLED' : 'DISABLED'}</span>
+                                </div>
+                                <div class="cron-card-copy">${escapeHtml(definition.function_summary || '--')}</div>
+                                <div class="cron-card-meta">
+                                    <div class="cron-card-row">
+                                        <span class="label">UTC 周期</span>
+                                        <span>${escapeHtml(definition.cycle_label || '--')}</span>
+                                    </div>
+                                    <div class="cron-card-row">
+                                        <span class="label">北京时间</span>
+                                        <span>${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '--')}</span>
+                                    </div>
+                                    <div class="cron-card-row">
+                                        <span class="label">美东时间</span>
+                                        <span>${escapeHtml(definition.et_cycle_label || definition.cycle_label || '--')}</span>
+                                    </div>
+                                    <div class="cron-card-row">
+                                        <span class="label">Cron</span>
+                                        <span class="mono">${escapeHtml(definition.cron_expr || '--')}</span>
+                                    </div>
+                                    <div class="cron-card-row">
+                                        <span class="label">窗口</span>
+                                        <span>${escapeHtml(definition.window_label || '--')}</span>
+                                    </div>
+                                </div>
+                                <div class="cron-chip-row">
+                                    <span class="mini-tag"><span class="mini-label">PB</span>${state.schedulerEnabled ? 'ON' : 'OFF'}</span>
+                                    <span class="mini-tag"><span class="mini-label">THIS</span>${state.cronEnabled ? 'ON' : 'OFF'}</span>
+                                    <span class="mini-tag"><span class="mini-label">ENV</span>${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        function renderConfigDetail(summary, runtimeConfig, cronDefinitions) {
+            const { configMap, preferredKeys } = getMergedConfigMap(summary, runtimeConfig);
             const chips = preferredKeys
                 .filter((key) => configMap[key] !== undefined && configMap[key] !== '')
                 .map((key) => `
                     <span class="mini-tag"><span class="mini-label">${escapeHtml(key)}</span>${escapeHtml(String(configMap[key]))}</span>
                 `);
-            document.getElementById('configDetail').innerHTML = chips.length
-                ? `<div class="tag-row">${chips.join('')}</div>`
+            const blocks = [];
+            if (chips.length) {
+                blocks.push(`
+                    <div class="config-stack">
+                        <div class="config-block-label">关键配置</div>
+                        <div class="tag-row">${chips.join('')}</div>
+                    </div>
+                `);
+            }
+            if (Array.isArray(cronDefinitions) && cronDefinitions.length) {
+                blocks.push(`
+                    <div class="config-stack">
+                        <div class="config-block-label">PB Cron 摘要</div>
+                        ${renderCronSummary(cronDefinitions, configMap)}
+                    </div>
+                `);
+            }
+            document.getElementById('configDetail').innerHTML = blocks.length
+                ? blocks.join('<div class="config-divider"></div>')
                 : renderEmpty('暂无关键配置');
         }
 
@@ -1645,10 +1819,11 @@
             if (!initRuntimeAuth()) return;
             try {
                 const envFilter = buildEnvironmentFilter();
-                const [health, status, summary, twoFactorResp, runtimeConfigResp, barsResp, indicatorsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
+                const [health, status, summary, cronResp, twoFactorResp, runtimeConfigResp, barsResp, indicatorsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     requestRuntimeJson('/api/custom/ibkr/healthz'),
                     requestRuntimeJson('/api/custom/ibkr/statusz'),
                     requestRuntimeJson('/api/custom/system/summaryz?lite=1'),
+                    requestRuntimeJson('/api/custom/system/cronz').catch(() => ({ items: [] })),
                     requestRuntimeJson('/api/custom/ibkr/2fa/status'),
                     requestRuntimeJson('/api/custom/ibkr/runtime/config'),
                     apiFetch('ibkr_bars', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
@@ -1659,6 +1834,7 @@
                 ]);
 
                 const runtimeConfig = Array.isArray(runtimeConfigResp?.items) ? runtimeConfigResp.items : [];
+                const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
                 const twoFactorState = twoFactorResp?.state || {};
                 const barsItems = toArray(barsResp);
                 const indicatorItems = toArray(indicatorsResp);
@@ -1671,7 +1847,7 @@
                 renderMetricCards(summary, health, status, twoFactorState, latestBar);
                 renderTwoFactorPanel(twoFactorState);
                 renderRuntimeDetail(summary, health, status, twoFactorState, latestBar, latestIndicator, latestSignal);
-                renderConfigDetail(summary, runtimeConfig);
+                renderConfigDetail(summary, runtimeConfig, cronDefinitions);
                 renderPipelinePanel(summary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
                 renderEngineTable(status);
                 renderBarsTable(barsItems);

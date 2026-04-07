@@ -375,6 +375,142 @@
     opacity: 0.3;
     cursor: not-allowed;
   }
+
+  .cron-overview {
+    margin-bottom: 24px;
+    padding: 16px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(99,179,237,0.08) 0%, rgba(18,24,29,0.96) 100%);
+  }
+
+  .cron-overview-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 14px;
+  }
+
+  .cron-overview-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .cron-overview-subtitle {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .cron-overview-badge {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.04);
+    color: var(--accent);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .cron-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+  }
+
+  .cron-card {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.03);
+    padding: 14px;
+  }
+
+  .cron-card-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: flex-start;
+    margin-bottom: 10px;
+  }
+
+  .cron-card-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .cron-card-id {
+    margin-top: 4px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--muted);
+    word-break: break-all;
+  }
+
+  .cron-state {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    border: 1px solid var(--border);
+  }
+
+  .cron-state.on {
+    color: #68D391;
+    border-color: rgba(104,211,145,0.35);
+    background: rgba(104,211,145,0.12);
+  }
+
+  .cron-state.off {
+    color: #FC8181;
+    border-color: rgba(252,129,129,0.35);
+    background: rgba(252,129,129,0.12);
+  }
+
+  .cron-meta {
+    display: grid;
+    gap: 7px;
+  }
+
+  .cron-meta-row {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 10px;
+    align-items: start;
+    font-size: 11px;
+  }
+
+  .cron-meta-label {
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .cron-meta-value {
+    color: var(--text);
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .cron-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .cron-tag {
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
 </style>
 <script>document.write(getCommonStyles())</script>
 </head>
@@ -412,6 +548,7 @@ requireAuth('/ibkr_config.html')
 
 let configs = []
 let configRecords = []
+let pbCronDefinitions = []
 let originalValues = {}
 let modifiedKeys = new Set()
 let activeTab = localStorage.getItem('config_active_tab') || 'all'
@@ -428,6 +565,7 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'watchlist_interval_min',
   'ibkr_target_refresh_sec',
   'ibkr_target_subscription_limit',
+  'ibkr_active_repair_interval_min',
   'ibkr_watchlist_backfill_interval_min',
   'ibkr_watchlist_backfill_batch_size',
   'ibkr_watchlist_backfill_stale_min',
@@ -490,6 +628,7 @@ const CONFIG_META = {
   ibkr_target_subscription_limit: meta('目标订阅上限', '标的订阅', 620, '60', '当日 ibkr_targets 进入 websocket 实时订阅的最大标的数'),
 
   ibkr_bar_publish_enabled: meta('K线发布开关', '行情链路', 700, 'TRUE', '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
+  ibkr_active_repair_interval_min: meta('活跃修复间隔', '行情链路', 705, '5', '当前实时订阅标的的缺口 / rollup 异常巡检间隔，按 5m 链路优先修复'),
   ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '行情链路', 710, '30', '非目标标的按批次执行 5m 增量回补的间隔'),
   ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '行情链路', 720, '12', '每轮底池回补最多处理多少个非目标标的'),
   ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '行情链路', 730, '20', '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
@@ -513,6 +652,7 @@ const CONFIG_META = {
 
 const GROUP_ORDER = [
   '运行总控',
+  'PB Cron 调度',
   '信号与反转',
   '交易窗口',
   '交易风控',
@@ -543,6 +683,7 @@ const NUMERIC_CONFIG_RULES = {
   watchlist_interval_min: { min: '1', max: '60', step: '1' },
   ibkr_target_refresh_sec: { min: '15', max: '300', step: '15' },
   ibkr_target_subscription_limit: { min: '1', max: '200', step: '1' },
+  ibkr_active_repair_interval_min: { min: '5', max: '120', step: '5' },
   ibkr_watchlist_backfill_interval_min: { min: '5', max: '240', step: '5' },
   ibkr_watchlist_backfill_batch_size: { min: '1', max: '100', step: '1' },
   ibkr_watchlist_backfill_stale_min: { min: '5', max: '240', step: '5' },
@@ -560,8 +701,66 @@ const SELECT_CONFIGS = {
   ]
 }
 
+function normalizeBooleanText(value, fallback = 'TRUE') {
+  const text = String(value ?? fallback).trim().toUpperCase()
+  if (!text) return String(fallback || 'TRUE').trim().toUpperCase()
+  return text
+}
+
+function isTruthyConfigValue(value, fallback = 'TRUE') {
+  const text = normalizeBooleanText(value, fallback)
+  return !(text === 'FALSE' || text === '0' || text === 'OFF' || text === 'NO')
+}
+
+function applyPbCronConfigMeta(definitions) {
+  if (!Array.isArray(definitions) || definitions.length === 0) return
+
+  if (!GROUP_ORDER.includes('PB Cron 调度')) {
+    GROUP_ORDER.splice(1, 0, 'PB Cron 调度')
+  }
+
+  definitions.forEach((definition) => {
+    if (!definition?.config_key) return
+    ACTIVE_CONFIG_KEYS.add(definition.config_key)
+    BOOLEAN_CONFIG_KEYS.add(definition.config_key)
+    CONFIG_META[definition.config_key] = meta(
+      definition.config_display_name || definition.display_name || definition.config_key,
+      definition.group_name || 'PB Cron 调度',
+      Number(definition.sort_order || 9999),
+      definition.default_value ?? 'TRUE',
+      definition.config_description || definition.function_summary || ''
+    )
+  })
+}
+
+async function loadPbCronDefinitions() {
+  try {
+    const token = getToken()
+    const headers = { 'Content-Type': 'application/json' }
+    if (token) headers.Authorization = `Bearer ${token}`
+    const res = await fetch(`${BASE_URL}/api/custom/system/cronz`, { headers })
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
+    const payload = await res.json()
+    return Array.isArray(payload?.items) ? payload.items : []
+  } catch (err) {
+    console.error('[Config] 加载 PB cron 定义失败:', err)
+    return []
+  }
+}
+
 // ── 渲染导航 ──
 document.getElementById('navContainer').innerHTML = renderNav('/ibkr_config.html')
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
 
 function normalizeConfigRecordEnvironment(record) {
   return String(record?.environment || '').trim().toLowerCase()
@@ -719,11 +918,16 @@ function renderTabs(tabs) {
 // ── 加载配置 ──
 async function load() {
   try {
-    const data = await apiFetch('config', {
-      perPage: 500,
-      sort: 'key,-updated'
-    })
+    const [data, cronDefs] = await Promise.all([
+      apiFetch('config', {
+        perPage: 500,
+        sort: 'key,-updated'
+      }),
+      loadPbCronDefinitions()
+    ])
 
+    pbCronDefinitions = cronDefs
+    applyPbCronConfigMeta(pbCronDefinitions)
     configRecords = data.items || []
     configs = buildConfigView(configRecords)
     originalValues = {}
@@ -770,6 +974,7 @@ function render() {
 
   let html = ''
   html += renderTabs(tabs)
+  html += renderCronOverview()
 
   for (const [groupName, groupItems] of displayGroups) {
     html += `<div class="config-section">`
@@ -815,6 +1020,98 @@ function render() {
 
   container.innerHTML = html
   updateSaveButton()
+}
+
+function getConfigEffectiveValue(key, fallback = '') {
+  const config = findConfig(key)
+  if (!config) return fallback
+  return config.value ?? config.default_value ?? fallback
+}
+
+function getCronEffectiveState(definition) {
+  const schedulerValue = getConfigEffectiveValue('pb_scheduler_enabled', 'TRUE')
+  const cronValue = getConfigEffectiveValue(definition.config_key, definition.default_value ?? 'TRUE')
+  const schedulerEnabled = isTruthyConfigValue(schedulerValue, 'TRUE')
+  const cronEnabled = isTruthyConfigValue(cronValue, definition.default_value ?? 'TRUE')
+  return {
+    schedulerEnabled,
+    cronEnabled,
+    effectiveEnabled: schedulerEnabled && cronEnabled
+  }
+}
+
+function renderCronOverview() {
+  if (!Array.isArray(pbCronDefinitions) || pbCronDefinitions.length === 0) return ''
+  if (activeTab !== 'all' && activeTab !== 'PB Cron 调度') return ''
+
+  return `
+    <div class="cron-overview">
+      <div class="cron-overview-head">
+        <div>
+          <div class="cron-overview-title">PB Cron 总览</div>
+          <div class="cron-overview-subtitle">
+            当前作用域 ${getConfigScopeLabel(configEnvironment)} 下可查看每个 PocketBase cron 的 UTC 周期、北京时间、美东时间、功能、绑定开关和实际生效状态。
+          </div>
+        </div>
+        <div class="cron-overview-badge">${pbCronDefinitions.length} 个 Cron</div>
+      </div>
+      <div class="cron-grid">
+        ${pbCronDefinitions.map((definition) => {
+          const state = getCronEffectiveState(definition)
+          return `
+            <div class="cron-card">
+              <div class="cron-card-header">
+                <div>
+                  <div class="cron-card-title">${escapeHtml(definition.display_name || definition.config_display_name || definition.id || 'PB Cron')}</div>
+                  <div class="cron-card-id">${escapeHtml(definition.id || '-')}</div>
+                </div>
+                <div class="cron-state ${state.effectiveEnabled ? 'on' : 'off'}">${state.effectiveEnabled ? 'ENABLED' : 'DISABLED'}</div>
+              </div>
+              <div class="cron-meta">
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">UTC 周期</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.cycle_label || '-')}</div>
+                </div>
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">北京时间</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '-')}</div>
+                </div>
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">美东时间</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '-')}</div>
+                </div>
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">Cron</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.cron_expr || '-')}</div>
+                </div>
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">窗口</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.window_label || '-')}</div>
+                </div>
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">功能</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.function_summary || '-')}</div>
+                </div>
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">开关</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.config_key || '-')}</div>
+                </div>
+                <div class="cron-meta-row">
+                  <div class="cron-meta-label">备注</div>
+                  <div class="cron-meta-value">${escapeHtml(definition.note || '受当前作用域配置控制')}</div>
+                </div>
+              </div>
+              <div class="cron-tags">
+                <span class="cron-tag">PB 总开关: ${state.schedulerEnabled ? 'ON' : 'OFF'}</span>
+                <span class="cron-tag">当前 Cron: ${state.cronEnabled ? 'ON' : 'OFF'}</span>
+                <span class="cron-tag">作用域: ${escapeHtml(getConfigScopeLabel(configEnvironment))}</span>
+              </div>
+            </div>
+          `
+        }).join('')}
+      </div>
+    </div>
+  `
 }
 
 window.setConfigTab = async function(tabId) {

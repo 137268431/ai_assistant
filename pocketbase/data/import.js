@@ -24,6 +24,14 @@ const configData = [
   cfg('ibkr_trading_enabled', 'TRUE', 'TRUE', '交易总开关', '运行总控', 100, 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
   cfg('ibkr_compute_enabled', 'TRUE', 'TRUE', 'Compute 调度开关', '运行总控', 110, '控制自动 compute / scan 调度；关闭后不再自动计算指标和执行盘前扫描'),
   cfg('pb_scheduler_enabled', 'TRUE', 'TRUE', 'PB 调度总开关', '运行总控', 120, '控制 PocketBase cron 调度；关闭后信号过期、订单过期、健康巡检、状态提醒等定时任务都会停止'),
+  cfg('pb_cron_signal_expiry_enabled', 'TRUE', 'TRUE', '信号过期清理', 'PB Cron 调度', 130, '扫描 pending / awaiting_confirm 信号，超时后自动标记为 expired。Cron: */5 * * * *；周期: 每 5 分钟；时间窗口: 全天。受 PB 调度总开关和本开关共同控制。'),
+  cfg('pb_cron_order_expiry_enabled', 'TRUE', 'TRUE', '订单过期取消', 'PB Cron 调度', 131, '扫描 Init / Submitted 订单，超时后自动标记为 Canceled。Cron: */5 * * * *；周期: 每 5 分钟；时间窗口: 全天。受 PB 调度总开关和本开关共同控制。'),
+  cfg('pb_cron_ibkr_compute_runtime_enabled', 'TRUE', 'TRUE', 'Compute + 心跳状态提醒', 'PB Cron 调度', 132, '触发 compute 调度，并串行执行健康检查通知与状态提醒。Cron: */5 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:55 每 5 分钟；时间窗口: 整点附带 ok 心跳，:00 / :30 附带状态提醒。通知是否真正发送，还受 health_check_notify_enabled / status_notify_enabled 控制。'),
+  cfg('pb_cron_ibkr_scan_runtime_enabled', 'TRUE', 'TRUE', '盘前 Scan', 'PB Cron 调度', 133, '触发开盘前 scan 调度，刷新当天候选信号与市场扫描结果。Cron: */5 7-9 * * 1-5；周期: 工作日 UTC 07:00-09:55 每 5 分钟；时间窗口: 盘前窗口。受 PB 调度总开关、Compute 开关和本开关共同控制。'),
+  cfg('pb_cron_ibkr_auth_pending_guard_enabled', 'TRUE', 'TRUE', '2FA 长时间未恢复巡检', 'PB Cron 调度', 134, '巡检 Session / 2FA 长时间未恢复状态，并在需要时发出系统告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 PB 调度总开关和本开关共同控制。'),
+  cfg('pb_cron_system_data_gap_guard_enabled', 'TRUE', 'TRUE', '数据缺口巡检', 'PB Cron 调度', 135, '巡检 bars / indicators / 序列缺口，并在检测到市场活动异常时发出告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 PB 调度总开关、Compute 开关和本开关共同控制。'),
+  cfg('pb_cron_ibkr_2fa_hourly_check_enabled', 'TRUE', 'TRUE', '2FA 每小时提醒', 'PB Cron 调度', 136, '若 2FA 仍未恢复，则按小时补发飞书验证卡片提醒。Cron: 5 4-20 * * 1-5；周期: 工作日 UTC 每小时 05 分；时间窗口: 盘前到盘后。受 PB 调度总开关和本开关共同控制。'),
+  cfg('pb_cron_system_daily_report_enabled', 'TRUE', 'TRUE', '系统日报', 'PB Cron 调度', 137, '汇总当日信号、订单、bars、targets 和系统事件，并发送日报。Cron: 5 20 * * 1-5；周期: 工作日 UTC 20:05；时间窗口: 收盘后。日报是否真正发送，还受 daily_summary_notify_enabled 控制。'),
 
   cfg('ibkr_signal_source', 'both', 'both', '信号来源', '信号与反转', 200, 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
   cfg('signal_poll_interval_sec', '120', '120', '信号轮询秒数', '信号与反转', 210, 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
@@ -45,6 +53,7 @@ const configData = [
   cfg('ibkr_target_subscription_limit', '60', '60', '目标订阅上限', '标的订阅', 620, '当日 ibkr_targets 进入 websocket 实时订阅的最大标的数'),
 
   cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'K线发布开关', '行情链路', 700, '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
+  cfg('ibkr_active_repair_interval_min', '5', '5', '活跃修复间隔', '行情链路', 705, '当前实时订阅标的的缺口 / rollup 异常巡检间隔，按 5m 链路优先修复'),
   cfg('ibkr_watchlist_backfill_interval_min', '30', '30', '底池回补间隔', '行情链路', 710, '非目标标的按批次执行 5m 增量回补的间隔'),
   cfg('ibkr_watchlist_backfill_batch_size', '12', '12', '底池回补批次', '行情链路', 720, '每轮底池回补最多处理多少个非目标标的'),
   cfg('ibkr_watchlist_backfill_stale_min', '20', '20', '底池回补滞后阈值', '行情链路', 730, '仅当最近 5m bar 超过该阈值未更新时才触发回补'),

@@ -543,6 +543,21 @@ routerAdd("POST", "/api/custom/system/event", (c) => {
     return c.json(200, { ok: true, notified: notified })
 })
 
+routerAdd("GET", "/api/custom/system/cronz", (c) => {
+    try {
+        const { getPbCronDefinitions } = require(`${__hooks}/lib/pb_cron_registry.js`)
+        return c.json(200, {
+            ok: true,
+            items: getPbCronDefinitions(),
+        })
+    } catch (err) {
+        return c.json(500, {
+            ok: false,
+            error: logRouteError("/api/custom/system/cronz", err),
+        })
+    }
+})
+
 routerAdd("GET", "/api/custom/system/healthz", (c) => {
     try {
         const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputePublicUrl, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
@@ -764,16 +779,16 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
 cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {
     const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
     try {
-        runIbkrScheduledAction("compute", 60, "[IBKRComputeCron]")
+        runIbkrScheduledAction("compute", 60, "[IBKRComputeCron]", "ibkr_compute_runtime")
     } catch (err) {
         console.log(`[IBKRComputeCron] compute dispatch error: ${err.message || err}`)
     }
     try {
         const systemNotify = require(`${__hooks}/lib/system_notify_scheduler.js`)
-        systemNotify.runSystemHeartbeatTick("[IBKRComputeCron]")
+        systemNotify.runSystemHeartbeatTick("[IBKRComputeCron]", "ibkr_compute_runtime")
         const minute = new Date().getMinutes()
         if (minute === 0 || minute === 30) {
-            systemNotify.runSystemStatusReminderTick("[IBKRComputeCron]")
+            systemNotify.runSystemStatusReminderTick("[IBKRComputeCron]", "ibkr_compute_runtime")
         }
     } catch (err) {
         console.log(`[IBKRComputeCron] system notify error: ${err.message || err}`)
@@ -782,7 +797,7 @@ cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {
 
 cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
     const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
-    runIbkrScheduledAction("scan", 60, "[IBKRComputeCron]")
+    runIbkrScheduledAction("scan", 60, "[IBKRComputeCron]", "ibkr_scan_runtime")
 })
 
 // System heartbeat / status reminder piggyback on ibkr_compute_runtime via lib/system_notify_scheduler.js
@@ -792,6 +807,7 @@ cronAdd("ibkr_auth_pending_guard", "*/10 4-20 * * 1-5", () => {
     const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
     const times = getTimeStrings()
     const runtimeKeys = getRuntimeKeys()
     const environments = getActiveRuntimeEnvironments(runtimeKeys)
@@ -799,6 +815,11 @@ cronAdd("ibkr_auth_pending_guard", "*/10 4-20 * * 1-5", () => {
 
     for (let i = 0; i < environments.length; i++) {
         const environment = environments[i]
+        const cronState = getPbCronToggleState("ibkr_auth_pending_guard", environment)
+        if (!cronState.effective_enabled) {
+            console.log(`[IBKRAuthPendingGuard] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+            continue
+        }
         if (!getComputeEnabledForEnvironment(environment, runtimeKeys) && !getTradingEnabledForEnvironment(environment, runtimeKeys)) {
             continue
         }
@@ -883,6 +904,7 @@ cronAdd("system_data_gap_guard", "*/10 4-20 * * 1-5", () => {
     const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
     const times = getTimeStrings()
     const runtimeKeys = getRuntimeKeys()
     const environments = getActiveRuntimeEnvironments(runtimeKeys)
@@ -890,6 +912,11 @@ cronAdd("system_data_gap_guard", "*/10 4-20 * * 1-5", () => {
 
     for (let i = 0; i < environments.length; i++) {
         const environment = environments[i]
+        const cronState = getPbCronToggleState("system_data_gap_guard", environment)
+        if (!cronState.effective_enabled) {
+            console.log(`[SystemDataGapGuard] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+            continue
+        }
         if (!getComputeEnabledForEnvironment(environment, runtimeKeys)) {
             continue
         }
@@ -955,11 +982,17 @@ cronAdd("system_data_gap_guard", "*/10 4-20 * * 1-5", () => {
 cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
     const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getStatePayload, normalizeStateWithRuntime, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
     const environments = getActiveRuntimeEnvironments(getRuntimeKeys())
     const nowMs = Date.now()
 
     for (let i = 0; i < environments.length; i++) {
         const environment = environments[i]
+        const cronState = getPbCronToggleState("ibkr_2fa_hourly_check", environment)
+        if (!cronState.effective_enabled) {
+            console.log(`[IBKR2FAHourly] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+            continue
+        }
         if (!getComputeEnabledForEnvironment(environment, getRuntimeKeys()) && !getTradingEnabledForEnvironment(environment, getRuntimeKeys())) {
             continue
         }
@@ -1015,12 +1048,18 @@ cronAdd("system_daily_report", "5 20 * * 1-5", () => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const { getActiveRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
     const times = getTimeStrings()
     const todayStart = times.date + " 00:00:00"
     const environments = getActiveRuntimeEnvironments(getRuntimeKeys())
 
     for (let i = 0; i < environments.length; i++) {
         const environment = environments[i]
+        const cronState = getPbCronToggleState("system_daily_report", environment)
+        if (!cronState.effective_enabled) {
+            console.log(`[SystemDailyReport] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+            continue
+        }
         const report = {
             "日期": times.date,
             "信号数": "0",

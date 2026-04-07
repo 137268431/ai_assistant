@@ -1,9 +1,13 @@
-function getIbkrSchedulerEnvironments() {
+function getIbkrSchedulerEnvironments(cronId) {
     const { getConfigValue, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const { getActiveRuntimeEnvironments, isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { isPbCronEnabled } = require(`${__hooks}/lib/pb_cron_registry.js`)
     const environments = getActiveRuntimeEnvironments(["ibkr_compute_enabled", "pb_scheduler_enabled"])
 
     return environments.filter((environment) => {
+        if (cronId && !isPbCronEnabled(cronId, environment)) {
+            return false
+        }
         const schedulerEnabled = isEnabledConfigValue(getConfigValue("pb_scheduler_enabled", "true", environment))
         const defaultCompute = environment === BACKTEST_ENVIRONMENT ? "false" : "true"
         const computeEnabled = isEnabledConfigValue(getConfigValue("ibkr_compute_enabled", defaultCompute, environment))
@@ -21,12 +25,12 @@ function parseSchedulerPayload(rawValue) {
     }
 }
 
-function runIbkrScheduledAction(action, timeoutSeconds, logPrefix) {
+function runIbkrScheduledAction(action, timeoutSeconds, logPrefix, cronId) {
     const prefix = logPrefix || "[IBKRComputeCron]"
     let environments = []
 
     try {
-        environments = getIbkrSchedulerEnvironments()
+        environments = getIbkrSchedulerEnvironments(cronId)
     } catch (err) {
         console.error(`${prefix} ${action}: environment resolve error: ${err.message}`)
         return { ok: false, error: err.message || String(err), environments: [] }

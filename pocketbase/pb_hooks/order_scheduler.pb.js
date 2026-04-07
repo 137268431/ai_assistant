@@ -10,16 +10,16 @@ cronAdd("order_expiry_check", "*/5 * * * *", () => {
     const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta } = require(`${__hooks}/lib/order_events.js`)
     const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
     const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
-    const { getRuntimeEnvironments, isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
     let totalCount = 0
 
     for (const environment of getRuntimeEnvironments()) {
-        const schedulerEnabled = String(getConfigValue("pb_scheduler_enabled", "true", environment) || "").trim().toUpperCase()
-        if (!isEnabledConfigValue(schedulerEnabled)) {
-            console.log(`[OrderScheduler] ${environment}: pb_scheduler_enabled="${schedulerEnabled}", 跳过执行`)
+        const cronState = getPbCronToggleState("order_expiry_check", environment)
+        if (!cronState.effective_enabled) {
+            console.log(`[OrderScheduler] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
             continue
         }
-
         let validityMinutes = parseInt(getConfigValue("order_validity_minutes", "30", environment), 10)
         if (!Number.isFinite(validityMinutes) || validityMinutes <= 0) {
             validityMinutes = 30

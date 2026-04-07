@@ -110,6 +110,7 @@ class IBKRTradingService:
         self._state_lock = threading.Lock()
         self._signal_thread = None
         self._subscription_thread = None
+        self._active_repair_thread = None
         self._watchlist_backfill_thread = None
         self._compute_thread = None
         self._warmup_thread = None
@@ -126,6 +127,9 @@ class IBKRTradingService:
         self._last_target_refresh_at = 0.0
         self._last_backfill_at = 0.0
         self._last_backfill_symbols = []
+        self._last_active_repair_at = 0.0
+        self._last_active_repair_symbols = []
+        self._last_active_repair_reasons = {}
         self._last_history_repair_at = 0.0
         self._last_history_repair_symbols = []
         self._last_pipeline_repair_at = 0.0
@@ -771,6 +775,12 @@ class IBKRTradingService:
                 name="target-refresh",
             )
             self._subscription_thread.start()
+            self._active_repair_thread = threading.Thread(
+                target=self._active_repair_loop,
+                daemon=True,
+                name="active-repair",
+            )
+            self._active_repair_thread.start()
             self._watchlist_backfill_thread = threading.Thread(
                 target=self._watchlist_backfill_loop,
                 daemon=True,
@@ -912,6 +922,15 @@ class IBKRTradingService:
         self._apply_live_subscriptions(current_date, {}, reason="market_day_reset")
         self._active_target_date = ""
         self._last_target_refresh_at = 0.0
+        self._last_backfill_at = 0.0
+        self._last_backfill_symbols = []
+        self._last_active_repair_at = 0.0
+        self._last_active_repair_symbols = []
+        self._last_active_repair_reasons = {}
+        self._last_history_repair_at = 0.0
+        self._last_history_repair_symbols = []
+        self._last_pipeline_repair_at = 0.0
+        self._last_pipeline_repair_symbols = []
         return True
 
     def _environment_watchlist_filter(self) -> str:
@@ -1252,6 +1271,71 @@ class IBKRTradingService:
         self._watchlist_backfill_cursor = (start + batch_size) % max(len(pool), 1)
         return ordered[:batch_size]
 
+    def _active_repair_loop(self):
+        logger.info("Active target repair loop started")
+        while self._running:
+            try:
+                self.config.refresh()
+                self._run_active_repair_cycle()
+            except Exception as exc:
+                logger.error("Active target repair loop error: %s", exc)
+
+            sleep_seconds = max(300, self.config.get_int_for_environment("ibkr_active_repair_interval_min", ENVIRONMENT, 5) * 60)
+            for _ in range(sleep_seconds):
+                if not self._running:
+                    break
+                time.sleep(1)
+
+    def _run_active_repair_cycle(self):
+        if self._is_warmup_active():
+            logger.info("Active target repair skipped while startup warmup is active")
+            return
+        if not self.session_keeper.is_authenticated:
+            logger.info("Active target repair skipped while session is unauthenticated")
+            return
+
+        repair_plan = self._build_history_repair_plan(list(self._active_subscription_symbols))
+        if not repair_plan:
+            logger.info("Active target repair skipped: no repair needed")
+            return
+
+        repair_symbols = sorted(repair_plan.keys())
+        history_symbols = [
+            symbol for symbol, snapshot in repair_plan.items()
+            if bool(snapshot.get("needs_history_fetch"))
+        ]
+        self._last_active_repair_at = time.time()
+        self._last_active_repair_symbols = repair_symbols
+        self._last_active_repair_reasons = {
+            symbol: str(repair_plan[symbol].get("repair_reason") or "")
+            for symbol in repair_symbols
+        }
+        logger.info(
+            "Running active target repair for %d symbols: %s",
+            len(repair_symbols),
+            ", ".join(
+                f"{symbol}({repair_plan[symbol]['repair_reason']})"
+                for symbol in repair_symbols
+            ),
+        )
+
+        conid_map = self.conid_resolver.resolve_bulk(history_symbols) if history_symbols else {}
+        if history_symbols and conid_map:
+            symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
+            self.data_backfill.backfill_all(
+                conid_map,
+                symbol_meta=symbol_meta,
+                intervals=["5m"],
+                repair_symbols=list(conid_map.keys()),
+            )
+            self.data_writer.flush()
+            self._last_history_repair_at = self._last_active_repair_at
+            self._last_history_repair_symbols = repair_symbols
+        elif history_symbols:
+            logger.warning("Active target repair skipped history fetch: unresolved conids for %s", ",".join(history_symbols))
+
+        self._run_symbol_pipeline_repair(repair_symbols, source="history_repair")
+
     def _watchlist_backfill_loop(self):
         logger.info("Watchlist backfill loop started")
         while self._running:
@@ -1272,42 +1356,6 @@ class IBKRTradingService:
             logger.info("Watchlist backfill skipped while startup warmup is active")
             return
         self._refresh_watchlist_pool()
-
-        repair_plan = self._build_history_repair_plan(list(self._active_subscription_symbols))
-        if repair_plan:
-            repair_symbols = sorted(repair_plan.keys())
-            history_symbols = [
-                symbol for symbol, snapshot in repair_plan.items()
-                if bool(snapshot.get("needs_history_fetch"))
-            ]
-            logger.info(
-                "Running active pipeline repair for %d symbols: %s",
-                len(repair_symbols),
-                ", ".join(
-                    f"{symbol}({repair_plan[symbol]['repair_reason']})"
-                    for symbol in repair_symbols
-                ),
-            )
-            conid_map = self.conid_resolver.resolve_bulk(history_symbols) if history_symbols else {}
-            if history_symbols and conid_map:
-                symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
-                self.data_backfill.backfill_all(
-                    conid_map,
-                    symbol_meta=symbol_meta,
-                    intervals=["5m"],
-                    repair_symbols=list(conid_map.keys()),
-                )
-                self.data_writer.flush()
-                self._last_backfill_at = time.time()
-                self._last_backfill_symbols = sorted(conid_map.keys())
-                self._last_history_repair_at = self._last_backfill_at
-                self._last_history_repair_symbols = repair_symbols
-            elif history_symbols:
-                logger.warning("History repair skipped fetch: unresolved conids for %s", ",".join(history_symbols))
-
-            if repair_symbols:
-                self._run_symbol_pipeline_repair(repair_symbols, source="history_repair")
-                return
 
         candidates = self._watchlist_backfill_candidates()
         if not candidates:
@@ -1695,6 +1743,8 @@ class IBKRTradingService:
             self._signal_thread.join(timeout=10)
         if self._subscription_thread:
             self._subscription_thread.join(timeout=10)
+        if self._active_repair_thread:
+            self._active_repair_thread.join(timeout=10)
         if self._watchlist_backfill_thread:
             self._watchlist_backfill_thread.join(timeout=10)
         if self._compute_thread:
@@ -1757,6 +1807,14 @@ class IBKRTradingService:
                     datetime.fromtimestamp(self._last_target_refresh_at, ET).isoformat()
                     if self._last_target_refresh_at else None
                 ),
+                "active_repair_interval_min": self.config.get_int_for_environment("ibkr_active_repair_interval_min", ENVIRONMENT, 5),
+                "last_active_repair": (
+                    datetime.fromtimestamp(self._last_active_repair_at, ET).isoformat()
+                    if self._last_active_repair_at else None
+                ),
+                "last_active_repair_symbols": list(self._last_active_repair_symbols),
+                "last_active_repair_reasons": dict(self._last_active_repair_reasons),
+                "watchlist_backfill_interval_min": self.config.get_int_for_environment("ibkr_watchlist_backfill_interval_min", ENVIRONMENT, 30),
                 "last_watchlist_backfill": (
                     datetime.fromtimestamp(self._last_backfill_at, ET).isoformat()
                     if self._last_backfill_at else None
