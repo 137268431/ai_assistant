@@ -320,9 +320,9 @@ function renderNav(activePage) {
     { path: '/index.html', icon: '🏠', label: '首页' },
     { path: '/ibkr_signals.html', aliases: ['/ibkr_reverse_signals.html'], icon: '📡', label: '信号' },
     { path: '/ibkr_orders.html', aliases: ['/ibkr_order_details.html'], icon: '📋', label: '订单' },
-    { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html'], icon: '📈', label: '指标' },
+    { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html', '/ibkr_stats.html'], icon: '📈', label: '指标' },
     { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
-    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_stats.html', '/ibkr_account.html'], icon: '🖥️', label: '系统' }
+    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_account.html'], icon: '🖥️', label: '系统' }
   ];
 
   return `

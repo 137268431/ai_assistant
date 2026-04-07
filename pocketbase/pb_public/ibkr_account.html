@@ -572,6 +572,7 @@
                 </div>
                 <div class="ticket-actions">
                     <button class="ticket-button primary" id="submitOrderButton" type="button" onclick="submitManualOrder()">提交 Bracket Order</button>
+                    <button class="ticket-button" id="openChartButton" type="button" onclick="openTicketChart()">打开图表</button>
                     <button class="ticket-button" id="resetOrderButton" type="button" onclick="resetManualOrderForm()">清空输入</button>
                 </div>
                 <div class="ticket-help">安全约束：未认证时不会提交；`LIVE` 环境会二次确认；`LMT` 要求 `止损 < 入场 < 止盈`（做多）或 `止盈 < 入场 < 止损`（做空）。</div>
@@ -710,7 +711,7 @@
 
         function setActionState(busy) {
             actionBusy = Boolean(busy);
-            ['refreshButton', 'cancelAllButton', 'runtimeButton', 'submitOrderButton', 'resetOrderButton'].forEach((id) => {
+            ['refreshButton', 'cancelAllButton', 'runtimeButton', 'submitOrderButton', 'openChartButton', 'resetOrderButton'].forEach((id) => {
                 const node = document.getElementById(id);
                 if (node) node.disabled = actionBusy;
             });
@@ -1009,6 +1010,15 @@
             window.location.href = buildPageUrl('/ibkr_chart.html', { symbol: normalized, interval: '5m' }, { environment: currentEnvironment });
         }
 
+        function openTicketChart() {
+            const symbol = getManualOrderState().symbol;
+            if (!symbol) {
+                showToast('先输入 symbol');
+                return;
+            }
+            openAccountChart(symbol);
+        }
+
         async function closePosition(position) {
             if (!position || !position.symbol || !position.conid) return;
             const qty = Number(position.quantity || 0);
@@ -1112,6 +1122,7 @@
         window.cancelOrder = cancelOrder;
         window.modifyOrder = modifyOrder;
         window.openAccountChart = openAccountChart;
+        window.openTicketChart = openTicketChart;
         window.closePosition = closePosition;
         window.loadAccountSnapshot = loadAccountSnapshot;
         window.goRuntime = goRuntime;
@@ -1133,13 +1144,7 @@
                     path: '/ibkr_system.html',
                     kicker: 'Monitor',
                     label: '总览',
-                    copy: '健康 / freshness / stats'
-                },
-                {
-                    path: '/ibkr_stats.html',
-                    kicker: 'Stats',
-                    label: '统计',
-                    copy: '收益 / 信号 / 订单 / 平仓明细'
+                    copy: '健康 / freshness / runtime'
                 },
                 {
                     path: '/ibkr_runtime.html',

@@ -476,6 +476,8 @@
         </div>
     </div>
 
+    <div id="pageBridge"></div>
+
     <div class="content">
         <div class="search-row">
             <div style="display:flex;gap:8px;align-items:center;">
@@ -1106,6 +1108,27 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                {
+                    path: '/ibkr_indicators.html',
+                    kicker: 'Indicators',
+                    label: '指标列表',
+                    copy: '浏览 / 快览 / 技术指标快照',
+                    active: true
+                },
+                {
+                    path: '/ibkr_chart.html',
+                    kicker: 'Chart',
+                    label: '图表工作台',
+                    copy: '主图 / 副图 / 信号定位'
+                },
+                {
+                    path: '/ibkr_stats.html',
+                    kicker: 'Stats',
+                    label: '统计',
+                    copy: '分析结果 / 收益分布 / 执行结果'
+                }
+            ]);
             document.getElementById('navContainer').innerHTML = renderNav('/ibkr_indicators.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             syncDatePickerUI(currentDate);

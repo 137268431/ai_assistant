@@ -419,111 +419,91 @@ let configEnvironment = getCurrentConfigEnvironment()
 const LEGACY_KEY_REDIRECTS = {
   health_check_email: 'health_check_notify_enabled'
 }
+const ACTIVE_CONFIG_KEYS = new Set([
+  'ibkr_trading_enabled',
+  'ibkr_signal_source',
+  'watchlist_interval_min',
+  'ibkr_target_refresh_sec',
+  'ibkr_target_subscription_limit',
+  'ibkr_watchlist_backfill_interval_min',
+  'ibkr_watchlist_backfill_batch_size',
+  'ibkr_watchlist_backfill_stale_min',
+  'signal_validity_minutes',
+  'order_validity_minutes',
+  'pb_scheduler_enabled',
+  'system_status_chat_id',
+  'system_alert_chat_id',
+  'status_notify_enabled',
+  'daily_summary_notify_enabled',
+  'manual_stop_notify_enabled',
+  'health_check_notify_enabled',
+  'inspection_notify_enabled',
+  'ibkr_compute_public_url',
+  'ibkr_compute_enabled',
+  'ibkr_bar_publish_enabled',
+  'market_index_symbols'
+])
 
 function meta(displayName, groupName, sortOrder, defaultValue = '') {
   return { display_name: displayName, group_name: groupName, sort_order: sortOrder, default_value: defaultValue }
 }
 
 const CONFIG_META = {
-  ibkr_trading_enabled: meta('交易总开关', '核心交易', 100),
-  signal_auto_confirm: meta('信号自动确认', '核心交易', 110),
-  max_positions: meta('最大持仓数', '核心交易', 120),
-  max_daily_sl: meta('每日止损熔断次数', '核心交易', 130),
-  max_loss_per_trade: meta('单笔最大亏损', '核心交易', 140),
-
-  risk_reward_ratio: meta('盈亏比', '风险参数', 200),
-  sl_atr_mult: meta('止损 ATR 倍数', '风险参数', 210),
-  tp_atr_mult: meta('止盈 ATR 倍数', '风险参数', 220),
-  atr_deviation: meta('ATR 偏离阈值', '风险参数', 230),
-  atr_multiplier: meta('ATR 计算倍数', '风险参数', 240),
-  eod_keep_symbols: meta('EOD 保留标的', '风险参数', 250),
-
-  day_start_time: meta('日内开始时间', '执行时间', 300),
-  trading_start_time: meta('交易执行开始', '执行时间', 310),
-  trading_end_time: meta('交易执行结束', '执行时间', 320),
-  order_start_time: meta('下单窗口开始', '执行时间', 330),
-  order_end_time: meta('下单窗口结束', '执行时间', 340),
-  eod_close_time: meta('收盘清理时间', '执行时间', 350),
-
-  sync_start_time: meta('同步窗口开始', '任务调度', 400),
-  sync_end_time: meta('同步窗口结束', '任务调度', 410),
-  signal_interval_min: meta('信号拉取间隔', '任务调度', 420),
-  config_interval_min: meta('配置刷新间隔', '任务调度', 430),
+  ibkr_trading_enabled: meta('交易总开关', '核心交易', 100, 'TRUE'),
+  ibkr_signal_source: meta('信号来源', '核心交易', 110, 'both'),
   watchlist_interval_min: meta('标的同步间隔', '任务调度', 440, '5'),
   ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '任务调度', 441, '60'),
   ibkr_target_subscription_limit: meta('目标订阅上限', '任务调度', 442, '60'),
   ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '任务调度', 443, '30'),
   ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '任务调度', 444, '12'),
   ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '任务调度', 445, '20'),
-  signal_validity_minutes: meta('信号有效期', '任务调度', 450),
-  order_validity_minutes: meta('订单有效期', '任务调度', 460),
-  pb_scheduler_enabled: meta('PB 前端定时刷新', '任务调度', 470),
+  signal_validity_minutes: meta('信号有效期', '任务调度', 450, '30'),
+  order_validity_minutes: meta('订单有效期', '任务调度', 460, '30'),
+  pb_scheduler_enabled: meta('PB 前端定时刷新', '任务调度', 470, 'TRUE'),
 
-  notification_channel: meta('通知渠道', '通知中心', 500),
-  alert_email: meta('邮件收件人', '通知中心', 510),
-  system_status_chat_id: meta('状态群 Chat ID', '通知中心', 515),
-  system_alert_chat_id: meta('告警群 Chat ID', '通知中心', 516),
-  status_notify_enabled: meta('状态通知', '通知中心', 520),
-  order_notify_enabled: meta('订单邮件补充通知', '通知中心', 530),
-  daily_summary_notify_enabled: meta('日报通知', '通知中心', 540),
-  manual_stop_notify_enabled: meta('手动停止通知', '通知中心', 550),
-  health_check_notify_enabled: meta('健康检查通知', '通知中心', 560),
-  health_check_email: meta('健康检查通知', '通知中心', 560),
-  inspection_notify_enabled: meta('巡检告警', '通知中心', 570),
-  order_validation_notify_enabled: meta('订单校验异常告警', '通知中心', 580),
-  atr_stop_adjust_notify_enabled: meta('ATR 止损调整通知', '通知中心', 590),
+  system_status_chat_id: meta('状态群 Chat ID', '通知中心', 515, 'oc_b7b52fc28816d90e27ce50ca7922a9ac'),
+  system_alert_chat_id: meta('告警群 Chat ID', '通知中心', 516, 'oc_91aa4f84bc6fedb125b1a263d91d4104'),
+  status_notify_enabled: meta('状态通知', '通知中心', 520, 'TRUE'),
+  daily_summary_notify_enabled: meta('日报通知', '通知中心', 540, 'TRUE'),
+  manual_stop_notify_enabled: meta('手动停止通知', '通知中心', 550, 'TRUE'),
+  health_check_notify_enabled: meta('健康检查通知', '通知中心', 560, 'TRUE'),
+  inspection_notify_enabled: meta('巡检告警', '通知中心', 570, 'TRUE'),
 
-  health_check_enabled: meta('健康检查总开关', '健康巡检', 700),
-  health_check_trading_interval_min: meta('盘中健康检查间隔', '健康巡检', 710),
-  health_check_nontrading_interval_hours: meta('非交易时段健康检查间隔', '健康巡检', 720),
-  clear_daily_cache: meta('清除当日缓存', '健康巡检', 730),
+  ibkr_compute_public_url: meta('IBKR Compute 地址', 'PB / IBKR 服务', 905, 'https://qc.lzw-glory.top'),
+  ibkr_compute_enabled: meta('IBKR Compute 服务开关', 'PB / IBKR 服务', 910, 'TRUE'),
+  ibkr_bar_publish_enabled: meta('IBKR K线发布开关', 'PB / IBKR 服务', 920, 'TRUE'),
 
-  log_level: meta('日志级别', '运行模式', 800),
-  deployment_mode: meta('部署模式', '运行模式', 810),
-
-  ibkr_compute_public_url: meta('IBKR Compute 地址', 'PB / IBKR 服务', 905),
-  ibkr_compute_enabled: meta('IBKR Compute 服务开关', 'PB / IBKR 服务', 910),
-  ibkr_bar_publish_enabled: meta('IBKR K线发布开关', 'PB / IBKR 服务', 920),
-
-  market_index_symbols: meta('大盘指数标的', '市场分析', 1000),
-  ibkr_target_filter_on: meta('每日目标筛选', '市场分析', 1010)
+  market_index_symbols: meta('大盘指数标的', '市场分析', 1000, 'SPY,QQQ,VIX')
 }
 
 const BOOLEAN_CONFIG_KEYS = new Set([
   'ibkr_trading_enabled',
-  'health_check_enabled',
-  'health_check_email',
   'status_notify_enabled',
-  'order_notify_enabled',
   'daily_summary_notify_enabled',
   'manual_stop_notify_enabled',
   'health_check_notify_enabled',
   'inspection_notify_enabled',
-  'order_validation_notify_enabled',
-  'atr_stop_adjust_notify_enabled',
-  'clear_daily_cache',
-  'signal_auto_confirm',
   'pb_scheduler_enabled',
   'ibkr_compute_enabled',
-  'ibkr_bar_publish_enabled',
-  'ibkr_target_filter_on'
+  'ibkr_bar_publish_enabled'
 ])
 
+const NUMERIC_CONFIG_RULES = {
+  watchlist_interval_min: { min: '1', max: '60', step: '1' },
+  ibkr_target_refresh_sec: { min: '15', max: '300', step: '15' },
+  ibkr_target_subscription_limit: { min: '1', max: '200', step: '1' },
+  ibkr_watchlist_backfill_interval_min: { min: '5', max: '240', step: '5' },
+  ibkr_watchlist_backfill_batch_size: { min: '1', max: '100', step: '1' },
+  ibkr_watchlist_backfill_stale_min: { min: '5', max: '240', step: '5' },
+  signal_validity_minutes: { min: '5', max: '120', step: '5' },
+  order_validity_minutes: { min: '5', max: '120', step: '5' }
+}
+
 const SELECT_CONFIGS = {
-  notification_channel: [
-    { value: 'feishu', label: 'feishu (默认飞书)' },
-    { value: 'email', label: 'email (仅邮件)' },
-    { value: 'all', label: 'all (飞书 + 邮件)' }
-  ],
-  log_level: [
-    { value: 'DEBUG', label: 'DEBUG (详细)' },
-    { value: 'INFO', label: 'INFO (重要)' },
-    { value: 'WARN', label: 'WARN (告警)' },
-    { value: 'ERROR', label: 'ERROR (错误)' }
-  ],
-  deployment_mode: [
-    { value: 'live', label: 'live (实盘)' },
-    { value: 'paper', label: 'paper (模拟盘)' }
+  ibkr_signal_source: [
+    { value: 'both', label: 'both (全部)' },
+    { value: 'tradingview', label: 'tradingview (仅 TV)' },
+    { value: 'ibkr_compute', label: 'ibkr_compute (仅 Compute)' }
   ]
 }
 
@@ -603,6 +583,7 @@ function getVisibleConfigs() {
 
   return configs
     .filter(config => {
+      if (!ACTIVE_CONFIG_KEYS.has(config.key)) return false
       const redirectKey = LEGACY_KEY_REDIRECTS[config.key]
       return !(redirectKey && keySet.has(redirectKey))
     })
@@ -802,11 +783,6 @@ function renderControl(config) {
     `
   }
 
-  // 邮箱收件人 - Email Input
-  if (key === 'alert_email') {
-    return `<input type="email" class="config-input" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" value="${value}" oninput="updateValue('${key}', this.value)">`
-  }
-
   if (SELECT_CONFIGS[key]) {
     return `
       <select class="config-select" onchange="updateValue('${key}', this.value)">
@@ -822,23 +798,14 @@ function renderControl(config) {
     return `<input type="time" class="config-input" value="${value}" onchange="updateValue('${key}', this.value)">`
   }
 
-  // 数字类 - Number Input with range
-  if (key.includes('max_') || key.includes('_mult') || key.includes('interval') || key.includes('deviation') || key.includes('ratio') || key.includes('validity')) {
-    const step = key.includes('deviation') || key.includes('ratio') || key.includes('mult') ? '0.1' : '1'
-    // 设置合理的 min/max 范围
-    let min = '0', max = '9999', stepVal = '1', isInt = 'true'
-    if (key.includes('max_positions')) { min = '1'; max = '10'; stepVal = '1' }
-    else if (key.includes('max_daily_sl')) { min = '1'; max = '10'; stepVal = '1' }
-    else if (key.includes('max_loss')) { min = '10'; max = '1000'; stepVal = '10' }
-    else if (key.includes('interval') && key.includes('min')) { min = '1'; max = '60'; stepVal = '1' }
-    else if (key.includes('interval') && key.includes('hours')) { min = '1'; max = '24'; stepVal = '1' }
-    else if (key.includes('validity')) { min = '5'; max = '120'; stepVal = '5' }
-    else if (key.includes('atr_mult')) { min = '0.5'; max = '5.0'; stepVal = '0.1'; isInt = 'false' }
-    else if (key.includes('atr_deviation')) { min = '0.05'; max = '1.0'; stepVal = '0.05'; isInt = 'false' }
-    else if (key.includes('ratio')) { min = '0.5'; max = '5.0'; stepVal = '0.1'; isInt = 'false' }
+  const numericRule = NUMERIC_CONFIG_RULES[key]
+  if (numericRule) {
+    const min = numericRule.min || '0'
+    const max = numericRule.max || '9999'
+    const stepVal = numericRule.step || '1'
 
     // 自然整数使用步进按钮，其他用普通输入框
-    if (stepVal === '1' || stepVal === '10') {
+    if (stepVal === '1') {
       return `
         <div class="stepper-container">
           <button class="stepper-btn" onclick="stepValue('${key}', -${stepVal})">−</button>
@@ -848,7 +815,7 @@ function renderControl(config) {
       `
     }
 
-    return `<input type="number" step="${step}" min="${min}" max="${max}" class="config-input" value="${value}" oninput="updateValue('${key}', this.value)">`
+    return `<input type="number" step="${stepVal}" min="${min}" max="${max}" class="config-input" value="${value}" oninput="updateValue('${key}', this.value)">`
   }
 
   // 文本 - Text Input

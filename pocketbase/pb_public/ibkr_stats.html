@@ -1084,29 +1084,23 @@
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 统计', { description: '收益 / 信号 / 订单 / 平仓明细' });
             document.getElementById('pageBridge').innerHTML = renderPageBridge([
                 {
-                    path: '/ibkr_system.html',
-                    kicker: 'Monitor',
-                    label: '总览',
-                    copy: '健康 / freshness / config'
+                    path: '/ibkr_indicators.html',
+                    kicker: 'Indicators',
+                    label: '指标列表',
+                    copy: '浏览 / 快览 / 技术指标快照'
+                },
+                {
+                    path: '/ibkr_chart.html',
+                    kicker: 'Chart',
+                    label: '图表工作台',
+                    copy: '主图 / 副图 / 信号定位'
                 },
                 {
                     path: '/ibkr_stats.html',
                     kicker: 'Stats',
                     label: '统计',
-                    copy: '收益 / 信号 / 订单 / 平仓明细',
+                    copy: '分析结果 / 收益分布 / 执行结果',
                     active: true
-                },
-                {
-                    path: '/ibkr_runtime.html',
-                    kicker: 'Console',
-                    label: '控制台',
-                    copy: '启动 / 2FA / compute / flow trace'
-                },
-                {
-                    path: '/ibkr_account.html',
-                    kicker: 'Account',
-                    label: '账户',
-                    copy: '真实持仓 / 挂单 / 操作'
                 }
             ]);
             document.getElementById('nav').innerHTML = renderNav('/ibkr_stats.html');

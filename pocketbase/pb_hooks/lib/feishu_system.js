@@ -158,8 +158,7 @@ function getConfigValue(key, defaultValue, environment) {
 }
 
 function isFeishuNotificationEnabled(environment) {
-    var channel = String(getConfigValue("notification_channel", "feishu", environment) || "feishu").trim().toLowerCase()
-    return !channel || channel === "feishu" || channel === "all"
+    return true
 }
 
 function getSystemChatId(environment) {

@@ -157,6 +157,14 @@
             color: var(--muted);
             flex-shrink: 0;
         }
+        .freshness-meta {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            min-width: 96px;
+            flex-shrink: 0;
+        }
         .freshness-bar-bg {
             flex: 1;
             height: 6px;
@@ -175,6 +183,16 @@
             font-family: 'JetBrains Mono', monospace;
             text-align: right;
             flex-shrink: 0;
+        }
+        .freshness-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+        .freshness-link:hover {
+            text-decoration: underline;
         }
 
         /* Event list */
@@ -612,7 +630,10 @@
                     html += `<div class="freshness-row">
                         <span class="freshness-label">${tf}</span>
                         <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:0;background:#64748b"></div></div>
-                        <span class="freshness-age" style="color:var(--muted)">--</span>
+                        <div class="freshness-meta">
+                            <span class="freshness-link" style="color:var(--muted)">--</span>
+                            <span class="freshness-age" style="color:var(--muted)">--</span>
+                        </div>
                     </div>`;
                     return;
                 }
@@ -622,11 +643,17 @@
                 if (age <= 2) { color = '#22c55e'; pct = 100; }
                 else if (age <= 5) { color = '#eab308'; pct = 70; }
                 else if (age <= 15) { color = '#f97316'; pct = 40; }
+                const chartHref = item.symbol
+                    ? buildPageUrl('/ibkr_chart.html', { symbol: item.symbol, interval: tf }, { environment: currentEnvironment })
+                    : '';
 
                 html += `<div class="freshness-row">
                     <span class="freshness-label">${tf}</span>
                     <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${pct}%;background:${color}"></div></div>
-                    <span class="freshness-age" style="color:${color}">${escapeHtml(String(age))}m</span>
+                    <div class="freshness-meta">
+                        ${chartHref ? `<a class="freshness-link" href="${chartHref}">${escapeHtml(item.symbol)}</a>` : '<span class="freshness-link" style="color:var(--muted)">--</span>'}
+                        <span class="freshness-age" style="color:${color}">${escapeHtml(String(age))}m</span>
+                    </div>
                 </div>`;
             });
             el.innerHTML = html;
@@ -662,8 +689,12 @@
                 const engine = computeData.engines[key] || {};
                 const readyIcon = engine.is_ready ? 'READY' : 'WARMING';
                 const lastClose = engine.last_close != null ? `$${Number(engine.last_close).toFixed(2)}` : '--';
+                const [environmentLabel, symbolLabel = '', intervalLabel = ''] = String(key).split(':');
+                const chartHref = symbolLabel
+                    ? buildPageUrl('/ibkr_chart.html', { symbol: symbolLabel, interval: intervalLabel || '5m' }, { environment: environmentLabel || currentEnvironment })
+                    : '';
                 html += `<tr>
-                    <td>${escapeHtml(key)}</td>
+                    <td>${escapeHtml(key)}${chartHref ? `<br><a class="freshness-link" href="${chartHref}">打开图表</a>` : ''}</td>
                     <td>${escapeHtml(String(engine.bar_count || 0))}</td>
                     <td>${escapeHtml(readyIcon)}</td>
                     <td>${escapeHtml(lastClose)}</td>
@@ -678,12 +709,23 @@
             const items = [
                 { label: 'TRADING', value: summary.ibkr_trading_enabled },
                 { label: 'COMPUTE', value: summary.compute_enabled },
-                { label: 'TARGET FILTER', value: summary.daily_target_filter },
-                { label: 'MAX POS', value: summary.max_positions },
+                { label: 'PB SCHEDULER', value: summary.config?.pb_scheduler_enabled || '--' },
+                { label: 'BAR PUBLISH', value: summary.config?.ibkr_bar_publish_enabled || '--' },
                 { label: 'COMPUTE URL', value: summary.config?.ibkr_compute_public_url || '--' }
             ];
 
-            ['sl_atr_mult', 'tp_atr_mult', 'signal_interval_min', 'signal_validity_minutes', 'order_validity_minutes'].forEach((key) => {
+            [
+                'ibkr_signal_source',
+                'watchlist_interval_min',
+                'ibkr_target_refresh_sec',
+                'ibkr_target_subscription_limit',
+                'ibkr_watchlist_backfill_interval_min',
+                'ibkr_watchlist_backfill_batch_size',
+                'ibkr_watchlist_backfill_stale_min',
+                'signal_validity_minutes',
+                'order_validity_minutes',
+                'market_index_symbols'
+            ].forEach((key) => {
                 if (summary.config && summary.config[key] !== undefined && summary.config[key] !== '') {
                     items.push({ label: key.toUpperCase().replace(/_/g, ' '), value: summary.config[key] });
                 }
@@ -808,14 +850,8 @@
                     path: '/ibkr_system.html',
                     kicker: 'Monitor',
                     label: '总览',
-                    copy: '健康 / freshness / config / stats',
+                    copy: '健康 / freshness / config',
                     active: currentFocus !== 'stats'
-                },
-                {
-                    path: '/ibkr_stats.html',
-                    kicker: 'Stats',
-                    label: '统计',
-                    copy: '收益 / 信号 / 订单 / 平仓明细'
                 },
                 {
                     path: '/ibkr_runtime.html',

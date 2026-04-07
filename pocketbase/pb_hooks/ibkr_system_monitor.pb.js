@@ -685,8 +685,6 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             environment: environment,
             compute_enabled: computeEnabled,
             ibkr_trading_enabled: tradingEnabled,
-            daily_target_filter: false,
-            max_positions: "3",
             config: {},
             today: { ibkr_signals: 0, ibkr_indicators: 0, orders: 0, ibkr_bars: 0, ibkr_targets: 0, events: 0 },
             ibkr_compute: computeSummary,
@@ -709,8 +707,6 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             } else if (summary.config.trading_enabled) {
                 summary.ibkr_trading_enabled = String(summary.config.trading_enabled).trim().toLowerCase() === "true"
             }
-            if (summary.config.max_positions) summary.max_positions = summary.config.max_positions
-            if (summary.config.ibkr_target_filter_on) summary.daily_target_filter = String(summary.config.ibkr_target_filter_on).trim().toLowerCase() === "true"
         } catch (_) {}
 
         if (!liteMode) {

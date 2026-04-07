@@ -1200,8 +1200,6 @@
                 ['Latest Signal Time', latestSignalTime],
                 ['Default Envs', Array.isArray(status?.default_environments) ? status.default_environments.join(', ') : '--'],
                 ['Supported Envs', Array.isArray(status?.supported_environments) ? status.supported_environments.join(', ') : '--'],
-                ['Target Filter', summary?.daily_target_filter ? 'ON' : 'OFF'],
-                ['Max Positions', String(summary?.max_positions || '--')],
                 ['Bars Latest', dataHealth.last_symbol ? `${dataHealth.last_symbol} · ${dataHealth.last_bar_age_min || 0}m` : '--']
             ];
             document.getElementById('runtimeDetail').innerHTML = `<div class="detail-list">${rows.map(([key, value]) => `
@@ -1259,12 +1257,16 @@
                 'pb_scheduler_enabled',
                 'ibkr_bar_publish_enabled',
                 'ibkr_trading_enabled',
-                'max_positions',
-                'sl_atr_mult',
-                'tp_atr_mult',
-                'signal_interval_min',
+                'ibkr_signal_source',
+                'watchlist_interval_min',
+                'ibkr_target_refresh_sec',
+                'ibkr_target_subscription_limit',
+                'ibkr_watchlist_backfill_interval_min',
+                'ibkr_watchlist_backfill_batch_size',
+                'ibkr_watchlist_backfill_stale_min',
                 'signal_validity_minutes',
-                'order_validity_minutes'
+                'order_validity_minutes',
+                'market_index_symbols'
             ];
             const configMap = {};
             runtimeConfig.forEach((item) => {
@@ -1735,13 +1737,7 @@
                     path: '/ibkr_system.html',
                     kicker: 'Monitor',
                     label: '总览',
-                    copy: '健康 / freshness / config / stats'
-                },
-                {
-                    path: '/ibkr_stats.html',
-                    kicker: 'Stats',
-                    label: '统计',
-                    copy: '收益 / 信号 / 订单 / 平仓明细'
+                    copy: '健康 / freshness / config'
                 },
                 {
                     path: '/ibkr_runtime.html',

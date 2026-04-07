@@ -929,6 +929,7 @@ class AuthHandler:
         active_challenge_code = ""
 
         COOKIE_SYNC_INTERVAL = 10
+        success_detected = False
 
         while True:
             now = time.time()
@@ -942,9 +943,15 @@ class AuthHandler:
                 if (now - last_cookie_sync_at) >= COOKIE_SYNC_INTERVAL:
                     self._sync_browser_cookies(session)
                     last_cookie_sync_at = now
-                if (now - last_browser_probe_at) >= BROWSER_PROBE_SECONDS:
+
+                # Only probe Gateway via browser when we haven't seen the success page yet.
+                # Simultaneous browser fetch + requests.Session hitting the same Gateway
+                # endpoints triggers IBKR's competing-session detection and invalidates
+                # the freshly-created auth session.
+                if not success_detected and (now - last_browser_probe_at) >= BROWSER_PROBE_SECONDS:
                     browser_state = self._fetch_browser_gateway_state()
                     last_browser_probe_at = now
+
                 page_state = self._capture_page_state()
                 page_state["browser_gateway_state"] = dict(browser_state or {})
                 self._last_wait_context = page_state
@@ -957,6 +964,48 @@ class AuthHandler:
                     elapsed, page_mode, page_url,
                     str(page_state.get("body_excerpt") or "")[:120],
                 )
+
+                # --- Success / Dispatcher detection (highest priority) ---
+                page_source = self._driver.page_source if self._driver else ""
+                is_success_page = (
+                    page_mode == "success"
+                    or "Client login succeeds" in page_source
+                    or "two_fa_result" in page_source
+                    or "/sso/Dispatcher" in page_url
+                )
+                if is_success_page and not success_detected:
+                    success_detected = True
+                    logger.info(
+                        "[2FA] Success page detected! url=%s — "
+                        "stopping browser probes to avoid competing session",
+                        page_url,
+                    )
+
+                if success_detected:
+                    # Once the SSO redirect has landed on the success page the
+                    # browser already owns the authenticated session. We sync its
+                    # cookies into requests.Session and use *only* that to confirm
+                    # with the Gateway API — no more browser-side fetch() calls.
+                    self._sync_browser_cookies(session)
+                    for wait_round in range(8):
+                        time.sleep(2)
+                        self._sync_browser_cookies(session)
+                        promoted = self._promote_backend_auth(session)
+                        if promoted.get("authenticated"):
+                            logger.info("[2FA] Backend auth confirmed after success page (round %d)", wait_round + 1)
+                            page_state["backend_authenticated"] = True
+                            self._last_wait_context = page_state
+                            return True
+                        logger.info("[2FA] Promote attempt %d: authenticated=%s", wait_round + 1, promoted.get("authenticated"))
+                    page_state["backend_authenticated"] = False
+                    self._last_wait_context = page_state
+                    logger.warning("[2FA] Success page detected but backend auth never confirmed after 8 promote attempts")
+                    # Don't break — keep waiting in case Gateway needs more time.
+                    success_detected = False  # allow re-detection next cycle
+
+                    time.sleep(WAIT_POLL_SECONDS)
+                    continue
+
                 challenge_code = str(page_state.get("challenge_code") or "").strip()
                 normalized_challenge = self._normalize_code(challenge_code)
                 if page_mode == "challenge_response":
@@ -1042,6 +1091,8 @@ class AuthHandler:
                                 ),
                             )
 
+                # Only check backend auth via requests when NOT in success-page
+                # promote flow (that path is handled above).
                 backend_result = self._check_backend_auth(session)
                 backend_authenticated = bool(backend_result.get("authenticated", False))
                 page_state["backend_authenticated"] = backend_authenticated
@@ -1051,7 +1102,12 @@ class AuthHandler:
                     return True
                 competing = bool((backend_result.get("payload") or {}).get("competing", False))
                 if competing:
-                    logger.warning("Competing session detected")
+                    logger.warning(
+                        "Competing session detected — pausing backend probes for one cycle "
+                        "to let browser session stabilize"
+                    )
+                    time.sleep(WAIT_POLL_SECONDS)
+                    continue
 
                 browser_authenticated = bool(browser_state.get("authenticated", False))
                 if browser_authenticated and not backend_authenticated:
@@ -1065,32 +1121,6 @@ class AuthHandler:
                         self._last_wait_context = page_state
                         if promoted.get("authenticated"):
                             return True
-
-                page_source = self._driver.page_source if self._driver else ""
-                is_success_page = (
-                    page_state.get("mode") == "success"
-                    or "Client login succeeds" in page_source
-                    or "two_fa_result" in page_source
-                    or "/sso/Dispatcher" in page_url
-                )
-                if is_success_page:
-                    logger.info(
-                        "[2FA] Success page detected! url=%s, waiting for session to stabilize...",
-                        page_url,
-                    )
-                    for wait_round in range(5):
-                        time.sleep(2)
-                        self._sync_browser_cookies(session)
-                        promoted = self._promote_backend_auth(session)
-                        if promoted.get("authenticated"):
-                            logger.info("[2FA] Backend auth confirmed after success page (round %d)", wait_round + 1)
-                            page_state["backend_authenticated"] = True
-                            self._last_wait_context = page_state
-                            return True
-                        logger.info("[2FA] Promote attempt %d: authenticated=%s", wait_round + 1, promoted.get("authenticated"))
-                    page_state["backend_authenticated"] = False
-                    self._last_wait_context = page_state
-                    logger.warning("[2FA] Success page detected but backend auth never confirmed after 5 promote attempts")
 
             except Exception as e:
                 logger.debug("2FA wait check: %s", e)
