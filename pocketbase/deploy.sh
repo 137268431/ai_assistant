@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ====================== 配置区 ======================
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REMOTE_HOST="root@206.119.171.136"
 REMOTE_DIR="/opt/pocketbase"
-LOCAL_PATH1="/Users/lzwglory/glory/ai_assistant/pocketbase"
-LOCAL_PATH2="/Users/lzwglory/ai_assistant/pocketbase"
+SELECTED_LOCAL_PATH="${PB_LOCAL_ROOT:-$SCRIPT_DIR}"
 # ====================================================
 
 # 颜色输出
@@ -20,23 +20,11 @@ echo -e "${GREEN}          PocketBase 一键部署脚本            ${NC}"
 echo -e "${GREEN}=============================================${NC}"
 echo ""
 
-# 选择本地路径
-echo -e "${YELLOW}📂 请选择本地路径：${NC}"
-echo "1) $LOCAL_PATH1"
-echo "2) $LOCAL_PATH2"
-read -p "请输入数字 [1-2]: " path_choice
-
-case $path_choice in
-    1) SELECTED_LOCAL_PATH="$LOCAL_PATH1" ;;
-    2) SELECTED_LOCAL_PATH="$LOCAL_PATH2" ;;
-    *) echo -e "${RED}❌ 输入错误${NC}"; exit 1 ;;
-esac
-
 if [ ! -d "$SELECTED_LOCAL_PATH" ]; then
     echo -e "${RED}❌ 路径不存在：$SELECTED_LOCAL_PATH${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ 已选择：$SELECTED_LOCAL_PATH${NC}"
+echo -e "${GREEN}✅ 使用本地路径：$SELECTED_LOCAL_PATH${NC}"
 echo ""
 
 # 选择上传内容

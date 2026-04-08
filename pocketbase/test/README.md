@@ -9,7 +9,7 @@
 - `quant_trading` 内部订单生命周期
 - PocketBase 的 `orders` / `order_details`
 - `pb_public/orders.html` 与 `pb_public/ibkr_order_details.html`
-- `ai_assistant/pocketbase/test/pb-flow.sh`
+- `ai_assistant/pocketbase/test/flows/pb-flow.sh`
 
 ---
 
@@ -41,7 +41,7 @@
 - 如需人工确认，则飞书卡片先停在 `awaiting_confirm`
 - 如已存在反向持仓或反向挂单，可额外生成 `reverse_signals`
 
-兼容链路 `POST /webhook/tv` 仍保留给 TradingView webhook，但不再是 `pb-flow.sh` 的主测试入口
+兼容链路 `POST /webhook/tv` 仍保留给 TradingView webhook，但不再是 `flows/pb-flow.sh` 的主测试入口
 
 ### 2. IBKR 认领信号并创建 Init 交易组
 
@@ -117,7 +117,7 @@ IBKR 后续通过 `POST /api/custom/ibkr/orders/upsert` 更新同一条主单：
 
 - `webhook/tv` 检测到 `signal_conflict` 时自动写入 `reverse_signals`
 - `POST /api/custom/ibkr/reverse/calculate` 计算 `indicator_conflict`
-- `pb-flow.sh` 的 `H` 会在保留现有交易组的前提下发送一个反向新信号，用于直接验证 `signal_conflict`
+- `flows/pb-flow.sh` 的 `H` 会在保留现有交易组的前提下发送一个反向新信号，用于直接验证 `signal_conflict`
 
 两种来源都会在创建时直接补齐：
 
@@ -185,7 +185,7 @@ IBKR 完成后回写 `POST /api/custom/ibkr/reverse/ack`：
 
 ---
 
-## `pb-flow.sh` 当前测试语义
+## `flows/pb-flow.sh` 当前测试语义
 
 | 步骤 | 语义 |
 |------|------|
@@ -218,12 +218,12 @@ IBKR 完成后回写 `POST /api/custom/ibkr/reverse/ack`：
 - `POST /api/custom/ibkr/bars`
 - `POST /api/custom/ibkr/targets/upsert`
 
-如果后续要把它们也并入 `pb-flow.sh`，建议先增加独立测试环境或测试专用 symbol / environment。
+如果后续要把它们也并入 `flows/pb-flow.sh`，建议先增加独立测试环境或测试专用 symbol / environment。
 
 ---
 
 ## 相关文档
 
 - [ibkr_signals.md](./ibkr_signals.md)
-- [orders.md](./orders.md)
-- [reverse_signals.md](./reverse_signals.md)
+- [orders.md](./scenarios/orders.md)
+- [reverse_signals.md](./scenarios/reverse_signals.md)
