@@ -21,6 +21,8 @@ MAX_2FA_WAIT = int(os.environ.get("IBKR_2FA_WAIT", "180"))
 CHALLENGE_RESPONSE_WAIT = int(os.environ.get("IBKR_CHALLENGE_RESPONSE_WAIT", "240"))
 POST_RESPONSE_GRACE_SECONDS = int(os.environ.get("IBKR_2FA_RESPONSE_GRACE", "90"))
 MAX_LOGIN_RETRIES = 3
+MAX_2FA_RETRY_ROUNDS = max(0, int(os.environ.get("IBKR_2FA_RETRY_ROUNDS", "2")))
+TWO_FA_RETRY_INTERVAL_SECONDS = max(0, int(os.environ.get("IBKR_2FA_RETRY_INTERVAL_SECONDS", "60")))
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", "").rstrip("/")
@@ -83,6 +85,11 @@ class AuthHandler:
     def _now_et(self) -> str:
         from datetime import datetime, timezone, timedelta
         et_now = datetime.now(timezone(timedelta(hours=-4)))
+        return et_now.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _future_et(self, offset_seconds: int) -> str:
+        from datetime import datetime, timezone, timedelta
+        et_now = datetime.now(timezone(timedelta(hours=-4))) + timedelta(seconds=max(0, offset_seconds))
         return et_now.strftime("%Y-%m-%d %H:%M:%S")
 
     def _log_to_pb(self, event: str, status: str, detail: str = ""):
@@ -556,6 +563,47 @@ class AuthHandler:
             patch.update(extra_patch)
         return patch
 
+    def _build_retry_detail(
+        self,
+        detail: Optional[Dict[str, Any]],
+        retry_round: int,
+        total_rounds: int,
+    ) -> Dict[str, Any]:
+        payload = dict(detail or {})
+        payload["2FA轮次"] = f"{retry_round}/{total_rounds}"
+        if total_rounds > 1:
+            payload["自动重试"] = "enabled"
+            payload["自动重试间隔秒"] = TWO_FA_RETRY_INTERVAL_SECONDS
+        return payload
+
+    def _build_retry_cycle_patch(
+        self,
+        cycle_started_at: str,
+        retry_round: int,
+        total_rounds: int,
+        extra_patch: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        patch: Dict[str, Any] = {
+            "requested_at": cycle_started_at,
+            "triggered_at": cycle_started_at,
+            "retry_round": retry_round,
+            "retry_total_rounds": total_rounds,
+            "retry_interval_seconds": TWO_FA_RETRY_INTERVAL_SECONDS,
+            "auto_retry_enabled": total_rounds > 1,
+            "next_retry_at": "",
+        }
+        if extra_patch:
+            patch.update(extra_patch)
+        return patch
+
+    def _sleep_with_cancel(self, wait_seconds: int) -> bool:
+        deadline = time.time() + max(0, wait_seconds)
+        while time.time() < deadline:
+            if self._cancel_requested:
+                return False
+            time.sleep(min(1.0, max(0.1, deadline - time.time())))
+        return not self._cancel_requested
+
     def _check_backend_auth(self, session) -> Dict[str, Any]:
         try:
             resp = session.post(
@@ -717,134 +765,239 @@ class AuthHandler:
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
+        total_2fa_rounds = 1 + MAX_2FA_RETRY_ROUNDS
         last_failure_kind = "failed"
         last_failure_detail = dict(detail or {})
         last_failure_error = ""
+        last_failure_retryable = False
+        last_cycle_started_at = self._now_et()
+        executed_retry_round = 0
 
-        for attempt in range(1, MAX_LOGIN_RETRIES + 1):
+        for retry_round in range(1, total_2fa_rounds + 1):
             if self._cancel_requested:
-                logger.info("Login cancelled before attempt %d", attempt)
+                logger.info("Login cancelled before 2FA round %d", retry_round)
                 break
-            logger.info("Login attempt %d/%d", attempt, MAX_LOGIN_RETRIES)
-            self._log_to_pb("login_attempt", "info", f"Attempt {attempt}")
-            self._last_wait_context = {}
-            reached_2fa_stage = False
-            allow_retry = True
 
-            try:
-                self._ensure_driver()
-                login_url = f"{self.gateway_url}/sso/Login?forwardTo=22&RL=1&ip2loc=on"
-                self._driver.get(login_url)
-                time.sleep(3)
-                self._install_trace_hooks()
+            executed_retry_round = retry_round
+            last_cycle_started_at = self._now_et()
+            cycle_detail = self._build_retry_detail(detail, retry_round, total_2fa_rounds)
+            cycle_state_patch = self._build_retry_cycle_patch(last_cycle_started_at, retry_round, total_2fa_rounds)
+            last_failure_retryable = False
 
-                wait = WebDriverWait(self._driver, 30)
-
-                username_field = wait.until(
-                    EC.presence_of_element_located((By.NAME, "username"))
+            for attempt in range(1, MAX_LOGIN_RETRIES + 1):
+                if self._cancel_requested:
+                    logger.info("Login cancelled before attempt %d in 2FA round %d", attempt, retry_round)
+                    break
+                logger.info(
+                    "Login attempt %d/%d (2FA round %d/%d)",
+                    attempt,
+                    MAX_LOGIN_RETRIES,
+                    retry_round,
+                    total_2fa_rounds,
                 )
-                username_field.clear()
-                username_field.send_keys(self._username)
+                self._log_to_pb("login_attempt", "info", f"Attempt {attempt} round {retry_round}/{total_2fa_rounds}")
+                self._last_wait_context = {}
+                reached_2fa_stage = False
+                allow_retry = True
 
-                password_field = self._driver.find_element(By.NAME, "password")
-                password_field.clear()
-                password_field.send_keys(self._password)
+                try:
+                    self._ensure_driver()
+                    login_url = f"{self.gateway_url}/sso/Login?forwardTo=22&RL=1&ip2loc=on"
+                    self._driver.get(login_url)
+                    time.sleep(3)
+                    # Trace hooks intentionally NOT installed here — they
+                    # monkey-patch fetch/XHR and interfere with SSO page JS.
 
-                submit_buttons = self._driver.find_elements(
-                    By.CSS_SELECTOR, "button[type='submit']"
-                )
-                submit_btn = None
-                for btn in submit_buttons:
-                    if btn.text.strip().lower() in ("login", "log in", "submit"):
-                        submit_btn = btn
-                        break
-                if submit_btn is None and submit_buttons:
-                    submit_btn = submit_buttons[0]
-                if submit_btn is None:
-                    raise Exception("No submit button found on login page")
-                submit_btn.click()
-                reached_2fa_stage = True
-                time.sleep(2)
-                self._install_trace_hooks()
+                    wait = WebDriverWait(self._driver, 30)
 
-                page_state = self._capture_page_state()
-                logger.info("Credentials submitted, current 2FA mode=%s", page_state.get("mode") or "unknown")
-                self._log_to_pb(
-                    "2fa_waiting",
-                    "info",
-                    page_state.get("body_excerpt") or "Waiting for 2FA confirmation",
-                )
-                self._report_wait_state(
-                    reason=reason,
-                    source=source,
-                    attempt=attempt,
-                    detail=detail,
-                    page_state=page_state,
-                )
+                    username_field = wait.until(
+                        EC.presence_of_element_located((By.NAME, "username"))
+                    )
+                    username_field.clear()
+                    username_field.send_keys(self._username)
 
-                if self._wait_for_2fa_completion(
-                    reason=reason,
-                    source=source,
-                    attempt=attempt,
-                    detail=detail,
-                ):
-                    self._last_login_time = time.time()
-                    logger.info("Login successful!")
-                    self._log_to_pb("login_success", "ok", "")
-                    self._report_2fa_status(
-                        status="success",
+                    password_field = self._driver.find_element(By.NAME, "password")
+                    password_field.clear()
+                    password_field.send_keys(self._password)
+
+                    submit_buttons = self._driver.find_elements(
+                        By.CSS_SELECTOR, "button[type='submit']"
+                    )
+                    submit_btn = None
+                    for btn in submit_buttons:
+                        if btn.text.strip().lower() in ("login", "log in", "submit"):
+                            submit_btn = btn
+                            break
+                    if submit_btn is None and submit_buttons:
+                        submit_btn = submit_buttons[0]
+                    if submit_btn is None:
+                        raise Exception("No submit button found on login page")
+                    submit_btn.click()
+                    reached_2fa_stage = True
+                    time.sleep(2)
+                    # DO NOT install trace hooks here. They monkey-patch window.fetch
+                    # and XMLHttpRequest, intercepting /sso/Authenticator which the
+                    # SSO page itself uses to poll for 2FA confirmation. Hijacking
+                    # that endpoint can break the SSO confirmation callback.
+
+                    page_state = self._capture_page_state()
+                    logger.info("Credentials submitted, current 2FA mode=%s", page_state.get("mode") or "unknown")
+                    self._log_to_pb(
+                        "2fa_waiting",
+                        "info",
+                        page_state.get("body_excerpt") or "Waiting for 2FA confirmation",
+                    )
+                    self._report_wait_state(
                         reason=reason,
                         source=source,
                         attempt=attempt,
-                        detail=self._build_wait_detail(self._last_wait_context, detail),
-                        message="2FA 验证成功，Gateway 已恢复认证。",
-                        last_result="验证成功。",
-                        state_patch=self._build_state_patch(
-                            self._last_wait_context,
-                            {
-                                "response_code": "",
-                                "response_status": "",
-                                "response_received_at": "",
-                                "response_submitted_at": "",
-                            },
-                        ),
+                        detail=cycle_detail,
+                        page_state=page_state,
+                        state_patch=cycle_state_patch,
                     )
-                    self._close_driver()
-                    return True
 
-                wait_state = dict(self._last_wait_context or {})
-                wait_mode = str(wait_state.get("mode") or "").strip()
-                allow_retry = False
-                last_failure_kind = "timeout"
-                last_failure_error = "challenge_response_timeout" if wait_mode == "challenge_response" else "2fa_timeout"
-                last_failure_detail = {
-                    **self._build_wait_detail(wait_state, detail),
-                    "最后尝试": f"{attempt}/{MAX_LOGIN_RETRIES}",
-                }
-                logger.warning("2FA flow timed out in mode=%s", wait_mode or "unknown")
-                self._log_to_pb("2fa_timeout", "warning", f"Attempt {attempt} mode={wait_mode or 'unknown'}")
+                    if self._wait_for_2fa_completion(
+                        reason=reason,
+                        source=source,
+                        attempt=attempt,
+                        detail=cycle_detail,
+                        cycle_state_patch=cycle_state_patch,
+                    ):
+                        self._last_login_time = time.time()
+                        logger.info("Login successful!")
+                        self._log_to_pb("login_success", "ok", "")
+                        self._report_2fa_status(
+                            status="success",
+                            reason=reason,
+                            source=source,
+                            attempt=attempt,
+                            detail=self._build_wait_detail(self._last_wait_context, cycle_detail),
+                            message="2FA 验证成功，Gateway 已恢复认证。",
+                            last_result="验证成功。",
+                            state_patch=self._build_state_patch(
+                                self._last_wait_context,
+                                {
+                                    **cycle_state_patch,
+                                    "next_retry_at": "",
+                                    "response_code": "",
+                                    "response_status": "",
+                                    "response_received_at": "",
+                                    "response_submitted_at": "",
+                                },
+                            ),
+                        )
+                        self._close_driver()
+                        return True
 
-            except Exception as e:
-                logger.error("Login error on attempt %d: %s", attempt, e)
-                self._log_to_pb("login_error", "error", str(e)[:500])
-                last_failure_kind = "failed"
-                last_failure_error = str(e)[:500]
-                last_failure_detail = {
-                    **self._build_wait_detail(self._last_wait_context, detail),
-                    "最后尝试": f"{attempt}/{MAX_LOGIN_RETRIES}",
-                }
-                allow_retry = not reached_2fa_stage
-            finally:
-                if attempt < MAX_LOGIN_RETRIES and allow_retry:
-                    self._close_driver()
-                    time.sleep(5)
+                    wait_state = dict(self._last_wait_context or {})
+                    wait_mode = str(wait_state.get("mode") or "").strip()
+                    allow_retry = False
+                    last_failure_retryable = True
+                    last_failure_kind = "timeout"
+                    last_failure_error = "challenge_response_timeout" if wait_mode == "challenge_response" else "2fa_timeout"
+                    last_failure_detail = {
+                        **self._build_wait_detail(wait_state, cycle_detail),
+                        "最后尝试": f"{attempt}/{MAX_LOGIN_RETRIES}",
+                    }
+                    logger.warning("2FA flow timed out in mode=%s", wait_mode or "unknown")
+                    self._log_to_pb("2fa_timeout", "warning", f"Attempt {attempt} mode={wait_mode or 'unknown'}")
 
-            if not allow_retry:
+                except Exception as e:
+                    logger.error("Login error on attempt %d: %s", attempt, e)
+                    self._log_to_pb("login_error", "error", str(e)[:500])
+                    last_failure_kind = "failed"
+                    last_failure_error = str(e)[:500]
+                    last_failure_detail = {
+                        **self._build_wait_detail(self._last_wait_context, cycle_detail),
+                        "最后尝试": f"{attempt}/{MAX_LOGIN_RETRIES}",
+                    }
+                    allow_retry = not reached_2fa_stage
+                    last_failure_retryable = reached_2fa_stage
+                finally:
+                    if attempt < MAX_LOGIN_RETRIES and allow_retry:
+                        self._close_driver()
+                        time.sleep(5)
+
+                if not allow_retry:
+                    break
+
+            if self._cancel_requested:
+                break
+
+            has_next_retry_round = last_failure_retryable and retry_round < total_2fa_rounds
+            if not has_next_retry_round:
+                break
+
+            next_retry_round = retry_round + 1
+            next_retry_at = self._future_et(TWO_FA_RETRY_INTERVAL_SECONDS)
+            retry_state_patch = self._build_retry_cycle_patch(
+                last_cycle_started_at,
+                retry_round,
+                total_2fa_rounds,
+                {
+                    "next_retry_at": next_retry_at,
+                    "challenge_code": "",
+                    "challenge_detected_at": "",
+                    "response_code": "",
+                    "response_status": "",
+                    "response_received_at": "",
+                    "response_submitted_at": "",
+                },
+            )
+
+            if last_failure_kind == "timeout":
+                is_challenge_timeout = last_failure_error == "challenge_response_timeout"
+                message = (
+                    f"等待 Challenge Response Code 超时，将在 {TWO_FA_RETRY_INTERVAL_SECONDS}s 后自动重试（下一轮 {next_retry_round}/{total_2fa_rounds}）。"
+                    if is_challenge_timeout
+                    else f"等待 IBKR Mobile 确认超时，将在 {TWO_FA_RETRY_INTERVAL_SECONDS}s 后自动重试（下一轮 {next_retry_round}/{total_2fa_rounds}）。"
+                )
+                last_result = (
+                    f"等待 Challenge Response 超时，计划自动重试 {next_retry_round}/{total_2fa_rounds}。"
+                    if is_challenge_timeout
+                    else f"等待手机确认超时，计划自动重试 {next_retry_round}/{total_2fa_rounds}。"
+                )
+                status = "timeout"
+            else:
+                message = f"IBKR 登录流程失败，将在 {TWO_FA_RETRY_INTERVAL_SECONDS}s 后自动重试（下一轮 {next_retry_round}/{total_2fa_rounds}）。"
+                last_result = f"登录流程失败，计划自动重试 {next_retry_round}/{total_2fa_rounds}。"
+                status = "failed"
+
+            self._report_2fa_status(
+                status=status,
+                reason=reason,
+                source=source,
+                detail=last_failure_detail,
+                message=message,
+                last_result=last_result,
+                error=last_failure_error,
+                state_patch=self._build_state_patch(self._last_wait_context, retry_state_patch),
+            )
+            logger.warning(
+                "Scheduling automatic 2FA retry round %d/%d in %ss (last_failure=%s)",
+                next_retry_round,
+                total_2fa_rounds,
+                TWO_FA_RETRY_INTERVAL_SECONDS,
+                last_failure_kind,
+            )
+            self._close_driver()
+            if not self._sleep_with_cancel(TWO_FA_RETRY_INTERVAL_SECONDS):
                 break
 
         self._close_driver()
         logger.error("Login flow ended without authentication")
         self._log_to_pb("login_failed", "error", "Login flow ended without authentication")
+        final_cycle_patch = self._build_retry_cycle_patch(
+            last_cycle_started_at,
+            max(executed_retry_round, 1),
+            total_2fa_rounds,
+            {"next_retry_at": ""},
+        )
+        exhausted_2fa_retries = (
+            last_failure_retryable
+            and executed_retry_round >= total_2fa_rounds
+            and total_2fa_rounds > 1
+        )
         if last_failure_kind == "timeout":
             is_challenge_timeout = last_failure_error == "challenge_response_timeout"
             self._report_2fa_status(
@@ -853,19 +1006,28 @@ class AuthHandler:
                 source=source,
                 detail=last_failure_detail,
                 message=(
-                    "等待 Challenge Response Code 超时，请重新点击按钮触发。"
+                    "等待 Challenge Response Code 超时，已达到自动重试上限，请重新点击按钮触发。"
+                    if is_challenge_timeout and exhausted_2fa_retries
+                    else "等待 Challenge Response Code 超时，请重新点击按钮触发。"
                     if is_challenge_timeout
+                    else "等待 IBKR Mobile 确认超时，已达到自动重试上限，请重新点击按钮触发。"
+                    if exhausted_2fa_retries
                     else "等待 IBKR Mobile 确认超时，请重新点击按钮触发。"
                 ),
                 last_result=(
-                    "等待 Challenge Response 超时。"
+                    "等待 Challenge Response 超时，自动重试次数已耗尽。"
+                    if is_challenge_timeout and exhausted_2fa_retries
+                    else "等待 Challenge Response 超时。"
                     if is_challenge_timeout
+                    else "等待手机确认超时，自动重试次数已耗尽。"
+                    if exhausted_2fa_retries
                     else "等待手机确认超时。"
                 ),
                 error=last_failure_error,
                 state_patch=self._build_state_patch(
                     self._last_wait_context,
                     {
+                        **final_cycle_patch,
                         "response_code": "",
                         "response_status": "",
                     },
@@ -877,10 +1039,18 @@ class AuthHandler:
                 reason=reason,
                 source=source,
                 detail=last_failure_detail,
-                message="IBKR 登录流程失败，请重新点击按钮触发。",
-                last_result="登录流程失败。",
+                message=(
+                    "IBKR 登录流程失败，已达到自动重试上限，请重新点击按钮触发。"
+                    if exhausted_2fa_retries
+                    else "IBKR 登录流程失败，请重新点击按钮触发。"
+                ),
+                last_result=(
+                    "登录流程失败，自动重试次数已耗尽。"
+                    if exhausted_2fa_retries
+                    else "登录流程失败。"
+                ),
                 error=last_failure_error or "login_failed",
-                state_patch=self._build_state_patch(self._last_wait_context),
+                state_patch=self._build_state_patch(self._last_wait_context, final_cycle_patch),
             )
         return False
 
@@ -908,6 +1078,7 @@ class AuthHandler:
         source: str,
         attempt: int,
         detail: Optional[Dict[str, Any]] = None,
+        cycle_state_patch: Optional[Dict[str, Any]] = None,
     ) -> bool:
         import requests
 
@@ -1005,9 +1176,6 @@ class AuthHandler:
                 if run_heavy_probe:
                     last_heavy_probe_at = now
 
-                    if not initial_mode_detected:
-                        self._install_trace_hooks()
-
                     page_state = self._capture_page_state()
                     page_state["url"] = page_url
 
@@ -1015,12 +1183,12 @@ class AuthHandler:
                         self._sync_browser_cookies(session)
                         last_cookie_sync_at = now
 
-                    # Browser-side Gateway API probe — only when we haven't
-                    # seen the success page, and very infrequently.
-                    if not success_detected and (now - last_browser_probe_at) >= max(BROWSER_PROBE_SECONDS, HEAVY_PROBE_INTERVAL):
-                        browser_state = self._fetch_browser_gateway_state()
-                        last_browser_probe_at = now
-
+                    # Browser-side Gateway API probes (fetch from within the
+                    # browser) are intentionally DISABLED during the 2FA wait.
+                    # They execute async JS that blocks the main thread and
+                    # competes with the SSO page's own authentication polling.
+                    # The backend requests.Session check at the bottom of the
+                    # loop is sufficient and doesn't touch the browser.
                     page_state["browser_gateway_state"] = dict(browser_state or {})
                     self._last_wait_context = page_state
 
@@ -1083,6 +1251,7 @@ class AuthHandler:
                             attempt=attempt,
                             detail=detail,
                             page_state=page_state,
+                            state_patch=cycle_state_patch,
                         )
                         last_report_key = report_key
 
@@ -1104,6 +1273,7 @@ class AuthHandler:
                                     state_patch=self._build_state_patch(
                                         page_state,
                                         {
+                                            **(cycle_state_patch or {}),
                                             "response_code": "",
                                             "response_status": "submitted",
                                             "response_submitted_at": self._now_et(),
@@ -1124,6 +1294,7 @@ class AuthHandler:
                                     state_patch=self._build_state_patch(
                                         page_state,
                                         {
+                                            **(cycle_state_patch or {}),
                                             "response_status": "submit_failed",
                                         },
                                     ),

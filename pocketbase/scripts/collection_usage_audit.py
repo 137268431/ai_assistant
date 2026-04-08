@@ -53,12 +53,6 @@ COLLECTIONS = {
         "rename_target": "ibkr_order_details",
         "note": "Main app order event log with ambiguous naming.",
     },
-    "ibkr_orders": {
-        "role": "legacy_broker_snapshot",
-        "cleanup_stage": "deprecate_after_reader_migration",
-        "rename_target": "",
-        "note": "Raw broker mirror still used by tracker and legacy readers.",
-    },
     "reverse_signals": {
         "role": "canonical_reverse_workflow",
         "cleanup_stage": "rename_after_readers_switch",

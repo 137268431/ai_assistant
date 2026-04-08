@@ -158,7 +158,7 @@ function buildOrderPageUrl(reverse) {
         return detailUrl
     }
     if (reverse.signal_id || reverse.origin_signal_id) {
-        var listUrl = PB_HOST + "/ibkr_orders.html?signal_id=" + encodeURIComponent(reverse.signal_id || reverse.origin_signal_id)
+        var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(reverse.signal_id || reverse.origin_signal_id)
         if (reverse.environment) {
             listUrl += "&environment=" + encodeURIComponent(reverse.environment)
         }

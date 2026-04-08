@@ -62,7 +62,7 @@ function buildSignalPageUrl(d) {
 
 function buildSignalOrdersPageUrl(d) {
     if (!d || !d.signal_id) return ""
-    var url = PB_HOST + "/ibkr_orders.html?signal_id=" + encodeURIComponent(d.signal_id)
+    var url = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(d.signal_id)
     if (d.page_date) {
         url += "&date=" + encodeURIComponent(d.page_date)
     }
@@ -138,6 +138,102 @@ function mergeSignalExtra(record, patch, saveAfterMerge) {
         $app.save(record)
     }
     return merged
+}
+
+function isSignalRecordLike(value) {
+    return !!(value && typeof value.get === "function" && typeof value.set === "function")
+}
+
+function getSignalNotificationState(record) {
+    var extra = getSignalExtra(record)
+    return {
+        extra: extra,
+        signalId: String(record && record.get ? (record.get("signal_id") || "") : "").trim(),
+        status: String(record && record.get ? (record.get("status") || "") : "").trim(),
+        messageId: String(extra.feishu_signal_message_id || "").trim(),
+        lastNotifyKey: String(extra.feishu_signal_notify_key || "").trim(),
+        inflightKey: String(extra.feishu_signal_notify_inflight_key || "").trim(),
+        inflightAtMs: Number(extra.feishu_signal_notify_inflight_at_ms || 0) || 0,
+    }
+}
+
+function buildSignalNotificationKey(action, signalId, status) {
+    return [
+        "signal_notify_v1",
+        String(action || "").trim(),
+        String(signalId || "").trim(),
+        String(status || "").trim(),
+    ].join(":")
+}
+
+function beginSignalNotification(record, notifyKey) {
+    if (!isSignalRecordLike(record) || !notifyKey) return
+    mergeSignalExtra(record, {
+        feishu_signal_notify_inflight_key: notifyKey,
+        feishu_signal_notify_inflight_at_ms: Date.now(),
+    }, true)
+}
+
+function finalizeSignalNotification(record, notifyKey, action, result) {
+    if (!isSignalRecordLike(record) || !notifyKey) return
+    var nowMs = Date.now()
+    var existingExtra = getSignalExtra(record)
+    var patch = {
+        feishu_signal_notify_last_action: String(action || "").trim(),
+        feishu_signal_notify_last_status: String(record.get("status") || "").trim(),
+        feishu_signal_notify_last_result: result && result.success ? "success" : "failed",
+        feishu_signal_notify_last_at_ms: nowMs,
+    }
+
+    if (result && result.success) {
+        patch.feishu_signal_notify_key = notifyKey
+        patch.feishu_signal_notify_sent_at_ms = nowMs
+        patch.feishu_signal_notify_inflight_key = ""
+        patch.feishu_signal_notify_inflight_at_ms = 0
+        patch.feishu_signal_notify_error = ""
+        if (result.message_id) {
+            patch.feishu_signal_message_id = result.message_id
+            patch.feishu_signal_card_version = 1
+        }
+        if (String(action || "").trim() === "new") {
+            patch.feishu_signal_first_sent_at_ms = Number(existingExtra.feishu_signal_first_sent_at_ms || 0) || nowMs
+        }
+    } else {
+        patch.feishu_signal_notify_error = String((result && result.error) || "unknown_error")
+    }
+
+    mergeSignalExtra(record, patch, true)
+}
+
+function shouldSkipSignalNotification(record, action) {
+    if (!isSignalRecordLike(record)) {
+        return { skip: false, notifyKey: "" }
+    }
+
+    var state = getSignalNotificationState(record)
+    var notifyKey = buildSignalNotificationKey(action, state.signalId, state.status)
+    var now = Date.now()
+    var inflightTtlMs = 2 * 60 * 1000
+
+    if (state.lastNotifyKey && state.lastNotifyKey === notifyKey) {
+        console.log("[FeishuSignal] 跳过重复信号通知:", "signal_id:", state.signalId || "-", "action:", action, "status:", state.status || "-", "reason:", "same_notify_key")
+        return {
+            skip: true,
+            notifyKey: notifyKey,
+            result: { success: true, skipped: true, deduped: true, message_id: state.messageId || "" }
+        }
+    }
+
+    if (state.inflightKey && state.inflightKey === notifyKey && state.inflightAtMs > 0 && (now - state.inflightAtMs) < inflightTtlMs) {
+        console.log("[FeishuSignal] 跳过短时重复信号通知:", "signal_id:", state.signalId || "-", "action:", action, "status:", state.status || "-", "reason:", "inflight_recent")
+        return {
+            skip: true,
+            notifyKey: notifyKey,
+            result: { success: true, skipped: true, deduped: true, message_id: state.messageId || "" }
+        }
+    }
+
+    return { skip: false, notifyKey: notifyKey, messageId: state.messageId }
 }
 
 function resolveSignalSourceInfo(extra, topLevelSource, topLevelSourceKind) {
@@ -522,22 +618,49 @@ function buildSignalStatusCard(signalOrRecord, options) {
 }
 
 function notifyNewSignal(signal) {
+    var dedup = shouldSkipSignalNotification(signal, "new")
+    if (dedup.skip) {
+        return dedup.result
+    }
+    beginSignalNotification(signal, dedup.notifyKey)
     var card = buildSignalNotificationCard(signal)
     var signalData = buildSignalDisplayData(signal)
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(signalData.environment || "", envUtils.LIVE_ENVIRONMENT)
     var result = feishuApp.sendCardToChatDetailed(card, runtimeEnvironment)
-    console.log("[FeishuSignal] 信号通知发送:", result.success ? "成功" : "失败", "message_id:", result.message_id || "-")
+    finalizeSignalNotification(signal, dedup.notifyKey, "new", result)
+    console.log(
+        "[FeishuSignal] 信号通知发送:",
+        result.success ? "成功" : "失败",
+        "signal_id:", signalData.signal_id || "-",
+        "status:", signalData.status || ((signal && typeof signal.get === "function") ? (signal.get("status") || "") : "") || "-",
+        "source:", signalData.signal_source || signalData.source || "-",
+        "message_id:", result.message_id || "-"
+    )
     return result
 }
 
 function notifySignalStatus(action, signal, options) {
     var opts = options || {}
+    var dedup = shouldSkipSignalNotification(signal, action)
+    if (dedup.skip) {
+        return dedup.result
+    }
+    beginSignalNotification(signal, dedup.notifyKey)
     var card = buildSignalStatusCard(signal, { message: opts.message })
-    var messageId = opts.messageId || ""
+    var messageId = opts.messageId || dedup.messageId || ""
     var signalData = buildSignalDisplayData(signal)
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(signalData.environment || "", envUtils.LIVE_ENVIRONMENT)
     var result = messageId ? feishuApp.updateMessageCard(messageId, card, runtimeEnvironment) : feishuApp.sendCardToChatDetailed(card, runtimeEnvironment)
-    console.log("[FeishuSignal] 信号卡片同步:", result.success ? "成功" : "失败", "action:", action, "message_id:", result.message_id || messageId || "-")
+    finalizeSignalNotification(signal, dedup.notifyKey, action, result)
+    console.log(
+        "[FeishuSignal] 信号卡片同步:",
+        result.success ? "成功" : "失败",
+        "action:", action,
+        "signal_id:", signalData.signal_id || "-",
+        "status:", signalData.status || ((signal && typeof signal.get === "function") ? (signal.get("status") || "") : "") || "-",
+        "source:", signalData.signal_source || signalData.source || "-",
+        "message_id:", result.message_id || messageId || "-"
+    )
     return result
 }
 

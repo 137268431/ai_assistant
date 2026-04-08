@@ -1104,7 +1104,7 @@
 
         function viewOrders(signalId) {
             const decoded = decodeURIComponent(signalId);
-            location.href = buildPageUrl('/ibkr_orders.html', { signal_id: decoded, date: currentDate });
+            location.href = buildPageUrl('/orders.html', { signal_id: decoded, date: currentDate });
         }
 
         function normalizeChartInterval(value, fallback = '5m') {
@@ -1238,7 +1238,7 @@
                     active: true
                 },
                 {
-                    path: '/ibkr_orders.html',
+                    path: '/orders.html',
                     params: executionParams,
                     kicker: 'Orders',
                     label: '订单',

@@ -419,6 +419,135 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
+        .history-toolbar {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .history-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .history-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .history-input,
+        .history-select {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            padding: 10px 12px;
+            outline: none;
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .history-input:focus,
+        .history-select:focus {
+            border-color: var(--accent);
+        }
+
+        .history-actions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .history-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .history-summary-note {
+            margin-bottom: 12px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.18);
+            background: rgba(99,179,237,0.08);
+            color: var(--accent);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.5;
+        }
+
+        .history-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+        }
+
+        .history-card {
+            background: linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.96));
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 14px;
+        }
+
+        .history-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .history-title {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.4px;
+        }
+
+        .history-sub {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.5;
+            word-break: break-all;
+        }
+
+        .history-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .history-detail-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .history-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: rgba(160,174,192,0.10);
+            border: 1px solid rgba(160,174,192,0.18);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.2;
+        }
+
         .detail-row {
             display: flex;
             gap: 8px;
@@ -514,7 +643,9 @@
             .meta-grid,
             .position-grid,
             .order-grid,
-            .orders-summary-grid {
+            .orders-summary-grid,
+            .history-summary-grid,
+            .history-toolbar {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
         }
@@ -533,7 +664,9 @@
             .ticket-grid,
             .position-grid,
             .order-grid,
-            .orders-summary-grid {
+            .orders-summary-grid,
+            .history-summary-grid,
+            .history-toolbar {
                 grid-template-columns: 1fr;
             }
             .record-symbol {
@@ -542,13 +675,18 @@
             .metric-grid {
                 grid-template-columns: 1fr 1fr;
             }
+            .history-actions,
+            .record-actions {
+                flex-direction: column;
+            }
         }
 
         @media (max-width: 480px) {
             .page-title {
                 font-size: 22px;
             }
-            .metric-grid {
+            .metric-grid,
+            .history-metrics {
                 grid-template-columns: 1fr;
             }
             .section, .page-header, .ops-row, .summary-grid, .meta-grid, .blocker {
@@ -684,6 +822,64 @@
             <div id="ordersSummary"></div>
             <div class="card-list" id="ordersArea"></div>
         </div>
+
+        <div class="section">
+            <div class="section-head">
+                <div>
+                    <div class="section-kicker">History</div>
+                    <div class="section-title">历史订单查询</div>
+                </div>
+                <div class="section-copy mono" id="historyMeta">--</div>
+            </div>
+            <div class="history-toolbar">
+                <label class="history-field">
+                    <span class="history-label">Source</span>
+                    <select class="history-select" id="historySource" onchange="handleHistoryFilterChange()">
+                        <option value="pb" selected>PB 落库历史</option>
+                        <option value="ibkr_direct">IBKR 直连诊断</option>
+                    </select>
+                </label>
+                <label class="history-field">
+                    <span class="history-label">Lookback</span>
+                    <select class="history-select" id="historyLookback" onchange="handleHistoryFilterChange()">
+                        <option value="1">最近 1 天</option>
+                        <option value="7" selected>最近 7 天</option>
+                        <option value="30">最近 30 天</option>
+                        <option value="90">最近 90 天</option>
+                    </select>
+                </label>
+                <label class="history-field">
+                    <span class="history-label">Status</span>
+                    <select class="history-select" id="historyStatus" onchange="handleHistoryFilterChange()">
+                        <option value="">全部状态</option>
+                        <option value="Filled">Filled</option>
+                        <option value="Submitted">Submitted</option>
+                        <option value="Canceled">Canceled</option>
+                        <option value="Init">Init</option>
+                    </select>
+                </label>
+                <label class="history-field">
+                    <span class="history-label">Limit</span>
+                    <select class="history-select" id="historyLimit" onchange="handleHistoryFilterChange()">
+                        <option value="20">20</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                    </select>
+                </label>
+                <label class="history-field">
+                    <span class="history-label">Keyword</span>
+                    <input class="history-input" id="historySearch" type="text" placeholder="symbol / broker_order_id / trade_group_id" oninput="handleHistorySearchChange()">
+                </label>
+            </div>
+            <div class="history-actions">
+                <button class="action-btn view" type="button" onclick="loadHistoricalOrders(true, { force: true })">刷新历史订单</button>
+                <button class="action-btn view" type="button" onclick="openHistoryOrdersPage()">打开完整订单页</button>
+            </div>
+            <div id="historySummary"></div>
+            <div class="card-list" id="historyArea">
+                <div class="empty-state">历史订单加载中...</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -691,6 +887,13 @@
         let refreshTimer = null;
         let latestSnapshot = null;
         let actionBusy = false;
+        let latestHistoricalOrders = [];
+        let latestHistoricalPayload = {};
+        let historyLoadedSource = '';
+        let lastHistoryFetchMs = 0;
+        let latestHistoryLoadId = 0;
+        let historyFilterTimer = null;
+        const HISTORY_CACHE_MS = 60 * 1000;
 
         function initAuth() {
             const token = getToken();
@@ -804,6 +1007,30 @@
             });
         }
 
+        function firstDefined(...values) {
+            for (let i = 0; i < values.length; i += 1) {
+                const value = values[i];
+                if (value !== undefined && value !== null && value !== '') return value;
+            }
+            return '';
+        }
+
+        function toNumber(value, fallback = 0) {
+            const num = Number(value);
+            return Number.isFinite(num) ? num : fallback;
+        }
+
+        function parseJsonLike(value) {
+            if (!value) return {};
+            if (typeof value === 'object' && !Array.isArray(value)) return value;
+            try {
+                const parsed = JSON.parse(String(value || ''));
+                return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch (_) {
+                return {};
+            }
+        }
+
         function badgeClass(kind) {
             const text = String(kind || '').toLowerCase();
             if (text === 'long' || text === 'buy' || text === 'authenticated' || text === 'ready') return 'badge long';
@@ -896,6 +1123,343 @@
             if (triggerText) segments.push(`Stop ${triggerText}`);
             if (!segments.length && String(order?.order_type || '').toUpperCase().includes('MKT')) return 'MKT';
             return segments.join(' / ') || '--';
+        }
+
+        function getHistoryFilters() {
+            return {
+                source: String(document.getElementById('historySource')?.value || 'pb').trim().toLowerCase() || 'pb',
+                lookbackDays: Math.max(1, Number(document.getElementById('historyLookback')?.value || 7) || 7),
+                status: String(document.getElementById('historyStatus')?.value || '').trim().toLowerCase(),
+                limit: Math.max(1, Number(document.getElementById('historyLimit')?.value || 50) || 50),
+                keyword: String(document.getElementById('historySearch')?.value || '').trim().toLowerCase(),
+            };
+        }
+
+        function getHistorySourceLabel(source) {
+            return String(source || '').trim().toLowerCase() === 'ibkr_direct' ? 'IBKR 直连' : 'PB 落库';
+        }
+
+        function buildHistorySummaryNote(filters, payload, totals) {
+            const source = String(filters?.source || 'pb').trim().toLowerCase();
+            if (source !== 'ibkr_direct') {
+                return '历史区读取 PocketBase <code>orders</code> 主表，展示系统已同步的真实 IBKR 订单状态；更完整的交易组与事件时间线请点“打开完整订单页”。';
+            }
+
+            const reconciliation = payload?.reconciliation || {};
+            const effectiveDays = Math.max(1, Number(payload?.effective_days || 1) || 1);
+            const notes = [
+                '当前数据源为 <code>IBKR 直连</code>，直接读取 gateway <code>/iserver/account/orders</code> 用于排查 PB 订单不一致。',
+                `直连窗口: 请求 ${escapeHtml(String(filters?.lookbackDays || 1))} 天，实际仅支持 ${escapeHtml(String(effectiveDays))} 个美东交易日。`,
+                `对账摘要: broker ${escapeHtml(String(reconciliation.broker_today_count || totals.total || 0))} · pb_today ${escapeHtml(String(reconciliation.pb_today_count || 0))} · 缺失 ${escapeHtml(String(reconciliation.broker_only_count || 0))} · 多余 ${escapeHtml(String(reconciliation.pb_only_count || 0))} · 状态差异 ${escapeHtml(String(reconciliation.status_mismatch_count || 0))} · 成交数量差异 ${escapeHtml(String(reconciliation.filled_qty_mismatch_count || 0))}.`,
+            ];
+            if (payload?.errors?.pb) {
+                notes.push(`PB 对账读取失败: ${escapeHtml(String(payload.errors.pb))}`);
+            }
+            if (Array.isArray(payload?.limitations)) {
+                payload.limitations.forEach((item) => {
+                    const text = String(item || '').trim();
+                    if (text) notes.push(escapeHtml(text));
+                });
+            }
+            return notes.join('<br>');
+        }
+
+        function normalizeHistoricalOrder(raw) {
+            const extra = parseJsonLike(raw?.extra);
+            const orderType = String(firstDefined(raw?.order_type, extra.order_type, '') || '').trim();
+            const rawRole = String(firstDefined(raw?.role, extra.role, '') || '').trim().toLowerCase();
+            const parentOrderUniqueId = String(firstDefined(raw?.parent_order_unique_id, extra.parent_order_unique_id, '') || '').trim();
+            const role = rawRole || getOrderRole({
+                role: rawRole,
+                order_type: orderType,
+                parent_id: parentOrderUniqueId,
+            });
+            const status = String(firstDefined(raw?.status, extra.current_status, extra.status, 'Init') || 'Init').trim();
+            const statusLower = status.toLowerCase();
+            const uniqueId = String(firstDefined(raw?.unique_id, extra.unique_id, raw?.order_id, raw?.id, '') || '').trim();
+            const entryOrderUniqueId = String(firstDefined(raw?.entry_order_unique_id, extra.entry_order_unique_id, role === 'entry' ? uniqueId : '', uniqueId) || '').trim();
+            const tradeGroupId = String(firstDefined(raw?.trade_group_id, extra.trade_group_id, entryOrderUniqueId, uniqueId) || '').trim();
+            const brokerOrderId = String(firstDefined(raw?.broker_order_id, extra.broker_order_id, '') || '').trim();
+            const orderId = String(firstDefined(raw?.order_id, extra.order_id, extra.original_order_id, '') || '').trim();
+            const symbol = String(firstDefined(raw?.symbol, extra.symbol, '') || '').trim().toUpperCase();
+            const direction = String(firstDefined(raw?.position_side, raw?.direction, raw?.side === 'BUY' ? 'long' : (raw?.side === 'SELL' ? 'short' : ''), extra.position_side, extra.direction, '') || '').trim().toLowerCase();
+            const quantity = toNumber(firstDefined(raw?.quantity, raw?.total_quantity, extra.quantity), 0);
+            const filledQty = toNumber(
+                firstDefined(raw?.filled_qty, raw?.filled_quantity, extra.filled_qty),
+                statusLower === 'filled' || statusLower === 'executed' ? quantity : 0
+            );
+            const limitPrice = toNumber(firstDefined(raw?.limit_price, raw?.price, extra.limit_price), 0);
+            const fillPrice = toNumber(firstDefined(raw?.fill_price, raw?.avg_price, extra.fill_price), 0);
+            const commission = toNumber(firstDefined(raw?.commission, extra.commission), 0);
+            const pnl = toNumber(firstDefined(raw?.pnl, extra.pnl), 0);
+            const relationStatus = String(firstDefined(
+                raw?.relation_status,
+                extra.relation_status,
+                ['filled', 'executed', 'closed', 'canceled', 'cancelled', 'rejected', 'expired'].includes(statusLower) ? 'closed' : 'active'
+            ) || '').trim().toLowerCase();
+            const orderTime = String(firstDefined(raw?.order_time, extra.order_time, raw?.us_time, extra.created_us_time, raw?.created, '') || '').trim();
+            const fillTime = String(firstDefined(raw?.fill_time, raw?.last_execution_time, extra.fill_time, extra.status_updated_us_time, raw?.updated, '') || '').trim();
+            const updatedTime = String(firstDefined(raw?.updated, extra.status_updated_us_time, raw?.us_time, raw?.created, orderTime) || '').trim();
+            const timeKey = parseTimeValue(updatedTime || orderTime || raw?.created);
+            const closedStatuses = ['filled', 'executed', 'closed', 'canceled', 'cancelled', 'rejected', 'expired'];
+
+            return {
+                ...raw,
+                extra,
+                symbol,
+                status,
+                status_lower: statusLower,
+                order_type: orderType,
+                role,
+                direction,
+                unique_id: uniqueId,
+                order_id: orderId,
+                broker_order_id: brokerOrderId,
+                entry_order_unique_id: entryOrderUniqueId,
+                trade_group_id: tradeGroupId,
+                parent_order_unique_id: parentOrderUniqueId,
+                quantity,
+                filled_qty: filledQty,
+                remaining_qty: Math.max(quantity - filledQty, 0),
+                limit_price: limitPrice,
+                fill_price: fillPrice,
+                commission,
+                pnl,
+                relation_status: relationStatus,
+                order_time: orderTime,
+                fill_time: fillTime,
+                updated_time: updatedTime,
+                time_key: timeKey,
+                can_open_chart: Boolean(symbol),
+                is_open: closedStatuses.indexOf(statusLower) === -1,
+                source: String(raw?.source || '').trim().toLowerCase(),
+                source_kind: String(raw?.source_kind || extra.source_kind || '').trim().toLowerCase(),
+                source_label: String(raw?.source_label || extra.source_label || '').trim(),
+                diagnostic_state: String(raw?.diagnostic_state || extra.diagnostic_state || '').trim().toLowerCase(),
+                diagnostic_note: String(raw?.diagnostic_note || extra.diagnostic_note || '').trim(),
+            };
+        }
+
+        function filterHistoricalOrders(records, filters) {
+            const sinceMs = Date.now() - (Math.max(1, Number(filters?.lookbackDays || 7)) * 24 * 60 * 60 * 1000);
+            const keyword = String(filters?.keyword || '').trim().toLowerCase();
+            const statusFilter = String(filters?.status || '').trim().toLowerCase();
+            const limit = Math.max(1, Number(filters?.limit || 50) || 50);
+
+            return (Array.isArray(records) ? records : []).filter((order) => {
+                if ((order?.time_key || 0) > 0 && order.time_key < sinceMs) return false;
+                if (statusFilter && String(order?.status_lower || '').trim().toLowerCase() !== statusFilter) return false;
+                if (keyword) {
+                    const haystack = [
+                        order?.symbol,
+                        order?.status,
+                        order?.order_id,
+                        order?.broker_order_id,
+                        order?.trade_group_id,
+                        order?.entry_order_unique_id,
+                        order?.unique_id,
+                        order?.direction,
+                        order?.role,
+                    ].join(' ').toLowerCase();
+                    if (!haystack.includes(keyword)) return false;
+                }
+                return true;
+            }).sort((left, right) => {
+                const leftOpen = left?.is_open ? 1 : 0;
+                const rightOpen = right?.is_open ? 1 : 0;
+                if (leftOpen !== rightOpen) return rightOpen - leftOpen;
+                return Number(right?.time_key || 0) - Number(left?.time_key || 0);
+            }).slice(0, limit);
+        }
+
+        function renderHistoricalOrders(records) {
+            const filters = getHistoryFilters();
+            const filtered = filterHistoricalOrders(records, filters);
+            const payload = latestHistoricalPayload || {};
+            const summaryArea = document.getElementById('historySummary');
+            const area = document.getElementById('historyArea');
+            const meta = document.getElementById('historyMeta');
+            if (!summaryArea || !area || !meta) return;
+
+            const totals = {
+                total: filtered.length,
+                open: filtered.filter((item) => item.is_open).length,
+                filled: filtered.filter((item) => item.status_lower === 'filled' || item.status_lower === 'executed').length,
+                canceled: filtered.filter((item) => ['canceled', 'cancelled', 'rejected', 'expired'].includes(item.status_lower)).length,
+                symbols: new Set(filtered.map((item) => item.symbol).filter(Boolean)).size,
+            };
+
+            meta.textContent = `${getHistorySourceLabel(filters.source)} · ${totals.total} items · symbols ${totals.symbols} · cache ${lastHistoryFetchMs ? formatTimeLabel(new Date(lastHistoryFetchMs).toISOString()) : '--'}`;
+            summaryArea.innerHTML = `
+                <div class="history-summary-grid">
+                    <div class="summary-mini-card">
+                        <div class="summary-label">VISIBLE</div>
+                        <div class="summary-mini-value">${escapeHtml(String(totals.total))}</div>
+                        <div class="summary-mini-copy">当前筛选结果</div>
+                    </div>
+                    <div class="summary-mini-card">
+                        <div class="summary-label">OPEN</div>
+                        <div class="summary-mini-value">${escapeHtml(String(totals.open))}</div>
+                        <div class="summary-mini-copy">仍在活动中的订单</div>
+                    </div>
+                    <div class="summary-mini-card">
+                        <div class="summary-label">FILLED</div>
+                        <div class="summary-mini-value">${escapeHtml(String(totals.filled))}</div>
+                        <div class="summary-mini-copy">已真实成交</div>
+                    </div>
+                    <div class="summary-mini-card">
+                        <div class="summary-label">CANCELED</div>
+                        <div class="summary-mini-value">${escapeHtml(String(totals.canceled))}</div>
+                        <div class="summary-mini-copy">已取消 / 拒绝 / 过期</div>
+                    </div>
+                </div>
+                <div class="history-summary-note">${buildHistorySummaryNote(filters, payload, totals)}</div>
+            `;
+
+            if (!filtered.length) {
+                area.innerHTML = '<div class="empty-state">当前筛选下没有历史订单记录。</div>';
+                return;
+            }
+
+            area.innerHTML = `<div class="history-grid">${filtered.map((order) => `
+                <div class="history-card">
+                    <div class="history-head">
+                        <div>
+                            <div class="history-title">${escapeHtml(order.symbol || '--')}</div>
+                            <div class="history-sub">broker=${escapeHtml(order.broker_order_id || '--')} · local=${escapeHtml(order.order_id || order.unique_id || '--')}</div>
+                            <div class="history-sub">group=${escapeHtml(order.trade_group_id || '--')}</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="${badgeClass(order.direction || '')}">${escapeHtml(String(order.direction || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(order.status_lower === 'filled' || order.status_lower === 'executed' ? 'long' : (order.is_open ? 'submitted' : order.status_lower))}">${escapeHtml(order.status || '--')}</span>
+                            <span class="${getOrderRoleBadgeClass(order)}">${escapeHtml(getOrderRoleLabel(order))}</span>
+                            <span class="${relationBadgeClass(order.relation_status === 'closed' ? 'flat_legacy' : (order.relation_status === 'active' ? 'system_managed' : 'external_position'))}">${escapeHtml(String(order.relation_status || '--').toUpperCase())}</span>
+                        </div>
+                    </div>
+                    <div class="history-metrics">
+                        <div class="metric-item"><div class="metric-label">Limit</div><div class="metric-value">${escapeHtml(formatOptionalMoney(order.limit_price))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Fill</div><div class="metric-value">${escapeHtml(formatOptionalMoney(order.fill_price))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Qty / Filled</div><div class="metric-value">${escapeHtml(formatQty(order.quantity))} / ${escapeHtml(formatQty(order.filled_qty))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Commission</div><div class="metric-value">${escapeHtml(formatOptionalMoney(order.commission, '$0.00'))}</div></div>
+                        <div class="metric-item"><div class="metric-label">PnL</div><div class="metric-value ${valueClass(order.pnl)}">${escapeHtml(formatSignedMoney(order.pnl))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Updated</div><div class="metric-value">${escapeHtml(formatTimeLabel(order.updated_time))}</div></div>
+                    </div>
+                    <div class="history-detail-row">
+                        <span class="history-pill">remaining=${escapeHtml(formatQty(order.remaining_qty))}</span>
+                        <span class="history-pill">entry_group=${escapeHtml(order.entry_order_unique_id || '--')}</span>
+                        <span class="history-pill">order_type=${escapeHtml(order.order_type || '--')}</span>
+                        ${order.source_kind ? `<span class="history-pill">source=${escapeHtml(order.source_kind)}</span>` : ''}
+                        ${order.diagnostic_state ? `<span class="history-pill">reconcile=${escapeHtml(order.diagnostic_state)}</span>` : ''}
+                    </div>
+                    <div class="history-sub">order_time=${escapeHtml(formatTimeLabel(order.order_time))} · fill_time=${escapeHtml(formatTimeLabel(order.fill_time))}</div>
+                    ${order.diagnostic_note ? `<div class="history-sub">${escapeHtml(order.diagnostic_note)}</div>` : ''}
+                    <div class="record-actions">
+                        ${order.can_open_chart ? `<button class="action-btn view" type="button" onclick="openAccountChart('${escapeHtml(order.symbol)}')">图表页</button>` : ''}
+                        ${order.trade_group_id ? `<button class="action-btn view" type="button" onclick="viewTradeGroup('${escapeHtml(order.trade_group_id)}')">订单页</button>` : '<button class="action-btn view" type="button" onclick="openHistoryOrdersPage()">完整订单页</button>'}
+                    </div>
+                </div>
+            `).join('')}</div>`;
+        }
+
+        function renderHistoricalError(error) {
+            const area = document.getElementById('historyArea');
+            const meta = document.getElementById('historyMeta');
+            const summaryArea = document.getElementById('historySummary');
+            const filters = getHistoryFilters();
+            const message = String(error?.message || 'unknown error');
+            if (meta) meta.textContent = '加载失败';
+            if (summaryArea) {
+                if (String(filters?.source || 'pb').trim().toLowerCase() === 'ibkr_direct') {
+                    const needsAuth = /not authenticated|authentication|2fa/i.test(message);
+                    summaryArea.innerHTML = `
+                        <div class="history-summary-note">
+                            IBKR 直连诊断依赖当前 gateway 会话可用。${needsAuth ? '当前会话未认证，请先到 Runtime 页面完成 2FA，然后再回到账户页重试。' : '当前直连请求失败，请稍后重试或到 Runtime 页面检查网关状态。'}
+                        </div>
+                    `;
+                } else {
+                    summaryArea.innerHTML = '';
+                }
+            }
+            if (area) area.innerHTML = `<div class="empty-state">历史订单加载失败：${escapeHtml(message)}</div>`;
+        }
+
+        async function loadHistoricalOrders(showFeedback = false, { force = false } = {}) {
+            if (!initAuth()) return;
+            const filters = getHistoryFilters();
+            const source = String(filters.source || 'pb').trim().toLowerCase();
+            const nowMs = Date.now();
+            if (!force && historyLoadedSource === source && (nowMs - lastHistoryFetchMs) < HISTORY_CACHE_MS) {
+                renderHistoricalOrders(latestHistoricalOrders);
+                return;
+            }
+
+            const meta = document.getElementById('historyMeta');
+            const area = document.getElementById('historyArea');
+            if (meta) meta.textContent = '加载中...';
+            if (area) area.innerHTML = '<div class="empty-state">历史订单加载中...</div>';
+
+            const loadId = ++latestHistoryLoadId;
+            try {
+                let items = [];
+                let payload = {};
+                if (source === 'ibkr_direct') {
+                    const result = await requestAccountJson(`/api/custom/ibkr/orders/history?days=${encodeURIComponent(String(filters.lookbackDays || 1))}`);
+                    payload = result || {};
+                    items = Array.isArray(result?.items) ? result.items : [];
+                } else {
+                    const fetchSize = Math.min(Math.max(filters.limit * 4, 100), 200);
+                    const result = await apiFetch('orders', {
+                        filter: `environment = "${escapeFilterValue(currentEnvironment)}"`,
+                        sort: '-updated',
+                        perPage: fetchSize,
+                    });
+                    payload = {
+                        ok: true,
+                        source: 'pb_records',
+                        effective_days: filters.lookbackDays,
+                        items: result?.items || [],
+                    };
+                    items = Array.isArray(result?.items) ? result.items : [];
+                }
+                if (loadId !== latestHistoryLoadId) return;
+                latestHistoricalOrders = items.map((item) => normalizeHistoricalOrder(item));
+                latestHistoricalPayload = payload;
+                historyLoadedSource = source;
+                lastHistoryFetchMs = Date.now();
+                renderHistoricalOrders(latestHistoricalOrders);
+                if (showFeedback) showToast('历史订单已刷新');
+            } catch (error) {
+                if (loadId !== latestHistoryLoadId) return;
+                latestHistoricalPayload = {};
+                historyLoadedSource = '';
+                renderHistoricalError(error);
+                if (showFeedback) showToast(`历史订单加载失败: ${error.message || error}`);
+            }
+        }
+
+        function handleHistoryFilterChange() {
+            if (historyFilterTimer) clearTimeout(historyFilterTimer);
+            historyFilterTimer = setTimeout(() => {
+                loadHistoricalOrders(false, { force: true });
+            }, 180);
+        }
+
+        function handleHistorySearchChange() {
+            if (historyFilterTimer) clearTimeout(historyFilterTimer);
+            historyFilterTimer = setTimeout(() => {
+                if (historyLoadedSource === String(getHistoryFilters().source || 'pb').trim().toLowerCase()) {
+                    renderHistoricalOrders(latestHistoricalOrders);
+                    return;
+                }
+                loadHistoricalOrders(false, { force: true });
+            }, 120);
+        }
+
+        function openHistoryOrdersPage() {
+            const filters = getHistoryFilters();
+            const params = {};
+            if (filters.keyword) params.search = filters.keyword;
+            window.location.href = buildPageUrl('/orders.html', params, { environment: currentEnvironment });
         }
 
         function renderOrdersSummary(orders, snapshot) {
@@ -1120,7 +1684,7 @@
             }
             const params = { trade_group_id: normalized };
             if (signalId) params.signal_id = String(signalId).trim();
-            window.location.href = buildPageUrl('/ibkr_orders.html', params, { environment: currentEnvironment });
+            window.location.href = buildPageUrl('/orders.html', params, { environment: currentEnvironment });
         }
 
         function renderPositions(snapshot) {
@@ -1241,6 +1805,7 @@
                 renderOrders(snapshot);
                 renderTicketPreview();
                 refreshInfo.textContent = `上次刷新：${formatTimeLabel(snapshot.fetched_at)}`;
+                loadHistoricalOrders(false, { force: Boolean(showFeedback) });
                 if (showFeedback) showToast('账户状态已刷新');
             } catch (error) {
                 renderBlocker({ errors: { summary: error.message } });
@@ -1269,6 +1834,7 @@
                     renderTicketPreview();
                     document.getElementById('refreshInfo').textContent = `上次刷新：${formatTimeLabel(payload.snapshot.fetched_at)}`;
                 }
+                loadHistoricalOrders(false, { force: true });
                 showToast(successMessage || `${label} 已执行`);
             } catch (error) {
                 showToast(`${label} 失败: ${error.message || error}`);
@@ -1440,6 +2006,10 @@
         window.resetManualOrderForm = resetManualOrderForm;
         window.renderTicketPreview = renderTicketPreview;
         window.toggleEntryPriceField = toggleEntryPriceField;
+        window.loadHistoricalOrders = loadHistoricalOrders;
+        window.handleHistoryFilterChange = handleHistoryFilterChange;
+        window.handleHistorySearchChange = handleHistorySearchChange;
+        window.openHistoryOrdersPage = openHistoryOrdersPage;
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });

@@ -396,7 +396,7 @@ function buildOrderPageUrl(group, pageDate) {
         return detailUrl
     }
     if (signalId) {
-        var listUrl = PB_HOST + "/ibkr_orders.html?signal_id=" + encodeURIComponent(signalId)
+        var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(signalId)
         if (group.primary && group.primary.environment) {
             listUrl += "&environment=" + encodeURIComponent(group.primary.environment)
         }

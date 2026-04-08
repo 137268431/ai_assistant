@@ -362,7 +362,7 @@ function renderNav(activePage) {
   const pages = [
     { path: '/index.html', icon: '🏠', label: '首页' },
     { path: '/ibkr_signals.html', aliases: ['/ibkr_reverse_signals.html'], icon: '📡', label: '信号' },
-    { path: '/ibkr_orders.html', aliases: ['/ibkr_order_details.html'], icon: '📋', label: '订单' },
+    { path: '/orders.html', aliases: ['/ibkr_order_details.html'], icon: '📋', label: '订单' },
     { path: '/ibkr_account.html', icon: '💼', label: '账户' },
     { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html', '/ibkr_stats.html'], icon: '📈', label: '指标' },
     { path: '/ibkr_screener.html', aliases: ['/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '筛选' },

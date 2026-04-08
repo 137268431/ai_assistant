@@ -212,26 +212,6 @@ class OrderPlacer:
             tp_order_id = order_ids[1] if len(order_ids) > 1 else ""
             sl_order_id = order_ids[2] if len(order_ids) > 2 else ""
 
-            # 兼容旧表，避免现网依赖被一次性切断。
-            self.pb_client.create_record("ibkr_orders", {
-                "symbol": symbol,
-                "conid": kwargs.get("conid"),
-                "side": "BUY" if direction == "long" else "SELL",
-                "orderType": "BRACKET",
-                "cOID": entry_unique_id,
-                "orderId": entry_order_id,
-                "price": kwargs.get("entry_price"),
-                "quantity": quantity,
-                "status": "submitted",
-                "parentId": "",
-                "bracket_group": entry_unique_id,
-                "signal_id": signal_id,
-                "account": kwargs.get("account"),
-                "tp_price": kwargs.get("tp_price"),
-                "sl_price": kwargs.get("sl_price"),
-                "us_time": us_time,
-            })
-
             if hasattr(self.pb_client, "upsert_order"):
                 base_payload = {
                     "symbol": symbol,

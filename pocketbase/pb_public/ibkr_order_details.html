@@ -1128,8 +1128,8 @@
             const backUrl = queryMode === 'signal_id'
                 ? buildPageUrl('/ibkr_signals.html', { signal_id: effectiveFilter, date: currentDate })
                 : signalContext
-                    ? buildPageUrl('/ibkr_orders.html', { signal_id: signalContext, date: currentDate })
-                    : buildPageUrl('/ibkr_orders.html', { date: currentDate });
+                    ? buildPageUrl('/orders.html', { signal_id: signalContext, date: currentDate })
+                    : buildPageUrl('/orders.html', { date: currentDate });
             row.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                     <a class="back-btn" href="${backUrl}">← 返回</a>
@@ -1255,7 +1255,7 @@
                     copy: '平仓 / 取消 / 调整流转'
                 },
                 {
-                    path: '/ibkr_orders.html',
+                    path: '/orders.html',
                     params: executionParams,
                     kicker: 'Orders',
                     label: '订单',

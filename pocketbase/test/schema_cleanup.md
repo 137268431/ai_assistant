@@ -21,12 +21,12 @@
   - 建议目标名：`ibkr_reverse_signals`
   - 原因：当前 hooks、页面、compute 都直接读写它，它不是遗留垃圾表
 
-### 2. 遗留 / 原始镜像表
+### 2. 已退役表
 
 - `ibkr_orders`
-  - 当前角色：券商原始订单镜像 / 兼容层
-  - 状态：暂不删除
-  - 删除前提：所有读取方迁移到 `orders`，并且 tracker / reconcile 不再依赖它
+  - 历史角色：券商原始订单镜像 / 兼容层
+  - 当前状态：已从主流程移除，且已于 2026-04-08 从远端 live 库删除
+  - 2026-04-08 起：不再参与下单、跟踪、过期判定、反向撤单、回补逻辑
 
 ### 3. 隔离回测表
 
@@ -39,8 +39,8 @@
 1. 先统一“谁是主表”，再做 rename / drop。
 2. 任何 live collection 删除前，必须先确认代码引用为 0。
 3. 不直接在生产上做“重命名即删除”，而是按迁移三段式执行：
-   - 第一步：加别名层 / 常量层 / 审计脚本
-   - 第二步：迁移所有 reader / writer
+   - 第一步：统一 reader / writer 的目标表
+   - 第二步：确认运行时引用归零
    - 第三步：做 schema rename 或下线旧表
 
 ## 审计机制
@@ -57,7 +57,7 @@ python3 pocketbase/scripts/collection_usage_audit.py
 
 ```bash
 python3 pocketbase/scripts/collection_usage_audit.py reverse_signals
-python3 pocketbase/scripts/collection_usage_audit.py order_details ibkr_orders
+python3 pocketbase/scripts/collection_usage_audit.py order_details
 ```
 
 ## 当前结论
@@ -68,3 +68,5 @@ python3 pocketbase/scripts/collection_usage_audit.py order_details ibkr_orders
   - 先把引用收敛
   - 再做别名 / 重命名迁移
   - 最后才考虑删旧表
+
+- `ibkr_orders` 已完成“引用收敛 -> 退出运行时 -> live 删表”。

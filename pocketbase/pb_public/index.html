@@ -378,7 +378,7 @@
                 </div>
                 <div class="stat-label">反转信号</div>
             </a>
-            <a id="ordersLink" href="/ibkr_orders.html" class="stat-card">
+            <a id="ordersLink" href="/orders.html" class="stat-card">
                 <div class="stat-icon">📋</div>
                 <div class="stat-number-row" id="todayOrdersRow">
                     <span class="stat-number long" id="todayOrdersLong">-</span>
@@ -414,7 +414,7 @@
                     <div class="action-label">反转信号</div>
                     <div class="action-desc">处理平仓/取消/调整信号</div>
                 </a>
-                <a id="actionOrdersLink" href="/ibkr_orders.html" class="action-card">
+                <a id="actionOrdersLink" href="/orders.html" class="action-card">
                     <div class="action-icon">📋</div>
                     <div class="action-label">订单管理</div>
                     <div class="action-desc">管理和平仓订单</div>
@@ -472,11 +472,11 @@
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', { environment: currentEnvironment }, { allowGlobal: true });
             document.getElementById('signalsLink').href = buildPageUrl('/ibkr_signals.html');
             document.getElementById('reverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
-            document.getElementById('ordersLink').href = buildPageUrl('/ibkr_orders.html');
+            document.getElementById('ordersLink').href = buildPageUrl('/orders.html');
             document.getElementById('positionsLink').href = buildPageUrl('/ibkr_account.html');
             document.getElementById('actionSignalsLink').href = buildPageUrl('/ibkr_signals.html');
             document.getElementById('actionReverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
-            document.getElementById('actionOrdersLink').href = buildPageUrl('/ibkr_orders.html');
+            document.getElementById('actionOrdersLink').href = buildPageUrl('/orders.html');
             document.getElementById('actionIndicatorsLink').href = buildPageUrl('/ibkr_indicators.html');
         }
 
@@ -863,7 +863,7 @@
             if (type === 'signal') {
                 location.href = buildPageUrl('/ibkr_signals.html');
             } else if (type === 'order') {
-                location.href = buildPageUrl('/ibkr_orders.html');
+                location.href = buildPageUrl('/orders.html');
             }
         }
 

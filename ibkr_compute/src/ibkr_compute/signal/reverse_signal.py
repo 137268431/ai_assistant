@@ -74,6 +74,10 @@ class ReverseSignalHandler:
         except Exception as e:
             logger.error("Reverse signal check failed: %s", e)
 
+    @staticmethod
+    def _escape_filter_value(value: str) -> str:
+        return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
     def _process_reverse(self, signal: dict, action: str) -> bool:
         symbol = signal.get("symbol", "").upper()
         logger.info("Processing reverse signal: %s %s", action, symbol)
@@ -122,28 +126,34 @@ class ReverseSignalHandler:
         if not self.order_modifier:
             return False
 
-        bracket_group = signal.get("bracket_group", "")
-        order_id = signal.get("order_id", "")
+        trade_group_id = (
+            signal.get("trade_group_id")
+            or signal.get("entry_order_unique_id")
+            or signal.get("bracket_group")
+            or ""
+        )
+        order_id = signal.get("broker_order_id", "") or signal.get("order_id", "")
+        runtime_environment = str(signal.get("environment") or self.environment or "live").strip() or "live"
 
         if order_id:
             result = self.order_modifier.cancel_order(order_id)
             return result.get("ok", False)
 
-        if bracket_group:
+        if trade_group_id:
             orders = []
             try:
+                group_filter = self._escape_filter_value(str(trade_group_id))
+                env_filter = self._escape_filter_value(runtime_environment)
                 orders = self.pb_client.get_records(
                     "orders",
-                    filter=f'trade_group_id = "{bracket_group}" && status != "Filled" && status != "Canceled"',
+                    filter=(
+                        f'environment = "{env_filter}" && '
+                        f'(trade_group_id = "{group_filter}" || entry_order_unique_id = "{group_filter}") && '
+                        f'status != "Filled" && status != "Canceled" && status != "Closed"'
+                    ),
                 )
             except Exception:
                 orders = []
-
-            if not orders:
-                orders = self.pb_client.get_records(
-                    "ibkr_orders",
-                    filter=f'bracket_group = "{bracket_group}" && status != "FILLED"',
-                )
 
             cancelled = 0
             for o in orders:

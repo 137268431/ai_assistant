@@ -15,6 +15,17 @@ function toNumber(value, fallback) {
     return Number.isFinite(num) ? num : (fallback || 0)
 }
 
+function parseStateValue(raw) {
+    if (!raw) return {}
+    if (typeof raw === "object") return raw
+    try {
+        const parsed = JSON.parse(String(raw || ""))
+        return parsed && typeof parsed === "object" ? parsed : {}
+    } catch (_) {
+        return {}
+    }
+}
+
 function parseShiftedTimeMs(value, offsetMinutes) {
     const text = String(value || "").trim()
     if (!text) return 0
@@ -42,10 +53,10 @@ function getStateRecord(stateKey, environment, dateToken) {
 function getStateData(stateKey, environment, dateToken) {
     const record = getStateRecord(stateKey, environment, dateToken)
     if (!record) return { record: null, data: {} }
-    let data = record.get("data") || {}
-    if (!data || typeof data !== "object") {
-        data = {}
-    }
+    const raw = typeof record.getString === "function"
+        ? (record.getString("data") || "")
+        : record.get("data")
+    const data = parseStateValue(raw)
     return { record: record, data: data }
 }
 
@@ -60,7 +71,7 @@ function saveStateData(stateKey, environment, dateToken, patch) {
     record.set("state_key", stateKey)
     record.set("date", dateToken)
     record.set("environment", environment)
-    record.set("data", next)
+    record.set("data", JSON.stringify(next))
     $app.save(record)
     return next
 }
@@ -412,6 +423,87 @@ function buildStatusAssessment(snapshot, startupGraceActive) {
     }
 }
 
+function listDataHealthProblems(snapshot) {
+    const problems = []
+    if (!snapshot) return problems
+
+    if (snapshot.latest_bar.bar_time_ms <= 0) {
+        problems.push("缺少最新 5m bars")
+    } else if (snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
+        problems.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
+    }
+
+    if (snapshot.latest_indicator.bar_time_ms <= 0) {
+        problems.push("缺少最新指标")
+    } else if (snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
+        problems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
+    }
+
+    if (!snapshot.session.authenticated) {
+        problems.push("IBKR 会话未认证")
+    }
+
+    if (!snapshot.websocket.connected) {
+        problems.push("WebSocket 未连接")
+    } else if (!snapshot.websocket.ready) {
+        problems.push("WebSocket 已连接但未 ready")
+    }
+
+    return problems
+}
+
+function buildDataHealthRecommendation(snapshot) {
+    const actions = []
+    if (!snapshot) return "检查 compute / IBKR / PocketBase 链路状态"
+
+    if (!snapshot.session.authenticated) {
+        actions.push("检查 IBKR 会话认证状态")
+    }
+    if (!snapshot.websocket.connected || !snapshot.websocket.ready) {
+        actions.push("检查 WebSocket 连接与 IB Gateway 网关状态")
+    }
+    if (
+        snapshot.latest_bar.bar_time_ms <= 0
+        || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+        || snapshot.latest_indicator.bar_time_ms <= 0
+        || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+    ) {
+        actions.push("检查实时 ticks / bars / indicators 写入链路")
+    }
+    if (!actions.length) {
+        actions.push("检查 compute 健康状态与行情链路")
+    }
+    return actions.join("；")
+}
+
+function buildRecoveryTitle(state) {
+    const lastIssueKind = String(state && state.last_issue_kind || "").trim().toLowerCase()
+    if (lastIssueKind === "compute") {
+        return "IBKR Compute 服务已恢复"
+    }
+    if (lastIssueKind === "data") {
+        return "IBKR 数据健康已恢复"
+    }
+    return "IBKR 系统状态已恢复"
+}
+
+function buildRecoveryDetail(snapshot, times, state, assessment) {
+    const summary = assessment && assessment.kind === "healthy_paused"
+        ? "先前异常已恢复，当前系统状态正确；交易开关关闭，属于只观察模式。"
+        : "先前异常已恢复，当前系统状态正确，核心链路已恢复正常。"
+    return {
+        "恢复结论": summary,
+        "恢复时间": times.us,
+        "上次异常": String(state && (state.last_issue_summary || state.last_issue_title) || "n/a"),
+        "Compute": snapshot.compute.status || "unknown",
+        "认证": snapshot.session.authenticated ? "ok" : "pending",
+        "WebSocket": snapshot.websocket.label,
+        "最新5m": snapshot.latest_bar.label,
+        "指标状态": snapshot.latest_indicator.label,
+        "交易开关": snapshot.trading_enabled ? "true" : "false",
+    }
+}
+
 function shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment) {
     if (!isStatusSummaryMinute(currentMinute)) {
         return false
@@ -441,9 +533,12 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
         try {
             const snapshot = buildStatusSnapshot(environment, times)
             const state = getStateData(HEARTBEAT_STATE_KEY, environment, times.date).data || {}
+            const hadOutstandingIssue = String(state.last_issue_hash || "").trim() !== ""
             const startupGraceActive = isStartupGraceActive(snapshot)
             const startupGraceLabel = startupGraceActive ? buildStartupGraceLabel(snapshot) : ""
             const mergeHeartbeatIntoSummary = shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment)
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const isHealthyState = assessment.kind === "healthy" || assessment.kind === "healthy_paused"
             const patch = {
                 last_checked_at: times.us,
                 last_compute_status: snapshot.compute.status || "",
@@ -452,10 +547,23 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
 
             if (snapshot.compute.status !== "running") {
                 const fingerprint = `compute:${snapshot.compute.status}:${snapshot.compute.error || ""}`
+                const issueSummary = `当前系统状态不正确：Compute=${snapshot.compute.status || "unknown"}${snapshot.compute.error ? `；错误=${snapshot.compute.error}` : ""}。`
+                patch.last_issue_kind = "compute"
+                patch.last_issue_title = "IBKR Compute 服务离线"
+                patch.last_issue_summary = issueSummary
                 if (startupGraceActive) {
-                    patch.last_issue_hash = ""
-                    patch.last_issue_ms = 0
-                    patch.last_issue_at = ""
+                    if (hadOutstandingIssue) {
+                        patch.last_issue_kind = String(state.last_issue_kind || "")
+                        patch.last_issue_title = String(state.last_issue_title || "")
+                        patch.last_issue_summary = String(state.last_issue_summary || "")
+                    } else {
+                        patch.last_issue_hash = ""
+                        patch.last_issue_ms = 0
+                        patch.last_issue_at = ""
+                        patch.last_issue_kind = ""
+                        patch.last_issue_title = ""
+                        patch.last_issue_summary = ""
+                    }
                     patch.last_startup_grace_at = times.us
                     patch.last_startup_grace_reason = startupGraceLabel
                     console.log(`${prefix} heartbeat ${environment}: compute offline suppressed during startup grace (${startupGraceLabel})`)
@@ -474,6 +582,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                         console.log(`${prefix} heartbeat ${environment}: compute offline merged into status summary`)
                     } else {
                         const detail = {
+                            "异常结论": issueSummary,
                             "检查时间": times.us,
                             "Compute": snapshot.compute.status || "unknown",
                             "错误": snapshot.compute.error || "n/a",
@@ -493,10 +602,26 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                 || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
             ) {
                 const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}`
+                const problemSummary = listDataHealthProblems(snapshot)
+                const issueSummary = problemSummary.length
+                    ? `当前数据链路不正确：${problemSummary.join("；")}。`
+                    : "当前数据链路不正确，请检查实时数据与指标链路。"
+                patch.last_issue_kind = "data"
+                patch.last_issue_title = "IBKR 数据健康异常"
+                patch.last_issue_summary = issueSummary
                 if (startupGraceActive) {
-                    patch.last_issue_hash = ""
-                    patch.last_issue_ms = 0
-                    patch.last_issue_at = ""
+                    if (hadOutstandingIssue) {
+                        patch.last_issue_kind = String(state.last_issue_kind || "")
+                        patch.last_issue_title = String(state.last_issue_title || "")
+                        patch.last_issue_summary = String(state.last_issue_summary || "")
+                    } else {
+                        patch.last_issue_hash = ""
+                        patch.last_issue_ms = 0
+                        patch.last_issue_at = ""
+                        patch.last_issue_kind = ""
+                        patch.last_issue_title = ""
+                        patch.last_issue_summary = ""
+                    }
                     patch.last_startup_grace_at = times.us
                     patch.last_startup_grace_reason = startupGraceLabel
                     console.log(`${prefix} heartbeat ${environment}: data warning suppressed during startup grace (${startupGraceLabel})`)
@@ -515,10 +640,13 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                         console.log(`${prefix} heartbeat ${environment}: data warning merged into status summary`)
                     } else {
                         const detail = {
+                            "异常结论": issueSummary,
                             "检查时间": times.us,
+                            "认证": snapshot.session.authenticated ? "ok" : "pending",
                             "最新5m": snapshot.latest_bar.label,
                             "指标状态": snapshot.latest_indicator.label,
                             "WebSocket": snapshot.websocket.label,
+                            "建议": buildDataHealthRecommendation(snapshot),
                         }
                         const notified = feishuSystem.notifySystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment)
                         writeSystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment, notified)
@@ -526,19 +654,33 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                     }
                 }
             } else {
-                patch.last_issue_hash = ""
-                patch.last_issue_ms = 0
-                patch.last_issue_at = ""
-                patch.last_startup_grace_at = ""
-                patch.last_startup_grace_reason = ""
+                if (hadOutstandingIssue && isHealthyState) {
+                    const title = buildRecoveryTitle(state)
+                    const detail = buildRecoveryDetail(snapshot, times, state, assessment)
+                    const notified = feishuSystem.notifySystemEvent("alert", "info", "pb", title, detail, environment)
+                    writeSystemEvent("alert", "info", "pb", title, detail, environment, notified)
+                    console.log(`${prefix} heartbeat ${environment}: recovery notified=${notified}`)
+                }
+                if (isHealthyState) {
+                    patch.last_issue_hash = ""
+                    patch.last_issue_ms = 0
+                    patch.last_issue_at = ""
+                    patch.last_issue_kind = ""
+                    patch.last_issue_title = ""
+                    patch.last_issue_summary = ""
+                    patch.last_startup_grace_at = ""
+                    patch.last_startup_grace_reason = ""
+                }
             }
 
-            const suppressOkHeartbeatForSummary = currentMinute < 5 && isStatusSummaryNotifyEnabled(environment)
+            const suppressOkHeartbeatForSummary = isHealthyState && currentMinute < 5 && isStatusSummaryNotifyEnabled(environment)
             if (suppressOkHeartbeatForSummary) {
                 console.log(`${prefix} heartbeat ${environment}: ok heartbeat merged into status summary`)
             }
             const shouldSendOkHeartbeat = (
-                currentMinute < 5
+                isHealthyState
+                && String(state.last_issue_hash || "").trim() === ""
+                && currentMinute < 5
                 && !suppressOkHeartbeatForSummary
                 && String(state.last_ok_hour || "") !== currentHourToken
             )

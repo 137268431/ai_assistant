@@ -9,6 +9,7 @@
 cronAdd("signal_expiry_check", "*/5 * * * *", () => {
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
     const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
+    const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
     const { getRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
 
@@ -52,27 +53,16 @@ cronAdd("signal_expiry_check", "*/5 * * * *", () => {
                 const signalId = String(record.get("signal_id") || "")
                 if (signalId) {
                     const relatedOrders = $app.findRecordsByFilter(
-                        "orders",
+                        COLLECTIONS.ORDERS,
                         "signal_id = {:sid} && environment = {:env}",
                         "-created",
                         20,
                         0,
                         { sid: signalId, env: environment }
                     ) || []
-                    const legacyOrders = $app.findRecordsByFilter(
-                        "ibkr_orders",
-                        "signal_id = {:sid}",
-                        "-created",
-                        20,
-                        0,
-                        { sid: signalId }
-                    ) || []
-                    if (relatedOrders.length > 0 || legacyOrders.length > 0) {
+                    if (relatedOrders.length > 0) {
                         const orderRefs = relatedOrders
                             .map((orderRecord) => String(orderRecord.get("unique_id") || orderRecord.get("order_id") || ""))
-                            .concat(
-                                legacyOrders.map((orderRecord) => String(orderRecord.get("cOID") || orderRecord.get("orderId") || ""))
-                            )
                             .filter((value) => !!value)
                         const oldStatus = record.get("status")
                         record.set("status", "executed")

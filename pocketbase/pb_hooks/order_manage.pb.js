@@ -321,8 +321,9 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
   }
 });
 
-// POST /api/custom/ibkr/orders/reconcile - 回补 ibkr_orders 缺失的 orders/order_details
+// POST /api/custom/ibkr/orders/reconcile - 回补 orders 缺失的 order_details
 routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
+  const { appendOrderDetail } = require(`${__hooks}/lib/order_events.js`)
   const envUtils = require(`${__hooks}/lib/environment.js`)
   const request = c.requestInfo().body || c.requestInfo().data || {}
 
@@ -334,35 +335,6 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
     return fallback
   }
 
-  function parseExtra(value) {
-    if (value && typeof value === "object" && !Array.isArray(value)) return value
-    if (typeof value === "string" && value) {
-      try {
-        const parsed = JSON.parse(value)
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
-      } catch (_) {}
-    }
-    return {}
-  }
-
-  function normalizeOrderStatus(value) {
-    const text = String(value || "").trim().toLowerCase()
-    if (!text) return "Submitted"
-    if (text === "submitted") return "Submitted"
-    if (text === "filled") return "Filled"
-    if (text === "canceled" || text === "cancelled") return "Canceled"
-    if (text === "closed") return "Closed"
-    if (text === "init" || text === "initialized") return "Init"
-    return text.charAt(0).toUpperCase() + text.slice(1)
-  }
-
-  function normalizeDirection(signalRecord, ibkrOrderRecord) {
-    const signalDirection = String(signalRecord ? signalRecord.get("direction") || "" : "").trim().toLowerCase()
-    if (signalDirection === "long" || signalDirection === "short") return signalDirection
-    const side = String(ibkrOrderRecord ? ibkrOrderRecord.get("side") || "" : "").trim().toUpperCase()
-    return side === "SELL" ? "short" : "long"
-  }
-
   try {
     const environment = envUtils.getRuntimeEnvironmentFromData(request, envUtils.LIVE_ENVIRONMENT)
     const signalId = String(request.signal_id || "").trim()
@@ -371,16 +343,16 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
     const dryRun = parseBoolean(request.dry_run, false)
     const suppressNotification = parseBoolean(request.suppress_notification, true)
 
-    const params = { signalId: signalId }
-    const filters = ["signal_id != ''"]
+    const params = { env: environment, signalId: signalId }
+    const filters = ["environment = {:env}"]
     if (signalId) {
       filters.push("signal_id = {:signalId}")
     }
 
-    const ibkrOrderRecords = $app.findRecordsByFilter(
-      "ibkr_orders",
+    const orderRecords = $app.findRecordsByFilter(
+      "orders",
       filters.join(" && "),
-      "-us_time",
+      "-updated,-created",
       limit,
       0,
       params
@@ -391,13 +363,14 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
     let skipped = 0
     let failed = 0
 
-    for (let i = 0; i < ibkrOrderRecords.length; i++) {
-      const ibkrOrder = ibkrOrderRecords[i]
-      const currentSignalId = String(ibkrOrder.get("signal_id") || "").trim()
-      const uniqueId = String(ibkrOrder.get("cOID") || "").trim()
-      const symbol = String(ibkrOrder.get("symbol") || "").trim()
+    for (let i = 0; i < orderRecords.length; i++) {
+      const orderRecord = orderRecords[i]
+      const currentSignalId = String(orderRecord.get("signal_id") || "").trim()
+      const uniqueId = String(orderRecord.get("unique_id") || "").trim()
+      const symbol = String(orderRecord.get("symbol") || "").trim()
+      const status = String(orderRecord.get("status") || "").trim() || "Submitted"
 
-      if (!currentSignalId || !uniqueId || !symbol) {
+      if (!uniqueId || !symbol) {
         skipped++
         results.push({
           signal_id: currentSignalId,
@@ -408,95 +381,40 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
         continue
       }
 
-      const existingOrders = $app.findRecordsByFilter(
-        "orders",
-        "unique_id = {:uniqueId} && environment = {:env}",
-        "",
+      const existingDetails = $app.findRecordsByFilter(
+        "order_details",
+        "order_id = {:orderId} && environment = {:env}",
+        "-bar_time_ms",
         1,
         0,
-        { uniqueId: uniqueId, env: environment }
+        { orderId: uniqueId, env: environment }
       ) || []
 
-      if (onlyMissing && existingOrders.length > 0) {
+      if (onlyMissing && existingDetails.length > 0) {
         skipped++
         results.push({
           signal_id: currentSignalId,
           unique_id: uniqueId,
-          status: "skipped_existing",
+          status: "skipped_existing_detail",
           symbol: symbol,
-          order_record_id: existingOrders[0].id,
+          detail_record_id: existingDetails[0].id,
         })
         continue
       }
 
-      const signalRecords = $app.findRecordsByFilter(
-        "ibkr_signals",
-        "signal_id = {:signalId}",
-        "-created",
-        1,
-        0,
-        { signalId: currentSignalId }
-      ) || []
-
-      if (signalRecords.length === 0) {
-        failed++
-        results.push({
-          signal_id: currentSignalId,
-          unique_id: uniqueId,
-          status: "failed_missing_signal",
-          symbol: symbol,
-        })
-        continue
-      }
-
-      const signalRecord = signalRecords[0]
-      const signalExtra = parseExtra(signalRecord.get("extra"))
-      const direction = normalizeDirection(signalRecord, ibkrOrder)
-      const status = normalizeOrderStatus(ibkrOrder.get("status"))
-      const usTime = String(ibkrOrder.get("us_time") || signalRecord.get("us_time") || "").trim()
-      const cnTime = String(signalRecord.get("cn_time") || "").trim()
-      const barTimeMs = Number(signalRecord.get("bar_time_ms") || 0) || 0
-      const limitPrice = Number(ibkrOrder.get("price") || signalRecord.get("entry") || 0) || 0
-      const quantity = Number(ibkrOrder.get("quantity") || signalRecord.get("shares") || 0) || 0
-      const filledQty = Number(ibkrOrder.get("filled_quantity") || 0) || 0
-      const fillPrice = Number(ibkrOrder.get("avg_price") || 0) || 0
-      const relationStatus = status === "Canceled" || status === "Closed" ? "closed" : "active"
       const payload = {
         environment: environment,
         unique_id: uniqueId,
-        order_type: "Entry",
-        order_id: String(ibkrOrder.get("orderId") || "").trim(),
-        broker_order_id: String(ibkrOrder.get("orderId") || "").trim(),
         symbol: symbol,
-        direction: direction,
-        quantity: quantity,
-        limit_price: limitPrice,
         status: status,
-        filled_qty: filledQty,
-        fill_price: fillPrice,
         signal_id: currentSignalId,
-        tp_price: Number(ibkrOrder.get("tp_price") || signalRecord.get("take_profit") || 0) || 0,
-        sl_price: Number(ibkrOrder.get("sl_price") || signalRecord.get("stop_loss") || 0) || 0,
-        trade_group_id: uniqueId,
-        entry_order_unique_id: uniqueId,
-        role: "entry",
-        relation_status: relationStatus,
-        us_time: usTime,
-        cn_time: cnTime,
-        bar_time_ms: barTimeMs,
-        order_time: usTime,
-        fill_time: status === "Filled" ? usTime : "",
+        order_type: String(orderRecord.get("order_type") || "").trim(),
+        order_id: String(orderRecord.get("order_id") || "").trim(),
+        broker_order_id: String(orderRecord.get("broker_order_id") || "").trim(),
+        us_time: String(orderRecord.get("us_time") || "").trim(),
+        cn_time: String(orderRecord.get("cn_time") || "").trim(),
+        bar_time_ms: Number(orderRecord.get("bar_time_ms") || 0) || 0,
         suppress_notification: suppressNotification,
-        extra: {
-          reason: "reconciled_from_ibkr_orders",
-          repair_source: "orders/reconcile",
-          signal_source: signalExtra.signal_source || signalExtra.source || signalRecord.get("source") || "",
-          signal_source_label: signalExtra.signal_source_label || "",
-          signal_source_detail: signalExtra.signal_source_detail || "",
-          ibkr_order_record_id: ibkrOrder.id,
-          ibkr_order_type: String(ibkrOrder.get("orderType") || "").trim(),
-          suppress_notification: suppressNotification,
-        },
       }
 
       if (dryRun) {
@@ -512,38 +430,28 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
       }
 
       try {
-        const resp = $http.send({
-          url: "http://127.0.0.1:8090/api/custom/ibkr/orders/upsert",
-          method: "POST",
-          timeout: 30,
-          body: JSON.stringify(payload),
-          headers: { "Content-Type": "application/json" },
+        const detailRecord = appendOrderDetail(orderRecord, {
+          environment: environment,
+          status: status,
+          source: "orders/reconcile",
+          reason: onlyMissing ? "reconciled_missing_order_details" : "reconciled_order_snapshot",
+          us_time: payload.us_time,
+          cn_time: payload.cn_time,
+          bar_time_ms: payload.bar_time_ms,
+          extra: {
+            repair_source: "orders/reconcile",
+            suppress_notification: suppressNotification,
+          },
         })
-        let responseBody = {}
-        try {
-          responseBody = JSON.parse(resp.raw || "{}")
-        } catch (_) {
-          responseBody = { raw: resp.raw || "" }
-        }
-        if (Number(resp.statusCode || 500) >= 200 && Number(resp.statusCode || 500) < 300 && responseBody.success) {
-          repaired++
-          results.push({
-            signal_id: currentSignalId,
-            unique_id: uniqueId,
-            status: "repaired",
-            symbol: symbol,
-            order_record_id: responseBody.order ? responseBody.order.id : "",
-          })
-        } else {
-          failed++
-          results.push({
-            signal_id: currentSignalId,
-            unique_id: uniqueId,
-            status: "failed_upsert",
-            symbol: symbol,
-            error: responseBody.error || responseBody.message || `status_${resp.statusCode || 500}`,
-          })
-        }
+
+        repaired++
+        results.push({
+          signal_id: currentSignalId,
+          unique_id: uniqueId,
+          status: "repaired_detail",
+          symbol: symbol,
+          detail_record_id: detailRecord.id,
+        })
       } catch (err) {
         failed++
         results.push({
@@ -563,7 +471,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
       only_missing: onlyMissing,
       suppress_notification: suppressNotification,
       summary: {
-        scanned: ibkrOrderRecords.length,
+        scanned: orderRecords.length,
         repaired: repaired,
         skipped: skipped,
         failed: failed,

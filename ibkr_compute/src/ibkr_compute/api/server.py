@@ -203,11 +203,18 @@ def get_market_index_symbols(environment: str) -> set[str]:
     }
 
 
+def get_signal_generator_params(environment: str) -> dict:
+    market_index_symbols = sorted(get_market_index_symbols(environment))
+    return {
+        "market_index_symbols": ",".join(market_index_symbols),
+    }
+
+
 def get_or_create_engine(environment: str, symbol: str, interval: str) -> IndicatorEngine:
     key = (environment, symbol, interval)
     if key not in engines:
         engines[key] = IndicatorEngine(symbol, interval)
-        signal_gens[key] = SignalGenerator(symbol, interval)
+        signal_gens[key] = SignalGenerator(symbol, interval, params=get_signal_generator_params(environment))
     return engines[key]
 
 
@@ -1561,6 +1568,7 @@ def build_chart_timeline_payload(
         normalized_symbol,
         normalized_interval,
         source_rows,
+        params=get_signal_generator_params(runtime_environment),
         include_signals=include_signals,
         visible_start_ms=int(start_ms or 0),
         visible_end_ms=int(end_ms or 0),
@@ -2583,6 +2591,313 @@ def _normalize_live_order(order: dict) -> dict:
     }
 
 
+def _canonical_order_status(value) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"PENDING", "PRESUBMITTED", "SUBMITTED", "PENDINGSUBMIT", "INPROGRESS"}:
+        return "SUBMITTED"
+    if text in {"FILLED", "EXECUTED"}:
+        return "FILLED"
+    if text in {"CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}:
+        return "CANCELED"
+    return text or "UNKNOWN"
+
+
+def _display_order_status(value) -> str:
+    canonical = _canonical_order_status(value)
+    return {
+        "SUBMITTED": "Submitted",
+        "FILLED": "Filled",
+        "CANCELED": "Canceled",
+        "UNKNOWN": "Unknown",
+    }.get(canonical, str(value or canonical or "Unknown").strip() or "Unknown")
+
+
+def _direction_from_side(value) -> str:
+    side = str(value or "").strip().upper()
+    if side == "BUY":
+        return "long"
+    if side == "SELL":
+        return "short"
+    return ""
+
+
+def _extract_market_date_text(value) -> str:
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    if len(text) >= 8 and text[:8].isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    normalized = text.replace(" ", "T")
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except Exception:
+        return ""
+    if parsed.tzinfo is None:
+        return parsed.strftime("%Y-%m-%d")
+    return parsed.astimezone(timezone(timedelta(hours=-4))).strftime("%Y-%m-%d")
+
+
+def _order_history_time_value(record: dict) -> str:
+    for key in ("order_time", "us_time", "updated", "created", "fill_time"):
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _normalize_broker_history_order(order: dict) -> dict:
+    live_order = _normalize_live_order(order)
+    order_id = str(live_order.get("order_id") or "").strip()
+    parent_id = str(live_order.get("parent_id") or "").strip()
+    coid = _extract_live_order_text(order, "cOID", "coid", "order_ref", "orderRef")
+    unique_id = coid or order_id
+    entry_unique_id = parent_id or coid or order_id
+    if not unique_id:
+        unique_id = order_id
+    if not entry_unique_id:
+        entry_unique_id = unique_id
+    status = _display_order_status(live_order.get("status"))
+    canonical_status = _canonical_order_status(status)
+    closed_statuses = {"FILLED", "CANCELED"}
+    submitted_time = str(live_order.get("submitted_time") or "").strip()
+    fill_time = str(live_order.get("last_execution_time") or "").strip()
+    updated_time = fill_time or submitted_time or datetime.utcnow().isoformat()
+    direction = _direction_from_side(live_order.get("side"))
+
+    return {
+        "source": "ibkr_direct",
+        "source_kind": "broker_order",
+        "source_label": "IBKR Direct",
+        "unique_id": unique_id,
+        "order_id": order_id,
+        "broker_order_id": order_id,
+        "order_type": live_order.get("order_type") or "",
+        "symbol": live_order.get("symbol") or "",
+        "direction": direction,
+        "position_side": direction,
+        "trade_group_id": entry_unique_id or unique_id,
+        "entry_order_unique_id": entry_unique_id,
+        "parent_order_unique_id": parent_id,
+        "role": live_order.get("role") or "",
+        "relation_status": "closed" if canonical_status in closed_statuses else "active",
+        "quantity": live_order.get("total_quantity") or 0,
+        "limit_price": live_order.get("price") or 0,
+        "status": status,
+        "filled_qty": live_order.get("filled_quantity") or 0,
+        "fill_price": live_order.get("avg_price") or 0,
+        "order_time": submitted_time,
+        "fill_time": fill_time,
+        "us_time": submitted_time,
+        "updated": updated_time,
+        "diagnostic_state": "",
+        "diagnostic_note": "",
+        "raw": live_order.get("raw") or {},
+    }
+
+
+def _normalize_pb_history_order(record: dict) -> dict:
+    return {
+        "record_id": str(record.get("id") or "").strip(),
+        "order_id": str(record.get("order_id") or "").strip(),
+        "broker_order_id": str(record.get("broker_order_id") or record.get("order_id") or "").strip(),
+        "symbol": str(record.get("symbol") or "").strip().upper(),
+        "status": _display_order_status(record.get("status")),
+        "quantity": float(_coerce_float(record.get("quantity"), 0.0) or 0.0),
+        "filled_qty": float(_coerce_float(record.get("filled_qty"), 0.0) or 0.0),
+        "time_value": _order_history_time_value(record),
+        "raw": record,
+    }
+
+
+def _build_broker_order_reconciliation(service, environment: str, broker_orders: list[dict]) -> dict:
+    pb_error = ""
+    market_date = current_market_date()
+    pb_today_rows = []
+    matched_count = 0
+    broker_only_ids = []
+    pb_only_ids = []
+    status_mismatches = []
+    filled_qty_mismatches = []
+    quantity_mismatches = []
+
+    try:
+        pb_rows = []
+        if getattr(service, "pb", None):
+            safe_environment = str(environment or "live").replace("\\", "\\\\").replace('"', '\\"')
+            pb_rows = service.pb.get_records(
+                "orders",
+                filter=f'environment = "{safe_environment}"',
+                sort="-updated",
+                per_page=200,
+                page=1,
+            )
+        for row in pb_rows or []:
+            if not isinstance(row, dict):
+                continue
+            normalized = _normalize_pb_history_order(row)
+            if _extract_market_date_text(normalized.get("time_value")) != market_date:
+                continue
+            pb_today_rows.append(normalized)
+    except Exception as exc:
+        pb_error = str(exc)
+        pb_today_rows = []
+
+    pb_by_order_id = {}
+    for row in pb_today_rows:
+        key = str(row.get("broker_order_id") or row.get("order_id") or "").strip()
+        if key and key not in pb_by_order_id:
+            pb_by_order_id[key] = row
+
+    for order in broker_orders:
+        order_id = str(order.get("broker_order_id") or order.get("order_id") or "").strip()
+        if not order_id:
+            order["diagnostic_state"] = "missing_broker_order_id"
+            order["diagnostic_note"] = "IBKR 未返回 broker order id，无法和 PB 订单表对账"
+            continue
+
+        pb_match = pb_by_order_id.pop(order_id, None)
+        if not pb_match:
+            broker_only_ids.append(order_id)
+            order["diagnostic_state"] = "missing_in_pb"
+            order["diagnostic_note"] = "IBKR 有该订单，但 PB 今日订单表未找到对应 broker_order_id"
+            continue
+
+        matched_count += 1
+        mismatch_fields = []
+        if _canonical_order_status(order.get("status")) != _canonical_order_status(pb_match.get("status")):
+            mismatch_fields.append("status")
+            status_mismatches.append(
+                {
+                    "broker_order_id": order_id,
+                    "symbol": order.get("symbol") or pb_match.get("symbol") or "",
+                    "ibkr_status": order.get("status") or "",
+                    "pb_status": pb_match.get("status") or "",
+                }
+            )
+
+        broker_quantity = float(_coerce_float(order.get("quantity"), 0.0) or 0.0)
+        pb_quantity = float(_coerce_float(pb_match.get("quantity"), 0.0) or 0.0)
+        if abs(broker_quantity - pb_quantity) > 1e-9:
+            mismatch_fields.append("quantity")
+            quantity_mismatches.append(
+                {
+                    "broker_order_id": order_id,
+                    "symbol": order.get("symbol") or pb_match.get("symbol") or "",
+                    "ibkr_quantity": broker_quantity,
+                    "pb_quantity": pb_quantity,
+                }
+            )
+
+        broker_filled = float(_coerce_float(order.get("filled_qty"), 0.0) or 0.0)
+        pb_filled = float(_coerce_float(pb_match.get("filled_qty"), 0.0) or 0.0)
+        if abs(broker_filled - pb_filled) > 1e-9:
+            mismatch_fields.append("filled_qty")
+            filled_qty_mismatches.append(
+                {
+                    "broker_order_id": order_id,
+                    "symbol": order.get("symbol") or pb_match.get("symbol") or "",
+                    "ibkr_filled_qty": broker_filled,
+                    "pb_filled_qty": pb_filled,
+                }
+            )
+
+        if mismatch_fields:
+            order["diagnostic_state"] = "field_mismatch"
+            order["diagnostic_note"] = f'PB 对账字段不一致: {", ".join(mismatch_fields)}'
+        else:
+            order["diagnostic_state"] = "matched"
+            order["diagnostic_note"] = "IBKR 与 PB 今日订单记录一致"
+
+    pb_only_ids = sorted(pb_by_order_id.keys())
+
+    return {
+        "market_date": market_date,
+        "pb_error": pb_error,
+        "pb_today_count": len(pb_today_rows),
+        "broker_today_count": len(broker_orders),
+        "matched_count": matched_count,
+        "broker_only_count": len(broker_only_ids),
+        "pb_only_count": len(pb_only_ids),
+        "status_mismatch_count": len(status_mismatches),
+        "filled_qty_mismatch_count": len(filled_qty_mismatches),
+        "quantity_mismatch_count": len(quantity_mismatches),
+        "broker_only_ids": broker_only_ids[:20],
+        "pb_only_ids": pb_only_ids[:20],
+        "status_mismatches": status_mismatches[:20],
+        "filled_qty_mismatches": filled_qty_mismatches[:20],
+        "quantity_mismatches": quantity_mismatches[:20],
+    }
+
+
+def _build_ibkr_order_history(service, requested_days: int = 1) -> dict:
+    runtime_environment = _ibkr_service_environment(service)
+    service_status = service.status() if hasattr(service, "status") else {}
+    use_paper = _ibkr_service_uses_paper_account(service)
+    account_id = ""
+    if hasattr(service, "order_placer"):
+        try:
+            account_id = str(service.order_placer.get_active_account_id(use_paper=use_paper) or "").strip()
+        except Exception:
+            account_id = ""
+
+    broker_payload = {}
+    broker_error = ""
+    try:
+        broker_payload = service.order_tracker.get_broker_order_history(days=requested_days, force=True)
+    except Exception as exc:
+        broker_error = str(exc)
+        broker_payload = {}
+
+    if not broker_error:
+        broker_error = str(broker_payload.get("error") or "").strip()
+
+    raw_orders = broker_payload.get("orders") or []
+    broker_orders = [
+        _normalize_broker_history_order(item)
+        for item in raw_orders
+        if isinstance(item, dict)
+    ]
+    reconciliation = _build_broker_order_reconciliation(service, runtime_environment, broker_orders)
+
+    canonical_statuses = [_canonical_order_status(item.get("status")) for item in broker_orders]
+    fetched_at = datetime.utcnow().isoformat()
+    return {
+        "ok": not broker_error,
+        "error": broker_error,
+        "environment": runtime_environment,
+        "account_id": account_id,
+        "source": "ibkr_direct_order_history",
+        "service_running": bool(getattr(service, "is_running", False)),
+        "session_authenticated": bool((service_status.get("session") or {}).get("authenticated")),
+        "gateway_running": bool((service_status.get("gateway") or {}).get("running")),
+        "requested_days": max(1, int(requested_days or 1)),
+        "effective_days": int(broker_payload.get("effective_days") or 1),
+        "current_day_only": bool(broker_payload.get("current_day_only", True)),
+        "items": broker_orders,
+        "counts": {
+            "total": len(broker_orders),
+            "open": len([item for item in canonical_statuses if item == "SUBMITTED"]),
+            "filled": len([item for item in canonical_statuses if item == "FILLED"]),
+            "canceled": len([item for item in canonical_statuses if item == "CANCELED"]),
+        },
+        "reconciliation": reconciliation,
+        "limitations": broker_payload.get("limitations") or [
+            "IBKR Client Portal /iserver/account/orders 仅返回当前美东交易日订单。",
+            "如果需要跨日历史订单，请补充 Flex / Statement 链路。",
+        ],
+        "errors": {
+            "broker": broker_error,
+            "pb": reconciliation.get("pb_error") or "",
+        },
+        "fetched_at": fetched_at,
+        "raw": broker_payload.get("raw") if isinstance(broker_payload.get("raw"), dict) else {},
+    }
+
+
 def _build_ibkr_account_snapshot(service) -> dict:
     runtime_environment = _ibkr_service_environment(service)
     service_status = service.status() if hasattr(service, "status") else {}
@@ -2799,6 +3114,21 @@ def ibkr_live_orders():
             "fetched_at": snapshot.get("fetched_at"),
         }
     )
+
+
+@app.route("/ibkr/orders/history", methods=["GET"])
+def ibkr_order_history():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+
+    requested_days = max(1, int(_coerce_float(request.args.get("days"), 1) or 1))
+    payload = _build_ibkr_order_history(service, requested_days=requested_days)
+    if payload.get("ok"):
+        return jsonify(payload)
+    error_text = str(payload.get("error") or (payload.get("errors") or {}).get("broker") or "").strip().lower()
+    status_code = 409 if "not authenticated" in error_text else 502
+    return jsonify(payload), status_code
 
 
 @app.route("/ibkr/orders/cancel", methods=["POST"])

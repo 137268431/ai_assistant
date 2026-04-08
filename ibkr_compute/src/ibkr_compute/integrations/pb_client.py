@@ -271,6 +271,26 @@ class PBClient:
         }
         return self.call_custom_api("ibkr/notify", method="POST", data=payload, timeout=5)
 
+    def notify_system_event(
+        self,
+        title: str,
+        detail: Optional[Dict[str, Any]] = None,
+        *,
+        event_type: str = "status_change",
+        level: str = "info",
+        source: str = "ibkr_compute",
+        environment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = {
+            "title": title,
+            "detail": detail or {},
+            "event_type": event_type,
+            "level": level,
+            "source": source,
+            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+        }
+        return self.call_custom_api("system/event", method="POST", data=payload, timeout=5)
+
     def request_ibkr_2fa(
         self,
         reason: str = "manual_reauth",

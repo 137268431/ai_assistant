@@ -298,7 +298,7 @@ function ensureRequestedState(environment, options) {
         source: preserveCurrentDisplay
             ? (currentData.source || opts.source || "ibkr_compute")
             : (opts.source || currentData.source || "ibkr_compute"),
-        requested_at: currentData.requested_at || times.us,
+        requested_at: preserveCurrentDisplay ? (currentData.requested_at || times.us) : times.us,
         last_request_at: times.us,
         request_count: toNumber(currentData.request_count, 0) + 1,
     }
@@ -315,6 +315,7 @@ function ensureRequestedState(environment, options) {
         patch.response_status = ""
         patch.response_received_at = ""
         patch.response_submitted_at = ""
+        patch.next_retry_at = ""
     }
 
     if (preserveCurrentDisplay && currentData.message) {
@@ -675,12 +676,15 @@ function trigger2faFlow(options) {
         }
     }
 
+    var triggerTime = timeUtils.getTimeStrings().us
     var triggerSaved = saveState(runtimeEnvironment, {
         status: "triggered",
         reason: opts.reason || currentData.reason || "manual_reauth",
         detail: opts.detail || currentData.detail || {},
         source: opts.source || currentData.source || "feishu_2fa",
-        triggered_at: timeUtils.getTimeStrings().us,
+        requested_at: triggerTime,
+        last_request_at: triggerTime,
+        triggered_at: triggerTime,
         result_at: "",
         last_error: "",
         last_result: opts.message || "已触发登录流程，等待网关提交 2FA。",
@@ -691,6 +695,7 @@ function trigger2faFlow(options) {
         response_status: "",
         response_received_at: "",
         response_submitted_at: "",
+        next_retry_at: "",
     })
 
     var computeBaseUrl = envUtils.getIbkrComputePublicUrl(runtimeEnvironment, "https://qc.lzw-glory.top")
@@ -779,6 +784,9 @@ function report2faResult(options) {
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(opts.environment || "", envUtils.LIVE_ENVIRONMENT)
     var status = String(opts.status || "requested").trim().toLowerCase() || "requested"
     if (!STATUS_CONFIG[status]) status = "failed"
+    var currentState = getStatePayload(runtimeEnvironment).data || {}
+    var statePatch = opts.state_patch && typeof opts.state_patch === "object" ? opts.state_patch : {}
+    var currentTimes = timeUtils.getTimeStrings()
 
     var patch = {
         status: status,
@@ -786,14 +794,15 @@ function report2faResult(options) {
         source: opts.source || "ibkr_compute",
         message: opts.message || "",
         last_result: opts.last_result || opts.message || "",
-        ...(opts.state_patch && typeof opts.state_patch === "object" ? opts.state_patch : {}),
+        ...statePatch,
     }
 
     if (status === "triggered" || status === "waiting_confirm" || status === "waiting_response") {
-        patch.triggered_at = (getStatePayload(runtimeEnvironment).data || {}).triggered_at || timeUtils.getTimeStrings().us
+        patch.requested_at = String(statePatch.requested_at || currentState.requested_at || currentTimes.us)
+        patch.triggered_at = String(statePatch.triggered_at || currentState.triggered_at || patch.requested_at || currentTimes.us)
     }
     if (["success", "timeout", "failed"].indexOf(status) !== -1) {
-        patch.result_at = timeUtils.getTimeStrings().us
+        patch.result_at = currentTimes.us
     }
     if (opts.error) {
         patch.last_error = String(opts.error)
@@ -814,6 +823,7 @@ function report2faResult(options) {
         patch.backend_authenticated = true
         patch.runtime_authenticated = true
         patch.runtime_started = true
+        patch.next_retry_at = ""
     }
 
     var saved = saveState(runtimeEnvironment, patch)

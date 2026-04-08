@@ -8,7 +8,7 @@
 
 - `quant_trading` 内部订单生命周期
 - PocketBase 的 `orders` / `order_details`
-- `pb_public/ibkr_orders.html` 与 `pb_public/ibkr_order_details.html`
+- `pb_public/orders.html` 与 `pb_public/ibkr_order_details.html`
 - `ai_assistant/pocketbase/test/pb-flow.sh`
 
 ---
@@ -169,7 +169,7 @@ IBKR 完成后回写 `POST /api/custom/ibkr/reverse/ack`：
 
 ## 页面对应关系
 
-### `pb_public/ibkr_orders.html`
+### `pb_public/orders.html`
 
 - 以 `trade_group_id` 聚合展示
 - 一个卡片代表一个交易组

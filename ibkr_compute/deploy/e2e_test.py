@@ -157,46 +157,6 @@ migrate((db) => {
   });
   Dao(db).saveCollection(bars);
 
-  // ibkr_orders
-  const orders = new Collection({
-    "id": "_pb_ibkr_orders_",
-    "name": "ibkr_orders",
-    "type": "base",
-    "system": false,
-    "schema": [
-      {"id":"io_coid","name":"cOID","type":"text","required":false,"options":{}},
-      {"id":"io_oid","name":"orderId","type":"text","required":false,"options":{}},
-      {"id":"io_sym","name":"symbol","type":"text","required":false,"options":{}},
-      {"id":"io_conid","name":"conid","type":"number","required":false,"options":{"noDecimal":true}},
-      {"id":"io_side","name":"side","type":"text","required":false,"options":{}},
-      {"id":"io_type","name":"orderType","type":"text","required":false,"options":{}},
-      {"id":"io_price","name":"price","type":"number","required":false,"options":{}},
-      {"id":"io_qty","name":"quantity","type":"number","required":false,"options":{"noDecimal":true}},
-      {"id":"io_fqty","name":"filled_quantity","type":"number","required":false,"options":{"noDecimal":true}},
-      {"id":"io_avg","name":"avg_price","type":"number","required":false,"options":{}},
-      {"id":"io_st","name":"status","type":"text","required":false,"options":{}},
-      {"id":"io_pid","name":"parentId","type":"text","required":false,"options":{}},
-      {"id":"io_bg","name":"bracket_group","type":"text","required":false,"options":{}},
-      {"id":"io_sig","name":"signal_id","type":"text","required":false,"options":{}},
-      {"id":"io_acct","name":"account","type":"text","required":false,"options":{}},
-      {"id":"io_tp","name":"tp_price","type":"number","required":false,"options":{}},
-      {"id":"io_sl","name":"sl_price","type":"number","required":false,"options":{}},
-      {"id":"io_ust","name":"us_time","type":"text","required":false,"options":{}},
-      {"id":"io_rpnl","name":"realized_pnl","type":"number","required":false,"options":{}}
-    ],
-    "indexes": [
-      "CREATE INDEX idx_ibkr_orders_sym ON ibkr_orders (symbol)",
-      "CREATE INDEX idx_ibkr_orders_bg ON ibkr_orders (bracket_group)"
-    ],
-    "listRule": "",
-    "viewRule": "",
-    "createRule": "",
-    "updateRule": "",
-    "deleteRule": "",
-    "options": {}
-  });
-  Dao(db).saveCollection(orders);
-
   // ibkr_positions
   const positions = new Collection({
     "id": "_pb_ibkr_positions_",
@@ -271,7 +231,7 @@ migrate((db) => {
 
 }, (db) => {
   const dao = new Dao(db);
-  ["ibkr_bars","ibkr_orders","ibkr_positions","ibkr_session","ibkr_conid_cache"].forEach(name => {
+  ["ibkr_bars","ibkr_positions","ibkr_session","ibkr_conid_cache"].forEach(name => {
     try { dao.deleteCollection(dao.findCollectionByNameOrId(name)); } catch(e) {}
   });
 })
@@ -373,21 +333,14 @@ def t_pb_bars():
         return "collection not found (will create)"
     return True
 
-@test("3.2 PB ibkr_orders collection exists")
-def t_pb_orders():
-    r = pb_get("/api/collections/ibkr_orders/records?perPage=1")
-    if r.status_code == 404:
-        return "collection not found (will create)"
-    return True
-
-@test("3.3 PB ibkr_session collection exists")
+@test("3.2 PB ibkr_session collection exists")
 def t_pb_session():
     r = pb_get("/api/collections/ibkr_session/records?perPage=1")
     if r.status_code == 404:
         return "collection not found (will create)"
     return True
 
-@test("3.4 PB ibkr_positions collection exists")
+@test("3.3 PB ibkr_positions collection exists")
 def t_pb_positions():
     r = pb_get("/api/collections/ibkr_positions/records?perPage=1")
     if r.status_code == 404:
@@ -717,7 +670,7 @@ def main():
     # Phase 0: Check PB collections exist
     print("[Phase 0] PocketBase Collections Check")
     collections_needed = []
-    for name in ["ibkr_bars", "ibkr_orders", "ibkr_positions", "ibkr_session", "ibkr_conid_cache"]:
+    for name in ["ibkr_bars", "ibkr_positions", "ibkr_session", "ibkr_conid_cache"]:
         try:
             r = pb_get("/api/collections/%s/records?perPage=1" % name)
             if r.status_code == 404:
@@ -755,7 +708,6 @@ def main():
     # Phase 3: PB Collections
     print("[Phase 3] PocketBase Collections")
     t_pb_bars()
-    t_pb_orders()
     t_pb_session()
     t_pb_positions()
     t_pb_conid()

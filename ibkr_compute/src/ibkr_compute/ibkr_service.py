@@ -45,6 +45,7 @@ logger = logging.getLogger("ibkr_service")
 ET = timezone(timedelta(hours=-4))
 
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://localhost:8090")
+PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", "").rstrip("/")
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 DEFAULT_SIGNAL_POLL_INTERVAL = 120
@@ -52,6 +53,8 @@ DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
 BAR_INTEGRITY_STATE_KEY = "ibkr_bar_integrity_cursor"
 BAR_INTEGRITY_STATE_DATE = "global"
 DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE = 8
+REALTIME_PRIORITY_ENVIRONMENTS = {"live", "paper"}
+SESSION_EVENT_ALERT_COOLDOWN_SECONDS = int(os.environ.get("IBKR_SESSION_EVENT_ALERT_COOLDOWN", "1800"))
 
 
 class IBKRTradingService:
@@ -116,6 +119,7 @@ class IBKRTradingService:
         self._active_repair_thread = None
         self._watchlist_backfill_thread = None
         self._compute_thread = None
+        self._bar_close_thread = None
         self._warmup_thread = None
         self._auth_required_reason = ""
         self._symbol_meta = {}
@@ -150,11 +154,15 @@ class IBKRTradingService:
         self._realtime_compute_runs = 0
         self._last_realtime_compute_at = 0.0
         self._last_realtime_compute_result = {}
+        self._last_bar_close_at = 0.0
         self._current_market_date = ""
         self._last_daily_reset_at = 0.0
         self._last_session_authenticated = False
         self._warmup_signature = ()
         self._warmup_state = self._initial_warmup_state()
+        self._last_session_issue_kind = ""
+        self._last_session_issue_title = ""
+        self._last_session_issue_at = 0.0
 
     def _build_2fa_detail(self, reason: str) -> dict:
         return {
@@ -162,7 +170,7 @@ class IBKRTradingService:
             "原因": reason,
         }
 
-    def _request_manual_2fa(self, reason: str, message: str):
+    def _request_manual_2fa(self, reason: str, message: str) -> bool:
         self._auth_required_reason = reason
         requested = self.auth_handler.request_2fa_approval(
             reason=reason,
@@ -174,9 +182,94 @@ class IBKRTradingService:
             logger.info("Manual 2FA request sent: %s", reason)
         else:
             logger.warning("Manual 2FA request failed to send: %s", reason)
+        return requested
 
     def _now_iso(self) -> str:
         return datetime.now(ET).isoformat()
+
+    def _runtime_page_url(self) -> str:
+        base_url = PB_PUBLIC_URL or ""
+        if not base_url:
+            return ""
+        return f"{base_url}/ibkr_runtime.html?environment={ENVIRONMENT}"
+
+    def _runtime_phase_label(self) -> str:
+        if self._running:
+            return "running"
+        if self._starting:
+            return "starting"
+        return "stopped"
+
+    def _emit_system_event(self, event_type: str, level: str, title: str, detail: dict):
+        if not self.pb:
+            return
+        try:
+            self.pb.notify_system_event(
+                title=title,
+                detail=detail,
+                event_type=event_type,
+                level=level,
+                source="ibkr_compute",
+                environment=ENVIRONMENT,
+            )
+        except Exception as exc:
+            logger.warning("System event emit failed (%s/%s): %s", event_type, title, exc)
+
+    def _notify_session_issue(
+        self,
+        kind: str,
+        title: str,
+        summary: str,
+        recommendation: str,
+        extra_detail: dict | None = None,
+    ):
+        now = time.time()
+        should_send = (
+            self._last_session_issue_kind != kind
+            or self._last_session_issue_at <= 0
+            or (now - self._last_session_issue_at) >= SESSION_EVENT_ALERT_COOLDOWN_SECONDS
+        )
+        self._last_session_issue_kind = kind
+        self._last_session_issue_title = title
+        if not should_send:
+            return
+
+        detail = {
+            "异常结论": summary,
+            "检查时间": self._now_et(),
+            "Session认证": "no",
+            "Runtime阶段": self._runtime_phase_label(),
+            "处理建议": recommendation,
+        }
+        if self._auth_required_reason:
+            detail["触发原因"] = self._auth_required_reason
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            detail["运行页"] = runtime_url
+        if extra_detail:
+            detail.update(extra_detail)
+
+        self._emit_system_event("alert", "warning", title, detail)
+        self._last_session_issue_at = now
+
+    def _notify_session_recovered(self, previous_kind: str):
+        if not previous_kind:
+            return
+        detail = {
+            "状态结论": "IBKR Session 已恢复认证，当前运行态重新正确。",
+            "检查时间": self._now_et(),
+            "Session认证": "yes",
+            "Runtime阶段": self._runtime_phase_label(),
+            "恢复来源": previous_kind,
+            "后续动作": "系统将继续 warmup、订阅刷新和信号处理。",
+        }
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            detail["运行页"] = runtime_url
+        self._emit_system_event("alert", "info", "IBKR Session 已恢复认证", detail)
+        self._last_session_issue_kind = ""
+        self._last_session_issue_title = ""
+        self._last_session_issue_at = 0.0
 
     def _initial_warmup_state(self) -> dict:
         return {
@@ -386,12 +479,20 @@ class IBKRTradingService:
     def _sync_session_transition(self):
         authenticated = bool(self.session_keeper.is_authenticated)
         if authenticated and not self._last_session_authenticated:
+            previous_kind = self._last_session_issue_kind
             self._last_session_authenticated = True
             logger.info("IBKR session restored; scheduling warmup refresh")
+            self._notify_session_recovered(previous_kind)
             self._schedule_warmup(reason="session_restored", force=True)
         elif not authenticated and self._last_session_authenticated:
             self._last_session_authenticated = False
             self._close_warmup_gate("session_unauthenticated")
+            self._notify_session_issue(
+                "runtime_unauthenticated",
+                "IBKR Runtime 未认证",
+                "检测到运行态已降为未认证，实时行情和交易链路可能不可用。",
+                "请立即检查 Gateway 与飞书 2FA 状态，并在需要时重新触发验证。",
+            )
 
     def _collect_warmup_readiness(self, snapshot: dict) -> dict:
         from ibkr_compute.api import server as compute_server
@@ -724,18 +825,25 @@ class IBKRTradingService:
                 logger.error("Gateway setup failed, exiting")
                 return
 
+            # Do a one-shot auth check WITHOUT starting the keeper loop.
+            # Starting session_keeper here would cause it to periodically
+            # tickle + check_auth during the 2FA wait, creating a second/third
+            # HTTP client hitting the Gateway and interfering with the SSO flow.
             self.session_keeper.start()
             time.sleep(1)
             self.session_keeper.check_auth_status()
             time.sleep(2)
 
             if not self.session_keeper.is_authenticated:
+                # Stop session_keeper during login to avoid interference.
+                # Its tickle/auth polling competes with the Selenium SSO flow.
+                self.session_keeper.stop()
+
                 if not trigger_login:
                     logger.warning("Not authenticated and trigger_login disabled; requesting manual 2FA")
                     self._request_manual_2fa(reason, "检测到会话未认证，请在准备好时点击按钮触发 2FA。")
-                    self.session_keeper.stop()
                     return
-                logger.info("Not authenticated, attempting login...")
+                logger.info("Not authenticated, attempting login (session_keeper paused)...")
                 if not self.auth_handler.login(
                     reason=reason,
                     source=source,
@@ -743,8 +851,10 @@ class IBKRTradingService:
                 ):
                     logger.error("Login failed, exiting")
                     self._auth_required_reason = reason
-                    self.session_keeper.stop()
                     return
+
+                # Login succeeded — restart session_keeper with fresh state.
+                self.session_keeper.start()
                 self.session_keeper.check_auth_status()
                 time.sleep(3)
             else:
@@ -801,6 +911,12 @@ class IBKRTradingService:
                 name="close-compute",
             )
             self._compute_thread.start()
+            self._bar_close_thread = threading.Thread(
+                target=self._bar_close_loop,
+                daemon=True,
+                name="bar-close-guard",
+            )
+            self._bar_close_thread.start()
             self._warmup_thread = threading.Thread(
                 target=self._warmup_loop,
                 daemon=True,
@@ -1379,16 +1495,31 @@ class IBKRTradingService:
             logger.info("Active target repair skipped while session is unauthenticated")
             return
 
+        defer_repairs, defer_snapshot = self._should_defer_background_repairs()
+        if defer_repairs:
+            logger.info(
+                "Active target repair downgraded to scan-only: reason=%s queue=%s active_targets=%s websocket=%s authenticated=%s",
+                defer_snapshot.get("reason"),
+                defer_snapshot.get("queue_size"),
+                defer_snapshot.get("active_target_count"),
+                defer_snapshot.get("websocket_connected"),
+                defer_snapshot.get("authenticated"),
+            )
+
         result = self.scan_bar_integrity(
             list(self._active_subscription_symbols),
             scan_scope="active_target",
             persist=True,
-            repair=True,
+            repair=not defer_repairs,
         )
         summary = result.get("summary") or {}
-        repair_symbols = list(summary.get("attempted_repair_symbols") or summary.get("repair_candidate_symbols") or [])
+        attempted_repair_symbols = list(summary.get("attempted_repair_symbols") or [])
+        repair_symbols = list(attempted_repair_symbols or summary.get("repair_candidate_symbols") or [])
         if not repair_symbols:
             logger.info("Active target repair skipped: no repair needed")
+            return
+        if defer_repairs and not attempted_repair_symbols:
+            logger.info("Active target repair deferred: pending=%s", ",".join(repair_symbols))
             return
 
         self._last_active_repair_at = time.time()
@@ -1420,6 +1551,17 @@ class IBKRTradingService:
     def _run_watchlist_backfill_cycle(self):
         if self._is_warmup_active():
             logger.info("Watchlist backfill skipped while startup warmup is active")
+            return
+        defer_repairs, defer_snapshot = self._should_defer_background_repairs()
+        if defer_repairs:
+            logger.info(
+                "Watchlist maintenance deferred: reason=%s queue=%s active_targets=%s websocket=%s authenticated=%s",
+                defer_snapshot.get("reason"),
+                defer_snapshot.get("queue_size"),
+                defer_snapshot.get("active_target_count"),
+                defer_snapshot.get("websocket_connected"),
+                defer_snapshot.get("authenticated"),
+            )
             return
         self._refresh_watchlist_pool()
 
@@ -1621,6 +1763,31 @@ class IBKRTradingService:
             return {
                 "repair_symbols": [],
                 "history_symbols": [],
+                "per_symbol": per_symbol,
+            }
+
+        defer_repairs, defer_snapshot = self._should_defer_background_repairs()
+        if defer_repairs:
+            for symbol in repair_symbols:
+                per_symbol[symbol]["result"]["deferred"] = True
+                per_symbol[symbol]["result"]["defer_reason"] = str(defer_snapshot.get("reason") or "realtime_priority_active")
+                per_symbol[symbol]["result"]["queue_size"] = int(defer_snapshot.get("queue_size", 0) or 0)
+            logger.info(
+                "Pipeline repair deferred (%s): symbols=%s reason=%s queue=%s active_targets=%s websocket=%s authenticated=%s",
+                source,
+                ",".join(sorted(repair_symbols)),
+                defer_snapshot.get("reason"),
+                defer_snapshot.get("queue_size"),
+                defer_snapshot.get("active_target_count"),
+                defer_snapshot.get("websocket_connected"),
+                defer_snapshot.get("authenticated"),
+            )
+            return {
+                "repair_symbols": [],
+                "history_symbols": [],
+                "deferred_symbols": sorted(repair_symbols),
+                "deferred": True,
+                "reason": str(defer_snapshot.get("reason") or "realtime_priority_active"),
                 "per_symbol": per_symbol,
             }
 
@@ -1945,7 +2112,17 @@ class IBKRTradingService:
             except Exception as exc:
                 logger.error("Realtime compute loop error: %s", exc)
 
+    def _bar_close_loop(self):
+        logger.info("Bar close guard loop started")
+        while self._running:
+            try:
+                self.bar_aggregator.force_close_due()
+            except Exception as exc:
+                logger.error("Bar close guard loop error: %s", exc)
+            time.sleep(1)
+
     def _on_bar_close(self, bar_data: dict):
+        self._last_bar_close_at = time.time()
         symbol = str(bar_data.get("symbol", "")).upper()
         meta = self._symbol_meta.get(symbol, {})
         payload = {
@@ -1966,6 +2143,27 @@ class IBKRTradingService:
 
         if self._running:
             self._compute_queue.put(queued_bars)
+
+    def _should_defer_background_repairs(self) -> tuple[bool, dict]:
+        queue_size = int(self._compute_queue.qsize())
+        active_target_count = len(self._active_subscription_symbols)
+        websocket_connected = bool(self.ws_client.is_connected)
+        authenticated = bool(self.session_keeper.is_authenticated)
+        runtime_active = bool(
+            self._running
+            and ENVIRONMENT in REALTIME_PRIORITY_ENVIRONMENTS
+            and authenticated
+            and websocket_connected
+            and active_target_count > 0
+        )
+        snapshot = {
+            "reason": "realtime_priority_active" if runtime_active else "",
+            "queue_size": queue_size,
+            "active_target_count": active_target_count,
+            "websocket_connected": websocket_connected,
+            "authenticated": authenticated,
+        }
+        return runtime_active, snapshot
 
     def _signal_loop(self):
         signal_poll_interval = DEFAULT_SIGNAL_POLL_INTERVAL
@@ -2156,9 +2354,18 @@ class IBKRTradingService:
         self._last_session_authenticated = False
         self._close_warmup_gate("session_unauthenticated")
         logger.warning("Session expired; requesting manual 2FA")
-        self._request_manual_2fa(
+        requested = self._request_manual_2fa(
             "session_expired",
             "检测到 IBKR 会话失效，等待你点击飞书按钮后再触发 2FA。",
+        )
+        self._notify_session_issue(
+            "session_expired",
+            "IBKR Session 已失效，需重新触发 2FA",
+            "检测到 IBKR Session 已失效，运行态已降为未认证，实时行情和交易链路可能不可用。",
+            "请立即打开飞书 2FA 卡片或运行页，重新触发并完成验证。",
+            {
+                "2FA卡片": "已请求或复用现有卡片" if requested else "请求失败，请手动检查 PB / 飞书链路",
+            },
         )
 
     def _on_gateway_down(self):
@@ -2168,9 +2375,19 @@ class IBKRTradingService:
         self.gateway_manager.restart()
         time.sleep(10)
         self.session_keeper.check_auth_status()
-        self._request_manual_2fa(
+        requested = self._request_manual_2fa(
             "gateway_down",
             "Gateway 已重启，等待你点击飞书按钮后再触发 2FA。",
+        )
+        self._notify_session_issue(
+            "gateway_down",
+            "IBKR Gateway 不可达，已触发重启",
+            "检测到 Gateway 一度不可达，已执行自动重启；当前运行态不可用，通常需要重新完成 2FA。",
+            "请立即检查 Gateway 是否恢复，并在飞书完成 2FA 后确认 Session 已恢复认证。",
+            {
+                "Gateway动作": "已自动重启",
+                "2FA卡片": "已请求或复用现有卡片" if requested else "请求失败，请手动检查 PB / 飞书链路",
+            },
         )
 
     def _schedule_retention(self):
@@ -2213,6 +2430,8 @@ class IBKRTradingService:
             self._watchlist_backfill_thread.join(timeout=10)
         if self._compute_thread:
             self._compute_thread.join(timeout=10)
+        if self._bar_close_thread:
+            self._bar_close_thread.join(timeout=10)
         if self._warmup_thread:
             self._warmup_thread.join(timeout=10)
 
@@ -2246,6 +2465,10 @@ class IBKRTradingService:
             "realtime_compute": {
                 "runs": self._realtime_compute_runs,
                 "queue_size": self._compute_queue.qsize(),
+                "last_bar_close": (
+                    datetime.fromtimestamp(self._last_bar_close_at, ET).isoformat()
+                    if self._last_bar_close_at else None
+                ),
                 "last_run": (
                     datetime.fromtimestamp(self._last_realtime_compute_at, ET).isoformat()
                     if self._last_realtime_compute_at else None

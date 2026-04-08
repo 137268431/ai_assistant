@@ -39,6 +39,7 @@ DEFAULT_PARAMS = {
     "ema_strength_lookback": 20, "ema_weak_threshold": 0.005,
     "dtp_switch_lookback": 10, "dtp_max_switches": 3,
     "oscillation_lookback": 20, "oscillation_threshold": 0.4,
+    "market_index_symbols": "SPY,QQQ,VIX",
 }
 
 

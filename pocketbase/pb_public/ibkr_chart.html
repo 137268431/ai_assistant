@@ -1319,7 +1319,7 @@
             const indicator = ctx?.indicator || null;
             const signalDate = deriveItemDate(signal);
             const signalUrl = buildPageUrl('/ibkr_signals.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
-            const orderUrl = buildPageUrl('/ibkr_orders.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
+            const orderUrl = buildPageUrl('/orders.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(signal, signalDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
             const reason = signal.reason || signal.note || signal.extra?.reason || '暂无原因说明';
@@ -1448,7 +1448,7 @@
             const activeSignalKey = String(focusSignal?.signal_id || focusSignal?.id || '');
             const focusDate = deriveItemDate(focusSignal || focusBar || latestBar);
             const signalUrl = buildPageUrl('/ibkr_signals.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
-            const ordersUrl = buildPageUrl('/ibkr_orders.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
+            const ordersUrl = buildPageUrl('/orders.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(focusSignal, focusDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
 

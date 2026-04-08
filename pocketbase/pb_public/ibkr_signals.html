@@ -731,6 +731,7 @@
             <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
         </div>
         <div id="filterNote"></div>
+        <div id="latencySummary" class="stats-bar"></div>
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
@@ -783,6 +784,7 @@
 
         // Signal validity configuration (from config table, default 30 minutes)
         let signalValidityMinutes = 30;
+        let realtimeLatencySnapshot = null;
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const configValueCache = {};
 
@@ -989,6 +991,173 @@
                 : '';
         }
 
+        function intervalToMs(interval) {
+            const text = String(interval || '').trim().toLowerCase();
+            const map = {
+                '5': 5 * 60 * 1000,
+                '5m': 5 * 60 * 1000,
+                '15': 15 * 60 * 1000,
+                '15m': 15 * 60 * 1000,
+                '30': 30 * 60 * 1000,
+                '30m': 30 * 60 * 1000,
+                '60': 60 * 60 * 1000,
+                '60m': 60 * 60 * 1000,
+                '1h': 60 * 60 * 1000,
+                '240': 4 * 60 * 60 * 1000,
+                '240m': 4 * 60 * 60 * 1000,
+                '4h': 4 * 60 * 60 * 1000,
+                '1d': 24 * 60 * 60 * 1000,
+                'd': 24 * 60 * 60 * 1000
+            };
+            return map[text] || 5 * 60 * 1000;
+        }
+
+        function parseTimestampMs(value) {
+            if (value === null || value === undefined || value === '') return 0;
+            if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+            const numeric = Number(value);
+            if (Number.isFinite(numeric) && numeric > 1_000_000_000_000) return numeric;
+            const parsed = Date.parse(String(value));
+            return Number.isFinite(parsed) ? parsed : 0;
+        }
+
+        function getSignalCloseTimeMs(signal) {
+            const barTimeMs = Number(signal?.bar_time_ms || signal?.extra?.bar_time_ms || 0) || 0;
+            if (!barTimeMs) return 0;
+            return barTimeMs + intervalToMs(signal?.interval || signal?.chart_tf || signal?.extra?.chart_tf || '5m');
+        }
+
+        function getSignalCreatedMs(signal) {
+            return parseTimestampMs(signal?.created);
+        }
+
+        function getSignalComputedAtMs(signal) {
+            const extra = signal?.extra || {};
+            return Number(extra.computed_at_ms || 0) || 0;
+        }
+
+        function getSignalFirstSentAtMs(signal) {
+            const extra = signal?.extra || {};
+            return Number(extra.feishu_signal_first_sent_at_ms || 0) || 0;
+        }
+
+        function getLatencyMs(fromMs, toMs) {
+            const start = Number(fromMs || 0);
+            const end = Number(toMs || 0);
+            if (!start || !end || end < start) return 0;
+            return end - start;
+        }
+
+        function formatLatency(ms) {
+            const value = Number(ms || 0);
+            if (!Number.isFinite(value) || value <= 0) return '--';
+            if (value < 1000) return `${Math.round(value)}ms`;
+            const totalSeconds = Math.round(value / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+            if (minutes > 0) return `${minutes}m ${seconds}s`;
+            return `${seconds}s`;
+        }
+
+        function formatEventTime(ms) {
+            return ms > 0 ? formatBarTimeMsToET(ms) : '--';
+        }
+
+        function averageLatency(signals, getter) {
+            const values = (Array.isArray(signals) ? signals : [])
+                .map((signal) => Number(getter(signal) || 0))
+                .filter((value) => Number.isFinite(value) && value > 0);
+            if (!values.length) return { avgMs: 0, count: 0 };
+            const total = values.reduce((sum, value) => sum + value, 0);
+            return {
+                avgMs: total / values.length,
+                count: values.length,
+            };
+        }
+
+        function resolveLatencyFocusSymbol() {
+            const symbols = [...new Set((Array.isArray(allSignals) ? allSignals : []).map((signal) => String(signal?.symbol || '').trim().toUpperCase()).filter(Boolean))];
+            return symbols.length === 1 ? symbols[0] : '';
+        }
+
+        function renderLatencySummary() {
+            const el = document.getElementById('latencySummary');
+            if (!el) return;
+
+            const writeMetrics = averageLatency(allSignals, (signal) => getLatencyMs(getSignalCloseTimeMs(signal), getSignalCreatedMs(signal)));
+            const latest = realtimeLatencySnapshot || {};
+            const scopeLabel = latest.symbol ? `${latest.symbol} 5m` : '最新 5m';
+            const chips = [
+                { label: `${scopeLabel} 实时延迟`, value: formatLatency(latest.dataFreshnessMs || 0) },
+                { label: `${scopeLabel} 入库耗时`, value: formatLatency(latest.barIngestDelayMs || 0) },
+                { label: `${scopeLabel} 计算耗时`, value: formatLatency(latest.indicatorComputeDelayMs || 0) },
+                { label: `当前页信号写入${writeMetrics.count ? `(${writeMetrics.count})` : ''}`, value: formatLatency(writeMetrics.avgMs || 0) },
+            ];
+
+            el.innerHTML = chips.map((chip) => `
+                <div class="stat-chip">
+                    <span class="stat-label">${escapeHtml(chip.label)}</span>
+                    <span class="stat-value">${escapeHtml(chip.value)}</span>
+                </div>
+            `).join('');
+        }
+
+        async function loadRealtimeLatencySnapshot(requestId = 0) {
+            const focusSymbol = resolveLatencyFocusSymbol();
+            const barConditions = [
+                `environment = "${currentEnvironment}"`,
+                `interval = "5m"`,
+            ];
+            if (focusSymbol) {
+                barConditions.push(`symbol = "${escapeFilterValue(focusSymbol)}"`);
+            }
+
+            const barResp = await apiFetch('ibkr_bars', {
+                filter: barConditions.join(' && '),
+                sort: '-bar_time_ms,-created',
+                perPage: 1,
+                page: 1
+            });
+            if (requestId && requestId !== currentSignalsRequestId) return;
+
+            const latestBar = Array.isArray(barResp?.items) ? barResp.items[0] : null;
+            if (!latestBar) {
+                realtimeLatencySnapshot = null;
+                renderLatencySummary();
+                return;
+            }
+
+            const barCloseMs = (Number(latestBar.bar_time_ms || 0) || 0) + intervalToMs(latestBar.interval || '5m');
+            const barCreatedMs = parseTimestampMs(latestBar.created);
+            const snapshot = {
+                symbol: String(latestBar.symbol || '').trim().toUpperCase(),
+                barTimeMs: Number(latestBar.bar_time_ms || 0) || 0,
+                barCloseMs,
+                dataFreshnessMs: barCloseMs > 0 ? Math.max(0, Date.now() - barCloseMs) : 0,
+                barIngestDelayMs: getLatencyMs(barCloseMs, barCreatedMs),
+                indicatorComputeDelayMs: 0,
+            };
+
+            if (snapshot.symbol && snapshot.barTimeMs) {
+                const indicatorResp = await apiFetch('ibkr_indicators', {
+                    filter: `environment = "${currentEnvironment}" && symbol = "${escapeFilterValue(snapshot.symbol)}" && bar_time_ms = ${snapshot.barTimeMs} && (interval = "5" || interval = "5m")`,
+                    sort: '-created',
+                    perPage: 1,
+                    page: 1
+                });
+                if (requestId && requestId !== currentSignalsRequestId) return;
+                const latestIndicator = Array.isArray(indicatorResp?.items) ? indicatorResp.items[0] : null;
+                if (latestIndicator) {
+                    snapshot.indicatorComputeDelayMs = getLatencyMs(barCloseMs, parseTimestampMs(latestIndicator.created));
+                }
+            }
+
+            realtimeLatencySnapshot = snapshot;
+            renderLatencySummary();
+        }
+
         function getSignalOrderStatusBadge(orders) {
             if (!orders || orders.length === 0) return '';
 
@@ -1088,8 +1257,14 @@
                 displayedSignals = allSignals;
 
                 renderFilterNote();
+                renderLatencySummary();
                 renderSignals();
                 updateLoadMoreButton();
+
+                loadRealtimeLatencySnapshot(requestId)
+                    .catch((error) => {
+                        console.error('加载延迟摘要失败:', error);
+                    });
 
                 // 技术指标改为后台补齐，不阻塞首屏。
                 loadSignalIndicatorsForSignals(allSignals, { replace: true, requestId })
@@ -1632,6 +1807,7 @@
 
                 displayedSignals = allSignals;
                 renderFilterNote();
+                renderLatencySummary();
                 renderSignals();
                 updateLoadMoreButton();
                 loadSignalIndicatorsForSignals(newSignals, { replace: false, requestId })
@@ -1661,12 +1837,13 @@
         }
 
         // 计算信号倒计时（从 bar_time_ms 开始，有效期从 config 读取）
-        function calculateCountdown(barTimeMs) {
+        function calculateCountdown(barTimeMs, intervalValue) {
             if (!barTimeMs) return '';
             const validityMinutes = signalValidityMinutes;
+            const closeTimeMs = Number(barTimeMs || 0) + intervalToMs(intervalValue || '5m');
 
-            // bar_time_ms 是 UTC 毫秒，加上有效期得到 UTC 过期时间
-            const expiryTime = new Date(barTimeMs + validityMinutes * 60 * 1000);
+            // bar_time_ms 是 bar 开始时间，倒计时从 bar 收盘后开始计算有效期
+            const expiryTime = new Date(closeTimeMs + validityMinutes * 60 * 1000);
 
             // 获取 ET 当前时间：用 toISOString 提取 UTC 字符串，附加 ' UTC' 后缀确保 new Date 正确解析为 UTC
             const now = new Date();
@@ -1771,6 +1948,13 @@
                 // ATR波动率数据（优先从 latestIndicator 获取，没有则从 signal.extra 获取）
                 const latestIndicator = signalIndicatorsMap[signal.id] || null;
                 const signalExtra = signal.extra || {};
+                const closeTimeMs = getSignalCloseTimeMs(signal);
+                const createdMs = getSignalCreatedMs(signal);
+                const computedAtMs = getSignalComputedAtMs(signal);
+                const firstSentAtMs = getSignalFirstSentAtMs(signal);
+                const signalWriteDelayMs = getLatencyMs(closeTimeMs, createdMs);
+                const computeMarkedDelayMs = getLatencyMs(closeTimeMs, computedAtMs);
+                const firstSentDelayMs = getLatencyMs(closeTimeMs, firstSentAtMs);
                 const atrPct = latestIndicator?.atr_pct || signalExtra.atr_pct || 0;
                 const slDistPct = latestIndicator?.sl_dist_pct || signalExtra.sl_dist_pct || 0;
                 const slAtrRatio = latestIndicator?.sl_atr_ratio || signalExtra.sl_atr_ratio || 0;
@@ -1819,8 +2003,8 @@
                             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                                 <div class="signal-status status-${statusClass}">${statusText}</div>
                                 ${showCountdown ? `
-                                <div class="countdown-display" data-bar-time="${signal.bar_time_ms || ''}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
-                                    ⏱️ <span class="countdown-value">${calculateCountdown(signal.bar_time_ms) || '-'}</span>
+                                <div class="countdown-display" data-bar-time="${signal.bar_time_ms || ''}" data-interval="${escapeHtml(signal.interval || '')}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
+                                    ⏱️ <span class="countdown-value">${calculateCountdown(signal.bar_time_ms, signal.interval) || '-'}</span>
                                 </div>
                                 ` : ''}
                             </div>
@@ -1850,6 +2034,22 @@
                             <div class="signal-item">
                                 <div class="signal-label">股数 / 开仓金额</div>
                                 <div class="signal-value">${signal.shares || 0} 股 / $${positionSize.toFixed(2)}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">bar 收盘</div>
+                                <div class="signal-value">${escapeHtml(formatEventTime(closeTimeMs))}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">信号写入耗时</div>
+                                <div class="signal-value">${escapeHtml(formatLatency(signalWriteDelayMs))}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">计算标记耗时</div>
+                                <div class="signal-value">${escapeHtml(formatLatency(computeMarkedDelayMs))}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">首次飞书耗时</div>
+                                <div class="signal-value">${escapeHtml(formatLatency(firstSentDelayMs))}</div>
                             </div>
                             ${dayChangePct ? `
                             <div class="signal-item">
@@ -1923,9 +2123,10 @@
             const countdownElements = document.querySelectorAll('.countdown-display');
             countdownElements.forEach(el => {
                 const barTime = el.getAttribute('data-bar-time');
+                const intervalValue = el.getAttribute('data-interval') || '5m';
                 const valueEl = el.querySelector('.countdown-value');
                 if (valueEl && barTime) {
-                    const remainingMs = calculateRemainingMs(parseInt(barTime));
+                    const remainingMs = calculateRemainingMs(parseInt(barTime, 10), intervalValue);
                     valueEl.textContent = formatCountdown(remainingMs) || '-';
 
                     // 少于5分钟时显示警告样式
@@ -1941,10 +2142,11 @@
         }
 
         // 计算剩余毫秒数
-        function calculateRemainingMs(barTimeMs) {
+        function calculateRemainingMs(barTimeMs, intervalValue) {
             if (!barTimeMs) return 0;
             const validityMinutes = signalValidityMinutes;
-            const expiryTime = new Date(barTimeMs + validityMinutes * 60 * 1000);
+            const closeTimeMs = Number(barTimeMs || 0) + intervalToMs(intervalValue || '5m');
+            const expiryTime = new Date(closeTimeMs + validityMinutes * 60 * 1000);
             const now = new Date();
             const usEasternTime = new Date(now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
             return expiryTime - usEasternTime;
@@ -2000,7 +2202,7 @@
                 showToast('无法找到关联订单');
                 return;
             }
-            location.href = buildPageUrl('/ibkr_orders.html', { signal_id: signalId, date: currentDate });
+            location.href = buildPageUrl('/orders.html', { signal_id: signalId, date: currentDate });
         }
 
         function viewReverseSignal(signalId) {
@@ -2113,7 +2315,7 @@
                     copy: '平仓 / 取消 / 调整流转'
                 },
                 {
-                    path: '/ibkr_orders.html',
+                    path: '/orders.html',
                     params: executionParams,
                     kicker: 'Orders',
                     label: '订单',

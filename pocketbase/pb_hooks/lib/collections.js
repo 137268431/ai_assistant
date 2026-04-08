@@ -6,7 +6,6 @@
 const COLLECTIONS = Object.freeze({
     ORDERS: "orders",
     ORDER_DETAILS: "order_details",
-    IBKR_ORDERS: "ibkr_orders",
     REVERSE_SIGNALS: "reverse_signals",
     IBKR_BACKTEST_REVERSE_SIGNALS: "ibkr_backtest_reverse_signals",
 })
@@ -23,12 +22,6 @@ const COLLECTION_META = Object.freeze({
         cleanup_stage: "rename_after_readers_switch",
         rename_target: "ibkr_order_details",
         note: "App-facing order event log; naming is ambiguous but still actively used.",
-    }),
-    [COLLECTIONS.IBKR_ORDERS]: Object.freeze({
-        role: "legacy_broker_snapshot",
-        cleanup_stage: "deprecate_after_reader_migration",
-        rename_target: "",
-        note: "Broker/raw order mirror kept for tracker and migration compatibility.",
     }),
     [COLLECTIONS.REVERSE_SIGNALS]: Object.freeze({
         role: "canonical_reverse_workflow",

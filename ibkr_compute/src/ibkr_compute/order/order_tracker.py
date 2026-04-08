@@ -10,7 +10,7 @@ import time
 import logging
 import threading
 import requests
-from typing import Dict, Optional, Callable, List
+from typing import Any, Dict, Optional, Callable, List
 from datetime import datetime, timezone, timedelta
 
 from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
@@ -43,17 +43,29 @@ class OrderTracker:
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
 
+    def _request_json(self, path: str, *, params: Optional[Dict[str, Any]] = None, timeout: int = 15):
+        load_cookies(self._session)
+        resp = self._session.get(
+            self._api_url(path),
+            params=params or {},
+            timeout=timeout,
+        )
+        if resp.status_code == 401:
+            save_cookies(self._session)
+            raise PermissionError("IBKR session is not authenticated")
+        resp.raise_for_status()
+        save_cookies(self._session)
+        if not resp.text:
+            return {}
+        return resp.json()
+
     def get_live_orders(self) -> List[Dict]:
         try:
-            load_cookies(self._session)
-            resp = self._session.get(
-                self._api_url("/iserver/account/orders"),
+            data = self._request_json(
+                "/iserver/account/orders",
                 params={"force": "true"},
                 timeout=15,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            save_cookies(self._session)
 
             if isinstance(data, dict):
                 return data.get("orders", [])
@@ -64,6 +76,54 @@ class OrderTracker:
         except Exception as e:
             logger.warning("Failed to get live orders: %s", e)
             return []
+
+    def get_broker_order_history(self, days: int = 1, force: bool = True) -> Dict[str, Any]:
+        requested_days = max(1, int(days or 1))
+        # IBKR Client Portal `/iserver/account/orders` only covers the current market day.
+        effective_days = 1
+        try:
+            data = self._request_json(
+                "/iserver/account/orders",
+                params={"force": "true" if force else "false"},
+                timeout=20,
+            )
+            if isinstance(data, dict):
+                orders = data.get("orders", [])
+                snapshot = data
+            elif isinstance(data, list):
+                orders = data
+                snapshot = {"orders": data}
+            else:
+                orders = []
+                snapshot = {}
+
+            return {
+                "ok": True,
+                "requested_days": requested_days,
+                "effective_days": effective_days,
+                "current_day_only": True,
+                "orders": orders if isinstance(orders, list) else [],
+                "raw": snapshot if isinstance(snapshot, dict) else {},
+                "limitations": [
+                    "IBKR Client Portal /iserver/account/orders 仅返回当前美东交易日订单。",
+                    "如果需要跨日历史订单，请补充 Flex / Statement 链路。",
+                ],
+            }
+        except Exception as e:
+            logger.warning("Failed to get broker order history: %s", e)
+            return {
+                "ok": False,
+                "requested_days": requested_days,
+                "effective_days": effective_days,
+                "current_day_only": True,
+                "orders": [],
+                "raw": {},
+                "error": str(e),
+                "limitations": [
+                    "IBKR Client Portal /iserver/account/orders 仅返回当前美东交易日订单。",
+                    "如果需要跨日历史订单，请补充 Flex / Statement 链路。",
+                ],
+            }
 
     def get_order_status(self, order_id: str) -> Dict:
         try:
@@ -266,35 +326,7 @@ class OrderTracker:
             now_str = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
             order_id_filter = self._escape_filter_value(order_id)
             coid_filter = self._escape_filter_value(coid)
-            ibkr_filter = f'orderId = "{order_id_filter}"'
-            if coid:
-                ibkr_filter = f'orderId = "{order_id_filter}" || cOID = "{coid_filter}"'
-            existing = self.pb_client.get_records("ibkr_orders", filter=ibkr_filter, per_page=1)
-            existing_ibkr = existing[0] if existing else {}
             runtime_environment = os.environ.get("IBKR_ENVIRONMENT", "live")
-
-            data = {
-                "orderId": order_id,
-                "symbol": symbol,
-                "side": order.get("side", ""),
-                "orderType": order.get("orderType", ""),
-                "status": status,
-                "price": order.get("price", 0),
-                "quantity": order.get("totalSize", 0),
-                "filled_quantity": order.get("filledQuantity", 0),
-                "avg_price": order.get("avgPrice", 0),
-                "us_time": now_str,
-                "cOID": coid or existing_ibkr.get("cOID", ""),
-                "signal_id": existing_ibkr.get("signal_id", ""),
-                "bracket_group": existing_ibkr.get("bracket_group", ""),
-                "parentId": order.get("parentId", "") or existing_ibkr.get("parentId", ""),
-                "account": order.get("acctId", "") or order.get("acct", "") or existing_ibkr.get("account", ""),
-            }
-
-            if existing:
-                self.pb_client.update_record("ibkr_orders", existing[0]["id"], data)
-            else:
-                self.pb_client.create_record("ibkr_orders", data)
 
             if hasattr(self.pb_client, "upsert_order"):
                 normalized_side = str(order.get("side", "")).upper()
@@ -323,9 +355,9 @@ class OrderTracker:
                     "INACTIVE": "Canceled",
                     "REJECTED": "Canceled",
                 }.get(str(status).upper(), "Submitted")
-                signal_id = str(existing_ibkr.get("signal_id") or "").strip()
-                trade_group_id = str(existing_ibkr.get("bracket_group") or "").strip()
-                entry_order_unique_id = str(existing_ibkr.get("cOID") or coid or "").strip()
+                signal_id = ""
+                trade_group_id = ""
+                entry_order_unique_id = str(coid or "").strip()
                 parent_order_unique_id = ""
                 canonical_unique_id = entry_order_unique_id if not parent_id else coid
                 existing_order = None

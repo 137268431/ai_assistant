@@ -1199,6 +1199,35 @@
             return `${Math.round(diffHour / 24)}d ago`;
         }
 
+        function parseIsoMs(value) {
+            if (!value) return 0;
+            const date = new Date(value);
+            return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+        }
+
+        function intervalToMs(interval) {
+            const value = String(interval || '').trim().toLowerCase();
+            const mapping = {
+                '1m': 60 * 1000,
+                '5m': 5 * 60 * 1000,
+                '15m': 15 * 60 * 1000,
+                '30m': 30 * 60 * 1000,
+                '1h': 60 * 60 * 1000,
+                '4h': 4 * 60 * 60 * 1000,
+                '1d': 24 * 60 * 60 * 1000
+            };
+            return mapping[value] || 0;
+        }
+
+        function formatSecondsLabel(value) {
+            const number = Number(value);
+            if (!Number.isFinite(number)) return '--';
+            if (number < 1) return `${number.toFixed(3)}s`;
+            if (number < 10) return `${number.toFixed(2)}s`;
+            if (number < 60) return `${number.toFixed(1)}s`;
+            return `${Math.round(number)}s`;
+        }
+
         function getExtraObject(record) {
             return record && typeof record.extra === 'object' && record.extra ? record.extra : {};
         }
@@ -1260,6 +1289,45 @@
                 last_bar_time_ms: lastBarTimeMs,
                 last_bar_label: formatBarTimeMsToET(lastBarTimeMs),
             };
+        }
+
+        function deriveRealtimeMetrics(status, latestBar) {
+            const realtime = status?.realtime_compute || {};
+            const barAggregator = status?.bar_aggregator || {};
+            const lastRunMs = parseIsoMs(realtime.last_run);
+            const lastBarCloseMs = parseIsoMs(realtime.last_bar_close);
+            const barTimeMs = Number(latestBar?.bar_time_ms || 0) || 0;
+            const expectedCloseMs = barTimeMs > 0 ? barTimeMs + (intervalToMs(latestBar?.interval || '5m') || 0) : 0;
+            const closeDelayS = lastBarCloseMs > 0 && expectedCloseMs > 0
+                ? Math.max(0, (lastBarCloseMs - expectedCloseMs) / 1000)
+                : null;
+            const computeAfterCloseS = lastRunMs > 0 && lastBarCloseMs > 0
+                ? Math.max(0, (lastRunMs - lastBarCloseMs) / 1000)
+                : null;
+            const activeBars = Object.values(barAggregator.active_bars || {});
+            const activeTickAges = activeBars
+                .map((item) => Number(item?.last_update_age_s || 0))
+                .filter((item) => Number.isFinite(item));
+            return {
+                last_bar_close: realtime.last_bar_close || null,
+                last_compute_run: realtime.last_run || null,
+                close_delay_s: closeDelayS,
+                compute_after_close_s: computeAfterCloseS,
+                active_tick_lag_s: activeTickAges.length ? Math.max(...activeTickAges) : null,
+                active_symbol_count: activeBars.length,
+            };
+        }
+
+        function parseSymbolList(rawValue) {
+            const seen = new Set();
+            return String(rawValue || '')
+                .split(',')
+                .map((item) => String(item || '').trim().toUpperCase())
+                .filter((item) => {
+                    if (!item || seen.has(item)) return false;
+                    seen.add(item);
+                    return true;
+                });
         }
 
         function buildEnvironmentFilter() {
@@ -1325,6 +1393,7 @@
             const today = summary?.today || {};
             const computeHealth = normalizeComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
+            const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
             const isAuthenticated = Boolean(status?.session?.authenticated);
             const gatewayRunning = Boolean(status?.gateway?.running || status?.gateway?.reachable);
@@ -1364,6 +1433,21 @@
                     label: 'Data Freshness',
                     value: dataHealth.last_bar_age_min != null ? `${dataHealth.last_bar_age_min}m` : '--',
                     copy: dataHealth.last_bar_time_ms ? `${dataHealth.last_symbol || 'n/a'} · ${dataHealth.last_bar_label}` : 'latest n/a'
+                },
+                {
+                    label: 'Close Delay',
+                    value: formatSecondsLabel(realtimeMetrics.close_delay_s),
+                    copy: realtimeMetrics.last_bar_close ? `last close ${formatTimeLabel(realtimeMetrics.last_bar_close)}` : 'last close --'
+                },
+                {
+                    label: 'Compute After Close',
+                    value: formatSecondsLabel(realtimeMetrics.compute_after_close_s),
+                    copy: realtimeMetrics.last_compute_run ? `last run ${formatTimeLabel(realtimeMetrics.last_compute_run)}` : 'last run --'
+                },
+                {
+                    label: 'Active Tick Lag',
+                    value: formatSecondsLabel(realtimeMetrics.active_tick_lag_s),
+                    copy: `${realtimeMetrics.active_symbol_count || 0} active symbols`
                 }
             ];
             document.getElementById('metricGrid').innerHTML = cards.map((card) => `
@@ -1377,6 +1461,7 @@
 
         function renderOpsGrid(summary, status, twoFactorState, latestBar, latestIndicator, latestSignal) {
             const dataHealth = deriveDataHealth(latestBar);
+            const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
             const latestBarExtra = getExtraObject(latestBar);
             const latestIndicatorExtra = getExtraObject(latestIndicator);
@@ -1449,6 +1534,9 @@
                 copy: [
                     latestBar ? `bar ${getRecordBarLabel(latestBar)}` : 'bars missing',
                     latestBar ? `write ${String(getComputedTimeLabel(latestBar)).slice(0, 19)}` : 'write --',
+                    realtimeMetrics.last_bar_close ? `close ${formatTimeLabel(realtimeMetrics.last_bar_close)}` : 'close --',
+                    realtimeMetrics.close_delay_s != null ? `close delay ${formatSecondsLabel(realtimeMetrics.close_delay_s)}` : '',
+                    realtimeMetrics.compute_after_close_s != null ? `compute ${formatSecondsLabel(realtimeMetrics.compute_after_close_s)}` : '',
                     latestBar && !latestBarExtra.computed_at_us && !latestBarExtra.computed_at_cn ? 'bar extra 缺失' : '',
                     `warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}`,
                     latestIndicator ? `indicator ${latestIndicator.symbol || '--'} ${latestIndicator.interval || '--'} · ${String(getComputedTimeLabel(latestIndicator)).slice(0, 19)}` : 'indicator missing',
@@ -1470,7 +1558,7 @@
                 links: [
                     { path: '/ibkr_signals.html', label: '看信号' },
                     { path: '/ibkr_indicators.html', label: '看指标' },
-                    { path: '/ibkr_orders.html', label: '看订单' },
+                    { path: '/orders.html', label: '看订单' },
                     { path: '/ibkr_config.html', label: '改配置', options: { allowGlobal: true, environment: currentEnvironment } },
                 ]
             };
@@ -1544,11 +1632,13 @@
         function renderRuntimeDetail(summary, health, status, twoFactorState, latestBar, latestIndicator, latestSignal) {
             const computeHealth = normalizeComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
+            const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
             const latestBarWrite = latestBar ? String(getComputedTimeLabel(latestBar)).slice(0, 19) : '--';
             const latestIndicatorCalc = latestIndicator ? String(getComputedTimeLabel(latestIndicator)).slice(0, 19) : '--';
             const latestSignalTime = latestSignal ? String((latestSignal.us_time || latestSignal.created || '--')).slice(0, 19) : '--';
+            const excludedMrSymbols = parseSymbolList(summary?.config?.market_index_symbols || '');
             const rows = [
                 ['Gateway', status?.gateway?.running || status?.gateway?.reachable ? 'ACTIVE' : 'OFFLINE'],
                 ['Gateway Reachable', status?.gateway?.reachable ? 'YES' : 'NO'],
@@ -1569,7 +1659,11 @@
                 ['Backfill Written', String(status?.data_backfill?.total_backfilled || 0)],
                 ['Close Compute Runs', String(status?.realtime_compute?.runs || 0)],
                 ['Close Compute Queue', String(status?.realtime_compute?.queue_size || 0)],
+                ['Last Bar Close', formatTimeLabel(status?.realtime_compute?.last_bar_close)],
                 ['Close Compute Last', formatTimeLabel(status?.realtime_compute?.last_run)],
+                ['Close Delay', formatSecondsLabel(realtimeMetrics.close_delay_s)],
+                ['Compute After Close', formatSecondsLabel(realtimeMetrics.compute_after_close_s)],
+                ['Active Tick Lag', formatSecondsLabel(realtimeMetrics.active_tick_lag_s)],
                 ['Warmup Phase', String(warmup.phase || '--').toUpperCase()],
                 ['Trading Gate', warmup.gate_open ? 'OPEN' : 'CLOSED'],
                 ['Warmup Reason', String(warmup.gate_reason || '--')],
@@ -1582,6 +1676,7 @@
                 ['Watchlist Pool', String(status?.market_universe?.watchlist_pool_count || 0)],
                 ['Today Targets', String(status?.market_universe?.active_target_count || 0)],
                 ['Trade Targets', Array.isArray(status?.market_universe?.active_trade_symbols) ? status.market_universe.active_trade_symbols.join(', ') || '--' : '--'],
+                ['MR Excluded Symbols', excludedMrSymbols.join(', ') || '--'],
                 ['Target Date', String(status?.market_universe?.active_target_date || '--')],
                 ['Last Target Refresh', formatTimeLabel(status?.market_universe?.last_target_refresh)],
                 ['Active Repair Every', `${Number(status?.market_universe?.active_repair_interval_min || 0) || 0}m`],
@@ -1773,12 +1868,25 @@
 
         function renderConfigDetail(summary, runtimeConfig, cronDefinitions) {
             const { configMap, preferredKeys } = getMergedConfigMap(summary, runtimeConfig);
+            const excludedMrSymbols = parseSymbolList(configMap.market_index_symbols || '');
             const chips = preferredKeys
                 .filter((key) => configMap[key] !== undefined && configMap[key] !== '')
                 .map((key) => `
                     <span class="mini-tag"><span class="mini-label">${escapeHtml(key)}</span>${escapeHtml(String(configMap[key]))}</span>
                 `);
             const blocks = [];
+            if (excludedMrSymbols.length) {
+                blocks.push(`
+                    <div class="config-stack">
+                        <div class="config-block-label">SD MR 排除标的</div>
+                        <div class="tag-row">
+                            ${excludedMrSymbols.map((symbol) => `
+                                <span class="mini-tag"><span class="mini-label">EXCLUDE</span>${escapeHtml(symbol)}</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `);
+            }
             if (chips.length) {
                 blocks.push(`
                     <div class="config-stack">

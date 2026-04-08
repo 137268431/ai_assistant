@@ -1,4 +1,5 @@
 const COMPUTE_STARTUP_GRACE_MS = 3 * 60 * 1000
+const CRON_REALTIME_SKIP_MS = 2 * 60 * 1000
 
 function getIbkrSchedulerEnvironments(cronId) {
     const { getConfigValue, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
@@ -46,6 +47,30 @@ function fetchSchedulerJson(url, timeoutSeconds) {
             error: err.message || String(err),
             payload: {},
         }
+    }
+}
+
+function getRealtimePriorityState(runtimePayload) {
+    const payload = runtimePayload && typeof runtimePayload === "object" ? runtimePayload : {}
+    const session = payload.session && typeof payload.session === "object" ? payload.session : {}
+    const websocket = payload.websocket && typeof payload.websocket === "object" ? payload.websocket : {}
+    const realtime = payload.realtime_compute && typeof payload.realtime_compute === "object" ? payload.realtime_compute : {}
+    const barAggregator = payload.bar_aggregator && typeof payload.bar_aggregator === "object" ? payload.bar_aggregator : {}
+    const activeSymbols = Number(barAggregator.active_symbols_visible || 0) || 0
+    const queueSize = Number(realtime.queue_size || 0) || 0
+    const lastRunText = String(realtime.last_run || "").trim()
+    const lastRunMs = lastRunText ? Date.parse(lastRunText) : NaN
+    const recentRealtimeRun = Number.isFinite(lastRunMs) && (Date.now() - lastRunMs) <= CRON_REALTIME_SKIP_MS
+    const runtimeStreamingActive = Boolean(session.authenticated && websocket.connected && activeSymbols > 0)
+    return {
+        skip: runtimeStreamingActive && (queueSize > 0 || recentRealtimeRun || activeSymbols > 0),
+        reason: runtimeStreamingActive ? "realtime_priority_active" : "",
+        queue_size: queueSize,
+        active_symbols_visible: activeSymbols,
+        recent_realtime_run: recentRealtimeRun,
+        websocket_connected: Boolean(websocket.connected),
+        authenticated: Boolean(session.authenticated),
+        last_run: lastRunText || "",
     }
 }
 
@@ -97,6 +122,21 @@ function runIbkrScheduledAction(action, timeoutSeconds, logPrefix, cronId) {
                     uptime_s: uptimeS,
                     runtime_starting: runtimeStarting,
                     warmup_phase: warmupPhase,
+                }
+            }
+
+            const realtimePriority = getRealtimePriorityState(runtimeSnapshot.payload)
+            if (realtimePriority.skip) {
+                console.log(
+                    `${prefix} ${action}: realtime priority active, skip dispatch, queue_size=${realtimePriority.queue_size}, active_symbols=${realtimePriority.active_symbols_visible}, last_run=${realtimePriority.last_run || "-"}, websocket=${realtimePriority.websocket_connected}, authenticated=${realtimePriority.authenticated}`
+                )
+                return {
+                    ok: true,
+                    skipped: true,
+                    reason: realtimePriority.reason,
+                    environments: environments,
+                    upstream: `${computeBaseUrl}/${action}`,
+                    realtime_priority: realtimePriority,
                 }
             }
         }

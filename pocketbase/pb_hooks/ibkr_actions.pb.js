@@ -3171,6 +3171,42 @@ routerAdd("GET", "/api/custom/ibkr/orders/live", (c) => {
     }
 })
 
+routerAdd("GET", "/api/custom/ibkr/orders/history", (c) => {
+    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    let days = "1"
+    try {
+        days = String(c.request.url.query().get("days") || "1").trim() || "1"
+    } catch (_) {
+        days = "1"
+    }
+    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/history?days=${encodeURIComponent(days)}`
+    try {
+        const resp = $http.send({ url: upstream, method: "GET", timeout: 25 })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/orders/history"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            status: "offline",
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/orders/history",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
 routerAdd("POST", "/api/custom/ibkr/orders/cancel", (c) => {
     const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const reqInfo = c.requestInfo()

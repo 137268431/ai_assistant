@@ -7,6 +7,7 @@
 
 import time
 import logging
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Dict, Optional
 
@@ -126,19 +127,23 @@ class BarAggregator:
         self._current_bars: Dict[int, LiveBar] = {}  # conid -> LiveBar
         self._bar_count = 0
         self._tick_count = 0
+        self._lock = threading.Lock()
 
     def set_symbol_map(self, conid_to_symbol: Dict[int, str]):
-        self.conid_to_symbol = conid_to_symbol
+        with self._lock:
+            self.conid_to_symbol = conid_to_symbol
 
     def remove_conids(self, conids):
-        for conid in list(conids or []):
-            try:
-                self._current_bars.pop(int(conid), None)
-            except (TypeError, ValueError):
-                continue
+        with self._lock:
+            for conid in list(conids or []):
+                try:
+                    self._current_bars.pop(int(conid), None)
+                except (TypeError, ValueError):
+                    continue
 
     def reset(self):
-        self._current_bars.clear()
+        with self._lock:
+            self._current_bars.clear()
 
     def on_tick(self, tick_data: dict):
         conid = tick_data.get("conid") or tick_data.get("conidEx")
@@ -156,20 +161,24 @@ class BarAggregator:
         if last_price is None or last_price <= 0:
             return
 
-        self._tick_count += 1
-
         et_now = _tick_time_to_et(tick_data)
         interval_start = get_bar_interval_start(et_now)
+        bars_to_close = []
 
-        current = self._current_bars.get(conid)
+        with self._lock:
+            self._tick_count += 1
+            current = self._current_bars.get(conid)
 
-        if current is None or current.interval_start != interval_start:
-            if current is not None and current.is_valid:
-                self._close_bar(current)
-            current = LiveBar(symbol, conid, interval_start)
-            self._current_bars[conid] = current
+            if current is None or current.interval_start != interval_start:
+                if current is not None and current.is_valid:
+                    bars_to_close.append(current)
+                current = LiveBar(symbol, conid, interval_start)
+                self._current_bars[conid] = current
 
-        current.update(last_price, volume, volume_source)
+            current.update(last_price, volume, volume_source)
+
+        for bar in bars_to_close:
+            self._close_bar(bar)
 
     def _extract_price(self, tick: dict) -> Optional[float]:
         for field in ("31", "last_price", "last"):
@@ -220,7 +229,8 @@ class BarAggregator:
         return 0.0, ""
 
     def _close_bar(self, bar: LiveBar):
-        self._bar_count += 1
+        with self._lock:
+            self._bar_count += 1
         bar_data = bar.to_dict()
         logger.info("Bar closed: %s %s O=%.2f H=%.2f L=%.2f C=%.2f V=%.0f ticks=%d",
                      bar.symbol, bar_data["us_time"],
@@ -233,17 +243,41 @@ class BarAggregator:
             except Exception as e:
                 logger.error("on_bar_close callback error for %s: %s", bar.symbol, e)
 
+    def force_close_due(self, et_now: Optional[datetime] = None) -> int:
+        current_interval_start = get_bar_interval_start(et_now or datetime.now(ET))
+        bars_to_close = []
+
+        with self._lock:
+            for conid, bar in list(self._current_bars.items()):
+                if bar.interval_start >= current_interval_start:
+                    continue
+                self._current_bars.pop(conid, None)
+                if bar.is_valid:
+                    bars_to_close.append(bar)
+
+        for bar in bars_to_close:
+            self._close_bar(bar)
+        return len(bars_to_close)
+
     def force_close_all(self):
-        for conid, bar in list(self._current_bars.items()):
-            if bar.is_valid:
-                self._close_bar(bar)
-        self._current_bars.clear()
+        bars_to_close = []
+        with self._lock:
+            for _, bar in list(self._current_bars.items()):
+                if bar.is_valid:
+                    bars_to_close.append(bar)
+            self._current_bars.clear()
+        for bar in bars_to_close:
+            self._close_bar(bar)
 
     def status(self) -> dict:
         active_bars = {}
         stale_symbols = 0
         now_ts = time.time()
-        for conid, bar in self._current_bars.items():
+        with self._lock:
+            items = list(self._current_bars.items())
+            total_bars_closed = self._bar_count
+            total_ticks = self._tick_count
+        for _, bar in items:
             age_seconds = max(0.0, now_ts - float(bar.last_update or 0.0))
             if bar.last_update and age_seconds > (BAR_INTERVAL_SECONDS * 2):
                 stale_symbols += 1
@@ -260,10 +294,10 @@ class BarAggregator:
             }
 
         return {
-            "active_symbols": len(self._current_bars),
+            "active_symbols": len(items),
             "active_symbols_visible": len(active_bars),
             "stale_symbols": stale_symbols,
-            "total_bars_closed": self._bar_count,
-            "total_ticks": self._tick_count,
+            "total_bars_closed": total_bars_closed,
+            "total_ticks": total_ticks,
             "active_bars": active_bars,
         }

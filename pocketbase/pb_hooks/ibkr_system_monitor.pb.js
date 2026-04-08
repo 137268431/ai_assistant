@@ -13,6 +13,8 @@ const BAR_LAG_ALERT_MS = 10 * 60 * 1000
 const INDICATOR_LAG_ALERT_MS = 10 * 60 * 1000
 const GAP_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const GAP_MONITOR_STATE_KEY = "system_gap_monitor"
+const AUTH_EDGE_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+const AUTH_EDGE_MONITOR_STATE_KEY = "system_auth_edge_monitor"
 const AUTH_PENDING_ALERT_TRIGGER_MS = 15 * 60 * 1000
 const AUTH_PENDING_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const AUTH_MONITOR_STATE_KEY = "system_auth_monitor"
@@ -24,6 +26,17 @@ function getRuntimeKeys() {
 function toNumber(value, fallback) {
     const num = Number(value)
     return Number.isFinite(num) ? num : (fallback || 0)
+}
+
+function parseStateValue(raw) {
+    if (!raw) return {}
+    if (typeof raw === "object") return raw
+    try {
+        const parsed = JSON.parse(String(raw || ""))
+        return parsed && typeof parsed === "object" ? parsed : {}
+    } catch (_) {
+        return {}
+    }
 }
 
 function uniqueSorted(values) {
@@ -54,10 +67,10 @@ function getStateRecord(stateKey, environment, dateToken) {
 function getStateData(stateKey, environment, dateToken) {
     const record = getStateRecord(stateKey, environment, dateToken)
     if (!record) return { record: null, data: {} }
-    let data = record.get("data") || {}
-    if (!data || typeof data !== "object") {
-        data = {}
-    }
+    const raw = typeof record.getString === "function"
+        ? (record.getString("data") || "")
+        : record.get("data")
+    const data = parseStateValue(raw)
     return { record: record, data: data }
 }
 
@@ -72,7 +85,7 @@ function saveStateData(stateKey, environment, dateToken, patch) {
     record.set("state_key", stateKey)
     record.set("date", dateToken)
     record.set("environment", environment)
-    record.set("data", next)
+    record.set("data", JSON.stringify(next))
     $app.save(record)
     return next
 }
@@ -259,10 +272,126 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
         response_status: String(state.response_status || ""),
         last_result: String(state.last_result || ""),
         last_error: String(state.last_error || ""),
+        reason: String(state.reason || ""),
+        message: String(state.message || ""),
+        page_url: String(state.page_url || ""),
         runtime_started: runtimeStarted,
         runtime_authenticated: runtimeAuthenticated,
+        gateway_reachable: gatewayReachable,
         gateway_status_code: gatewayStatusCode,
     }
+}
+
+function isAuthActiveStatus(status) {
+    return ["requested", "triggered", "waiting_confirm", "waiting_response"].indexOf(String(status || "").trim().toLowerCase()) !== -1
+}
+
+function buildAuthImmediateIssue(auth) {
+    if (!auth) return null
+    const status = String(auth.status || "").trim().toLowerCase()
+    const gatewayStatusCode = toNumber(auth.gateway_status_code, 0)
+    const gatewayReachable = auth.gateway_reachable === true
+    const runtimeAuthenticated = auth.runtime_authenticated === true
+    const runtimeStarted = auth.runtime_started === true
+    const active = auth.active === true || isAuthActiveStatus(status)
+
+    if (!gatewayReachable && !active) {
+        return null
+    }
+
+    if (status === "waiting_response") {
+        return {
+            kind: "waiting_response",
+            title: "IBKR 2FA 已触发，等待提交",
+            summary: "检测到 2FA 已进入响应提交阶段，请尽快在飞书中完成提交。",
+        }
+    }
+
+    if (status === "waiting_confirm") {
+        return {
+            kind: "waiting_confirm",
+            title: "IBKR 2FA 已触发，等待确认",
+            summary: "检测到 2FA 已进入确认阶段，请尽快在飞书中完成确认。",
+        }
+    }
+
+    if (active && (status === "requested" || status === "triggered")) {
+        return {
+            kind: "requested",
+            title: "IBKR 2FA 已请求，待处理",
+            summary: "检测到系统已请求 2FA，当前会话尚未恢复认证，请立即处理飞书 2FA 卡片。",
+        }
+    }
+
+    if (gatewayStatusCode === 401 && !runtimeAuthenticated) {
+        return {
+            kind: "session_expired",
+            title: "IBKR Session 已失效，需重新触发 2FA",
+            summary: "检测到 Gateway Session 已失效（401），运行态未认证，需要立即重新触发 2FA。",
+        }
+    }
+
+    if (runtimeStarted && !runtimeAuthenticated) {
+        return {
+            kind: "runtime_unauthenticated",
+            title: "IBKR Runtime 未认证",
+            summary: "检测到运行态未认证，实时链路可能不可用，请立即检查 Gateway 与 2FA 状态。",
+        }
+    }
+
+    return null
+}
+
+function buildAuthImmediateFingerprint(auth, issue) {
+    return JSON.stringify({
+        issue_kind: issue && issue.kind || "",
+        status: auth && auth.status || "",
+        requested_at: auth && auth.requested_at || "",
+        triggered_at: auth && auth.triggered_at || "",
+        gateway_status_code: auth && auth.gateway_status_code || 0,
+        runtime_started: auth && auth.runtime_started ? "yes" : "no",
+        runtime_authenticated: auth && auth.runtime_authenticated ? "yes" : "no",
+        challenge: auth && auth.challenge_code ? "yes" : "no",
+        response_status: auth && auth.response_status || "",
+    })
+}
+
+function shouldNotifyAuthImmediateAlert(previous, auth, issue, fingerprint, nowMs) {
+    const prev = previous || {}
+    const prevGatewayStatusCode = toNumber(prev.last_gateway_status_code, 0)
+    const prevRuntimeAuthenticated = String(prev.last_runtime_authenticated || "") === "yes"
+    const prevActive = String(prev.last_auth_active || "") === "yes"
+    const prevStatus = String(prev.last_auth_status || "").trim().toLowerCase()
+    const prevRequestedAt = String(prev.last_requested_at || "")
+    const prevTriggeredAt = String(prev.last_triggered_at || "")
+    const prevIssueKind = String(prev.last_auth_issue_kind || "")
+    const lastAlertHash = String(prev.last_auth_edge_alert_hash || "")
+    const lastAlertMs = toNumber(prev.last_auth_edge_alert_ms, 0)
+    const currentGatewayStatusCode = toNumber(auth && auth.gateway_status_code, 0)
+    const currentRuntimeAuthenticated = auth && auth.runtime_authenticated === true
+    const currentActive = auth && auth.active === true
+    const currentStatus = String(auth && auth.status || "").trim().toLowerCase()
+    const currentRequestedAt = String(auth && auth.requested_at || "")
+    const currentTriggeredAt = String(auth && auth.triggered_at || "")
+    const issueKind = String(issue && issue.kind || "")
+
+    const edgeDetected = (
+        !String(prev.last_auth_scan_at || "")
+        || (currentGatewayStatusCode === 401 && prevGatewayStatusCode !== 401)
+        || (!currentRuntimeAuthenticated && prevRuntimeAuthenticated)
+        || (currentActive && !prevActive)
+        || (currentActive && !!currentRequestedAt && currentRequestedAt !== prevRequestedAt)
+        || (currentActive && !!currentTriggeredAt && currentTriggeredAt !== prevTriggeredAt)
+        || (!!issueKind && issueKind !== prevIssueKind)
+        || (!!currentStatus && currentStatus !== prevStatus && currentActive)
+    )
+
+    return (
+        edgeDetected
+        || fingerprint !== lastAlertHash
+        || lastAlertMs <= 0
+        || (nowMs - lastAlertMs) >= AUTH_EDGE_ALERT_COOLDOWN_MS
+    )
 }
 
 function loadFreshness(environment) {
@@ -802,100 +931,19 @@ cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
 
 // System heartbeat / status reminder piggyback on ibkr_compute_runtime via lib/system_notify_scheduler.js
 
+cronAdd("ibkr_auth_edge_guard", "* 4-20 * * 1-5", () => {
+    try {
+        require(`${__hooks}/lib/system_auth_edge_guard.js`).runIbkrAuthEdgeGuard()
+    } catch (err) {
+        console.log(`[IBKRAuthEdgeGuard] fatal error: ${err.message || err}`)
+    }
+})
+
 cronAdd("ibkr_auth_pending_guard", "*/10 4-20 * * 1-5", () => {
-    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
-    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
-    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
-    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
-    const times = getTimeStrings()
-    const runtimeKeys = getRuntimeKeys()
-    const environments = getActiveRuntimeEnvironments(runtimeKeys)
-    const nowMs = Date.now()
-
-    for (let i = 0; i < environments.length; i++) {
-        const environment = environments[i]
-        const cronState = getPbCronToggleState("ibkr_auth_pending_guard", environment)
-        if (!cronState.effective_enabled) {
-            console.log(`[IBKRAuthPendingGuard] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
-            continue
-        }
-        if (!getComputeEnabledForEnvironment(environment, runtimeKeys) && !getTradingEnabledForEnvironment(environment, runtimeKeys)) {
-            continue
-        }
-
-        const runtime = loadRuntimeSnapshot(environment)
-        const auth = loadAuthAttentionSummary(environment, runtime)
-        const nextState = {
-            last_auth_scan_at: times.us,
-            last_auth_status: auth.status || "",
-            last_auth_age_min: auth.age_min || 0,
-        }
-
-        if (!auth.pending_too_long) {
-            saveStateData(AUTH_MONITOR_STATE_KEY, environment, times.date, {
-                ...nextState,
-                last_auth_issue_at: "",
-            })
-            continue
-        }
-
-        const fingerprint = JSON.stringify({
-            status: auth.status || "",
-            mode: auth.mode || "",
-            age_bucket: Math.floor((auth.age_min || 0) / 5),
-            challenge: auth.challenge_code ? "yes" : "no",
-            response_status: auth.response_status || "",
-            gateway_status_code: auth.gateway_status_code || 0,
-            runtime_started: auth.runtime_started ? "yes" : "no",
-            runtime_authenticated: auth.runtime_authenticated ? "yes" : "no",
-        })
-        const state = getStateData(AUTH_MONITOR_STATE_KEY, environment, times.date).data || {}
-        const lastAlertHash = String(state.last_auth_alert_hash || "")
-        const lastAlertMs = toNumber(state.last_auth_alert_ms, 0)
-        const shouldNotify = (
-            fingerprint !== lastAlertHash
-            || lastAlertMs <= 0
-            || (nowMs - lastAlertMs) >= AUTH_PENDING_ALERT_COOLDOWN_MS
-        )
-
-        if (!shouldNotify) {
-            saveStateData(AUTH_MONITOR_STATE_KEY, environment, times.date, nextState)
-            continue
-        }
-
-        let title = "IBKR Session 长时间未恢复认证"
-        if (auth.status === "waiting_confirm") {
-            title = "IBKR 2FA 长时间未确认"
-        } else if (auth.status === "waiting_response") {
-            title = "IBKR 2FA Response 长时间未提交"
-        } else if (auth.status === "requested" || auth.status === "triggered") {
-            title = "IBKR 2FA 长时间未完成"
-        }
-
-        const detail = {
-            "检查时间": times.us,
-            "2FA状态": auth.status || "requested",
-            "持续时间": `${auth.age_min || 0} 分钟`,
-            "Runtime已启动": auth.runtime_started ? "yes" : "no",
-            "Session认证": auth.runtime_authenticated ? "yes" : "no",
-            "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
-        }
-        if (auth.mode) detail["验证模式"] = auth.mode
-        if (auth.challenge_code) detail["Challenge"] = auth.challenge_code
-        if (auth.response_status) detail["响应状态"] = auth.response_status
-        if (auth.triggered_at) detail["触发时间"] = auth.triggered_at
-        if (auth.last_result) detail["最近反馈"] = auth.last_result
-        if (auth.last_error) detail["最近错误"] = auth.last_error
-
-        const notified = feishuSystem.notifyWarning("ibkr_compute", title, detail, environment)
-        writeSystemEvent("alert", "warning", "ibkr_compute", title, detail, environment, notified)
-        saveStateData(AUTH_MONITOR_STATE_KEY, environment, times.date, {
-            ...nextState,
-            last_auth_issue_at: times.us,
-            last_auth_alert_ms: nowMs,
-            last_auth_alert_hash: fingerprint,
-        })
+    try {
+        require(`${__hooks}/lib/system_auth_edge_guard.js`).runIbkrAuthPendingGuard()
+    } catch (err) {
+        console.log(`[IBKRAuthPendingGuard] fatal error: ${err.message || err}`)
     }
 })
 
@@ -980,67 +1028,10 @@ cronAdd("system_data_gap_guard", "*/10 4-20 * * 1-5", () => {
 })
 
 cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
-    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
-    const { getStatePayload, normalizeStateWithRuntime, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
-    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
-    const environments = getActiveRuntimeEnvironments(getRuntimeKeys())
-    const nowMs = Date.now()
-
-    for (let i = 0; i < environments.length; i++) {
-        const environment = environments[i]
-        const cronState = getPbCronToggleState("ibkr_2fa_hourly_check", environment)
-        if (!cronState.effective_enabled) {
-            console.log(`[IBKR2FAHourly] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
-            continue
-        }
-        if (!getComputeEnabledForEnvironment(environment, getRuntimeKeys()) && !getTradingEnabledForEnvironment(environment, getRuntimeKeys())) {
-            continue
-        }
-
-        try {
-            const runtimeStatus = fetchComputeJson("/ibkr/status", 8, environment)
-            const runtimeStarted = Boolean(
-                runtimeStatus.starting
-                || (runtimeStatus.session && runtimeStatus.session.running)
-                || (runtimeStatus.websocket && runtimeStatus.websocket.running)
-                || (runtimeStatus.order_tracker && runtimeStatus.order_tracker.running)
-            )
-            const runtimeAuthenticated = Boolean(runtimeStatus.session && runtimeStatus.session.authenticated)
-            const gatewayReachable = Boolean(runtimeStatus.gateway && (runtimeStatus.gateway.running || runtimeStatus.gateway.reachable))
-            const gatewayStatusCode = Number(runtimeStatus.gateway && runtimeStatus.gateway.status_code || 0) || 0
-            const needsAuthAttention = gatewayReachable && (!runtimeAuthenticated || gatewayStatusCode === 401 || !runtimeStarted)
-            if (!needsAuthAttention) {
-                continue
-            }
-
-            const statePayload = getStatePayload(environment)
-            const state = normalizeStateWithRuntime(statePayload.data || {}, runtimeStatus || {})
-            const status = String(state.status || "").trim().toLowerCase()
-            const lastPushMs = Number(state.last_request_push_ms || 0) || 0
-
-            if (lastPushMs > 0 && (nowMs - lastPushMs) < 55 * 60 * 1000) {
-                continue
-            }
-
-            request2faApproval({
-                environment: environment,
-                reason: String(state.reason || "scheduled_2fa_check"),
-                source: "pb_scheduler",
-                message: "检测到 IBKR 2FA 仍未恢复，已按小时发送提醒，请在方便时点击卡片继续验证。",
-                detail: {
-                    "当前状态": status || "requested",
-                    "Runtime已启动": runtimeStarted ? "yes" : "no",
-                    "Session认证": runtimeAuthenticated ? "yes" : "no",
-                    "Gateway状态码": gatewayStatusCode ? String(gatewayStatusCode) : "n/a",
-                    "最近结果": String(state.last_result || ""),
-                    "最近错误": String(state.last_error || ""),
-                },
-                forceReset: false,
-                forceNew: false,
-            })
-        } catch (err) {
-            console.log(`[IBKR2FAHourly] ${environment}: ${err.message || err}`)
-        }
+    try {
+        require(`${__hooks}/lib/system_auth_edge_guard.js`).runIbkr2faHourlyCheck()
+    } catch (err) {
+        console.log(`[IBKR2FAHourly] fatal error: ${err.message || err}`)
     }
 })
 
