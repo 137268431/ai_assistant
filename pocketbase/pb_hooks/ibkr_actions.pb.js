@@ -25,6 +25,8 @@ const IBKR_ACTIONS_VOLATILE_COMPARE_KEYS = {
     computed_at_us: true,
     computed_at_cn: true,
 }
+const IBKR_WATCHLIST_ROLE_TRADE = "trade"
+const IBKR_WATCHLIST_ROLE_MARKET_MONITOR = "market_monitor"
 
 function ibkrActionsNormalizeForCompare(value) {
     if (Array.isArray(value)) {
@@ -78,6 +80,14 @@ function ibkrActionsUpsertRecord(collectionName, filterStr, filterParams, data) 
     return { record: record, action: action }
 }
 globalThis.ibkrActionsUpsertRecord = ibkrActionsUpsertRecord
+
+function ibkrActionsNormalizeWatchlistRole(value) {
+    const normalized = String(value || "").trim().toLowerCase()
+    return normalized === IBKR_WATCHLIST_ROLE_MARKET_MONITOR
+        ? IBKR_WATCHLIST_ROLE_MARKET_MONITOR
+        : IBKR_WATCHLIST_ROLE_TRADE
+}
+globalThis.ibkrActionsNormalizeWatchlistRole = ibkrActionsNormalizeWatchlistRole
 
 function ibkrActionsBuildProxyMeta(payload, route, upstream) {
     const base = payload && typeof payload === "object" && !Array.isArray(payload)
@@ -711,6 +721,7 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload) {
     const orderTracker = ibkrActionsCloneObject(payload.order_tracker)
     const warmup = ibkrActionsCloneObject(payload.warmup)
     const realtimeCompute = ibkrActionsCloneObject(payload.realtime_compute)
+    const realtimeResult = ibkrActionsCloneObject(realtimeCompute.last_result)
     const marketUniverse = ibkrActionsCloneObject(payload.market_universe)
 
     const activeTradeSymbols = ibkrActionsTrimArray(
@@ -776,6 +787,11 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload) {
             runs: Number(realtimeCompute.runs || 0) || 0,
             queue_size: Number(realtimeCompute.queue_size || 0) || 0,
             last_run: realtimeCompute.last_run || "",
+            last_bar_close: realtimeCompute.last_bar_close || "",
+            last_elapsed_s: Number(realtimeResult.elapsed_s || 0) || 0,
+            last_processed: Number(realtimeResult.processed || 0) || 0,
+            last_signals: Number(realtimeResult.signals || 0) || 0,
+            last_errors: Number(realtimeResult.errors || 0) || 0,
         },
         market_universe: {
             market_date: String(marketUniverse.market_date || ""),
@@ -1047,117 +1063,6 @@ routerAdd("POST", "/api/custom/ibkr/indicators", (c) => {
 
 // ══════════════════════════════════════
 // 信号写入 -> ibkr_signals
-// ══════════════════════════════════════
-function ibkrActionsGetSignalExtra(record) {
-    if (!record) return {}
-    const value = record.get("extra")
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-        return value
-    }
-    if (typeof value === "string" && value) {
-        try {
-            const parsed = JSON.parse(value)
-            return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
-        } catch (_) {}
-    }
-    return {}
-}
-
-function ibkrActionsSignalConfirmationRequired(environment) {
-    const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
-    return ibkrActionsParseBoolean(
-        getConfigValue("signal_manual_confirm_enabled", "true", environment),
-        true
-    )
-}
-
-function ibkrActionsPrepareSignalLifecycle(prepared, existingRecord, environment) {
-    const existingStatus = existingRecord ? String(existingRecord.get("status") || "").trim() : ""
-    const existingNote = existingRecord ? String(existingRecord.get("note") || "").trim() : ""
-    const existingExtra = ibkrActionsGetSignalExtra(existingRecord)
-    const incomingStatus = String(prepared.data.status || "pending").trim() || "pending"
-    const incomingNote = String(prepared.data.note || "").trim()
-    const manualConfirmEnabled = ibkrActionsSignalConfirmationRequired(environment)
-    const finalStatuses = {
-        executed: true,
-        rejected: true,
-        expired: true,
-        closed: true,
-    }
-
-    let resolvedStatus = incomingStatus
-    let resolvedNote = incomingNote
-
-    if (finalStatuses[existingStatus]) {
-        resolvedStatus = existingStatus
-        resolvedNote = existingNote || incomingNote
-    } else if (manualConfirmEnabled) {
-        if (existingStatus === "pending") {
-            resolvedStatus = "pending"
-            resolvedNote = existingNote || incomingNote
-        } else if (incomingStatus === "pending" || incomingStatus === "awaiting_confirm") {
-            resolvedStatus = "awaiting_confirm"
-            resolvedNote = incomingNote || "manual_confirmation_required"
-        }
-    } else if (incomingStatus === "pending" || incomingStatus === "awaiting_confirm") {
-        resolvedStatus = "pending"
-        resolvedNote = incomingNote === "manual_confirmation_required" ? "" : incomingNote
-    }
-
-    prepared.data.status = resolvedStatus
-    prepared.data.note = resolvedNote
-    prepared.data.extra = {
-        ...existingExtra,
-        ...(prepared.data.extra || {}),
-        signal_confirmation_required: manualConfirmEnabled,
-        signal_confirmation_mode: manualConfirmEnabled ? "manual" : "auto",
-    }
-    if (resolvedNote) {
-        prepared.data.extra.status_reason = resolvedNote
-    }
-
-    return {
-        previous_status: existingStatus,
-        next_status: resolvedStatus,
-    }
-}
-
-if (typeof globalThis !== "undefined") {
-    globalThis.__ibkrActionsPrepareSignalLifecycle = ibkrActionsPrepareSignalLifecycle
-}
-
-function ibkrActionsSyncSignalNotification(record, previousStatus) {
-    if (!record) return
-    const currentStatus = String(record.get("status") || "").trim()
-    if (currentStatus !== "awaiting_confirm" && currentStatus !== "pending") {
-        return
-    }
-
-    const { getSignalExtra, mergeSignalExtra, notifyNewSignal, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
-    const signalExtra = getSignalExtra(record)
-    let syncResult = null
-
-    if (!signalExtra.feishu_signal_message_id) {
-        syncResult = notifyNewSignal(record)
-    } else if (previousStatus !== currentStatus) {
-        syncResult = notifySignalStatus(currentStatus, record, {
-            messageId: signalExtra.feishu_signal_message_id || "",
-            message: currentStatus === "awaiting_confirm" ? "等待人工确认" : "信号已确认，等待执行",
-        })
-    }
-
-    if (syncResult && syncResult.success && syncResult.message_id && syncResult.message_id !== signalExtra.feishu_signal_message_id) {
-        mergeSignalExtra(record, {
-            feishu_signal_message_id: syncResult.message_id,
-            feishu_signal_card_version: 1,
-        }, true)
-    }
-}
-
-if (typeof globalThis !== "undefined") {
-    globalThis.__ibkrActionsSyncSignalNotification = ibkrActionsSyncSignalNotification
-}
-
 routerAdd("POST", "/api/custom/ibkr/signal", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
@@ -1174,6 +1079,22 @@ routerAdd("POST", "/api/custom/ibkr/signal", (c) => {
         try {
             existing = $app.findFirstRecordByFilter("ibkr_signals", prepared.filter, prepared.params)
         } catch (_) {}
+        if (!existing) {
+            const duplicate = actionHelpers.findSignalDuplicateByBarKey(prepared.data, environment, prepared.signal_id)
+            if (duplicate) {
+                actionHelpers.annotateSignalDuplicate(duplicate, prepared.data, environment)
+                return c.json(200, {
+                    ok: true,
+                    signal_id: String(duplicate.get("signal_id") || "").trim() || prepared.signal_id,
+                    duplicate_signal_id: prepared.signal_id,
+                    target: "ibkr_signals",
+                    id: duplicate.id,
+                    action: "skipped_duplicate_bar_signal",
+                    status: String(duplicate.get("status") || "").trim(),
+                    dedupe_key: actionHelpers.buildSignalBarDedupeKey(prepared.data, environment),
+                })
+            }
+        }
         signalLifecycle.prepareSignalLifecycle(prepared, existing, environment)
         const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
         if (result.action !== "skipped") {
@@ -1208,6 +1129,7 @@ routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
     let created = 0
     let updated = 0
     let skipped = 0
+    let duplicates = 0
     let errors = 0
     for (let i = 0; i < items.length; i++) {
         const environment = String((items[i] && items[i].environment) || defaultEnvironment).trim().toLowerCase() || defaultEnvironment
@@ -1221,6 +1143,15 @@ routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
             try {
                 existing = $app.findFirstRecordByFilter("ibkr_signals", prepared.filter, prepared.params)
             } catch (_) {}
+            if (!existing) {
+                const duplicate = actionHelpers.findSignalDuplicateByBarKey(prepared.data, environment, prepared.signal_id)
+                if (duplicate) {
+                    actionHelpers.annotateSignalDuplicate(duplicate, prepared.data, environment)
+                    duplicates++
+                    skipped++
+                    continue
+                }
+            }
             signalLifecycle.prepareSignalLifecycle(prepared, existing, environment)
             const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
             if (result.action === "created") {
@@ -1246,6 +1177,7 @@ routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
         created: created,
         updated: updated,
         skipped: skipped,
+        duplicates: duplicates,
         errors: errors,
         target: "ibkr_signals",
     })
@@ -1397,6 +1329,9 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
             { sym: symbol, env: recordEnvironment }
         )
     } catch (_) {}
+    const symbolRole = globalThis.ibkrActionsNormalizeWatchlistRole(
+        d.symbol_role || d.role || (existing ? existing.get("symbol_role") : "")
+    )
 
     const compareData = {
         symbol: symbol,
@@ -1404,6 +1339,7 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
         exchange: exchange,
         industry: industry,
         note: note,
+        symbol_role: symbolRole,
     }
 
     if (existing && !actionHelpers.recordNeedsUpdate(existing, compareData)) {
@@ -1413,6 +1349,7 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
             id: existing.id || "",
             symbol: symbol,
             environment: recordEnvironment,
+            symbol_role: symbolRole,
         })
     }
 
@@ -1444,6 +1381,7 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
             id: result.record && result.record.id ? result.record.id : "",
             symbol: symbol,
             environment: recordEnvironment,
+            symbol_role: symbolRole,
         })
     } catch (err) {
         console.error(`[IBKRActions] watchlist upsert error: ${err.message}`)
@@ -2071,6 +2009,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         watchPriority[environment] = 2
         const watchMeta = {}
         const watchRank = {}
+        const watchRole = {}
         for (let i = 0; i < watchRecords.length; i++) {
             const record = watchRecords[i]
             const symbol = String(record.get("symbol") || "").trim().toUpperCase()
@@ -2080,12 +2019,20 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
             if (rank < 0) continue
             if (watchRank[symbol] != null && watchRank[symbol] > rank) continue
             watchRank[symbol] = rank
+            watchRole[symbol] = globalThis.ibkrActionsNormalizeWatchlistRole(record.get("symbol_role"))
             watchMeta[symbol] = {
                 exchange: String(record.get("exchange") || "").trim().toUpperCase(),
                 industry: String(record.get("industry") || "").trim(),
                 note: String(record.get("note") || "").trim(),
+                symbol_role: watchRole[symbol],
             }
         }
+        const tradeWatchMeta = {}
+        Object.keys(watchMeta).forEach((symbol) => {
+            if ((watchRole[symbol] || IBKR_WATCHLIST_ROLE_TRADE) === IBKR_WATCHLIST_ROLE_TRADE) {
+                tradeWatchMeta[symbol] = watchMeta[symbol]
+            }
+        })
 
         const targetRecords = $app.findRecordsByFilter(
             "ibkr_targets",
@@ -2099,6 +2046,9 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         for (let i = 0; i < targetRecords.length; i++) {
             const record = targetRecords[i]
             const symbol = String(record.get("symbol") || "").trim().toUpperCase()
+            if ((watchRole[symbol] || IBKR_WATCHLIST_ROLE_TRADE) !== IBKR_WATCHLIST_ROLE_TRADE) {
+                continue
+            }
             if (symbol && !targetBySymbol[symbol]) {
                 targetBySymbol[symbol] = record
             }
@@ -2106,8 +2056,8 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
 
         const universeSymbols = requestedSymbols.length
             ? requestedSymbols
-            : Object.keys(watchMeta).concat(
-                Object.keys(targetBySymbol).filter((symbol) => !watchMeta[symbol])
+            : Object.keys(tradeWatchMeta).concat(
+                Object.keys(targetBySymbol).filter((symbol) => !tradeWatchMeta[symbol])
             )
         const normalizedUniverse = normalizeSymbols(universeSymbols)
         if (!normalizedUniverse.length) {
@@ -2236,7 +2186,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
 
         for (let i = 0; i < normalizedUniverse.length; i++) {
             const symbol = normalizedUniverse[i]
-            const meta = watchMeta[symbol] || {}
+            const meta = tradeWatchMeta[symbol] || {}
             const target = targetBySymbol[symbol]
             const intraday = latestIntradayBySymbol[symbol]
             const fallbackDaily = fallbackDailyBySymbol[symbol]
@@ -2714,6 +2664,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const orderTracker = cloneObject(payload.order_tracker)
             const warmup = cloneObject(payload.warmup)
             const realtimeCompute = cloneObject(payload.realtime_compute)
+            const realtimeResult = cloneObject(realtimeCompute.last_result)
             const marketUniverse = cloneObject(payload.market_universe)
 
             const activeTradeSymbols = trimArray(
@@ -2779,6 +2730,11 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     runs: Number(realtimeCompute.runs || 0) || 0,
                     queue_size: Number(realtimeCompute.queue_size || 0) || 0,
                     last_run: realtimeCompute.last_run || "",
+                    last_bar_close: realtimeCompute.last_bar_close || "",
+                    last_elapsed_s: Number(realtimeResult.elapsed_s || 0) || 0,
+                    last_processed: Number(realtimeResult.processed || 0) || 0,
+                    last_signals: Number(realtimeResult.signals || 0) || 0,
+                    last_errors: Number(realtimeResult.errors || 0) || 0,
                 },
                 market_universe: {
                     market_date: String(marketUniverse.market_date || ""),

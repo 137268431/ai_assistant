@@ -40,6 +40,13 @@ class OrderTracker:
         self._known_orders: Dict[str, dict] = {}
         self._last_poll: Optional[float] = None
 
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
 
@@ -154,6 +161,44 @@ class OrderTracker:
             or ""
         ).strip().upper()
 
+    def _stamp_known_order(self, order: Dict, *, seen_live: bool) -> Dict:
+        stamped = dict(order or {})
+        stamped["_seen_live"] = bool(seen_live)
+        stamped["_last_seen_at"] = time.time() if seen_live else float(order.get("_last_seen_at") or 0.0)
+        stamped["_missing_poll_count"] = 0
+        stamped["_first_missing_at"] = 0.0
+        return stamped
+
+    def _order_sync_signature(self, order: Dict) -> tuple:
+        return (
+            self._extract_order_status(order),
+            round(self._to_float(order.get("filledQuantity"), 0.0), 8),
+            round(self._to_float(order.get("avgPrice"), 0.0), 8),
+            round(self._to_float(order.get("price"), 0.0), 8),
+            round(self._to_float(order.get("totalSize"), 0.0), 8),
+            str(order.get("parentId") or "").strip(),
+            str(order.get("cOID") or order.get("coid") or "").strip(),
+            str(order.get("side") or "").strip().upper(),
+            str(order.get("orderType") or "").strip().upper(),
+        )
+
+    def _order_needs_sync(self, previous: Dict, current: Dict) -> bool:
+        if not previous:
+            return True
+        if not bool(previous.get("_seen_live")):
+            return True
+        return self._order_sync_signature(previous) != self._order_sync_signature(current)
+
+    def _infer_disappeared_order_status(self, previous: Dict) -> str:
+        status = self._extract_order_status(previous)
+        if status in {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}:
+            return status
+        filled_qty = self._to_float(previous.get("filledQuantity"), 0.0)
+        avg_price = self._to_float(previous.get("avgPrice"), 0.0)
+        if filled_qty > 0 or avg_price > 0:
+            return "FILLED"
+        return "CANCELED"
+
     def register_submitted_orders(self, order_ids: List[str], seed: Optional[Dict] = None):
         seed = seed or {}
         clean_ids = [str(item).strip() for item in (order_ids or []) if str(item).strip()]
@@ -174,7 +219,7 @@ class OrderTracker:
 
         for index, order_id in enumerate(clean_ids):
             if index == 0:
-                self._known_orders[order_id] = {
+                self._known_orders[order_id] = self._stamp_known_order({
                     "orderId": order_id,
                     "ticker": symbol,
                     "side": side,
@@ -186,9 +231,9 @@ class OrderTracker:
                     "parentId": "",
                     "status": "SUBMITTED",
                     "cOID": entry_unique_id,
-                }
+                }, seen_live=False)
             elif index == 1:
-                self._known_orders[order_id] = {
+                self._known_orders[order_id] = self._stamp_known_order({
                     "orderId": order_id,
                     "ticker": symbol,
                     "side": close_side,
@@ -200,9 +245,9 @@ class OrderTracker:
                     "parentId": clean_ids[0],
                     "status": "SUBMITTED",
                     "cOID": tp_unique_id,
-                }
+                }, seen_live=False)
             elif index == 2:
-                self._known_orders[order_id] = {
+                self._known_orders[order_id] = self._stamp_known_order({
                     "orderId": order_id,
                     "ticker": symbol,
                     "side": close_side,
@@ -214,27 +259,40 @@ class OrderTracker:
                     "parentId": clean_ids[0],
                     "status": "SUBMITTED",
                     "cOID": sl_unique_id,
-                }
+                }, seen_live=False)
 
     def _finalize_disappeared_orders(self, current_order_ids: set[str]):
         closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}
         missing_ids = [order_id for order_id in list(self._known_orders.keys()) if order_id not in current_order_ids]
 
         for order_id in missing_ids:
-            previous = self._known_orders.get(order_id, {})
+            previous = dict(self._known_orders.get(order_id, {}))
+            previous_status = self._extract_order_status(previous)
+            missing_poll_count = int(previous.get("_missing_poll_count") or 0) + 1
+            first_missing_at = float(previous.get("_first_missing_at") or 0.0) or time.time()
+            previous["_missing_poll_count"] = missing_poll_count
+            previous["_first_missing_at"] = first_missing_at
+
             payload = self.get_order_status(order_id)
             if not payload:
-                continue
+                if missing_poll_count < 2:
+                    self._known_orders[order_id] = previous
+                    continue
+                merged = dict(previous)
+                status = self._infer_disappeared_order_status(previous)
+                merged["status"] = status
+                merged["_status_inferred"] = True
+                merged["_status_inferred_reason"] = "missing_from_live_orders_without_status"
+            else:
+                merged = dict(previous)
+                merged.update(payload)
+                merged["orderId"] = order_id
+                status = self._extract_order_status(merged)
+                if not status:
+                    self._known_orders[order_id] = previous
+                    continue
+                merged["status"] = status
 
-            merged = dict(previous)
-            merged.update(payload)
-            merged["orderId"] = order_id
-            status = self._extract_order_status(merged)
-            if not status:
-                continue
-            merged["status"] = status
-
-            previous_status = self._extract_order_status(previous)
             if status != previous_status:
                 self._sync_to_pb(merged)
 
@@ -282,34 +340,39 @@ class OrderTracker:
                 continue
             current_order_ids.add(order_id)
 
-            status = order.get("status", "").upper()
             prev = self._known_orders.get(order_id, {})
-            prev_status = prev.get("status", "")
+            prev_status = self._extract_order_status(prev)
+            merged = dict(prev)
+            merged.update(order)
+            merged["orderId"] = order_id
+            merged = self._stamp_known_order(merged, seen_live=True)
+            status = self._extract_order_status(merged)
+            should_sync = self._order_needs_sync(prev, merged)
 
-            if status != prev_status:
-                self._known_orders[order_id] = order
-                self._sync_to_pb(order)
+            if should_sync:
+                self._known_orders[order_id] = merged
+                self._sync_to_pb(merged)
 
                 if status in ("FILLED", "EXECUTED") and prev_status not in ("FILLED", "EXECUTED"):
                     logger.info("Order FILLED: %s %s %s@%s",
-                                order.get("ticker"), order.get("side"),
-                                order.get("filledQuantity"), order.get("avgPrice"))
+                                merged.get("ticker"), merged.get("side"),
+                                merged.get("filledQuantity"), merged.get("avgPrice"))
                     if self.on_fill:
                         try:
-                            self.on_fill(order)
+                            self.on_fill(merged)
                         except Exception as e:
                             logger.error("on_fill callback error: %s", e)
 
                 elif status in ("CANCELLED", "CANCELED"):
-                    logger.info("Order CANCELLED: %s %s", order.get("ticker"), order_id)
+                    logger.info("Order CANCELLED: %s %s", merged.get("ticker"), order_id)
                     if self.on_cancel:
                         try:
-                            self.on_cancel(order)
+                            self.on_cancel(merged)
                         except Exception as e:
                             logger.error("on_cancel callback error: %s", e)
 
             else:
-                self._known_orders[order_id] = order
+                self._known_orders[order_id] = merged
 
         self._finalize_disappeared_orders(current_order_ids)
 
@@ -404,6 +467,16 @@ class OrderTracker:
                 if not entry_order_unique_id:
                     entry_order_unique_id = canonical_unique_id
 
+                extra = {
+                    "source": "order_tracker",
+                    "seen_live": bool(order.get("_seen_live")),
+                }
+                if coid:
+                    extra["coid"] = coid
+                if order.get("_status_inferred"):
+                    extra["status_inferred"] = True
+                    extra["status_inferred_reason"] = str(order.get("_status_inferred_reason") or "")
+
                 self.pb_client.upsert_order({
                     "unique_id": canonical_unique_id,
                     "order_id": order_id,
@@ -425,6 +498,7 @@ class OrderTracker:
                     "fill_price": avg_price,
                     "us_time": now_str,
                     "bar_time_ms": int(time.time() * 1000),
+                    "extra": extra,
                 })
 
         except Exception as e:

@@ -6,7 +6,7 @@
         "createRule": "",
         "updateRule": "",
         "deleteRule": "",
-        "name": "reverse_signals",
+        "name": "ibkr_reverse_signals",
         "type": "base",
         "fields": [
             {
@@ -262,12 +262,12 @@
             }
         ],
         "indexes": [
-            "CREATE INDEX idx_reverse_signals_symbol ON reverse_signals (symbol)",
-            "CREATE INDEX idx_reverse_signals_status ON reverse_signals (status)",
-            "CREATE INDEX idx_reverse_signals_bar_time_ms ON reverse_signals (bar_time_ms)",
-            "CREATE INDEX idx_reverse_signals_priority ON reverse_signals (priority)",
-            "CREATE INDEX idx_reverse_signals_source ON reverse_signals (source)",
-            "CREATE INDEX idx_reverse_signals_environment ON reverse_signals (environment)"
+            "CREATE INDEX idx_ibkr_reverse_signals_symbol ON ibkr_reverse_signals (symbol)",
+            "CREATE INDEX idx_ibkr_reverse_signals_status ON ibkr_reverse_signals (status)",
+            "CREATE INDEX idx_ibkr_reverse_signals_bar_time_ms ON ibkr_reverse_signals (bar_time_ms)",
+            "CREATE INDEX idx_ibkr_reverse_signals_priority ON ibkr_reverse_signals (priority)",
+            "CREATE INDEX idx_ibkr_reverse_signals_source ON ibkr_reverse_signals (source)",
+            "CREATE INDEX idx_ibkr_reverse_signals_environment ON ibkr_reverse_signals (environment)"
         ],
         "system": false
     }

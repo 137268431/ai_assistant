@@ -2,8 +2,12 @@
 
 /**
  * order_events.js
- * 共享订单事件日志与 order_details 写入工具
+ * 共享订单事件日志与 ibkr_order_details 写入工具
  */
+
+function getCollectionRegistry() {
+    return require(`${__hooks}/lib/collections.js`)
+}
 
 const ORDER_INTERNAL_EXTRA_KEYS = {
     feishu_order_message_id: true,
@@ -78,9 +82,10 @@ function firstNonEmpty() {
 }
 
 function nextSequence(orderUniqueId) {
+    const { COLLECTIONS } = getCollectionRegistry()
     try {
         const existingDetails = $app.findRecordsByFilter(
-            "order_details",
+            COLLECTIONS.ORDER_DETAILS,
             "order_id = {:orderId}",
             "-bar_time_ms",
             1000,
@@ -89,7 +94,7 @@ function nextSequence(orderUniqueId) {
         )
         return existingDetails.length + 1
     } catch (err) {
-        console.error(`[OrderEvents] 查询 order_details 失败: order_id=${orderUniqueId}`, err)
+        console.error(`[OrderEvents] 查询 ibkr_order_details 失败: order_id=${orderUniqueId}`, err)
         return 1
     }
 }
@@ -454,6 +459,7 @@ function applyOrderStatusMeta(record, options, saveAfterApply) {
 }
 
 function appendOrderDetail(record, options) {
+    const { COLLECTIONS } = getCollectionRegistry()
     const opts = options || {}
     const status = opts.status || record.get("status") || ""
     const source = opts.source || "unknown"
@@ -465,7 +471,7 @@ function appendOrderDetail(record, options) {
     const sequence = nextSequence(uniqueId)
     const nowStrings = formatNowStrings()
 
-    const detailsCollection = $app.findCollectionByNameOrId("order_details")
+    const detailsCollection = $app.findCollectionByNameOrId(COLLECTIONS.ORDER_DETAILS)
     const detailRecord = new Record(detailsCollection, {})
     detailRecord.set("order_id", uniqueId)
     detailRecord.set("symbol", symbol)
@@ -520,7 +526,7 @@ function appendOrderDetail(record, options) {
     })
 
     $app.save(detailRecord)
-    console.log(`[OrderEvents] order_details 已保存: order_id=${uniqueId}, status=${status}, source=${source}, sequence=${sequence}`)
+    console.log(`[OrderEvents] ibkr_order_details 已保存: order_id=${uniqueId}, status=${status}, source=${source}, sequence=${sequence}`)
     return detailRecord
 }
 

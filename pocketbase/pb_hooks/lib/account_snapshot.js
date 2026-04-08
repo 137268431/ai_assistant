@@ -119,6 +119,159 @@ function normalizeSignalRecord(record) {
     }
 }
 
+function isClosedOrderStatus(status) {
+    const key = toText(status).toUpperCase()
+    return ["FILLED", "EXECUTED", "CANCELED", "CANCELLED", "CLOSED", "REJECTED", "INACTIVE", "EXPIRED"].indexOf(key) !== -1
+}
+
+function isOpenLikeOrder(order) {
+    if (!order || isClosedOrderStatus(order.status)) return false
+    const relationStatus = toText(order.relation_status).toLowerCase()
+    if (relationStatus === "active" || relationStatus === "planned") return true
+    return Number(order.status_weight || 0) >= 40
+}
+
+function serializeManagedOrder(order) {
+    return {
+        symbol: order.symbol || "",
+        unique_id: order.unique_id || "",
+        broker_order_id: order.broker_order_id || "",
+        signal_id: order.signal_id || "",
+        trade_group_id: order.trade_group_id || "",
+        entry_order_unique_id: order.entry_order_unique_id || "",
+        role: order.role || "",
+        relation_status: order.relation_status || "",
+        status: order.status || "",
+        quantity: order.quantity || 0,
+        filled_qty: order.filled_qty || 0,
+        updated: order.updated || "",
+    }
+}
+
+function buildManagedOrderContext(environment, brokerOrders) {
+    const brokerList = Array.isArray(brokerOrders) ? brokerOrders : []
+    const brokerOrderIds = {}
+    for (let i = 0; i < brokerList.length; i++) {
+        const brokerOrderId = toText(brokerList[i] && (brokerList[i].order_id || brokerList[i].broker_order_id))
+        if (brokerOrderId) brokerOrderIds[brokerOrderId] = true
+    }
+
+    let orderRecords = []
+    try {
+        orderRecords = $app.findRecordsByFilter(
+            "orders",
+            "environment = {:env}",
+            "-updated",
+            800,
+            0,
+            { env: environment }
+        ) || []
+    } catch (_) {
+        orderRecords = []
+    }
+
+    const groupsByKey = {}
+    const pbActiveOrderIds = {}
+    let activeOrderCount = 0
+
+    for (let i = 0; i < orderRecords.length; i++) {
+        const normalized = normalizeOrderRecord(orderRecords[i])
+        if (!normalized.symbol) continue
+        const groupKey = normalized.trade_group_id || normalized.entry_order_unique_id || normalized.unique_id || normalized.broker_order_id
+        if (!groupKey) continue
+
+        if (!groupsByKey[groupKey]) {
+            groupsByKey[groupKey] = {
+                symbol: normalized.symbol,
+                signal_id: normalized.signal_id || "",
+                trade_group_id: normalized.trade_group_id || groupKey,
+                entry_order_unique_id: normalized.entry_order_unique_id || normalized.unique_id || groupKey,
+                latest_updated_ms: 0,
+                latest_updated: "",
+                latest_order_status: "",
+                best_status_weight: -1,
+                entry_filled_qty: 0,
+                exit_filled_qty: 0,
+                has_active_order: false,
+                matched_broker_orders: 0,
+                orders: [],
+            }
+        }
+
+        const group = groupsByKey[groupKey]
+        group.orders.push(normalized)
+        if (!group.signal_id && normalized.signal_id) group.signal_id = normalized.signal_id
+        if (normalized.updated_ms >= group.latest_updated_ms) {
+            group.latest_updated_ms = normalized.updated_ms
+            group.latest_updated = normalized.updated
+        }
+        if (normalized.status_weight >= group.best_status_weight) {
+            group.best_status_weight = normalized.status_weight
+            group.latest_order_status = normalized.status
+        }
+
+        const isEntry = normalized.role === "entry"
+        const isExit = normalized.role === "take_profit" || normalized.role === "stop_loss"
+        if (isEntry) group.entry_filled_qty += Math.abs(normalized.filled_qty)
+        if (isExit) group.exit_filled_qty += Math.abs(normalized.filled_qty)
+
+        if (isOpenLikeOrder(normalized)) {
+            group.has_active_order = true
+            activeOrderCount += 1
+            if (normalized.broker_order_id) {
+                pbActiveOrderIds[normalized.broker_order_id] = true
+                if (brokerOrderIds[normalized.broker_order_id]) {
+                    group.matched_broker_orders += 1
+                }
+            }
+        }
+    }
+
+    const activeGroups = Object.keys(groupsByKey).map((key) => {
+        const group = groupsByKey[key]
+        const hasOpenExposure = group.entry_filled_qty > group.exit_filled_qty
+        return {
+            symbol: group.symbol,
+            signal_id: group.signal_id,
+            trade_group_id: group.trade_group_id,
+            entry_order_unique_id: group.entry_order_unique_id,
+            latest_updated: group.latest_updated,
+            latest_updated_ms: group.latest_updated_ms,
+            latest_order_status: group.latest_order_status,
+            has_active_order: group.has_active_order,
+            has_open_exposure: hasOpenExposure,
+            broker_matched: group.matched_broker_orders > 0,
+            matched_broker_orders: group.matched_broker_orders,
+            order_count: group.orders.length,
+            orders: group.orders.map(serializeManagedOrder),
+        }
+    }).filter((group) => group.has_active_order || group.has_open_exposure)
+
+    activeGroups.sort((left, right) => {
+        const leftScore = (left.has_open_exposure ? 1000 : 0) + (left.has_active_order ? 100 : 0) + (left.broker_matched ? 10 : 0)
+        const rightScore = (right.has_open_exposure ? 1000 : 0) + (right.has_active_order ? 100 : 0) + (right.broker_matched ? 10 : 0)
+        if (leftScore !== rightScore) return rightScore - leftScore
+        return (right.latest_updated_ms || 0) - (left.latest_updated_ms || 0)
+    })
+
+    const pbOnlyActiveGroups = activeGroups.filter((group) => group.has_active_order && !group.broker_matched)
+    const brokerOnlyOrders = brokerList.filter((order) => {
+        const brokerOrderId = toText(order && (order.order_id || order.broker_order_id))
+        return brokerOrderId && !pbActiveOrderIds[brokerOrderId]
+    }).map((order) => ({
+        symbol: toText(order && order.symbol).toUpperCase(),
+        order_id: toText(order && (order.order_id || order.broker_order_id)),
+        status: toText(order && order.status),
+    }))
+
+    return {
+        active_groups: activeGroups,
+        pb_only_active_groups: pbOnlyActiveGroups,
+        active_order_count: activeOrderCount,
+        broker_only_orders: brokerOnlyOrders,
+    }
+}
+
 function buildRelationContext(environment, symbols) {
     const normalizedSymbols = []
     const seenSymbols = {}
@@ -266,7 +419,12 @@ function enrichAccountSnapshot(payload, environment) {
     if (!payload || typeof payload !== "object") return payload
 
     const positions = Array.isArray(payload.positions) ? payload.positions : []
-    const symbols = positions.map((item) => toText(item && item.symbol).toUpperCase()).filter(Boolean)
+    const brokerOrders = Array.isArray(payload.orders) ? payload.orders : []
+    const managedOrderContext = buildManagedOrderContext(environment, brokerOrders)
+    const symbols = positions
+        .map((item) => toText(item && item.symbol).toUpperCase())
+        .concat(managedOrderContext.active_groups.map((group) => toText(group && group.symbol).toUpperCase()))
+        .filter(Boolean)
     const context = buildRelationContext(environment, symbols)
 
     let systemManagedCount = 0
@@ -331,6 +489,22 @@ function enrichAccountSnapshot(payload, environment) {
         system_managed_positions: systemManagedCount,
         external_positions: externalCount,
         flat_positions: flatCount,
+        pb_active_order_groups: managedOrderContext.active_groups.length,
+        pb_active_orders: managedOrderContext.active_order_count,
+        pb_only_active_order_groups: managedOrderContext.pb_only_active_groups.length,
+        broker_only_open_orders: managedOrderContext.broker_only_orders.length,
+    }
+
+    payload.managed_order_groups = managedOrderContext.active_groups
+    payload.pb_only_order_groups = managedOrderContext.pb_only_active_groups
+    payload.order_reconciliation = {
+        broker_total_orders: brokerOrders.length,
+        broker_open_orders: Number((payload.counts || {}).open_orders || 0) || 0,
+        pb_active_order_groups: managedOrderContext.active_groups.length,
+        pb_active_orders: managedOrderContext.active_order_count,
+        pb_only_active_order_groups: managedOrderContext.pb_only_active_groups.length,
+        broker_only_open_orders: managedOrderContext.broker_only_orders.length,
+        broker_only_orders: managedOrderContext.broker_only_orders,
     }
 
     return payload

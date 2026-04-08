@@ -193,6 +193,20 @@
             },
             {
                 "hidden": false,
+                "id": "wl_symbol_role",
+                "maxSelect": 1,
+                "name": "symbol_role",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "select",
+                "values": [
+                    "trade",
+                    "market_monitor"
+                ]
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,
@@ -214,7 +228,8 @@
         ],
         "indexes": [
             "CREATE UNIQUE INDEX idx_watchlist_symbol_environment ON watchlist (symbol, environment)",
-            "CREATE INDEX idx_watchlist_environment ON watchlist (environment)"
+            "CREATE INDEX idx_watchlist_environment ON watchlist (environment)",
+            "CREATE INDEX idx_watchlist_environment_role ON watchlist (environment, symbol_role)"
         ],
         "system": false
     }

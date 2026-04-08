@@ -782,6 +782,7 @@
 
         function buildSystemComputeSummary(healthPayload = {}, statusPayload = {}, fallbackPayload = {}) {
             const statusCompute = statusPayload?.compute || {};
+            const runtimeCompute = statusPayload?.runtime?.realtime_compute || {};
             const fallbackCompute = fallbackPayload || {};
             return {
                 status: statusCompute.status || statusPayload.status || fallbackCompute.status || healthPayload.status || 'unknown',
@@ -793,6 +794,13 @@
                 uptime_s: Number(statusCompute.uptime_s || fallbackCompute.uptime_s || healthPayload.uptime_s || 0) || 0,
                 last_compute: statusCompute.last_compute || fallbackCompute.last_compute || healthPayload.last_compute || null,
                 last_scan: statusCompute.last_scan || fallbackCompute.last_scan || healthPayload.last_scan || null,
+                queue_size: Number(runtimeCompute.queue_size || fallbackCompute.queue_size || 0) || 0,
+                last_realtime_run: runtimeCompute.last_run || fallbackCompute.last_realtime_run || null,
+                last_bar_close: runtimeCompute.last_bar_close || fallbackCompute.last_bar_close || null,
+                last_realtime_elapsed_s: Number(runtimeCompute.last_elapsed_s || fallbackCompute.last_realtime_elapsed_s || 0) || 0,
+                last_realtime_processed: Number(runtimeCompute.last_processed || fallbackCompute.last_realtime_processed || 0) || 0,
+                last_realtime_signals: Number(runtimeCompute.last_signals || fallbackCompute.last_realtime_signals || 0) || 0,
+                last_realtime_errors: Number(runtimeCompute.last_errors || fallbackCompute.last_realtime_errors || 0) || 0,
             };
         }
 
@@ -993,7 +1001,7 @@
             const dataHealth = health.ibkr_data || {};
             const dataEl = document.getElementById('dataStatus');
             if (dataHealth.status === 'online') {
-                dataEl.innerHTML = '<span class="status-dot dot-green"></span>在线';
+                dataEl.innerHTML = `<span class="status-dot dot-green"></span>在线${dataHealth.last_bar_age_min != null ? ` · ${escapeHtml(String(dataHealth.last_bar_age_min))}m` : ''}`;
             } else if (dataHealth.status === 'delayed') {
                 dataEl.innerHTML = `<span class="status-dot dot-yellow"></span>延迟 ${escapeHtml(String(dataHealth.last_bar_age_min || '?'))}m`;
             } else if (dataHealth.status === 'offline') {
@@ -1001,15 +1009,23 @@
             } else {
                 dataEl.innerHTML = `<span class="status-dot dot-gray"></span>${escapeHtml(dataHealth.status || '无数据')}`;
             }
+            if (dataHealth.last_bar_time_ms) {
+                dataEl.innerHTML += `<span style="color:var(--muted)"> · ${escapeHtml(formatTimeLabel(dataHealth.last_bar_time_ms))}</span>`;
+            }
 
             const comp = health.ibkr_compute || {};
             const compEl = document.getElementById('computeStatus');
+            const compMeta = [];
+            if (Number(comp.last_realtime_elapsed_s || 0) > 0) compMeta.push(`${Number(comp.last_realtime_elapsed_s || 0).toFixed(2)}s`);
+            if (Number(comp.last_realtime_signals || 0) > 0) compMeta.push(`sig ${Number(comp.last_realtime_signals || 0)}`);
+            if (Number(comp.last_realtime_errors || 0) > 0) compMeta.push(`err ${Number(comp.last_realtime_errors || 0)}`);
+            if (Number(comp.queue_size || 0) > 0) compMeta.push(`queue ${Number(comp.queue_size || 0)}`);
             if (comp.status === 'running') {
-                compEl.innerHTML = '<span class="status-dot dot-green"></span>运行';
+                compEl.innerHTML = `<span class="status-dot dot-green"></span>运行${compMeta.length ? ` · ${escapeHtml(compMeta.join(' · '))}` : ''}`;
             } else if (comp.status === 'offline') {
                 compEl.innerHTML = '<span class="status-dot dot-red"></span>离线';
             } else {
-                compEl.innerHTML = `<span class="status-dot dot-${comp.status === 'error' ? 'red' : 'gray'}"></span>${escapeHtml(comp.status || '--')}`;
+                compEl.innerHTML = `<span class="status-dot dot-${comp.status === 'error' ? 'red' : 'gray'}"></span>${escapeHtml(comp.status || '--')}${compMeta.length ? ` · ${escapeHtml(compMeta.join(' · '))}` : ''}`;
             }
 
             const runtime = health.runtime || {};
@@ -1111,7 +1127,11 @@
             }
 
             const keys = Object.keys(computeData.engines);
-            countEl.textContent = `${computeData.ready_engines || 0}/${computeData.total_engines || keys.length} ready · top 16`;
+            const computeMeta = [];
+            if (Number(computeData.last_realtime_elapsed_s || 0) > 0) computeMeta.push(`last ${Number(computeData.last_realtime_elapsed_s || 0).toFixed(2)}s`);
+            if (Number(computeData.last_realtime_signals || 0) > 0) computeMeta.push(`sig ${Number(computeData.last_realtime_signals || 0)}`);
+            if (Number(computeData.queue_size || 0) > 0) computeMeta.push(`queue ${Number(computeData.queue_size || 0)}`);
+            countEl.textContent = `${computeData.ready_engines || 0}/${computeData.total_engines || keys.length} ready · ${computeMeta.join(' · ') || 'top 16'}`;
 
             if (!keys.length) {
                 el.innerHTML = '<div class="loading-text">无引擎数据</div>';
@@ -1255,8 +1275,7 @@
                 'signal_validity_minutes',
                 'order_validity_minutes',
                 'signal_poll_interval_sec',
-                'reverse_signal_threshold',
-                'market_index_symbols'
+                'reverse_signal_threshold'
             ].forEach((key) => {
                 if (summary.config && summary.config[key] !== undefined && summary.config[key] !== '') {
                     items.push({ label: key.toUpperCase().replace(/_/g, ' '), value: summary.config[key] });

@@ -6,7 +6,7 @@
         "createRule": "",
         "updateRule": "",
         "deleteRule": "",
-        "name": "order_details",
+        "name": "ibkr_order_details",
         "type": "base",
         "fields": [
             {
@@ -320,13 +320,13 @@
             }
         ],
         "indexes": [
-            "CREATE INDEX idx_order_details_order_id ON order_details (order_id)",
-            "CREATE INDEX idx_order_details_symbol ON order_details (symbol)",
-            "CREATE INDEX idx_order_details_order_type ON order_details (order_type)",
-            "CREATE INDEX idx_order_details_trade_group_id ON order_details (trade_group_id)",
-            "CREATE INDEX idx_order_details_entry_order_unique_id ON order_details (entry_order_unique_id)",
-            "CREATE INDEX idx_order_details_environment ON order_details (environment)",
-            "CREATE INDEX idx_order_details_signal_environment ON order_details (signal_id, environment)"
+            "CREATE INDEX idx_ibkr_order_details_order_id ON ibkr_order_details (order_id)",
+            "CREATE INDEX idx_ibkr_order_details_symbol ON ibkr_order_details (symbol)",
+            "CREATE INDEX idx_ibkr_order_details_order_type ON ibkr_order_details (order_type)",
+            "CREATE INDEX idx_ibkr_order_details_trade_group_id ON ibkr_order_details (trade_group_id)",
+            "CREATE INDEX idx_ibkr_order_details_entry_order_unique_id ON ibkr_order_details (entry_order_unique_id)",
+            "CREATE INDEX idx_ibkr_order_details_environment ON ibkr_order_details (environment)",
+            "CREATE INDEX idx_ibkr_order_details_signal_environment ON ibkr_order_details (signal_id, environment)"
         ],
         "system": false
     }

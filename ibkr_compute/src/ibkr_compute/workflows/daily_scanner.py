@@ -12,6 +12,8 @@ TODO P4: 完整实现评分逻辑
 
 from ibkr_compute.integrations.pb_client import PBClient
 
+WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
+
 
 class DailyScanner:
     def __init__(self, pb_client: PBClient, engines: dict):
@@ -158,7 +160,10 @@ class DailyScanner:
         try:
             records = self.pb_client.get_records(
                 "watchlist",
-                filter=f'environment = "{environment}" || environment = "global" || environment = ""',
+                filter=(
+                    f'(environment = "{environment}" || environment = "global" || environment = "") '
+                    f'&& (symbol_role = "{WATCHLIST_SYMBOL_ROLE_TRADE}" || symbol_role = "")'
+                ),
                 per_page=500
             )
             merged = {}

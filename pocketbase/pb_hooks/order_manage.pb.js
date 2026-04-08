@@ -5,7 +5,7 @@
  * 订单管理 API（替代 GAS order_manager.gs）
  */
 
-// POST /api/custom/ibkr/orders/upsert - 订单 upsert，自动写入 order_details
+// POST /api/custom/ibkr/orders/upsert - 订单 upsert，自动写入 ibkr_order_details
 routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
   const { notifyNewOrder, notifyOrder, getOrderStatusInfo } = require(`${__hooks}/lib/feishu_order.js`)
   const { appendOrderDetail, getOrderExtra, mergeOrderExtra, resolveOrderRelationship, resolveOrderStatusEventTimes, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
@@ -251,7 +251,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
       $app.save(record);
       console.log(`[OrderUpsert] 状态落库: unique_id=${uniqueId}, previous_status=${previousStatus || "-"}, new_status=${status}`);
 
-      // 写入 order_details（通过 appendOrderDetail 写入完整 order 镜像）
+      // 写入 ibkr_order_details（通过 appendOrderDetail 写入完整 order 镜像）
       appendOrderDetail(record, {
         environment: environment,
         status: status,
@@ -267,7 +267,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
           ...extra,
         },
       });
-      console.log(`[OrderUpsert] order_details 已保存: order_id=${uniqueId}, order_type=${orderType}, status=${status}`);
+      console.log(`[OrderUpsert] ibkr_order_details 已保存: order_id=${uniqueId}, order_type=${orderType}, status=${status}`);
     }
 
     // 同步飞书订单卡片
@@ -321,9 +321,10 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
   }
 });
 
-// POST /api/custom/ibkr/orders/reconcile - 回补 orders 缺失的 order_details
+// POST /api/custom/ibkr/orders/reconcile - 回补 orders 缺失的 ibkr_order_details
 routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
   const { appendOrderDetail } = require(`${__hooks}/lib/order_events.js`)
+  const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
   const envUtils = require(`${__hooks}/lib/environment.js`)
   const request = c.requestInfo().body || c.requestInfo().data || {}
 
@@ -382,7 +383,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
       }
 
       const existingDetails = $app.findRecordsByFilter(
-        "order_details",
+        COLLECTIONS.ORDER_DETAILS,
         "order_id = {:orderId} && environment = {:env}",
         "-bar_time_ms",
         1,
@@ -434,7 +435,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
           environment: environment,
           status: status,
           source: "orders/reconcile",
-          reason: onlyMissing ? "reconciled_missing_order_details" : "reconciled_order_snapshot",
+          reason: onlyMissing ? "reconciled_missing_ibkr_order_details" : "reconciled_order_snapshot",
           us_time: payload.us_time,
           cn_time: payload.cn_time,
           bar_time_ms: payload.bar_time_ms,

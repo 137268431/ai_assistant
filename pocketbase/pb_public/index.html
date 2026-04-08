@@ -506,7 +506,7 @@
                 });
 
                 // 加载今日反向信号
-                const reverseSignals = await pb.collection('reverse_signals').getFullList({
+                const reverseSignals = await pb.collection('ibkr_reverse_signals').getFullList({
                     filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                     sort: '-created',
                     $autoCancel: false
@@ -647,15 +647,33 @@
             if (!container) return;
 
             try {
-                // 先获取配置的大盘指数代码
-                let symbols = ['SPY', 'QQQ', 'VIX'];
-                try {
-                    const configValue = await loadConfigValue('market_index_symbols', 'SPY,QQQ,VIX');
-                    if (configValue) {
-                        symbols = configValue.split(',').map(s => s.trim());
-                    }
-                } catch(_) {
-                    // 使用默认值
+                const scopeFilter = currentEnvironment === 'live'
+                    ? '(environment = "live" || environment = "global" || environment = "")'
+                    : `(environment = "${escapeQueryValue(currentEnvironment)}" || environment = "global")`;
+                const watchlistResp = await apiFetch('watchlist', {
+                    filter: `${scopeFilter} && symbol_role = "market_monitor"`,
+                    sort: '-updated',
+                    perPage: 100
+                }).catch(() => ({ items: [] }));
+                const roleRows = Array.isArray(watchlistResp.items) ? watchlistResp.items : [];
+                const priority = { '': 0, global: 1 };
+                priority[currentEnvironment] = 2;
+                const merged = {};
+                const applied = {};
+                roleRows.forEach((item) => {
+                    const symbol = String(item.symbol || '').trim().toUpperCase();
+                    if (!symbol) return;
+                    const env = String(item.environment || '').trim().toLowerCase();
+                    const rank = priority[env] != null ? priority[env] : -1;
+                    if (rank < 0) return;
+                    if (applied[symbol] != null && applied[symbol] > rank) return;
+                    applied[symbol] = rank;
+                    merged[symbol] = item;
+                });
+                const symbols = Object.keys(merged).sort();
+                if (!symbols.length) {
+                    container.innerHTML = '<div class="empty-state">当前未配置市场监控标的。</div>';
+                    return;
                 }
 
                 const promises = symbols.map(async (symbol) => {

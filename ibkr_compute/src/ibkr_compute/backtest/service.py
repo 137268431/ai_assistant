@@ -161,6 +161,9 @@ class BacktestCancelled(Exception):
     pass
 
 
+WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
+
+
 class BacktestService:
     def __init__(self, pb_client: PBClient):
         self.pb = pb_client
@@ -2007,7 +2010,12 @@ class BacktestService:
             return resolved
 
         if source == "watchlist":
-            rows = self.pb.get_all_records("watchlist", sort="symbol", max_pages=20)
+            rows = self.pb.get_all_records(
+                "watchlist",
+                filter=f'symbol_role = "{WATCHLIST_SYMBOL_ROLE_TRADE}" || symbol_role = ""',
+                sort="symbol",
+                max_pages=20,
+            )
             resolved = []
             for row in rows:
                 symbol = str(row.get("symbol", "")).upper()
@@ -2380,7 +2388,12 @@ class BacktestService:
             return [{"symbol": symbol, "exchange": "", "environment": request.get("source_environment", "live")} for symbol in requested_symbols]
 
         source_environment = str(request.get("source_environment") or "live").strip().lower() or "live"
-        rows = self.pb.get_all_records("watchlist", sort="symbol", max_pages=20)
+        rows = self.pb.get_all_records(
+            "watchlist",
+            filter=f'symbol_role = "{WATCHLIST_SYMBOL_ROLE_TRADE}" || symbol_role = ""',
+            sort="symbol",
+            max_pages=20,
+        )
         merged = {}
         priority = {"": 0, "global": 1, source_environment: 2}
         applied = {}

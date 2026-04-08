@@ -55,6 +55,19 @@ BAR_INTEGRITY_STATE_DATE = "global"
 DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE = 8
 REALTIME_PRIORITY_ENVIRONMENTS = {"live", "paper"}
 SESSION_EVENT_ALERT_COOLDOWN_SECONDS = int(os.environ.get("IBKR_SESSION_EVENT_ALERT_COOLDOWN", "1800"))
+WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
+WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR = "market_monitor"
+VALID_WATCHLIST_SYMBOL_ROLES = {
+    WATCHLIST_SYMBOL_ROLE_TRADE,
+    WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR,
+}
+
+
+def normalize_watchlist_symbol_role(value, default: str = WATCHLIST_SYMBOL_ROLE_TRADE) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in VALID_WATCHLIST_SYMBOL_ROLES:
+        return normalized
+    return default
 
 
 class IBKRTradingService:
@@ -123,7 +136,7 @@ class IBKRTradingService:
         self._warmup_thread = None
         self._auth_required_reason = ""
         self._symbol_meta = {}
-        self._market_index_symbols = []
+        self._watchlist_monitor_symbols = []
         self._watchlist_symbols = []
         self._watchlist_records = {}
         self._active_subscription_symbols = []
@@ -344,8 +357,8 @@ class IBKRTradingService:
                 symbol: dict(self._symbol_meta.get(symbol) or {})
                 for symbol in symbols
             }
-        market_index_set = set(self._market_index_symbols)
-        monitor_symbols = [symbol for symbol in symbols if symbol in market_index_set]
+        monitor_symbol_set = set(self._watchlist_monitor_symbols)
+        monitor_symbols = [symbol for symbol in symbols if symbol in monitor_symbol_set]
         return {
             "target_date": target_date,
             "symbols": symbols,
@@ -1067,29 +1080,8 @@ class IBKRTradingService:
         safe_env = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
         return f'environment = "{safe_env}" || environment = "global" || environment = ""'
 
-    def _configured_market_index_symbols(self) -> list[str]:
-        raw_value = ""
-        try:
-            raw_value = self.config.get_for_environment("market_index_symbols", ENVIRONMENT, "SPY,QQQ,VIX")
-        except Exception:
-            raw_value = self.config.get("market_index_symbols", "SPY,QQQ,VIX")
-        symbols = []
-        seen = set()
-        for item in str(raw_value or "SPY,QQQ,VIX").split(","):
-            symbol = str(item or "").strip().upper()
-            if not symbol or symbol in seen:
-                continue
-            seen.add(symbol)
-            symbols.append(symbol)
-        return symbols
-
-    def _default_symbol_meta(self, symbol: str) -> dict:
-        defaults = {
-            "SPY": {"exchange": "ARCA", "industry": "ETF"},
-            "QQQ": {"exchange": "NASDAQ", "industry": "ETF"},
-            "VIX": {"exchange": "CBOE", "industry": "INDEX"},
-        }
-        return defaults.get(symbol, {"exchange": "SMART", "industry": "INDEX"})
+    def _watchlist_record_role(self, row: dict) -> str:
+        return normalize_watchlist_symbol_role((row or {}).get("symbol_role"))
 
     def _refresh_watchlist_pool(self, force: bool = False):
         refresh_minutes = max(1, self.config.get_int_for_environment("watchlist_interval_min", ENVIRONMENT, 5))
@@ -1127,34 +1119,28 @@ class IBKRTradingService:
             return
 
         symbol_meta = {}
+        monitor_symbols = []
         for symbol, row in merged.items():
+            symbol_role = self._watchlist_record_role(row)
             symbol_meta[symbol] = {
                 "exchange": str(row.get("exchange", "") or "").upper(),
                 "industry": str(row.get("industry", "") or ""),
+                "symbol_role": symbol_role,
             }
-
-        market_index_symbols = self._configured_market_index_symbols()
-        for symbol in market_index_symbols:
-            if symbol not in merged:
-                default_meta = self._default_symbol_meta(symbol)
-                merged[symbol] = {
-                    "symbol": symbol,
-                    "exchange": default_meta["exchange"],
-                    "industry": default_meta["industry"],
-                }
-            if symbol not in symbol_meta:
-                default_meta = self._default_symbol_meta(symbol)
-                symbol_meta[symbol] = {
-                    "exchange": default_meta["exchange"],
-                    "industry": default_meta["industry"],
-                }
+            if symbol_role == WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR:
+                monitor_symbols.append(symbol)
 
         self._watchlist_records = merged
         self._watchlist_symbols = sorted(merged.keys())
-        self._market_index_symbols = market_index_symbols
+        self._watchlist_monitor_symbols = sorted(monitor_symbols)
         self._symbol_meta = symbol_meta
         self._last_watchlist_refresh_at = now
-        logger.info("Watchlist pool refreshed: %d symbols", len(self._watchlist_symbols))
+        logger.info(
+            "Watchlist pool refreshed: %d symbols (%d trade / %d monitor)",
+            len(self._watchlist_symbols),
+            max(0, len(self._watchlist_symbols) - len(self._watchlist_monitor_symbols)),
+            len(self._watchlist_monitor_symbols),
+        )
 
     def _get_target_subscription_limit(self) -> int:
         return max(0, self.config.get_int_for_environment("ibkr_target_subscription_limit", ENVIRONMENT, 60))
@@ -1208,20 +1194,17 @@ class IBKRTradingService:
             }
             seen.add(symbol)
 
-        for symbol in self._market_index_symbols:
+        for symbol in self._watchlist_monitor_symbols:
             if symbol in seen:
                 continue
-            default_meta = self._default_symbol_meta(symbol)
             selected_symbols.append(symbol)
             selected_meta[symbol] = {
                 "exchange": str(
                     self._symbol_meta.get(symbol, {}).get("exchange")
-                    or default_meta.get("exchange")
                     or ""
                 ).upper(),
                 "industry": str(
                     self._symbol_meta.get(symbol, {}).get("industry")
-                    or default_meta.get("industry")
                     or ""
                 ),
             }
@@ -1498,10 +1481,11 @@ class IBKRTradingService:
         defer_repairs, defer_snapshot = self._should_defer_background_repairs()
         if defer_repairs:
             logger.info(
-                "Active target repair downgraded to scan-only: reason=%s queue=%s active_targets=%s websocket=%s authenticated=%s",
+                "Active target repair downgraded to scan-only: reason=%s queue=%s trade_targets=%s subscriptions=%s websocket=%s authenticated=%s",
                 defer_snapshot.get("reason"),
                 defer_snapshot.get("queue_size"),
                 defer_snapshot.get("active_target_count"),
+                defer_snapshot.get("active_subscription_count"),
                 defer_snapshot.get("websocket_connected"),
                 defer_snapshot.get("authenticated"),
             )
@@ -1555,10 +1539,11 @@ class IBKRTradingService:
         defer_repairs, defer_snapshot = self._should_defer_background_repairs()
         if defer_repairs:
             logger.info(
-                "Watchlist maintenance deferred: reason=%s queue=%s active_targets=%s websocket=%s authenticated=%s",
+                "Watchlist maintenance deferred: reason=%s queue=%s trade_targets=%s subscriptions=%s websocket=%s authenticated=%s",
                 defer_snapshot.get("reason"),
                 defer_snapshot.get("queue_size"),
                 defer_snapshot.get("active_target_count"),
+                defer_snapshot.get("active_subscription_count"),
                 defer_snapshot.get("websocket_connected"),
                 defer_snapshot.get("authenticated"),
             )
@@ -1773,12 +1758,13 @@ class IBKRTradingService:
                 per_symbol[symbol]["result"]["defer_reason"] = str(defer_snapshot.get("reason") or "realtime_priority_active")
                 per_symbol[symbol]["result"]["queue_size"] = int(defer_snapshot.get("queue_size", 0) or 0)
             logger.info(
-                "Pipeline repair deferred (%s): symbols=%s reason=%s queue=%s active_targets=%s websocket=%s authenticated=%s",
+                "Pipeline repair deferred (%s): symbols=%s reason=%s queue=%s trade_targets=%s subscriptions=%s websocket=%s authenticated=%s",
                 source,
                 ",".join(sorted(repair_symbols)),
                 defer_snapshot.get("reason"),
                 defer_snapshot.get("queue_size"),
                 defer_snapshot.get("active_target_count"),
+                defer_snapshot.get("active_subscription_count"),
                 defer_snapshot.get("websocket_connected"),
                 defer_snapshot.get("authenticated"),
             )
@@ -2146,7 +2132,8 @@ class IBKRTradingService:
 
     def _should_defer_background_repairs(self) -> tuple[bool, dict]:
         queue_size = int(self._compute_queue.qsize())
-        active_target_count = len(self._active_subscription_symbols)
+        active_subscription_count = len(self._active_subscription_symbols)
+        active_target_count = len(self._active_trade_symbols)
         websocket_connected = bool(self.ws_client.is_connected)
         authenticated = bool(self.session_keeper.is_authenticated)
         runtime_active = bool(
@@ -2154,12 +2141,13 @@ class IBKRTradingService:
             and ENVIRONMENT in REALTIME_PRIORITY_ENVIRONMENTS
             and authenticated
             and websocket_connected
-            and active_target_count > 0
+            and active_subscription_count > 0
         )
         snapshot = {
             "reason": "realtime_priority_active" if runtime_active else "",
             "queue_size": queue_size,
             "active_target_count": active_target_count,
+            "active_subscription_count": active_subscription_count,
             "websocket_connected": websocket_connected,
             "authenticated": authenticated,
         }
@@ -2483,8 +2471,10 @@ class IBKRTradingService:
                 ),
                 "watchlist_pool_count": len(self._watchlist_symbols),
                 "active_target_date": self._active_target_date,
-                "active_target_count": len(self._active_subscription_symbols),
-                "active_target_symbols": list(self._active_subscription_symbols),
+                "active_target_count": len(self._active_trade_symbols),
+                "active_subscription_count": len(self._active_subscription_symbols),
+                "active_target_symbols": list(self._active_trade_symbols),
+                "active_subscription_symbols": list(self._active_subscription_symbols),
                 "active_trade_symbols": list(self._active_trade_symbols),
                 "last_watchlist_refresh": (
                     datetime.fromtimestamp(self._last_watchlist_refresh_at, ET).isoformat()

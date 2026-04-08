@@ -121,6 +121,135 @@ function upsertRecord(collectionName, filterStr, filterParams, data) {
     return { record: record, action: action }
 }
 
+function getRecordExtra(record) {
+    if (!record) return {}
+    const value = record.get("extra")
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value
+    }
+    if (typeof value === "string" && value) {
+        try {
+            const parsed = JSON.parse(value)
+            return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+        } catch (_) {}
+    }
+    return {}
+}
+
+function buildSignalBarDedupeKey(data, environment) {
+    const symbol = String(data.symbol || "").trim().toUpperCase()
+    const direction = String(data.direction || "").trim().toLowerCase()
+    const barTimeMs = Math.trunc(Number(data.bar_time_ms) || 0)
+    const interval = String(data.interval || "").trim()
+    const chartTf = String(data.chart_tf || "").trim()
+    const scriptTag = String(data.script_tag || "").trim()
+    const runtimeEnvironment = String(environment || data.environment || "live").trim().toLowerCase() || "live"
+    if (!symbol || !direction || !barTimeMs) {
+        return ""
+    }
+    return [
+        runtimeEnvironment,
+        symbol,
+        direction,
+        barTimeMs,
+        interval || "-",
+        chartTf || "-",
+        scriptTag || "-",
+    ].join("|")
+}
+
+function findSignalDuplicateByBarKey(data, environment, excludeSignalId) {
+    const symbol = String(data.symbol || "").trim().toUpperCase()
+    const direction = String(data.direction || "").trim().toLowerCase()
+    const barTimeMs = Math.trunc(Number(data.bar_time_ms) || 0)
+    const runtimeEnvironment = String(environment || data.environment || "live").trim().toLowerCase() || "live"
+    if (!symbol || !direction || !barTimeMs) {
+        return null
+    }
+
+    let filter = "environment = {:env} && symbol = {:sym} && direction = {:dir} && bar_time_ms = {:ms}"
+    const params = {
+        env: runtimeEnvironment,
+        sym: symbol,
+        dir: direction,
+        ms: barTimeMs,
+    }
+
+    const interval = String(data.interval || "").trim()
+    const chartTf = String(data.chart_tf || "").trim()
+    const scriptTag = String(data.script_tag || "").trim()
+    const signalId = String(excludeSignalId || data.signal_id || "").trim()
+
+    if (interval) {
+        filter += " && interval = {:tf}"
+        params.tf = interval
+    }
+    if (chartTf) {
+        filter += " && chart_tf = {:chartTf}"
+        params.chartTf = chartTf
+    }
+    if (scriptTag) {
+        filter += " && script_tag = {:scriptTag}"
+        params.scriptTag = scriptTag
+    }
+    if (signalId) {
+        filter += " && signal_id != {:sid}"
+        params.sid = signalId
+    }
+
+    try {
+        const rows = $app.findRecordsByFilter("ibkr_signals", filter, "-updated,-created", 5, 0, params) || []
+        return rows.length > 0 ? rows[0] : null
+    } catch (_) {
+        return null
+    }
+}
+
+function annotateSignalDuplicate(record, incomingData, environment) {
+    if (!record || !incomingData) return record
+
+    const extra = getRecordExtra(record)
+    const duplicateSignalIds = Array.isArray(extra.duplicate_signal_ids) ? extra.duplicate_signal_ids.slice() : []
+    const incomingSignalId = String(incomingData.signal_id || "").trim()
+    if (incomingSignalId && duplicateSignalIds.indexOf(incomingSignalId) === -1) {
+        duplicateSignalIds.push(incomingSignalId)
+    }
+
+    const incomingExtra = incomingData.extra && typeof incomingData.extra === "object" && !Array.isArray(incomingData.extra)
+        ? incomingData.extra
+        : {}
+    const sourceMeta = normalizeSignalSourceMeta(
+        incomingData.signal_source
+        || incomingExtra.signal_source
+        || incomingData.source
+        || incomingExtra.source
+        || ""
+    )
+
+    record.set("extra", {
+        ...extra,
+        duplicate_signal_ids: duplicateSignalIds,
+        duplicate_signal_count: duplicateSignalIds.length,
+        last_duplicate_signal_id: incomingSignalId,
+        last_duplicate_signal_at: new Date().toISOString(),
+        last_duplicate_signal_source: String(
+            incomingExtra.signal_source
+            || incomingData.signal_source
+            || sourceMeta.signal_source
+            || ""
+        ),
+        last_duplicate_signal_source_label: String(
+            incomingExtra.signal_source_label
+            || incomingData.signal_source_label
+            || sourceMeta.signal_source_label
+            || ""
+        ),
+        duplicate_bar_dedupe_key: buildSignalBarDedupeKey(incomingData, environment),
+    })
+    $app.save(record)
+    return record
+}
+
 function buildIndicatorData(d, environment) {
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const interval = String(d.interval || "").trim()
@@ -297,6 +426,9 @@ const exported = {
     valuesEqual,
     recordNeedsUpdate,
     upsertRecord,
+    buildSignalBarDedupeKey,
+    findSignalDuplicateByBarKey,
+    annotateSignalDuplicate,
     buildIndicatorData,
     buildSignalData,
     buildBarIntegrityData,

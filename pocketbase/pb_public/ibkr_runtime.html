@@ -1269,6 +1269,8 @@
                 ready_symbols: Number(warmup.ready_symbols || 0) || 0,
                 ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
                 ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
+                trade_symbols: Array.isArray(warmup.trade_symbols) ? warmup.trade_symbols : [],
+                monitor_symbols: Array.isArray(warmup.monitor_symbols) ? warmup.monitor_symbols : [],
                 pending_symbols: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : [],
                 started_at: warmup.started_at || null,
                 finished_at: warmup.finished_at || null,
@@ -1638,7 +1640,6 @@
             const latestBarWrite = latestBar ? String(getComputedTimeLabel(latestBar)).slice(0, 19) : '--';
             const latestIndicatorCalc = latestIndicator ? String(getComputedTimeLabel(latestIndicator)).slice(0, 19) : '--';
             const latestSignalTime = latestSignal ? String((latestSignal.us_time || latestSignal.created || '--')).slice(0, 19) : '--';
-            const excludedMrSymbols = parseSymbolList(summary?.config?.market_index_symbols || '');
             const rows = [
                 ['Gateway', status?.gateway?.running || status?.gateway?.reachable ? 'ACTIVE' : 'OFFLINE'],
                 ['Gateway Reachable', status?.gateway?.reachable ? 'YES' : 'NO'],
@@ -1676,7 +1677,7 @@
                 ['Watchlist Pool', String(status?.market_universe?.watchlist_pool_count || 0)],
                 ['Today Targets', String(status?.market_universe?.active_target_count || 0)],
                 ['Trade Targets', Array.isArray(status?.market_universe?.active_trade_symbols) ? status.market_universe.active_trade_symbols.join(', ') || '--' : '--'],
-                ['MR Excluded Symbols', excludedMrSymbols.join(', ') || '--'],
+                ['Monitor Symbols', Array.isArray(warmup.monitor_symbols) ? warmup.monitor_symbols.join(', ') || '--' : '--'],
                 ['Target Date', String(status?.market_universe?.active_target_date || '--')],
                 ['Last Target Refresh', formatTimeLabel(status?.market_universe?.last_target_refresh)],
                 ['Active Repair Every', `${Number(status?.market_universe?.active_repair_interval_min || 0) || 0}m`],
@@ -1775,8 +1776,7 @@
                 'signal_validity_minutes',
                 'order_validity_minutes',
                 'signal_poll_interval_sec',
-                'reverse_signal_threshold',
-                'market_index_symbols'
+                'reverse_signal_threshold'
             ];
             const configMap = {};
             runtimeConfig.forEach((item) => {
@@ -1868,25 +1868,12 @@
 
         function renderConfigDetail(summary, runtimeConfig, cronDefinitions) {
             const { configMap, preferredKeys } = getMergedConfigMap(summary, runtimeConfig);
-            const excludedMrSymbols = parseSymbolList(configMap.market_index_symbols || '');
             const chips = preferredKeys
                 .filter((key) => configMap[key] !== undefined && configMap[key] !== '')
                 .map((key) => `
                     <span class="mini-tag"><span class="mini-label">${escapeHtml(key)}</span>${escapeHtml(String(configMap[key]))}</span>
                 `);
             const blocks = [];
-            if (excludedMrSymbols.length) {
-                blocks.push(`
-                    <div class="config-stack">
-                        <div class="config-block-label">SD MR 排除标的</div>
-                        <div class="tag-row">
-                            ${excludedMrSymbols.map((symbol) => `
-                                <span class="mini-tag"><span class="mini-label">EXCLUDE</span>${escapeHtml(symbol)}</span>
-                            `).join('')}
-                        </div>
-                    </div>
-                `);
-            }
             if (chips.length) {
                 blocks.push(`
                     <div class="config-stack">

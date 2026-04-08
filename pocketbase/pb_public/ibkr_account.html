@@ -913,6 +913,10 @@
                 .replace(/'/g, '&#39;');
         }
 
+        function toJsStringLiteral(value) {
+            return JSON.stringify(String(value ?? ''));
+        }
+
         function getAuthHeaders(extra = {}) {
             const headers = { ...extra };
             const token = getToken();
@@ -1465,7 +1469,11 @@
         function renderOrdersSummary(orders, snapshot) {
             const area = document.getElementById('ordersSummary');
             if (!area) return;
-            if (!orders.length) {
+            const managedGroups = Array.isArray(snapshot?.managed_order_groups) ? snapshot.managed_order_groups : [];
+            const pbOnlyGroups = Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups : [];
+            const reconciliation = snapshot?.order_reconciliation || {};
+
+            if (!orders.length && !managedGroups.length) {
                 area.innerHTML = '';
                 return;
             }
@@ -1481,27 +1489,53 @@
             let otherChildren = 0;
             let remainingQty = 0;
 
-            focusOrders.forEach((order) => {
-                const symbol = String(order.symbol || '').trim().toUpperCase();
-                const status = String(order.status || '--').trim().toUpperCase();
-                const role = getOrderRole(order);
-                if (symbol) {
-                    symbols.add(symbol);
-                    symbolCounts[symbol] = (symbolCounts[symbol] || 0) + 1;
-                }
-                statusCounts[status] = (statusCounts[status] || 0) + 1;
-                if (role === 'entry') entryCount += 1;
-                else if (role === 'take_profit') tpCount += 1;
-                else if (role === 'stop_loss') stopCount += 1;
-                else otherChildren += 1;
-                remainingQty += Math.abs(Number(order.remaining_quantity || order.total_quantity || 0) || 0);
-            });
+            if (focusOrders.length) {
+                focusOrders.forEach((order) => {
+                    const symbol = String(order.symbol || '').trim().toUpperCase();
+                    const status = String(order.status || '--').trim().toUpperCase();
+                    const role = getOrderRole(order);
+                    if (symbol) {
+                        symbols.add(symbol);
+                        symbolCounts[symbol] = (symbolCounts[symbol] || 0) + 1;
+                    }
+                    statusCounts[status] = (statusCounts[status] || 0) + 1;
+                    if (role === 'entry') entryCount += 1;
+                    else if (role === 'take_profit') tpCount += 1;
+                    else if (role === 'stop_loss') stopCount += 1;
+                    else otherChildren += 1;
+                    remainingQty += Math.abs(Number(order.remaining_quantity || order.total_quantity || 0) || 0);
+                });
+            } else {
+                managedGroups.forEach((group) => {
+                    const symbol = String(group.symbol || '').trim().toUpperCase();
+                    const status = String(group.latest_order_status || '--').trim().toUpperCase();
+                    if (symbol) {
+                        symbols.add(symbol);
+                        symbolCounts[symbol] = (symbolCounts[symbol] || 0) + 1;
+                    }
+                    statusCounts[status] = (statusCounts[status] || 0) + 1;
+                    const ordersInGroup = Array.isArray(group.orders) ? group.orders : [];
+                    ordersInGroup.forEach((order) => {
+                        const role = String(order.role || '').trim().toLowerCase();
+                        if (role === 'entry') entryCount += 1;
+                        else if (role === 'take_profit') tpCount += 1;
+                        else if (role === 'stop_loss') stopCount += 1;
+                        else otherChildren += 1;
+                        remainingQty += Math.abs(Number(order.quantity || 0) - Number(order.filled_qty || 0));
+                    });
+                });
+            }
 
-            const cards = [
+            const cards = focusOrders.length ? [
                 ['Open Orders', String(snapshot?.counts?.open_orders || openOrders.length || 0), '当前可撤挂单'],
                 ['Symbols', String(symbols.size), '有挂单的标的数'],
                 ['Entry / Exit', `${entryCount} / ${tpCount + stopCount + otherChildren}`, '入场单 / 保护单'],
                 ['Remaining Qty', formatQty(remainingQty), '待成交剩余数量'],
+            ] : [
+                ['Broker Open', String(reconciliation.broker_open_orders || 0), 'IBKR 当前返回挂单'],
+                ['PB Groups', String(reconciliation.pb_active_order_groups || managedGroups.length || 0), '系统仍认定活跃订单组'],
+                ['PB Only', String(reconciliation.pb_only_active_order_groups || pbOnlyGroups.length || 0), 'PB 有但 broker 当前未返回'],
+                ['Symbols', String(symbols.size), '涉及标的数'],
             ];
             const statusLine = formatCompactCountMap(statusCounts, (key, count) => `${key}×${count}`) || '--';
             const symbolLine = formatCompactCountMap(symbolCounts, (key, count) => `${key}×${count}`) || '--';
@@ -1511,6 +1545,13 @@
                 `STOP×${stopCount}`,
                 otherChildren ? `CHILD×${otherChildren}` : '',
             ].filter(Boolean).join(' · ');
+            const extraNotes = [];
+            if (pbOnlyGroups.length > 0) {
+                extraNotes.push(`PB 侧仍有 ${pbOnlyGroups.length} 个活跃订单组，但 broker 当前实时挂单接口未返回`)
+            }
+            if (Number(reconciliation.broker_only_open_orders || 0) > 0) {
+                extraNotes.push(`broker 有 ${reconciliation.broker_only_open_orders} 条挂单未关联到 PB 订单表`)
+            }
 
             area.innerHTML = `
                 <div class="orders-summary-grid">
@@ -1526,6 +1567,7 @@
                     <div class="orders-summary-note">状态分布: ${escapeHtml(statusLine)}</div>
                     <div class="orders-summary-note">挂单角色: ${escapeHtml(roleLine || '--')}</div>
                     <div class="orders-summary-note">当前标的: ${escapeHtml(symbolLine)}</div>
+                    ${extraNotes.map((line) => `<div class="orders-summary-note">${escapeHtml(line)}</div>`).join('')}
                 </div>
             `;
         }
@@ -1735,6 +1777,9 @@
 
         function renderOrders(snapshot) {
             const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.slice() : [];
+            const managedGroups = Array.isArray(snapshot?.managed_order_groups) ? snapshot.managed_order_groups.slice() : [];
+            const pbOnlyGroups = Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups.slice() : [];
+            const reconciliation = snapshot?.order_reconciliation || {};
             orders.sort((a, b) => {
                 const leftOpen = a.can_cancel ? 1 : 0;
                 const rightOpen = b.can_cancel ? 1 : 0;
@@ -1748,7 +1793,52 @@
             const area = document.getElementById('ordersArea');
             renderOrdersSummary(orders, snapshot);
             if (!orders.length) {
-                area.innerHTML = '<div class="empty-state">当前没有实时挂单。</div>';
+                if (!managedGroups.length) {
+                    area.innerHTML = '<div class="empty-state">当前没有实时挂单。</div>';
+                    return;
+                }
+                area.innerHTML = `
+                    <div class="empty-state">
+                        Broker 当前没有返回实时挂单，但系统侧仍检测到 ${escapeHtml(String(managedGroups.length))} 个活跃订单组。
+                        ${Number(reconciliation.pb_only_active_order_groups || pbOnlyGroups.length || 0) > 0 ? `其中 ${escapeHtml(String(reconciliation.pb_only_active_order_groups || pbOnlyGroups.length || 0))} 个是 PB-only，需要重点排查订单同步。` : ''}
+                    </div>
+                    <div class="order-grid">${managedGroups.map((group) => {
+                        const ordersInGroup = Array.isArray(group.orders) ? group.orders : [];
+                        const signalId = String(group.signal_id || '');
+                        const tradeGroupId = String(group.trade_group_id || group.entry_order_unique_id || '');
+                        const latestStatus = String(group.latest_order_status || '--');
+                        const matchedText = group.broker_matched ? 'broker matched' : 'broker missing';
+                        return `
+                            <div class="surface-card">
+                                <div class="record-head">
+                                    <div>
+                                        <div class="record-symbol">${escapeHtml(group.symbol || '--')}</div>
+                                        <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
+                                    </div>
+                                    <div class="badge-row">
+                                        <span class="${badgeClass(group.has_open_exposure ? 'long' : group.has_active_order ? 'pending' : 'neutral')}">${escapeHtml(group.has_open_exposure ? 'OPEN' : 'PENDING')}</span>
+                                        <span class="${badgeClass(group.broker_matched ? 'ready' : 'warning')}">${escapeHtml(matchedText.toUpperCase())}</span>
+                                        <span class="${badgeClass(String(latestStatus).toLowerCase())}">${escapeHtml(String(latestStatus).toUpperCase())}</span>
+                                    </div>
+                                </div>
+                                <div class="metric-grid">
+                                    <div class="metric-item"><div class="metric-label">Orders</div><div class="metric-value">${escapeHtml(String(group.order_count || ordersInGroup.length || 0))}</div></div>
+                                    <div class="metric-item"><div class="metric-label">Broker Match</div><div class="metric-value">${escapeHtml(String(group.matched_broker_orders || 0))}</div></div>
+                                    <div class="metric-item"><div class="metric-label">Updated</div><div class="metric-value">${escapeHtml(formatTimeLabel(group.latest_updated))}</div></div>
+                                    <div class="metric-item"><div class="metric-label">State</div><div class="metric-value">${escapeHtml(group.has_open_exposure ? 'Open Exposure' : 'Pending Only')}</div></div>
+                                </div>
+                                <div class="detail-row">
+                                    ${ordersInGroup.map((order) => `<span class="detail-pill">${escapeHtml(String(order.role || '--').toUpperCase())}:${escapeHtml(String(order.status || '--'))}${order.broker_order_id ? ` · ${escapeHtml(order.broker_order_id)}` : ''}</span>`).join('')}
+                                </div>
+                                <div class="record-actions">
+                                    ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
+                                    ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
+                                    <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(group.symbol || '')})">图表页</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}</div>
+                `;
                 return;
             }
             area.innerHTML = `<div class="order-grid">${orders.map((order) => `

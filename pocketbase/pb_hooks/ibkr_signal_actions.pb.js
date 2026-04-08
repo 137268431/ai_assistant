@@ -161,7 +161,7 @@ var signalActionsCancelOrderGroupRecords = function(options) {
                 },
             })
         } catch (detailErr) {
-            console.error("[SignalActions] 写入 order_details 失败:", detailErr)
+            console.error("[SignalActions] 写入 ibkr_order_details 失败:", detailErr)
         }
     })
 
@@ -1024,7 +1024,7 @@ routerAdd("GET", "/webhook/order/close", (c) => {
                     },
                 })
             } catch (detailErr) {
-                console.error("[OrderAction] 平仓写入 order_details 失败:", detailErr)
+                console.error("[OrderAction] 平仓写入 ibkr_order_details 失败:", detailErr)
             }
         })
         const orderExtra = getOrderExtra(record)

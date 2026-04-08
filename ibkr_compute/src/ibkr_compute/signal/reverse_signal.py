@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 ET = timezone(timedelta(hours=-4))
 
 REVERSE_ACTIONS = {"close", "cancel", "adjust_sl", "adjust_tp"}
-REVERSE_SIGNAL_COLLECTION = "reverse_signals"
+REVERSE_SIGNAL_COLLECTION = "ibkr_reverse_signals"
 
 
 class ReverseSignalHandler:

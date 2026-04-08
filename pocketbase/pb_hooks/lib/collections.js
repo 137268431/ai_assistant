@@ -5,8 +5,8 @@
 
 const COLLECTIONS = Object.freeze({
     ORDERS: "orders",
-    ORDER_DETAILS: "order_details",
-    REVERSE_SIGNALS: "reverse_signals",
+    ORDER_DETAILS: "ibkr_order_details",
+    REVERSE_SIGNALS: "ibkr_reverse_signals",
     IBKR_BACKTEST_REVERSE_SIGNALS: "ibkr_backtest_reverse_signals",
 })
 
@@ -19,15 +19,15 @@ const COLLECTION_META = Object.freeze({
     }),
     [COLLECTIONS.ORDER_DETAILS]: Object.freeze({
         role: "canonical_app_order_events",
-        cleanup_stage: "rename_after_readers_switch",
-        rename_target: "ibkr_order_details",
-        note: "App-facing order event log; naming is ambiguous but still actively used.",
+        cleanup_stage: "retain",
+        rename_target: "",
+        note: "Canonical IBKR order event log collection.",
     }),
     [COLLECTIONS.REVERSE_SIGNALS]: Object.freeze({
         role: "canonical_reverse_workflow",
-        cleanup_stage: "rename_after_readers_switch",
-        rename_target: "ibkr_reverse_signals",
-        note: "Live reverse-intent workflow table; not safe to delete while hooks, compute, and UI still read it.",
+        cleanup_stage: "retain",
+        rename_target: "",
+        note: "Canonical IBKR reverse-intent workflow collection.",
     }),
     [COLLECTIONS.IBKR_BACKTEST_REVERSE_SIGNALS]: Object.freeze({
         role: "backtest_only",

@@ -29,18 +29,37 @@ cronAdd("signal_expiry_check", "*/5 * * * *", () => {
 
         const cutoffMs = Date.now() - validityMinutes * 60 * 1000
 
-        let expired
+        let candidates
         try {
-            expired = $app.findRecordsByFilter(
+            candidates = $app.findRecordsByFilter(
                 "ibkr_signals",
-                `(status = 'pending' || status = 'awaiting_confirm') && environment = {:env} && bar_time_ms <= {:cutoffMs}`,
+                `(status = 'pending' || status = 'awaiting_confirm') && environment = {:env}`,
                 "-created", 100, 0,
-                { env: environment, cutoffMs: cutoffMs }
+                { env: environment }
             )
         } catch (err) {
             console.error(`[SignalExpiry] ${environment}: 查询信号失败:`, err)
             continue
         }
+
+        const expired = (candidates || []).filter((record) => {
+            try {
+                const extra = getSignalExtra(record)
+                const barTimeMs = Number(record.get("bar_time_ms") || extra.bar_time_ms || 0) || 0
+                if (barTimeMs > 0) {
+                    return barTimeMs <= cutoffMs
+                }
+                const createdMs = Date.parse(String(record.get("created") || "").trim() || "")
+                if (Number.isFinite(createdMs) && createdMs > 0) {
+                    return createdMs <= cutoffMs
+                }
+                const updatedMs = Date.parse(String(record.get("updated") || "").trim() || "")
+                if (Number.isFinite(updatedMs) && updatedMs > 0) {
+                    return updatedMs <= cutoffMs
+                }
+            } catch (_) {}
+            return false
+        })
 
         if (!expired || expired.length === 0) {
             console.log(`[SignalExpiry] ${environment}: 无过期信号（有效期 ${validityMinutes} 分钟）`)
@@ -91,6 +110,11 @@ cronAdd("signal_expiry_check", "*/5 * * * *", () => {
 
                 const oldStatus = record.get("status")
                 record.set("status", "expired")
+                mergeSignalExtra(record, {
+                    expired_by: "signal_expiry_check",
+                    expired_at: new Date().toISOString(),
+                    expiry_reference: Number(record.get("bar_time_ms") || 0) > 0 ? "bar_time_ms" : "created_or_updated",
+                }, false)
                 $app.save(record)
                 const signalExtra = getSignalExtra(record)
                 const syncResult = notifySignalStatus("expired", record, {

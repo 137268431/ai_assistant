@@ -1272,7 +1272,7 @@
             return `
                 <div class="detail-card">
                     <div class="subhead">反转验证</div>
-                    <div class="foot-note">这是回测阶段的反转动作留痕，只用于验证持仓后的 <span class="mono">indicator_conflict</span> 场景，不会回写 live <span class="mono">reverse_signals</span>。</div>
+                    <div class="foot-note">这是回测阶段的反转动作留痕，只用于验证持仓后的 <span class="mono">indicator_conflict</span> 场景，不会回写 live <span class="mono">ibkr_reverse_signals</span>。</div>
                     <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
                     <div class="detail-list">
                         <div class="detail-item"><div class="detail-item-label">Collection</div><div class="detail-item-value mono">${escapeHtml(capture.collection || 'ibkr_backtest_reverse_signals')}</div></div>

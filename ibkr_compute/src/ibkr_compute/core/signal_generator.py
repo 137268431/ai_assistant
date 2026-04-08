@@ -15,25 +15,17 @@ import logging
 from .position_sizing import calc_long_position, calc_short_position
 
 logger = logging.getLogger(__name__)
-DEFAULT_MARKET_INDEX_SYMBOLS = "SPY,QQQ,VIX"
+DEFAULT_MARKET_MONITOR_SYMBOLS = ""
 
 
 class SignalGenerator:
     def __init__(self, symbol: str, interval: str, params: dict = None):
         self.symbol = symbol
         self.interval = interval
-        self.params = params or {}
-        raw_excluded_symbols = (
-            self.params.get("market_index_symbols")
-            or self.params.get("exclude_symbols")
-            or DEFAULT_MARKET_INDEX_SYMBOLS
-        )
-        self.excluded_symbols = {
-            str(item or "").strip().upper()
-            for item in str(raw_excluded_symbols or DEFAULT_MARKET_INDEX_SYMBOLS).split(",")
-            if str(item or "").strip()
-        }
-        self.symbol_excluded = self.symbol in self.excluded_symbols
+        self.params = {}
+        self.market_monitor_symbols = set()
+        self.symbol_is_market_monitor = False
+        self.set_params(params)
 
         # MR 窗口状态
         self.sd_lower_mr_active = False
@@ -73,13 +65,26 @@ class SignalGenerator:
         self._prev_buy_signal = False
         self._prev_sell_signal = False
 
+    def set_params(self, params: dict = None) -> None:
+        self.params = params or {}
+        raw_market_monitor_symbols = (
+            self.params.get("market_monitor_symbols")
+            or DEFAULT_MARKET_MONITOR_SYMBOLS
+        )
+        self.market_monitor_symbols = {
+            str(item or "").strip().upper()
+            for item in str(raw_market_monitor_symbols or DEFAULT_MARKET_MONITOR_SYMBOLS).split(",")
+            if str(item or "").strip()
+        }
+        self.symbol_is_market_monitor = str(self.symbol or "").strip().upper() in self.market_monitor_symbols
+
     def update(self, snapshot: dict) -> dict:
         """根据最新指标快照更新 MR 窗口状态, 检测信号。
         返回 None (无信号) 或 signal dict。
         """
         if not snapshot:
             return None
-        if self.symbol_excluded:
+        if self.symbol_is_market_monitor:
             return None
 
         sd_lower = snapshot.get("sd_lower", False)

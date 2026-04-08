@@ -73,9 +73,7 @@ const configData = [
   cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '兜底心跳通知', '系统通知', 930, '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),
   cfg('inspection_notify_enabled', 'TRUE', 'TRUE', '巡检告警', '系统通知', 940, '孤立持仓、恢复异常、数据缺口等巡检告警'),
 
-  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址'),
-
-  cfg('market_index_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '大盘指数标的', '市场分析', 1100, '用于监控和关联分析的大盘指数代码，逗号分隔')
+  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址')
 ];
 
 const watchlistData = [
@@ -239,7 +237,8 @@ function normalizeImportItem(collection, item) {
       updated_us: item.updated_us || '',
       updated_cn: item.updated_cn || '',
       note: item.note || '',
-      environment: item.environment || 'global'
+      environment: item.environment || 'global',
+      symbol_role: item.symbol_role || 'trade'
     };
   }
 

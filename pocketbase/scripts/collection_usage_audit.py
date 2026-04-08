@@ -47,17 +47,17 @@ COLLECTIONS = {
         "rename_target": "",
         "note": "Main app order lifecycle table.",
     },
-    "order_details": {
+    "ibkr_order_details": {
         "role": "canonical_app_order_events",
-        "cleanup_stage": "rename_after_readers_switch",
-        "rename_target": "ibkr_order_details",
-        "note": "Main app order event log with ambiguous naming.",
+        "cleanup_stage": "retain",
+        "rename_target": "",
+        "note": "Canonical IBKR order event log collection.",
     },
-    "reverse_signals": {
+    "ibkr_reverse_signals": {
         "role": "canonical_reverse_workflow",
-        "cleanup_stage": "rename_after_readers_switch",
-        "rename_target": "ibkr_reverse_signals",
-        "note": "Reverse workflow table; not safe to delete while UI/hooks/compute still read it.",
+        "cleanup_stage": "retain",
+        "rename_target": "",
+        "note": "Canonical IBKR reverse workflow collection.",
     },
     "ibkr_backtest_reverse_signals": {
         "role": "backtest_only",

@@ -736,7 +736,7 @@
             try {
                 currentPage = 1;
                 const perPage = queryMode === 'list' ? itemsPerPage : 300;
-                const result = await pb.collection('order_details').getList(1, perPage, {
+                const result = await pb.collection('ibkr_order_details').getList(1, perPage, {
                     filter: buildDetailsFilter(getSearchTerm()),
                     sort: '-bar_time_ms,-created',
                     $autoCancel: false
@@ -765,7 +765,7 @@
             if (!hasMore || queryMode !== 'list') return;
             try {
                 const nextPage = currentPage + 1;
-                const result = await pb.collection('order_details').getList(nextPage, itemsPerPage, {
+                const result = await pb.collection('ibkr_order_details').getList(nextPage, itemsPerPage, {
                     filter: buildDetailsFilter(getSearchTerm()),
                     sort: '-bar_time_ms,-created',
                     $autoCancel: false

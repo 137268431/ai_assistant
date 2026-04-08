@@ -1442,7 +1442,7 @@
                 const latestBySymbol = {};
                 for (const symbolChunk of chunkArray(symbols, 12)) {
                     const symbolFilter = symbolChunk.map(s => `symbol = "${escapeFilterValue(s)}"`).join(' || ');
-                    const rows = await fetchCollectionFullList('reverse_signals', {
+                    const rows = await fetchCollectionFullList('ibkr_reverse_signals', {
                         filter: `environment = "${currentEnvironment}" && (${symbolFilter}) && status = "confirmed" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                         sort: '-created',
                         maxPages: 4

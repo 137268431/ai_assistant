@@ -285,11 +285,11 @@ check_today_test_data() {
     local ord_count=$(echo "$ord_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询订单详情
-    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=100" "" "检查-查询订单详情")
+    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=100" "" "检查-查询订单详情")
     local det_count=$(echo "$det_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询反转信号
-    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/reverse_signals/records?filter=date='${us_date}'&perPage=100" "" "检查-查询反转信号")
+    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_reverse_signals/records?filter=date='${us_date}'&perPage=100" "" "检查-查询反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询指标
@@ -354,8 +354,8 @@ cleanup_today_data() {
         fi
     fi
 
-    # ── 订单详情（order_details）──
-    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=200" "" "清理-查询所有订单详情")
+    # ── 订单详情（ibkr_order_details）──
+    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=200" "" "清理-查询所有订单详情")
     local det_count=$(echo "$det_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_det=0
 
@@ -369,13 +369,13 @@ cleanup_today_data() {
                 [ -n "$oid" ] && echo -e "    ${RED}✗${NC} $oid"
             done
             for det_id in $deleted_det_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/order_details/records/${det_id}" "" "删除订单详情" > /dev/null 2>&1
+                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_order_details/records/${det_id}" "" "删除订单详情" > /dev/null 2>&1
             done
         fi
     fi
 
     # ── 反转信号 ──
-    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/reverse_signals/records?perPage=200" "" "清理-查询所有反转信号")
+    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_reverse_signals/records?perPage=200" "" "清理-查询所有反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_rev=0
 
@@ -389,7 +389,7 @@ cleanup_today_data() {
                 [ -n "$rid" ] && echo -e "    ${RED}✗${NC} $rid"
             done
             for rev_id in $deleted_rev_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/reverse_signals/records/${rev_id}" "" "删除反转信号" > /dev/null 2>&1
+                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_reverse_signals/records/${rev_id}" "" "删除反转信号" > /dev/null 2>&1
             done
         fi
     fi

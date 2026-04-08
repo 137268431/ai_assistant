@@ -163,6 +163,21 @@ def build_bar_environment_filter(environment: str, include_legacy_empty: bool = 
     return f"({' || '.join(clauses)})" if len(clauses) > 1 else clauses[0]
 
 
+WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
+WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR = "market_monitor"
+VALID_WATCHLIST_SYMBOL_ROLES = {
+    WATCHLIST_SYMBOL_ROLE_TRADE,
+    WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR,
+}
+
+
+def normalize_watchlist_symbol_role(value, default: str = WATCHLIST_SYMBOL_ROLE_TRADE) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in VALID_WATCHLIST_SYMBOL_ROLES:
+        return normalized
+    return default
+
+
 def normalize_symbols(symbols) -> list[str]:
     normalized = []
     seen = set()
@@ -190,31 +205,32 @@ def normalize_bar_environment(bar: dict, environment: str) -> dict:
     return payload
 
 
-def get_market_index_symbols(environment: str) -> set[str]:
-    runtime_environment = str(environment or "live").strip().lower() or "live"
-    try:
-        raw_value = cfg.get_for_environment("market_index_symbols", runtime_environment, "SPY,QQQ,VIX")
-    except Exception:
-        raw_value = cfg.get("market_index_symbols", "SPY,QQQ,VIX")
+def get_market_monitor_symbols(environment: str) -> set[str]:
+    watchlist_map = load_effective_watchlist(environment)
     return {
-        str(item or "").strip().upper()
-        for item in str(raw_value or "SPY,QQQ,VIX").split(",")
-        if str(item or "").strip()
+        symbol
+        for symbol, row in watchlist_map.items()
+        if normalize_watchlist_symbol_role((row or {}).get("symbol_role")) == WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR
     }
 
 
 def get_signal_generator_params(environment: str) -> dict:
-    market_index_symbols = sorted(get_market_index_symbols(environment))
+    market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
     return {
-        "market_index_symbols": ",".join(market_index_symbols),
+        "market_monitor_symbols": ",".join(market_monitor_symbols),
     }
 
 
 def get_or_create_engine(environment: str, symbol: str, interval: str) -> IndicatorEngine:
     key = (environment, symbol, interval)
+    signal_params = get_signal_generator_params(environment)
     if key not in engines:
         engines[key] = IndicatorEngine(symbol, interval)
-        signal_gens[key] = SignalGenerator(symbol, interval, params=get_signal_generator_params(environment))
+        signal_gens[key] = SignalGenerator(symbol, interval, params=signal_params)
+    else:
+        signal_generator = signal_gens.get(key)
+        if signal_generator:
+            signal_generator.set_params(signal_params)
     return engines[key]
 
 
@@ -687,7 +703,9 @@ def load_effective_watchlist(environment: str) -> dict:
         if symbol in applied and applied[symbol] > rank:
             continue
         applied[symbol] = rank
-        merged[symbol] = row
+        normalized_row = dict(row)
+        normalized_row["symbol_role"] = normalize_watchlist_symbol_role((row or {}).get("symbol_role"))
+        merged[symbol] = normalized_row
     return merged
 
 
@@ -789,7 +807,17 @@ def build_screener_payload(
     now_ms = int(time.time() * 1000)
 
     refresh_daily_close_cache([runtime_environment])
-    watchlist_map = load_effective_watchlist(runtime_environment)
+    watchlist_map_all = load_effective_watchlist(runtime_environment)
+    watchlist_map = {
+        symbol: row
+        for symbol, row in watchlist_map_all.items()
+        if normalize_watchlist_symbol_role((row or {}).get("symbol_role")) == WATCHLIST_SYMBOL_ROLE_TRADE
+    }
+    market_monitor_symbols = {
+        symbol
+        for symbol, row in watchlist_map_all.items()
+        if normalize_watchlist_symbol_role((row or {}).get("symbol_role")) == WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR
+    }
     metadata_map = refresh_symbol_metadata()
 
     universe_symbols = selected_symbols or sorted(watchlist_map.keys())
@@ -806,6 +834,8 @@ def build_screener_payload(
     target_by_symbol = {}
     for row in target_rows:
         symbol = str(row.get("symbol", "")).strip().upper()
+        if symbol in market_monitor_symbols:
+            continue
         if symbol and symbol not in target_by_symbol:
             target_by_symbol[symbol] = row
             if symbol not in universe_set and not selected_set:
@@ -1840,7 +1870,7 @@ def compute():
                     reset_compute_state_for_symbols(environment, requested_symbols, intervals=INTERVALS)
                 if not skip_persisted_cursor:
                     load_persisted_compute_cursors(environment)
-                market_index_symbols = get_market_index_symbols(environment)
+                market_monitor_symbols = get_market_monitor_symbols(environment)
                 for interval in INTERVALS:
                     interval_bars = fetch_interval_bars(
                         environment,
@@ -1906,7 +1936,7 @@ def compute():
                             if len(indicator_batch) >= INDICATOR_BATCH_SIZE:
                                 flush_pending_indicators()
 
-                            if interval != "5m" or not signal_generator or symbol in market_index_symbols:
+                            if interval != "5m" or not signal_generator or symbol in market_monitor_symbols:
                                 continue
 
                             signal = signal_generator.update(snapshot)

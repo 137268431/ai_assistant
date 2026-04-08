@@ -906,8 +906,8 @@
     <section id="watchlistTab" class="tab-panel">
       <div class="panel-stack">
         <section class="panel">
-          <div class="panel-title">搜索可加入的标的</div>
-          <div class="panel-copy">支持 ticker 或公司名。返回结果来自 IBKR Gateway，不依赖本地缓存前端匹配。</div>
+          <div class="panel-title" id="watchlistSearchPanelTitle">搜索可加入的标的</div>
+          <div class="panel-copy" id="watchlistSearchPanelCopy">支持 ticker 或公司名。返回结果来自 IBKR Gateway，不依赖本地缓存前端匹配。</div>
 
           <div class="control-grid">
             <div class="field">
@@ -941,8 +941,8 @@
         </section>
 
         <section class="panel">
-          <div class="panel-title">已有 watchlist 记录</div>
-          <div class="panel-copy">这里直接管理 PocketBase `watchlist` 集合，默认支持当前环境与 GLOBAL 共享池一起看。</div>
+          <div class="panel-title" id="watchlistListPanelTitle">已有 watchlist 记录</div>
+          <div class="panel-copy" id="watchlistListPanelCopy">这里直接管理 PocketBase `watchlist` 集合，默认支持当前环境与 GLOBAL 共享池一起看。</div>
 
           <div class="control-grid">
             <div class="field">
@@ -985,13 +985,14 @@
                   <th>Exchange</th>
                   <th>Industry</th>
                   <th>Scope</th>
+                  <th>Role</th>
                   <th>Note</th>
                   <th>Updated</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="watchlistTable">
-                <tr><td colspan="7" class="empty-state">尚未加载记录。</td></tr>
+                <tr><td colspan="8" class="empty-state">尚未加载记录。</td></tr>
               </tbody>
             </table>
           </div>
@@ -1017,7 +1018,8 @@
       items: [],
       searchResults: [],
       loaded: false,
-      lastRefresh: '尚未加载'
+      lastRefresh: '尚未加载',
+      loadedRole: ''
     };
 
     function escapeHtml(value) {
@@ -1159,9 +1161,28 @@
 
     function getRequestedTab() {
       const value = String(new URLSearchParams(window.location.search).get('tab') || '').trim().toLowerCase();
+      if (value === 'monitor') return 'monitor';
       if (value === 'watchlist') return 'watchlist';
       if (value === 'targets') return 'targets';
       return 'screener';
+    }
+
+    function isWatchlistRoleTab(tab = activeTab) {
+      return tab === 'watchlist' || tab === 'monitor';
+    }
+
+    function getWatchlistRoleForTab(tab = activeTab) {
+      return tab === 'monitor' ? 'market_monitor' : 'trade';
+    }
+
+    function getWatchlistRoleLabel(tab = activeTab) {
+      return getWatchlistRoleForTab(tab) === 'market_monitor' ? '市场监控' : '标池';
+    }
+
+    function getWatchlistRoleCopy(tab = activeTab) {
+      return getWatchlistRoleForTab(tab) === 'market_monitor'
+        ? '市场上下文 / 指数情绪 / 只算指标不进交易'
+        : 'watchlist / global pool / manual upkeep';
     }
 
     function renderDomainTabs() {
@@ -1182,7 +1203,13 @@
           tab: 'watchlist',
           kicker: 'Pool',
           label: '标池',
-          copy: 'watchlist / global pool / manual upkeep'
+          copy: getWatchlistRoleCopy('watchlist')
+        },
+        {
+          tab: 'monitor',
+          kicker: 'Market',
+          label: '市场监控',
+          copy: getWatchlistRoleCopy('monitor')
         }
       ];
       return `
@@ -1226,6 +1253,14 @@
       return getEnvironmentLabel(normalized, true);
     }
 
+    function formatWatchlistRole(role) {
+      return normalizeWatchlistRole(role) === 'market_monitor' ? 'market_monitor' : 'trade';
+    }
+
+    function normalizeWatchlistRole(role) {
+      return String(role || '').trim().toLowerCase() === 'market_monitor' ? 'market_monitor' : 'trade';
+    }
+
     function resolveRecordEnvClass(environment) {
       const normalized = String(environment || '').trim().toLowerCase();
       if (!normalized) return 'env-live';
@@ -1234,6 +1269,7 @@
 
     function getFilteredWatchlistItems() {
       const keyword = String(document.getElementById('listSearchInput').value || '').trim().toUpperCase();
+      const activeRole = getWatchlistRoleForTab();
       const rank = (environment) => {
         const normalized = String(environment || '').trim().toLowerCase();
         if (normalized === currentEnvironment) return 3;
@@ -1243,6 +1279,7 @@
       };
 
       return watchlistState.items
+        .filter((item) => normalizeWatchlistRole(item.symbol_role) === activeRole)
         .filter((item) => {
           if (!keyword) return true;
           return [
@@ -1250,6 +1287,7 @@
             item.exchange,
             item.industry,
             item.note,
+            formatWatchlistRole(item.symbol_role),
             formatRecordEnvironment(item.environment)
           ].some((value) => String(value || '').toUpperCase().includes(keyword));
         })
@@ -1265,8 +1303,9 @@
       const currentCount = items.filter((item) => String(item.environment || '').trim().toLowerCase() === currentEnvironment).length;
       const globalCount = items.filter((item) => String(item.environment || '').trim().toLowerCase() === 'global').length;
       const legacyCount = items.filter((item) => !String(item.environment || '').trim()).length;
+      const roleLabel = getWatchlistRoleLabel();
       renderSummaryCards([
-        { label: 'VISIBLE', value: items.length, copy: '当前筛选后展示的标池记录数' },
+        { label: 'VISIBLE', value: items.length, copy: `当前筛选后展示的${roleLabel}记录数` },
         { label: 'CURRENT ENV', value: currentCount, copy: '当前运行环境命中的记录', className: 'good' },
         { label: 'GLOBAL', value: globalCount, copy: '全局共享池记录', className: 'teal' },
         { label: 'LEGACY', value: legacyCount, copy: '历史 environment 为空的记录', className: 'accent' }
@@ -1319,14 +1358,31 @@
 
     function updateHero() {
       document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
-      if (activeTab === 'watchlist') {
+      if (isWatchlistRoleTab()) {
         const visible = getFilteredWatchlistItems().length;
-        document.getElementById('heroTitle').textContent = '维护运行标池与 GLOBAL 共享池。';
-        document.getElementById('heroCopy').textContent = '在同一页里搜索真实 IBKR 合约、写入当前环境或 GLOBAL，并直接清理手工加入的标池记录。';
+        const roleLabel = getWatchlistRoleLabel();
+        const isMonitorTab = getWatchlistRoleForTab() === 'market_monitor';
+        document.getElementById('heroTitle').textContent = isMonitorTab ? '维护市场监控标的与 GLOBAL 共享池。' : '维护运行标池与 GLOBAL 共享池。';
+        document.getElementById('heroCopy').textContent = isMonitorTab
+          ? '在同一页里搜索真实 IBKR 合约、写入当前环境或 GLOBAL，并维护只做 bars / indicators / runtime 上下文的市场监控标的。'
+          : '在同一页里搜索真实 IBKR 合约、写入当前环境或 GLOBAL，并直接清理手工加入的标池记录。';
         document.getElementById('marketDateMeta').textContent = `Scope ${getEnvironmentLabel(currentEnvironment)} + GLOBAL`;
         document.getElementById('refreshInfo').textContent = watchlistState.lastRefresh;
-        document.getElementById('selectionInfo').textContent = `当前可见 ${visible} 条 · 原始 ${watchlistState.items.length} 条`;
+        document.getElementById('selectionInfo').textContent = `当前可见 ${visible} 条 · 当前角色 ${roleLabel}`;
         renderWatchlistSummary();
+        document.getElementById('watchlistSearchPanelTitle').textContent = isMonitorTab ? '搜索可加入的市场监控标的' : '搜索可加入的标的';
+        document.getElementById('watchlistSearchPanelCopy').textContent = isMonitorTab
+          ? '支持 ticker 或公司名。写入后的标的只参与 bars / indicators / runtime 监控，不进入 scan、targets 与交易信号。'
+          : '支持 ticker 或公司名。返回结果来自 IBKR Gateway，不依赖本地缓存前端匹配。';
+        document.getElementById('watchlistListPanelTitle').textContent = isMonitorTab ? '已有市场监控记录' : '已有 watchlist 记录';
+        document.getElementById('watchlistListPanelCopy').textContent = isMonitorTab
+          ? '这里直接管理 PocketBase `watchlist` 中 role=`market_monitor` 的记录，默认支持当前环境与 GLOBAL 共享池一起看。'
+          : '这里直接管理 PocketBase `watchlist` 集合中 role=`trade` 的记录，默认支持当前环境与 GLOBAL 共享池一起看。';
+        document.getElementById('searchMeta').textContent = isMonitorTab ? '输入后回车或点击搜索，加入市场监控。' : '输入后回车或点击搜索。';
+        document.getElementById('batchMeta').textContent = isMonitorTab
+          ? '批量导入会逐个调用 IBKR 搜索并写入当前 scope，角色固定为 market_monitor。'
+          : '批量导入会逐个调用 IBKR 搜索并写入当前 scope。';
+        document.getElementById('deleteMeta').textContent = isMonitorTab ? '适合清理一组市场监控标的。' : '适合清理一组手工加入的标的。';
         return;
       }
 
@@ -1359,6 +1415,7 @@
       const screenerDate = document.getElementById('marketDate').value || getDailyTargetDate() || '';
       const params = { market_date: screenerDate };
       if (activeTab === 'watchlist') params.tab = 'watchlist';
+      if (activeTab === 'monitor') params.tab = 'monitor';
       if (activeTab === 'targets') {
         params.tab = 'targets';
         params.date = getDailyTargetDate();
@@ -1371,17 +1428,17 @@
     }
 
     async function activateTab(tab, { syncHistory = true } = {}) {
-      activeTab = ['watchlist', 'targets'].includes(tab) ? tab : 'screener';
+      activeTab = ['watchlist', 'monitor', 'targets'].includes(tab) ? tab : 'screener';
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
       document.getElementById('screenerTab').classList.toggle('active', activeTab === 'screener');
       document.getElementById('targetsTab').classList.toggle('active', activeTab === 'targets');
-      document.getElementById('watchlistTab').classList.toggle('active', activeTab === 'watchlist');
+      document.getElementById('watchlistTab').classList.toggle('active', isWatchlistRoleTab());
       if (syncHistory) syncUrl();
       if (activeTab === 'targets' && !dailyTargetsState.loaded) {
         await loadDailyTargets(false);
       }
-      if (activeTab === 'watchlist' && !watchlistState.loaded) {
+      if (isWatchlistRoleTab() && (!watchlistState.loaded || watchlistState.loadedRole !== getWatchlistRoleForTab())) {
         await loadWatchlist(false);
       }
       updateHero();
@@ -1650,6 +1707,8 @@
       const nextParams = { market_date: marketDate };
       if (activeTab === 'watchlist') {
         nextParams.tab = 'watchlist';
+      } else if (activeTab === 'monitor') {
+        nextParams.tab = 'monitor';
       } else if (activeTab === 'targets') {
         const targetDate = getDailyTargetDate() || marketDate;
         nextParams.tab = 'targets';
@@ -1740,6 +1799,18 @@
       return watchlistState.items.filter((item) => String(item.symbol || '').trim().toUpperCase() === normalized);
     }
 
+    function formatExistingWatchlistScopes(items) {
+      const seen = new Set();
+      return (Array.isArray(items) ? items : [])
+        .map((item) => `${formatRecordEnvironment(item.environment)} ${formatWatchlistRole(item.symbol_role)}`)
+        .filter((label) => {
+          if (!label || seen.has(label)) return false;
+          seen.add(label);
+          return true;
+        })
+        .join(' / ');
+    }
+
     function pickBestCandidate(items, symbol) {
       const normalized = String(symbol || '').trim().toUpperCase();
       const list = Array.isArray(items) ? items.slice() : [];
@@ -1777,6 +1848,7 @@
       return {
         environment: currentEnvironment,
         scope,
+        symbol_role: getWatchlistRoleForTab(),
         symbol: item.symbol,
         exchange: item.exchange || '',
         industry: item.industry || item.asset_class || (secTypes.length ? secTypes.join('/') : ''),
@@ -2128,15 +2200,19 @@
     function buildWatchlistFilter() {
       const scope = document.getElementById('scopeFilter').value || 'all';
       const current = escapeFilterValue(currentEnvironment);
-      if (scope === 'global') return 'environment = "global"';
+      const activeRole = getWatchlistRoleForTab();
+      const roleFilter = activeRole === 'trade'
+        ? '(symbol_role = "trade" || symbol_role = "")'
+        : 'symbol_role = "market_monitor"';
+      if (scope === 'global') return `(environment = "global" && ${roleFilter})`;
       if (scope === 'current') {
         return currentEnvironment === 'live'
-          ? '(environment = "live" || environment = "")'
-          : `environment = "${current}"`;
+          ? `((environment = "live" || environment = "") && ${roleFilter})`
+          : `(environment = "${current}" && ${roleFilter})`;
       }
       return currentEnvironment === 'live'
-        ? '(environment = "global" || environment = "live" || environment = "")'
-        : `(environment = "global" || environment = "${current}")`;
+        ? `((environment = "global" || environment = "live" || environment = "") && ${roleFilter})`
+        : `((environment = "global" || environment = "${current}") && ${roleFilter})`;
     }
 
     function syncWatchlistScopeOptions() {
@@ -2151,6 +2227,7 @@
       const mount = document.getElementById('searchResults');
       const scope = document.getElementById('targetScope').value || currentEnvironment;
       const scopeLabel = scope === 'global' ? 'GLOBAL' : getEnvironmentLabel(scope);
+      const roleLabel = getWatchlistRoleLabel();
 
       if (!watchlistState.searchResults.length) {
         mount.innerHTML = '<div class="empty-state">暂无搜索结果。</div>';
@@ -2161,13 +2238,14 @@
         const secTypes = Array.isArray(item.sec_types) ? item.sec_types : [];
         const description = item.description || item.company_name || '无描述';
         const existing = findExistingBySymbol(item.symbol);
+        const existingLabel = formatExistingWatchlistScopes(existing);
         return `
           <article class="result-card">
             <div class="card-top">
               <span class="symbol-chip">${escapeHtml(item.symbol || '--')}</span>
               <span class="pool-pill">${escapeHtml(item.exchange || 'SMART')}</span>
               <span class="pool-pill ${item.is_us ? '' : 'neutral'}">${item.is_us ? 'US' : 'NON-US'}</span>
-              ${existing.length ? `<span class="pool-pill exists">已存在 ${escapeHtml(existing.map((row) => formatRecordEnvironment(row.environment)).join('/'))}</span>` : ''}
+              ${existing.length ? `<span class="pool-pill exists">已存在 ${escapeHtml(existingLabel)}</span>` : ''}
             </div>
             <div>
               <div class="card-title">${escapeHtml(item.company_name || item.symbol || '--')}</div>
@@ -2179,7 +2257,7 @@
               ${(secTypes.length ? secTypes : [item.asset_class || 'UNKNOWN']).map((type) => `<span class="pool-pill">${escapeHtml(type)}</span>`).join('')}
             </div>
             <div class="card-bottom">
-              <button class="btn primary" type="button" onclick="addCandidate(${index})">加入 ${escapeHtml(scopeLabel)}</button>
+              <button class="btn primary" type="button" onclick="addCandidate(${index})">加入 ${escapeHtml(scopeLabel)} ${escapeHtml(roleLabel)}</button>
               <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">查看图表</a>
             </div>
           </article>
@@ -2191,7 +2269,7 @@
       const items = getFilteredWatchlistItems();
       const table = document.getElementById('watchlistTable');
       if (!items.length) {
-        table.innerHTML = '<tr><td colspan="7" class="empty-state">当前没有符合条件的 watchlist 记录。</td></tr>';
+        table.innerHTML = `<tr><td colspan="8" class="empty-state">当前没有符合条件的 ${escapeHtml(getWatchlistRoleLabel())} 记录。</td></tr>`;
       } else {
         table.innerHTML = items.map((item) => `
           <tr>
@@ -2204,6 +2282,7 @@
             <td>${escapeHtml(item.exchange || '--')}</td>
             <td>${escapeHtml(item.industry || '--')}</td>
             <td><span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span></td>
+            <td>${escapeHtml(formatWatchlistRole(item.symbol_role || 'trade'))}</td>
             <td>${escapeHtml(item.note || '--')}</td>
             <td>
               <div class="meta-stack">
@@ -2223,7 +2302,10 @@
       }
 
       document.getElementById('listMeta').textContent = `已载入 ${watchlistState.items.length} 条原始记录 · 当前可见 ${items.length} 条`;
-      if (activeTab === 'watchlist') updateHero();
+      if (isWatchlistRoleTab()) {
+        renderSearchResults();
+        updateHero();
+      }
     }
 
     async function searchContracts() {
@@ -2260,16 +2342,21 @@
         });
         watchlistState.items = Array.isArray(response.items) ? response.items : [];
         watchlistState.loaded = true;
+        watchlistState.loadedRole = getWatchlistRoleForTab();
         watchlistState.lastRefresh = `更新: ${new Date().toLocaleTimeString()}`;
         renderWatchlistRows();
-        if (showToastOnSuccess) showToast('watchlist 已刷新');
+        if (showToastOnSuccess) showToast(`${getWatchlistRoleLabel()} 已刷新`);
       } catch (error) {
         watchlistState.items = [];
         watchlistState.loaded = true;
+        watchlistState.loadedRole = getWatchlistRoleForTab();
         watchlistState.lastRefresh = 'watchlist 加载失败';
-        document.getElementById('watchlistTable').innerHTML = `<tr><td colspan="7" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        document.getElementById('watchlistTable').innerHTML = `<tr><td colspan="8" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
         document.getElementById('listMeta').textContent = `加载失败: ${error.message || error}`;
-        if (activeTab === 'watchlist') updateHero();
+        if (isWatchlistRoleTab()) {
+          renderSearchResults();
+          updateHero();
+        }
       }
     }
 
@@ -2283,7 +2370,7 @@
           method: 'POST',
           body: buildWatchlistBody(item, scope, note)
         });
-        showToast(`${item.symbol} 已写入 ${scope === 'global' ? 'GLOBAL' : getEnvironmentLabel(scope)}`);
+        showToast(`${item.symbol} 已写入 ${scope === 'global' ? 'GLOBAL' : getEnvironmentLabel(scope)} ${getWatchlistRoleLabel()}`);
         await loadWatchlist(false);
         if (payload.action === 'created' || payload.action === 'updated') {
           document.getElementById('noteInput').value = '';
@@ -2316,6 +2403,12 @@
       if (nextIndustry === null) return;
       const nextNote = window.prompt('修改 note', item.note || '');
       if (nextNote === null) return;
+      const nextRole = window.prompt('修改 symbol_role(trade/market_monitor)', normalizeWatchlistRole(item.symbol_role || 'trade'));
+      if (nextRole === null) return;
+      if (!['trade', 'market_monitor'].includes(String(nextRole || '').trim())) {
+        showToast('symbol_role 仅支持 trade 或 market_monitor');
+        return;
+      }
 
       try {
         await requestJson('/api/custom/ibkr/watchlist/upsert', {
@@ -2323,6 +2416,7 @@
           body: {
             environment: currentEnvironment,
             scope: nextScope,
+            symbol_role: String(nextRole || '').trim(),
             symbol: item.symbol,
             exchange: String(nextExchange || '').trim().toUpperCase(),
             industry: String(nextIndustry || '').trim(),
@@ -2420,7 +2514,9 @@
       document.getElementById('batchAddBtn').addEventListener('click', batchAddSymbols);
       document.getElementById('clearBatchBtn').addEventListener('click', () => {
         document.getElementById('batchSymbolsInput').value = '';
-        document.getElementById('batchMeta').textContent = '批量导入会逐个调用 IBKR 搜索并写入当前 scope。';
+        document.getElementById('batchMeta').textContent = getWatchlistRoleForTab() === 'market_monitor'
+          ? '批量导入会逐个调用 IBKR 搜索并写入当前 scope，角色固定为 market_monitor。'
+          : '批量导入会逐个调用 IBKR 搜索并写入当前 scope。';
       });
       document.getElementById('batchDeleteBtn').addEventListener('click', batchDeleteSymbols);
       document.getElementById('refreshListBtn').addEventListener('click', () => loadWatchlist(true));
@@ -2440,6 +2536,7 @@
       currentEnvironment = environment;
       const params = { market_date: document.getElementById('marketDate').value || '' };
       if (activeTab === 'watchlist') params.tab = 'watchlist';
+      if (activeTab === 'monitor') params.tab = 'monitor';
       if (activeTab === 'targets') {
         params.tab = 'targets';
         params.date = getDailyTargetDate();
@@ -2458,7 +2555,7 @@
       document.getElementById('dailyTargetDate').value = dailyTargetsState.selectedDate;
       document.getElementById('nav').innerHTML = renderNav('/ibkr_screener.html');
       document.getElementById('contextBar').innerHTML = renderPageContextBar('🔎 IBKR 筛选与标池', {
-        description: '筛选 / 每日标的 / watchlist 一体化'
+        description: '筛选 / 每日标的 / 标池 / 市场监控 一体化'
       });
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
