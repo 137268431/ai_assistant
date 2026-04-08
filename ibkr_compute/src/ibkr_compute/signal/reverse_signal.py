@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 ET = timezone(timedelta(hours=-4))
 
 REVERSE_ACTIONS = {"close", "cancel", "adjust_sl", "adjust_tp"}
+REVERSE_SIGNAL_COLLECTION = "reverse_signals"
 
 
 class ReverseSignalHandler:
@@ -33,7 +34,7 @@ class ReverseSignalHandler:
     def check_and_process(self):
         try:
             records = self.pb_client.get_records(
-                "reverse_signals",
+                REVERSE_SIGNAL_COLLECTION,
                 filter=f'status = "pending" && environment = "{self.environment}"',
                 sort="-priority,-bar_time_ms",
                 per_page=50,

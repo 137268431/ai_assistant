@@ -22,6 +22,10 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
     return undefined
   }
 
+  function normalizeObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {}
+  }
+
   console.log(`[OrderUpsert] === 订单 Upsert 开始 ===`);
   console.log(`[OrderUpsert] unique_id: ${data.unique_id}`);
   console.log(`[OrderUpsert] order_type: ${data.order_type}`);
@@ -54,6 +58,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
   const avgFillPrice = data.fill_price;
   const extra = envUtils.attachEnvironment(data.extra || {}, environment);
   const reason = extra.reason || "";
+  const suppressNotification = Boolean(data.suppress_notification || extra.suppress_notification);
 
   if (!uniqueId || !orderType || !symbol) {
     return c.json(400, { error: "Missing required fields" });
@@ -87,7 +92,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
     record.set("environment", environment);
 
     const previousStatus = record ? record.get("status") : "";
-    const existingOrderExtra = record ? getOrderExtra(record) : {};
+    const existingOrderExtra = record ? normalizeObject(getOrderExtra(record)) : {};
     const resolvedOrderId = firstDefined(orderId, record.get("order_id"), existingOrderExtra.order_id, "");
     const resolvedBrokerOrderId = firstDefined(
       data.broker_order_id,
@@ -266,30 +271,34 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
     }
 
     // 同步飞书订单卡片
-    try {
-      const orderExtra = getOrderExtra(record);
-      const statusInfo = getOrderStatusInfo(status);
-      let notifyResult = null;
+    if (suppressNotification) {
+      console.log(`[OrderUpsert] 跳过飞书同步: unique_id=${uniqueId}, status=${status}, suppress_notification=true`);
+    } else {
+      try {
+        const orderExtra = getOrderExtra(record);
+        const statusInfo = getOrderStatusInfo(status);
+        let notifyResult = null;
 
-      if (!orderExtra.feishu_order_message_id && (status === "Submitted" || status === "Filled" || status === "Canceled" || status === "Closed")) {
-        console.log(`[OrderUpsert] 首次发送订单卡片: unique_id=${uniqueId}, status=${status}`);
-        notifyResult = notifyNewOrder(record, { message: statusInfo.message });
-      } else if (!isIdempotentUpsert && (status === "Submitted" || status === "Filled" || status === "Canceled" || status === "Closed")) {
-        console.log(`[OrderUpsert] 同步订单卡片: unique_id=${uniqueId}, previous_status=${previousStatus || "-"}, status=${status}`);
-        notifyResult = notifyOrder(status.toLowerCase(), record, {
-          messageId: orderExtra.feishu_order_message_id || "",
-          message: statusInfo.message,
-        });
-      }
+        if (!orderExtra.feishu_order_message_id && (status === "Submitted" || status === "Filled" || status === "Canceled" || status === "Closed")) {
+          console.log(`[OrderUpsert] 首次发送订单卡片: unique_id=${uniqueId}, status=${status}`);
+          notifyResult = notifyNewOrder(record, { message: statusInfo.message });
+        } else if (!isIdempotentUpsert && (status === "Submitted" || status === "Filled" || status === "Canceled" || status === "Closed")) {
+          console.log(`[OrderUpsert] 同步订单卡片: unique_id=${uniqueId}, previous_status=${previousStatus || "-"}, status=${status}`);
+          notifyResult = notifyOrder(status.toLowerCase(), record, {
+            messageId: orderExtra.feishu_order_message_id || "",
+            message: statusInfo.message,
+          });
+        }
 
-      if (notifyResult && notifyResult.success && notifyResult.message_id && notifyResult.message_id !== orderExtra.feishu_order_message_id) {
-        mergeOrderExtra(record, {
-          feishu_order_message_id: notifyResult.message_id,
-          feishu_order_card_version: 2,
-        }, true);
+        if (notifyResult && notifyResult.success && notifyResult.message_id && notifyResult.message_id !== orderExtra.feishu_order_message_id) {
+          mergeOrderExtra(record, {
+            feishu_order_message_id: notifyResult.message_id,
+            feishu_order_card_version: 2,
+          }, true);
+        }
+      } catch (err) {
+        console.error("[Feishu] 同步订单卡片失败:", err);
       }
-    } catch (err) {
-      console.error("[Feishu] 同步订单卡片失败:", err);
     }
 
     console.log(`[OrderUpsert] === 订单 Upsert 完成 === success=true, order_id=${record.id}, unique_id=${uniqueId}, status=${status}`);
@@ -309,5 +318,260 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
     console.error(`[OrderUpsert] === 订单 Upsert 失败 === error:`, err.message);
     console.error(`[OrderUpsert] 堆栈:`, err.stack);
     return c.json(500, { error: err.message });
+  }
+});
+
+// POST /api/custom/ibkr/orders/reconcile - 回补 ibkr_orders 缺失的 orders/order_details
+routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
+  const envUtils = require(`${__hooks}/lib/environment.js`)
+  const request = c.requestInfo().body || c.requestInfo().data || {}
+
+  function parseBoolean(value, fallback) {
+    if (value === undefined || value === null || value === "") return fallback
+    const text = String(value).trim().toLowerCase()
+    if (["1", "true", "yes", "y", "on"].includes(text)) return true
+    if (["0", "false", "no", "n", "off"].includes(text)) return false
+    return fallback
+  }
+
+  function parseExtra(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value
+    if (typeof value === "string" && value) {
+      try {
+        const parsed = JSON.parse(value)
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+      } catch (_) {}
+    }
+    return {}
+  }
+
+  function normalizeOrderStatus(value) {
+    const text = String(value || "").trim().toLowerCase()
+    if (!text) return "Submitted"
+    if (text === "submitted") return "Submitted"
+    if (text === "filled") return "Filled"
+    if (text === "canceled" || text === "cancelled") return "Canceled"
+    if (text === "closed") return "Closed"
+    if (text === "init" || text === "initialized") return "Init"
+    return text.charAt(0).toUpperCase() + text.slice(1)
+  }
+
+  function normalizeDirection(signalRecord, ibkrOrderRecord) {
+    const signalDirection = String(signalRecord ? signalRecord.get("direction") || "" : "").trim().toLowerCase()
+    if (signalDirection === "long" || signalDirection === "short") return signalDirection
+    const side = String(ibkrOrderRecord ? ibkrOrderRecord.get("side") || "" : "").trim().toUpperCase()
+    return side === "SELL" ? "short" : "long"
+  }
+
+  try {
+    const environment = envUtils.getRuntimeEnvironmentFromData(request, envUtils.LIVE_ENVIRONMENT)
+    const signalId = String(request.signal_id || "").trim()
+    const limit = Math.max(1, Math.min(100, parseInt(request.limit, 10) || 20))
+    const onlyMissing = parseBoolean(request.only_missing, true)
+    const dryRun = parseBoolean(request.dry_run, false)
+    const suppressNotification = parseBoolean(request.suppress_notification, true)
+
+    const params = { signalId: signalId }
+    const filters = ["signal_id != ''"]
+    if (signalId) {
+      filters.push("signal_id = {:signalId}")
+    }
+
+    const ibkrOrderRecords = $app.findRecordsByFilter(
+      "ibkr_orders",
+      filters.join(" && "),
+      "-us_time",
+      limit,
+      0,
+      params
+    ) || []
+
+    const results = []
+    let repaired = 0
+    let skipped = 0
+    let failed = 0
+
+    for (let i = 0; i < ibkrOrderRecords.length; i++) {
+      const ibkrOrder = ibkrOrderRecords[i]
+      const currentSignalId = String(ibkrOrder.get("signal_id") || "").trim()
+      const uniqueId = String(ibkrOrder.get("cOID") || "").trim()
+      const symbol = String(ibkrOrder.get("symbol") || "").trim()
+
+      if (!currentSignalId || !uniqueId || !symbol) {
+        skipped++
+        results.push({
+          signal_id: currentSignalId,
+          unique_id: uniqueId,
+          status: "skipped_invalid_source",
+          symbol: symbol,
+        })
+        continue
+      }
+
+      const existingOrders = $app.findRecordsByFilter(
+        "orders",
+        "unique_id = {:uniqueId} && environment = {:env}",
+        "",
+        1,
+        0,
+        { uniqueId: uniqueId, env: environment }
+      ) || []
+
+      if (onlyMissing && existingOrders.length > 0) {
+        skipped++
+        results.push({
+          signal_id: currentSignalId,
+          unique_id: uniqueId,
+          status: "skipped_existing",
+          symbol: symbol,
+          order_record_id: existingOrders[0].id,
+        })
+        continue
+      }
+
+      const signalRecords = $app.findRecordsByFilter(
+        "ibkr_signals",
+        "signal_id = {:signalId}",
+        "-created",
+        1,
+        0,
+        { signalId: currentSignalId }
+      ) || []
+
+      if (signalRecords.length === 0) {
+        failed++
+        results.push({
+          signal_id: currentSignalId,
+          unique_id: uniqueId,
+          status: "failed_missing_signal",
+          symbol: symbol,
+        })
+        continue
+      }
+
+      const signalRecord = signalRecords[0]
+      const signalExtra = parseExtra(signalRecord.get("extra"))
+      const direction = normalizeDirection(signalRecord, ibkrOrder)
+      const status = normalizeOrderStatus(ibkrOrder.get("status"))
+      const usTime = String(ibkrOrder.get("us_time") || signalRecord.get("us_time") || "").trim()
+      const cnTime = String(signalRecord.get("cn_time") || "").trim()
+      const barTimeMs = Number(signalRecord.get("bar_time_ms") || 0) || 0
+      const limitPrice = Number(ibkrOrder.get("price") || signalRecord.get("entry") || 0) || 0
+      const quantity = Number(ibkrOrder.get("quantity") || signalRecord.get("shares") || 0) || 0
+      const filledQty = Number(ibkrOrder.get("filled_quantity") || 0) || 0
+      const fillPrice = Number(ibkrOrder.get("avg_price") || 0) || 0
+      const relationStatus = status === "Canceled" || status === "Closed" ? "closed" : "active"
+      const payload = {
+        environment: environment,
+        unique_id: uniqueId,
+        order_type: "Entry",
+        order_id: String(ibkrOrder.get("orderId") || "").trim(),
+        broker_order_id: String(ibkrOrder.get("orderId") || "").trim(),
+        symbol: symbol,
+        direction: direction,
+        quantity: quantity,
+        limit_price: limitPrice,
+        status: status,
+        filled_qty: filledQty,
+        fill_price: fillPrice,
+        signal_id: currentSignalId,
+        tp_price: Number(ibkrOrder.get("tp_price") || signalRecord.get("take_profit") || 0) || 0,
+        sl_price: Number(ibkrOrder.get("sl_price") || signalRecord.get("stop_loss") || 0) || 0,
+        trade_group_id: uniqueId,
+        entry_order_unique_id: uniqueId,
+        role: "entry",
+        relation_status: relationStatus,
+        us_time: usTime,
+        cn_time: cnTime,
+        bar_time_ms: barTimeMs,
+        order_time: usTime,
+        fill_time: status === "Filled" ? usTime : "",
+        suppress_notification: suppressNotification,
+        extra: {
+          reason: "reconciled_from_ibkr_orders",
+          repair_source: "orders/reconcile",
+          signal_source: signalExtra.signal_source || signalExtra.source || signalRecord.get("source") || "",
+          signal_source_label: signalExtra.signal_source_label || "",
+          signal_source_detail: signalExtra.signal_source_detail || "",
+          ibkr_order_record_id: ibkrOrder.id,
+          ibkr_order_type: String(ibkrOrder.get("orderType") || "").trim(),
+          suppress_notification: suppressNotification,
+        },
+      }
+
+      if (dryRun) {
+        repaired++
+        results.push({
+          signal_id: currentSignalId,
+          unique_id: uniqueId,
+          status: "dry_run_ready",
+          symbol: symbol,
+          payload: payload,
+        })
+        continue
+      }
+
+      try {
+        const resp = $http.send({
+          url: "http://127.0.0.1:8090/api/custom/ibkr/orders/upsert",
+          method: "POST",
+          timeout: 30,
+          body: JSON.stringify(payload),
+          headers: { "Content-Type": "application/json" },
+        })
+        let responseBody = {}
+        try {
+          responseBody = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+          responseBody = { raw: resp.raw || "" }
+        }
+        if (Number(resp.statusCode || 500) >= 200 && Number(resp.statusCode || 500) < 300 && responseBody.success) {
+          repaired++
+          results.push({
+            signal_id: currentSignalId,
+            unique_id: uniqueId,
+            status: "repaired",
+            symbol: symbol,
+            order_record_id: responseBody.order ? responseBody.order.id : "",
+          })
+        } else {
+          failed++
+          results.push({
+            signal_id: currentSignalId,
+            unique_id: uniqueId,
+            status: "failed_upsert",
+            symbol: symbol,
+            error: responseBody.error || responseBody.message || `status_${resp.statusCode || 500}`,
+          })
+        }
+      } catch (err) {
+        failed++
+        results.push({
+          signal_id: currentSignalId,
+          unique_id: uniqueId,
+          status: "failed_exception",
+          symbol: symbol,
+          error: err.message || String(err),
+        })
+      }
+    }
+
+    return c.json(200, {
+      success: true,
+      environment: environment,
+      dry_run: dryRun,
+      only_missing: onlyMissing,
+      suppress_notification: suppressNotification,
+      summary: {
+        scanned: ibkrOrderRecords.length,
+        repaired: repaired,
+        skipped: skipped,
+        failed: failed,
+      },
+      results: results,
+    })
+  } catch (err) {
+    console.error("[OrderReconcile] 失败:", err)
+    return c.json(500, { success: false, error: err.message || String(err) })
   }
 });

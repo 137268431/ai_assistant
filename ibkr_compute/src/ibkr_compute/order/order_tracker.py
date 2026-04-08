@@ -80,6 +80,124 @@ class OrderTracker:
             logger.warning("Failed to get order status %s: %s", order_id, e)
             return {}
 
+    @staticmethod
+    def _escape_filter_value(value: str) -> str:
+        return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _extract_order_status(order: Dict) -> str:
+        return str(
+            order.get("status")
+            or order.get("order_status")
+            or order.get("orderStatus")
+            or order.get("state")
+            or ""
+        ).strip().upper()
+
+    def register_submitted_orders(self, order_ids: List[str], seed: Optional[Dict] = None):
+        seed = seed or {}
+        clean_ids = [str(item).strip() for item in (order_ids or []) if str(item).strip()]
+        if not clean_ids:
+            return
+
+        symbol = str(seed.get("symbol") or "").strip().upper()
+        direction = str(seed.get("direction") or "").strip().lower()
+        entry_unique_id = str(seed.get("entry_unique_id") or "").strip()
+        tp_unique_id = str(seed.get("tp_unique_id") or "").strip()
+        sl_unique_id = str(seed.get("sl_unique_id") or "").strip()
+        side = "BUY" if direction == "long" else "SELL" if direction == "short" else ""
+        close_side = "SELL" if side == "BUY" else "BUY" if side == "SELL" else ""
+        quantity = seed.get("quantity", 0)
+        entry_price = seed.get("entry_price", 0)
+        tp_price = seed.get("tp_price", 0)
+        sl_price = seed.get("sl_price", 0)
+
+        for index, order_id in enumerate(clean_ids):
+            if index == 0:
+                self._known_orders[order_id] = {
+                    "orderId": order_id,
+                    "ticker": symbol,
+                    "side": side,
+                    "orderType": "LMT",
+                    "price": entry_price,
+                    "totalSize": quantity,
+                    "filledQuantity": 0,
+                    "avgPrice": 0,
+                    "parentId": "",
+                    "status": "SUBMITTED",
+                    "cOID": entry_unique_id,
+                }
+            elif index == 1:
+                self._known_orders[order_id] = {
+                    "orderId": order_id,
+                    "ticker": symbol,
+                    "side": close_side,
+                    "orderType": "LMT",
+                    "price": tp_price,
+                    "totalSize": quantity,
+                    "filledQuantity": 0,
+                    "avgPrice": 0,
+                    "parentId": clean_ids[0],
+                    "status": "SUBMITTED",
+                    "cOID": tp_unique_id,
+                }
+            elif index == 2:
+                self._known_orders[order_id] = {
+                    "orderId": order_id,
+                    "ticker": symbol,
+                    "side": close_side,
+                    "orderType": "STP",
+                    "price": sl_price,
+                    "totalSize": quantity,
+                    "filledQuantity": 0,
+                    "avgPrice": 0,
+                    "parentId": clean_ids[0],
+                    "status": "SUBMITTED",
+                    "cOID": sl_unique_id,
+                }
+
+    def _finalize_disappeared_orders(self, current_order_ids: set[str]):
+        closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}
+        missing_ids = [order_id for order_id in list(self._known_orders.keys()) if order_id not in current_order_ids]
+
+        for order_id in missing_ids:
+            previous = self._known_orders.get(order_id, {})
+            payload = self.get_order_status(order_id)
+            if not payload:
+                continue
+
+            merged = dict(previous)
+            merged.update(payload)
+            merged["orderId"] = order_id
+            status = self._extract_order_status(merged)
+            if not status:
+                continue
+            merged["status"] = status
+
+            previous_status = self._extract_order_status(previous)
+            if status != previous_status:
+                self._sync_to_pb(merged)
+
+                if status in ("FILLED", "EXECUTED") and previous_status not in ("FILLED", "EXECUTED"):
+                    logger.info("Order FILLED after disappearance: %s %s", merged.get("ticker"), order_id)
+                    if self.on_fill:
+                        try:
+                            self.on_fill(merged)
+                        except Exception as e:
+                            logger.error("on_fill callback error: %s", e)
+                elif status in ("CANCELLED", "CANCELED", "INACTIVE", "REJECTED"):
+                    logger.info("Order CLOSED after disappearance: %s %s status=%s", merged.get("ticker"), order_id, status)
+                    if self.on_cancel:
+                        try:
+                            self.on_cancel(merged)
+                        except Exception as e:
+                            logger.error("on_cancel callback error: %s", e)
+
+            if status in closed_statuses:
+                self._known_orders.pop(order_id, None)
+            else:
+                self._known_orders[order_id] = merged
+
     def _poll_loop(self):
         logger.info("Order tracker started (interval=%ds)", POLL_INTERVAL)
         while self._running:
@@ -96,11 +214,13 @@ class OrderTracker:
     def _poll_orders(self):
         orders = self.get_live_orders()
         self._last_poll = time.time()
+        current_order_ids = set()
 
         for order in orders:
             order_id = str(order.get("orderId", ""))
             if not order_id:
                 continue
+            current_order_ids.add(order_id)
 
             status = order.get("status", "").upper()
             prev = self._known_orders.get(order_id, {})
@@ -131,19 +251,27 @@ class OrderTracker:
             else:
                 self._known_orders[order_id] = order
 
+        self._finalize_disappeared_orders(current_order_ids)
+
     def _sync_to_pb(self, order: dict):
         if not self.pb_client:
             return
         try:
             order_id = str(order.get("orderId", ""))
+            if not order_id:
+                return
+            coid = str(order.get("cOID") or order.get("coid") or order.get("order_ref") or order.get("orderRef") or "").strip()
             symbol = order.get("ticker", "")
-            status = order.get("status", "")
+            status = self._extract_order_status(order)
             now_str = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
-            existing = self.pb_client.get_records(
-                "ibkr_orders",
-                filter=f'orderId = "{order_id}"',
-                per_page=1,
-            )
+            order_id_filter = self._escape_filter_value(order_id)
+            coid_filter = self._escape_filter_value(coid)
+            ibkr_filter = f'orderId = "{order_id_filter}"'
+            if coid:
+                ibkr_filter = f'orderId = "{order_id_filter}" || cOID = "{coid_filter}"'
+            existing = self.pb_client.get_records("ibkr_orders", filter=ibkr_filter, per_page=1)
+            existing_ibkr = existing[0] if existing else {}
+            runtime_environment = os.environ.get("IBKR_ENVIRONMENT", "live")
 
             data = {
                 "orderId": order_id,
@@ -156,6 +284,11 @@ class OrderTracker:
                 "filled_quantity": order.get("filledQuantity", 0),
                 "avg_price": order.get("avgPrice", 0),
                 "us_time": now_str,
+                "cOID": coid or existing_ibkr.get("cOID", ""),
+                "signal_id": existing_ibkr.get("signal_id", ""),
+                "bracket_group": existing_ibkr.get("bracket_group", ""),
+                "parentId": order.get("parentId", "") or existing_ibkr.get("parentId", ""),
+                "account": order.get("acctId", "") or order.get("acct", "") or existing_ibkr.get("account", ""),
             }
 
             if existing:
@@ -187,20 +320,72 @@ class OrderTracker:
                     "EXECUTED": "Filled",
                     "CANCELLED": "Canceled",
                     "CANCELED": "Canceled",
+                    "INACTIVE": "Canceled",
+                    "REJECTED": "Canceled",
                 }.get(str(status).upper(), "Submitted")
+                signal_id = str(existing_ibkr.get("signal_id") or "").strip()
+                trade_group_id = str(existing_ibkr.get("bracket_group") or "").strip()
+                entry_order_unique_id = str(existing_ibkr.get("cOID") or coid or "").strip()
+                parent_order_unique_id = ""
+                canonical_unique_id = entry_order_unique_id if not parent_id else coid
+                existing_order = None
+
+                if order_id:
+                    order_filter = (
+                        f'(broker_order_id = "{order_id_filter}" || order_id = "{order_id_filter}") '
+                        f'&& environment = "{self._escape_filter_value(runtime_environment)}"'
+                    )
+                    matches = self.pb_client.get_records("orders", filter=order_filter, per_page=1)
+                    existing_order = matches[0] if matches else None
+                if not existing_order and coid:
+                    coid_order_filter = (
+                        f'unique_id = "{coid_filter}" && environment = "{self._escape_filter_value(runtime_environment)}"'
+                    )
+                    matches = self.pb_client.get_records("orders", filter=coid_order_filter, per_page=1)
+                    existing_order = matches[0] if matches else None
+
+                if existing_order:
+                    canonical_unique_id = str(existing_order.get("unique_id") or canonical_unique_id or order_id).strip()
+                    signal_id = signal_id or str(existing_order.get("signal_id") or "").strip()
+                    trade_group_id = str(existing_order.get("trade_group_id") or trade_group_id or "").strip()
+                    entry_order_unique_id = str(existing_order.get("entry_order_unique_id") or entry_order_unique_id or canonical_unique_id).strip()
+                    parent_order_unique_id = str(existing_order.get("parent_order_unique_id") or "").strip()
+                    role = str(existing_order.get("role") or role).strip() or role
+                elif parent_id:
+                    parent_filter = self._escape_filter_value(str(parent_id))
+                    parent_order_filter = (
+                        f'(broker_order_id = "{parent_filter}" || order_id = "{parent_filter}") '
+                        f'&& environment = "{self._escape_filter_value(runtime_environment)}"'
+                    )
+                    matches = self.pb_client.get_records("orders", filter=parent_order_filter, per_page=1)
+                    if matches:
+                        parent_record = matches[0]
+                        parent_order_unique_id = str(parent_record.get("unique_id") or "").strip()
+                        trade_group_id = str(parent_record.get("trade_group_id") or parent_record.get("entry_order_unique_id") or trade_group_id).strip()
+                        entry_order_unique_id = str(parent_record.get("entry_order_unique_id") or parent_order_unique_id or entry_order_unique_id).strip()
+                        signal_id = signal_id or str(parent_record.get("signal_id") or "").strip()
+
+                if not canonical_unique_id:
+                    canonical_unique_id = order_id
+                if not trade_group_id:
+                    trade_group_id = entry_order_unique_id or canonical_unique_id
+                if not entry_order_unique_id:
+                    entry_order_unique_id = canonical_unique_id
+
                 self.pb_client.upsert_order({
-                    "unique_id": order_id,
+                    "unique_id": canonical_unique_id,
                     "order_id": order_id,
                     "broker_order_id": order_id,
                     "order_type": order_type,
                     "symbol": symbol,
                     "direction": direction,
                     "position_side": direction,
-                    "trade_group_id": parent_id or order_id,
-                    "entry_order_unique_id": parent_id or order_id,
-                    "parent_order_unique_id": parent_id,
+                    "trade_group_id": trade_group_id,
+                    "entry_order_unique_id": entry_order_unique_id,
+                    "parent_order_unique_id": parent_order_unique_id,
                     "role": role,
                     "relation_status": relation_status,
+                    "signal_id": signal_id,
                     "quantity": quantity,
                     "limit_price": limit_price,
                     "status": mapped_status,

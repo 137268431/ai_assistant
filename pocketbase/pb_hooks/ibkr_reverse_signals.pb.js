@@ -13,6 +13,10 @@ var getReverseSignalsNotifier = function() {
   return require(`${__hooks}/lib/feishu_reverse.js`)
 }
 
+var getCollectionRegistry = function() {
+  return require(`${__hooks}/lib/collections.js`)
+}
+
 var normalizeReverseEnvironment = function(value) {
   const { normalizeRuntimeEnvironment, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
   return normalizeRuntimeEnvironment(value || "", LIVE_ENVIRONMENT)
@@ -142,13 +146,14 @@ function buildReverseResponse(record, created, duplicate) {
 
 function listReverseRecords(dateText, maxItems, environment) {
   const reverseUtils = getReverseSignalsUtils()
+  const { COLLECTIONS } = getCollectionRegistry()
   const limit = Math.max(1, Math.min(Number(maxItems) || 200, 500))
   const runtimeEnvironment = normalizeReverseEnvironment(environment)
   if (dateText) {
     const range = reverseUtils.buildDateRange(dateText)
     if (range) {
       return $app.findRecordsByFilter(
-        "reverse_signals",
+        COLLECTIONS.REVERSE_SIGNALS,
         "environment = {:env} && bar_time_ms >= {:start} && bar_time_ms <= {:end}",
         "-created",
         limit,
@@ -157,13 +162,14 @@ function listReverseRecords(dateText, maxItems, environment) {
       ) || []
     }
   }
-  return $app.findRecordsByFilter("reverse_signals", "environment = {:env}", "-created", limit, 0, { env: runtimeEnvironment }) || []
+  return $app.findRecordsByFilter(COLLECTIONS.REVERSE_SIGNALS, "environment = {:env}", "-created", limit, 0, { env: runtimeEnvironment }) || []
 }
 
 // GET /api/custom/ibkr/reverse/list - 获取某日反转信号列表
 routerAdd("GET", "/api/custom/ibkr/reverse/list", (c) => {
   try {
     const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
+    const { COLLECTIONS } = getCollectionRegistry()
     const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const dateText = c.request.url.query().get("date") || ""
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
@@ -179,7 +185,7 @@ routerAdd("GET", "/api/custom/ibkr/reverse/list", (c) => {
       const range = reverseUtils.buildDateRange(dateText)
       if (range) {
         records = $app.findRecordsByFilter(
-          "reverse_signals",
+          COLLECTIONS.REVERSE_SIGNALS,
           "environment = {:env} && bar_time_ms >= {:start} && bar_time_ms <= {:end}",
           "-created",
           limit,
@@ -189,7 +195,7 @@ routerAdd("GET", "/api/custom/ibkr/reverse/list", (c) => {
       }
     }
     if (!records.length) {
-      records = $app.findRecordsByFilter("reverse_signals", "environment = {:env}", "-created", limit, 0, { env: runtimeEnvironment }) || []
+      records = $app.findRecordsByFilter(COLLECTIONS.REVERSE_SIGNALS, "environment = {:env}", "-created", limit, 0, { env: runtimeEnvironment }) || []
     }
     const ibkr_signals = records
       .map((record) => reverseUtils.normalizeReverseRecord(record))
@@ -355,9 +361,10 @@ routerAdd("POST", "/api/custom/ibkr/reverse/calculate", (c) => {
 routerAdd("GET", "/api/custom/ibkr/reverse/pending", (c) => {
   try {
     const reverseUtils = getReverseSignalsUtils()
+    const { COLLECTIONS } = getCollectionRegistry()
     const environment = getReverseRequestEnvironment(c)
     const records = $app.findRecordsByFilter(
-      "reverse_signals",
+      COLLECTIONS.REVERSE_SIGNALS,
       "status = 'pending' && environment = {:env}",
       "-priority,-bar_time_ms",
       200,
@@ -377,6 +384,7 @@ routerAdd("GET", "/api/custom/ibkr/reverse/pending", (c) => {
 // POST /api/custom/ibkr/reverse/dispatch - 页面触发执行/取消
 routerAdd("POST", "/api/custom/ibkr/reverse/dispatch", (c) => {
   const reverseUtils = getReverseSignalsUtils()
+  const { COLLECTIONS } = getCollectionRegistry()
   const data = c.requestInfo().body || c.requestInfo().data || {}
   const reverseId = String(data.reverse_id || data.signal_id || "").trim()
   const action = String(data.action || "").trim()
@@ -390,7 +398,7 @@ routerAdd("POST", "/api/custom/ibkr/reverse/dispatch", (c) => {
   }
 
   try {
-    const record = $app.findRecordById("reverse_signals", reverseId)
+    const record = $app.findRecordById(COLLECTIONS.REVERSE_SIGNALS, reverseId)
     if (!record) {
       return c.json(404, { error: "Reverse signal not found" })
     }
@@ -459,6 +467,7 @@ routerAdd("POST", "/api/custom/ibkr/reverse/dispatch", (c) => {
 // POST /api/custom/ibkr/reverse/ack - IBKR 回写处理结果
 routerAdd("POST", "/api/custom/ibkr/reverse/ack", (c) => {
   const reverseUtils = getReverseSignalsUtils()
+  const { COLLECTIONS } = getCollectionRegistry()
   const data = c.requestInfo().body || c.requestInfo().data || {}
   const reverseId = String(data.signal_id || data.reverse_id || "").trim()
   const status = String(data.status || "confirmed").trim()
@@ -469,7 +478,7 @@ routerAdd("POST", "/api/custom/ibkr/reverse/ack", (c) => {
   }
 
   try {
-    const record = $app.findRecordById("reverse_signals", reverseId)
+    const record = $app.findRecordById(COLLECTIONS.REVERSE_SIGNALS, reverseId)
     const extra = reverseUtils.getReverseExtra(record)
     const mergedExtra = {
       ...extra,

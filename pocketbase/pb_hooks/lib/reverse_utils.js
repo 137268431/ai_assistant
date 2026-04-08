@@ -14,6 +14,13 @@ function getEnvUtils() {
     return loaded
 }
 
+function getCollectionRegistry() {
+    if (globalThis.__gloryCollectionRegistry) return globalThis.__gloryCollectionRegistry
+    const loaded = require(`${__hooks}/lib/collections.js`)
+    globalThis.__gloryCollectionRegistry = loaded
+    return loaded
+}
+
 function parseJsonObject(value) {
     if (!value) return {}
     if (typeof value === "object") return value
@@ -196,9 +203,10 @@ function buildOrderContext(orderRecord) {
 
 function findLatestActiveEntryOrder(symbol, direction, environment) {
     var envUtils = getEnvUtils()
+    var collections = getCollectionRegistry().COLLECTIONS
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var records = $app.findRecordsByFilter(
-        "orders",
+        collections.ORDERS,
         "symbol = {:symbol} && environment = {:env} && order_type = 'Entry' && (status = 'Submitted' || status = 'Filled')",
         "-created",
         20,
@@ -222,10 +230,11 @@ function findLatestActiveEntryOrder(symbol, direction, environment) {
 
 function findPendingReverseDuplicate(criteria) {
     var envUtils = getEnvUtils()
+    var collections = getCollectionRegistry().COLLECTIONS
     if (!criteria || !criteria.symbol) return null
 
     var records = $app.findRecordsByFilter(
-        "reverse_signals",
+        collections.REVERSE_SIGNALS,
         "symbol = {:symbol} && environment = {:env} && status = 'pending'",
         "-created",
         50,
@@ -250,6 +259,7 @@ function findPendingReverseDuplicate(criteria) {
 
 function upsertReverseRecord(payload) {
     var envUtils = getEnvUtils()
+    var collections = getCollectionRegistry().COLLECTIONS
     var extra = parseJsonObject(payload && payload.extra)
     var criteria = {
         environment: envUtils.normalizeRuntimeEnvironment(payload.environment || extra.environment || "", envUtils.LIVE_ENVIRONMENT),
@@ -266,7 +276,7 @@ function upsertReverseRecord(payload) {
     var record = payload.dedupe === false ? null : findPendingReverseDuplicate(criteria)
     var existed = !!record
     if (!record) {
-        var collection = $app.findCollectionByNameOrId("reverse_signals")
+        var collection = $app.findCollectionByNameOrId(collections.REVERSE_SIGNALS)
         record = new Record(collection, {})
     }
 

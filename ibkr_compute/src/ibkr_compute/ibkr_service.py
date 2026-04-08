@@ -2032,6 +2032,20 @@ class IBKRTradingService:
                 logger.info("Order placed: %s %s bracket_group=%s",
                             symbol, sig["direction"], result.get("bracket_group"))
                 try:
+                    self.order_tracker.register_submitted_orders(result.get("order_ids") or [], {
+                        "symbol": symbol,
+                        "direction": sig["direction"],
+                        "quantity": sig["shares"],
+                        "entry_price": sig["entry"],
+                        "tp_price": sig["take_profit"],
+                        "sl_price": sig["stop_loss"],
+                        "entry_unique_id": result.get("entry_coid") or result.get("bracket_group") or "",
+                        "tp_unique_id": result.get("tp_coid") or "",
+                        "sl_unique_id": result.get("sl_coid") or "",
+                    })
+                except Exception as track_err:
+                    logger.error("Order tracker register failed: %s", track_err)
+                try:
                     self._ack_signal_after_order_submission(sig, result)
                 except Exception as ack_err:
                     logger.error(

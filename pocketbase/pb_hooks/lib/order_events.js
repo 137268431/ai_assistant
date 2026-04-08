@@ -120,13 +120,17 @@ function getJsonField(record, fieldName) {
     return {}
 }
 
+function ensureObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {}
+}
+
 function getOrderExtra(record) {
-    return getJsonField(record, "extra")
+    return ensureObject(getJsonField(record, "extra"))
 }
 
 function mergeOrderExtra(record, patch, saveAfterMerge) {
     const merged = {
-        ...getOrderExtra(record),
+        ...ensureObject(getOrderExtra(record)),
         ...(patch || {}),
     }
     record.set("extra", merged)
@@ -138,7 +142,7 @@ function mergeOrderExtra(record, patch, saveAfterMerge) {
 
 function stripInternalExtra(extra) {
     const safe = {}
-    const source = extra || {}
+    const source = ensureObject(extra)
     Object.keys(source).forEach((key) => {
         if (!ORDER_INTERNAL_EXTRA_KEYS[key]) {
             safe[key] = source[key]
@@ -176,10 +180,10 @@ function resolveOrderRelationship(recordOrData, fallback) {
         ? source.get.bind(source)
         : function(fieldName) { return source[fieldName] }
 
-    const extra = getJsonField(source, "extra")
+    const extra = ensureObject(getJsonField(source, "extra"))
     const fallbackExtra = (fallbackData && typeof fallbackData.get === "function")
-        ? getJsonField(fallbackData, "extra")
-        : (fallbackData.extra || {})
+        ? ensureObject(getJsonField(fallbackData, "extra"))
+        : ensureObject(fallbackData.extra)
 
     const uniqueId = firstNonEmpty(
         get("unique_id"),
@@ -348,7 +352,7 @@ function applyOrderEventTimes(record, options, saveAfterApply) {
 
 function resolveOrderStatusEventTimes(record, options) {
     const opts = options || {}
-    const extra = record ? getOrderExtra(record) : {}
+    const extra = record ? ensureObject(getOrderExtra(record)) : {}
     const candidate = resolveOrderEventTimes(opts, extra)
     const previousStatus = firstNonEmpty(opts.previous_status, record ? record.get("status") : "", extra.current_status)
     const currentStatus = firstNonEmpty(opts.status, previousStatus)
@@ -376,7 +380,7 @@ function resolveOrderStatusEventTimes(record, options) {
 
 function applyOrderStatusMeta(record, options, saveAfterApply) {
     const opts = options || {}
-    const extra = getOrderExtra(record)
+    const extra = ensureObject(getOrderExtra(record))
     const currentStatus = opts.status || record.get("status") || ""
     const previousStatus = opts.previous_status != null
         ? opts.previous_status
@@ -456,7 +460,8 @@ function appendOrderDetail(record, options) {
     const reason = opts.reason || ""
     const uniqueId = record.get("unique_id") || record.id
     const symbol = record.get("symbol") || ""
-    const environment = opts.environment || record.get("environment") || getOrderExtra(record).environment || "live"
+    const orderExtra = ensureObject(getOrderExtra(record))
+    const environment = opts.environment || record.get("environment") || orderExtra.environment || "live"
     const sequence = nextSequence(uniqueId)
     const nowStrings = formatNowStrings()
 
@@ -484,7 +489,7 @@ function appendOrderDetail(record, options) {
     detailRecord.set("relation_status", relation.relation_status || "")
     detailRecord.set("position_side", relation.position_side || "")
 
-    const existingExtra = stripInternalExtra(getOrderExtra(record))
+    const existingExtra = stripInternalExtra(orderExtra)
     detailRecord.set("extra", {
         sequence: sequence,
         environment: environment,

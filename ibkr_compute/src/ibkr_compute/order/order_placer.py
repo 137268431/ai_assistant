@@ -207,6 +207,10 @@ class OrderPlacer:
             sl_unique_id = kwargs.get("sl_coid")
             symbol = kwargs.get("symbol")
             signal_id = kwargs.get("signal_id", "")
+            order_ids = [str(item).strip() for item in (kwargs.get("order_ids") or []) if str(item).strip()]
+            entry_order_id = order_ids[0] if len(order_ids) > 0 else ""
+            tp_order_id = order_ids[1] if len(order_ids) > 1 else ""
+            sl_order_id = order_ids[2] if len(order_ids) > 2 else ""
 
             # 兼容旧表，避免现网依赖被一次性切断。
             self.pb_client.create_record("ibkr_orders", {
@@ -215,6 +219,7 @@ class OrderPlacer:
                 "side": "BUY" if direction == "long" else "SELL",
                 "orderType": "BRACKET",
                 "cOID": entry_unique_id,
+                "orderId": entry_order_id,
                 "price": kwargs.get("entry_price"),
                 "quantity": quantity,
                 "status": "submitted",
@@ -242,8 +247,8 @@ class OrderPlacer:
                 self.pb_client.upsert_order({
                     **base_payload,
                     "unique_id": entry_unique_id,
-                    "order_id": entry_unique_id,
-                    "broker_order_id": entry_unique_id,
+                    "order_id": entry_order_id,
+                    "broker_order_id": entry_order_id,
                     "order_type": "Entry",
                     "role": "entry",
                     "relation_status": "active",
@@ -257,8 +262,8 @@ class OrderPlacer:
                 self.pb_client.upsert_order({
                     **base_payload,
                     "unique_id": tp_unique_id,
-                    "order_id": tp_unique_id,
-                    "broker_order_id": tp_unique_id,
+                    "order_id": tp_order_id,
+                    "broker_order_id": tp_order_id,
                     "order_type": "TakeProfit",
                     "role": "take_profit",
                     "relation_status": "planned",
@@ -272,8 +277,8 @@ class OrderPlacer:
                 self.pb_client.upsert_order({
                     **base_payload,
                     "unique_id": sl_unique_id,
-                    "order_id": sl_unique_id,
-                    "broker_order_id": sl_unique_id,
+                    "order_id": sl_order_id,
+                    "broker_order_id": sl_order_id,
                     "order_type": "StopLoss",
                     "role": "stop_loss",
                     "relation_status": "planned",
