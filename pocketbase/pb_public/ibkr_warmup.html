@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IBKR Warmup - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        .page-shell {
+            position: relative;
+            z-index: 1;
+            padding: 0 16px 96px;
+        }
+        .hero {
+            margin: 12px 0 16px;
+            padding: 20px;
+            border-radius: 22px;
+            border: 1px solid rgba(99, 179, 237, 0.18);
+            background:
+                radial-gradient(circle at top right, rgba(72, 187, 120, 0.20), transparent 36%),
+                radial-gradient(circle at bottom left, rgba(246, 173, 85, 0.16), transparent 42%),
+                linear-gradient(145deg, rgba(14, 20, 32, 0.98), rgba(9, 15, 24, 0.96));
+            box-shadow: 0 24px 60px rgba(2, 8, 23, 0.34);
+        }
+        .hero-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .hero-kicker {
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 1.3px;
+            margin-bottom: 8px;
+        }
+        .hero-title {
+            font-size: 26px;
+            line-height: 1.08;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .hero-copy {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.7;
+            max-width: 760px;
+        }
+        .hero-meta {
+            min-width: 220px;
+            display: grid;
+            gap: 10px;
+            text-align: right;
+        }
+        .hero-meta-line {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .hero-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .hero-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .hero-chip .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            box-shadow: 0 0 12px currentColor;
+            background: currentColor;
+        }
+        .tone-ok { color: #48BB78; }
+        .tone-warn { color: #F6AD55; }
+        .tone-error { color: #FC8181; }
+        .tone-info { color: #63B3ED; }
+        .tone-muted { color: #8BA4C4; }
+        .error-banner {
+            margin: 0 0 16px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(252, 129, 129, 0.26);
+            background: rgba(46, 14, 20, 0.78);
+            color: #FECACA;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .error-banner.is-hidden {
+            display: none;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .metric-card {
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(160deg, rgba(14, 20, 32, 0.94), rgba(9, 15, 24, 0.98));
+            box-shadow: 0 18px 40px rgba(2, 8, 23, 0.18);
+            padding: 16px;
+            display: grid;
+            gap: 10px;
+        }
+        .metric-card.ok { border-color: rgba(72, 187, 120, 0.24); }
+        .metric-card.warn { border-color: rgba(246, 173, 85, 0.24); }
+        .metric-card.error { border-color: rgba(252, 129, 129, 0.24); }
+        .metric-card.info { border-color: rgba(99, 179, 237, 0.24); }
+        .metric-label {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            line-height: 1;
+        }
+        .metric-copy {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .metric-progress {
+            width: 100%;
+            height: 7px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.06);
+            overflow: hidden;
+        }
+        .metric-progress > span {
+            display: block;
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--accent), #48BB78);
+        }
+        .section {
+            margin-bottom: 16px;
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(160deg, rgba(14, 20, 32, 0.95), rgba(9, 15, 24, 0.98));
+            box-shadow: 0 18px 40px rgba(2, 8, 23, 0.16);
+            overflow: hidden;
+        }
+        .section-head {
+            padding: 14px 16px 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .section-title {
+            font-size: 14px;
+            font-weight: 700;
+        }
+        .section-copy {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .section-body {
+            padding: 16px;
+        }
+        .key-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 10px;
+        }
+        .key-item {
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.03);
+            padding: 12px;
+            display: grid;
+            gap: 6px;
+        }
+        .key-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+        .key-value {
+            font-size: 16px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .key-sub {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .detail-item {
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.03);
+            padding: 12px;
+        }
+        .detail-label {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 6px;
+        }
+        .detail-value {
+            font-size: 20px;
+            font-weight: 700;
+            line-height: 1.1;
+            margin-bottom: 4px;
+        }
+        .detail-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .sub-block {
+            margin-top: 14px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding-top: 14px;
+        }
+        .sub-title {
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .chip-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .list-chip {
+            padding: 7px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .list-chip.warn {
+            border-color: rgba(246, 173, 85, 0.24);
+            color: #F6AD55;
+        }
+        .list-chip.error {
+            border-color: rgba(252, 129, 129, 0.24);
+            color: #FC8181;
+        }
+        .list-chip.ok {
+            border-color: rgba(72, 187, 120, 0.24);
+            color: #48BB78;
+        }
+        .list-chip.info {
+            border-color: rgba(99, 179, 237, 0.24);
+            color: #63B3ED;
+        }
+        .reason-list {
+            display: grid;
+            gap: 8px;
+        }
+        .reason-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.05);
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .reason-key {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text);
+        }
+        .reason-value {
+            color: var(--muted);
+            text-align: right;
+            word-break: break-word;
+        }
+        .filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .filter-input {
+            flex: 1 1 180px;
+            min-width: 160px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            color: var(--text);
+            padding: 10px 12px;
+            font-size: 14px;
+        }
+        .filter-btn {
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            padding: 10px 12px;
+            cursor: pointer;
+        }
+        .filter-btn.active {
+            color: var(--text);
+            border-color: rgba(99, 179, 237, 0.30);
+            background: rgba(99, 179, 237, 0.12);
+        }
+        .table-summary {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 12px;
+        }
+        .table-wrap {
+            overflow-x: auto;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .status-table {
+            width: 100%;
+            min-width: 760px;
+            border-collapse: collapse;
+        }
+        .status-table th {
+            padding: 11px 10px;
+            text-align: left;
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.03);
+        }
+        .status-table td {
+            padding: 11px 10px;
+            font-size: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            vertical-align: top;
+        }
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .table-main {
+            font-weight: 700;
+            margin-bottom: 3px;
+        }
+        .table-sub {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+        .badge.ok {
+            color: #48BB78;
+            border-color: rgba(72, 187, 120, 0.24);
+        }
+        .badge.warn {
+            color: #F6AD55;
+            border-color: rgba(246, 173, 85, 0.24);
+        }
+        .badge.error {
+            color: #FC8181;
+            border-color: rgba(252, 129, 129, 0.24);
+        }
+        .badge.info {
+            color: #63B3ED;
+            border-color: rgba(99, 179, 237, 0.24);
+        }
+        .empty-state {
+            padding: 22px 14px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        @media (max-width: 720px) {
+            .hero-meta {
+                min-width: auto;
+                text-align: left;
+            }
+            .metric-grid,
+            .key-grid,
+            .detail-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="contextBar"></div>
+    <div class="page-shell">
+        <div id="pageBridge"></div>
+        <section class="hero">
+            <div class="hero-head">
+                <div>
+                    <div class="hero-kicker">Startup Warmup</div>
+                    <div class="hero-title">Warmup 预热进度</div>
+                    <div class="hero-copy" id="heroCopy">加载 warmup 状态中...</div>
+                </div>
+                <div class="hero-meta">
+                    <div class="hero-meta-line" id="refreshInfo">等待首次加载</div>
+                    <div class="hero-meta-line" id="sourceInfo">来源 /api/custom/ibkr/statusz?warmup=1</div>
+                </div>
+            </div>
+            <div class="hero-chips" id="heroChips"></div>
+        </section>
+        <div class="error-banner is-hidden" id="errorBanner"></div>
+        <section class="metric-grid" id="metricGrid"></section>
+        <section class="section">
+            <div class="section-head">
+                <div class="section-title">启动状态</div>
+                <div class="section-copy">runtime / warmup / timeline</div>
+            </div>
+            <div class="section-body">
+                <div class="key-grid" id="startupGrid"></div>
+            </div>
+        </section>
+        <section class="section">
+            <div class="section-head">
+                <div class="section-title">预热修复</div>
+                <div class="section-copy">preflight repair / history fetch / remaining</div>
+            </div>
+            <div class="section-body">
+                <div class="detail-grid" id="repairGrid"></div>
+                <div id="repairDetails"></div>
+            </div>
+        </section>
+        <section class="section">
+            <div class="section-head">
+                <div class="section-title">完整性阻塞</div>
+                <div class="section-copy">integrity pending / repair reasons</div>
+            </div>
+            <div class="section-body" id="integrityBody"></div>
+        </section>
+        <section class="section">
+            <div class="section-head">
+                <div class="section-title">Symbol 状态</div>
+                <div class="section-copy">role / ready / integrity / last bar</div>
+            </div>
+            <div class="section-body">
+                <div class="filters">
+                    <input id="symbolSearch" class="filter-input" type="text" placeholder="搜索 symbol / reason">
+                    <button class="filter-btn active" data-filter="all" onclick="setSymbolFilter('all')">全部</button>
+                    <button class="filter-btn" data-filter="trade" onclick="setSymbolFilter('trade')">Trade</button>
+                    <button class="filter-btn" data-filter="monitor" onclick="setSymbolFilter('monitor')">Monitor</button>
+                    <button class="filter-btn" data-filter="blocked" onclick="setSymbolFilter('blocked')">Blocked</button>
+                </div>
+                <div class="table-summary" id="symbolSummary">等待数据...</div>
+                <div class="table-wrap">
+                    <table class="status-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Role</th>
+                                <th>Ready</th>
+                                <th>Integrity</th>
+                                <th>Bars</th>
+                                <th>Last Bar ET</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="symbolTableBody">
+                            <tr><td colspan="7" class="empty-state">加载 warmup symbol 状态中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+    <div id="nav"></div>
+    <script>
+        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let refreshTimer = null;
+        let currentSymbolFilter = 'all';
+        let lastStatusPayload = null;
+        function initWarmupAuth() {
+            const token = getToken();
+            if (!token) {
+                redirectToLogin(`${location.pathname}${location.search}`);
+                return false;
+            }
+            return true;
+        }
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+        function getAuthHeaders(extra = {}) {
+            const headers = { ...extra };
+            const token = getToken();
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            return headers;
+        }
+        async function requestWarmupJson(path, params = {}, { method = 'GET', body = null } = {}) {
+            const options = {
+                method,
+                headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
+            };
+            if (body) options.body = JSON.stringify(body);
+            const response = await fetchWithRetry(
+                buildPageUrl(path, params, { environment: currentEnvironment }),
+                options,
+                { attempts: 3, retryDelayMs: 500 }
+            );
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+            const text = await response.text();
+            let payload = {};
+            try {
+                payload = text ? JSON.parse(text) : {};
+            } catch (_) {
+                payload = { ok: false, raw: text };
+            }
+            if (!response.ok) {
+                throw new Error(payload.message || payload.error || `Request failed (${response.status})`);
+            }
+            return payload;
+        }
+        function formatTimeLabel(value) {
+            if (!value) return '--';
+            if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return formatTime(value, 'America/New_York', 'default');
+            if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value;
+            return String(value);
+        }
+        function formatAgoFromMs(value) {
+            const number = Number(value || 0);
+            if (!Number.isFinite(number) || number <= 0) return '--';
+            const diffMin = Math.max(0, Math.round((Date.now() - number) / 60000));
+            if (diffMin < 1) return 'just now';
+            if (diffMin < 60) return `${diffMin}m ago`;
+            if (diffMin < 1440) return `${Math.floor(diffMin / 60)}h ago`;
+            return `${Math.floor(diffMin / 1440)}d ago`;
+        }
+        function formatAgoFromIso(value) {
+            if (!value) return '--';
+            const ms = Date.parse(value);
+            return Number.isNaN(ms) ? '--' : formatAgoFromMs(ms);
+        }
+        function progressPct(ready, total) {
+            const numerator = Number(ready || 0) || 0;
+            const denominator = Number(total || 0) || 0;
+            if (denominator <= 0) return 0;
+            return Math.max(0, Math.min(100, Math.round((numerator / denominator) * 100)));
+        }
+        function getToneByPhase(phase) {
+            const text = String(phase || '').trim().toLowerCase();
+            if (['ready', 'done', 'success', 'complete'].includes(text)) return 'ok';
+            if (['pending', 'running', 'warming', 'warming_up'].includes(text)) return 'warn';
+            if (['failed', 'error'].includes(text)) return 'error';
+            return 'info';
+        }
+        function getRuntimeTone(status) {
+            const runtimePhase = String(status?.runtime_phase || '').trim().toLowerCase();
+            if (status?.startup_complete) return 'ok';
+            if (status?.starting || ['starting', 'booting', 'warming'].includes(runtimePhase)) return 'warn';
+            if (['error', 'failed', 'stopped'].includes(runtimePhase)) return 'error';
+            return 'info';
+        }
+        function renderBadge(label, tone) {
+            return `<span class="badge ${tone}">${escapeHtml(label)}</span>`;
+        }
+        function renderChip(label, tone) {
+            return `<span class="hero-chip tone-${tone}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+        }
+        function normalizeWarmup(status) {
+            const warmup = status && typeof status.warmup === 'object' && status.warmup ? status.warmup : {};
+            const preflight = warmup.preflight_repair && typeof warmup.preflight_repair === 'object' && warmup.preflight_repair
+                ? warmup.preflight_repair
+                : {};
+            return {
+                phase: String(warmup.phase || (warmup.trading_gate_open ? 'ready' : 'idle')).trim().toLowerCase() || 'idle',
+                gate_open: Boolean(warmup.trading_gate_open),
+                gate_reason: String(warmup.trading_gate_reason || '').trim() || '--',
+                required_interval: String(warmup.required_interval || '5m').trim() || '5m',
+                reason: String(warmup.reason || '').trim() || '--',
+                target_date: String(warmup.target_date || '').trim() || '--',
+                symbols_total: Number(warmup.symbols_total || 0) || 0,
+                trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
+                monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
+                ready_symbols: Number(warmup.ready_symbols || 0) || 0,
+                ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
+                ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
+                pending_symbols: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : [],
+                integrity_pending_symbols: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols : [],
+                integrity_repair_reasons: warmup.integrity_repair_reasons && typeof warmup.integrity_repair_reasons === 'object'
+                    ? warmup.integrity_repair_reasons
+                    : {},
+                requested_at: warmup.requested_at || '',
+                started_at: warmup.started_at || '',
+                finished_at: warmup.finished_at || '',
+                last_success_at: warmup.last_success_at || '',
+                last_error: String(warmup.last_error || '').trim(),
+                symbol_status: Array.isArray(warmup.symbol_status) ? warmup.symbol_status : [],
+                preflight_repair: {
+                    initial_repair_symbols: Array.isArray(preflight.initial_repair_symbols) ? preflight.initial_repair_symbols : [],
+                    attempted_repair_symbols: Array.isArray(preflight.attempted_repair_symbols) ? preflight.attempted_repair_symbols : [],
+                    remaining_repair_symbols: Array.isArray(preflight.remaining_repair_symbols) ? preflight.remaining_repair_symbols : [],
+                    history_fetch_symbols: Array.isArray(preflight.history_fetch_symbols) ? preflight.history_fetch_symbols : [],
+                    history_written_total: Number(preflight.history_written_total || 0) || 0,
+                    repair_reasons: preflight.repair_reasons && typeof preflight.repair_reasons === 'object'
+                        ? preflight.repair_reasons
+                        : {}
+                }
+            };
+        }
+        function renderHero(status, warmup) {
+            const runtimePhase = String(status?.runtime_phase || 'unknown').trim().toLowerCase() || 'unknown';
+            const runtimeTone = getRuntimeTone(status);
+            const warmupTone = warmup.last_error ? 'error' : getToneByPhase(warmup.phase);
+            const gateTone = warmup.gate_open ? 'ok' : (warmup.phase === 'idle' ? 'muted' : 'warn');
+            document.getElementById('heroChips').innerHTML = [
+                renderChip(`Runtime ${runtimePhase.toUpperCase()}`, runtimeTone),
+                renderChip(`Startup ${status?.startup_complete ? 'COMPLETE' : (status?.starting ? 'RUNNING' : 'WAITING')}`, runtimeTone),
+                renderChip(`Warmup ${String(warmup.phase || 'idle').toUpperCase()}`, warmupTone),
+                renderChip(`Gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'}`, gateTone),
+                renderChip(`Env ${String(currentEnvironment).toUpperCase()}`, 'muted')
+            ].join('');
+            document.getElementById('heroCopy').textContent = warmup.last_error
+                ? `Warmup 最近一次失败原因：${warmup.last_error}`
+                : '展示 startup warmup、预热修复、完整性阻塞和 symbol 就绪情况，自动每 15 秒刷新。';
+            document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
+            document.getElementById('sourceInfo').textContent = `来源 /api/custom/ibkr/statusz?warmup=1 · ${status?.warmup_details_included ? 'warmup full' : 'warmup lite'}`;
+        }
+        function renderMetricCard(card) {
+            return `
+                <div class="metric-card ${card.tone}">
+                    <div class="metric-label">${escapeHtml(card.label)}</div>
+                    <div class="metric-value">${escapeHtml(card.value)}</div>
+                    <div class="metric-progress"><span style="width:${card.progress}%"></span></div>
+                    <div class="metric-copy">${escapeHtml(card.copy)}</div>
+                </div>
+            `;
+        }
+        function renderMetrics(status, warmup) {
+            const cards = [
+                {
+                    label: 'Overall Ready',
+                    value: `${warmup.ready_symbols} / ${warmup.symbols_total}`,
+                    progress: progressPct(warmup.ready_symbols, warmup.symbols_total),
+                    copy: `phase ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
+                    tone: warmup.last_error ? 'error' : (warmup.ready_symbols >= warmup.symbols_total && warmup.symbols_total > 0 ? 'ok' : 'warn')
+                },
+                {
+                    label: 'Trade Ready',
+                    value: `${warmup.ready_trade_symbols} / ${warmup.trade_symbols_total}`,
+                    progress: progressPct(warmup.ready_trade_symbols, warmup.trade_symbols_total),
+                    copy: `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`,
+                    tone: warmup.gate_open ? 'ok' : 'warn'
+                },
+                {
+                    label: 'Monitor Ready',
+                    value: `${warmup.ready_monitor_symbols} / ${warmup.monitor_symbols_total}`,
+                    progress: progressPct(warmup.ready_monitor_symbols, warmup.monitor_symbols_total),
+                    copy: `interval ${warmup.required_interval} · reason ${warmup.reason}`,
+                    tone: warmup.monitor_symbols_total > 0 && warmup.ready_monitor_symbols >= warmup.monitor_symbols_total ? 'ok' : 'info'
+                },
+                {
+                    label: 'Runtime',
+                    value: String(status?.runtime_phase || 'unknown').toUpperCase(),
+                    progress: status?.startup_complete ? 100 : (status?.starting ? 55 : 0),
+                    copy: `starting ${status?.starting ? 'YES' : 'NO'} · startup_complete ${status?.startup_complete ? 'YES' : 'NO'}`,
+                    tone: getRuntimeTone(status)
+                }
+            ];
+            document.getElementById('metricGrid').innerHTML = cards.map(renderMetricCard).join('');
+        }
+        function renderStartupGrid(status, warmup) {
+            const items = [
+                ['Runtime Phase', String(status?.runtime_phase || 'unknown').toUpperCase(), `requested env ${String(currentEnvironment).toUpperCase()}`, getRuntimeTone(status)],
+                ['Starting', status?.starting ? 'YES' : 'NO', 'runtime start flag', status?.starting ? 'warn' : 'info'],
+                ['Startup Complete', status?.startup_complete ? 'YES' : 'NO', status?.startup_complete ? 'service ready' : 'still warming', status?.startup_complete ? 'ok' : 'warn'],
+                ['Warmup Phase', String(warmup.phase || 'idle').toUpperCase(), `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`, warmup.last_error ? 'error' : getToneByPhase(warmup.phase)],
+                ['Trigger Reason', warmup.reason, `target date ${warmup.target_date}`, 'info'],
+                ['Required Interval', warmup.required_interval, `${warmup.symbols_total} total symbols`, 'info'],
+                ['Requested At', formatTimeLabel(warmup.requested_at), formatAgoFromIso(warmup.requested_at), 'muted'],
+                ['Started At', formatTimeLabel(warmup.started_at), formatAgoFromIso(warmup.started_at), 'muted'],
+                ['Finished At', formatTimeLabel(warmup.finished_at), warmup.finished_at ? formatAgoFromIso(warmup.finished_at) : 'not finished', warmup.finished_at ? 'ok' : 'warn'],
+                ['Last Success', formatTimeLabel(warmup.last_success_at), warmup.last_success_at ? formatAgoFromIso(warmup.last_success_at) : 'no success snapshot', warmup.last_success_at ? 'ok' : 'warn']
+            ];
+            document.getElementById('startupGrid').innerHTML = items.map(([label, value, sub, tone]) => `
+                <div class="key-item">
+                    <div class="key-label">${escapeHtml(label)}</div>
+                    <div class="key-value tone-${tone}">${escapeHtml(value || '--')}</div>
+                    <div class="key-sub">${escapeHtml(sub || '--')}</div>
+                </div>
+            `).join('');
+        }
+        function renderChipList(values, tone, emptyLabel = '无') {
+            if (!Array.isArray(values) || values.length === 0) return `<div class="empty-state">${escapeHtml(emptyLabel)}</div>`;
+            return `<div class="chip-list">${values.map((value) => `<span class="list-chip ${tone}">${escapeHtml(value)}</span>`).join('')}</div>`;
+        }
+        function renderReasonList(map, emptyLabel = '无') {
+            const entries = Object.entries(map || {});
+            if (!entries.length) return `<div class="empty-state">${escapeHtml(emptyLabel)}</div>`;
+            return `
+                <div class="reason-list">
+                    ${entries.map(([key, value]) => `
+                        <div class="reason-row">
+                            <div class="reason-key">${escapeHtml(key)}</div>
+                            <div class="reason-value">${escapeHtml(value)}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+        function renderRepairSection(warmup) {
+            const repair = warmup.preflight_repair || {};
+            const detailCards = [
+                ['Initial Repair', String((repair.initial_repair_symbols || []).length), '初始需要修复的 symbol'],
+                ['Attempted Repair', String((repair.attempted_repair_symbols || []).length), '已经尝试过的 symbol'],
+                ['Remaining Repair', String((repair.remaining_repair_symbols || []).length), '仍未修复完成的 symbol'],
+                ['History Fetch', String((repair.history_fetch_symbols || []).length), '触发历史回拉的 symbol'],
+                ['History Written', String(repair.history_written_total || 0), '本轮补写 bars 数量']
+            ];
+            document.getElementById('repairGrid').innerHTML = detailCards.map(([label, value, copy]) => `
+                <div class="detail-item">
+                    <div class="detail-label">${escapeHtml(label)}</div>
+                    <div class="detail-value">${escapeHtml(value)}</div>
+                    <div class="detail-copy">${escapeHtml(copy)}</div>
+                </div>
+            `).join('');
+            document.getElementById('repairDetails').innerHTML = [
+                ['Remaining Symbols', renderChipList(repair.remaining_repair_symbols || [], 'warn', '当前没有剩余 repair symbol')],
+                ['History Fetch Symbols', renderChipList(repair.history_fetch_symbols || [], 'info', '当前没有 history fetch symbol')],
+                ['Repair Reasons', renderReasonList(repair.repair_reasons || {}, '当前没有 repair reason')]
+            ].map(([title, content]) => `
+                <div class="sub-block">
+                    <div class="sub-title">${escapeHtml(title)}</div>
+                    ${content}
+                </div>
+            `).join('');
+        }
+        function renderIntegritySection(warmup) {
+            const reasonCount = Object.keys(warmup.integrity_repair_reasons || {}).length;
+            document.getElementById('integrityBody').innerHTML = `
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <div class="detail-label">Integrity Pending</div>
+                        <div class="detail-value">${escapeHtml(String((warmup.integrity_pending_symbols || []).length))}</div>
+                        <div class="detail-copy">仍未满足完整性要求的 symbol</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Pending Symbols</div>
+                        <div class="detail-value">${escapeHtml(String((warmup.pending_symbols || []).length))}</div>
+                        <div class="detail-copy">warmup 阶段仍未 ready 的 symbol</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Repair Reasons</div>
+                        <div class="detail-value">${escapeHtml(String(reasonCount))}</div>
+                        <div class="detail-copy">integrity repair reasons 条数</div>
+                    </div>
+                </div>
+                <div class="sub-block">
+                    <div class="sub-title">Integrity Pending Symbols</div>
+                    ${renderChipList(warmup.integrity_pending_symbols || [], 'error', '当前没有完整性阻塞')}
+                </div>
+                <div class="sub-block">
+                    <div class="sub-title">Pending Symbols</div>
+                    ${renderChipList(warmup.pending_symbols || [], 'warn', '当前没有 pending symbol')}
+                </div>
+                <div class="sub-block">
+                    <div class="sub-title">Integrity Repair Reasons</div>
+                    ${renderReasonList(warmup.integrity_repair_reasons || {}, '当前没有 integrity repair reason')}
+                </div>
+            `;
+        }
+        function getFilteredSymbolStatus(warmup) {
+            const rows = Array.isArray(warmup.symbol_status) ? warmup.symbol_status.slice() : [];
+            const query = String(document.getElementById('symbolSearch')?.value || '').trim().toUpperCase();
+            return rows.filter((item) => {
+                const role = String(item?.role || '').trim().toLowerCase();
+                const isBlocked = !item?.ready || !item?.integrity_ready;
+                if (currentSymbolFilter === 'trade' && role !== 'trade') return false;
+                if (currentSymbolFilter === 'monitor' && role !== 'monitor') return false;
+                if (currentSymbolFilter === 'blocked' && !isBlocked) return false;
+                if (!query) return true;
+                return [
+                    String(item?.symbol || '').toUpperCase(),
+                    role.toUpperCase(),
+                    String(item?.integrity_reason || '').toUpperCase()
+                ].some((value) => value.includes(query));
+            }).sort((left, right) => {
+                const leftPenalty = (left?.ready ? 0 : 4) + (left?.integrity_ready ? 0 : 2);
+                const rightPenalty = (right?.ready ? 0 : 4) + (right?.integrity_ready ? 0 : 2);
+                if (leftPenalty !== rightPenalty) return rightPenalty - leftPenalty;
+                const leftRole = String(left?.role || '');
+                const rightRole = String(right?.role || '');
+                if (leftRole !== rightRole) return leftRole.localeCompare(rightRole);
+                return String(left?.symbol || '').localeCompare(String(right?.symbol || ''));
+            });
+        }
+        function renderSymbolTable(warmup) {
+            const rows = Array.isArray(warmup.symbol_status) ? warmup.symbol_status : [];
+            const filtered = getFilteredSymbolStatus(warmup);
+            const blockedCount = rows.filter((item) => !item?.ready || !item?.integrity_ready).length;
+            document.getElementById('symbolSummary').textContent = `全部 ${rows.length} · blocked ${blockedCount} · 当前筛选 ${filtered.length}`;
+            if (!filtered.length) {
+                document.getElementById('symbolTableBody').innerHTML = '<tr><td colspan="7" class="empty-state">当前筛选下没有 symbol</td></tr>';
+                return;
+            }
+            document.getElementById('symbolTableBody').innerHTML = filtered.map((item) => {
+                const readyTone = item?.ready ? 'ok' : 'warn';
+                const integrityTone = item?.integrity_ready ? 'ok' : 'error';
+                const roleTone = String(item?.role || '').trim().toLowerCase() === 'monitor' ? 'info' : 'ok';
+                const reason = String(item?.integrity_reason || '').trim() || '--';
+                const lastBarTimeMs = Number(item?.last_bar_time_ms || 0) || 0;
+                return `
+                    <tr>
+                        <td class="mono">
+                            <div class="table-main">${escapeHtml(String(item?.symbol || '--'))}</div>
+                            <div class="table-sub">${escapeHtml(formatAgoFromMs(lastBarTimeMs))}</div>
+                        </td>
+                        <td>${renderBadge(String(item?.role || '--').toUpperCase(), roleTone)}</td>
+                        <td>${renderBadge(item?.ready ? 'READY' : 'WAITING', readyTone)}</td>
+                        <td>${renderBadge(item?.integrity_ready ? 'OK' : 'BLOCKED', integrityTone)}</td>
+                        <td class="mono">
+                            <div class="table-main">${escapeHtml(String(Number(item?.bar_count || 0) || 0))}</div>
+                            <div class="table-sub">bars</div>
+                        </td>
+                        <td class="mono">
+                            <div class="table-main">${escapeHtml(formatBarTimeMsToET(lastBarTimeMs))}</div>
+                            <div class="table-sub">${escapeHtml(formatAgoFromMs(lastBarTimeMs))}</div>
+                        </td>
+                        <td>
+                            <div class="table-main">${escapeHtml(reason)}</div>
+                            <div class="table-sub">${item?.ready && item?.integrity_ready ? 'symbol ready' : 'requires follow-up'}</div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        function renderAll(status) {
+            const warmup = normalizeWarmup(status);
+            lastStatusPayload = status;
+            renderHero(status, warmup);
+            renderMetrics(status, warmup);
+            renderStartupGrid(status, warmup);
+            renderRepairSection(warmup);
+            renderIntegritySection(warmup);
+            renderSymbolTable(warmup);
+        }
+        function setError(message) {
+            const banner = document.getElementById('errorBanner');
+            if (!message) {
+                banner.textContent = '';
+                banner.classList.add('is-hidden');
+                return;
+            }
+            banner.textContent = message;
+            banner.classList.remove('is-hidden');
+        }
+        async function loadWarmupData() {
+            try {
+                const payload = await requestWarmupJson('/api/custom/ibkr/statusz', { warmup: '1' });
+                if (!payload || typeof payload !== 'object') throw new Error('Warmup payload empty');
+                renderAll(payload);
+                if (payload.ok === false || payload.runtime?.ok === false) {
+                    setError(payload.error || payload.runtime?.error || '当前 warmup 状态降级，请检查 compute/runtime。');
+                } else {
+                    setError('');
+                }
+            } catch (error) {
+                setError(`Warmup 页面加载失败: ${error.message || error}`);
+                if (!lastStatusPayload) {
+                    renderAll({
+                        runtime_phase: 'unknown',
+                        starting: false,
+                        startup_complete: false,
+                        warmup_details_included: false,
+                        warmup: {}
+                    });
+                }
+            }
+        }
+        function updateFilterButtons() {
+            document.querySelectorAll('.filter-btn[data-filter]').forEach((button) => {
+                button.classList.toggle('active', button.dataset.filter === currentSymbolFilter);
+            });
+        }
+        window.setSymbolFilter = function(filter) {
+            currentSymbolFilter = filter;
+            updateFilterButtons();
+            if (lastStatusPayload) renderSymbolTable(normalizeWarmup(lastStatusPayload));
+        };
+        window.onEnvironmentChange = function(environment) {
+            currentEnvironment = environment;
+            window.location.href = buildPageUrl('/ibkr_warmup.html', {}, { environment: currentEnvironment });
+        };
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!initWarmupAuth()) return;
+            document.getElementById('nav').innerHTML = renderNav('/ibkr_warmup.html');
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🔥 Warmup 预热', { description: '启动进度 / 修复 / symbol readiness' });
+            document.getElementById('pageBridge').innerHTML = renderPageBridge([
+                { path: '/ibkr_system.html', kicker: 'Monitor', label: '总览', copy: '健康 / freshness / config' },
+                { path: '/ibkr_runtime.html', kicker: 'Console', label: '控制台', copy: '启动 / 2FA / compute / flow trace' },
+                { path: '/ibkr_warmup.html', kicker: 'Warmup', label: '预热', copy: 'startup / gate / repair / symbol status', active: true },
+                { path: '/ibkr_data_quality.html', kicker: 'Quality', label: '数据质量', copy: 'bars 缺口 / 重复 / 安全修复' }
+            ]);
+            document.getElementById('symbolSearch').addEventListener('input', () => {
+                if (lastStatusPayload) renderSymbolTable(normalizeWarmup(lastStatusPayload));
+            });
+            updateFilterButtons();
+            await loadWarmupData();
+            refreshTimer = setInterval(() => loadWarmupData(), 15000);
+        });
+    </script>
+</body>
+</html>

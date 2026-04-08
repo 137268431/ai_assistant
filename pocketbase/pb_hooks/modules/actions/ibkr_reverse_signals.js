@@ -13,10 +13,6 @@ var getReverseSignalsNotifier = function() {
   return require(`${__hooks}/lib/feishu_reverse.js`)
 }
 
-var getCollectionRegistry = function() {
-  return require(`${__hooks}/lib/collections.js`)
-}
-
 var normalizeReverseEnvironment = function(value) {
   const { normalizeRuntimeEnvironment, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
   return normalizeRuntimeEnvironment(value || "", LIVE_ENVIRONMENT)
@@ -146,7 +142,7 @@ function buildReverseResponse(record, created, duplicate) {
 
 function listReverseRecords(dateText, maxItems, environment) {
   const reverseUtils = getReverseSignalsUtils()
-  const { COLLECTIONS } = getCollectionRegistry()
+  const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
   const limit = Math.max(1, Math.min(Number(maxItems) || 200, 500))
   const runtimeEnvironment = normalizeReverseEnvironment(environment)
   if (dateText) {
@@ -169,7 +165,7 @@ function listReverseRecords(dateText, maxItems, environment) {
 routerAdd("GET", "/api/custom/ibkr/reverse/list", (c) => {
   try {
     const reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
-    const { COLLECTIONS } = getCollectionRegistry()
+    const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
     const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const dateText = c.request.url.query().get("date") || ""
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
@@ -361,7 +357,7 @@ routerAdd("POST", "/api/custom/ibkr/reverse/calculate", (c) => {
 routerAdd("GET", "/api/custom/ibkr/reverse/pending", (c) => {
   try {
     const reverseUtils = getReverseSignalsUtils()
-    const { COLLECTIONS } = getCollectionRegistry()
+    const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
     const environment = getReverseRequestEnvironment(c)
     const records = $app.findRecordsByFilter(
       COLLECTIONS.REVERSE_SIGNALS,
@@ -384,7 +380,7 @@ routerAdd("GET", "/api/custom/ibkr/reverse/pending", (c) => {
 // POST /api/custom/ibkr/reverse/dispatch - 页面触发执行/取消
 routerAdd("POST", "/api/custom/ibkr/reverse/dispatch", (c) => {
   const reverseUtils = getReverseSignalsUtils()
-  const { COLLECTIONS } = getCollectionRegistry()
+  const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {}
   const reverseId = String(data.reverse_id || data.signal_id || "").trim()
   const action = String(data.action || "").trim()
@@ -467,7 +463,7 @@ routerAdd("POST", "/api/custom/ibkr/reverse/dispatch", (c) => {
 // POST /api/custom/ibkr/reverse/ack - IBKR 回写处理结果
 routerAdd("POST", "/api/custom/ibkr/reverse/ack", (c) => {
   const reverseUtils = getReverseSignalsUtils()
-  const { COLLECTIONS } = getCollectionRegistry()
+  const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
   const data = c.requestInfo().body || c.requestInfo().data || {}
   const reverseId = String(data.signal_id || data.reverse_id || "").trim()
   const status = String(data.status || "confirmed").trim()

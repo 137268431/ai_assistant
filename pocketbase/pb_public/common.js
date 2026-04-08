@@ -367,7 +367,7 @@ function renderNav(activePage) {
     { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html', '/ibkr_stats.html'], icon: '📈', label: '指标' },
     { path: '/ibkr_screener.html', aliases: ['/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '筛选' },
     { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
-    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_data_quality.html'], icon: '🖥️', label: '系统' }
+    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_warmup.html', '/ibkr_data_quality.html'], icon: '🖥️', label: '系统' }
   ];
 
   return `

@@ -335,6 +335,8 @@ function getStatusConfig(status) {
 
 function buildActionButton(stateData, environment) {
     var cfg = getStatusConfig(stateData.status)
+    var status = String(stateData.status || "").trim().toLowerCase()
+    var forceRestart = ["triggered", "waiting_confirm", "waiting_response", "timeout", "failed"].indexOf(status) !== -1
     return {
         tag: "button",
         type: "primary",
@@ -345,6 +347,7 @@ function buildActionButton(stateData, environment) {
         value: {
             action: "ibkr_2fa_start",
             environment: environment,
+            force_restart: forceRestart,
         },
     }
 }
@@ -665,8 +668,9 @@ function trigger2faFlow(options) {
     var current = getStatePayload(runtimeEnvironment)
     var currentData = current.data || {}
     var callbackDriven = opts.source === "feishu_callback"
+    var forceRestart = !!opts.forceRestart
 
-    if (["triggered", "waiting_confirm", "waiting_response"].indexOf(currentData.status || "") !== -1) {
+    if (!forceRestart && ["triggered", "waiting_confirm", "waiting_response"].indexOf(currentData.status || "") !== -1) {
         return {
             ok: true,
             environment: runtimeEnvironment,
@@ -737,7 +741,10 @@ function trigger2faFlow(options) {
                 data: triggerSaved.data,
                 result: { success: true, skipped: true, reason: "callback_card_response" },
             }
-            : deliverCard(triggerSaved, { bypassThrottle: true })
+            : deliverCard(triggerSaved, {
+                bypassThrottle: true,
+                forceNew: !!opts.forceNewCard,
+            })
         return {
             ok: true,
             environment: runtimeEnvironment,
@@ -945,25 +952,22 @@ function handle2faCardCallback(c, options) {
         }, updateToken)
     }
 
-    if (["triggered", "waiting_confirm", "waiting_response"].indexOf(currentData.status || "") !== -1) {
-        return feishuApp.sendFeishuCallbackResponse(c, {
-            toast: { type: "info", content: "验证流程已经在进行中" },
-            card: { type: "raw", data: build2faCard(currentData, runtimeEnvironment) }
-        }, updateToken)
-    }
+    var currentStatus = String(currentData.status || "").trim().toLowerCase()
+    var forceRestart = !!opts.forceRestart || ["triggered", "waiting_confirm", "waiting_response", "timeout", "failed"].indexOf(currentStatus) !== -1
 
     var result = trigger2faFlow({
         environment: runtimeEnvironment,
         source: "feishu_callback",
         reason: currentData.reason || "manual_reauth",
         detail: currentData.detail || {},
+        forceRestart: forceRestart,
     })
 
     return feishuApp.sendFeishuCallbackResponse(c, {
         toast: {
             type: result.ok ? "success" : "error",
             content: result.ok
-                ? "2FA 已触发，请在 IBKR Mobile 确认"
+                ? (forceRestart ? "已强制重开新一轮 2FA，请立即查看 IBKR Mobile" : "2FA 已触发，请在 IBKR Mobile 确认")
                 : ("2FA 触发失败: " + (result.error || "unknown_error"))
         },
         card: { type: "raw", data: result.card || build2faCard(result.state || currentData, runtimeEnvironment) }

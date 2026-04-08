@@ -39,6 +39,7 @@ class OrderTracker:
         self._thread: Optional[threading.Thread] = None
         self._known_orders: Dict[str, dict] = {}
         self._last_poll: Optional[float] = None
+        self._account_selected = False
 
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
@@ -49,6 +50,84 @@ class OrderTracker:
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
+
+    @staticmethod
+    def _normalize_text(value: Any) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _extract_live_symbol(order: Dict) -> str:
+        return str(
+            order.get("ticker")
+            or order.get("symbol")
+            or order.get("contractDesc")
+            or ""
+        ).strip().upper()
+
+    @staticmethod
+    def _extract_live_side(order: Dict) -> str:
+        return str(order.get("side") or "").strip().upper()
+
+    @staticmethod
+    def _extract_live_order_type(order: Dict) -> str:
+        return str(order.get("orderType") or order.get("order_type") or "").strip().upper()
+
+    @staticmethod
+    def _extract_live_parent_id(order: Dict) -> str:
+        return str(order.get("parentId") or order.get("parent_id") or "").strip()
+
+    @staticmethod
+    def _is_open_order_status(status: str) -> bool:
+        return str(status or "").strip().upper() not in {
+            "",
+            "FILLED",
+            "EXECUTED",
+            "CANCELLED",
+            "CANCELED",
+            "INACTIVE",
+            "REJECTED",
+            "EXPIRED",
+            "API_CANCELLED",
+        }
+
+    def _ensure_account_selected(self) -> bool:
+        try:
+            load_cookies(self._session)
+            resp = self._session.get(
+                self._api_url("/iserver/accounts"),
+                timeout=10,
+            )
+            if resp.status_code == 401:
+                save_cookies(self._session)
+                return False
+            resp.raise_for_status()
+            save_cookies(self._session)
+            data = resp.json() if resp.text else {}
+            accounts = data.get("accounts", []) if isinstance(data, dict) else []
+            selected = data.get("selectedAccount", "") if isinstance(data, dict) else ""
+            if accounts or selected:
+                self._account_selected = True
+                logger.debug("iserver account selected: selected=%s accounts=%s", selected, accounts)
+                return True
+            return False
+        except Exception as exc:
+            logger.debug("Failed to select iserver account: %s", exc)
+            return False
+
+    def _fetch_live_orders_once(self, *, force: bool = True, timeout: int = 15) -> List[Dict]:
+        data = self._request_json(
+            "/iserver/account/orders",
+            params={"force": "true" if force else "false"},
+            timeout=timeout,
+        )
+
+        if isinstance(data, dict):
+            orders = data.get("orders", [])
+        elif isinstance(data, list):
+            orders = data
+        else:
+            orders = []
+        return orders if isinstance(orders, list) else []
 
     def _request_json(self, path: str, *, params: Optional[Dict[str, Any]] = None, timeout: int = 15):
         load_cookies(self._session)
@@ -66,28 +145,129 @@ class OrderTracker:
             return {}
         return resp.json()
 
-    def get_live_orders(self) -> List[Dict]:
+    def get_live_orders(self, *, retries: int = 3, retry_delay: float = 0.5, force: bool = True) -> List[Dict]:
         try:
-            data = self._request_json(
-                "/iserver/account/orders",
-                params={"force": "true"},
-                timeout=15,
-            )
+            if not self._account_selected:
+                self._ensure_account_selected()
 
-            if isinstance(data, dict):
-                return data.get("orders", [])
-            elif isinstance(data, list):
-                return data
-
-            return []
+            attempts = max(1, int(retries or 1))
+            orders: List[Dict] = []
+            for attempt in range(attempts):
+                orders = self._fetch_live_orders_once(force=force, timeout=15)
+                if orders:
+                    return orders
+                if attempt == 0 and not orders and self._account_selected:
+                    self._ensure_account_selected()
+                if attempt + 1 < attempts:
+                    time.sleep(max(0.0, float(retry_delay or 0.0)))
+            return orders
         except Exception as e:
             logger.warning("Failed to get live orders: %s", e)
             return []
+
+    def get_orders_by_ids(self, broker_order_ids: List[str]) -> List[Dict]:
+        """Fetch individual order statuses by broker_order_id.
+        Used to supplement the bulk live orders when the Gateway session cache is stale.
+        Returns orders that are still in an active (non-closed) status.
+        """
+        closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED"}
+        results = []
+        for oid in (broker_order_ids or []):
+            oid = str(oid or "").strip()
+            if not oid:
+                continue
+            try:
+                payload = self.get_order_status(oid)
+                if not payload or not isinstance(payload, dict):
+                    continue
+                status = self._extract_order_status(payload)
+                if status and status.upper() not in closed_statuses:
+                    results.append(payload)
+            except Exception as exc:
+                logger.debug("get_orders_by_ids failed for %s: %s", oid, exc)
+        return results
+
+    def sync_live_orders_snapshot(self, orders: Optional[List[Dict]] = None) -> int:
+        live_orders = orders if orders is not None else self.get_live_orders()
+        synced = 0
+        for order in live_orders or []:
+            order_id = self._normalize_text(order.get("orderId") or order.get("order_id"))
+            if not order_id:
+                continue
+            try:
+                self._sync_to_pb(order)
+                synced += 1
+            except Exception as exc:
+                logger.debug("sync_live_orders_snapshot failed for %s: %s", order_id, exc)
+        return synced
+
+    def find_duplicate_open_entry(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        quantity: Any,
+        entry_price: Any,
+        entry_order_type: str = "LMT",
+        price_tolerance: float = 0.02,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_symbol = self._normalize_text(symbol).upper()
+        normalized_direction = self._normalize_text(direction).lower()
+        expected_side = "BUY" if normalized_direction == "long" else "SELL" if normalized_direction == "short" else ""
+        expected_qty = round(self._to_float(quantity, 0.0), 8)
+        expected_price = self._to_float(entry_price, 0.0)
+        normalized_order_type = self._normalize_text(entry_order_type).upper() or "LMT"
+
+        if not normalized_symbol or not expected_side or expected_qty <= 0:
+            return None
+
+        live_orders = self.get_live_orders()
+        for order in live_orders:
+            if self._extract_live_parent_id(order):
+                continue
+
+            live_status = self._extract_order_status(order)
+            if not self._is_open_order_status(live_status):
+                continue
+            if self._extract_live_symbol(order) != normalized_symbol:
+                continue
+            if self._extract_live_side(order) != expected_side:
+                continue
+
+            live_qty = round(
+                self._to_float(
+                    order.get("totalSize") if order.get("totalSize") is not None else order.get("quantity"),
+                    0.0,
+                ),
+                8,
+            )
+            if abs(live_qty - expected_qty) > 1e-8:
+                continue
+
+            live_type = self._extract_live_order_type(order)
+            if normalized_order_type == "MKT":
+                if live_type and live_type != "MKT":
+                    continue
+                return order
+
+            if live_type and live_type not in {"LMT", "LIMIT"}:
+                continue
+
+            live_price = self._to_float(order.get("price"), 0.0)
+            if expected_price <= 0 or live_price <= 0:
+                continue
+            if abs(live_price - expected_price) > max(price_tolerance, expected_price * 0.0005):
+                continue
+            return order
+
+        return None
 
     def get_broker_order_history(self, days: int = 1, force: bool = True) -> Dict[str, Any]:
         requested_days = max(1, int(days or 1))
         # IBKR Client Portal `/iserver/account/orders` only covers the current market day.
         effective_days = 1
+        if not self._account_selected:
+            self._ensure_account_selected()
         try:
             data = self._request_json(
                 "/iserver/account/orders",

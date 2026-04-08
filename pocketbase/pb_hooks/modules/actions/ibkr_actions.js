@@ -712,7 +712,7 @@ function ibkrActionsTrimObjectEntries(value, limit) {
 }
 globalThis.ibkrActionsTrimObjectEntries = ibkrActionsTrimObjectEntries
 
-function ibkrActionsBuildStatuszRuntimePayload(runtimePayload) {
+function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDetails) {
     const payload = ibkrActionsCloneObject(runtimePayload)
     const gateway = ibkrActionsCloneObject(payload.gateway)
     const session = ibkrActionsCloneObject(payload.session)
@@ -729,12 +729,61 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload) {
         Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols.length : 0
     )
     const pendingSymbols = ibkrActionsTrimArray(warmup.pending_symbols, 12)
+    const fullPendingSymbols = ibkrActionsTrimArray(
+        warmup.pending_symbols,
+        Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : 0
+    )
     const activeRepairSymbols = ibkrActionsTrimArray(marketUniverse.last_active_repair_symbols, 12)
+    const fullSymbolStatus = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            warmup.symbol_status,
+            Array.isArray(warmup.symbol_status) ? warmup.symbol_status.length : 0
+        )
+        : []
+    const integrityPendingSymbols = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            warmup.integrity_pending_symbols,
+            Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0
+        )
+        : []
+    const readySymbolsList = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            warmup.ready_symbols_list,
+            Array.isArray(warmup.ready_symbols_list) ? warmup.ready_symbols_list.length : 0
+        )
+        : []
+    const warmupSymbols = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            warmup.symbols,
+            Array.isArray(warmup.symbols) ? warmup.symbols.length : 0
+        )
+        : []
+    const warmupTradeSymbols = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            warmup.trade_symbols,
+            Array.isArray(warmup.trade_symbols) ? warmup.trade_symbols.length : 0
+        )
+        : []
+    const warmupMonitorSymbols = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            warmup.monitor_symbols,
+            Array.isArray(warmup.monitor_symbols) ? warmup.monitor_symbols.length : 0
+        )
+        : []
+    const integrityRepairReasons = includeWarmupDetails
+        ? ibkrActionsCloneObject(warmup.integrity_repair_reasons)
+        : {}
+    const preflightRepair = includeWarmupDetails
+        ? ibkrActionsCloneObject(warmup.preflight_repair)
+        : {}
 
     return {
         ok: payload.ok,
         starting: Boolean(payload.starting),
+        startup_complete: Boolean(payload.startup_complete),
+        runtime_phase: String(payload.runtime_phase || ""),
         environment: String(payload.environment || ""),
+        warmup_details_included: Boolean(includeWarmupDetails),
         gateway: {
             running: Boolean(gateway.running),
             reachable: Boolean(gateway.reachable),
@@ -775,18 +824,31 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload) {
             trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
             monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
             ready_symbols: Number(warmup.ready_symbols || 0) || 0,
-            ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
-            ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-            pending_symbols: pendingSymbols,
-            pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
-            started_at: warmup.started_at || "",
-            finished_at: warmup.finished_at || "",
-            last_error: String(warmup.last_error || ""),
-        },
-        realtime_compute: {
-            runs: Number(realtimeCompute.runs || 0) || 0,
-            queue_size: Number(realtimeCompute.queue_size || 0) || 0,
-            last_run: realtimeCompute.last_run || "",
+                ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
+                ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
+                pending_symbols: includeWarmupDetails ? fullPendingSymbols : pendingSymbols,
+                pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
+                requested_at: warmup.requested_at || "",
+                started_at: warmup.started_at || "",
+                finished_at: warmup.finished_at || "",
+                last_success_at: warmup.last_success_at || "",
+                last_error: String(warmup.last_error || ""),
+                reason: String(warmup.reason || ""),
+                target_date: String(warmup.target_date || ""),
+                symbols: warmupSymbols,
+                trade_symbols: warmupTradeSymbols,
+                monitor_symbols: warmupMonitorSymbols,
+                ready_symbols_list: readySymbolsList,
+                symbol_status: fullSymbolStatus,
+                integrity_pending_symbols: integrityPendingSymbols,
+                integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
+                integrity_repair_reasons: integrityRepairReasons,
+                preflight_repair: preflightRepair,
+            },
+            realtime_compute: {
+                runs: Number(realtimeCompute.runs || 0) || 0,
+                queue_size: Number(realtimeCompute.queue_size || 0) || 0,
+                last_run: realtimeCompute.last_run || "",
             last_bar_close: realtimeCompute.last_bar_close || "",
             last_elapsed_s: Number(realtimeResult.elapsed_s || 0) || 0,
             last_processed: Number(realtimeResult.processed || 0) || 0,
@@ -2655,7 +2717,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
 
             return payload
         }
-        const buildStatuszRuntimePayload = function(runtimePayload) {
+        const buildStatuszRuntimePayload = function(runtimePayload, includeWarmupDetails) {
             const payload = cloneObject(runtimePayload)
             const gateway = cloneObject(payload.gateway)
             const session = cloneObject(payload.session)
@@ -2672,12 +2734,61 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols.length : 0
             )
             const pendingSymbols = trimArray(warmup.pending_symbols, 12)
+            const fullPendingSymbols = trimArray(
+                warmup.pending_symbols,
+                Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : 0
+            )
             const activeRepairSymbols = trimArray(marketUniverse.last_active_repair_symbols, 12)
+            const fullSymbolStatus = includeWarmupDetails
+                ? trimArray(
+                    warmup.symbol_status,
+                    Array.isArray(warmup.symbol_status) ? warmup.symbol_status.length : 0
+                )
+                : []
+            const integrityPendingSymbols = includeWarmupDetails
+                ? trimArray(
+                    warmup.integrity_pending_symbols,
+                    Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0
+                )
+                : []
+            const readySymbolsList = includeWarmupDetails
+                ? trimArray(
+                    warmup.ready_symbols_list,
+                    Array.isArray(warmup.ready_symbols_list) ? warmup.ready_symbols_list.length : 0
+                )
+                : []
+            const warmupSymbols = includeWarmupDetails
+                ? trimArray(
+                    warmup.symbols,
+                    Array.isArray(warmup.symbols) ? warmup.symbols.length : 0
+                )
+                : []
+            const warmupTradeSymbols = includeWarmupDetails
+                ? trimArray(
+                    warmup.trade_symbols,
+                    Array.isArray(warmup.trade_symbols) ? warmup.trade_symbols.length : 0
+                )
+                : []
+            const warmupMonitorSymbols = includeWarmupDetails
+                ? trimArray(
+                    warmup.monitor_symbols,
+                    Array.isArray(warmup.monitor_symbols) ? warmup.monitor_symbols.length : 0
+                )
+                : []
+            const integrityRepairReasons = includeWarmupDetails
+                ? cloneObject(warmup.integrity_repair_reasons)
+                : {}
+            const preflightRepair = includeWarmupDetails
+                ? cloneObject(warmup.preflight_repair)
+                : {}
 
             return {
                 ok: payload.ok,
                 starting: Boolean(payload.starting),
+                startup_complete: Boolean(payload.startup_complete),
+                runtime_phase: String(payload.runtime_phase || ""),
                 environment: String(payload.environment || ""),
+                warmup_details_included: Boolean(includeWarmupDetails),
                 gateway: {
                     running: Boolean(gateway.running),
                     reachable: Boolean(gateway.reachable),
@@ -2718,13 +2829,26 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
                     monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
                     ready_symbols: Number(warmup.ready_symbols || 0) || 0,
-                    ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
-                    ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-                    pending_symbols: pendingSymbols,
-                    pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
-                    started_at: warmup.started_at || "",
-                    finished_at: warmup.finished_at || "",
-                    last_error: String(warmup.last_error || ""),
+                        ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
+                        ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
+                        pending_symbols: includeWarmupDetails ? fullPendingSymbols : pendingSymbols,
+                        pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
+                        requested_at: warmup.requested_at || "",
+                        started_at: warmup.started_at || "",
+                        finished_at: warmup.finished_at || "",
+                        last_success_at: warmup.last_success_at || "",
+                        last_error: String(warmup.last_error || ""),
+                        reason: String(warmup.reason || ""),
+                        target_date: String(warmup.target_date || ""),
+                        symbols: warmupSymbols,
+                        trade_symbols: warmupTradeSymbols,
+                        monitor_symbols: warmupMonitorSymbols,
+                        ready_symbols_list: readySymbolsList,
+                        symbol_status: fullSymbolStatus,
+                        integrity_pending_symbols: integrityPendingSymbols,
+                        integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
+                        integrity_repair_reasons: integrityRepairReasons,
+                        preflight_repair: preflightRepair,
                 },
                 realtime_compute: {
                     runs: Number(realtimeCompute.runs || 0) || 0,
@@ -2762,6 +2886,9 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
         const query = c.request.url.query()
         const includeEngines = parseBoolean(query.get("full"), false)
             || !parseBoolean(query.get("lite"), true)
+        const includeWarmupDetails = parseBoolean(query.get("warmup"), false)
+            || parseBoolean(query.get("warmup_full"), false)
+            || includeEngines
         const computeBase = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
         const computeUpstream = `${computeBase}/status`
         const runtimeUpstream = `${computeBase}/ibkr/status`
@@ -2794,13 +2921,14 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
         }
 
         const computeData = buildStatuszComputePayload(computePayload, includeEngines)
-        const runtimeData = buildStatuszRuntimePayload(runtimePayload)
+        const runtimeData = buildStatuszRuntimePayload(runtimePayload, includeWarmupDetails)
         const actualRuntimeEnvironment = String(runtimeData.environment || computeData.environment || environment).trim().toLowerCase() || environment
         const response = {
             ...computeData,
             ...(runtimeData && runtimeData.ok !== false ? runtimeData : {}),
             compute: computeData,
             runtime: runtimeData,
+            warmup_details_included: Boolean(includeWarmupDetails),
             requested_environment: environment,
             actual_runtime_environment: actualRuntimeEnvironment,
             runtime_environment_mismatch: actualRuntimeEnvironment !== environment,
@@ -3610,10 +3738,12 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
     const d = reqInfo.body || reqInfo.data || {}
     const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
-    const { getStatePayload, normalizeStateWithRuntime, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const { getStatePayload, normalizeStateWithRuntime, request2faApproval, trigger2faFlow } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const forceReset = d.force_reset === true || ["1", "true", "yes", "on"].includes(String(d.force_reset || "").trim().toLowerCase())
     const forceNew = d.force_new === true || ["1", "true", "yes", "on"].includes(String(d.force_new || "").trim().toLowerCase())
+    const triggerNow = d.trigger_now === true || ["1", "true", "yes", "on"].includes(String(d.trigger_now || "").trim().toLowerCase())
+    const forceRestart = d.force_restart === true || ["1", "true", "yes", "on"].includes(String(d.force_restart || "").trim().toLowerCase()) || triggerNow
 
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
@@ -3663,15 +3793,28 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
             })
         }
 
-        const result = request2faApproval({
-            environment: environment,
-            reason: String(d.reason || "").trim() || "manual_reauth",
-            source: String(d.source || "").trim() || "ibkr_compute",
-            message: String(d.message || "").trim(),
-            detail: d.detail && typeof d.detail === "object" ? d.detail : {},
-            forceReset: forceReset,
-            forceNew: forceNew,
-        })
+        const reason = String(d.reason || "").trim() || "manual_reauth"
+        const source = String(d.source || "").trim() || "ibkr_compute"
+        const messageText = String(d.message || "").trim()
+        const detail = d.detail && typeof d.detail === "object" ? d.detail : {}
+        const result = triggerNow
+            ? trigger2faFlow({
+                environment: environment,
+                reason: reason,
+                source: source,
+                detail: detail,
+                forceRestart: forceRestart,
+                forceNewCard: forceNew,
+            })
+            : request2faApproval({
+                environment: environment,
+                reason: reason,
+                source: source,
+                message: messageText,
+                detail: detail,
+                forceReset: forceReset,
+                forceNew: forceNew,
+            })
         const state = normalizeStateWithRuntime(result.state || {}, runtime)
         state.requested_environment = environment
         state.actual_runtime_environment = String((runtime && runtime.environment) || environment).trim().toLowerCase() || environment
@@ -3680,6 +3823,10 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
         let message = ""
         if (state.runtime_authenticated && state.gateway_reachable && Number(state.gateway_status_code || 0) !== 401) {
             message = "当前 Gateway 会话已认证，无需再次确认。"
+        } else if (triggerNow && result.ok) {
+            message = forceNew
+                ? "已强制开启新一轮 2FA，并刷新卡片。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
+                : "已重新触发 2FA。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
         } else if (result.skipped_reason === "active_card_reused") {
             const remainingMs = Number(result.renotify_remaining_ms || 0) || 0
             const remainingMin = remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0
@@ -3709,6 +3856,7 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
             skipped_reason: result.skipped_reason || "",
             renotify_remaining_ms: Number(result.renotify_remaining_ms || 0) || 0,
             error: result.error || "",
+            already_active: !!result.already_active,
         })
     } catch (err) {
         return c.json(500, { ok: false, error: err.message || String(err), environment: environment })

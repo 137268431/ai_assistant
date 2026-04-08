@@ -14,11 +14,15 @@ IBKR Compute — 指标计算 HTTP 服务
 """
 
 import json
+import logging
 import os
 import time
 import traceback
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
 
 import requests
 from flask import Flask, Response, jsonify, redirect, request
@@ -83,6 +87,7 @@ BOOTSTRAP_LOOKBACK_BARS = {
     "4h": 260,
     "1d": 260,
 }
+MATERIALIZE_MAX_WORKERS = max(1, min(8, int(os.environ.get("IBKR_MATERIALIZE_MAX_WORKERS", "1"))))
 LEGACY_COLLECTION_MAP = {
     "signals": "ibkr_signals",
     "indicators": "ibkr_indicators",
@@ -224,14 +229,15 @@ def get_signal_generator_params(environment: str) -> dict:
 def get_or_create_engine(environment: str, symbol: str, interval: str) -> IndicatorEngine:
     key = (environment, symbol, interval)
     signal_params = get_signal_generator_params(environment)
-    if key not in engines:
-        engines[key] = IndicatorEngine(symbol, interval)
-        signal_gens[key] = SignalGenerator(symbol, interval, params=signal_params)
-    else:
-        signal_generator = signal_gens.get(key)
-        if signal_generator:
-            signal_generator.set_params(signal_params)
-    return engines[key]
+    with compute_lock:
+        if key not in engines:
+            engines[key] = IndicatorEngine(symbol, interval)
+            signal_gens[key] = SignalGenerator(symbol, interval, params=signal_params)
+        else:
+            signal_generator = signal_gens.get(key)
+            if signal_generator:
+                signal_generator.set_params(signal_params)
+        return engines[key]
 
 
 def build_compute_cursor_key(symbol: str, interval: str) -> str:
@@ -423,6 +429,7 @@ def materialize_engines_from_storage(environment: str, symbols, interval: str = 
     normalized_symbols = normalize_symbols(symbols)
     if not normalized_symbols:
         return {}
+    started_at = time.perf_counter()
 
     symbol_filters = " || ".join(f'symbol = "{symbol}"' for symbol in normalized_symbols)
     rows = pb.get_all_records(
@@ -445,18 +452,16 @@ def materialize_engines_from_storage(environment: str, symbols, interval: str = 
         if len(latest_by_symbol) >= len(normalized_symbols):
             break
 
-    results = {}
-    for symbol in normalized_symbols:
+    def _materialize_symbol(symbol: str) -> dict:
         target_ms = int(latest_by_symbol.get(symbol, 0) or 0)
         if target_ms <= 0:
-            results[symbol] = {
+            return {
                 "processed": 0,
                 "bar_count": 0,
                 "last_bar_time_ms": 0,
                 "is_ready": False,
                 "reason": "no_stored_bars",
             }
-            continue
 
         existing_engine = engines.get((runtime_environment, symbol, normalized_interval))
         force_rebuild = bool(existing_engine and not existing_engine.is_ready())
@@ -469,7 +474,7 @@ def materialize_engines_from_storage(environment: str, symbols, interval: str = 
             force_rebuild=force_rebuild,
         )
         engine = engines.get((runtime_environment, symbol, normalized_interval))
-        results[symbol] = {
+        return {
             "processed": processed,
             "bar_count": int(getattr(engine, "bar_count", 0) or 0) if engine else 0,
             "last_bar_time_ms": int(getattr(engine, "last_bar_time_ms", 0) or 0) if engine else 0,
@@ -483,6 +488,41 @@ def materialize_engines_from_storage(environment: str, symbols, interval: str = 
             ),
         }
 
+    results = {}
+    worker_count = min(MATERIALIZE_MAX_WORKERS, len(normalized_symbols))
+    if worker_count <= 1:
+        for symbol in normalized_symbols:
+            results[symbol] = _materialize_symbol(symbol)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="materialize-engine") as executor:
+            future_map = {
+                executor.submit(_materialize_symbol, symbol): symbol
+                for symbol in normalized_symbols
+            }
+            for future in as_completed(future_map):
+                symbol = future_map[future]
+                try:
+                    results[symbol] = future.result()
+                except Exception:
+                    traceback.print_exc()
+                    results[symbol] = {
+                        "processed": 0,
+                        "bar_count": 0,
+                        "last_bar_time_ms": 0,
+                        "is_ready": False,
+                        "reason": "materialize_failed",
+                    }
+
+    ready_count = sum(1 for item in results.values() if bool((item or {}).get("is_ready")))
+    logger.info(
+        "Materialized engines from storage: env=%s interval=%s symbols=%d ready=%d workers=%d elapsed_s=%.3f",
+        runtime_environment,
+        normalized_interval,
+        len(normalized_symbols),
+        ready_count,
+        worker_count,
+        time.perf_counter() - started_at,
+    )
     return results
 
 
@@ -2561,21 +2601,20 @@ def _normalize_live_position(position: dict) -> dict:
 
 
 def _normalize_live_order(order: dict) -> dict:
-    status = str(order.get("status") or "").strip()
-    parent_id = str(order.get("parentId") or "").strip()
-    order_type = str(order.get("orderType") or order.get("orderDesc") or "").strip().upper()
+    # Support both bulk /iserver/account/orders format and individual /iserver/account/order/status/{id} format
+    status = str(order.get("status") or order.get("order_status") or order.get("orderStatus") or "").strip()
+    parent_id = str(order.get("parentId") or order.get("parent_order_id") or "").strip()
+    order_type = str(order.get("orderType") or order.get("order_type") or order.get("orderDesc") or "").strip().upper()
     total_quantity = float(
         _coerce_float(
-            order.get("totalSize")
-            if order.get("totalSize") is not None
+            order.get("totalSize") if order.get("totalSize") is not None
+            else order.get("total_size") if order.get("total_size") is not None
             else order.get("quantity"),
             0.0,
         ) or 0.0
     )
-    filled_quantity = float(_coerce_float(order.get("filledQuantity"), 0.0) or 0.0)
-    remaining_quantity = _coerce_float(order.get("remainingQuantity"))
-    if remaining_quantity is None:
-        remaining_quantity = _coerce_float(order.get("remainingSize"))
+    filled_quantity = float(_coerce_float(order.get("filledQuantity") or order.get("cum_fill"), 0.0) or 0.0)
+    remaining_quantity = _coerce_float(order.get("remainingQuantity") or order.get("remainingSize"))
     if remaining_quantity is None:
         remaining_quantity = max(total_quantity - filled_quantity, 0.0)
 
@@ -2590,33 +2629,37 @@ def _normalize_live_order(order: dict) -> dict:
     else:
         role = "child"
 
+    # price: bulk uses "price", individual status uses "limit_price" / "stop_price"
+    price = float(_coerce_float(order.get("price") or order.get("limit_price"), 0.0) or 0.0)
+    trigger_price = float(_coerce_float(order.get("auxPrice") or order.get("stop_price"), 0.0) or 0.0)
+
     return {
-        "order_id": str(order.get("orderId") or order.get("id") or "").strip(),
+        "order_id": str(order.get("orderId") or order.get("order_id") or order.get("id") or "").strip(),
         "parent_id": parent_id,
-        "symbol": str(order.get("ticker") or order.get("symbol") or order.get("contractDesc") or "").strip().upper(),
-        "conid": int(_coerce_float(order.get("conid"), 0) or 0),
+        "symbol": str(order.get("ticker") or order.get("symbol") or order.get("contractDesc") or order.get("contract_description_1") or "").strip().upper(),
+        "conid": int(_coerce_float(order.get("conid") or order.get("conidex"), 0) or 0),
         "side": str(order.get("side") or "").strip().upper(),
         "status": status,
         "role": role,
         "order_type": order_type,
-        "order_description": _extract_live_order_text(order, "orderDesc", "description", "description1"),
-        "price": float(_coerce_float(order.get("price"), 0.0) or 0.0),
-        "trigger_price": float(_coerce_float(order.get("auxPrice"), 0.0) or 0.0),
-        "avg_price": float(_coerce_float(order.get("avgPrice"), 0.0) or 0.0),
+        "order_description": _extract_live_order_text(order, "orderDesc", "order_description", "order_description_with_contract", "description"),
+        "price": price,
+        "trigger_price": trigger_price,
+        "avg_price": float(_coerce_float(order.get("avgPrice") or order.get("average_price"), 0.0) or 0.0),
         "total_quantity": total_quantity,
         "filled_quantity": filled_quantity,
         "remaining_quantity": float(remaining_quantity or 0.0),
         "time_in_force": str(order.get("tif") or order.get("timeInForce") or "").strip().upper(),
-        "account": str(order.get("acct") or order.get("acctId") or "").strip(),
+        "account": str(order.get("acct") or order.get("acctId") or order.get("account") or "").strip(),
         "currency": str(order.get("currency") or "USD").strip().upper(),
-        "asset_class": _extract_live_order_text(order, "secType", "assetClass").upper(),
-        "listing_exchange": _extract_live_order_text(order, "listingExchange", "exchange"),
-        "submitted_time": _extract_live_order_text(order, "submittedTime", "submitTime", "createdTime", "createTime"),
+        "asset_class": _extract_live_order_text(order, "secType", "sec_type", "assetClass").upper(),
+        "listing_exchange": _extract_live_order_text(order, "listingExchange", "listing_exchange", "exchange"),
+        "submitted_time": _extract_live_order_text(order, "submittedTime", "submitTime", "order_time", "createdTime", "createTime"),
         "last_execution_time": _extract_live_order_text(order, "lastExecutionTime", "lastFillTime", "lastExecutionTime_r"),
         "good_till_date": _extract_live_order_text(order, "goodTillDate"),
-        "outside_rth": _coerce_live_bool(order.get("outsideRth"), False),
-        "can_cancel": bool(normalized_status and normalized_status not in closed_statuses),
-        "can_modify": bool(normalized_status and normalized_status not in closed_statuses),
+        "outside_rth": _coerce_live_bool(order.get("outsideRth") or order.get("outside_rth"), False),
+        "can_cancel": bool(normalized_status and normalized_status not in closed_statuses and not _coerce_live_bool(order.get("cannot_cancel_order"), False)),
+        "can_modify": bool(normalized_status and normalized_status not in closed_statuses and not _coerce_live_bool(order.get("order_not_editable"), False)),
         "raw": order,
     }
 
@@ -2960,6 +3003,24 @@ def _build_ibkr_account_snapshot(service) -> dict:
         orders_raw = service.order_tracker.get_live_orders()
     except Exception as exc:
         orders_error = str(exc)
+
+    # When the Gateway bulk orders endpoint returns empty (common after session restart),
+    # fall back to individually verifying PB-tracked active orders by broker_order_id.
+    if not orders_raw:
+        try:
+            pb_active = pb.get_records(
+                "orders",
+                filter=f'environment="{_ibkr_service_environment(service)}" && broker_order_id!="" && (status="Submitted" || status="Init" || status="PreSubmitted")',
+                sort="-updated",
+                per_page=50,
+            )
+            fallback_ids = [str(r.get("broker_order_id") or "").strip() for r in (pb_active or []) if r.get("broker_order_id")]
+            if fallback_ids:
+                orders_raw = service.order_tracker.get_orders_by_ids(fallback_ids)
+                if orders_raw:
+                    logger.info("Live orders fallback: bulk returned empty, recovered %d orders via individual status fetch", len(orders_raw))
+        except Exception as exc:
+            logger.debug("Live orders fallback failed: %s", exc)
 
     positions = [_normalize_live_position(item) for item in (positions_raw or []) if isinstance(item, dict)]
     orders = [_normalize_live_order(item) for item in (orders_raw or []) if isinstance(item, dict)]
@@ -3311,6 +3372,56 @@ def ibkr_place_order():
             return jsonify({"ok": False, "error": f"Failed to resolve contract for {symbol}: {exc}"}), 500
     if conid <= 0:
         return jsonify({"ok": False, "error": f"Cannot resolve conid for {symbol}"}), 404
+
+    duplicate_order = None
+    if hasattr(service, "order_tracker"):
+        try:
+            duplicate_order = service.order_tracker.find_duplicate_open_entry(
+                symbol=symbol,
+                direction=direction,
+                quantity=quantity,
+                entry_price=float(entry_price or 0.0),
+                entry_order_type=order_type,
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"Failed to inspect live orders before placement: {exc}"}), 500
+
+    if duplicate_order:
+        try:
+            service.order_tracker.sync_live_orders_snapshot([duplicate_order])
+        except Exception:
+            pass
+        snapshot = _build_ibkr_account_snapshot(service)
+        broker_order_id = str(duplicate_order.get("orderId") or duplicate_order.get("id") or "").strip()
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Duplicate open broker order already exists",
+                "action": "place_order",
+                "environment": runtime_environment,
+                "symbol": symbol,
+                "direction": direction,
+                "quantity": quantity,
+                "order_type": order_type,
+                "entry_price": float(entry_price or 0.0),
+                "take_profit_price": float(take_profit_price),
+                "stop_loss_price": float(stop_loss_price),
+                "duplicate_order": {
+                    "order_id": broker_order_id,
+                    "status": str(duplicate_order.get("status") or "").strip(),
+                    "symbol": str(duplicate_order.get("ticker") or duplicate_order.get("symbol") or "").strip().upper(),
+                    "side": str(duplicate_order.get("side") or "").strip().upper(),
+                    "price": _coerce_float(duplicate_order.get("price"), 0.0) or 0.0,
+                    "quantity": _coerce_float(
+                        duplicate_order.get("totalSize")
+                        if duplicate_order.get("totalSize") is not None
+                        else duplicate_order.get("quantity"),
+                        0.0,
+                    ) or 0.0,
+                },
+                "snapshot": snapshot,
+            }
+        ), 409
 
     signal_id = f"MANUAL_{runtime_environment.upper()}_{symbol}_{int(time.time())}"
     result = service.order_placer.place_bracket_order(

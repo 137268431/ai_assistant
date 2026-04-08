@@ -876,8 +876,8 @@
                     <span class="action-copy">优先复用飞书里的活动卡片；当前已认证会直接提示无需 2FA。</span>
                 </button>
                 <button class="action-btn action-accent" onclick="handleRuntimeAction('reauth_force_new')">
-                    <span class="action-label">重发新 2FA 卡片</span>
-                    <span class="action-copy">旧卡片找不到、过期或想强制新发提醒时使用。</span>
+                    <span class="action-label">强制新一轮 2FA</span>
+                    <span class="action-copy">立即停止旧轮次并重开认证，同时刷新飞书卡片；适合第一次验证失败后马上再来一轮。</span>
                 </button>
                 <button class="action-btn action-accent" onclick="handleRuntimeAction('compute')">
                     <span class="action-label">执行 Compute</span>
@@ -1362,7 +1362,7 @@
                     return '当前 Gateway 会话已认证，无需再次确认。';
                 }
                 return action === 'reauth_force_new'
-                    ? '已强制发送新的 2FA 卡片，请在飞书点击按钮触发验证。'
+                    ? '已强制开启新一轮 2FA，请立即查看手机通知或飞书卡片。'
                     : '已请求 2FA 卡片，请在飞书点击按钮触发验证。';
             }
             if (action === 'compute' || action === 'scan' || action === 'recompute') {
@@ -2379,8 +2379,10 @@
                         reason: 'manual_reauth',
                         source: 'runtime_page',
                         force_reset: true,
+                        force_restart: true,
+                        trigger_now: true,
                         force_new: true,
-                        message: '已从 PocketBase Runtime 页面强制重发新的 2FA 卡片，请在飞书中点击按钮触发验证。'
+                        message: '已从 PocketBase Runtime 页面强制开启新一轮 2FA，请立即查看手机通知。'
                     }
                 },
                 compute: { path: '/api/custom/ibkr/proxy', body: { action: 'compute', environment: currentEnvironment } },
@@ -2438,6 +2440,12 @@
                     label: '控制台',
                     copy: '启动 / 2FA / compute / flow trace',
                     active: true
+                },
+                {
+                    path: '/ibkr_warmup.html',
+                    kicker: 'Warmup',
+                    label: '预热',
+                    copy: 'startup / gate / repair / symbol status'
                 },
                 {
                     path: '/ibkr_data_quality.html',

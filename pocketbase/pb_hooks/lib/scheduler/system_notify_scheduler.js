@@ -4,11 +4,16 @@
  */
 
 const HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
+const DAILY_REMINDER_STATE_KEY = "system_notify_daily"
 const HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const BAR_STALE_WARN_MIN = 10
 const INDICATOR_STALE_WARN_MIN = 10
 const COMPUTE_STARTUP_GRACE_MS = 3 * 60 * 1000
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
+const MARKET_OPEN_REMINDER_HOUR = 9
+const MARKET_OPEN_REMINDER_MINUTE = 20
+const MARKET_CLOSE_REMINDER_HOUR = 16
+const MARKET_CLOSE_REMINDER_MINUTE = 5
 
 function toNumber(value, fallback) {
     const num = Number(value)
@@ -156,6 +161,35 @@ function loadTodayCounts(environment, times) {
     }
 }
 
+function loadTodayEventCounts(environment, times) {
+    const rows = (() => {
+        try {
+            return $app.findRecordsByFilter(
+                "system_events",
+                "created >= {:t} && environment = {:env}",
+                "",
+                0,
+                0,
+                { t: times.todayStart, env: environment }
+            ) || []
+        } catch (_) {
+            return []
+        }
+    })()
+
+    let errorCount = 0
+    for (let i = 0; i < rows.length; i++) {
+        if (String(rows[i].get("level") || "").trim().toLowerCase() === "error") {
+            errorCount += 1
+        }
+    }
+
+    return {
+        events: rows.length,
+        error_events: errorCount,
+    }
+}
+
 function load2faSummary(environment, runtimeStatus) {
     const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
     const statePayload = getStatePayload(environment)
@@ -267,6 +301,129 @@ function buildStatusSnapshot(environment, times) {
         trading_enabled: runtimeModes.getTradingEnabledForEnvironment(environment, RUNTIME_KEYS),
         auth: auth,
     }
+}
+
+function getUsClock() {
+    const now = new Date()
+    const usOffset = -4 * 60
+    const usTime = new Date(now.getTime() + usOffset * 60000)
+    return {
+        date: usTime.toISOString().slice(0, 10),
+        time: usTime.toISOString().slice(11, 16),
+        hour: usTime.getUTCHours(),
+        minute: usTime.getUTCMinutes(),
+        weekday: usTime.getUTCDay(),
+    }
+}
+
+function matchesUsDate(value, dateToken) {
+    return String(value || "").slice(0, 10) === String(dateToken || "")
+}
+
+function classifyMarketSession(snapshot, times, clock) {
+    const weekday = Number(clock && clock.weekday)
+    const isWeekend = weekday === 0 || weekday === 6
+    const hasTargets = toNumber(snapshot && snapshot.today && snapshot.today.targets, 0) > 0
+        || toNumber(snapshot && snapshot.active_target_count, 0) > 0
+    const hasIntradayActivity = (
+        toNumber(snapshot && snapshot.today && snapshot.today.bars, 0) > 0
+        || toNumber(snapshot && snapshot.today && snapshot.today.indicators, 0) > 0
+        || toNumber(snapshot && snapshot.today && snapshot.today.signals, 0) > 0
+        || toNumber(snapshot && snapshot.today && snapshot.today.orders, 0) > 0
+        || matchesUsDate(snapshot && snapshot.latest_bar && snapshot.latest_bar.us_time, times && times.date)
+    )
+
+    if (isWeekend) {
+        return {
+            kind: "closed",
+            label: "周末休市",
+            open_title: "IBKR 休市提醒",
+            open_summary: "今日为周末休市，09:20 仍按日常规则发送系统状态提醒。",
+            close_title: "IBKR 闭市汇总",
+            close_summary: "今日为周末休市，按闭市日生成系统汇总。",
+            reason: "weekend",
+        }
+    }
+
+    if (hasTargets || hasIntradayActivity) {
+        return {
+            kind: "trading",
+            label: "交易日",
+            open_title: "IBKR 开盘前系统检查",
+            open_summary: "今日为交易日，09:20 开盘前系统状态检查已完成。",
+            close_title: "IBKR 收盘汇总",
+            close_summary: "今日交易已收盘，已生成当日系统汇总。",
+            reason: hasTargets ? "targets_ready" : "intraday_activity_detected",
+        }
+    }
+
+    return {
+        kind: "closed_uncertain",
+        label: "未检测到交易计划",
+        open_title: "IBKR 非交易日提醒",
+        open_summary: "当前未检测到今日目标池或盘中活动，可能为休市日，或盘前计划尚未生成；先按闭市提醒处理。",
+        close_title: "IBKR 非交易日汇总",
+        close_summary: "当前未检测到今日交易活动，按闭市日生成系统汇总。",
+        reason: "no_targets_or_intraday_activity",
+    }
+}
+
+function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times, eventCounts) {
+    const detail = {
+        "日程判断": marketSession.open_summary,
+        "今日模式": marketSession.label,
+        "状态结论": assessment.summary,
+        "检查时间": times.us,
+        "Compute": snapshot.compute.status || "unknown",
+        "认证": snapshot.session.authenticated ? "ok" : "pending",
+        "WebSocket": snapshot.websocket.label,
+        "2FA状态": snapshot.auth.label,
+        "引擎就绪": `${snapshot.compute.ready_engines || 0}/${snapshot.compute.total_engines || 0}`,
+        "最新5m": snapshot.latest_bar.label,
+        "指标状态": snapshot.latest_indicator.label,
+        "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
+        "目标池": `${snapshot.today.targets} targets / active ${snapshot.active_target_count || 0}`,
+        "系统事件": `${eventCounts.events} / error ${eventCounts.error_events}`,
+        "交易开关": snapshot.trading_enabled ? "true" : "false",
+    }
+    if (snapshot.account.ok) {
+        detail["实时账户"] = `pos ${snapshot.account.positions} / open ${snapshot.account.open_orders} / netliq ${snapshot.account.net_liquidation.toFixed(2)}`
+    } else {
+        detail["实时账户"] = "unavailable"
+    }
+    if (snapshot.compute.uptime_s > 0) detail["Compute Uptime"] = `${Math.round(snapshot.compute.uptime_s)}s`
+    if (snapshot.runtime.warmup_phase) detail["Warmup"] = snapshot.runtime.warmup_phase
+    if (snapshot.auth.mode) detail["验证模式"] = snapshot.auth.mode
+    if (snapshot.auth.last_result) detail["2FA反馈"] = snapshot.auth.last_result
+    if (snapshot.auth.last_error) detail["2FA异常"] = snapshot.auth.last_error
+    return detail
+}
+
+function buildDailyCloseSummaryDetail(snapshot, assessment, marketSession, times, eventCounts) {
+    const detail = {
+        "日期": times.date,
+        "收盘结论": marketSession.close_summary,
+        "今日模式": marketSession.label,
+        "系统状态": assessment.summary,
+        "信号数": String(snapshot.today.signals || 0),
+        "订单数": String(snapshot.today.orders || 0),
+        "IBKR Bars": String(snapshot.today.bars || 0),
+        "指标数": String(snapshot.today.indicators || 0),
+        "Targets": String(snapshot.today.targets || 0),
+        "系统事件": String(eventCounts.events || 0),
+        "错误事件": String(eventCounts.error_events || 0),
+        "2FA状态": snapshot.auth.label,
+        "最新5m": snapshot.latest_bar.label,
+        "指标状态": snapshot.latest_indicator.label,
+        "交易开关": snapshot.trading_enabled ? "true" : "false",
+        "汇总时间": times.us,
+    }
+    if (snapshot.account.ok) {
+        detail["实时账户"] = `pos ${snapshot.account.positions} / open ${snapshot.account.open_orders} / netliq ${snapshot.account.net_liquidation.toFixed(2)}`
+    } else {
+        detail["实时账户"] = "unavailable"
+    }
+    return detail
 }
 
 function isStatusSummaryNotifyEnabled(environment) {
@@ -770,7 +927,112 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
     }
 }
 
+function runDailyOpenReminderTick(logPrefix, cronId) {
+    const prefix = logPrefix || "[IBKRSystemNotify]"
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const times = getTimeStrings()
+    const clock = getUsClock()
+
+    if (clock.hour !== MARKET_OPEN_REMINDER_HOUR || clock.minute !== MARKET_OPEN_REMINDER_MINUTE) {
+        return
+    }
+
+    const environments = listNotifyEnvironments(cronId)
+    console.log(`${prefix} open reminder tick: time=${clock.time}, environments=${environments.join(",") || "-"}`)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        try {
+            const state = getStateData(DAILY_REMINDER_STATE_KEY, environment, times.date).data || {}
+            if (String(state.open_sent_at || "").trim()) {
+                continue
+            }
+
+            const snapshot = buildStatusSnapshot(environment, times)
+            const startupGraceActive = isStartupGraceActive(snapshot)
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const marketSession = classifyMarketSession(snapshot, times, clock)
+            const detail = buildDailyOpenReminderDetail(
+                snapshot,
+                assessment,
+                marketSession,
+                times,
+                loadTodayEventCounts(environment, times)
+            )
+            const title = marketSession.kind === "trading" && assessment.level === "warning"
+                ? `${marketSession.open_title}（需关注）`
+                : marketSession.open_title
+            const level = marketSession.kind === "trading" ? assessment.level : "info"
+            const notified = feishuSystem.notifySystemEvent("status_change", level, "pb", title, detail, environment)
+            writeSystemEvent("status_change", level, "pb", title, detail, environment, notified)
+            saveStateData(DAILY_REMINDER_STATE_KEY, environment, times.date, {
+                open_sent_at: times.us,
+                open_title: title,
+                open_market_kind: marketSession.kind,
+                open_market_reason: marketSession.reason,
+            })
+            console.log(`${prefix} open reminder ${environment}: level=${level}, notified=${notified}`)
+        } catch (err) {
+            console.log(`${prefix} open reminder ${environment} error: ${err.message || err}`)
+        }
+    }
+}
+
+function runDailyCloseSummaryTick(logPrefix, cronId) {
+    const prefix = logPrefix || "[IBKRSystemNotify]"
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const times = getTimeStrings()
+    const clock = getUsClock()
+
+    if (clock.hour !== MARKET_CLOSE_REMINDER_HOUR || clock.minute !== MARKET_CLOSE_REMINDER_MINUTE) {
+        return
+    }
+
+    const environments = listNotifyEnvironments(cronId)
+    console.log(`${prefix} close summary tick: time=${clock.time}, environments=${environments.join(",") || "-"}`)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        try {
+            const state = getStateData(DAILY_REMINDER_STATE_KEY, environment, times.date).data || {}
+            if (String(state.close_sent_at || "").trim()) {
+                continue
+            }
+
+            const snapshot = buildStatusSnapshot(environment, times)
+            const startupGraceActive = isStartupGraceActive(snapshot)
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const marketSession = classifyMarketSession(snapshot, times, clock)
+            const detail = buildDailyCloseSummaryDetail(
+                snapshot,
+                assessment,
+                marketSession,
+                times,
+                loadTodayEventCounts(environment, times)
+            )
+            const title = marketSession.close_title
+            const notified = feishuSystem.notifySystemEvent("daily_report", "info", "pb", title, detail, environment)
+            writeSystemEvent("daily_report", "info", "pb", title, detail, environment, notified)
+            saveStateData(DAILY_REMINDER_STATE_KEY, environment, times.date, {
+                close_sent_at: times.us,
+                close_title: title,
+                close_market_kind: marketSession.kind,
+                close_market_reason: marketSession.reason,
+            })
+            console.log(`${prefix} close summary ${environment}: notified=${notified}`)
+        } catch (err) {
+            console.log(`${prefix} close summary ${environment} error: ${err.message || err}`)
+        }
+    }
+}
+
 module.exports = {
     runSystemHeartbeatTick,
     runSystemStatusReminderTick,
+    runDailyOpenReminderTick,
+    runDailyCloseSummaryTick,
 }

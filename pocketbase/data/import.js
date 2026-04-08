@@ -32,7 +32,8 @@ const configData = [
   cfg('pb_cron_ibkr_auth_pending_guard_enabled', 'TRUE', 'TRUE', '2FA 长时间未恢复巡检', 'PB Cron 调度', 135, '巡检 Session / 2FA 长时间未恢复状态，并在需要时发出系统告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 PB 调度总开关和本开关共同控制。'),
   cfg('pb_cron_system_data_gap_guard_enabled', 'TRUE', 'TRUE', '数据缺口巡检', 'PB Cron 调度', 136, '巡检 bars / indicators / 序列缺口，并在检测到市场活动异常时发出告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 PB 调度总开关、Compute 开关和本开关共同控制。'),
   cfg('pb_cron_ibkr_2fa_hourly_check_enabled', 'TRUE', 'TRUE', '2FA 每小时提醒', 'PB Cron 调度', 137, '若 2FA 仍未恢复，则按小时补发飞书验证卡片提醒。Cron: 5 4-20 * * 1-5；周期: 工作日 UTC 每小时 05 分；时间窗口: 盘前到盘后。受 PB 调度总开关和本开关共同控制。'),
-  cfg('pb_cron_system_daily_report_enabled', 'TRUE', 'TRUE', '系统日报', 'PB Cron 调度', 138, '汇总当日信号、订单、bars、targets 和系统事件，并发送日报。Cron: 5 20 * * 1-5；周期: 工作日 UTC 20:05；时间窗口: 收盘后。日报是否真正发送，还受 daily_summary_notify_enabled 控制。'),
+  cfg('pb_cron_system_market_open_reminder_enabled', 'TRUE', 'TRUE', '开盘前状态提醒', 'PB Cron 调度', 138, '每日 09:20 发送开盘前系统状态；若为周末或未检测到交易计划，则改发闭市/休市提醒。Cron: */5 * * * *；周期: 每 5 分钟轮询一次；时间窗口: 内部按 ET 09:20 仅发送一次。受 PB 调度总开关、本开关和 status_notify_enabled 共同控制。'),
+  cfg('pb_cron_system_daily_report_enabled', 'TRUE', 'TRUE', '系统日报', 'PB Cron 调度', 139, '汇总当日信号、订单、bars、targets 和系统事件，并在收盘后发送日报。Cron: */5 * * * *；周期: 每 5 分钟轮询一次；时间窗口: 内部按 ET 16:05 仅发送一次，周末/非交易日也会发送闭市汇总。日报是否真正发送，还受 daily_summary_notify_enabled 控制。'),
 
   cfg('ibkr_signal_source', 'both', 'both', '信号来源', '信号与反转', 200, 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
   cfg('signal_poll_interval_sec', '120', '120', '信号轮询秒数', '信号与反转', 210, 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
@@ -67,8 +68,8 @@ const configData = [
   cfg('order_chat_id', 'oc_5ca4585e1fd108c2c662dfc358684945', 'oc_5ca4585e1fd108c2c662dfc358684945', '订单群 Chat ID', '通知路由', 630, '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
   cfg('reverse_chat_id', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转群 Chat ID', '通知路由', 640, '反转信号与反转执行卡片默认发送到这里'),
 
-  cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态摘要通知', '系统通知', 900, '开盘、重启和定时系统状态摘要通知开关；:00 / :30 会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
-  cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '系统通知', 910, '收盘后发送当日交易汇总'),
+  cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态摘要通知', '系统通知', 900, '开盘前 09:20、重启和定时系统状态摘要通知开关；:00 / :30 会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
+  cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '系统通知', 910, '收盘后发送当日交易汇总；周末或非交易日也会发送闭市汇总'),
   cfg('manual_stop_notify_enabled', 'TRUE', 'TRUE', '手动停止通知', '系统通知', 920, '手动停止算法时发送通知'),
   cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '兜底心跳通知', '系统通知', 930, '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),
   cfg('inspection_notify_enabled', 'TRUE', 'TRUE', '巡检告警', '系统通知', 940, '孤立持仓、恢复异常、数据缺口等巡检告警'),

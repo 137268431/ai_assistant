@@ -582,7 +582,7 @@
     <div class="page-loading-overlay" id="pageLoading">
         <div class="page-loading-card">
             <div class="page-loading-title" id="pageLoadingTitle">系统概览加载中</div>
-            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 healthz / summaryz / cron / events / 回测统计，请稍候。</div>
+            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 healthz / statusz / cron / freshness / events / 回测统计，请稍候。</div>
             <div class="page-loading-bars">
                 <div class="page-loading-bar"></div>
                 <div class="page-loading-bar"></div>
@@ -724,6 +724,24 @@
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
+        }
+
+        function formatTimeLabel(value) {
+            if (value === undefined || value === null || value === '') return '--';
+            const text = String(value).trim();
+            if (!text) return '--';
+
+            if (/^\d{10,13}$/.test(text)) {
+                const timestamp = text.length === 10 ? Number(text) * 1000 : Number(text);
+                return formatBarTimeMsToET(timestamp);
+            }
+
+            if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+                return formatTime(text, 'America/New_York', 'default');
+            }
+
+            if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text;
+            return text;
         }
 
         function withTimeout(promise, ms, label) {
@@ -879,6 +897,21 @@
                         return fallback;
                     }
                 };
+                const safeCountFetch = async (bucket, label, collection, filter, timeoutMs = secondaryTimeoutMs) => {
+                    try {
+                        const payload = await withTimeout(apiFetch(collection, {
+                            filter,
+                            perPage: 1,
+                            page: 1
+                        }), timeoutMs, label);
+                        const totalItems = Number(payload?.totalItems);
+                        if (Number.isFinite(totalItems)) return totalItems;
+                        return Array.isArray(payload?.items) ? payload.items.length : 0;
+                    } catch (error) {
+                        bucket.push(`${label}: ${error.message || error}`);
+                        return null;
+                    }
+                };
 
                 const [computeHealth, computeStatus, summaryLite, cronResp] = await Promise.all([
                     safeRequestSystemJson(coreErrors, 'ibkr_healthz', '/api/custom/ibkr/healthz', {
@@ -919,13 +952,24 @@
                     ? `更新: ${new Date().toLocaleTimeString()} · 核心已加载，补充中`
                     : `更新: ${new Date().toLocaleTimeString()} · 核心已加载`;
 
-                const [summary, eventsResp, ...restResponses] = await Promise.all([
-                    safeRequestSystemJson(secondaryErrors, 'summaryz', '/api/custom/system/summaryz', {
-                        today: {},
-                        ibkr_compute: {},
-                        config: {}
-                    }, secondaryTimeoutMs, { retryAttempts: 2 }),
+                const marketDate = String(
+                    computeStatus?.runtime?.market_universe?.market_date
+                    || computeStatus?.market_universe?.market_date
+                    || ''
+                ).trim() || String(summaryLite?.timestamp || '').slice(0, 10);
+                const todayDate = marketDate || new Date().toISOString().slice(0, 10);
+                const todayStart = `${todayDate} 00:00:00`;
+                const todayFilterBase = `created >= "${escapeQueryValue(todayStart)}" && ${envFilterBase}`;
+                const targetDateFilter = `date = "${escapeQueryValue(todayDate)}" && ${envFilterBase}`;
+
+                const [eventsResp, signalCount, indicatorCount, orderCount, barCount, targetCount, eventCount, ...restResponses] = await Promise.all([
                     safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
+                    safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', todayFilterBase),
+                    safeCountFetch(secondaryErrors, 'count:ibkr_indicators', 'ibkr_indicators', todayFilterBase),
+                    safeCountFetch(secondaryErrors, 'count:orders', 'orders', todayFilterBase),
+                    safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', todayFilterBase),
+                    safeCountFetch(secondaryErrors, 'count:ibkr_targets', 'ibkr_targets', targetDateFilter),
+                    safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', todayFilterBase),
                     ...freshnessIntervals.map((interval) =>
                         safeApiFetch(secondaryErrors, `freshness:${interval}`, 'ibkr_bars', {
                             filter: `${envFilterBase} && interval = "${escapeQueryValue(interval)}"`,
@@ -942,6 +986,14 @@
                 const freshnessResponses = restResponses.slice(0, freshnessIntervals.length);
                 const backtestBatchResp = restResponses[freshnessIntervals.length] || {};
                 const backtestRunsResp = restResponses[freshnessIntervals.length + 1] || {};
+                const todayStats = {
+                    orders: orderCount,
+                    ibkr_bars: barCount,
+                    ibkr_indicators: indicatorCount,
+                    ibkr_signals: signalCount,
+                    ibkr_targets: targetCount,
+                    events: eventCount,
+                };
                 const freshnessItems = freshnessIntervals.map((interval, index) => {
                     const latest = Array.isArray(freshnessResponses[index]?.items) ? freshnessResponses[index].items[0] : null;
                     const lastBarTimeMs = Number(latest?.bar_time_ms || 0) || 0;
@@ -953,16 +1005,18 @@
                     };
                 });
 
-                renderStatus(buildSystemHealthSnapshot(computeHealth, computeStatus, freshnessItems, summary?.ibkr_compute || summaryLite?.ibkr_compute || {}));
-                renderTodayStats(summary?.today || null);
+                renderStatus(buildSystemHealthSnapshot(computeHealth, computeStatus, freshnessItems, summaryLite?.ibkr_compute || {}));
+                renderTodayStats(todayStats);
                 renderFreshness(freshnessItems);
-                renderEngines(buildSystemComputeSummary(computeHealth, computeStatus, summary?.ibkr_compute || summaryLite?.ibkr_compute || {}));
-                renderConfig(summary?.config ? summary : (summaryLite || {}), cronDefinitions);
+                renderEngines(buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {}));
+                renderConfig(summaryLite || {}, cronDefinitions);
                 renderBacktests(
                     Array.isArray(backtestBatchResp?.items) ? backtestBatchResp.items : [],
                     Array.isArray(backtestRunsResp?.items) ? backtestRunsResp.items : []
                 );
                 renderEvents(Array.isArray(eventsResp?.items) ? eventsResp.items : []);
+
+                document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()} · 细节已加载`;
 
                 const softErrors = coreErrors.concat(secondaryErrors);
                 if (softErrors.length) {
@@ -1062,7 +1116,7 @@
             document.getElementById('todayStats').innerHTML = stats.map((item) => `
                 <div class="stat-mini">
                     <div class="stat-mini-label">${escapeHtml(item.label)}</div>
-                    <div class="stat-mini-value">${escapeHtml(hasData ? String(item.value || 0) : '-')}</div>
+                    <div class="stat-mini-value">${escapeHtml(hasData ? (item.value == null ? '-' : String(item.value)) : '-')}</div>
                 </div>
             `).join('');
         }
@@ -1419,6 +1473,12 @@
                     kicker: 'Console',
                     label: '控制台',
                     copy: '启动 / 2FA / compute / flow trace'
+                },
+                {
+                    path: '/ibkr_warmup.html',
+                    kicker: 'Warmup',
+                    label: '预热',
+                    copy: 'startup / gate / repair / symbol status'
                 },
                 {
                     path: '/ibkr_data_quality.html',

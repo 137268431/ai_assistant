@@ -14,13 +14,6 @@ function getEnvUtils() {
     return loaded
 }
 
-function getCollectionRegistry() {
-    if (globalThis.__gloryCollectionRegistry) return globalThis.__gloryCollectionRegistry
-    const loaded = require(`${__hooks}/lib/collections.js`)
-    globalThis.__gloryCollectionRegistry = loaded
-    return loaded
-}
-
 function parseJsonObject(value) {
     if (!value) return {}
     if (typeof value === "object") return value
@@ -203,7 +196,7 @@ function buildOrderContext(orderRecord) {
 
 function findLatestActiveEntryOrder(symbol, direction, environment) {
     var envUtils = getEnvUtils()
-    var collections = getCollectionRegistry().COLLECTIONS
+    var collections = require(`${__hooks}/lib/collections.js`).COLLECTIONS
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var records = $app.findRecordsByFilter(
         collections.ORDERS,
@@ -230,7 +223,7 @@ function findLatestActiveEntryOrder(symbol, direction, environment) {
 
 function findPendingReverseDuplicate(criteria) {
     var envUtils = getEnvUtils()
-    var collections = getCollectionRegistry().COLLECTIONS
+    var collections = require(`${__hooks}/lib/collections.js`).COLLECTIONS
     if (!criteria || !criteria.symbol) return null
 
     var records = $app.findRecordsByFilter(
@@ -259,7 +252,7 @@ function findPendingReverseDuplicate(criteria) {
 
 function upsertReverseRecord(payload) {
     var envUtils = getEnvUtils()
-    var collections = getCollectionRegistry().COLLECTIONS
+    var collections = require(`${__hooks}/lib/collections.js`).COLLECTIONS
     var extra = parseJsonObject(payload && payload.extra)
     var criteria = {
         environment: envUtils.normalizeRuntimeEnvironment(payload.environment || extra.environment || "", envUtils.LIVE_ENVIRONMENT),

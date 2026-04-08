@@ -38,7 +38,8 @@ routerAdd("POST", "/webhook/feishu/callback", (c) => {
             return handle2faCardCallback(c, {
                 action: action,
                 environment: environment,
-                updateToken: updateToken
+                updateToken: updateToken,
+                forceRestart: value.force_restart === true || ["1", "true", "yes", "on"].includes(String(value.force_restart || "").trim().toLowerCase()),
             })
         }
 

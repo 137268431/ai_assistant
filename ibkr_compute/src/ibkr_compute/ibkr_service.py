@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import signal
+import json
 import logging
 import threading
 import queue
@@ -32,7 +33,11 @@ from ibkr_compute.order.order_tracker import OrderTracker
 from ibkr_compute.order.order_modifier import OrderModifier
 from ibkr_compute.order.order_lifecycle import OrderLifecycle
 from ibkr_compute.signal.signal_router import SignalRouter
-from ibkr_compute.signal.signal_processor import SignalProcessor
+from ibkr_compute.signal.signal_processor import (
+    DEFAULT_TRADE_WINDOW_END,
+    DEFAULT_TRADE_WINDOW_START,
+    SignalProcessor,
+)
 from ibkr_compute.signal.reverse_signal import ReverseSignalHandler
 
 logging.basicConfig(
@@ -50,6 +55,9 @@ GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 DEFAULT_SIGNAL_POLL_INTERVAL = 120
 DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
+STARTUP_BACKGROUND_PRIME_INTERVALS = ("15m", "30m", "1h")
+STARTUP_BACKGROUND_PRIME_CHUNK_SIZE = 8
+STARTUP_HISTORY_REPAIR_SHORT_PERIOD = "1d"
 BAR_INTEGRITY_STATE_KEY = "ibkr_bar_integrity_cursor"
 BAR_INTEGRITY_STATE_DATE = "global"
 DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE = 8
@@ -176,6 +184,23 @@ class IBKRTradingService:
         self._last_session_issue_kind = ""
         self._last_session_issue_title = ""
         self._last_session_issue_at = 0.0
+        self._startup_reason = ""
+        self._startup_source = ""
+        self._startup_trigger_login = False
+        self._interval_prime_thread = None
+        self._interval_prime_lock = threading.Lock()
+        self._interval_prime_state = {
+            "running": False,
+            "intervals": list(STARTUP_BACKGROUND_PRIME_INTERVALS),
+            "completed_intervals": [],
+            "chunk_size": STARTUP_BACKGROUND_PRIME_CHUNK_SIZE,
+            "symbol_count": 0,
+            "last_started_at": "",
+            "last_finished_at": "",
+            "last_duration_s": 0.0,
+            "last_error": "",
+            "last_source": "",
+        }
 
     def _build_2fa_detail(self, reason: str) -> dict:
         return {
@@ -200,6 +225,9 @@ class IBKRTradingService:
     def _now_iso(self) -> str:
         return datetime.now(ET).isoformat()
 
+    def _now_et(self) -> str:
+        return self._now_iso()
+
     def _runtime_page_url(self) -> str:
         base_url = PB_PUBLIC_URL or ""
         if not base_url:
@@ -207,11 +235,314 @@ class IBKRTradingService:
         return f"{base_url}/ibkr_runtime.html?environment={ENVIRONMENT}"
 
     def _runtime_phase_label(self) -> str:
-        if self._running:
-            return "running"
         if self._starting:
             return "starting"
+        if self._running:
+            return "running"
         return "stopped"
+
+    def _format_symbol_list(self, symbols: list[str], limit: int = 12) -> str:
+        items = [str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()]
+        if not items:
+            return "-"
+        if len(items) <= limit:
+            return ",".join(items)
+        return f"{','.join(items[:limit])} (+{len(items) - limit})"
+
+    def _format_elapsed_seconds(self, elapsed_seconds: float) -> str:
+        total_seconds = max(0, int(round(float(elapsed_seconds or 0))))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        parts = []
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0 or hours > 0:
+            parts.append(f"{minutes}m")
+        parts.append(f"{seconds}s")
+        return " ".join(parts)
+
+    def _format_elapsed_between(self, started_at: str, finished_at: str) -> str:
+        started_text = str(started_at or "").strip()
+        finished_text = str(finished_at or "").strip()
+        if not started_text or not finished_text:
+            return "-"
+        try:
+            started_dt = datetime.fromisoformat(started_text)
+            finished_dt = datetime.fromisoformat(finished_text)
+        except Exception:
+            return "-"
+        elapsed_seconds = (finished_dt - started_dt).total_seconds()
+        if elapsed_seconds < 0:
+            return "-"
+        return self._format_elapsed_seconds(elapsed_seconds)
+
+    def _get_time_window(self, key: str, default: tuple[int, int]) -> tuple[int, int]:
+        raw_value = str(
+            self.config.get_for_environment(
+                key,
+                ENVIRONMENT,
+                f"{default[0]:02d}:{default[1]:02d}",
+            )
+            or ""
+        ).strip()
+        try:
+            hour_text, minute_text = raw_value.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            pass
+        return default
+
+    def _trade_window_start(self) -> tuple[int, int]:
+        return self._get_time_window("trade_window_start_time", DEFAULT_TRADE_WINDOW_START)
+
+    def _trade_window_end(self) -> tuple[int, int]:
+        return self._get_time_window("trade_window_end_time", DEFAULT_TRADE_WINDOW_END)
+
+    def _collect_startup_history_repair_snapshot(self, symbol: str) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        snapshot = {
+            "symbol": normalized_symbol,
+            "interval": "5m",
+            "stored_bar_count": 0,
+            "latest_stored_ms": 0,
+            "today_regular_count": 0,
+            "today_regular_latest_ms": 0,
+            "today_gap_count": 0,
+            "today_gap_examples": [],
+            "needs_history_fetch": False,
+            "needs_manual_review": False,
+            "needs_pipeline_repair": False,
+            "needs_repair": False,
+            "safe_repair": False,
+            "repair_reason": "",
+            "integrity_status": "ok",
+        }
+        if not normalized_symbol:
+            return snapshot
+
+        min_bars = max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_history_repair_min_bars_5m",
+                ENVIRONMENT,
+                260,
+            ),
+        )
+        expected_ms = interval_to_ms("5m")
+        bars_needed = max(400, min_bars + 20)
+        max_pages = max(2, min(8, (bars_needed + 199) // 200))
+        et_now = datetime.now(ET)
+        market_date = et_now.strftime("%Y-%m-%d")
+        now_ms = int(et_now.timestamp() * 1000)
+        require_today_regular = (et_now.hour, et_now.minute) >= self._trade_window_start()
+        freshness_tolerance_ms = max(expected_ms * 3, 15 * 60 * 1000)
+
+        try:
+            rows = self.pb.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{normalized_symbol}" && '
+                    'interval = "5m" && '
+                    f'{self._build_bar_environment_filter()}'
+                ),
+                sort="-bar_time_ms",
+                max_pages=max_pages,
+            )
+        except Exception as exc:
+            snapshot["needs_history_fetch"] = True
+            snapshot["needs_pipeline_repair"] = True
+            snapshot["needs_repair"] = True
+            snapshot["safe_repair"] = True
+            snapshot["repair_reason"] = f"startup_snapshot_error:{exc}"
+            snapshot["integrity_status"] = "warn"
+            return snapshot
+
+        if not rows:
+            snapshot["needs_history_fetch"] = True
+            snapshot["needs_pipeline_repair"] = True
+            snapshot["needs_repair"] = True
+            snapshot["safe_repair"] = True
+            snapshot["repair_reason"] = f"bars<{min_bars}"
+            snapshot["integrity_status"] = "warn"
+            return snapshot
+
+        rows = rows[:bars_needed]
+        snapshot["stored_bar_count"] = len(rows)
+        snapshot["latest_stored_ms"] = int((rows[0] or {}).get("bar_time_ms", 0) or 0)
+
+        today_regular_rows = []
+        for row in reversed(rows):
+            bar_time_ms = int((row or {}).get("bar_time_ms", 0) or 0)
+            if bar_time_ms <= 0:
+                continue
+            row_dt = datetime.fromtimestamp(bar_time_ms / 1000, ET)
+            if row_dt.strftime("%Y-%m-%d") != market_date:
+                continue
+            session_type = str((row or {}).get("session_type", "") or "").strip().lower()
+            if session_type != "regular":
+                continue
+            today_regular_rows.append(row)
+
+        snapshot["today_regular_count"] = len(today_regular_rows)
+        if today_regular_rows:
+            snapshot["today_regular_latest_ms"] = int(
+                (today_regular_rows[-1] or {}).get("bar_time_ms", 0) or 0
+            )
+
+        for index in range(1, len(today_regular_rows)):
+            previous_ms = int((today_regular_rows[index - 1] or {}).get("bar_time_ms", 0) or 0)
+            current_ms = int((today_regular_rows[index] or {}).get("bar_time_ms", 0) or 0)
+            delta_ms = current_ms - previous_ms
+            if delta_ms > expected_ms and delta_ms <= (6 * expected_ms):
+                snapshot["today_gap_count"] += 1
+                if len(snapshot["today_gap_examples"]) < 4:
+                    snapshot["today_gap_examples"].append({
+                        "prev_us_time": str((today_regular_rows[index - 1] or {}).get("us_time", "") or ""),
+                        "next_us_time": str((today_regular_rows[index] or {}).get("us_time", "") or ""),
+                        "missing_points": max(int(round(delta_ms / expected_ms)) - 1, 1),
+                    })
+
+        reasons = []
+        if snapshot["stored_bar_count"] < min_bars:
+            reasons.append(f"bars<{min_bars}")
+        if require_today_regular:
+            latest_today_regular_ms = int(snapshot.get("today_regular_latest_ms", 0) or 0)
+            if latest_today_regular_ms <= 0:
+                reasons.append("today_regular_missing")
+            elif (now_ms - latest_today_regular_ms) > freshness_tolerance_ms:
+                stale_minutes = max(0, int((now_ms - latest_today_regular_ms) // 60000))
+                reasons.append(f"today_regular_stale={stale_minutes}m")
+        if int(snapshot.get("today_gap_count", 0) or 0) > 0:
+            reasons.append(f"today_regular_gaps={int(snapshot.get('today_gap_count', 0) or 0)}")
+
+        needs_repair = bool(reasons)
+        snapshot["needs_history_fetch"] = needs_repair
+        snapshot["needs_pipeline_repair"] = needs_repair
+        snapshot["needs_repair"] = needs_repair
+        snapshot["safe_repair"] = needs_repair
+        snapshot["repair_reason"] = ",".join(reasons)
+        snapshot["integrity_status"] = "warn" if needs_repair else "ok"
+        return snapshot
+
+    def _complete_startup_success(self, title: str, detail: dict | None = None) -> bool:
+        with self._state_lock:
+            if not self._starting:
+                return False
+            self._starting = False
+            startup_reason = self._startup_reason
+            startup_source = self._startup_source
+            startup_trigger_login = self._startup_trigger_login
+            self._startup_reason = ""
+            self._startup_source = ""
+            self._startup_trigger_login = False
+
+        payload = {
+            "状态结论": "IBKR Runtime 已完成启动前回补与预热，当前服务可用。",
+            "检查时间": self._now_et(),
+            "Runtime阶段": self._runtime_phase_label(),
+            "启动原因": startup_reason or str((self._warmup_state or {}).get("reason") or "startup"),
+            "启动来源": startup_source or "api_start",
+            "触发登录": "yes" if startup_trigger_login else "no",
+        }
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            payload["运行页"] = runtime_url
+        if detail:
+            payload.update(detail)
+        started_at = str(payload.get("预热开始") or "").strip()
+        finished_at = str(payload.get("预热完成") or "").strip()
+        if started_at and finished_at and "预热耗时" not in payload:
+            payload["预热耗时"] = self._format_elapsed_between(started_at, finished_at)
+        self._emit_system_event("status_change", "info", title, payload)
+        return True
+
+    def _copy_interval_prime_state(self) -> dict:
+        with self._interval_prime_lock:
+            return dict(self._interval_prime_state)
+
+    def _schedule_interval_prime(self, symbols: list[str], source: str = "startup") -> bool:
+        normalized_symbols = [
+            str(symbol or "").strip().upper()
+            for symbol in (symbols or [])
+            if str(symbol or "").strip()
+        ]
+        if not normalized_symbols:
+            return False
+
+        with self._interval_prime_lock:
+            if self._interval_prime_state.get("running"):
+                return False
+            self._interval_prime_state = {
+                **self._interval_prime_state,
+                "running": True,
+                "completed_intervals": [],
+                "symbol_count": len(normalized_symbols),
+                "last_started_at": self._now_iso(),
+                "last_finished_at": "",
+                "last_duration_s": 0.0,
+                "last_error": "",
+                "last_source": source,
+            }
+
+        def worker():
+            started = time.time()
+            completed_intervals = []
+            last_error = ""
+            try:
+                from ibkr_compute.api import server as compute_server
+
+                try:
+                    with compute_server.compute_lock:
+                        compute_server.load_persisted_compute_cursors(ENVIRONMENT)
+                except Exception as exc:
+                    logger.warning("Interval prime cursor preload failed: %s", exc)
+
+                for interval in STARTUP_BACKGROUND_PRIME_INTERVALS:
+                    if not self._running:
+                        break
+                    for index in range(0, len(normalized_symbols), STARTUP_BACKGROUND_PRIME_CHUNK_SIZE):
+                        if not self._running:
+                            break
+                        chunk = normalized_symbols[index:index + STARTUP_BACKGROUND_PRIME_CHUNK_SIZE]
+                        with compute_server.compute_lock:
+                            compute_server.materialize_engines_from_storage(
+                                ENVIRONMENT,
+                                chunk,
+                                interval,
+                            )
+                    completed_intervals.append(interval)
+                    logger.info(
+                        "Background interval prime finished (%s): interval=%s symbols=%d",
+                        source,
+                        interval,
+                        len(normalized_symbols),
+                    )
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning("Background interval prime failed (%s): %s", source, exc)
+            finally:
+                finished_at = self._now_iso()
+                with self._interval_prime_lock:
+                    self._interval_prime_state = {
+                        **self._interval_prime_state,
+                        "running": False,
+                        "completed_intervals": completed_intervals,
+                        "last_finished_at": finished_at,
+                        "last_duration_s": round(max(0.0, time.time() - started), 3),
+                        "last_error": last_error,
+                        "last_source": source,
+                    }
+
+        self._interval_prime_thread = threading.Thread(
+            target=worker,
+            daemon=True,
+            name="interval-prime",
+        )
+        self._interval_prime_thread.start()
+        return True
 
     def _emit_system_event(self, event_type: str, level: str, title: str, detail: dict):
         if not self.pb:
@@ -309,9 +640,14 @@ class IBKRTradingService:
             "ready_symbols_list": [],
             "pending_symbols": [],
             "symbol_status": [],
+            "integrity_pending_symbols": [],
+            "integrity_repair_reasons": {},
+            "preflight_repair": {},
             "backfill_written": 0,
             "backfill_result": {},
             "compute_result": {},
+            "timings": {},
+            "last_duration_s": 0.0,
         }
 
     def _copy_warmup_state(self, source: dict | None = None) -> dict:
@@ -405,6 +741,11 @@ class IBKRTradingService:
             symbols=snapshot["symbols"],
             trade_symbols=snapshot["trade_symbols"],
             monitor_symbols=snapshot["monitor_symbols"],
+            integrity_pending_symbols=[],
+            integrity_repair_reasons={},
+            preflight_repair={},
+            timings={},
+            last_duration_s=0.0,
         )
 
     def _schedule_warmup(self, reason: str = "subscriptions_changed", force: bool = False) -> bool:
@@ -432,9 +773,14 @@ class IBKRTradingService:
                 ready_symbols_list=[],
                 pending_symbols=[],
                 symbol_status=[],
+                integrity_pending_symbols=[],
+                integrity_repair_reasons={},
+                preflight_repair={},
                 backfill_written=0,
                 backfill_result={},
                 compute_result={},
+                timings={},
+                last_duration_s=0.0,
             )
             return False
 
@@ -475,9 +821,14 @@ class IBKRTradingService:
             ready_symbols_list=[],
             pending_symbols=snapshot["symbols"],
             symbol_status=[],
+            integrity_pending_symbols=[],
+            integrity_repair_reasons={},
+            preflight_repair={},
             backfill_written=0,
             backfill_result={},
             compute_result={},
+            timings={},
+            last_duration_s=0.0,
         )
         self._warmup_wakeup.set()
         logger.info(
@@ -552,6 +903,125 @@ class IBKRTradingService:
             "trading_gate_reason": "ready" if trading_gate_open else ("no_trade_symbols" if not snapshot["trade_symbols"] else "warmup_incomplete"),
         }
 
+    def _apply_integrity_readiness(self, readiness: dict, snapshot: dict, repair_plan: dict[str, dict] | None = None) -> dict:
+        plan = repair_plan or {}
+        if not plan:
+            readiness["integrity_pending_symbols"] = []
+            readiness["integrity_repair_reasons"] = {}
+            for item in readiness.get("symbol_status") or []:
+                if isinstance(item, dict):
+                    item["integrity_ready"] = True
+                    item["integrity_reason"] = ""
+            return readiness
+
+        blocking_symbols = sorted(plan.keys())
+        repair_reasons = {
+            symbol: str((plan.get(symbol) or {}).get("repair_reason") or "history_repair_pending")
+            for symbol in blocking_symbols
+        }
+        ready_set = set(readiness.get("ready_symbols_list") or []) - set(blocking_symbols)
+        pending_set = set(readiness.get("pending_symbols") or []) | set(blocking_symbols)
+        trade_symbol_set = set(snapshot.get("trade_symbols") or [])
+        monitor_symbol_set = set(snapshot.get("monitor_symbols") or [])
+
+        status_map = {
+            str((item or {}).get("symbol") or "").upper(): dict(item or {})
+            for item in (readiness.get("symbol_status") or [])
+            if str((item or {}).get("symbol") or "").strip()
+        }
+        merged_status = []
+        for symbol in snapshot.get("symbols") or []:
+            role = "trade" if symbol in trade_symbol_set else "monitor" if symbol in monitor_symbol_set else "active"
+            row = dict(status_map.get(symbol) or {})
+            row["symbol"] = symbol
+            row["role"] = row.get("role") or role
+            row["integrity_ready"] = symbol not in repair_reasons
+            row["integrity_reason"] = repair_reasons.get(symbol, "")
+            if symbol in repair_reasons:
+                row["ready"] = False
+            merged_status.append(row)
+
+        ready_trade_symbols = len([symbol for symbol in snapshot.get("trade_symbols") or [] if symbol in ready_set])
+        ready_monitor_symbols = len([symbol for symbol in snapshot.get("monitor_symbols") or [] if symbol in ready_set])
+        trade_blocked = any(symbol in trade_symbol_set for symbol in blocking_symbols)
+        trading_gate_open = (
+            bool(snapshot.get("trade_symbols"))
+            and ready_trade_symbols == int(snapshot.get("trade_symbols_total", 0) or 0)
+            and not trade_blocked
+        )
+
+        readiness["phase"] = "ready" if not pending_set else "degraded"
+        readiness["ready_symbols"] = len(ready_set)
+        readiness["ready_trade_symbols"] = ready_trade_symbols
+        readiness["ready_monitor_symbols"] = ready_monitor_symbols
+        readiness["ready_symbols_list"] = sorted(ready_set)
+        readiness["pending_symbols"] = sorted(pending_set)
+        readiness["symbol_status"] = merged_status
+        readiness["integrity_pending_symbols"] = blocking_symbols
+        readiness["integrity_repair_reasons"] = repair_reasons
+        readiness["trading_gate_open"] = trading_gate_open
+        if trading_gate_open:
+            readiness["trading_gate_reason"] = "ready"
+        elif trade_blocked:
+            readiness["trading_gate_reason"] = "history_repair_pending"
+        elif not snapshot.get("trade_symbols"):
+            readiness["trading_gate_reason"] = "no_trade_symbols"
+        else:
+            readiness["trading_gate_reason"] = "warmup_incomplete"
+        return readiness
+
+    def _run_warmup_preflight_repairs(self, snapshot: dict) -> dict:
+        repair_plan = self._build_startup_history_repair_plan(snapshot.get("symbols") or [])
+        period_overrides = self._build_startup_history_period_overrides(repair_plan)
+        if not repair_plan:
+            return {
+                "initial_repair_symbols": [],
+                "attempted_repair_symbols": [],
+                "remaining_repair_symbols": [],
+                "repair_reasons": {},
+                "history_fetch_symbols": [],
+                "history_period_overrides": {},
+                "history_written_total": 0,
+                "repair_result": {},
+            }
+
+        logger.info(
+            "Warmup preflight history repair started: symbols=%s short_window=%s",
+            ",".join(sorted(repair_plan.keys())),
+            ",".join(
+                f"{symbol}:{(period_overrides.get(symbol) or {}).get('5m')}"
+                for symbol in sorted(period_overrides.keys())
+            ) or "none",
+        )
+        repair_result = self._run_bar_integrity_repairs(
+            repair_plan,
+            source="warmup_preflight",
+            allow_defer=False,
+            run_pipeline_repair=False,
+            history_period_overrides=period_overrides,
+        )
+        remaining_plan = self._build_startup_history_repair_plan(snapshot.get("symbols") or [])
+        history_written_total = 0
+        for item in (repair_result.get("per_symbol") or {}).values():
+            result = (item or {}).get("result") or {}
+            history_written_total += int(result.get("history_written", 0) or 0)
+        return {
+            "initial_repair_symbols": sorted(repair_plan.keys()),
+            "attempted_repair_symbols": sorted(repair_result.get("repair_symbols") or []),
+            "remaining_repair_symbols": sorted(remaining_plan.keys()),
+            "repair_reasons": {
+                symbol: str((data or {}).get("repair_reason") or "history_repair_pending")
+                for symbol, data in remaining_plan.items()
+            },
+            "history_fetch_symbols": sorted(repair_result.get("history_symbols") or []),
+            "history_period_overrides": {
+                symbol: dict((period_overrides.get(symbol) or {}))
+                for symbol in sorted(period_overrides.keys())
+            },
+            "history_written_total": history_written_total,
+            "repair_result": repair_result,
+        }
+
     def _is_warmup_active(self) -> bool:
         phase = str(self._warmup_state.get("phase") or "").strip().lower()
         return phase in {"pending", "running"}
@@ -571,6 +1041,8 @@ class IBKRTradingService:
             return
 
         started_at = self._now_iso()
+        warmup_started_perf = time.perf_counter()
+        warmup_timings = {}
         self._set_warmup_state(
             phase="running",
             reason=str(self._warmup_state.get("reason") or "warmup"),
@@ -588,9 +1060,14 @@ class IBKRTradingService:
             monitor_symbols=snapshot["monitor_symbols"],
             pending_symbols=snapshot["symbols"],
             symbol_status=[],
+            integrity_pending_symbols=[],
+            integrity_repair_reasons={},
+            preflight_repair={},
             backfill_written=0,
             backfill_result={},
             compute_result={},
+            timings={},
+            last_duration_s=0.0,
         )
 
         logger.info(
@@ -608,21 +1085,51 @@ class IBKRTradingService:
         from ibkr_compute.api import server as compute_server
 
         try:
-            bootstrap_result = self._trigger_realtime_compute(source="warmup_bootstrap")
-            compute_result["bootstrap"] = bootstrap_result
-            if bootstrap_result.get("ok") is False:
-                last_error = str(bootstrap_result.get("error") or "warmup_bootstrap_failed")
+            step_started = time.perf_counter()
+            with compute_server.compute_lock:
+                compute_server.load_persisted_compute_cursors(ENVIRONMENT)
+            warmup_timings["cursor_load_s"] = round(time.perf_counter() - step_started, 3)
+
+            step_started = time.perf_counter()
+            preflight_result = self._run_warmup_preflight_repairs(snapshot)
+            warmup_timings["preflight_repair_s"] = round(time.perf_counter() - step_started, 3)
+            compute_result["preflight_repair"] = preflight_result
+            preflight_blockers = {
+                symbol: {
+                    "repair_reason": (preflight_result.get("repair_reasons") or {}).get(symbol, "history_repair_pending")
+                }
+                for symbol in (preflight_result.get("remaining_repair_symbols") or [])
+            }
+            if preflight_result.get("history_written_total"):
+                backfill_written += int(preflight_result.get("history_written_total", 0) or 0)
+                self._last_history_repair_at = time.time()
+                self._last_history_repair_symbols = sorted(preflight_result.get("attempted_repair_symbols") or [])
+
+            step_started = time.perf_counter()
+            storage_bootstrap = compute_server.materialize_engines_from_storage(
+                ENVIRONMENT,
+                snapshot["symbols"],
+                DEFAULT_WARMUP_REQUIRED_INTERVAL,
+            )
+            warmup_timings["storage_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
+            if storage_bootstrap:
+                compute_result["storage_bootstrap"] = storage_bootstrap
 
             readiness = self._collect_warmup_readiness(snapshot)
+            readiness = self._apply_integrity_readiness(readiness, snapshot, preflight_blockers)
             if readiness["pending_symbols"]:
-                storage_bootstrap = compute_server.materialize_engines_from_storage(
+                step_started = time.perf_counter()
+                pending_storage_bootstrap = compute_server.materialize_engines_from_storage(
                     ENVIRONMENT,
                     readiness["pending_symbols"],
                     DEFAULT_WARMUP_REQUIRED_INTERVAL,
                 )
-                if storage_bootstrap:
-                    compute_result["storage_bootstrap"] = storage_bootstrap
+                warmup_timings["pending_storage_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
+                if pending_storage_bootstrap:
+                    compute_result["pending_storage_bootstrap"] = pending_storage_bootstrap
                     readiness = self._collect_warmup_readiness(snapshot)
+                    readiness = self._apply_integrity_readiness(readiness, snapshot, preflight_blockers)
+            compute_result["warmup_timings"] = dict(warmup_timings)
             self._set_warmup_state(
                 phase="running",
                 required_interval=readiness["required_interval"],
@@ -640,14 +1147,21 @@ class IBKRTradingService:
                 ready_symbols_list=readiness["ready_symbols_list"],
                 pending_symbols=readiness["pending_symbols"],
                 symbol_status=readiness["symbol_status"],
+                integrity_pending_symbols=readiness["integrity_pending_symbols"],
+                integrity_repair_reasons=readiness["integrity_repair_reasons"],
+                preflight_repair=preflight_result,
                 trading_gate_open=readiness["trading_gate_open"],
-                trading_gate_reason=readiness["trading_gate_reason"] if readiness["trading_gate_open"] else "warmup_running",
+                trading_gate_reason=readiness["trading_gate_reason"],
                 compute_result=compute_result,
+                timings=warmup_timings,
+                last_duration_s=round(time.perf_counter() - warmup_started_perf, 3),
             )
 
             if readiness["trading_gate_open"] and not readiness["pending_symbols"]:
                 finished_at = self._now_iso()
                 phase = readiness["phase"]
+                warmup_timings["total_elapsed_s"] = round(time.perf_counter() - warmup_started_perf, 3)
+                compute_result["warmup_timings"] = dict(warmup_timings)
                 self._set_warmup_state(
                     phase=phase,
                     required_interval=readiness["required_interval"],
@@ -670,9 +1184,14 @@ class IBKRTradingService:
                     ready_symbols_list=readiness["ready_symbols_list"],
                     pending_symbols=readiness["pending_symbols"],
                     symbol_status=readiness["symbol_status"],
-                    backfill_written=0,
-                    backfill_result={},
+                    integrity_pending_symbols=readiness["integrity_pending_symbols"],
+                    integrity_repair_reasons=readiness["integrity_repair_reasons"],
+                    preflight_repair=preflight_result,
+                    backfill_written=backfill_written,
+                    backfill_result=backfill_result,
                     compute_result=compute_result,
+                    timings=warmup_timings,
+                    last_duration_s=warmup_timings["total_elapsed_s"],
                 )
                 logger.info(
                     "Warmup finished early after bootstrap: phase=%s gate=open ready=%d/%d trade_ready=%d/%d",
@@ -682,6 +1201,21 @@ class IBKRTradingService:
                     readiness["ready_trade_symbols"],
                     snapshot["trade_symbols_total"],
                 )
+                self._complete_startup_success(
+                    "IBKR Runtime 启动完成",
+                    {
+                        "Warmup结果": f"{readiness['ready_symbols']}/{snapshot['symbols_total']} ready",
+                        "交易标的": f"{readiness['ready_trade_symbols']}/{snapshot['trade_symbols_total']} ready",
+                        "监控标的": f"{readiness['ready_monitor_symbols']}/{snapshot['monitor_symbols_total']} ready",
+                        "预检修复标的": self._format_symbol_list(preflight_result.get("attempted_repair_symbols") or []),
+                        "回补写入Bars": backfill_written,
+                        "预热开始": started_at,
+                        "预热完成": finished_at,
+                        "预热耗时": f"{warmup_timings['total_elapsed_s']:.3f}s",
+                        "交易门": "open",
+                    },
+                )
+                self._schedule_interval_prime(snapshot["symbols"], source="startup_ready")
                 self._signal_wakeup.set()
                 return
             if readiness["trading_gate_open"] and readiness["pending_symbols"]:
@@ -702,9 +1236,14 @@ class IBKRTradingService:
                     ready_symbols_list=readiness["ready_symbols_list"],
                     pending_symbols=readiness["pending_symbols"],
                     symbol_status=readiness["symbol_status"],
+                    integrity_pending_symbols=readiness["integrity_pending_symbols"],
+                    integrity_repair_reasons=readiness["integrity_repair_reasons"],
+                    preflight_repair=preflight_result,
                     trading_gate_open=True,
                     trading_gate_reason=readiness["trading_gate_reason"],
                     compute_result=compute_result,
+                    timings=warmup_timings,
+                    last_duration_s=round(time.perf_counter() - warmup_started_perf, 3),
                 )
                 logger.info(
                     "Warmup trade gate open after bootstrap; continuing repair for pending symbols: %s",
@@ -723,13 +1262,15 @@ class IBKRTradingService:
                     len(pending_map),
                     snapshot["symbols_total"],
                 )
+                step_started = time.perf_counter()
                 backfill_result = self.data_backfill.backfill_all(
                     pending_map,
                     symbol_meta=snapshot["symbol_meta"],
                     intervals=[DEFAULT_WARMUP_REQUIRED_INTERVAL],
                     repair_symbols=list(pending_map.keys()),
                 )
-                backfill_written = sum(
+                warmup_timings["pending_backfill_s"] = round(time.perf_counter() - step_started, 3)
+                backfill_written += sum(
                     int(count or 0)
                     for per_symbol in backfill_result.values()
                     for count in per_symbol.values()
@@ -738,20 +1279,38 @@ class IBKRTradingService:
                 if readiness["trading_gate_open"]:
                     self._last_history_repair_at = time.time()
                     self._last_history_repair_symbols = sorted(pending_map.keys())
-                after_backfill_result = self._run_symbol_pipeline_repair(
+                step_started = time.perf_counter()
+                after_backfill_result = compute_server.materialize_engines_from_storage(
+                    ENVIRONMENT,
                     list(pending_map.keys()),
-                    source="warmup_backfill",
+                    DEFAULT_WARMUP_REQUIRED_INTERVAL,
                 )
+                warmup_timings["after_backfill_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
                 compute_result["after_backfill"] = after_backfill_result
-                if after_backfill_result.get("ok") is False:
-                    last_error = str(after_backfill_result.get("error") or "warmup_compute_failed")
         except Exception as exc:
             last_error = str(exc)
             logger.error("Warmup cycle failed: %s", exc)
 
         readiness = self._collect_warmup_readiness(snapshot)
+        final_preflight = dict(compute_result.get("preflight_repair") or {})
+        if final_preflight.get("initial_repair_symbols") or backfill_result:
+            final_remaining_plan = self._build_history_repair_plan(snapshot["symbols"])
+            final_preflight["remaining_repair_symbols"] = sorted(final_remaining_plan.keys())
+            final_preflight["repair_reasons"] = {
+                symbol: str((data or {}).get("repair_reason") or "history_repair_pending")
+                for symbol, data in final_remaining_plan.items()
+            }
+        final_blockers = {
+            symbol: {
+                "repair_reason": (final_preflight.get("repair_reasons") or {}).get(symbol, "history_repair_pending")
+            }
+            for symbol in (final_preflight.get("remaining_repair_symbols") or [])
+        }
+        readiness = self._apply_integrity_readiness(readiness, snapshot, final_blockers)
         finished_at = self._now_iso()
         phase = "failed" if last_error and readiness["ready_symbols"] == 0 else readiness["phase"]
+        warmup_timings["total_elapsed_s"] = round(time.perf_counter() - warmup_started_perf, 3)
+        compute_result["warmup_timings"] = dict(warmup_timings)
         self._set_warmup_state(
             phase=phase,
             required_interval=readiness["required_interval"],
@@ -774,13 +1333,18 @@ class IBKRTradingService:
             ready_symbols_list=readiness["ready_symbols_list"],
             pending_symbols=readiness["pending_symbols"],
             symbol_status=readiness["symbol_status"],
+            integrity_pending_symbols=readiness["integrity_pending_symbols"],
+            integrity_repair_reasons=readiness["integrity_repair_reasons"],
+            preflight_repair=final_preflight,
             backfill_written=backfill_written,
             backfill_result=backfill_result,
             compute_result=compute_result,
+            timings=warmup_timings,
+            last_duration_s=warmup_timings["total_elapsed_s"],
         )
 
         logger.info(
-            "Warmup finished: phase=%s gate=%s ready=%d/%d trade_ready=%d/%d backfill_written=%d compute_processed=%s",
+            "Warmup finished: phase=%s gate=%s ready=%d/%d trade_ready=%d/%d backfill_written=%d compute_processed=%s total_elapsed_s=%.3f",
             phase,
             "open" if readiness["trading_gate_open"] else "closed",
             readiness["ready_symbols"],
@@ -789,8 +1353,25 @@ class IBKRTradingService:
             snapshot["trade_symbols_total"],
             backfill_written,
             compute_result.get("processed", 0) if isinstance(compute_result, dict) else 0,
+            warmup_timings["total_elapsed_s"],
         )
         if readiness["trading_gate_open"]:
+            if phase == "ready":
+                self._complete_startup_success(
+                    "IBKR Runtime 启动完成",
+                    {
+                        "Warmup结果": f"{readiness['ready_symbols']}/{snapshot['symbols_total']} ready",
+                        "交易标的": f"{readiness['ready_trade_symbols']}/{snapshot['trade_symbols_total']} ready",
+                        "监控标的": f"{readiness['ready_monitor_symbols']}/{snapshot['monitor_symbols_total']} ready",
+                        "预检修复标的": self._format_symbol_list((final_preflight.get("attempted_repair_symbols") or [])),
+                        "回补写入Bars": backfill_written,
+                        "预热开始": started_at,
+                        "预热完成": finished_at,
+                        "预热耗时": f"{warmup_timings['total_elapsed_s']:.3f}s",
+                        "交易门": "open",
+                    },
+                )
+                self._schedule_interval_prime(snapshot["symbols"], source="startup_ready")
             self._signal_wakeup.set()
 
     def _warmup_loop(self):
@@ -823,6 +1404,9 @@ class IBKRTradingService:
                 logger.info("IBKR Trading Service already starting")
                 return
             self._starting = True
+            self._startup_reason = reason
+            self._startup_source = source
+            self._startup_trigger_login = bool(trigger_login)
 
         startup_ok = False
 
@@ -939,13 +1523,26 @@ class IBKRTradingService:
 
             self._schedule_retention()
 
-            logger.info("IBKR Trading Service fully started")
+            if not self._active_subscription_symbols:
+                self._complete_startup_success(
+                    "IBKR Runtime 启动完成（无活动标的）",
+                    {
+                        "Warmup结果": "0/0 ready",
+                        "交易标的": "0/0 ready",
+                        "监控标的": "0/0 ready",
+                        "预检修复标的": "-",
+                        "回补写入Bars": 0,
+                        "交易门": "closed",
+                    },
+                )
+            logger.info("IBKR Trading Service core components started; waiting for warmup readiness")
         finally:
             with self._state_lock:
                 if not startup_ok and not self._running:
                     self._starting = False
-                elif startup_ok:
-                    self._starting = False
+                    self._startup_reason = ""
+                    self._startup_source = ""
+                    self._startup_trigger_login = False
 
     def _ensure_gateway(self) -> bool:
         if not self.gateway_manager.is_running:
@@ -1724,7 +2321,14 @@ class IBKRTradingService:
             },
         }
 
-    def _run_bar_integrity_repairs(self, snapshots: dict[str, dict], source: str) -> dict:
+    def _run_bar_integrity_repairs(
+        self,
+        snapshots: dict[str, dict],
+        source: str,
+        allow_defer: bool = True,
+        run_pipeline_repair: bool = True,
+        history_period_overrides: dict[str, dict] | None = None,
+    ) -> dict:
         repair_symbols = [
             symbol for symbol, snapshot in snapshots.items()
             if bool(snapshot.get("safe_repair"))
@@ -1752,7 +2356,7 @@ class IBKRTradingService:
             }
 
         defer_repairs, defer_snapshot = self._should_defer_background_repairs()
-        if defer_repairs:
+        if allow_defer and defer_repairs:
             for symbol in repair_symbols:
                 per_symbol[symbol]["result"]["deferred"] = True
                 per_symbol[symbol]["result"]["defer_reason"] = str(defer_snapshot.get("reason") or "realtime_priority_active")
@@ -1786,11 +2390,17 @@ class IBKRTradingService:
                 per_symbol[symbol]["result"]["history_error"] = "conid_unresolved"
             if conid_map:
                 symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
+                effective_period_overrides = {
+                    symbol: dict((history_period_overrides or {}).get(symbol) or {})
+                    for symbol in conid_map.keys()
+                    if (history_period_overrides or {}).get(symbol)
+                }
                 backfill_result = self.data_backfill.backfill_all(
                     conid_map,
                     symbol_meta=symbol_meta,
                     intervals=["5m"],
                     repair_symbols=list(conid_map.keys()),
+                    period_overrides=effective_period_overrides,
                 )
                 self.data_writer.flush()
                 self._last_history_repair_at = time.time()
@@ -1799,8 +2409,21 @@ class IBKRTradingService:
                     per_symbol[symbol]["result"]["history_written"] = int(
                         ((backfill_result.get(symbol) or {}).get("5m", 0) or 0)
                     )
+                    history_period = str(
+                        ((effective_period_overrides.get(symbol) or {}).get("5m") or "")
+                    ).strip()
+                    if history_period:
+                        per_symbol[symbol]["result"]["history_period"] = history_period
 
-        pipeline_result = self._run_symbol_pipeline_repair(repair_symbols, source=source)
+        pipeline_result = {
+            "ok": True,
+            "symbols": sorted(repair_symbols),
+            "compute": {},
+            "rollup": {},
+            "skipped": not run_pipeline_repair,
+        }
+        if run_pipeline_repair:
+            pipeline_result = self._run_symbol_pipeline_repair(repair_symbols, source=source)
         pipeline_ok = bool(pipeline_result.get("ok", False))
         for symbol in repair_symbols:
             per_symbol[symbol]["result"]["pipeline_ok"] = pipeline_ok
@@ -1808,6 +2431,7 @@ class IBKRTradingService:
                 "processed": int(((pipeline_result.get("compute") or {}).get("processed", 0) or 0)),
                 "errors": int(((pipeline_result.get("compute") or {}).get("errors", 0) or 0)),
                 "rollup_written": int(((pipeline_result.get("rollup") or {}).get("written", 0) or 0)),
+                "skipped": bool(pipeline_result.get("skipped", False)),
             }
 
         return {
@@ -1940,6 +2564,44 @@ class IBKRTradingService:
                 plan[symbol] = snapshot
         return plan
 
+    def _build_startup_history_repair_plan(self, symbols: list[str]) -> dict[str, dict]:
+        if not symbols:
+            return {}
+        if not self.config.get_bool_for_environment("ibkr_history_repair_enabled", ENVIRONMENT, True):
+            return {}
+
+        plan = {}
+        for symbol in sorted({str(item or "").upper() for item in symbols if str(item or "").strip()}):
+            snapshot = self._collect_startup_history_repair_snapshot(symbol)
+            if bool(snapshot.get("needs_pipeline_repair")):
+                plan[symbol] = snapshot
+        return plan
+
+    def _startup_history_repair_period(self, snapshot: dict) -> str:
+        reasons = [
+            str(item or "").strip()
+            for item in str((snapshot or {}).get("repair_reason") or "").split(",")
+            if str(item or "").strip()
+        ]
+        if not reasons:
+            return ""
+        if any(
+            reason.startswith("bars<") or reason.startswith("startup_snapshot_error:")
+            for reason in reasons
+        ):
+            return ""
+        if all(reason.startswith("today_regular_") for reason in reasons):
+            return STARTUP_HISTORY_REPAIR_SHORT_PERIOD
+        return ""
+
+    def _build_startup_history_period_overrides(self, repair_plan: dict[str, dict]) -> dict[str, dict]:
+        overrides = {}
+        for symbol, snapshot in (repair_plan or {}).items():
+            period = self._startup_history_repair_period(snapshot)
+            if period:
+                overrides[str(symbol).upper()] = {"5m": period}
+        return overrides
+
     def _inspect_derived_interval_sync(self, symbol: str) -> dict:
         normalized_symbol = str(symbol or "").strip().upper()
         result = {
@@ -2056,7 +2718,21 @@ class IBKRTradingService:
 
     def _compute_loop(self):
         logger.info("Realtime close-driven compute loop started")
+        startup_wait_logged_at = 0.0
         while self._running or not self._compute_queue.empty():
+            if self._starting:
+                queue_size = int(self._compute_queue.qsize())
+                now = time.time()
+                if queue_size > 0 and (now - startup_wait_logged_at) >= 15:
+                    logger.info(
+                        "Realtime compute deferred while startup warmup is active: queue=%d",
+                        queue_size,
+                    )
+                    startup_wait_logged_at = now
+                time.sleep(1)
+                continue
+
+            startup_wait_logged_at = 0.0
             try:
                 first_item = self._compute_queue.get(timeout=1)
             except queue.Empty:
@@ -2196,6 +2872,34 @@ class IBKRTradingService:
                 continue
 
             symbol = sig["symbol"]
+            duplicate_order = self.order_tracker.find_duplicate_open_entry(
+                symbol=symbol,
+                direction=sig["direction"],
+                quantity=sig["shares"],
+                entry_price=sig["entry"],
+                entry_order_type="LMT",
+            )
+            if duplicate_order:
+                broker_order_id = str(duplicate_order.get("orderId") or duplicate_order.get("id") or "").strip()
+                broker_status = str(duplicate_order.get("status") or "").strip()
+                broker_price = duplicate_order.get("price")
+                try:
+                    self.order_tracker.sync_live_orders_snapshot([duplicate_order])
+                except Exception as sync_err:
+                    logger.error("Duplicate broker order sync failed: %s", sync_err)
+                self._mark_signal_duplicate_open_order(sig, duplicate_order)
+                logger.warning(
+                    "Skip duplicate order submission: signal_id=%s symbol=%s direction=%s broker_order_id=%s status=%s price=%s",
+                    sig.get("signal_id"),
+                    symbol,
+                    sig.get("direction"),
+                    broker_order_id or "-",
+                    broker_status or "-",
+                    broker_price,
+                )
+                self.signal_router.mark_processed(sig["signal_id"])
+                continue
+
             conid = self.conid_resolver.resolve(symbol)
             if not conid:
                 logger.warning("Cannot resolve conid for %s, skipping", symbol)
@@ -2248,6 +2952,71 @@ class IBKRTradingService:
                 logger.error("Order failed: %s - %s", symbol, result.get("error"))
 
             self.signal_router.mark_processed(sig["signal_id"])
+
+    def _mark_signal_duplicate_open_order(self, sig: dict, broker_order: dict):
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+
+        safe_signal_id = signal_id.replace('"', '\\"')
+        safe_environment = str(ENVIRONMENT or "live").replace('"', '\\"')
+
+        try:
+            record = self.pb.get_first_record(
+                "ibkr_signals",
+                filter=(
+                    f'signal_id = "{safe_signal_id}" && '
+                    f'environment = "{safe_environment}"'
+                ),
+            )
+            if not record or not record.get("id"):
+                return
+
+            existing_extra = record.get("extra") or {}
+            if isinstance(existing_extra, str):
+                try:
+                    existing_extra = json.loads(existing_extra)
+                except Exception:
+                    existing_extra = {}
+            if not isinstance(existing_extra, dict):
+                existing_extra = {}
+
+            broker_order_id = str(broker_order.get("orderId") or broker_order.get("id") or "").strip()
+            broker_coid = str(
+                broker_order.get("cOID")
+                or broker_order.get("coid")
+                or broker_order.get("order_ref")
+                or broker_order.get("orderRef")
+                or ""
+            ).strip()
+            patch = {
+                "status": "rejected",
+                "note": "duplicate_existing_broker_order",
+                "extra": {
+                    **existing_extra,
+                    "status_reason": "duplicate_existing_broker_order",
+                    "duplicate_broker_order_detected": True,
+                    "duplicate_broker_order_id": broker_order_id,
+                    "duplicate_broker_order_status": str(broker_order.get("status") or "").strip(),
+                    "duplicate_broker_order_price": broker_order.get("price"),
+                    "duplicate_broker_order_quantity": broker_order.get("totalSize") if broker_order.get("totalSize") is not None else broker_order.get("quantity"),
+                    "duplicate_broker_order_side": str(broker_order.get("side") or "").strip(),
+                    "duplicate_broker_order_type": str(broker_order.get("orderType") or "").strip(),
+                    "duplicate_broker_order_coid": broker_coid,
+                    "duplicate_detected_at": self._now_iso(),
+                    "duplicate_action": "skip_submit_existing_broker_order",
+                },
+            }
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            logger.error(
+                "Failed to mark signal duplicate-open-order: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
 
     def _ack_signal_after_order_submission(self, sig: dict, result: dict):
         raw = sig.get("raw") or {}
@@ -2393,6 +3162,9 @@ class IBKRTradingService:
         logger.info("Stopping IBKR Trading Service...")
         with self._state_lock:
             self._starting = False
+            self._startup_reason = ""
+            self._startup_source = ""
+            self._startup_trigger_login = False
         self._running = False
         self._last_session_authenticated = False
 
@@ -2422,6 +3194,8 @@ class IBKRTradingService:
             self._bar_close_thread.join(timeout=10)
         if self._warmup_thread:
             self._warmup_thread.join(timeout=10)
+        if self._interval_prime_thread:
+            self._interval_prime_thread.join(timeout=10)
 
         self._set_warmup_state(
             phase="stopped",
@@ -2436,6 +3210,8 @@ class IBKRTradingService:
     def status(self) -> dict:
         return {
             "starting": self._starting,
+            "startup_complete": bool(self._running and not self._starting),
+            "runtime_phase": self._runtime_phase_label(),
             "environment": ENVIRONMENT,
             "gateway": self.gateway_manager.status(),
             "session": self.session_keeper.status(),
@@ -2463,6 +3239,7 @@ class IBKRTradingService:
                 ),
                 "last_result": self._last_realtime_compute_result,
             },
+            "interval_prime": self._copy_interval_prime_state(),
             "market_universe": {
                 "market_date": self._current_market_date,
                 "last_daily_reset": (

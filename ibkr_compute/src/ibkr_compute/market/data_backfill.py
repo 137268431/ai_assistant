@@ -346,9 +346,12 @@ class DataBackfill:
         interval: str = "5m",
         exchange: str = "",
         repair: bool = False,
+        request_period: Optional[str] = None,
     ) -> List[Dict]:
         normalized = normalize_interval(interval)
         period, bar_size = PERIOD_MAP.get(normalized, PERIOD_MAP["5m"])
+        if str(request_period or "").strip():
+            period = str(request_period).strip()
 
         try:
             data = self._request_history_json(conid, symbol, normalized, period, bar_size)
@@ -429,8 +432,16 @@ class DataBackfill:
         interval: str = "5m",
         exchange: str = "",
         repair: bool = False,
+        request_period: Optional[str] = None,
     ) -> int:
-        bars = self.fetch_history(conid, symbol, interval=interval, exchange=exchange, repair=repair)
+        bars = self.fetch_history(
+            conid,
+            symbol,
+            interval=interval,
+            exchange=exchange,
+            repair=repair,
+            request_period=request_period,
+        )
         written = self._write_bars(bars)
         logger.info(
             "Backfill %s/%s (%s): %d/%d bars written",
@@ -449,11 +460,20 @@ class DataBackfill:
         exchange: str = "",
         intervals: Optional[List[str]] = None,
         repair: bool = False,
+        period_overrides: Optional[Dict[str, str]] = None,
     ) -> Dict[str, int]:
         results = {}
         for interval in self._resolve_intervals(intervals):
-            written = self.backfill_symbol(conid, symbol, interval=interval, exchange=exchange, repair=repair)
-            results[normalize_interval(interval)] = written
+            normalized = normalize_interval(interval)
+            written = self.backfill_symbol(
+                conid,
+                symbol,
+                interval=normalized,
+                exchange=exchange,
+                repair=repair,
+                request_period=str((period_overrides or {}).get(normalized) or "").strip() or None,
+            )
+            results[normalized] = written
             if self.interval_delay > 0:
                 time.sleep(self.interval_delay)
         return results
@@ -465,10 +485,19 @@ class DataBackfill:
         exchange: str,
         intervals: Sequence[str],
         repair: bool,
+        period_overrides: Optional[Dict[str, str]] = None,
     ) -> Dict[str, List[Dict]]:
         fetched = {}
         for interval in self._resolve_intervals(intervals):
-            fetched[interval] = self.fetch_history(conid, symbol, interval=interval, exchange=exchange, repair=repair)
+            normalized = normalize_interval(interval)
+            fetched[normalized] = self.fetch_history(
+                conid,
+                symbol,
+                interval=normalized,
+                exchange=exchange,
+                repair=repair,
+                request_period=str((period_overrides or {}).get(normalized) or "").strip() or None,
+            )
             if self.interval_delay > 0:
                 time.sleep(self.interval_delay)
         return fetched
@@ -479,6 +508,7 @@ class DataBackfill:
         symbol_meta: Optional[Dict[str, Dict[str, str]]] = None,
         intervals: Optional[List[str]] = None,
         repair_symbols: Optional[Sequence[str]] = None,
+        period_overrides: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> Dict[str, Dict[str, int]]:
         results = {}
         metadata = symbol_meta or {}
@@ -509,6 +539,7 @@ class DataBackfill:
                     str((metadata.get(symbol) or {}).get("exchange") or ""),
                     interval_list,
                     symbol in repair_set,
+                    dict((period_overrides or {}).get(symbol) or {}),
                 ): symbol
                 for symbol, conid in conid_map.items()
             }

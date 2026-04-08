@@ -853,32 +853,8 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             }
         } catch (_) {}
 
-        if (!liteMode) {
-            try {
-                const records = $app.findRecordsByFilter("ibkr_signals", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-                summary.today.ibkr_signals = records ? records.length : 0
-            } catch (_) {}
-            try {
-                const records = $app.findRecordsByFilter("ibkr_indicators", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-                summary.today.ibkr_indicators = records ? records.length : 0
-            } catch (_) {}
-            try {
-                const records = $app.findRecordsByFilter("orders", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-                summary.today.orders = records ? records.length : 0
-            } catch (_) {}
-            try {
-                const records = $app.findRecordsByFilter("ibkr_bars", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-                summary.today.ibkr_bars = records ? records.length : 0
-            } catch (_) {}
-            try {
-                const records = $app.findRecordsByFilter("ibkr_targets", "date = {:d} && environment = {:env}", "", 0, 0, { d: times.date, env: environment })
-                summary.today.ibkr_targets = records ? records.length : 0
-            } catch (_) {}
-            try {
-                const records = $app.findRecordsByFilter("system_events", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment })
-                summary.today.events = records ? records.length : 0
-            } catch (_) {}
-        }
+        // Keep summaryz lightweight for UI callers. Heavy per-day counts are fetched
+        // directly by pages via paginated collection APIs when needed.
 
         try {
             const recent = $app.findRecordsByFilter("system_events", "environment = {:env}", "-created", 20, 0, { env: environment }) || []
@@ -930,6 +906,14 @@ cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
 })
 
 // System heartbeat / status reminder piggyback on ibkr_compute_runtime via lib/system_notify_scheduler.js
+
+cronAdd("system_market_open_reminder", "*/5 * * * *", () => {
+    try {
+        require(`${__hooks}/lib/system_notify_scheduler.js`).runDailyOpenReminderTick("[IBKROpenReminder]", "system_market_open_reminder")
+    } catch (err) {
+        console.log(`[IBKROpenReminder] fatal error: ${err.message || err}`)
+    }
+})
 
 cronAdd("ibkr_auth_edge_guard", "* 4-20 * * 1-5", () => {
     try {
@@ -1035,59 +1019,11 @@ cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
     }
 })
 
-cronAdd("system_daily_report", "5 20 * * 1-5", () => {
-    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
-    const { getActiveRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
-    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
-    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
-    const times = getTimeStrings()
-    const todayStart = times.date + " 00:00:00"
-    const environments = getActiveRuntimeEnvironments(getRuntimeKeys())
-
-    for (let i = 0; i < environments.length; i++) {
-        const environment = environments[i]
-        const cronState = getPbCronToggleState("system_daily_report", environment)
-        if (!cronState.effective_enabled) {
-            console.log(`[SystemDailyReport] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
-            continue
-        }
-        const report = {
-            "日期": times.date,
-            "信号数": "0",
-            "订单数": "0",
-            "IBKR Bars": "0",
-            "Targets": "0",
-            "系统事件": "0",
-            "错误事件": "0",
-        }
-
-        try {
-            const rows = $app.findRecordsByFilter("ibkr_signals", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment }) || []
-            report["信号数"] = String(rows.length)
-        } catch (_) {}
-        try {
-            const rows = $app.findRecordsByFilter("orders", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment }) || []
-            report["订单数"] = String(rows.length)
-        } catch (_) {}
-        try {
-            const rows = $app.findRecordsByFilter("ibkr_bars", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment }) || []
-            report["IBKR Bars"] = String(rows.length)
-        } catch (_) {}
-        try {
-            const rows = $app.findRecordsByFilter("ibkr_targets", "date = {:d} && environment = {:env}", "", 0, 0, { d: times.date, env: environment }) || []
-            report["Targets"] = String(rows.length)
-        } catch (_) {}
-        try {
-            const rows = $app.findRecordsByFilter("system_events", "created >= {:t} && environment = {:env}", "", 0, 0, { t: todayStart, env: environment }) || []
-            report["系统事件"] = String(rows.length)
-            let errorCount = 0
-            for (let j = 0; j < rows.length; j++) {
-                if (rows[j].get("level") === "error") errorCount += 1
-            }
-            report["错误事件"] = String(errorCount)
-        } catch (_) {}
-
-        feishuSystem.notifyDailyReport(report, environment)
+cronAdd("system_daily_report", "*/5 * * * *", () => {
+    try {
+        require(`${__hooks}/lib/system_notify_scheduler.js`).runDailyCloseSummaryTick("[SystemDailyReport]", "system_daily_report")
+    } catch (err) {
+        console.log(`[SystemDailyReport] fatal error: ${err.message || err}`)
     }
 })
 
