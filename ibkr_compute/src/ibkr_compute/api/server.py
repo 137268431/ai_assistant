@@ -121,7 +121,7 @@ SIGNAL_BATCH_SIZE = max(1, int(os.environ.get("IBKR_SIGNAL_BATCH_SIZE", "30")))
 CHART_TIMELINE_VISIBLE_LIMIT = max(200, int(os.environ.get("IBKR_CHART_TIMELINE_VISIBLE_LIMIT", "3000")))
 IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS = max(
     1.0,
-    float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS", "3.0")),
+    float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS", "5.0")),
 )
 COMPUTE_CURSOR_STATE_KEY = "compute_cursors"
 COMPUTE_CURSOR_STATE_DATE = "global"
@@ -3021,18 +3021,38 @@ def _build_ibkr_account_snapshot(service) -> dict:
     positions_error = ""
     orders_error = ""
 
-    try:
-        summary_raw = service.order_lifecycle.get_account_summary(account_id)
-    except Exception as exc:
-        summary_error = str(exc)
-    try:
-        positions_raw = service.order_lifecycle.get_positions(account_id)
-    except Exception as exc:
-        positions_error = str(exc)
-    try:
-        orders_raw = service.order_tracker.get_live_orders()
-    except Exception as exc:
-        orders_error = str(exc)
+    fetchers = {}
+    if hasattr(service, "order_lifecycle") and service.order_lifecycle:
+        fetchers["summary"] = lambda: service.order_lifecycle.get_account_summary(account_id)
+        fetchers["positions"] = lambda: service.order_lifecycle.get_positions(account_id)
+    if hasattr(service, "order_tracker") and service.order_tracker:
+        fetchers["orders"] = service.order_tracker.get_live_orders
+
+    if fetchers:
+        with ThreadPoolExecutor(max_workers=len(fetchers), thread_name_prefix="ibkr-account") as executor:
+            future_map = {
+                executor.submit(fetcher): name
+                for name, fetcher in fetchers.items()
+            }
+            for future in as_completed(future_map):
+                name = future_map[future]
+                try:
+                    value = future.result()
+                except Exception as exc:
+                    if name == "summary":
+                        summary_error = str(exc)
+                    elif name == "positions":
+                        positions_error = str(exc)
+                    else:
+                        orders_error = str(exc)
+                    continue
+
+                if name == "summary":
+                    summary_raw = value if isinstance(value, dict) else {}
+                elif name == "positions":
+                    positions_raw = value if isinstance(value, list) else []
+                else:
+                    orders_raw = value if isinstance(value, list) else []
 
     # When the Gateway bulk orders endpoint returns empty (common after session restart),
     # fall back to individually verifying PB-tracked active orders by broker_order_id.
@@ -3103,9 +3123,10 @@ def _build_ibkr_account_snapshot(service) -> dict:
         },
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
+    cache_expires_at = time.time() + IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS
     with ibkr_account_snapshot_cache_lock:
         ibkr_account_snapshot_cache[cache_key] = {
-            "expires_at": now + IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS,
+            "expires_at": cache_expires_at,
             "payload": payload,
         }
     return payload

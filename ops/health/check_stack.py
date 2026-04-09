@@ -276,15 +276,17 @@ if latest_indicator_5m is None:
 elif latest_indicator_5m.get("age_min") is not None and latest_indicator_5m["age_min"] > INDICATOR_STALE_MIN:
     failures.append(f"db:latest_indicator_5m_stale:{latest_indicator_5m['age_min']}")
 
-if latest_signal is None:
-    warnings.append("db:latest_signal_missing")
-
 runtime_payload = local_http.get("compute_ibkr_status", {}).get("json") or {}
 gateway = runtime_payload.get("gateway") or {}
 session = runtime_payload.get("session") or {}
 websocket = runtime_payload.get("websocket") or {}
 realtime = runtime_payload.get("realtime_compute") or {}
 market_universe = runtime_payload.get("market_universe") or {}
+
+if latest_signal is None:
+    last_signal_count = int(((realtime.get("last_result") or {}).get("signals") or 0))
+    if last_signal_count > 0:
+        warnings.append("db:latest_signal_missing")
 
 if gateway and (gateway.get("running") is False or gateway.get("reachable") is False):
     failures.append("runtime:gateway_unhealthy")

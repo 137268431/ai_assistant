@@ -32,9 +32,7 @@ class OrderTracker:
         self.on_fill = on_fill
         self.on_cancel = on_cancel
 
-        self._session = requests.Session()
-        self._session.verify = False
-        load_cookies(self._session)
+        self._session_local = threading.local()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._known_orders: Dict[str, dict] = {}
@@ -50,6 +48,15 @@ class OrderTracker:
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
+
+    def _get_session(self) -> requests.Session:
+        session = getattr(self._session_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.verify = False
+            self._session_local.session = session
+        load_cookies(session)
+        return session
 
     @staticmethod
     def _normalize_text(value: Any) -> str:
@@ -92,16 +99,16 @@ class OrderTracker:
 
     def _ensure_account_selected(self) -> bool:
         try:
-            load_cookies(self._session)
-            resp = self._session.get(
+            session = self._get_session()
+            resp = session.get(
                 self._api_url("/iserver/accounts"),
                 timeout=10,
             )
             if resp.status_code == 401:
-                save_cookies(self._session)
+                save_cookies(session)
                 return False
             resp.raise_for_status()
-            save_cookies(self._session)
+            save_cookies(session)
             data = resp.json() if resp.text else {}
             accounts = data.get("accounts", []) if isinstance(data, dict) else []
             selected = data.get("selectedAccount", "") if isinstance(data, dict) else ""
@@ -130,17 +137,17 @@ class OrderTracker:
         return orders if isinstance(orders, list) else []
 
     def _request_json(self, path: str, *, params: Optional[Dict[str, Any]] = None, timeout: int = 15):
-        load_cookies(self._session)
-        resp = self._session.get(
+        session = self._get_session()
+        resp = session.get(
             self._api_url(path),
             params=params or {},
             timeout=timeout,
         )
         if resp.status_code == 401:
-            save_cookies(self._session)
+            save_cookies(session)
             raise PermissionError("IBKR session is not authenticated")
         resp.raise_for_status()
-        save_cookies(self._session)
+        save_cookies(session)
         if not resp.text:
             return {}
         return resp.json()
@@ -314,14 +321,14 @@ class OrderTracker:
 
     def get_order_status(self, order_id: str) -> Dict:
         try:
-            load_cookies(self._session)
-            resp = self._session.get(
+            session = self._get_session()
+            resp = session.get(
                 self._api_url(f"/iserver/account/order/status/{order_id}"),
                 timeout=15,
             )
             resp.raise_for_status()
             payload = resp.json()
-            save_cookies(self._session)
+            save_cookies(session)
             return payload
         except Exception as e:
             logger.warning("Failed to get order status %s: %s", order_id, e)

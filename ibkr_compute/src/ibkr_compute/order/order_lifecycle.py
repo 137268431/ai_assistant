@@ -41,9 +41,7 @@ class OrderLifecycle:
         self.config = config
         self.environment = environment
 
-        self._session = requests.Session()
-        self._session.verify = False
-        load_cookies(self._session)
+        self._session_local = threading.local()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._eod_closed_today = False
@@ -52,6 +50,15 @@ class OrderLifecycle:
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
+
+    def _get_session(self) -> requests.Session:
+        session = getattr(self._session_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.verify = False
+            self._session_local.session = session
+        load_cookies(session)
+        return session
 
     def _get_config_value(self, key: str, default: str) -> str:
         if not self.config:
@@ -92,14 +99,14 @@ class OrderLifecycle:
     def get_positions(self, acct_id: str = None) -> List[Dict]:
         acct = acct_id or self.account_id
         try:
-            load_cookies(self._session)
-            resp = self._session.get(
+            session = self._get_session()
+            resp = session.get(
                 self._api_url(f"/portfolio/{acct}/positions/0"),
                 timeout=15,
             )
             resp.raise_for_status()
             data = resp.json()
-            save_cookies(self._session)
+            save_cookies(session)
             return data if isinstance(data, list) else []
         except Exception as e:
             logger.warning("Failed to get positions: %s", e)
@@ -108,14 +115,14 @@ class OrderLifecycle:
     def get_account_summary(self, acct_id: str = None) -> Dict:
         acct = acct_id or self.account_id
         try:
-            load_cookies(self._session)
-            resp = self._session.get(
+            session = self._get_session()
+            resp = session.get(
                 self._api_url(f"/portfolio/{acct}/summary"),
                 timeout=15,
             )
             resp.raise_for_status()
             payload = resp.json()
-            save_cookies(self._session)
+            save_cookies(session)
             return payload
         except Exception as e:
             logger.warning("Failed to get account summary: %s", e)
@@ -156,17 +163,17 @@ class OrderLifecycle:
                     "cOID": f"eod_{symbol}_{datetime.now(ET).strftime('%H%M%S')}",
                 }]
 
-                load_cookies(self._session)
-                resp = self._session.post(url, json={"orders": orders}, timeout=15)
+                session = self._get_session()
+                resp = session.post(url, json={"orders": orders}, timeout=15)
                 resp.raise_for_status()
                 data = resp.json()
-                save_cookies(self._session)
+                save_cookies(session)
 
                 if isinstance(data, list) and data and data[0].get("id"):
                     reply_url = self._api_url(f"/iserver/reply/{data[0]['id']}")
-                    load_cookies(self._session)
-                    self._session.post(reply_url, json={"confirmed": True}, timeout=15)
-                    save_cookies(self._session)
+                    session = self._get_session()
+                    session.post(reply_url, json={"confirmed": True}, timeout=15)
+                    save_cookies(session)
 
                 closed += 1
                 logger.info("EOD close: %s %s %d shares", symbol, side, qty)
