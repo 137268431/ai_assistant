@@ -516,6 +516,14 @@ class AuthHandler:
         if trace_summary:
             wait_detail["最近网关回包"] = trace_summary
 
+        mode_timeline = str(state.get("mode_timeline") or "").strip()
+        if mode_timeline:
+            wait_detail["模式轨迹"] = mode_timeline
+
+        mode_changed_at = str(state.get("mode_changed_at") or "").strip()
+        if mode_changed_at:
+            wait_detail["最近模式切换"] = mode_changed_at
+
         return wait_detail
 
     def _build_state_patch(self, page_state: Optional[Dict[str, Any]], extra_patch: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -558,6 +566,14 @@ class AuthHandler:
         trace_summary = str(browser_state.get("trace_summary") or "").strip()
         if trace_summary:
             patch["gateway_trace"] = trace_summary[:260]
+
+        mode_timeline = str(state.get("mode_timeline") or "").strip()
+        if mode_timeline:
+            patch["mode_timeline"] = mode_timeline
+
+        mode_changed_at = str(state.get("mode_changed_at") or "").strip()
+        if mode_changed_at:
+            patch["mode_changed_at"] = mode_changed_at
 
         if extra_patch:
             patch.update(extra_patch)
@@ -891,15 +907,23 @@ class AuthHandler:
 
                     wait_state = dict(self._last_wait_context or {})
                     wait_mode = str(wait_state.get("mode") or "").strip()
+                    wait_abort_reason = str(wait_state.get("abort_reason") or "").strip()
                     allow_retry = False
                     last_failure_retryable = True
                     last_failure_kind = "timeout"
-                    last_failure_error = "challenge_response_timeout" if wait_mode == "challenge_response" else "2fa_timeout"
+                    if wait_abort_reason in {"push_to_challenge_transition", "challenge_response_unsupported"}:
+                        last_failure_error = wait_abort_reason
+                    else:
+                        last_failure_error = "challenge_response_timeout" if wait_mode == "challenge_response" else "2fa_timeout"
                     last_failure_detail = {
                         **self._build_wait_detail(wait_state, cycle_detail),
                         "最后尝试": f"{attempt}/{MAX_LOGIN_RETRIES}",
                     }
-                    logger.warning("2FA flow timed out in mode=%s", wait_mode or "unknown")
+                    logger.warning(
+                        "2FA flow ended without auth in mode=%s abort_reason=%s",
+                        wait_mode or "unknown",
+                        wait_abort_reason or "-",
+                    )
                     self._log_to_pb("2fa_timeout", "warning", f"Attempt {attempt} mode={wait_mode or 'unknown'}")
 
                 except Exception as e:
@@ -947,12 +971,24 @@ class AuthHandler:
 
             if last_failure_kind == "timeout":
                 is_challenge_timeout = last_failure_error == "challenge_response_timeout"
+                is_push_to_challenge = last_failure_error == "push_to_challenge_transition"
+                is_challenge_unsupported = last_failure_error == "challenge_response_unsupported"
                 message = (
+                    f"本轮手机确认没有建立可用 Session，IBKR 已切到 Challenge/Response；系统将在 {TWO_FA_RETRY_INTERVAL_SECONDS}s 后自动重试新的 push（下一轮 {next_retry_round}/{total_2fa_rounds}）。"
+                    if is_push_to_challenge
+                    else f"IBKR 当前进入 Challenge/Response；当前策略不走 challenge，将在 {TWO_FA_RETRY_INTERVAL_SECONDS}s 后自动重试新的 push（下一轮 {next_retry_round}/{total_2fa_rounds}）。"
+                    if is_challenge_unsupported
+                    else
                     f"等待 Challenge Response Code 超时，将在 {TWO_FA_RETRY_INTERVAL_SECONDS}s 后自动重试（下一轮 {next_retry_round}/{total_2fa_rounds}）。"
                     if is_challenge_timeout
                     else f"等待 IBKR Mobile 确认超时，将在 {TWO_FA_RETRY_INTERVAL_SECONDS}s 后自动重试（下一轮 {next_retry_round}/{total_2fa_rounds}）。"
                 )
                 last_result = (
+                    f"检测到 push_notification -> challenge_response，计划自动重试 {next_retry_round}/{total_2fa_rounds}。"
+                    if is_push_to_challenge
+                    else f"检测到 challenge_response，计划自动重试 {next_retry_round}/{total_2fa_rounds}。"
+                    if is_challenge_unsupported
+                    else
                     f"等待 Challenge Response 超时，计划自动重试 {next_retry_round}/{total_2fa_rounds}。"
                     if is_challenge_timeout
                     else f"等待手机确认超时，计划自动重试 {next_retry_round}/{total_2fa_rounds}。"
@@ -1000,12 +1036,23 @@ class AuthHandler:
         )
         if last_failure_kind == "timeout":
             is_challenge_timeout = last_failure_error == "challenge_response_timeout"
+            is_push_to_challenge = last_failure_error == "push_to_challenge_transition"
+            is_challenge_unsupported = last_failure_error == "challenge_response_unsupported"
             self._report_2fa_status(
                 status="timeout",
                 reason=reason,
                 source=source,
                 detail=last_failure_detail,
                 message=(
+                    "本轮手机确认没有建立可用 Session，IBKR 已切到 Challenge/Response；已达到自动重试上限，请重新点击按钮触发。"
+                    if is_push_to_challenge and exhausted_2fa_retries
+                    else "本轮手机确认没有建立可用 Session，IBKR 已切到 Challenge/Response；请重新点击按钮触发。"
+                    if is_push_to_challenge
+                    else "IBKR 当前进入 Challenge/Response；当前策略不走 challenge，已达到自动重试上限，请重新点击按钮触发。"
+                    if is_challenge_unsupported and exhausted_2fa_retries
+                    else "IBKR 当前进入 Challenge/Response；当前策略不走 challenge，请重新点击按钮触发。"
+                    if is_challenge_unsupported
+                    else
                     "等待 Challenge Response Code 超时，已达到自动重试上限，请重新点击按钮触发。"
                     if is_challenge_timeout and exhausted_2fa_retries
                     else "等待 Challenge Response Code 超时，请重新点击按钮触发。"
@@ -1015,6 +1062,15 @@ class AuthHandler:
                     else "等待 IBKR Mobile 确认超时，请重新点击按钮触发。"
                 ),
                 last_result=(
+                    "检测到 push_notification -> challenge_response，自动重试次数已耗尽。"
+                    if is_push_to_challenge and exhausted_2fa_retries
+                    else "检测到 push_notification -> challenge_response。"
+                    if is_push_to_challenge
+                    else "检测到 challenge_response，自动重试次数已耗尽。"
+                    if is_challenge_unsupported and exhausted_2fa_retries
+                    else "检测到 challenge_response。"
+                    if is_challenge_unsupported
+                    else
                     "等待 Challenge Response 超时，自动重试次数已耗尽。"
                     if is_challenge_timeout and exhausted_2fa_retries
                     else "等待 Challenge Response 超时。"
@@ -1110,6 +1166,8 @@ class AuthHandler:
         last_heavy_probe_at = 0.0
         success_detected = False
         initial_mode_detected = False
+        last_page_mode = ""
+        mode_history: list[str] = []
 
         while True:
             now = time.time()
@@ -1195,18 +1253,48 @@ class AuthHandler:
                         self._sync_browser_cookies(session)
                         last_cookie_sync_at = now
 
-                    # Browser-side Gateway API probes (fetch from within the
-                    # browser) are intentionally DISABLED during the 2FA wait.
-                    # They execute async JS that blocks the main thread and
-                    # competes with the SSO page's own authentication polling.
-                    # The backend requests.Session check at the bottom of the
-                    # loop is sufficient and doesn't touch the browser.
+                    # Keep browser-side Gateway probes very sparse.
+                    # We still need an occasional in-browser auth/tickle read
+                    # because some successful phone confirmations don't
+                    # immediately redirect to /sso/Dispatcher, but the browser
+                    # cookie jar is already authenticated. Without this probe,
+                    # we lose the fallback path that promotes backend auth from
+                    # a browser-authenticated state.
+                    if (now - last_browser_probe_at) >= BROWSER_PROBE_SECONDS:
+                        browser_state = self._fetch_browser_gateway_state()
+                        last_browser_probe_at = now
+                        if browser_state.get("error"):
+                            logger.debug("Browser gateway state probe error: %s", browser_state.get("error"))
+
                     page_state["browser_gateway_state"] = dict(browser_state or {})
                     self._last_wait_context = page_state
 
                     page_mode = str(page_state.get("mode") or "").strip()
+                    challenge_from_push = False
+                    if page_mode and page_mode != last_page_mode:
+                        mode_history.append(f"{elapsed}s:{page_mode}")
+                        if len(mode_history) > 8:
+                            mode_history = mode_history[-8:]
+                        page_state["mode_changed_at"] = self._now_et()
+                        challenge_from_push = last_page_mode == "push_notification" and page_mode == "challenge_response"
+                        logger.info(
+                            "[2FA %ds] Mode transition: %s -> %s",
+                            elapsed,
+                            last_page_mode or "unknown",
+                            page_mode,
+                        )
+                        if challenge_from_push:
+                            logger.warning("[2FA] Push confirmation did not establish a session; IBKR switched to challenge_response")
+                            self._log_to_pb(
+                                "2fa_mode_shift",
+                                "warning",
+                                "push_notification -> challenge_response before authenticated session",
+                            )
+                        last_page_mode = page_mode
                     if page_mode != "unknown":
                         initial_mode_detected = True
+                    if mode_history:
+                        page_state["mode_timeline"] = " -> ".join(mode_history)
                     logger.info(
                         "[2FA %ds] mode=%s url=%s body=%.120s",
                         elapsed, page_mode, page_url,
@@ -1224,19 +1312,32 @@ class AuthHandler:
                         logger.info("[2FA %ds] Success detected via page content", elapsed)
                         continue
 
-                    challenge_code = str(page_state.get("challenge_code") or "").strip()
-                    normalized_challenge = self._normalize_code(challenge_code)
                     if page_mode == "challenge_response":
-                        if normalized_challenge and normalized_challenge != active_challenge_code:
-                            active_challenge_code = normalized_challenge
-                            challenge_deadline = max(challenge_deadline, time.time() + CHALLENGE_RESPONSE_WAIT)
-                            logger.info(
-                                "Challenge/Response detected for %s, extending wait by %ss",
-                                challenge_code or normalized_challenge,
-                                CHALLENGE_RESPONSE_WAIT,
-                            )
-                        elif not challenge_deadline:
-                            challenge_deadline = time.time() + CHALLENGE_RESPONSE_WAIT
+                        abort_reason = "push_to_challenge_transition" if challenge_from_push else "challenge_response_unsupported"
+                        abort_message = (
+                            "IBKR 已从手机确认切换到 Challenge/Response，说明本轮手机确认没有建立可用 Session；系统将结束本轮并改走新的 push 重试。"
+                            if challenge_from_push
+                            else "IBKR 当前进入 Challenge/Response；当前策略不走 challenge，本轮将结束并重新触发新的 push。"
+                        )
+                        abort_result = (
+                            "检测到 push_notification -> challenge_response 切换；本轮不会再等待 challenge。"
+                            if challenge_from_push
+                            else "检测到 challenge_response；本轮不会进入 challenge 提交流程。"
+                        )
+                        page_state["abort_reason"] = abort_reason
+                        self._last_wait_context = page_state
+                        self._report_2fa_status(
+                            status="timeout",
+                            reason=reason,
+                            source=source,
+                            attempt=attempt,
+                            detail=self._build_wait_detail(page_state, detail),
+                            message=abort_message,
+                            last_result=abort_result,
+                            error=abort_reason,
+                            state_patch=self._build_state_patch(page_state, cycle_state_patch),
+                        )
+                        return False
 
                     sso_expires_ms = browser_state.get("sso_expires_ms")
                     if isinstance(sso_expires_ms, (int, float)):
@@ -1266,51 +1367,6 @@ class AuthHandler:
                             state_patch=cycle_state_patch,
                         )
                         last_report_key = report_key
-
-                    if page_mode == "challenge_response":
-                        response_code = self._get_pending_response_code(challenge_code)
-                        if response_code and response_code != submitted_response:
-                            if self._submit_challenge_response(response_code):
-                                submitted_response = response_code
-                                response_deadline = max(response_deadline, time.time() + POST_RESPONSE_GRACE_SECONDS)
-                                logger.info("Submitted challenge response for active 2FA flow")
-                                self._report_2fa_status(
-                                    status="waiting_confirm",
-                                    reason=reason,
-                                    source=source,
-                                    attempt=attempt,
-                                    detail=self._build_wait_detail(page_state, detail),
-                                    message="已提交 Challenge Response Code，等待 Gateway 完成认证。",
-                                    last_result="Response Code 已提交，等待认证完成。",
-                                    state_patch=self._build_state_patch(
-                                        page_state,
-                                        {
-                                            **(cycle_state_patch or {}),
-                                            "response_code": "",
-                                            "response_status": "submitted",
-                                            "response_submitted_at": self._now_et(),
-                                        },
-                                    ),
-                                )
-                                time.sleep(1)
-                            else:
-                                self._report_2fa_status(
-                                    status="waiting_response",
-                                    reason=reason,
-                                    source=source,
-                                    attempt=attempt,
-                                    detail=self._build_wait_detail(page_state, detail),
-                                    message="读取到 Response Code，但浏览器提交失败，请重新提交或重新触发。",
-                                    last_result="Response Code 浏览器提交失败。",
-                                    error="challenge_submit_failed",
-                                    state_patch=self._build_state_patch(
-                                        page_state,
-                                        {
-                                            **(cycle_state_patch or {}),
-                                            "response_status": "submit_failed",
-                                        },
-                                    ),
-                                )
 
                     browser_authenticated = bool(browser_state.get("authenticated", False))
                     if browser_authenticated:

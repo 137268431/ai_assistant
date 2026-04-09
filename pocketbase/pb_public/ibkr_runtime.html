@@ -879,6 +879,18 @@
                     <span class="action-label">强制新一轮 2FA</span>
                     <span class="action-copy">立即停止旧轮次并重开认证，同时刷新飞书卡片；适合第一次验证失败后马上再来一轮。</span>
                 </button>
+                <button class="action-btn action-accent" onclick="handleRuntimeAction('takeover_on')">
+                    <span class="action-label">开始人工接管</span>
+                    <span class="action-copy">你要去真实账户里查挂单时先点这个，系统会暂停把当前轮次误判为锁死，但仍持续静默探测。</span>
+                </button>
+                <button class="action-btn action-accent" onclick="handleRuntimeAction('takeover_off')">
+                    <span class="action-label">结束人工接管并探测</span>
+                    <span class="action-copy">结束人工查看后立即恢复静默探测；如果会话其实已经恢复，页面会自动转成 success。</span>
+                </button>
+                <button class="action-btn action-accent" onclick="handleRuntimeAction('probe')">
+                    <span class="action-label">立即静默探测</span>
+                    <span class="action-copy">不 stop/start，不新开 2FA，只快速确认当前 Gateway 会话是否已经恢复。</span>
+                </button>
                 <button class="action-btn action-accent" onclick="handleRuntimeAction('compute')">
                     <span class="action-label">执行 Compute</span>
                     <span class="action-copy">通过 PocketBase 代理触发 `/compute`，检查 bars → indicators → signals。</span>
@@ -929,6 +941,10 @@
                 <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_all')">
                     <span class="action-label">全部急停</span>
                     <span class="action-copy">一次关闭计算、交易、K线写入、PB 调度，并停止当前 runtime。</span>
+                </button>
+                <button class="action-btn action-danger" onclick="handleRuntimeAction('panic_reset_2fa')">
+                    <span class="action-label">全量清空并重新验证</span>
+                    <span class="action-copy">清空当前 2FA / Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起一轮干净验证。</span>
                 </button>
             </div>
 
@@ -1365,6 +1381,13 @@
                     ? '已强制开启新一轮 2FA，请立即查看手机通知或飞书卡片。'
                     : '已请求 2FA 卡片，请在飞书点击按钮触发验证。';
             }
+            if (action === 'takeover_on' || action === 'takeover_off' || action === 'probe' || action === 'panic_reset_2fa') {
+                if (payload.message) return payload.message;
+                if (action === 'takeover_on') return '已开启人工接管，系统会继续静默探测。';
+                if (action === 'takeover_off') return '已结束人工接管，并恢复静默探测。';
+                if (action === 'probe') return '已触发静默探测。';
+                return '已全量清空旧状态并重新拉起新的验证周期。';
+            }
             if (action === 'compute' || action === 'scan' || action === 'recompute') {
                 const pieces = [];
                 if (payload.environments) pieces.push(`env=${payload.environments.join(',')}`);
@@ -1480,6 +1503,7 @@
             const totalEngines = Number(status?.total_engines || 0) || 0;
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toLowerCase();
             const challengeCode = String(twoFactorState?.challenge_code || '').trim();
+            const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
 
             const blocker = { tone: 'info', kicker: 'Primary Blocker', title: '运行链路可控', copy: '当前没有硬阻塞，继续观察 bars → indicators → signals 是否连续刷新。' };
@@ -1487,6 +1511,14 @@
                 blocker.tone = 'error';
                 blocker.title = `Runtime 环境错配 · ${getEnvironmentLabel(runtimeMismatch.actual)}`;
                 blocker.copy = runtimeMismatch.message;
+            } else if (recoveryPhase === 'panic_resetting') {
+                blocker.tone = 'warn';
+                blocker.title = '正在全量清空旧 2FA 状态';
+                blocker.copy = '系统正在停止旧 runtime、清理 cookie 并准备拉起一轮新的干净验证；这期间旧 challenge / response 不再可信。';
+            } else if (recoveryPhase === 'manual_takeover') {
+                blocker.tone = 'warn';
+                blocker.title = '人工接管中';
+                blocker.copy = '当前视为你正在真实账户里确认挂单；系统不会把这轮直接判死，但后台仍会持续探测认证是否已恢复。';
             } else if (!gatewayActive) {
                 blocker.tone = 'error';
                 blocker.title = 'Gateway 当前离线';
@@ -1611,6 +1643,7 @@
                 || 'https://qc.lzw-glory.top';
             document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase}`;
             const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
+            const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
             const runtimeStarted = Boolean(
                 status?.starting
                 || status?.session?.running
@@ -1626,7 +1659,7 @@
                     ? 'runtime stopped · waiting manual start'
                 : (runtimeMismatch
                     ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
-                    : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`);
+                    : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${recoveryPhase ? ` · ${recoveryPhase}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`);
             document.getElementById('authInfo').textContent = authSummary;
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
         }
@@ -1646,6 +1679,14 @@
                 ['Gateway Manager', String(status?.gateway?.managed_by || '--').toUpperCase()],
                 ['Session', sessionAuthenticated ? 'AUTHENTICATED' : 'WAITING_FOR_2FA'],
                 ['2FA Status', String(twoFactorState?.status || '--').toUpperCase()],
+                ['Recovery Phase', String(twoFactorState?.recovery_phase || '--').toUpperCase()],
+                ['Interruption Kind', String(twoFactorState?.interruption_kind || '--')],
+                ['Manual Takeover', twoFactorState?.manual_takeover_active ? 'YES' : 'NO'],
+                ['Manual Takeover Until', formatTimeLabel(twoFactorState?.manual_takeover_until)],
+                ['Probe Result', String(twoFactorState?.probe_result || '--')],
+                ['Probe Attempts', String(twoFactorState?.probe_attempts || 0)],
+                ['Probe Last Checked', formatTimeLabel(twoFactorState?.probe_last_checked_at)],
+                ['Last Runtime Auth', formatTimeLabel(twoFactorState?.last_runtime_authenticated_at)],
                 ['2FA Mode', String(twoFactorState?.mode || '--').toUpperCase()],
                 ['Challenge', String(twoFactorState?.challenge_code || '--')],
                 ['2FA Request', formatTimeLabel(twoFactorState?.last_request_at)],
@@ -1707,11 +1748,16 @@
             const status = String(twoFactorState?.status || 'requested').toLowerCase();
             const mode = String(twoFactorState?.mode || '').trim();
             const challengeCode = String(twoFactorState?.challenge_code || '').trim();
+            const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
             const canSubmit = status === 'waiting_response' && !!challengeCode;
             const runtimeMismatch = getRuntimeEnvironmentMismatch(latestRuntimeStatus, twoFactorState);
             let helper = twoFactorState?.last_result || '当前没有等待中的 Challenge。';
             if (runtimeMismatch) {
                 helper = runtimeMismatch.message;
+            } else if (recoveryPhase === 'panic_resetting') {
+                helper = '系统正在全量清空旧 2FA / Session 状态，并准备拉起一轮新的干净验证。当前旧 Challenge / Response 不应再继续使用。';
+            } else if (twoFactorState?.manual_takeover_active) {
+                helper = '当前处于人工接管中。你可以继续去真实账户里确认挂单；系统不会直接把当前轮次判死，但后台仍会持续静默探测会话是否已恢复。';
             } else if (status === 'success') {
                 helper = twoFactorState?.message || '当前 Gateway 会话已认证，无需提交 Response Code。';
             } else if (status === 'requested') {
@@ -1729,6 +1775,7 @@
                     <div class="challenge-head">
                         <span class="mini-tag"><span class="mini-label">STATUS</span><span class="pill ${statusClass(status)}">${escapeHtml(String(twoFactorState?.status || '--').toUpperCase())}</span></span>
                         <span class="mini-tag"><span class="mini-label">MODE</span>${escapeHtml(mode || '--')}</span>
+                        <span class="mini-tag"><span class="mini-label">RECOVERY</span>${escapeHtml(String(twoFactorState?.recovery_phase || '--'))}</span>
                         <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(String(twoFactorState?.source || '--'))}</span>
                     </div>
                     <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || (runtimeMismatch ? `当前实际 runtime: ${String(runtimeMismatch.actual || '--').toUpperCase()}` : (status === 'success' ? '当前无需 Challenge' : '当前未检测到 Challenge')))}</div>
@@ -2329,7 +2376,7 @@
 
         async function handleRuntimeAction(action) {
             if (actionPending) return;
-            const guardedActions = new Set(['start', 'stop', 'reauth', 'reauth_force_new', 'emergency_runtime', 'emergency_compute', 'emergency_all']);
+            const guardedActions = new Set(['start', 'stop', 'reauth', 'reauth_force_new', 'takeover_on', 'takeover_off', 'probe', 'panic_reset_2fa', 'emergency_runtime', 'emergency_compute', 'emergency_all']);
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch && guardedActions.has(action)) {
                 document.getElementById('lastAction').textContent = runtimeMismatch.message;
@@ -2355,6 +2402,9 @@
                 return;
             }
             if (action === 'emergency_trading' && !window.confirm('确认关闭交易执行？新的自动下单会被阻止。')) {
+                return;
+            }
+            if (action === 'panic_reset_2fa' && !window.confirm('确认执行全量清空并重新验证？这会清空当前 2FA / Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起新的验证流程。')) {
                 return;
             }
             if (!initRuntimeAuth()) return;
@@ -2383,6 +2433,44 @@
                         trigger_now: true,
                         force_new: true,
                         message: '已从 PocketBase Runtime 页面强制开启新一轮 2FA，请立即查看手机通知。'
+                    }
+                },
+                takeover_on: {
+                    path: '/api/custom/ibkr/2fa/takeover',
+                    body: {
+                        environment: currentEnvironment,
+                        enabled: true,
+                        ttl_sec: 600,
+                        reason: 'manual_takeover',
+                        source: 'runtime_page'
+                    }
+                },
+                takeover_off: {
+                    path: '/api/custom/ibkr/2fa/takeover',
+                    body: {
+                        environment: currentEnvironment,
+                        enabled: false,
+                        reason: 'manual_takeover_released',
+                        source: 'runtime_page'
+                    }
+                },
+                probe: {
+                    path: '/api/custom/ibkr/2fa/probe',
+                    body: {
+                        environment: currentEnvironment,
+                        reason: 'manual_probe',
+                        source: 'runtime_page'
+                    }
+                },
+                panic_reset_2fa: {
+                    path: '/api/custom/ibkr/2fa/panic-reset',
+                    body: {
+                        environment: currentEnvironment,
+                        restart_gateway: true,
+                        restart_runtime: true,
+                        trigger_login: true,
+                        reason: 'panic_reset_2fa',
+                        source: 'runtime_page'
                     }
                 },
                 compute: { path: '/api/custom/ibkr/proxy', body: { action: 'compute', environment: currentEnvironment } },

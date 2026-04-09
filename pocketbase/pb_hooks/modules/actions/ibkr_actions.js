@@ -3926,6 +3926,137 @@ routerAdd("POST", "/api/custom/ibkr/2fa/respond", (c) => {
     }
 })
 
+routerAdd("POST", "/api/custom/ibkr/2fa/takeover", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
+    const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+
+    try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/2fa/takeover"))
+        }
+        const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
+        const resp = $http.send({
+            url: `${computeBaseUrl}/ibkr/2fa/takeover`,
+            method: "POST",
+            body: JSON.stringify({
+                environment: environment,
+                enabled: d.enabled !== false,
+                ttl_sec: Number(d.ttl_sec || 0) || 600,
+                reason: String(d.reason || "manual_takeover"),
+                source: String(d.source || "runtime_page"),
+            }),
+            headers: { "Content-Type": "application/json" },
+            timeout: 20,
+        })
+        const payload = ibkrActionsParseHttpJson(resp.raw)
+        const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
+        const runtime = ibkrActionsParseHttpJson(runtimeResp.raw)
+        const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
+        return c.json((resp.statusCode || 200), {
+            ok: payload.ok !== false,
+            environment: environment,
+            enabled: d.enabled !== false,
+            state: state,
+            payload: payload,
+            message: (d.enabled !== false)
+                ? "已开启人工接管；系统会继续静默探测，但不会把当前轮次误判为已锁死。"
+                : "已结束人工接管，并立即恢复静默探测。",
+        })
+    } catch (err) {
+        return c.json(500, { ok: false, error: err.message || String(err), environment: environment })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/2fa/probe", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
+    const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+
+    try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/2fa/probe"))
+        }
+        const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
+        const resp = $http.send({
+            url: `${computeBaseUrl}/ibkr/2fa/probe`,
+            method: "POST",
+            body: JSON.stringify({
+                environment: environment,
+                reason: String(d.reason || "manual_probe"),
+                source: String(d.source || "runtime_page"),
+            }),
+            headers: { "Content-Type": "application/json" },
+            timeout: 20,
+        })
+        const payload = ibkrActionsParseHttpJson(resp.raw)
+        const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
+        const runtime = ibkrActionsParseHttpJson(runtimeResp.raw)
+        const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
+        return c.json((resp.statusCode || 200), {
+            ok: payload.ok !== false,
+            environment: environment,
+            state: state,
+            payload: payload,
+            message: "已触发静默探测；若当前会话其实已在真实账户侧恢复，系统会自动转为 success。",
+        })
+    } catch (err) {
+        return c.json(500, { ok: false, error: err.message || String(err), environment: environment })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/2fa/panic-reset", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
+    const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+
+    try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/2fa/panic-reset"))
+        }
+        const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
+        const resp = $http.send({
+            url: `${computeBaseUrl}/ibkr/panic-reset`,
+            method: "POST",
+            body: JSON.stringify({
+                environment: environment,
+                restart_gateway: d.restart_gateway !== false,
+                restart_runtime: d.restart_runtime !== false,
+                trigger_login: d.trigger_login !== false,
+                reason: String(d.reason || "panic_reset_2fa"),
+                source: String(d.source || "runtime_page"),
+            }),
+            headers: { "Content-Type": "application/json" },
+            timeout: 60,
+        })
+        const payload = ibkrActionsParseHttpJson(resp.raw)
+        const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
+        const runtime = ibkrActionsParseHttpJson(runtimeResp.raw)
+        const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
+        return c.json((resp.statusCode || 200), {
+            ok: payload.ok !== false,
+            environment: environment,
+            state: state,
+            payload: payload,
+            message: "已全量清空旧 2FA / Session 状态，并重新拉起新的验证周期。",
+        })
+    } catch (err) {
+        return c.json(500, { ok: false, error: err.message || String(err), environment: environment })
+    }
+})
+
 // ══════════════════════════════════════
 // IBKR 状态持久化 — 替代 ObjectStore
 // ══════════════════════════════════════

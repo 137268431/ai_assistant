@@ -5,12 +5,33 @@ var timeUtils = require(`${__hooks}/lib/time_utils.js`)
 var systemEvents = require(`${__hooks}/lib/system_events.js`)
 
 var IBKR_2FA_STATE_KEY = "ibkr_2fa"
+var IBKR_2FA_STATE_DATE = "global"
 var PB_HOST = "https://pb.lzw-glory.top"
+var DEFAULT_TWO_FA_CHAT_ID = "oc_c48c10447685e80cfea0c003864aa51f"
 var CARD_UPDATE_COOLDOWN_MS = 15000
 var REQUEST_RENOTIFY_COOLDOWN_MS = 900000
 var DELIVERY_LOCK_TTL_MS = 20000
 var ACTIVE_STATUSES = ["requested", "triggered", "waiting_confirm", "waiting_response"]
 var TERMINAL_STATUSES = ["success", "timeout", "failed"]
+var RECOVERY_FIELDS = [
+    "cycle_id",
+    "recovery_phase",
+    "recovery_reason",
+    "interruption_kind",
+    "manual_takeover_active",
+    "manual_takeover_started_at",
+    "manual_takeover_until",
+    "probe_started_at",
+    "probe_last_checked_at",
+    "probe_attempts",
+    "probe_result",
+    "auto_restart_scheduled",
+    "last_runtime_authenticated_at",
+    "last_gateway_status_code",
+    "last_recovery_source",
+    "lock_owner",
+    "lock_expires_at",
+]
 var rootScope = typeof globalThis !== "undefined" ? globalThis : this
 if (!rootScope.__IBKR_2FA_DELIVERY_LOCKS) {
     rootScope.__IBKR_2FA_DELIVERY_LOCKS = {}
@@ -92,6 +113,19 @@ function sanitizeResponseCode(value) {
     return String(value || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase()
 }
 
+function resolve2faChatId(environment) {
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+    if (feishuSystem && typeof feishuSystem.get2faChatId === "function") {
+        var chatId = String(feishuSystem.get2faChatId(runtimeEnvironment) || "").trim()
+        if (chatId) return chatId
+    }
+    if (envUtils && typeof envUtils.getConfigValue === "function") {
+        var configured = String(envUtils.getConfigValue("system_2fa_chat_id", DEFAULT_TWO_FA_CHAT_ID, runtimeEnvironment) || "").trim()
+        if (configured) return configured
+    }
+    return DEFAULT_TWO_FA_CHAT_ID
+}
+
 function getModeLabel(mode) {
     var text = String(mode || "").trim().toLowerCase()
     if (text === "push_notification") return "Push Notification"
@@ -120,6 +154,9 @@ function buildDeliveryFingerprint(stateData) {
         mode: stateData.mode || "",
         challenge_code: stateData.challenge_code || "",
         response_status: stateData.response_status || "",
+        recovery_phase: stateData.recovery_phase || "",
+        manual_takeover_active: stateData.manual_takeover_active ? "yes" : "no",
+        probe_result: stateData.probe_result || "",
         reason: stateData.reason || "",
         message: stateData.message || "",
         last_result: stateData.last_result || "",
@@ -169,17 +206,18 @@ function getStateRecord(environment, dateToken) {
 function getStatePayload(environment) {
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var times = timeUtils.getTimeStrings()
-    var record = getStateRecord(runtimeEnvironment, times.date)
+    var record = getStateRecord(runtimeEnvironment, IBKR_2FA_STATE_DATE) || getStateRecord(runtimeEnvironment, times.date)
     var rawData = ""
     if (record) {
         rawData = typeof record.getString === "function" ? (record.getString("data") || "") : record.get("data")
     }
     var data = record ? safeJsonParse(rawData) : {}
     if (!data.status) data.status = "requested"
+    if (!data.recovery_phase) data.recovery_phase = "idle"
     return {
         ok: true,
         environment: runtimeEnvironment,
-        date: times.date,
+        date: record ? (typeof record.getString === "function" ? (record.getString("date") || IBKR_2FA_STATE_DATE) : (record.get("date") || IBKR_2FA_STATE_DATE)) : IBKR_2FA_STATE_DATE,
         state_key: IBKR_2FA_STATE_KEY,
         record: record,
         data: data,
@@ -189,6 +227,7 @@ function getStatePayload(environment) {
 function normalizeStateWithRuntime(stateData, runtimeStatus) {
     var state = { ...(stateData || {}) }
     var runtime = runtimeStatus || {}
+    var authRecovery = runtime.auth_recovery && typeof runtime.auth_recovery === "object" ? runtime.auth_recovery : {}
     var runtimeStarted = Boolean(
         runtime.starting
         || (runtime.session && runtime.session.running)
@@ -203,6 +242,12 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
     state.runtime_authenticated = runtimeAuthenticated
     state.gateway_status_code = gatewayStatusCode
     state.gateway_reachable = gatewayReachable
+    RECOVERY_FIELDS.forEach(function(key) {
+        if (Object.prototype.hasOwnProperty.call(authRecovery, key)) {
+            state[key] = authRecovery[key]
+        }
+    })
+    if (!state.recovery_phase) state.recovery_phase = runtimeAuthenticated ? "recovered" : "idle"
 
     if (runtimeAuthenticated && gatewayReachable && gatewayStatusCode !== 401) {
         state.status = "success"
@@ -222,6 +267,9 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
         state.browser_authenticated = true
         state.gateway_authenticated = true
         state.backend_authenticated = true
+        state.recovery_phase = "recovered"
+        state.auto_restart_scheduled = false
+        state.manual_takeover_active = false
         return state
     }
 
@@ -244,7 +292,7 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
 function saveState(environment, patch, options) {
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var times = timeUtils.getTimeStrings()
-    var record = getStateRecord(runtimeEnvironment, times.date)
+    var record = getStateRecord(runtimeEnvironment, IBKR_2FA_STATE_DATE) || getStateRecord(runtimeEnvironment, times.date)
     var collection = $app.findCollectionByNameOrId("ibkr_state")
     if (!record) {
         record = new Record(collection, {})
@@ -262,14 +310,14 @@ function saveState(environment, patch, options) {
     }
 
     record.set("state_key", IBKR_2FA_STATE_KEY)
-    record.set("date", times.date)
+    record.set("date", IBKR_2FA_STATE_DATE)
     record.set("environment", runtimeEnvironment)
     record.set("data", next)
     $app.save(record)
 
     return {
         environment: runtimeEnvironment,
-        date: times.date,
+        date: IBKR_2FA_STATE_DATE,
         record: record,
         data: next,
     }
@@ -316,6 +364,20 @@ function ensureRequestedState(environment, options) {
         patch.response_received_at = ""
         patch.response_submitted_at = ""
         patch.next_retry_at = ""
+        patch.recovery_phase = "idle"
+        patch.recovery_reason = ""
+        patch.interruption_kind = ""
+        patch.manual_takeover_active = false
+        patch.manual_takeover_started_at = ""
+        patch.manual_takeover_until = ""
+        patch.probe_started_at = ""
+        patch.probe_last_checked_at = ""
+        patch.probe_attempts = 0
+        patch.probe_result = ""
+        patch.auto_restart_scheduled = false
+        patch.last_recovery_source = ""
+        patch.lock_owner = ""
+        patch.lock_expires_at = ""
     }
 
     if (preserveCurrentDisplay && currentData.message) {
@@ -383,8 +445,15 @@ function build2faCard(stateData, environment) {
     if (stateData.triggered_at) metaLines.push("**触发时间**: " + stateData.triggered_at)
     if (stateData.result_at) metaLines.push("**结果时间**: " + stateData.result_at)
     if (stateData.reason) metaLines.push("**触发原因**: " + stateData.reason)
+    if (stateData.recovery_phase) metaLines.push("**恢复阶段**: " + stateData.recovery_phase)
+    if (stateData.interruption_kind) metaLines.push("**中断类型**: " + stateData.interruption_kind)
     if (stateData.mode) metaLines.push("**验证模式**: " + getModeLabel(stateData.mode))
     if (stateData.challenge_code) metaLines.push("**Challenge**: " + stateData.challenge_code)
+    if (stateData.manual_takeover_active) metaLines.push("**人工接管**: yes")
+    if (stateData.manual_takeover_until) metaLines.push("**人工接管到期**: " + stateData.manual_takeover_until)
+    if (stateData.probe_result) metaLines.push("**静默探测**: " + stateData.probe_result)
+    if (stateData.probe_attempts) metaLines.push("**探测次数**: " + stringifyValue(stateData.probe_attempts))
+    if (stateData.last_runtime_authenticated_at) metaLines.push("**最近认证成功**: " + stateData.last_runtime_authenticated_at)
     if (stateData.response_received_at) metaLines.push("**响应码收到**: " + stateData.response_received_at)
     if (stateData.response_submitted_at) metaLines.push("**响应码提交**: " + stateData.response_submitted_at)
     if (stateData.last_result) metaLines.push("**反馈**: " + stateData.last_result)
@@ -539,10 +608,10 @@ function deliverCard(savedState, options) {
         if (messageId && !opts.forceNew) {
             result = feishuApp.updateMessageCard(messageId, card, effectiveState.environment)
             if (!result.success && allowReplace) {
-                result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.get2faChatId(effectiveState.environment), "chat_id", effectiveState.environment)
+                result = feishuApp.sendMessageDetailed("interactive", card, resolve2faChatId(effectiveState.environment), "chat_id", effectiveState.environment)
             }
         } else {
-            result = feishuApp.sendMessageDetailed("interactive", card, feishuSystem.get2faChatId(effectiveState.environment), "chat_id", effectiveState.environment)
+            result = feishuApp.sendMessageDetailed("interactive", card, resolve2faChatId(effectiveState.environment), "chat_id", effectiveState.environment)
         }
 
         if (result && result.success) {
@@ -700,6 +769,20 @@ function trigger2faFlow(options) {
         response_received_at: "",
         response_submitted_at: "",
         next_retry_at: "",
+        recovery_phase: "triggered",
+        recovery_reason: opts.reason || currentData.reason || "manual_reauth",
+        interruption_kind: "",
+        manual_takeover_active: false,
+        manual_takeover_started_at: "",
+        manual_takeover_until: "",
+        probe_started_at: "",
+        probe_last_checked_at: "",
+        probe_attempts: 0,
+        probe_result: "",
+        auto_restart_scheduled: false,
+        last_recovery_source: opts.source || currentData.source || "feishu_2fa",
+        lock_owner: "",
+        lock_expires_at: "",
     })
 
     var computeBaseUrl = envUtils.getIbkrComputePublicUrl(runtimeEnvironment, "https://qc.lzw-glory.top")
@@ -815,6 +898,7 @@ function report2faResult(options) {
         patch.last_error = String(opts.error)
     } else if (status === "success") {
         patch.last_error = ""
+        patch.recovery_phase = "recovered"
         patch.mode = ""
         patch.challenge_code = ""
         patch.challenge_detected_at = ""
@@ -831,6 +915,13 @@ function report2faResult(options) {
         patch.runtime_authenticated = true
         patch.runtime_started = true
         patch.next_retry_at = ""
+        patch.manual_takeover_active = false
+        patch.manual_takeover_started_at = ""
+        patch.manual_takeover_until = ""
+        patch.probe_result = "authenticated"
+        patch.auto_restart_scheduled = false
+        patch.lock_owner = ""
+        patch.lock_expires_at = ""
     }
 
     var saved = saveState(runtimeEnvironment, patch)

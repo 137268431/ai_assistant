@@ -133,6 +133,8 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
         status: status || "requested",
         active: active,
         pending_too_long: pendingTooLong,
+        cycle_id: String(state.cycle_id || ""),
+        recovery_phase: String(state.recovery_phase || ""),
         age_min: ageMin,
         requested_at: String(state.requested_at || ""),
         triggered_at: String(state.triggered_at || ""),
@@ -171,8 +173,8 @@ function buildAuthImmediateIssue(auth) {
     if (status === "waiting_response") {
         return {
             kind: "waiting_response",
-            title: "IBKR 2FA 已触发，等待提交",
-            summary: "检测到 2FA 已进入响应提交阶段，请尽快在飞书中完成提交。",
+            title: "IBKR 2FA 已切到 Challenge/Response",
+            summary: "本轮 2FA 已不再是手机确认。不要再点旧的确认消息；如不想提交 Response Code，请去 Runtime 页面执行“全量清空并重新验证”。",
         }
     }
 
@@ -180,7 +182,7 @@ function buildAuthImmediateIssue(auth) {
         return {
             kind: "waiting_confirm",
             title: "IBKR 2FA 已触发，等待确认",
-            summary: "检测到 2FA 已进入确认阶段，请尽快在飞书中完成确认。",
+            summary: "本轮 2FA 当前仍是手机确认。只需要在 IBKR App 点一次确认；如果手机没有反应，不要反复点旧消息，先去 Runtime 页面确认当前状态是否已变成 Challenge/Response。",
         }
     }
 
@@ -214,13 +216,14 @@ function buildAuthImmediateIssue(auth) {
 function buildAuthImmediateFingerprint(auth, issue) {
     return JSON.stringify({
         issue_kind: issue && issue.kind || "",
+        cycle_id: auth && auth.cycle_id || "",
         status: auth && auth.status || "",
         requested_at: auth && auth.requested_at || "",
         triggered_at: auth && auth.triggered_at || "",
         gateway_status_code: auth && auth.gateway_status_code || 0,
         runtime_started: auth && auth.runtime_started ? "yes" : "no",
         runtime_authenticated: auth && auth.runtime_authenticated ? "yes" : "no",
-        challenge: auth && auth.challenge_code ? "yes" : "no",
+        challenge_code: auth && auth.challenge_code || "",
         response_status: auth && auth.response_status || "",
     })
 }
@@ -234,6 +237,7 @@ function shouldNotifyAuthImmediateAlert(previous, auth, issue, fingerprint, nowM
     const prevRequestedAt = String(prev.last_requested_at || "")
     const prevTriggeredAt = String(prev.last_triggered_at || "")
     const prevIssueKind = String(prev.last_auth_issue_kind || "")
+    const prevCycleId = String(prev.last_auth_cycle_id || "")
     const lastAlertHash = String(prev.last_auth_edge_alert_hash || "")
     const lastAlertMs = toNumber(prev.last_auth_edge_alert_ms, 0)
     const currentGatewayStatusCode = toNumber(auth && auth.gateway_status_code, 0)
@@ -243,6 +247,16 @@ function shouldNotifyAuthImmediateAlert(previous, auth, issue, fingerprint, nowM
     const currentRequestedAt = String(auth && auth.requested_at || "")
     const currentTriggeredAt = String(auth && auth.triggered_at || "")
     const issueKind = String(issue && issue.kind || "")
+    const currentCycleId = String(auth && auth.cycle_id || "")
+
+    if (
+        (issueKind === "waiting_confirm" || issueKind === "waiting_response")
+        && !!currentCycleId
+        && issueKind === prevIssueKind
+        && currentCycleId === prevCycleId
+    ) {
+        return false
+    }
 
     const edgeDetected = (
         !String(prev.last_auth_scan_at || "")
@@ -299,6 +313,7 @@ function runIbkrAuthEdgeGuard() {
                 last_auth_active: auth.active ? "yes" : "no",
                 last_requested_at: auth.requested_at || "",
                 last_triggered_at: auth.triggered_at || "",
+                last_auth_cycle_id: auth.cycle_id || "",
             }
             const issue = buildAuthImmediateIssue(auth)
 
@@ -331,10 +346,14 @@ function runIbkrAuthEdgeGuard() {
                 "异常结论": issue.summary,
                 "检查时间": times.us,
                 "2FA状态": auth.status || "requested",
+                "恢复阶段": auth.recovery_phase || "idle",
+                "轮次ID": auth.cycle_id || "-",
                 "Session认证": auth.runtime_authenticated ? "yes" : "no",
                 "Runtime已启动": auth.runtime_started ? "yes" : "no",
                 "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
-                "处理建议": "立即打开飞书 2FA 卡片或运行页，重新触发并完成验证。",
+                "处理建议": issue.kind === "waiting_response"
+                    ? "不要再点旧确认消息。若不接受 Challenge/Response，请去 Runtime 页面点“全量清空并重新验证”；若接受，则按当前 Challenge 提交 Response Code。"
+                    : "优先打开 Runtime 页面确认当前状态；如果仍是 waiting_confirm，只在 IBKR App 点一次确认。",
             }
             if (auth.reason) detail["触发原因"] = auth.reason
             if (auth.message) detail["最近反馈"] = auth.message
@@ -433,7 +452,7 @@ function runIbkrAuthPendingGuard() {
             if (auth.status === "waiting_confirm") {
                 title = "IBKR 2FA 长时间未确认"
             } else if (auth.status === "waiting_response") {
-                title = "IBKR 2FA Response 长时间未提交"
+                title = "IBKR 2FA 已卡在 Challenge/Response"
             } else if (auth.status === "requested" || auth.status === "triggered") {
                 title = "IBKR 2FA 长时间未完成"
             }
@@ -442,6 +461,8 @@ function runIbkrAuthPendingGuard() {
                 "检查时间": times.us,
                 "2FA状态": auth.status || "requested",
                 "持续时间": `${auth.age_min || 0} 分钟`,
+                "恢复阶段": auth.recovery_phase || "idle",
+                "轮次ID": auth.cycle_id || "-",
                 "Runtime已启动": auth.runtime_started ? "yes" : "no",
                 "Session认证": auth.runtime_authenticated ? "yes" : "no",
                 "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
@@ -452,6 +473,9 @@ function runIbkrAuthPendingGuard() {
             if (auth.triggered_at) detail["触发时间"] = auth.triggered_at
             if (auth.last_result) detail["最近反馈"] = auth.last_result
             if (auth.last_error) detail["最近错误"] = auth.last_error
+            detail["处理建议"] = auth.status === "waiting_response"
+                ? "这轮已经不是手机确认。若不接受 Challenge/Response，请直接去 Runtime 页面点“全量清空并重新验证”。"
+                : "优先去 Runtime 页面确认当前轮次；如果仍是手机确认，只在 IBKR App 点一次确认。"
 
             const notified = feishuSystem.notifyWarning("ibkr_compute", title, detail, environment)
             writeSystemEvent("alert", "warning", "ibkr_compute", title, detail, environment, notified)

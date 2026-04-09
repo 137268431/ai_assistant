@@ -264,6 +264,8 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
         has_request: hasRequest,
         active: active,
         pending_too_long: pendingTooLong,
+        cycle_id: String(state.cycle_id || ""),
+        recovery_phase: String(state.recovery_phase || ""),
         age_min: ageMin,
         requested_at: String(state.requested_at || ""),
         triggered_at: String(state.triggered_at || ""),
@@ -302,8 +304,8 @@ function buildAuthImmediateIssue(auth) {
     if (status === "waiting_response") {
         return {
             kind: "waiting_response",
-            title: "IBKR 2FA 已触发，等待提交",
-            summary: "检测到 2FA 已进入响应提交阶段，请尽快在飞书中完成提交。",
+            title: "IBKR 2FA 已切到 Challenge/Response",
+            summary: "本轮 2FA 已不再是手机确认。不要再点旧的确认消息；如不想提交 Response Code，请去 Runtime 页面执行“全量清空并重新验证”。",
         }
     }
 
@@ -311,7 +313,7 @@ function buildAuthImmediateIssue(auth) {
         return {
             kind: "waiting_confirm",
             title: "IBKR 2FA 已触发，等待确认",
-            summary: "检测到 2FA 已进入确认阶段，请尽快在飞书中完成确认。",
+            summary: "本轮 2FA 当前仍是手机确认。只需要在 IBKR App 点一次确认；如果手机没有反应，不要反复点旧消息，先去 Runtime 页面确认当前状态是否已变成 Challenge/Response。",
         }
     }
 
@@ -345,13 +347,14 @@ function buildAuthImmediateIssue(auth) {
 function buildAuthImmediateFingerprint(auth, issue) {
     return JSON.stringify({
         issue_kind: issue && issue.kind || "",
+        cycle_id: auth && auth.cycle_id || "",
         status: auth && auth.status || "",
         requested_at: auth && auth.requested_at || "",
         triggered_at: auth && auth.triggered_at || "",
         gateway_status_code: auth && auth.gateway_status_code || 0,
         runtime_started: auth && auth.runtime_started ? "yes" : "no",
         runtime_authenticated: auth && auth.runtime_authenticated ? "yes" : "no",
-        challenge: auth && auth.challenge_code ? "yes" : "no",
+        challenge_code: auth && auth.challenge_code || "",
         response_status: auth && auth.response_status || "",
     })
 }
@@ -365,6 +368,7 @@ function shouldNotifyAuthImmediateAlert(previous, auth, issue, fingerprint, nowM
     const prevRequestedAt = String(prev.last_requested_at || "")
     const prevTriggeredAt = String(prev.last_triggered_at || "")
     const prevIssueKind = String(prev.last_auth_issue_kind || "")
+    const prevCycleId = String(prev.last_auth_cycle_id || "")
     const lastAlertHash = String(prev.last_auth_edge_alert_hash || "")
     const lastAlertMs = toNumber(prev.last_auth_edge_alert_ms, 0)
     const currentGatewayStatusCode = toNumber(auth && auth.gateway_status_code, 0)
@@ -374,6 +378,16 @@ function shouldNotifyAuthImmediateAlert(previous, auth, issue, fingerprint, nowM
     const currentRequestedAt = String(auth && auth.requested_at || "")
     const currentTriggeredAt = String(auth && auth.triggered_at || "")
     const issueKind = String(issue && issue.kind || "")
+    const currentCycleId = String(auth && auth.cycle_id || "")
+
+    if (
+        (issueKind === "waiting_confirm" || issueKind === "waiting_response")
+        && !!currentCycleId
+        && issueKind === prevIssueKind
+        && currentCycleId === prevCycleId
+    ) {
+        return false
+    }
 
     const edgeDetected = (
         !String(prev.last_auth_scan_at || "")

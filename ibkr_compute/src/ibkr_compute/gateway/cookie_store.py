@@ -128,3 +128,23 @@ def save_browser_cookies(cookies: Iterable[dict]) -> int:
             path=normalized["path"] or "/",
         )
     return save_cookies(session)
+
+
+def clear_cookies() -> dict:
+    path = _cookie_path()
+    existed = path.exists()
+    removed = False
+    error = ""
+    if existed:
+        try:
+            path.unlink()
+            removed = True
+        except Exception as exc:
+            error = str(exc)
+            logger.warning("Failed to clear gateway cookie store %s: %s", path, exc)
+    return {
+        "path": str(path),
+        "existed": existed,
+        "removed": removed,
+        "error": error,
+    }

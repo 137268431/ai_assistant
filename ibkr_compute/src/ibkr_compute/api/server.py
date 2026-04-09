@@ -3159,6 +3159,71 @@ def ibkr_status():
     return jsonify({"ok": True, **status_payload})
 
 
+@app.route("/ibkr/2fa/takeover", methods=["POST"])
+def ibkr_2fa_takeover():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    payload = request.get_json(silent=True) or {}
+    enabled = bool(payload.get("enabled", True))
+    ttl_seconds = int(payload.get("ttl_sec") or 0) or 600
+    reason = str(payload.get("reason") or "manual_takeover").strip() or "manual_takeover"
+    source = str(payload.get("source") or "api_takeover").strip() or "api_takeover"
+    state = service.set_manual_takeover(
+        enabled=enabled,
+        ttl_seconds=ttl_seconds,
+        reason=reason,
+        source=source,
+    )
+    return jsonify({
+        "ok": True,
+        "environment": _ibkr_service_environment(service),
+        "enabled": bool(enabled),
+        "state": state,
+    })
+
+
+@app.route("/ibkr/2fa/probe", methods=["POST"])
+def ibkr_2fa_probe():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get("reason") or "manual_probe").strip() or "manual_probe"
+    source = str(payload.get("source") or "api_probe").strip() or "api_probe"
+    state = service.trigger_auth_probe(reason=reason, source=source)
+    return jsonify({
+        "ok": True,
+        "environment": _ibkr_service_environment(service),
+        "state": state,
+    })
+
+
+@app.route("/ibkr/panic-reset", methods=["POST"])
+def ibkr_panic_reset():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    payload = request.get_json(silent=True) or {}
+    restart_gateway = bool(payload.get("restart_gateway", True))
+    restart_runtime = bool(payload.get("restart_runtime", True))
+    trigger_login = bool(payload.get("trigger_login", True))
+    reason = str(payload.get("reason") or "panic_reset_2fa").strip() or "panic_reset_2fa"
+    source = str(payload.get("source") or "api_panic_reset").strip() or "api_panic_reset"
+    result = service.panic_reset_auth(
+        restart_gateway=restart_gateway,
+        restart_runtime=restart_runtime,
+        trigger_login=trigger_login,
+        reason=reason,
+        source=source,
+    )
+    return jsonify({
+        "ok": True,
+        "environment": _ibkr_service_environment(service),
+        **result,
+    })
+
+
 @app.route("/ibkr/account", methods=["GET"])
 def ibkr_account():
     service = get_ibkr_service()
