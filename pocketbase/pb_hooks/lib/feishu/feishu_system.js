@@ -2,6 +2,7 @@
  * feishu_system.js
  * 系统状态/异常/心跳 飞书通知
  * 正常状态群默认: oc_b7b52fc28816d90e27ce50ca7922a9ac
+ * 2FA 专用群默认: oc_c48c10447685e80cfea0c003864aa51f
  * 异常告警群默认: oc_91aa4f84bc6fedb125b1a263d91d4104
  */
 
@@ -10,6 +11,7 @@ var envUtils = require(`${__hooks}/lib/environment.js`)
 
 var PB_HOST = "https://pb.lzw-glory.top"
 var SYSTEM_CHAT_ID = "oc_b7b52fc28816d90e27ce50ca7922a9ac"
+var TWO_FA_CHAT_ID = "oc_c48c10447685e80cfea0c003864aa51f"
 var ALERT_CHAT_ID = "oc_91aa4f84bc6fedb125b1a263d91d4104"
 
 var LEVEL_CONFIG = {
@@ -165,8 +167,43 @@ function getSystemChatId(environment) {
     return String(getConfigValue("system_status_chat_id", SYSTEM_CHAT_ID, environment) || SYSTEM_CHAT_ID).trim() || SYSTEM_CHAT_ID
 }
 
+function get2faChatId(environment) {
+    return String(getConfigValue("system_2fa_chat_id", TWO_FA_CHAT_ID, environment) || TWO_FA_CHAT_ID).trim() || TWO_FA_CHAT_ID
+}
+
 function getAlertChatId(environment) {
     return String(getConfigValue("system_alert_chat_id", ALERT_CHAT_ID, environment) || ALERT_CHAT_ID).trim() || ALERT_CHAT_ID
+}
+
+function isLikely2faAlert(title, detail) {
+    var normalizedTitle = String(title || "").trim()
+    if (!normalizedTitle) return false
+    if (normalizedTitle.indexOf("2FA") !== -1) return true
+
+    var authTitles = [
+        "IBKR Session 已失效",
+        "IBKR Runtime 未认证",
+        "IBKR Session 长时间未恢复认证",
+    ]
+    for (var i = 0; i < authTitles.length; i++) {
+        if (normalizedTitle.indexOf(authTitles[i]) !== -1) {
+            return true
+        }
+    }
+
+    if (!detail || typeof detail !== "object") {
+        return false
+    }
+
+    return (
+        Object.prototype.hasOwnProperty.call(detail, "2FA状态")
+        && (
+            Object.prototype.hasOwnProperty.call(detail, "Session认证")
+            || Object.prototype.hasOwnProperty.call(detail, "验证模式")
+            || Object.prototype.hasOwnProperty.call(detail, "Challenge")
+            || Object.prototype.hasOwnProperty.call(detail, "响应状态")
+        )
+    )
 }
 
 function shouldNotifyEvent(eventType, level, source, title, environment) {
@@ -200,9 +237,12 @@ function shouldNotifyEvent(eventType, level, source, title, environment) {
     return isEnabledText(getConfigValue("status_notify_enabled", "TRUE", runtimeEnvironment))
 }
 
-function getTargetChatId(eventType, level, environment) {
+function getTargetChatId(eventType, level, environment, source, title, detail) {
     var normalizedEventType = String(eventType || "status_change").trim().toLowerCase()
     var normalizedLevel = String(level || "info").trim().toLowerCase()
+    if (isLikely2faAlert(title, detail)) {
+        return get2faChatId(environment)
+    }
     if (normalizedLevel === "warning" || normalizedLevel === "error" || normalizedEventType === "alert") {
         return getAlertChatId(environment)
     }
@@ -231,7 +271,7 @@ function notifySystemEvent(eventType, level, source, title, detail, environment)
     }
 
     var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment)
-    var success = feishuApp.sendMessage("interactive", card, getTargetChatId(eventType, level, runtimeEnvironment), "chat_id", runtimeEnvironment)
+    var success = feishuApp.sendMessage("interactive", card, getTargetChatId(eventType, level, runtimeEnvironment, source, title, detail), "chat_id", runtimeEnvironment)
     if (!success) {
         console.error("[FeishuSystem] 发送失败: " + title)
     }
@@ -281,7 +321,9 @@ module.exports = {
     notifyDailyReport: notifyDailyReport,
     buildSimpleCard: buildSimpleCard,
     SYSTEM_CHAT_ID: SYSTEM_CHAT_ID,
+    TWO_FA_CHAT_ID: TWO_FA_CHAT_ID,
     ALERT_CHAT_ID: ALERT_CHAT_ID,
     getSystemChatId: getSystemChatId,
+    get2faChatId: get2faChatId,
     getAlertChatId: getAlertChatId,
 }

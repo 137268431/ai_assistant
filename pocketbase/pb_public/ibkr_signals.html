@@ -68,24 +68,244 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
-        .stats-bar {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
+        .latency-summary {
+            position: relative;
             margin-bottom: 16px;
+            padding: 14px;
+            border-radius: 18px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background:
+                radial-gradient(circle at top right, rgba(99,179,237,0.12), transparent 34%),
+                linear-gradient(180deg, rgba(20,28,46,0.94), rgba(10,16,26,0.98));
+            box-shadow: 0 18px 40px rgba(2,8,23,0.18);
+            overflow: hidden;
         }
 
-        .stats-bar .stat-chip:nth-child(4),
-        .stats-bar .stat-chip:nth-child(5) {
-            grid-column: auto;
+        .latency-summary::after {
+            content: '';
+            position: absolute;
+            right: -44px;
+            bottom: -62px;
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(72,187,120,0.10), transparent 68%);
+            pointer-events: none;
         }
 
-        .stats-bar .stat-chip:nth-child(4) {
-            justify-self: end;
+        .latency-summary-head {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
         }
 
-        .stats-bar .stat-chip:nth-child(5) {
-            justify-self: start;
+        .latency-summary-kicker {
+            margin-bottom: 6px;
+            font-size: 10px;
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 1.4px;
+            text-transform: uppercase;
+        }
+
+        .latency-summary-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text);
+            letter-spacing: -0.02em;
+        }
+
+        .latency-summary-subtitle {
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .latency-summary-meta {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .latency-meta-chip {
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
+        .latency-grid {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .latency-card {
+            position: relative;
+            min-width: 0;
+            padding: 12px 14px;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+            overflow: hidden;
+        }
+
+        .latency-card::before {
+            content: '';
+            position: absolute;
+            left: 14px;
+            top: 14px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            box-shadow: 0 0 14px currentColor;
+            opacity: 0.9;
+        }
+
+        .latency-card.ok {
+            color: #48BB78;
+            border-color: rgba(72,187,120,0.16);
+            background: linear-gradient(180deg, rgba(72,187,120,0.10), rgba(255,255,255,0.02));
+        }
+
+        .latency-card.warn {
+            color: #F6AD55;
+            border-color: rgba(246,173,85,0.18);
+            background: linear-gradient(180deg, rgba(246,173,85,0.12), rgba(255,255,255,0.02));
+        }
+
+        .latency-card.alert {
+            color: #FC8181;
+            border-color: rgba(252,129,129,0.18);
+            background: linear-gradient(180deg, rgba(252,129,129,0.12), rgba(255,255,255,0.02));
+        }
+
+        .latency-card.muted {
+            color: #8BA4C4;
+            border-color: rgba(139,164,196,0.14);
+            background: linear-gradient(180deg, rgba(139,164,196,0.10), rgba(255,255,255,0.02));
+        }
+
+        .latency-card-label {
+            padding-left: 18px;
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+        }
+
+        .latency-card-value {
+            margin-top: 10px;
+            font-size: 26px;
+            line-height: 1;
+            font-weight: 700;
+            letter-spacing: -0.04em;
+            color: currentColor;
+        }
+
+        .latency-card-copy {
+            margin-top: 8px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--muted);
+        }
+
+        .latency-summary-footer {
+            position: relative;
+            z-index: 1;
+            margin-top: 10px;
+        }
+
+        .latency-write-card {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(7, 13, 24, 0.42);
+        }
+
+        .latency-write-card.ok {
+            border-color: rgba(72,187,120,0.18);
+            background: linear-gradient(180deg, rgba(72,187,120,0.08), rgba(7,13,24,0.42));
+        }
+
+        .latency-write-card.warn {
+            border-color: rgba(246,173,85,0.18);
+            background: linear-gradient(180deg, rgba(246,173,85,0.10), rgba(7,13,24,0.42));
+        }
+
+        .latency-write-card.alert {
+            border-color: rgba(252,129,129,0.18);
+            background: linear-gradient(180deg, rgba(252,129,129,0.10), rgba(7,13,24,0.42));
+        }
+
+        .latency-write-card.muted {
+            border-color: rgba(139,164,196,0.14);
+            background: linear-gradient(180deg, rgba(139,164,196,0.08), rgba(7,13,24,0.42));
+        }
+
+        .latency-write-copy {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .latency-write-label {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+        }
+
+        .latency-write-note {
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .latency-write-value {
+            flex-shrink: 0;
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.04em;
+            color: var(--text);
+        }
+
+        .latency-write-card.ok .latency-write-value { color: #48BB78; }
+        .latency-write-card.warn .latency-write-value { color: #F6AD55; }
+        .latency-write-card.alert .latency-write-value { color: #FC8181; }
+        .latency-write-card.muted .latency-write-value { color: #8BA4C4; }
+
+        .latency-write-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: 6px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: rgba(99,179,237,0.12);
+            color: var(--accent);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
         }
 
         /* 状态筛选 Tab */
@@ -147,28 +367,6 @@
             font-size: 10px;
             margin-left: 2px;
             opacity: 0.8;
-        }
-
-        .stat-chip {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 8px 16px;
-            white-space: nowrap;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
-        }
-
-        .stat-chip .stat-label {
-            color: var(--muted);
-        }
-
-        .stat-chip .stat-value {
-            color: var(--accent);
-            font-weight: 700;
         }
 
         .signal-card {
@@ -699,6 +897,39 @@
         .refresh-select:focus {
             border-color: var(--accent);
         }
+
+        @media (max-width: 900px) {
+            .latency-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .latency-summary {
+                padding: 12px;
+            }
+
+            .latency-summary-head {
+                flex-direction: column;
+            }
+
+            .latency-summary-meta {
+                justify-content: flex-start;
+            }
+
+            .latency-card-value {
+                font-size: 24px;
+            }
+
+            .latency-write-card {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .latency-write-value {
+                font-size: 20px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -731,7 +962,7 @@
             <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
         </div>
         <div id="filterNote"></div>
-        <div id="latencySummary" class="stats-bar"></div>
+        <div id="latencySummary" class="latency-summary"></div>
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
@@ -1077,6 +1308,23 @@
             };
         }
 
+        function resolveLatencyTone(kind, ms) {
+            const value = Number(ms || 0);
+            if (!Number.isFinite(value) || value <= 0) return 'muted';
+
+            const seconds = value / 1000;
+            const thresholds = {
+                freshness: { ok: 120, warn: 300 },
+                ingest: { ok: 5, warn: 15 },
+                compute: { ok: 15, warn: 45 },
+                write: { ok: 30, warn: 90 }
+            };
+            const limit = thresholds[kind] || thresholds.compute;
+            if (seconds <= limit.ok) return 'ok';
+            if (seconds <= limit.warn) return 'warn';
+            return 'alert';
+        }
+
         function resolveLatencyFocusSymbol() {
             const symbols = [...new Set((Array.isArray(allSignals) ? allSignals : []).map((signal) => String(signal?.symbol || '').trim().toUpperCase()).filter(Boolean))];
             return symbols.length === 1 ? symbols[0] : '';
@@ -1089,19 +1337,72 @@
             const writeMetrics = averageLatency(allSignals, (signal) => getLatencyMs(getSignalCloseTimeMs(signal), getSignalCreatedMs(signal)));
             const latest = realtimeLatencySnapshot || {};
             const scopeLabel = latest.symbol ? `${latest.symbol} 5m` : '最新 5m';
-            const chips = [
-                { label: `${scopeLabel} 实时延迟`, value: formatLatency(latest.dataFreshnessMs || 0) },
-                { label: `${scopeLabel} 入库耗时`, value: formatLatency(latest.barIngestDelayMs || 0) },
-                { label: `${scopeLabel} 计算耗时`, value: formatLatency(latest.indicatorComputeDelayMs || 0) },
-                { label: `当前页信号写入${writeMetrics.count ? `(${writeMetrics.count})` : ''}`, value: formatLatency(writeMetrics.avgMs || 0) },
+            const refreshText = currentInterval > 0 ? `${currentInterval}s 自动刷新` : '手动刷新';
+            const scopeSubtitle = latest.barCloseMs
+                ? `基于 ${formatEventTime(latest.barCloseMs)} ET 收盘 bar`
+                : '等待最新 5m 快照';
+            const pipelineCards = [
+                {
+                    label: '实时延迟',
+                    value: formatLatency(latest.dataFreshnessMs || 0),
+                    copy: '现在距离最新 5m bar 收盘的时间差',
+                    tone: resolveLatencyTone('freshness', latest.dataFreshnessMs || 0),
+                },
+                {
+                    label: '入库耗时',
+                    value: formatLatency(latest.barIngestDelayMs || 0),
+                    copy: 'bar 收盘到写入 ibkr_bars',
+                    tone: resolveLatencyTone('ingest', latest.barIngestDelayMs || 0),
+                },
+                {
+                    label: '计算耗时',
+                    value: formatLatency(latest.indicatorComputeDelayMs || 0),
+                    copy: 'bar 收盘到最新指标计算完成',
+                    tone: resolveLatencyTone('compute', latest.indicatorComputeDelayMs || 0),
+                },
             ];
+            const writeTone = resolveLatencyTone('write', writeMetrics.avgMs || 0);
+            const writeValue = formatLatency(writeMetrics.avgMs || 0);
+            const writeNote = writeMetrics.count
+                ? `${writeMetrics.count} 条信号平均从 bar close 到 signal 入库`
+                : '当前页暂无可统计的信号写入耗时';
 
-            el.innerHTML = chips.map((chip) => `
-                <div class="stat-chip">
-                    <span class="stat-label">${escapeHtml(chip.label)}</span>
-                    <span class="stat-value">${escapeHtml(chip.value)}</span>
+            el.innerHTML = `
+                <div class="latency-summary-head">
+                    <div>
+                        <div class="latency-summary-kicker">Pipeline Snapshot</div>
+                        <div class="latency-summary-title">${escapeHtml(scopeLabel)}</div>
+                        <div class="latency-summary-subtitle">${escapeHtml(scopeSubtitle)}</div>
+                    </div>
+                    <div class="latency-summary-meta">
+                        <span class="latency-meta-chip">${escapeHtml(refreshText)}</span>
+                        <span class="latency-meta-chip">${escapeHtml(`env=${getEnvironmentLabel(currentEnvironment)}`)}</span>
+                    </div>
                 </div>
-            `).join('');
+                <div class="latency-grid">
+                    ${pipelineCards.map((card) => `
+                        <div class="latency-card ${escapeHtml(card.tone)}">
+                            <div class="latency-card-label">${escapeHtml(card.label)}</div>
+                            <div class="latency-card-value">${escapeHtml(card.value)}</div>
+                            <div class="latency-card-copy">${escapeHtml(card.copy)}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="latency-summary-footer">
+                    <div class="latency-write-card">
+                        <div class="latency-write-copy">
+                            <div class="latency-write-label">
+                                当前页信号写入
+                                ${writeMetrics.count ? `<span class="latency-write-count">${escapeHtml(`${writeMetrics.count} 条`)}</span>` : ''}
+                            </div>
+                            <div class="latency-write-note">${escapeHtml(writeNote)}</div>
+                        </div>
+                        <div class="latency-write-value">${escapeHtml(writeValue)}</div>
+                    </div>
+                </div>
+            `;
+            const writeCard = el.querySelector('.latency-write-card');
+            if (writeCard) writeCard.classList.add(writeTone);
         }
 
         async function loadRealtimeLatencySnapshot(requestId = 0) {

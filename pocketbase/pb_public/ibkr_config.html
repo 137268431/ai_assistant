@@ -755,8 +755,9 @@ const CONFIG_META = {
   ibkr_watchlist_integrity_enabled: meta('底池完整性巡检', '行情链路', 740, 'TRUE', '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
   ibkr_watchlist_integrity_batch_size: meta('底池巡检批次', '行情链路', 750, '8', '每轮底池完整性巡检最多处理多少个非目标标的'),
 
-  system_status_chat_id: meta('状态群 Chat ID', '通知路由', 600, 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '正常状态提醒、2FA 卡片与日常运行反馈默认发送到这里'),
-  system_alert_chat_id: meta('告警群 Chat ID', '通知路由', 610, 'oc_91aa4f84bc6fedb125b1a263d91d4104', '所有 warning / error 级别且影响系统运行的异常默认发送到这里'),
+  system_status_chat_id: meta('状态群 Chat ID', '通知路由', 600, 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '正常状态提醒与日常运行反馈默认发送到这里'),
+  system_2fa_chat_id: meta('2FA 群 Chat ID', '通知路由', 605, 'oc_c48c10447685e80cfea0c003864aa51f', '所有 2FA 卡片、2FA 超时/失败/待确认、Session 失效与运行态未认证提醒统一发送到这里'),
+  system_alert_chat_id: meta('告警群 Chat ID', '通知路由', 610, 'oc_91aa4f84bc6fedb125b1a263d91d4104', '所有非 2FA 的 warning / error 级别且影响系统运行的异常默认发送到这里'),
   signal_chat_id: meta('信号群 Chat ID', '通知路由', 620, 'oc_edb26dcc52938b7833ac9f32ae6b1620', '新信号卡片默认发送到这里'),
   order_chat_id: meta('订单群 Chat ID', '通知路由', 630, 'oc_5ca4585e1fd108c2c662dfc358684945', '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
   reverse_chat_id: meta('反转群 Chat ID', '通知路由', 640, 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转信号与反转执行卡片默认发送到这里'),

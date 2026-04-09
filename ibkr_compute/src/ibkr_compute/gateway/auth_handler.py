@@ -1143,12 +1143,24 @@ class AuthHandler:
 
                 if success_detected:
                     # The SSO redirect completed — Gateway is now authenticated
-                    # internally. We just need to confirm via the REST API.
-                    # No more browser JS execution needed at all.
+                    # internally. We need to promote the session via tickle /
+                    # reauthenticate before the REST API will report authenticated.
                     self._sync_browser_cookies(session)
                     for wait_round in range(8):
                         time.sleep(2)
                         self._sync_browser_cookies(session)
+                        # Tickle + reauthenticate to activate the Gateway session,
+                        # matching the pattern in _promote_backend_auth and the
+                        # legacy ibkr_login.py script.
+                        try:
+                            session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
+                        except Exception:
+                            pass
+                        if wait_round in (2, 5):
+                            try:
+                                session.post(f"{self.gateway_url}/v1/api/iserver/reauthenticate", timeout=15)
+                            except Exception:
+                                pass
                         backend_result = self._check_backend_auth(session)
                         if backend_result.get("authenticated"):
                             logger.info("[2FA] Backend auth confirmed (round %d)", wait_round + 1)
@@ -1312,7 +1324,15 @@ class AuthHandler:
                             if promoted.get("authenticated"):
                                 return True
                 else:
-                    # Lightweight cycle: only log every 15s to reduce noise.
+                    # Lightweight cycle: sync cookies and tickle periodically
+                    # so the bottom-of-loop auth check has up-to-date state.
+                    if (now - last_cookie_sync_at) >= COOKIE_SYNC_INTERVAL:
+                        self._sync_browser_cookies(session)
+                        last_cookie_sync_at = now
+                        try:
+                            session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
+                        except Exception:
+                            pass
                     if elapsed % 15 == 0:
                         logger.info("[2FA %ds] Waiting for SSO redirect... (url=%s)", elapsed, page_url)
 
