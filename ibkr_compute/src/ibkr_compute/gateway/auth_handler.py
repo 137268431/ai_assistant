@@ -213,7 +213,6 @@ class AuthHandler:
                 function shouldTrack(url) {
                     if (!url) return false;
                     return [
-                        "/sso/Authenticator",
                         "/v1/api/iserver/auth/status",
                         "/v1/api/tickle",
                     ].some(function(marker) {
@@ -350,7 +349,10 @@ class AuthHandler:
         if not self._driver:
             return {}
         try:
-            self._install_trace_hooks()
+            # NOTE: Do NOT install trace hooks here. They monkey-patch
+            # window.fetch / XMLHttpRequest and intercept /sso/Authenticator,
+            # which the SSO page itself uses to poll for 2FA confirmation.
+            # Installing them breaks the SSO redirect to /sso/Dispatcher.
             payload = self._driver.execute_async_script("""
                 const done = arguments[arguments.length - 1];
                 async function fetchJson(path, method) {
@@ -1137,6 +1139,8 @@ class AuthHandler:
         cycle_state_patch: Optional[Dict[str, Any]] = None,
     ) -> bool:
         import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         session = requests.Session()
         session.verify = False
@@ -1163,8 +1167,11 @@ class AuthHandler:
         # and triggers the redirect to /sso/Dispatcher) is not blocked by
         # Selenium execute_script() calls occupying the main thread.
         HEAVY_PROBE_INTERVAL = 30
-        last_heavy_probe_at = 0.0
+        # Delay the first heavy probe so the SSO page has uninterrupted
+        # time to set up its own JS polling and detect 2FA confirmation.
+        last_heavy_probe_at = time.time()
         success_detected = False
+        success_promote_cycles = 0
         initial_mode_detected = False
         last_page_mode = ""
         mode_history: list[str] = []
@@ -1200,25 +1207,23 @@ class AuthHandler:
                     )
 
                 if success_detected:
-                    # The SSO redirect completed — Gateway is now authenticated
-                    # internally. We need to promote the session via tickle /
-                    # reauthenticate before the REST API will report authenticated.
+                    # The SSO redirect completed — Gateway session should be
+                    # valid. Tickle to activate, then check auth status.
+                    # IMPORTANT: Do NOT call /iserver/reauthenticate here — it
+                    # triggers a NEW auth flow and invalidates the session that
+                    # was just established via SSO.
                     self._sync_browser_cookies(session)
                     for wait_round in range(8):
                         time.sleep(2)
                         self._sync_browser_cookies(session)
-                        # Tickle + reauthenticate to activate the Gateway session,
-                        # matching the pattern in _promote_backend_auth and the
-                        # legacy ibkr_login.py script.
                         try:
-                            session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
-                        except Exception:
-                            pass
-                        if wait_round in (2, 5):
-                            try:
-                                session.post(f"{self.gateway_url}/v1/api/iserver/reauthenticate", timeout=15)
-                            except Exception:
-                                pass
+                            tickle_resp = session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
+                            logger.info(
+                                "[2FA] Tickle round %d: status=%s body=%.200s",
+                                wait_round + 1, tickle_resp.status_code, tickle_resp.text[:200],
+                            )
+                        except Exception as exc:
+                            logger.warning("[2FA] Tickle round %d failed: %s", wait_round + 1, exc)
                         backend_result = self._check_backend_auth(session)
                         if backend_result.get("authenticated"):
                             logger.info("[2FA] Backend auth confirmed (round %d)", wait_round + 1)
@@ -1226,11 +1231,23 @@ class AuthHandler:
                             page_state["backend_authenticated"] = True
                             self._last_wait_context = page_state
                             return True
-                        logger.info("[2FA] Auth check round %d: authenticated=%s", wait_round + 1, backend_result.get("authenticated"))
-                    # Gateway auth is global — if the URL reached /sso/Dispatcher,
-                    # the Gateway SHOULD be authenticated. If not, something is
-                    # seriously wrong; allow re-detection next cycle.
-                    logger.warning("[2FA] URL reached Dispatcher but backend auth not confirmed after 8 attempts")
+                        logger.info(
+                            "[2FA] Auth check round %d: authenticated=%s payload=%s",
+                            wait_round + 1, backend_result.get("authenticated"),
+                            str(backend_result.get("payload", {}))[:200],
+                        )
+                    success_promote_cycles += 1
+                    if success_promote_cycles >= 3:
+                        logger.error(
+                            "[2FA] Backend auth promotion failed after %d cycles (24 total attempts), aborting",
+                            success_promote_cycles,
+                        )
+                        self._last_wait_context = {"mode": "dispatcher_auth_failed", "url": page_url}
+                        return False
+                    logger.warning(
+                        "[2FA] URL reached Dispatcher but backend auth not confirmed after 8 attempts (cycle %d/3)",
+                        success_promote_cycles,
+                    )
                     success_detected = False
                     time.sleep(WAIT_POLL_SECONDS)
                     continue
@@ -1253,18 +1270,13 @@ class AuthHandler:
                         self._sync_browser_cookies(session)
                         last_cookie_sync_at = now
 
-                    # Keep browser-side Gateway probes very sparse.
-                    # We still need an occasional in-browser auth/tickle read
-                    # because some successful phone confirmations don't
-                    # immediately redirect to /sso/Dispatcher, but the browser
-                    # cookie jar is already authenticated. Without this probe,
-                    # we lose the fallback path that promotes backend auth from
-                    # a browser-authenticated state.
-                    if (now - last_browser_probe_at) >= BROWSER_PROBE_SECONDS:
-                        browser_state = self._fetch_browser_gateway_state()
-                        last_browser_probe_at = now
-                        if browser_state.get("error"):
-                            logger.debug("Browser gateway state probe error: %s", browser_state.get("error"))
+                    # Do NOT call _fetch_browser_gateway_state() here.
+                    # It runs execute_async_script which sends POST requests
+                    # (tickle + auth/status) from WITHIN the browser using the
+                    # SSO session's live cookies. This disrupts the Gateway's
+                    # internal SSO confirmation flow, preventing the redirect
+                    # to /sso/Dispatcher. The Python requests-based auth check
+                    # at the bottom of this loop is sufficient.
 
                     page_state["browser_gateway_state"] = dict(browser_state or {})
                     self._last_wait_context = page_state
@@ -1368,17 +1380,6 @@ class AuthHandler:
                         )
                         last_report_key = report_key
 
-                    browser_authenticated = bool(browser_state.get("authenticated", False))
-                    if browser_authenticated:
-                        logger.info("[2FA] Browser probe reports authenticated=true")
-                        self._sync_browser_cookies(session)
-                        if (time.time() - last_backend_promote_at) >= BACKEND_PROMOTE_SECONDS:
-                            promoted = self._promote_backend_auth(session)
-                            last_backend_promote_at = time.time()
-                            page_state["backend_authenticated"] = bool(promoted.get("authenticated", False))
-                            self._last_wait_context = page_state
-                            if promoted.get("authenticated"):
-                                return True
                 else:
                     # Lightweight cycle: sync cookies and tickle periodically
                     # so the bottom-of-loop auth check has up-to-date state.
@@ -1399,7 +1400,14 @@ class AuthHandler:
                 page_state["backend_authenticated"] = backend_authenticated
                 self._last_wait_context = page_state
                 if backend_authenticated:
+                    logger.info("[2FA %ds] Backend auth confirmed via requests session", elapsed)
                     return True
+                if elapsed % 30 == 0 and elapsed > 0:
+                    logger.info(
+                        "[2FA %ds] Backend auth check: ok=%s status=%s authenticated=%s",
+                        elapsed, backend_result.get("ok"), backend_result.get("status_code"),
+                        backend_result.get("authenticated"),
+                    )
 
             except Exception as e:
                 logger.debug("2FA wait check: %s", e)
