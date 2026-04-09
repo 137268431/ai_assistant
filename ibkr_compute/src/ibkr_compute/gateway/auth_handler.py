@@ -1176,6 +1176,37 @@ class AuthHandler:
         last_page_mode = ""
         mode_history: list[str] = []
 
+        # ================================================================
+        # CRITICAL: During the 2FA wait loop, do NOT execute ANY
+        # JavaScript in the browser (no execute_script, no
+        # execute_async_script, no _capture_page_state, no
+        # _fetch_browser_gateway_state, no driver.page_source).
+        #
+        # The SSO page uses its own JS polling (XHR/fetch to
+        # /sso/Authenticator) to detect when the user confirms on
+        # their phone. ANY Selenium JS execution blocks the browser
+        # main thread and can cause the SSO page to miss the
+        # confirmation callback, preventing the redirect to
+        # /sso/Dispatcher.
+        #
+        # This loop mirrors the working legacy ibkr_login.py:
+        # - Read current_url (does NOT block JS)
+        # - Sync cookies periodically (Python-side only)
+        # - Check auth via Python requests (external to browser)
+        # - On success URL, promote via tickle + auth check
+        # ================================================================
+        # ================================================================
+        # This loop mirrors the proven-working legacy ibkr_login.py:
+        # 1. Read current_url + body.text every cycle
+        # 2. Check for Dispatcher URL or success text
+        # 3. Sync cookies every 10s
+        # 4. Check backend auth via Python requests
+        # 5. Sleep 5s between cycles (matching legacy)
+        # ================================================================
+        from selenium.webdriver.common.by import By
+
+        POLL_INTERVAL = 5
+
         while True:
             now = time.time()
             effective_deadline = max(base_deadline, challenge_deadline, response_deadline)
@@ -1184,235 +1215,86 @@ class AuthHandler:
             if self._cancel_requested:
                 logger.info("2FA wait cancelled by service stop request")
                 return False
+
+            elapsed = int(now - start)
+
             try:
-                # ---- Lightweight check: URL only (no JS execution) ----
-                # Reading current_url does NOT block the browser's JS thread,
-                # so the SSO page's polling/callback can keep running freely.
+                # Sync cookies periodically.
+                if (now - last_cookie_sync_at) >= COOKIE_SYNC_INTERVAL:
+                    self._sync_browser_cookies(session)
+                    last_cookie_sync_at = now
+
+                # Read browser state — matches legacy ibkr_login.py pattern.
                 page_url = ""
+                page_text = ""
                 try:
                     page_url = self._driver.current_url or "" if self._driver else ""
+                    page_text = (self._driver.find_element(By.TAG_NAME, "body").text or "")[:300] if self._driver else ""
                 except Exception:
                     pass
 
-                elapsed = int(now - start)
-
-                # Detect success purely from URL change — no execute_script needed.
-                is_success_url = "/sso/Dispatcher" in page_url
-
-                if is_success_url and not success_detected:
-                    success_detected = True
-                    logger.info(
-                        "[2FA %ds] SUCCESS — browser redirected to %s",
-                        elapsed, page_url,
-                    )
-
-                if success_detected:
-                    # The SSO redirect completed — Gateway session should be
-                    # valid. Tickle to activate, then check auth status.
-                    # IMPORTANT: Do NOT call /iserver/reauthenticate here — it
-                    # triggers a NEW auth flow and invalidates the session that
-                    # was just established via SSO.
+                # Check for success (URL redirect or page text).
+                if "/sso/Dispatcher" in page_url or "Client login succeeds" in page_text:
+                    logger.info("[2FA %ds] SUCCESS PAGE DETECTED: %s", elapsed, page_url)
                     self._sync_browser_cookies(session)
-                    for wait_round in range(8):
+                    for promote_round in range(5):
                         time.sleep(2)
                         self._sync_browser_cookies(session)
-                        try:
-                            tickle_resp = session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
-                            logger.info(
-                                "[2FA] Tickle round %d: status=%s body=%.200s",
-                                wait_round + 1, tickle_resp.status_code, tickle_resp.text[:200],
-                            )
-                        except Exception as exc:
-                            logger.warning("[2FA] Tickle round %d failed: %s", wait_round + 1, exc)
-                        backend_result = self._check_backend_auth(session)
-                        if backend_result.get("authenticated"):
-                            logger.info("[2FA] Backend auth confirmed (round %d)", wait_round + 1)
-                            page_state = self._capture_page_state()
-                            page_state["backend_authenticated"] = True
-                            self._last_wait_context = page_state
-                            return True
-                        logger.info(
-                            "[2FA] Auth check round %d: authenticated=%s payload=%s",
-                            wait_round + 1, backend_result.get("authenticated"),
-                            str(backend_result.get("payload", {}))[:200],
-                        )
-                    success_promote_cycles += 1
-                    if success_promote_cycles >= 3:
-                        logger.error(
-                            "[2FA] Backend auth promotion failed after %d cycles (24 total attempts), aborting",
-                            success_promote_cycles,
-                        )
-                        self._last_wait_context = {"mode": "dispatcher_auth_failed", "url": page_url}
-                        return False
-                    logger.warning(
-                        "[2FA] URL reached Dispatcher but backend auth not confirmed after 8 attempts (cycle %d/3)",
-                        success_promote_cycles,
-                    )
-                    success_detected = False
-                    time.sleep(WAIT_POLL_SECONDS)
-                    continue
-
-                # ---- Heavy probes: run infrequently to avoid blocking SSO JS ----
-                # The SSO 2FA page uses its own JS polling to detect phone
-                # confirmation. Frequent execute_script() calls block the browser
-                # main thread and can prevent the SSO page from processing the
-                # confirmation callback and triggering the redirect.
-                run_heavy_probe = (now - last_heavy_probe_at) >= HEAVY_PROBE_INTERVAL
-                page_state: Dict[str, Any] = {"mode": "unknown", "url": page_url}
-
-                if run_heavy_probe:
-                    last_heavy_probe_at = now
-
-                    page_state = self._capture_page_state()
-                    page_state["url"] = page_url
-
-                    if (now - last_cookie_sync_at) >= COOKIE_SYNC_INTERVAL:
-                        self._sync_browser_cookies(session)
-                        last_cookie_sync_at = now
-
-                    # Do NOT call _fetch_browser_gateway_state() here.
-                    # It runs execute_async_script which sends POST requests
-                    # (tickle + auth/status) from WITHIN the browser using the
-                    # SSO session's live cookies. This disrupts the Gateway's
-                    # internal SSO confirmation flow, preventing the redirect
-                    # to /sso/Dispatcher. The Python requests-based auth check
-                    # at the bottom of this loop is sufficient.
-
-                    page_state["browser_gateway_state"] = dict(browser_state or {})
-                    self._last_wait_context = page_state
-
-                    page_mode = str(page_state.get("mode") or "").strip()
-                    challenge_from_push = False
-                    if page_mode and page_mode != last_page_mode:
-                        mode_history.append(f"{elapsed}s:{page_mode}")
-                        if len(mode_history) > 8:
-                            mode_history = mode_history[-8:]
-                        page_state["mode_changed_at"] = self._now_et()
-                        challenge_from_push = last_page_mode == "push_notification" and page_mode == "challenge_response"
-                        logger.info(
-                            "[2FA %ds] Mode transition: %s -> %s",
-                            elapsed,
-                            last_page_mode or "unknown",
-                            page_mode,
-                        )
-                        if challenge_from_push:
-                            logger.warning("[2FA] Push confirmation did not establish a session; IBKR switched to challenge_response")
-                            self._log_to_pb(
-                                "2fa_mode_shift",
-                                "warning",
-                                "push_notification -> challenge_response before authenticated session",
-                            )
-                        last_page_mode = page_mode
-                    if page_mode != "unknown":
-                        initial_mode_detected = True
-                    if mode_history:
-                        page_state["mode_timeline"] = " -> ".join(mode_history)
-                    logger.info(
-                        "[2FA %ds] mode=%s url=%s body=%.120s",
-                        elapsed, page_mode, page_url,
-                        str(page_state.get("body_excerpt") or "")[:120],
-                    )
-
-                    # Also check page_source for success text (fallback)
-                    page_source = self._driver.page_source if self._driver else ""
-                    if (
-                        page_state.get("mode") == "success"
-                        or "Client login succeeds" in page_source
-                        or "two_fa_result" in page_source
-                    ):
-                        success_detected = True
-                        logger.info("[2FA %ds] Success detected via page content", elapsed)
-                        continue
-
-                    if page_mode == "challenge_response":
-                        abort_reason = "push_to_challenge_transition" if challenge_from_push else "challenge_response_unsupported"
-                        abort_message = (
-                            "IBKR 已从手机确认切换到 Challenge/Response，说明本轮手机确认没有建立可用 Session；系统将结束本轮并改走新的 push 重试。"
-                            if challenge_from_push
-                            else "IBKR 当前进入 Challenge/Response；当前策略不走 challenge，本轮将结束并重新触发新的 push。"
-                        )
-                        abort_result = (
-                            "检测到 push_notification -> challenge_response 切换；本轮不会再等待 challenge。"
-                            if challenge_from_push
-                            else "检测到 challenge_response；本轮不会进入 challenge 提交流程。"
-                        )
-                        page_state["abort_reason"] = abort_reason
-                        self._last_wait_context = page_state
-                        self._report_2fa_status(
-                            status="timeout",
-                            reason=reason,
-                            source=source,
-                            attempt=attempt,
-                            detail=self._build_wait_detail(page_state, detail),
-                            message=abort_message,
-                            last_result=abort_result,
-                            error=abort_reason,
-                            state_patch=self._build_state_patch(page_state, cycle_state_patch),
-                        )
-                        return False
-
-                    sso_expires_ms = browser_state.get("sso_expires_ms")
-                    if isinstance(sso_expires_ms, (int, float)):
-                        if sso_expires_ms <= 0:
-                            expiry_bucket = "expired"
-                        elif sso_expires_ms <= 30000:
-                            expiry_bucket = "lt30"
-                        else:
-                            expiry_bucket = ""
-                    else:
-                        expiry_bucket = ""
-
-                    report_key = (
-                        page_state.get("mode"),
-                        page_state.get("challenge_code"),
-                        page_state.get("body_excerpt"),
-                        expiry_bucket,
-                        bool(browser_state.get("authenticated", False)),
-                    )
-                    if report_key != last_report_key:
-                        self._report_wait_state(
-                            reason=reason,
-                            source=source,
-                            attempt=attempt,
-                            detail=detail,
-                            page_state=page_state,
-                            state_patch=cycle_state_patch,
-                        )
-                        last_report_key = report_key
-
-                else:
-                    # Lightweight cycle: sync cookies and tickle periodically
-                    # so the bottom-of-loop auth check has up-to-date state.
-                    if (now - last_cookie_sync_at) >= COOKIE_SYNC_INTERVAL:
-                        self._sync_browser_cookies(session)
-                        last_cookie_sync_at = now
                         try:
                             session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
                         except Exception:
                             pass
-                    if elapsed % 15 == 0:
-                        logger.info("[2FA %ds] Waiting for SSO redirect... (url=%s)", elapsed, page_url)
+                        backend_result = self._check_backend_auth(session)
+                        if backend_result.get("authenticated"):
+                            logger.info("[2FA %ds] Backend auth confirmed (round %d)", elapsed, promote_round + 1)
+                            self._last_wait_context = {"mode": "success", "url": page_url, "backend_authenticated": True}
+                            return True
+                        logger.info("[2FA %ds] Promote attempt %d...", elapsed, promote_round + 1)
+                    logger.warning("[2FA %ds] Success page but backend auth not confirmed", elapsed)
 
-                # Backend auth check via requests — always runs but doesn't
-                # touch the browser, so it won't block SSO page JS.
-                backend_result = self._check_backend_auth(session)
-                backend_authenticated = bool(backend_result.get("authenticated", False))
-                page_state["backend_authenticated"] = backend_authenticated
-                self._last_wait_context = page_state
-                if backend_authenticated:
-                    logger.info("[2FA %ds] Backend auth confirmed via requests session", elapsed)
-                    return True
-                if elapsed % 30 == 0 and elapsed > 0:
-                    logger.info(
-                        "[2FA %ds] Backend auth check: ok=%s status=%s authenticated=%s",
-                        elapsed, backend_result.get("ok"), backend_result.get("status_code"),
-                        backend_result.get("authenticated"),
+                # Detect challenge/response mode.
+                page_text_lower = page_text.lower()
+                if "enter the challenge code below" in page_text_lower or "response code" in page_text_lower:
+                    logger.warning("[2FA %ds] Challenge/Response detected, aborting this round", elapsed)
+                    page_state = {"mode": "challenge_response", "url": page_url, "body_excerpt": page_text[:240]}
+                    page_state["abort_reason"] = "challenge_response_unsupported"
+                    self._last_wait_context = page_state
+                    self._report_2fa_status(
+                        status="timeout",
+                        reason=reason,
+                        source=source,
+                        attempt=attempt,
+                        detail=self._build_wait_detail(page_state, detail),
+                        message="IBKR 当前进入 Challenge/Response；当前策略不走 challenge，本轮将结束并重新触发新的 push。",
+                        last_result="检测到 challenge_response；本轮不会进入 challenge 提交流程。",
+                        error="challenge_response_unsupported",
+                        state_patch=self._build_state_patch(page_state, cycle_state_patch),
                     )
+                    return False
+
+                # Backend auth check via Python requests.
+                backend_result = self._check_backend_auth(session)
+                if backend_result.get("authenticated"):
+                    logger.info("[2FA %ds] Backend auth confirmed via requests session", elapsed)
+                    self._last_wait_context = {"mode": "success", "url": page_url, "backend_authenticated": True}
+                    return True
+
+                if elapsed % 15 == 0:
+                    auth_info = backend_result.get("authenticated", False)
+                    competing = backend_result.get("payload", {}).get("competing", False)
+                    connected = backend_result.get("payload", {}).get("connected", False)
+                    logger.info(
+                        "[2FA %ds] auth=%s connected=%s competing=%s url=%s",
+                        elapsed, auth_info, connected, competing, page_url,
+                    )
+                    if competing:
+                        logger.warning("[2FA] Competing session detected!")
 
             except Exception as e:
-                logger.debug("2FA wait check: %s", e)
+                if elapsed % 30 == 0:
+                    logger.debug("[2FA %ds] Check error: %s", elapsed, e)
 
-            time.sleep(WAIT_POLL_SECONDS)
+            time.sleep(POLL_INTERVAL)
 
         return False
 
