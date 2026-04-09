@@ -81,13 +81,17 @@ class DataBackfill:
         self._count_lock = threading.Lock()
         self._request_gate_lock = threading.Lock()
         self._next_request_at = 0.0
+        self._session_local = threading.local()
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
 
-    def _create_session(self) -> requests.Session:
-        session = requests.Session()
-        session.verify = False
+    def _get_session(self) -> requests.Session:
+        session = getattr(self._session_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.verify = False
+            self._session_local.session = session
         load_cookies(session)
         return session
 
@@ -131,42 +135,39 @@ class DataBackfill:
 
         for attempt in range(self.max_retries + 1):
             self._wait_for_request_slot()
-            session = self._create_session()
-            try:
+            session = self._get_session()
+            with self._count_lock:
+                self._request_count += 1
+
+            resp = session.get(
+                self._api_url("/iserver/marketdata/history"),
+                params=params,
+                timeout=30,
+            )
+
+            if resp.status_code in RETRYABLE_STATUS_CODES and attempt < self.max_retries:
+                delay = self.retry_base_delay * (2 ** attempt)
                 with self._count_lock:
-                    self._request_count += 1
-
-                resp = session.get(
-                    self._api_url("/iserver/marketdata/history"),
-                    params=params,
-                    timeout=30,
+                    self._retry_count += 1
+                    if resp.status_code == 429:
+                        self._throttle_count += 1
+                logger.warning(
+                    "History fetch retry for %s/%s (conid=%d, status=%d, attempt=%d/%d, sleep=%.1fs)",
+                    symbol,
+                    interval,
+                    conid,
+                    resp.status_code,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    delay,
                 )
+                time.sleep(delay)
+                continue
 
-                if resp.status_code in RETRYABLE_STATUS_CODES and attempt < self.max_retries:
-                    delay = self.retry_base_delay * (2 ** attempt)
-                    with self._count_lock:
-                        self._retry_count += 1
-                        if resp.status_code == 429:
-                            self._throttle_count += 1
-                    logger.warning(
-                        "History fetch retry for %s/%s (conid=%d, status=%d, attempt=%d/%d, sleep=%.1fs)",
-                        symbol,
-                        interval,
-                        conid,
-                        resp.status_code,
-                        attempt + 1,
-                        self.max_retries + 1,
-                        delay,
-                    )
-                    time.sleep(delay)
-                    continue
-
-                resp.raise_for_status()
-                payload = resp.json()
-                save_cookies(session)
-                return payload
-            finally:
-                session.close()
+            resp.raise_for_status()
+            payload = resp.json()
+            save_cookies(session)
+            return payload
 
         raise RuntimeError(f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}")
 

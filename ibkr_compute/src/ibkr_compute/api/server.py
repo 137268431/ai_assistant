@@ -16,6 +16,7 @@ IBKR Compute — 指标计算 HTTP 服务
 import json
 import logging
 import os
+import sys
 import time
 import traceback
 import threading
@@ -47,6 +48,20 @@ from ibkr_compute.market.timeframe_utils import (
 )
 from ibkr_compute.workflows.daily_scanner import DailyScanner
 
+
+def _register_canonical_module_alias():
+    module = sys.modules.get(__name__)
+    spec = globals().get("__spec__")
+    canonical_name = str(getattr(spec, "name", "") or "").strip()
+    if not module or not canonical_name:
+        return
+    existing = sys.modules.get(canonical_name)
+    if existing is None or existing is module:
+        sys.modules[canonical_name] = module
+
+
+_register_canonical_module_alias()
+
 app = Flask(__name__)
 
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://localhost:8090")
@@ -71,6 +86,8 @@ daily_close_cache = {}
 daily_close_cache_date = ""
 metadata_cache_updated_at = 0.0
 compute_lock = threading.RLock()
+ibkr_account_snapshot_cache = {}
+ibkr_account_snapshot_cache_lock = threading.Lock()
 
 INTERVALS = list(COMPUTE_INTERVALS)
 SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
@@ -102,6 +119,10 @@ ROLLUP_BATCH_SIZE = 100
 INDICATOR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_INDICATOR_BATCH_SIZE", "60")))
 SIGNAL_BATCH_SIZE = max(1, int(os.environ.get("IBKR_SIGNAL_BATCH_SIZE", "30")))
 CHART_TIMELINE_VISIBLE_LIMIT = max(200, int(os.environ.get("IBKR_CHART_TIMELINE_VISIBLE_LIMIT", "3000")))
+IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS = max(
+    1.0,
+    float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS", "3.0")),
+)
 COMPUTE_CURSOR_STATE_KEY = "compute_cursors"
 COMPUTE_CURSOR_STATE_DATE = "global"
 IBKR_RUNTIME_CONTROL_STATE_KEY = "ibkr_runtime_control"
@@ -2984,6 +3005,15 @@ def _build_ibkr_account_snapshot(service) -> dict:
     if not account_id and hasattr(service, "order_lifecycle"):
         account_id = str(getattr(service.order_lifecycle, "account_id", "") or "").strip()
 
+    cache_key = (runtime_environment, account_id)
+    now = time.time()
+    with ibkr_account_snapshot_cache_lock:
+        cached_entry = ibkr_account_snapshot_cache.get(cache_key)
+        if cached_entry and float(cached_entry.get("expires_at", 0) or 0) > now:
+            return dict(cached_entry.get("payload") or {})
+        if cached_entry:
+            ibkr_account_snapshot_cache.pop(cache_key, None)
+
     summary_raw = {}
     positions_raw = []
     orders_raw = []
@@ -3047,7 +3077,7 @@ def _build_ibkr_account_snapshot(service) -> dict:
         "currency": _extract_summary_text(summary_map, "currency", "basecurrency") or "USD",
     }
 
-    return {
+    payload = {
         "ok": True,
         "environment": runtime_environment,
         "account_id": account_id,
@@ -3073,6 +3103,12 @@ def _build_ibkr_account_snapshot(service) -> dict:
         },
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
+    with ibkr_account_snapshot_cache_lock:
+        ibkr_account_snapshot_cache[cache_key] = {
+            "expires_at": now + IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS,
+            "payload": payload,
+        }
+    return payload
 
 
 @app.route("/ibkr/start", methods=["POST"])

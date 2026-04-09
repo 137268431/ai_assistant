@@ -1772,7 +1772,10 @@ class IBKRTradingService:
         readiness = self._collect_warmup_readiness(snapshot)
         final_preflight = dict(compute_result.get("preflight_repair") or {})
         if final_preflight.get("initial_repair_symbols") or backfill_result:
-            final_remaining_plan = self._build_history_repair_plan(snapshot["symbols"])
+            # Startup readiness should only block on base 5m freshness/integrity.
+            # Higher-timeframe rollups are refreshed by the compute path after
+            # startup completes and should not keep the runtime stuck forever.
+            final_remaining_plan = self._build_startup_history_repair_plan(snapshot["symbols"])
             final_preflight["remaining_repair_symbols"] = sorted(final_remaining_plan.keys())
             final_preflight["repair_reasons"] = {
                 symbol: str((data or {}).get("repair_reason") or "history_repair_pending")
@@ -1834,21 +1837,24 @@ class IBKRTradingService:
             warmup_timings["total_elapsed_s"],
         )
         if readiness["trading_gate_open"]:
-            if phase == "ready":
-                self._complete_startup_success(
-                    "IBKR Runtime 启动完成",
-                    {
-                        "Warmup结果": f"{readiness['ready_symbols']}/{snapshot['symbols_total']} ready",
-                        "交易标的": f"{readiness['ready_trade_symbols']}/{snapshot['trade_symbols_total']} ready",
-                        "监控标的": f"{readiness['ready_monitor_symbols']}/{snapshot['monitor_symbols_total']} ready",
-                        "预检修复标的": self._format_symbol_list((final_preflight.get("attempted_repair_symbols") or [])),
-                        "回补写入Bars": backfill_written,
-                        "预热开始": started_at,
-                        "预热完成": finished_at,
-                        "预热耗时": f"{warmup_timings['total_elapsed_s']:.3f}s",
-                        "交易门": "open",
-                    },
-                )
+            startup_title = "IBKR Runtime 启动完成"
+            startup_detail = {
+                "Warmup结果": f"{readiness['ready_symbols']}/{snapshot['symbols_total']} ready",
+                "交易标的": f"{readiness['ready_trade_symbols']}/{snapshot['trade_symbols_total']} ready",
+                "监控标的": f"{readiness['ready_monitor_symbols']}/{snapshot['monitor_symbols_total']} ready",
+                "预检修复标的": self._format_symbol_list((final_preflight.get("attempted_repair_symbols") or [])),
+                "回补写入Bars": backfill_written,
+                "预热开始": started_at,
+                "预热完成": finished_at,
+                "预热耗时": f"{warmup_timings['total_elapsed_s']:.3f}s",
+                "交易门": "open",
+            }
+            if phase != "ready":
+                startup_title = "IBKR Runtime 启动完成（后台继续预热）"
+                startup_detail["后续动作"] = "交易链路已开放，剩余 monitor/integrity repair 在后台继续。"
+                startup_detail["待完成标的"] = self._format_symbol_list(readiness.get("pending_symbols") or [])
+                startup_detail["完整性阻塞"] = self._format_symbol_list(readiness.get("integrity_pending_symbols") or [])
+            if self._complete_startup_success(startup_title, startup_detail):
                 self._schedule_interval_prime(snapshot["symbols"], source="startup_ready")
             self._signal_wakeup.set()
 

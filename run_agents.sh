@@ -46,7 +46,7 @@ echo "Available models for $cli:"
 if [ "$cli" = "claude" ]; then
     echo "  1) qwen3-max-2026-01-23"
     echo "  2) claude-opus-4-6-thinking"
-    echo "  3) claude-opus-4-5-thinking"
+    echo "  3) claude-opus-4-6-20260205"
     echo "  4) opus"
     echo "  5) sonnet"
     echo "  6) MiniMax-M2.5"
@@ -58,7 +58,7 @@ if [ "$cli" = "claude" ]; then
     case $selection in
         1) model="qwen3-max-2026-01-23" ;;
         2) model="claude-opus-4-6-thinking" ;;
-        3) model="claude-opus-4-5-thinking" ;;
+        3) model="claude-opus-4-6-20260205" ;;
         4) model="opus" ;;
         5) model="sonnet" ;;
         6) model="MiniMax-M2.5" ;;

@@ -8,6 +8,10 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <style>
+        body.drawer-open {
+            overflow: hidden;
+        }
+
         .account-shell {
             padding-bottom: 96px;
         }
@@ -49,7 +53,7 @@
 
         .ops-row {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 10px;
             margin: 0 16px 14px;
         }
@@ -81,6 +85,11 @@
 
         .ops-btn.warn {
             border-color: rgba(246,173,85,0.34);
+        }
+
+        .ops-btn.trade {
+            border-color: rgba(72,187,120,0.34);
+            background: linear-gradient(180deg, rgba(15, 42, 32, 0.96), rgba(10, 18, 24, 0.98));
         }
 
         .ops-btn.danger {
@@ -275,6 +284,93 @@
             color: var(--muted);
             font-size: 11px;
             line-height: 1.7;
+        }
+
+        .ticket-drawer-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 120;
+            display: flex;
+            justify-content: flex-end;
+            background: rgba(2, 6, 16, 0.58);
+            backdrop-filter: blur(10px);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .ticket-drawer-backdrop[hidden] {
+            display: none;
+        }
+
+        .ticket-drawer-backdrop.open {
+            opacity: 1;
+        }
+
+        .ticket-drawer {
+            width: min(540px, 100vw);
+            height: 100%;
+            overflow-y: auto;
+            padding: 18px 16px 22px;
+            background: linear-gradient(180deg, rgba(7,11,19,0.98), rgba(18,26,42,0.98));
+            border-left: 1px solid rgba(99,179,237,0.16);
+            box-shadow: -18px 0 48px rgba(0,0,0,0.35);
+            transform: translateX(100%);
+            transition: transform 0.22s ease;
+        }
+
+        .ticket-drawer-backdrop.open .ticket-drawer {
+            transform: translateX(0);
+        }
+
+        .ticket-drawer-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .ticket-drawer-title {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+        }
+
+        .ticket-drawer-copy {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .ticket-drawer-close {
+            flex-shrink: 0;
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.10);
+            background: rgba(255,255,255,0.04);
+            color: var(--text);
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        .ticket-drawer-close:disabled {
+            opacity: 0.45;
+            cursor: wait;
+        }
+
+        .ticket-drawer-meta {
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .ticket-drawer-panel {
+            padding: 14px;
         }
 
         .section {
@@ -547,6 +643,20 @@
             .record-actions {
                 flex-direction: column;
             }
+
+            .ticket-drawer {
+                width: 100vw;
+                padding: 14px 12px 18px;
+                border-left: none;
+            }
+
+            .ticket-drawer-head {
+                align-items: center;
+            }
+
+            .ticket-drawer-title {
+                font-size: 18px;
+            }
         }
 
         @media (max-width: 480px) {
@@ -559,6 +669,10 @@
             .section, .page-header, .ops-row, .summary-grid, .meta-grid, .blocker {
                 margin-left: 12px;
                 margin-right: 12px;
+            }
+
+            .ticket-drawer-panel {
+                padding: 12px;
             }
         }
     </style>
@@ -586,6 +700,11 @@
                 <div class="ops-label">刷新账户</div>
                 <div class="ops-copy">立即拉取最新账户、持仓和挂单状态。</div>
             </button>
+            <button class="ops-btn trade" id="openTicketButton" type="button" onclick="openTicketDrawer()">
+                <div class="ops-kicker">Trade</div>
+                <div class="ops-label">直接下单</div>
+                <div class="ops-copy">打开下单抽屉，不再占住主视图。</div>
+            </button>
             <button class="ops-btn warn" id="cancelAllButton" type="button" onclick="cancelAllOrders()">
                 <div class="ops-kicker">Orders</div>
                 <div class="ops-label">撤全部挂单</div>
@@ -606,13 +725,58 @@
         <div class="section">
             <div class="section-head">
                 <div>
-                    <div class="section-kicker">Order Ticket</div>
-                    <div class="section-title">直接下单</div>
+                    <div class="section-kicker">Positions</div>
+                    <div class="section-title">当前持仓</div>
                 </div>
+                <div class="section-copy mono" id="positionsMeta">--</div>
+            </div>
+            <div class="card-list" id="positionsArea"></div>
+        </div>
+
+        <div class="section">
+            <div class="section-head">
+                <div>
+                    <div class="section-kicker">Orders</div>
+                    <div class="section-title">实时挂单</div>
+                </div>
+                <div class="section-copy mono" id="ordersMeta">--</div>
+            </div>
+            <div id="ordersSummary"></div>
+            <div class="card-list" id="ordersArea"></div>
+        </div>
+
+        <div class="section">
+            <div class="section-head">
+                <div>
+                    <div class="section-kicker">History</div>
+                    <div class="section-title">历史订单</div>
+                </div>
+            </div>
+            <div class="surface-card" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                <div>
+                    <div class="summary-label">完整订单历史</div>
+                    <div class="ticket-copy" style="margin-top:6px;">按交易组查看完整的 entry / TP / SL 链路、成交时间线和盈亏记录。</div>
+                </div>
+                <button class="action-btn view" type="button" onclick="openHistoryOrdersPage()" style="white-space:nowrap;flex-shrink:0;">打开订单页 →</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="ticket-drawer-backdrop" id="ticketDrawerBackdrop" hidden onclick="onTicketDrawerBackdrop(event)">
+        <aside class="ticket-drawer" role="dialog" aria-modal="true" aria-labelledby="ticketDrawerTitle" onclick="event.stopPropagation()">
+            <div class="ticket-drawer-head">
+                <div>
+                    <div class="section-kicker">Trade Ticket</div>
+                    <div class="ticket-drawer-title" id="ticketDrawerTitle">直接下单</div>
+                    <div class="ticket-drawer-copy">把下单入口收进抽屉里，默认视图只留给持仓和挂单。这里仍然提交真实 IBKR Bracket Order。</div>
+                </div>
+                <button class="ticket-drawer-close" id="closeTicketButton" type="button" onclick="closeTicketDrawer()" aria-label="关闭下单抽屉">×</button>
+            </div>
+            <div class="ticket-drawer-meta">
                 <div class="section-copy mono" id="ticketMeta">BRACKET ONLY</div>
             </div>
-            <div class="surface-card ticket-shell">
-                <div class="ticket-copy">这里直接发真实 IBKR Bracket Order：开仓 + 止盈 + 止损。默认只支持 `LMT` / `MKT` 两种入场方式，目的是把实盘控制入口集中在 PocketBase 里。</div>
+            <div class="surface-card ticket-shell ticket-drawer-panel">
+                <div class="ticket-copy">默认只支持 `LMT` / `MKT` 两种入场方式，目的是把实盘控制入口集中在 PocketBase 里，同时不挤占账户主视图。</div>
                 <div class="ticket-grid">
                     <label class="ticket-field">
                         <span class="ticket-label">Symbol</span>
@@ -660,46 +824,7 @@
                 </div>
                 <div class="ticket-help">安全约束：未认证时不会提交；`LIVE` 环境会二次确认；`LMT` 要求 `止损 < 入场 < 止盈`（做多）或 `止盈 < 入场 < 止损`（做空）。</div>
             </div>
-        </div>
-
-        <div class="section">
-            <div class="section-head">
-                <div>
-                    <div class="section-kicker">Positions</div>
-                    <div class="section-title">当前持仓</div>
-                </div>
-                <div class="section-copy mono" id="positionsMeta">--</div>
-            </div>
-            <div class="card-list" id="positionsArea"></div>
-        </div>
-
-        <div class="section">
-            <div class="section-head">
-                <div>
-                    <div class="section-kicker">Orders</div>
-                    <div class="section-title">实时挂单</div>
-                </div>
-                <div class="section-copy mono" id="ordersMeta">--</div>
-            </div>
-            <div id="ordersSummary"></div>
-            <div class="card-list" id="ordersArea"></div>
-        </div>
-
-        <div class="section">
-            <div class="section-head">
-                <div>
-                    <div class="section-kicker">History</div>
-                    <div class="section-title">历史订单</div>
-                </div>
-            </div>
-            <div class="surface-card" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
-                <div>
-                    <div class="summary-label">完整订单历史</div>
-                    <div class="ticket-copy" style="margin-top:6px;">按交易组查看完整的 entry / TP / SL 链路、成交时间线和盈亏记录。</div>
-                </div>
-                <button class="action-btn view" type="button" onclick="openHistoryOrdersPage()" style="white-space:nowrap;flex-shrink:0;">打开订单页 →</button>
-            </div>
-        </div>
+        </aside>
     </div>
 
     <script>
@@ -707,6 +832,7 @@
         let refreshTimer = null;
         let latestSnapshot = null;
         let actionBusy = false;
+        let ticketDrawerOpen = false;
 
         function initAuth() {
             const token = getToken();
@@ -1057,13 +1183,43 @@
 
         function setActionState(busy) {
             actionBusy = Boolean(busy);
-            ['refreshButton', 'cancelAllButton', 'runtimeButton', 'submitOrderButton', 'openChartButton', 'resetOrderButton'].forEach((id) => {
+            ['refreshButton', 'openTicketButton', 'cancelAllButton', 'runtimeButton', 'submitOrderButton', 'openChartButton', 'resetOrderButton', 'closeTicketButton'].forEach((id) => {
                 const node = document.getElementById(id);
                 if (node) node.disabled = actionBusy;
             });
             document.querySelectorAll('.action-btn').forEach((node) => {
                 node.disabled = actionBusy;
             });
+        }
+
+        function openTicketDrawer() {
+            if (actionBusy) return;
+            const backdrop = document.getElementById('ticketDrawerBackdrop');
+            if (!backdrop || !backdrop.hidden) return;
+            backdrop.hidden = false;
+            document.body.classList.add('drawer-open');
+            ticketDrawerOpen = true;
+            requestAnimationFrame(() => {
+                backdrop.classList.add('open');
+                document.getElementById('ticketSymbol')?.focus();
+            });
+        }
+
+        function closeTicketDrawer(force = false) {
+            if (actionBusy && !force) return;
+            const backdrop = document.getElementById('ticketDrawerBackdrop');
+            if (!backdrop || backdrop.hidden) return;
+            backdrop.classList.remove('open');
+            document.body.classList.remove('drawer-open');
+            ticketDrawerOpen = false;
+            window.setTimeout(() => {
+                if (!backdrop.classList.contains('open')) backdrop.hidden = true;
+            }, 220);
+        }
+
+        function onTicketDrawerBackdrop(event) {
+            if (event.target !== event.currentTarget) return;
+            closeTicketDrawer();
         }
 
         function getManualOrderState() {
@@ -1210,17 +1366,13 @@
         function renderPositions(snapshot) {
             const allPositions = Array.isArray(snapshot?.positions) ? snapshot.positions.slice() : [];
             const positions = allPositions.filter((position) => Number(position?.quantity || 0) !== 0);
-            const flatPositions = allPositions.filter((position) => Number(position?.quantity || 0) === 0);
             positions.sort((a, b) => Math.abs(Number(b.market_value || 0)) - Math.abs(Number(a.market_value || 0)));
-            document.getElementById('positionsMeta').textContent = `${positions.length} open · flat ${flatPositions.length} · updated ${formatTimeLabel(snapshot?.fetched_at)}`;
+            document.getElementById('positionsMeta').textContent = `${positions.length} open · updated ${formatTimeLabel(snapshot?.fetched_at)}`;
             const area = document.getElementById('positionsArea');
             if (!positions.length) {
-                area.innerHTML = `<div class="empty-state">当前没有打开仓位。${flatPositions.length ? `仍有 ${flatPositions.length} 条 flat 记录留在 Gateway 返回里，但不会再被当作活跃持仓。` : '这里显示的是 Gateway 直接返回的真实仓位。'}</div>`;
+                area.innerHTML = '<div class="empty-state">当前没有打开仓位。这里显示的是 Gateway 直接返回的真实仓位。</div>';
                 return;
             }
-            const flatSummary = flatPositions.length
-                ? `<div class="surface-card" style="margin-top:12px"><div class="section-kicker">Flat Records</div><div class="ticket-copy">${flatPositions.map((position) => `${escapeHtml(position.symbol || '--')}(${escapeHtml(formatSignedMoney(position.realized_pnl || 0))})`).join(' · ')}</div></div>`
-                : '';
             area.innerHTML = `<div class="position-grid">${positions.map((position) => `
                 <div class="surface-card">
                     <div class="record-head">
@@ -1250,7 +1402,7 @@
                         <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction }).replace(/'/g, "&#39;")})'>市价平仓</button>
                     </div>
                 </div>
-            `).join('')}</div>${flatSummary}`;
+            `).join('')}</div>`;
         }
 
         function renderOrders(snapshot) {
@@ -1402,8 +1554,10 @@
                     document.getElementById('refreshInfo').textContent = `上次刷新：${formatTimeLabel(payload.snapshot.fetched_at)}`;
                 }
                 showToast(successMessage || `${label} 已执行`);
+                return true;
             } catch (error) {
                 showToast(`${label} 失败: ${error.message || error}`);
+                return false;
             } finally {
                 setActionState(false);
             }
@@ -1541,7 +1695,7 @@
                 return;
             }
 
-            await runAction(
+            const ok = await runAction(
                 '下单',
                 '/api/custom/ibkr/orders/place',
                 {
@@ -1555,6 +1709,10 @@
                 },
                 `${state.symbol} Bracket Order 已提交`
             );
+            if (ok) {
+                resetManualOrderForm();
+                closeTicketDrawer(true);
+            }
         }
 
         window.cancelAllOrders = cancelAllOrders;
@@ -1572,6 +1730,9 @@
         window.renderTicketPreview = renderTicketPreview;
         window.toggleEntryPriceField = toggleEntryPriceField;
         window.openHistoryOrdersPage = openHistoryOrdersPage;
+        window.openTicketDrawer = openTicketDrawer;
+        window.closeTicketDrawer = closeTicketDrawer;
+        window.onTicketDrawerBackdrop = onTicketDrawerBackdrop;
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
@@ -1586,6 +1747,12 @@
             renderTicketPreview();
             await loadAccountSnapshot(false);
             refreshTimer = setInterval(() => loadAccountSnapshot(false), 20000);
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && ticketDrawerOpen) {
+                closeTicketDrawer();
+            }
         });
     </script>
 </body>
