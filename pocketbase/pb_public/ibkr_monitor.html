@@ -1425,33 +1425,7 @@
             if (!initMonitorAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_monitor.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📊 IBKR 监控大盘', { description: '请求 / 订阅 / 主机健康' });
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                {
-                    path: '/ibkr_system.html',
-                    kicker: 'Overview',
-                    label: '总览',
-                    copy: '健康 / freshness / config'
-                },
-                {
-                    path: '/ibkr_monitor.html',
-                    kicker: 'Dashboard',
-                    label: '监控大盘',
-                    copy: '请求 / 订阅 / 主机健康',
-                    active: true
-                },
-                {
-                    path: '/ibkr_runtime.html',
-                    kicker: 'Console',
-                    label: '控制台',
-                    copy: '启动 / 2FA / compute / flow trace'
-                },
-                {
-                    path: '/ibkr_data_quality.html',
-                    kicker: 'Quality',
-                    label: '数据质量',
-                    copy: 'bars 缺口 / 重复 / 安全修复'
-                }
-            ]);
+            document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_monitor.html');
             await loadMonitorData(false);
             startPolling();
         });

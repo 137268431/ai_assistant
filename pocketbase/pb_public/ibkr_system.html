@@ -601,7 +601,7 @@
             <div class="page-header">
                 <div>
                     <div class="page-title">🖥️ IBKR 总览</div>
-                    <div class="page-copy">这里保留系统概览视角：健康度、freshness、统计快照、最近事件，以及最近回测统计。动作控制与 2FA 放到控制台，真实账户和下单入口放到账户页，三张页面通过顶部桥接互相联动。</div>
+                    <div class="page-copy">这里保留系统视角：健康度、freshness、统计快照、最近事件，以及最近回测统计。动作控制与 2FA 放到控制台；监控大盘、预热和数据质量已经移到独立的运维分组。</div>
                 </div>
                 <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
                     <div id="environmentHeader"></div>
@@ -1460,39 +1460,7 @@
             currentFocus = String(new URLSearchParams(window.location.search).get('focus') || '').trim().toLowerCase();
             document.getElementById('nav').innerHTML = renderNav('/ibkr_system.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🖥️ IBKR 总览', { description: '健康 / freshness / 配置总览' });
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                {
-                    path: '/ibkr_system.html',
-                    kicker: 'Monitor',
-                    label: '总览',
-                    copy: '健康 / freshness / config',
-                    active: currentFocus !== 'stats'
-                },
-                {
-                    path: '/ibkr_monitor.html',
-                    kicker: 'Dashboard',
-                    label: '监控大盘',
-                    copy: '请求 / 订阅 / 主机健康'
-                },
-                {
-                    path: '/ibkr_runtime.html',
-                    kicker: 'Console',
-                    label: '控制台',
-                    copy: '启动 / 2FA / compute / flow trace'
-                },
-                {
-                    path: '/ibkr_warmup.html',
-                    kicker: 'Warmup',
-                    label: '预热',
-                    copy: 'startup / gate / repair / symbol status'
-                },
-                {
-                    path: '/ibkr_data_quality.html',
-                    kicker: 'Quality',
-                    label: '数据质量',
-                    copy: 'bars 缺口 / 重复 / 安全修复'
-                }
-            ]);
+            document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_system.html');
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
             await loadSystemData(false);

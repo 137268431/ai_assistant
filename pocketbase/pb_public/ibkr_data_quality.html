@@ -971,33 +971,7 @@
       document.getElementById('contextBar').innerHTML = renderPageContextBar('🧩 数据质量', {
         description: '5 分钟K线完整性 / 派生周期同步 / 修复回写'
       });
-      document.getElementById('pageBridge').innerHTML = renderPageBridge([
-        {
-          path: '/ibkr_system.html',
-          kicker: 'Monitor',
-          label: '总览',
-          copy: '健康 / freshness / config'
-        },
-        {
-          path: '/ibkr_runtime.html',
-          kicker: 'Console',
-          label: '控制台',
-          copy: '启动 / 2FA / compute'
-        },
-        {
-          path: '/ibkr_warmup.html',
-          kicker: 'Warmup',
-          label: '预热',
-          copy: '启动 / 闸门 / 修复 / 标的状态'
-        },
-        {
-          path: '/ibkr_data_quality.html',
-          kicker: 'Quality',
-          label: '数据质量',
-          copy: 'K线完整性 / 安全修复',
-          active: true
-        }
-      ]);
+      document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_data_quality.html');
       document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
       await loadDataQuality(false);
     });

@@ -373,8 +373,9 @@ function renderNav(activePage) {
     { path: '/ibkr_account.html', icon: '💼', label: '账户' },
     { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html', '/ibkr_stats.html'], icon: '📈', label: '指标' },
     { path: '/ibkr_screener.html', aliases: ['/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '筛选' },
-    { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
-    { path: '/ibkr_system.html', aliases: ['/ibkr_monitor.html', '/ibkr_runtime.html', '/ibkr_warmup.html', '/ibkr_data_quality.html'], icon: '🖥️', label: '系统' }
+    { path: '/ibkr_monitor.html', aliases: ['/ibkr_warmup.html', '/ibkr_data_quality.html'], icon: '🛠️', label: '运维' },
+    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html'], icon: '🖥️', label: '系统' },
+    { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' }
   ];
 
   return `
@@ -1014,6 +1015,51 @@ function renderPageBridge(items = []) {
       }).join('')}
     </div>
   `;
+}
+
+function renderSystemBridge(activePage) {
+  return renderPageBridge([
+    {
+      path: '/ibkr_system.html',
+      kicker: 'Overview',
+      label: '总览',
+      copy: '健康 / freshness / config',
+      active: activePage === '/ibkr_system.html'
+    },
+    {
+      path: '/ibkr_runtime.html',
+      kicker: 'Console',
+      label: '控制台',
+      copy: '启动 / 2FA / compute / flow trace',
+      active: activePage === '/ibkr_runtime.html'
+    }
+  ]);
+}
+
+function renderOpsBridge(activePage) {
+  return renderPageBridge([
+    {
+      path: '/ibkr_monitor.html',
+      kicker: 'Dashboard',
+      label: '监控大盘',
+      copy: '请求 / 订阅 / 主机健康',
+      active: activePage === '/ibkr_monitor.html'
+    },
+    {
+      path: '/ibkr_warmup.html',
+      kicker: 'Warmup',
+      label: '预热',
+      copy: 'startup / gate / repair / symbol status',
+      active: activePage === '/ibkr_warmup.html'
+    },
+    {
+      path: '/ibkr_data_quality.html',
+      kicker: 'Quality',
+      label: '数据质量',
+      copy: 'bars 缺口 / 重复 / 安全修复',
+      active: activePage === '/ibkr_data_quality.html'
+    }
+  ]);
 }
 
 // ── 通用 CSS 样式 ──
@@ -1911,3 +1957,5 @@ window.closeIndicatorModal = function() {
 
 window.showIndicatorModal = showIndicatorModal;
 window.getIndicatorModalStyles = getIndicatorModalStyles;
+window.renderSystemBridge = renderSystemBridge;
+window.renderOpsBridge = renderOpsBridge;

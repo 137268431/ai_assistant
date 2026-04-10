@@ -941,12 +941,7 @@
             if (!initWarmupAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_warmup.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🔥 Warmup 预热', { description: '启动进度 / 修复 / symbol readiness' });
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                { path: '/ibkr_system.html', kicker: 'Monitor', label: '总览', copy: '健康 / freshness / config' },
-                { path: '/ibkr_runtime.html', kicker: 'Console', label: '控制台', copy: '启动 / 2FA / compute / flow trace' },
-                { path: '/ibkr_warmup.html', kicker: 'Warmup', label: '预热', copy: 'startup / gate / repair / symbol status', active: true },
-                { path: '/ibkr_data_quality.html', kicker: 'Quality', label: '数据质量', copy: 'bars 缺口 / 重复 / 安全修复' }
-            ]);
+            document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_warmup.html');
             document.getElementById('symbolSearch').addEventListener('input', () => {
                 if (lastStatusPayload) renderSymbolTable(normalizeWarmup(lastStatusPayload));
             });

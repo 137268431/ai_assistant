@@ -402,7 +402,7 @@
         </div>
 
         <div class="quick-actions">
-            <div class="section-title">快捷入口</div>
+            <div class="section-title">交易快捷入口</div>
             <div class="action-grid">
                 <a id="actionSignalsLink" href="/ibkr_signals.html" class="action-card">
                     <div class="action-icon">📡</div>
@@ -424,10 +424,42 @@
                     <div class="action-label">指标监控</div>
                     <div class="action-desc">查看技术指标</div>
                 </a>
+            </div>
+        </div>
+
+        <div class="quick-actions">
+            <div class="section-title">系统快捷入口</div>
+            <div class="action-grid">
+                <a id="actionSystemOverviewLink" href="/ibkr_system.html" class="action-card">
+                    <div class="action-icon">🖥️</div>
+                    <div class="action-label">系统总览</div>
+                    <div class="action-desc">查看健康、freshness 和配置概况</div>
+                </a>
+                <a id="actionRuntimeLink" href="/ibkr_runtime.html" class="action-card">
+                    <div class="action-icon">🎛️</div>
+                    <div class="action-label">控制台</div>
+                    <div class="action-desc">处理启动、2FA 和链路控制</div>
+                </a>
+            </div>
+        </div>
+
+        <div class="quick-actions">
+            <div class="section-title">运维快捷入口</div>
+            <div class="action-grid">
+                <a id="actionMonitorLink" href="/ibkr_monitor.html" class="action-card">
+                    <div class="action-icon">📊</div>
+                    <div class="action-label">监控大盘</div>
+                    <div class="action-desc">查看请求、订阅和主机健康</div>
+                </a>
                 <a id="actionWarmupLink" href="/ibkr_warmup.html" class="action-card">
                     <div class="action-icon">🔥</div>
                     <div class="action-label">Warmup 进度</div>
                     <div class="action-desc">查看启动预热和修复进度</div>
+                </a>
+                <a id="actionQualityLink" href="/ibkr_data_quality.html" class="action-card">
+                    <div class="action-icon">🧩</div>
+                    <div class="action-label">数据质量</div>
+                    <div class="action-desc">查看 K 线完整性和安全修复</div>
                 </a>
             </div>
         </div>
@@ -483,7 +515,11 @@
             document.getElementById('actionReverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
             document.getElementById('actionOrdersLink').href = buildPageUrl('/orders.html');
             document.getElementById('actionIndicatorsLink').href = buildPageUrl('/ibkr_indicators.html');
+            document.getElementById('actionSystemOverviewLink').href = buildPageUrl('/ibkr_system.html');
+            document.getElementById('actionRuntimeLink').href = buildPageUrl('/ibkr_runtime.html');
+            document.getElementById('actionMonitorLink').href = buildPageUrl('/ibkr_monitor.html');
             document.getElementById('actionWarmupLink').href = buildPageUrl('/ibkr_warmup.html');
+            document.getElementById('actionQualityLink').href = buildPageUrl('/ibkr_data_quality.html');
         }
 
         async function initAuth() {
