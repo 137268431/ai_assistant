@@ -137,6 +137,11 @@
             color: #d7f0ff;
         }
 
+        .toolbar-btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
         .tf-group {
             display: flex;
             gap: 8px;
@@ -204,7 +209,7 @@
 
         .cursor-strip {
             display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 8px;
             margin-top: 12px;
         }
@@ -257,6 +262,100 @@
             font-size: 13px;
             font-weight: 700;
             line-height: 1.45;
+        }
+
+        .cursor-value.compact {
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .compare-status-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+
+        .compare-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            border-radius: 999px;
+            padding: 5px 9px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(8, 12, 20, 0.88);
+            color: var(--muted);
+        }
+
+        .compare-pill.match {
+            border-color: rgba(72,187,120,0.22);
+            color: #bbf7d0;
+        }
+
+        .compare-pill.mismatch,
+        .compare-pill.missing_stored,
+        .compare-pill.missing_ibkr {
+            border-color: rgba(252,129,129,0.24);
+            color: #fecaca;
+        }
+
+        .compare-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .compare-item {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            border-radius: 12px;
+            background: rgba(20, 28, 46, 0.72);
+            padding: 10px;
+            align-items: center;
+        }
+
+        .compare-item.interactive {
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+        }
+
+        .compare-item.interactive:hover {
+            border-color: rgba(99,179,237,0.22);
+            background: rgba(24, 36, 58, 0.9);
+            transform: translateY(-1px);
+        }
+
+        .compare-item.disabled {
+            opacity: 0.66;
+        }
+
+        .compare-side {
+            display: grid;
+            gap: 4px;
+            min-width: 0;
+        }
+
+        .compare-title {
+            font-size: 12px;
+            color: var(--text);
+            font-weight: 700;
+        }
+
+        .compare-meta {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .compare-copy {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.7;
         }
 
         .workspace {
@@ -750,6 +849,8 @@
                 <div class="symbol-form">
                     <input id="chartSymbolInput" class="symbol-input" type="text" placeholder="AAPL" maxlength="12">
                     <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
+                    <button class="toolbar-btn" id="compareBtn" type="button" onclick="runIbkrCompare()">IBKR 对比</button>
+                    <button class="toolbar-btn" id="clearCompareBtn" type="button" onclick="clearIbkrCompare()">清空对比</button>
                     <button class="toolbar-btn" type="button" onclick="reloadChartPage()">刷新图表</button>
                 </div>
                 <div class="toolbar-filters">
@@ -811,6 +912,9 @@
         let currentIndicatorId = '';
         let chartInstance = null;
         let lastPayload = null;
+        let comparePayload = null;
+        let compareLoading = false;
+        let compareError = '';
         let selectedBarIndex = -1;
         let selectedSignalId = '';
         let hoverBarIndex = -1;
@@ -1125,6 +1229,166 @@
             throw lastError || new Error(`Failed to request ${path}`);
         }
 
+        function buildTimelinePayloadFromResponse(response) {
+            const bars = Array.isArray(response?.bars)
+                ? response.bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
+            const indicators = Array.isArray(response?.indicator_timeline)
+                ? response.indicator_timeline.map((item) => normalizeIndicatorRecord(item)).sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
+            const signals = Array.isArray(response?.signals)
+                ? response.signals.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
+            const latestIndicator = normalizeIndicatorRecord(response?.latest_indicator || null) || (indicators.length ? indicators[indicators.length - 1] : null);
+            return {
+                latestIndicator,
+                bars,
+                indicators,
+                signals,
+                meta: response?.meta && typeof response.meta === 'object' ? response.meta : {}
+            };
+        }
+
+        function buildComparePayloadFromResponse(response) {
+            const comparison = response?.comparison && typeof response.comparison === 'object'
+                ? response.comparison
+                : { summary: {}, timeline: [], mismatch_examples: [] };
+            const timeline = Array.isArray(comparison.timeline)
+                ? comparison.timeline.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
+            return {
+                storedTimeline: buildTimelinePayloadFromResponse(response?.stored_timeline || {}),
+                ibkrTimeline: buildTimelinePayloadFromResponse(response?.ibkr_timeline || {}),
+                comparison: {
+                    summary: comparison.summary || {},
+                    timeline,
+                    mismatch_examples: Array.isArray(comparison.mismatch_examples) ? comparison.mismatch_examples : []
+                },
+                meta: response?.meta && typeof response.meta === 'object' ? response.meta : {},
+                rowByMs: new Map(
+                    timeline
+                        .map((item) => [Number(item?.bar_time_ms || 0), item])
+                        .filter(([barTimeMs]) => barTimeMs > 0)
+                )
+            };
+        }
+
+        function isCompareSupportedRange() {
+            return normalizeRangeKey(currentRangeKey, currentInterval) !== 'all';
+        }
+
+        function renderCompareButtons() {
+            const compareBtn = document.getElementById('compareBtn');
+            const clearCompareBtn = document.getElementById('clearCompareBtn');
+            if (compareBtn) {
+                compareBtn.textContent = compareLoading ? 'IBKR 对比中...' : (comparePayload ? '重新对比' : 'IBKR 对比');
+                compareBtn.disabled = compareLoading
+                    || !isCompareSupportedRange()
+                    || !currentSymbol
+                    || !lastPayload
+                    || !Array.isArray(lastPayload.bars)
+                    || !lastPayload.bars.length;
+                compareBtn.title = isCompareSupportedRange() ? '' : '当前 v1 不支持 ALL 范围的 IBKR 对比';
+            }
+            if (clearCompareBtn) {
+                clearCompareBtn.disabled = compareLoading || (!comparePayload && !compareError);
+            }
+        }
+
+        function resetCompareState({ keepError = false } = {}) {
+            comparePayload = null;
+            compareLoading = false;
+            if (!keepError) compareError = '';
+            renderCompareButtons();
+        }
+
+        function getCompareRowByBarTime(barTimeMs) {
+            const target = Number(barTimeMs || 0);
+            if (!comparePayload || !target) return null;
+            return comparePayload.rowByMs.get(target) || null;
+        }
+
+        function getCompareStatusLabel(status) {
+            const key = String(status || '').trim().toLowerCase();
+            if (key === 'match') return '一致';
+            if (key === 'mismatch') return '不一致';
+            if (key === 'missing_stored') return 'Stored 缺失';
+            if (key === 'missing_ibkr') return 'IBKR 缺失';
+            if (key === 'loading') return '对比中';
+            return '未对比';
+        }
+
+        function getCompareStatusClass(status) {
+            const key = String(status || '').trim().toLowerCase();
+            if (['match', 'mismatch', 'missing_stored', 'missing_ibkr'].includes(key)) return key;
+            return '';
+        }
+
+        function buildCompareStatusPills(statusMap) {
+            if (!statusMap || typeof statusMap !== 'object') return '';
+            const defs = [
+                { key: 'bar', label: 'Bars' },
+                { key: 'indicator', label: 'Ind' },
+                { key: 'signal', label: 'Signal' },
+            ];
+            return defs.map((item) => `
+                <span class="compare-pill ${getCompareStatusClass(statusMap[item.key])}">
+                    ${escapeHtml(item.label)} ${escapeHtml(getCompareStatusLabel(statusMap[item.key]))}
+                </span>
+            `).join('');
+        }
+
+        function summarizeCompareFields(group, emptyText = '一致') {
+            if (!group || typeof group !== 'object') return emptyText;
+            const status = String(group.status || '').trim().toLowerCase();
+            if (status === 'match') return emptyText;
+            if (status === 'missing_stored') return 'Stored 缺失';
+            if (status === 'missing_ibkr') return 'IBKR 缺失';
+            if (status === 'absent') return '无数据';
+            const fields = Array.isArray(group.fields) ? group.fields : [];
+            return fields.length ? fields.join(', ') : emptyText;
+        }
+
+        function buildCompareDiffCopy(compareRow) {
+            if (!compareRow || typeof compareRow !== 'object') return '尚未运行 IBKR 对比。';
+            const barText = summarizeCompareFields(compareRow?.diff?.bar, 'Bars 一致');
+            const indicatorText = summarizeCompareFields(compareRow?.diff?.indicator, 'Indicators 一致');
+            const signalText = summarizeCompareFields(compareRow?.diff?.signal, 'Signals 一致');
+            return `Bars: ${barText}<br>Indicators: ${indicatorText}<br>Signals: ${signalText}`;
+        }
+
+        function formatCompareBarSummary(bar) {
+            if (!bar) return '--';
+            return `${escapeHtml(formatPrice(bar.open))} / ${escapeHtml(formatPrice(bar.high))}<br>${escapeHtml(formatPrice(bar.low))} / ${escapeHtml(formatPrice(bar.close))}<br>Vol ${escapeHtml(formatNumber(bar.volume || 0, 0))}`;
+        }
+
+        function formatCompareChainSummary(indicator, signal) {
+            const line1 = indicator
+                ? `EMA20 ${escapeHtml(formatPrice(indicator.ema_fast))} · EMA50 ${escapeHtml(formatPrice(indicator.ema_slow))}`
+                : 'EMA --';
+            const line2 = indicator
+                ? `VWAP ${escapeHtml(formatPrice(indicator.vwap))} · CRSI ${escapeHtml(formatNumber(indicator.crsi))}`
+                : 'VWAP / CRSI --';
+            const line3 = indicator
+                ? `OBV ${escapeHtml(formatNumber(indicator.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator.atr_pct))}`
+                : 'OBV / ATR --';
+            const line4 = signal
+                ? `${escapeHtml(String(signal.signal || signal.direction || '--'))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}`
+                : '无信号';
+            return `${line1}<br>${line2}<br>${line3}<br>${line4}`;
+        }
+
+        function buildCompareErrorCard() {
+            if (!compareError) return '';
+            return `
+                <div class="rail-card">
+                    <div class="rail-kicker">IBKR Compare</div>
+                    <div class="rail-value" style="font-size:18px;color:#fecaca;">对比失败</div>
+                    <div class="rail-sub">${escapeHtml(compareError)}</div>
+                </div>
+            `;
+        }
+
         function isComputedSignal(signal) {
             const status = String(signal?.status || '').trim().toLowerCase();
             const sourceKind = String(signal?.source_kind || signal?.extra?.source_kind || '').trim().toLowerCase();
@@ -1178,6 +1442,14 @@
                 `<span class="hero-chip">${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>`,
                 `<span class="hero-chip">最后bar ${escapeHtml(latest?.us_time || (payload?.bars?.length ? payload.bars[payload.bars.length - 1]?.us_time || '--' : '--'))}</span>`
             ];
+            if (compareLoading) {
+                chips.push('<span class="hero-chip">IBKR 对比中</span>');
+            } else if (comparePayload) {
+                const summary = comparePayload?.comparison?.summary || {};
+                chips.push(`<span class="hero-chip">IBKR 对比 bar ${escapeHtml(String(summary.bar_mismatch_count || 0))} · ind ${escapeHtml(String(summary.indicator_mismatch_count || 0))} · sig ${escapeHtml(String(summary.signal_mismatch_count || 0))}</span>`);
+            } else if (compareError) {
+                chips.push('<span class="hero-chip">IBKR 对比失败</span>');
+            }
             document.getElementById('heroStatus').innerHTML = chips.join('');
         }
 
@@ -1208,6 +1480,19 @@
                 `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`,
                 `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`
             ];
+            if (compareLoading) {
+                chips.push('IBKR compare loading');
+            } else if (comparePayload) {
+                const summary = comparePayload?.comparison?.summary || {};
+                chips.push(`stored ${summary.stored_visible_bars || 0}`);
+                chips.push(`ibkr ${summary.ibkr_visible_bars || 0}`);
+                chips.push(`bar diff ${summary.bar_mismatch_count || 0}`);
+                chips.push(`ind diff ${summary.indicator_mismatch_count || 0}`);
+                chips.push(`signal diff ${summary.signal_mismatch_count || 0}`);
+                chips.push(`missing ${Number(summary.missing_stored_bar_count || 0) + Number(summary.missing_ibkr_bar_count || 0)}`);
+            } else if (compareError) {
+                chips.push('IBKR compare error');
+            }
             document.getElementById('summaryStrip').innerHTML = chips.map((item) => `<span class="summary-chip">${escapeHtml(item)}</span>`).join('');
         }
 
@@ -1244,6 +1529,37 @@
             const bar = context?.bar || null;
             const indicator = context?.indicator || null;
             const signal = context?.activeSignal || null;
+            const compareRow = getCompareRowByBarTime(bar?.bar_time_ms);
+            if (comparePayload && compareRow) {
+                document.getElementById('cursorStrip').innerHTML = `
+                    <div class="cursor-card">
+                        <div class="cursor-label">Cursor Time</div>
+                        <div class="cursor-value">${escapeHtml(bar?.us_time || '--')}</div>
+                        <div class="compare-status-row">${buildCompareStatusPills(compareRow.status)}</div>
+                    </div>
+                    <div class="cursor-card">
+                        <div class="cursor-label">Stored Bars</div>
+                        <div class="cursor-value compact">${formatCompareBarSummary(compareRow?.stored?.bar)}</div>
+                    </div>
+                    <div class="cursor-card">
+                        <div class="cursor-label">IBKR API Bars</div>
+                        <div class="cursor-value compact">${formatCompareBarSummary(compareRow?.ibkr?.bar)}</div>
+                    </div>
+                    <div class="cursor-card">
+                        <div class="cursor-label">Stored Chain</div>
+                        <div class="cursor-value compact">${formatCompareChainSummary(compareRow?.stored?.indicator, compareRow?.stored?.signal)}</div>
+                    </div>
+                    <div class="cursor-card">
+                        <div class="cursor-label">IBKR API Chain</div>
+                        <div class="cursor-value compact">${formatCompareChainSummary(compareRow?.ibkr?.indicator, compareRow?.ibkr?.signal)}</div>
+                    </div>
+                    <div class="cursor-card">
+                        <div class="cursor-label">Diff</div>
+                        <div class="cursor-value compact">${buildCompareDiffCopy(compareRow)}</div>
+                    </div>
+                `;
+                return;
+            }
             document.getElementById('cursorStrip').innerHTML = `
                 <div class="cursor-card">
                     <div class="cursor-label">Cursor Time</div>
@@ -1451,8 +1767,119 @@
             const ordersUrl = buildPageUrl('/orders.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(focusSignal, focusDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
+            const compareRow = getCompareRowByBarTime(focusBar?.bar_time_ms);
+
+            if (comparePayload) {
+                const compareSummary = comparePayload?.comparison?.summary || {};
+                const mismatchExamples = Array.isArray(comparePayload?.comparison?.mismatch_examples)
+                    ? comparePayload.comparison.mismatch_examples
+                    : [];
+                const compareListHtml = mismatchExamples.length
+                    ? mismatchExamples.map((item) => {
+                        const barTimeMs = Number(item?.bar_time_ms || 0);
+                        const focusable = findBarIndexByTime(bars, barTimeMs) >= 0;
+                        return `
+                            <div class="compare-item ${focusable ? 'interactive' : 'disabled'}" ${focusable ? `onclick="focusCompareBar('${barTimeMs}')"` : ''}>
+                                <div class="compare-side">
+                                    <div class="compare-title">${escapeHtml(item?.us_time || formatBarTimeMsToET(barTimeMs) || '--')}</div>
+                                    <div class="compare-meta">Bars ${escapeHtml(getCompareStatusLabel(item?.status?.bar))} · Ind ${escapeHtml(getCompareStatusLabel(item?.status?.indicator))} · Sig ${escapeHtml(getCompareStatusLabel(item?.status?.signal))}</div>
+                                    <div class="compare-meta">bar ${escapeHtml((item?.bar_fields || []).join(', ') || '--')} · ind ${escapeHtml((item?.indicator_fields || []).join(', ') || '--')} · sig ${escapeHtml((item?.signal_fields || []).join(', ') || '--')}</div>
+                                </div>
+                                <span class="compare-pill ${getCompareStatusClass(item?.status?.bar)}">${focusable ? '聚焦' : '仅提示'}</span>
+                            </div>
+                        `;
+                    }).join('')
+                    : '<div class="rail-sub">当前窗口没有发现 bars / indicators / signals 差异。</div>';
+
+                document.getElementById('infoRail').innerHTML = `
+                    ${buildCompareErrorCard()}
+                    <div class="rail-card">
+                        <div class="rail-kicker">Focus</div>
+                        <div class="rail-value">${focusBar ? formatPrice(focusBar.close) : '--'}</div>
+                        <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}<br>${escapeHtml(focusBar?.us_time || '--')}</div>
+                        <div class="metric-grid">
+                            <div class="metric-item"><div class="metric-label">Open / High</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.open))} / ${escapeHtml(formatPrice(focusBar.high))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Low / Close</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.low))} / ${escapeHtml(formatPrice(focusBar.close))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Volume</div><div class="metric-value">${focusBar ? escapeHtml(formatNumber(focusBar.volume || 0, 0)) : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(String(focusSignal.signal || focusSignal.direction || '--')) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
+                        </div>
+                        <div class="focus-actions">
+                            ${focusSignal ? `<button class="mini-link mini-link-btn" type="button" onclick="openFocusedSignalDrawer()">信号详情</button>` : ''}
+                            <a class="mini-link" href="${signalUrl}">历史信号页</a>
+                            <a class="mini-link" href="${ordersUrl}">历史订单页</a>
+                            ${orderDetailsUrl ? `<a class="mini-link" href="${orderDetailsUrl}">订单明细</a>` : ''}
+                            <a class="mini-link" href="${accountUrl}">账户页</a>
+                        </div>
+                    </div>
+                    <div class="rail-card">
+                        <div class="rail-kicker">Stored Bars Chain</div>
+                        <div class="rail-value">${compareRow?.stored?.bar ? formatPrice(compareRow.stored.bar.close) : '--'}</div>
+                        <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · Stored bars<br>${escapeHtml(compareRow?.stored?.bar?.us_time || focusBar?.us_time || '--')}</div>
+                        <div class="metric-grid">
+                            <div class="metric-item"><div class="metric-label">OHLC</div><div class="metric-value">${compareRow?.stored?.bar ? `${escapeHtml(formatPrice(compareRow.stored.bar.open))} / ${escapeHtml(formatPrice(compareRow.stored.bar.high))}<br>${escapeHtml(formatPrice(compareRow.stored.bar.low))} / ${escapeHtml(formatPrice(compareRow.stored.bar.close))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">EMA / VWAP</div><div class="metric-value">${compareRow?.stored?.indicator ? `${escapeHtml(formatPrice(compareRow.stored.indicator.ema_fast))} / ${escapeHtml(formatPrice(compareRow.stored.indicator.ema_slow))}<br>${escapeHtml(formatPrice(compareRow.stored.indicator.vwap))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">CRSI / OBV</div><div class="metric-value">${compareRow?.stored?.indicator ? `${escapeHtml(formatNumber(compareRow.stored.indicator.crsi))} / ${escapeHtml(formatNumber(compareRow.stored.indicator.obv_rsi))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${compareRow?.stored?.signal ? `${escapeHtml(String(compareRow.stored.signal.signal || '--'))}<br>${escapeHtml(String(compareRow.stored.signal.direction || '--').toUpperCase())}` : '无信号'}</div></div>
+                        </div>
+                    </div>
+                    <div class="rail-card">
+                        <div class="rail-kicker">IBKR API Chain</div>
+                        <div class="rail-value">${compareRow?.ibkr?.bar ? formatPrice(compareRow.ibkr.bar.close) : '--'}</div>
+                        <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · IBKR API bars<br>${escapeHtml(compareRow?.ibkr?.bar?.us_time || focusBar?.us_time || '--')}</div>
+                        <div class="metric-grid">
+                            <div class="metric-item"><div class="metric-label">OHLC</div><div class="metric-value">${compareRow?.ibkr?.bar ? `${escapeHtml(formatPrice(compareRow.ibkr.bar.open))} / ${escapeHtml(formatPrice(compareRow.ibkr.bar.high))}<br>${escapeHtml(formatPrice(compareRow.ibkr.bar.low))} / ${escapeHtml(formatPrice(compareRow.ibkr.bar.close))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">EMA / VWAP</div><div class="metric-value">${compareRow?.ibkr?.indicator ? `${escapeHtml(formatPrice(compareRow.ibkr.indicator.ema_fast))} / ${escapeHtml(formatPrice(compareRow.ibkr.indicator.ema_slow))}<br>${escapeHtml(formatPrice(compareRow.ibkr.indicator.vwap))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">CRSI / OBV</div><div class="metric-value">${compareRow?.ibkr?.indicator ? `${escapeHtml(formatNumber(compareRow.ibkr.indicator.crsi))} / ${escapeHtml(formatNumber(compareRow.ibkr.indicator.obv_rsi))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${compareRow?.ibkr?.signal ? `${escapeHtml(String(compareRow.ibkr.signal.signal || '--'))}<br>${escapeHtml(String(compareRow.ibkr.signal.direction || '--').toUpperCase())}` : '无信号'}</div></div>
+                        </div>
+                    </div>
+                    <div class="rail-card">
+                        <div class="rail-kicker">Comparison</div>
+                        <div class="metric-grid">
+                            <div class="metric-item"><div class="metric-label">Matched Bars</div><div class="metric-value">${escapeHtml(String(compareSummary.matched_bar_count || 0))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Missing Bars</div><div class="metric-value">${escapeHtml(String((compareSummary.missing_stored_bar_count || 0) + (compareSummary.missing_ibkr_bar_count || 0)))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Bar Diff</div><div class="metric-value">${escapeHtml(String(compareSummary.bar_mismatch_count || 0))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal Diff</div><div class="metric-value">${escapeHtml(String(compareSummary.signal_mismatch_count || 0))}</div></div>
+                        </div>
+                        <div class="compare-status-row">${buildCompareStatusPills(compareRow?.status)}</div>
+                        <div class="compare-copy">${buildCompareDiffCopy(compareRow)}</div>
+                        <div class="compare-list">${compareListHtml}</div>
+                    </div>
+                    <div class="rail-card">
+                        <div class="rail-kicker">Signal Flow</div>
+                        <div class="metric-grid">
+                            <div class="metric-item"><div class="metric-label">多头信号</div><div class="metric-value">${longCount}</div></div>
+                            <div class="metric-item"><div class="metric-label">空头信号</div><div class="metric-value">${shortCount}</div></div>
+                            <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(String(latestSignal.signal || latestSignal.direction || '--')) : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
+                        </div>
+                        <div class="rail-sub">主图仍使用 stored bars 链路；IBKR 对比是临时拉取，不写回库。</div>
+                    </div>
+                    <div class="rail-card">
+                        <div class="rail-kicker">Recent Signals</div>
+                        <div class="signal-list">
+                            ${signals.slice(0, 12).map((signal) => {
+                                const signalMs = Number(signal.bar_time_ms || 0) || 0;
+                                const encodedSignalKey = encodeURIComponent(String(signal.signal_id || signal.id || ''));
+                                const isActive = activeSignalKey && activeSignalKey === String(signal.signal_id || signal.id || '');
+                                return `
+                                    <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
+                                        <div class="signal-side">
+                                            <div class="signal-title">${escapeHtml(getSignalActionText(signal))}</div>
+                                            <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}</div>
+                                        </div>
+                                        <span class="signal-badge ${escapeHtml(getSignalBadgeClass(signal))}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
+                                    </div>
+                                `;
+                            }).join('') || '<div class="rail-sub">当前窗口暂无实时重算信号。</div>'}
+                        </div>
+                    </div>
+                `;
+                return;
+            }
 
             document.getElementById('infoRail').innerHTML = `
+                ${buildCompareErrorCard()}
                 <div class="rail-card">
                     <div class="rail-kicker">Focus</div>
                     <div class="rail-value">${focusBar ? formatPrice(focusBar.close) : '--'}</div>
@@ -1621,12 +2048,20 @@
             );
 
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)} 图表页`;
-            document.getElementById('chartMeta').textContent = `${sortedBars.length} bars · ${indicators.length} ind · ${signals.length} signals · ${latest?.us_time || sortedBars[sortedBars.length - 1]?.us_time || '--'}`;
+            const compareSummary = comparePayload?.comparison?.summary || null;
+            document.getElementById('chartMeta').textContent = compareSummary
+                ? `${sortedBars.length} bars · ${indicators.length} ind · ${signals.length} signals · compare bar ${compareSummary.bar_mismatch_count || 0} / ind ${compareSummary.indicator_mismatch_count || 0} / sig ${compareSummary.signal_mismatch_count || 0}`
+                : `${sortedBars.length} bars · ${indicators.length} ind · ${signals.length} signals · ${latest?.us_time || sortedBars[sortedBars.length - 1]?.us_time || '--'}`;
             note.textContent = !indicators.length
                 ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
                 ? `可用上方图层按钮切换 EMA / VWAP / Signals / Volume；当前主图${chartLayerState.signals ? '已叠加' : '未叠加'}实时重算信号点。`
                 : '当前为非 5m 周期，主图只展示 bars 实时重算出的价格结构与指标轨迹；仍可用图层按钮切换 EMA / VWAP / Volume。';
+            if (comparePayload) {
+                note.textContent += ' 当前主图仍展示 stored bars 链路；右侧 Compare 与上方 Cursor 显示 IBKR API 临时对比结果。';
+            } else if (compareError) {
+                note.textContent += ' 最近一次 IBKR 对比失败，可查看右侧错误卡。';
+            }
 
             if (chartInstance) {
                 chartInstance.dispose();
@@ -1754,12 +2189,14 @@
             if (!currentSymbol) {
                 await resolveInitialContext();
             }
+            resetCompareState();
 
             const input = document.getElementById('chartSymbolInput');
             if (input && currentSymbol) input.value = currentSymbol;
             renderTimeframeGroup();
             renderRangeGroup();
             renderLayerStrip();
+            renderCompareButtons();
             closeSignalDrawer();
             document.getElementById('cursorStrip').innerHTML = '';
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} 图表页`;
@@ -1784,17 +2221,11 @@
                         include_signals: currentInterval === '5m'
                     }
                 }, 2);
-
-                const bars = Array.isArray(timelineResp?.bars)
-                    ? timelineResp.bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
-                    : [];
-                const indicators = Array.isArray(timelineResp?.indicator_timeline)
-                    ? timelineResp.indicator_timeline.map((item) => normalizeIndicatorRecord(item)).sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
-                    : [];
-                const signals = Array.isArray(timelineResp?.signals)
-                    ? timelineResp.signals.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
-                    : [];
-                const latestIndicator = normalizeIndicatorRecord(timelineResp?.latest_indicator || null) || (indicators.length ? indicators[indicators.length - 1] : null);
+                const timelinePayload = buildTimelinePayloadFromResponse(timelineResp);
+                const bars = timelinePayload.bars;
+                const indicators = timelinePayload.indicators;
+                const signals = timelinePayload.signals;
+                const latestIndicator = timelinePayload.latestIndicator;
 
                 if (latestIndicator) {
                     currentAnchorMs = Number(latestIndicator.bar_time_ms || currentAnchorMs) || currentAnchorMs;
@@ -1803,11 +2234,12 @@
                 }
                 currentIndicatorId = '';
 
-                lastPayload = { latestIndicator, bars, indicators, signals };
+                lastPayload = timelinePayload;
                 renderHeroStatus(lastPayload);
                 renderSummaryStrip(lastPayload);
                 renderInfoRail(lastPayload);
                 renderChart(lastPayload);
+                renderCompareButtons();
                 updateQueryState();
             } catch (error) {
                 if (chartInstance) {
@@ -1820,6 +2252,69 @@
                 document.getElementById('chartCanvas').innerHTML = `<div class="chart-empty">加载失败：${escapeHtml(error.message || 'unknown error')}<br>请确认该标的在当前环境已有 <code>ibkr_bars</code> 数据。</div>`;
                 document.getElementById('chartNote').textContent = '图表页只依赖 ibkr_bars；历史指标页和信号页仅作为记录与状态流转使用。';
                 document.getElementById('infoRail').innerHTML = `<div class="rail-card"><div class="rail-kicker">Load Error</div><div class="rail-sub">${escapeHtml(error.message || 'unknown error')}</div></div>`;
+                renderCompareButtons();
+            }
+        }
+
+        async function runIbkrCompareInternal() {
+            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) {
+                showToast('当前没有可对比的 bars');
+                return;
+            }
+            if (!isCompareSupportedRange()) {
+                showToast('当前 v1 不支持 ALL 范围的 IBKR 对比');
+                return;
+            }
+            compareLoading = true;
+            compareError = '';
+            comparePayload = null;
+            renderCompareButtons();
+            renderHeroStatus(lastPayload);
+            renderSummaryStrip(lastPayload);
+            renderInfoRail(lastPayload);
+            renderCursorStrip(lastPayload);
+
+            const cappedMs = currentAnchorMs || Number(lastPayload.bars[lastPayload.bars.length - 1]?.bar_time_ms || Date.now()) || Date.now();
+            const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
+
+            try {
+                const response = await requestChartJson('/api/custom/ibkr/proxy', {
+                    method: 'POST',
+                    body: {
+                        action: 'chart/compare',
+                        environment: currentEnvironment,
+                        symbol: currentSymbol,
+                        interval: currentInterval,
+                        start_ms: rangeStartMs,
+                        end_ms: cappedMs,
+                        include_signals: currentInterval === '5m'
+                    }
+                }, 1);
+                comparePayload = buildComparePayloadFromResponse(response);
+                compareError = '';
+                if (comparePayload?.storedTimeline?.bars?.length) {
+                    lastPayload = comparePayload.storedTimeline;
+                }
+                renderHeroStatus(lastPayload);
+                renderSummaryStrip(lastPayload);
+                renderInfoRail(lastPayload);
+                renderChart(lastPayload);
+                renderCompareButtons();
+            } catch (error) {
+                compareError = error?.message || 'IBKR compare failed';
+                comparePayload = null;
+                renderHeroStatus(lastPayload);
+                renderSummaryStrip(lastPayload);
+                renderInfoRail(lastPayload);
+                renderCursorStrip(lastPayload);
+                renderCompareButtons();
+            } finally {
+                compareLoading = false;
+                renderHeroStatus(lastPayload);
+                renderSummaryStrip(lastPayload);
+                renderInfoRail(lastPayload);
+                renderCursorStrip(lastPayload);
+                renderCompareButtons();
             }
         }
 
@@ -1882,6 +2377,30 @@
             await loadChartWorkspace();
         };
 
+        window.runIbkrCompare = async function() {
+            await runIbkrCompareInternal();
+        };
+
+        window.clearIbkrCompare = function() {
+            resetCompareState();
+            if (lastPayload) {
+                renderHeroStatus(lastPayload);
+                renderSummaryStrip(lastPayload);
+                renderInfoRail(lastPayload);
+                renderCursorStrip(lastPayload);
+            }
+        };
+
+        window.focusCompareBar = function(barTimeMs) {
+            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const index = findBarIndexByTime(lastPayload.bars, barTimeMs);
+            if (index < 0) {
+                showToast('该异常 bar 不在当前 stored bars 主图中');
+                return;
+            }
+            focusBarIndex(index, '');
+        };
+
         window.closeSignalDrawer = closeSignalDrawer;
         window.openFocusedSignalDrawer = openFocusedSignalDrawer;
 
@@ -1930,6 +2449,7 @@
             });
 
             renderLayerStrip();
+            renderCompareButtons();
             await resolveInitialContext();
             await loadChartWorkspace();
 

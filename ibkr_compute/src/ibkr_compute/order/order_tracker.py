@@ -388,8 +388,8 @@ class OrderTracker:
 
     def register_submitted_orders(self, order_ids: List[str], seed: Optional[Dict] = None):
         seed = seed or {}
-        clean_ids = [str(item).strip() for item in (order_ids or []) if str(item).strip()]
-        if not clean_ids:
+        indexed_ids = [str(item or "").strip() for item in (order_ids or [])]
+        if not any(indexed_ids):
             return
 
         symbol = str(seed.get("symbol") or "").strip().upper()
@@ -404,49 +404,52 @@ class OrderTracker:
         tp_price = seed.get("tp_price", 0)
         sl_price = seed.get("sl_price", 0)
 
-        for index, order_id in enumerate(clean_ids):
-            if index == 0:
-                self._known_orders[order_id] = self._stamp_known_order({
-                    "orderId": order_id,
-                    "ticker": symbol,
-                    "side": side,
-                    "orderType": "LMT",
-                    "price": entry_price,
-                    "totalSize": quantity,
-                    "filledQuantity": 0,
-                    "avgPrice": 0,
-                    "parentId": "",
-                    "status": "SUBMITTED",
-                    "cOID": entry_unique_id,
-                }, seen_live=False)
-            elif index == 1:
-                self._known_orders[order_id] = self._stamp_known_order({
-                    "orderId": order_id,
-                    "ticker": symbol,
-                    "side": close_side,
-                    "orderType": "LMT",
-                    "price": tp_price,
-                    "totalSize": quantity,
-                    "filledQuantity": 0,
-                    "avgPrice": 0,
-                    "parentId": clean_ids[0],
-                    "status": "SUBMITTED",
-                    "cOID": tp_unique_id,
-                }, seen_live=False)
-            elif index == 2:
-                self._known_orders[order_id] = self._stamp_known_order({
-                    "orderId": order_id,
-                    "ticker": symbol,
-                    "side": close_side,
-                    "orderType": "STP",
-                    "price": sl_price,
-                    "totalSize": quantity,
-                    "filledQuantity": 0,
-                    "avgPrice": 0,
-                    "parentId": clean_ids[0],
-                    "status": "SUBMITTED",
-                    "cOID": sl_unique_id,
-                }, seen_live=False)
+        entry_order_id = indexed_ids[0] if len(indexed_ids) > 0 else ""
+        tp_order_id = indexed_ids[1] if len(indexed_ids) > 1 else ""
+        sl_order_id = indexed_ids[2] if len(indexed_ids) > 2 else ""
+
+        if entry_order_id:
+            self._known_orders[entry_order_id] = self._stamp_known_order({
+                "orderId": entry_order_id,
+                "ticker": symbol,
+                "side": side,
+                "orderType": "LMT",
+                "price": entry_price,
+                "totalSize": quantity,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "parentId": "",
+                "status": "SUBMITTED",
+                "cOID": entry_unique_id,
+            }, seen_live=False)
+        if tp_order_id:
+            self._known_orders[tp_order_id] = self._stamp_known_order({
+                "orderId": tp_order_id,
+                "ticker": symbol,
+                "side": close_side,
+                "orderType": "LMT",
+                "price": tp_price,
+                "totalSize": quantity,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "parentId": entry_order_id,
+                "status": "SUBMITTED",
+                "cOID": tp_unique_id,
+            }, seen_live=False)
+        if sl_order_id:
+            self._known_orders[sl_order_id] = self._stamp_known_order({
+                "orderId": sl_order_id,
+                "ticker": symbol,
+                "side": close_side,
+                "orderType": "STP",
+                "price": sl_price,
+                "totalSize": quantity,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "parentId": entry_order_id,
+                "status": "SUBMITTED",
+                "cOID": sl_unique_id,
+            }, seen_live=False)
 
     def _finalize_disappeared_orders(self, current_order_ids: set[str]):
         closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}

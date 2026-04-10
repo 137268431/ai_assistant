@@ -122,6 +122,17 @@
       line-height: 1.5;
     }
 
+    .summary-footnote {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(8, 14, 24, 0.56);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
     .panel {
       margin-top: 16px;
       padding: 20px;
@@ -136,6 +147,33 @@
       margin-top: 6px;
       color: var(--muted);
       line-height: 1.5;
+    }
+
+    .legend-grid {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .legend-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(18, 30, 53, 0.72);
+    }
+
+    .legend-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .legend-copy {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
     }
 
     .filters {
@@ -239,6 +277,7 @@
     .status-ok { color: var(--success); background: rgba(104, 211, 145, 0.14); }
     .status-warn { color: var(--warn); background: rgba(246, 173, 85, 0.16); }
     .status-error, .status-repair_failed { color: var(--danger); background: rgba(252, 129, 129, 0.14); }
+    .status-repairing { color: var(--warn); background: rgba(246, 173, 85, 0.16); }
     .status-repaired { color: var(--accent); background: rgba(94, 234, 212, 0.14); }
 
     .pill-row {
@@ -258,7 +297,62 @@
 
     .small-copy {
       color: var(--muted);
+      display: block;
+      margin-top: 4px;
       line-height: 1.55;
+      word-break: break-word;
+    }
+
+    .status-stack {
+      display: grid;
+      gap: 6px;
+    }
+
+    .issue-list,
+    .meta-list {
+      display: grid;
+      gap: 6px;
+    }
+
+    .issue-item,
+    .meta-item {
+      color: var(--text);
+      line-height: 1.55;
+    }
+
+    .issue-item strong,
+    .meta-item strong {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .decision-box {
+      display: grid;
+      gap: 6px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      background: rgba(8, 14, 24, 0.54);
+    }
+
+    .decision-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .decision-copy {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .decision-ok .decision-title { color: var(--success); }
+    .decision-auto .decision-title { color: var(--accent); }
+    .decision-warn .decision-title { color: var(--warn); }
+    .decision-manual .decision-title { color: var(--danger); }
+
+    .code-copy {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     }
 
     .row-actions {
@@ -336,42 +430,66 @@
         </div>
       </div>
       <div class="summary-grid" id="summaryGrid"></div>
+      <div class="summary-footnote" id="summaryFootnote">说明待加载...</div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">怎么看这页</div>
+      <div class="panel-copy">这页先告诉你问题属于哪一类，再告诉你系统会不会自动修，不再只堆原始字段。</div>
+      <div class="legend-grid">
+        <div class="legend-card">
+          <div class="legend-title">黄色 / warn</div>
+          <div class="legend-copy">表示 5m bars 不足、存在缺口，或者 15m/30m/1h/4h/1d rollup 缺失或滞后。这类通常可安全自动修复。</div>
+        </div>
+        <div class="legend-card">
+          <div class="legend-title">红色 / error</div>
+          <div class="legend-copy">表示发现 duplicate bar 或 bad OHLC。因为涉及潜在误删，这类只会标记人工复核，不会自动清洗。</div>
+        </div>
+        <div class="legend-card">
+          <div class="legend-title">自动修复策略</div>
+          <div class="legend-copy">系统平时会在 warmup、active target、watchlist 巡检里自动补齐安全问题。这里的“安全修复”按钮只是立即再跑一轮。</div>
+        </div>
+        <div class="legend-card">
+          <div class="legend-title">你最该看什么</div>
+          <div class="legend-copy">先看“问题等级”，再看“发现的问题”和“系统动作”。如果动作写着“需人工复核”，说明当前异常不会自动处理。</div>
+        </div>
+      </div>
     </section>
 
     <section class="panel">
       <div class="panel-title">过滤与动作</div>
-      <div class="panel-copy">支持按环境、日期、范围、状态、symbol 过滤。没有指定 symbol 时，手动重扫/修复会按当前范围执行。</div>
+      <div class="panel-copy">支持按环境、日期、范围、状态、symbol 过滤。没有指定 symbol 时，手动重扫/修复会按当前范围执行；系统平时也会自动补齐安全问题。</div>
       <div class="filters">
         <div class="field">
-          <label for="marketDate">Market Date</label>
+          <label for="marketDate">交易日</label>
           <input id="marketDate" type="date" />
         </div>
         <div class="field">
-          <label for="scanScope">Scope</label>
+          <label for="scanScope">范围</label>
           <select id="scanScope">
             <option value="">全部</option>
-            <option value="active_target">active_target</option>
-            <option value="watchlist">watchlist</option>
-            <option value="manual">manual</option>
+            <option value="active_target">active_target 当前交易标的</option>
+            <option value="watchlist">watchlist 观察池</option>
+            <option value="manual">manual 手动</option>
           </select>
         </div>
         <div class="field">
-          <label for="statusFilter">Status</label>
+          <label for="statusFilter">状态</label>
           <select id="statusFilter">
             <option value="">全部</option>
-            <option value="ok">ok</option>
-            <option value="warn">warn</option>
-            <option value="error">error</option>
-            <option value="repaired">repaired</option>
-            <option value="repair_failed">repair_failed</option>
+            <option value="ok">ok 正常</option>
+            <option value="warn">warn 可自动修复</option>
+            <option value="error">error 人工复核</option>
+            <option value="repaired">repaired 已修复</option>
+            <option value="repair_failed">repair_failed 修复未完成</option>
           </select>
         </div>
         <div class="field">
-          <label for="symbolFilter">Symbol</label>
+          <label for="symbolFilter">标的</label>
           <input id="symbolFilter" type="text" placeholder="AAPL / SPY / VIX" />
         </div>
         <div class="field">
-          <label for="needsRepairFilter">Needs Repair</label>
+          <label for="needsRepairFilter">待补齐</label>
           <select id="needsRepairFilter">
             <option value="">全部</option>
             <option value="true">仅待修复</option>
@@ -379,7 +497,7 @@
           </select>
         </div>
         <div class="field">
-          <label for="batchSize">Batch Size</label>
+          <label for="batchSize">批量数量</label>
           <input id="batchSize" type="number" min="1" max="100" step="1" value="8" />
         </div>
       </div>
@@ -393,8 +511,8 @@
           <span>当前 symbol 存在时只扫该 symbol；否则按当前 scope 扫一批。</span>
         </button>
         <button class="action-btn" onclick="runGlobalAction('repair')">
-          <strong>安全修复</strong>
-          <span>只修复 bars 缺口、bar 数不足、rollup 缺失/滞后，不自动删重复和坏 OHLC。</span>
+          <strong>立即安全修复</strong>
+          <span>只补 bars 缺口、bar 数不足、rollup 缺失/滞后；duplicate 和坏 OHLC 仍保留给人工审查。</span>
         </button>
         <button class="action-btn" onclick="loadDataQuality(true)">
           <strong>刷新页面</strong>
@@ -405,25 +523,21 @@
 
     <section class="panel">
       <div class="panel-title">巡检明细</div>
-      <div class="panel-copy">状态为 <code>warn</code> 表示可安全修复的缺口类问题；<code>error</code> 表示发现重复或坏 OHLC，需要人工审查。</div>
+      <div class="panel-copy">先看问题等级，再看系统动作。表里会明确告诉你是“会自动修”“已经修过”还是“只能人工复核”。</div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Symbol</th>
-              <th>Status</th>
-              <th>Scope</th>
-              <th>Bars</th>
-              <th>Gaps</th>
-              <th>Duplicates / Bad OHLC</th>
-              <th>Rollup</th>
-              <th>Latest</th>
-              <th>Repair</th>
-              <th>Actions</th>
+              <th>标的</th>
+              <th>问题等级</th>
+              <th>发现的问题</th>
+              <th>系统动作</th>
+              <th>最近状态</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="qualityTable">
-            <tr><td colspan="10" class="loading">加载中...</td></tr>
+            <tr><td colspan="6" class="loading">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -530,16 +644,164 @@
       return Array.isArray(values) && values.length ? values.join(', ') : '无';
     }
 
+    function formatScopeLabel(value) {
+      const key = String(value || '').trim().toLowerCase();
+      const scopeMap = {
+        active_target: '当前交易标的',
+        watchlist: '观察池',
+        manual: '手动'
+      };
+      return scopeMap[key] || (value || '--');
+    }
+
+    function formatStatusMeta(item) {
+      const status = String(item?.status || 'ok').trim().toLowerCase();
+      if (status === 'repaired') {
+        return { label: '已修复', copy: '最近一轮自动修复后恢复正常' };
+      }
+      if (status === 'repair_failed') {
+        return { label: '修复未完成', copy: '系统试过补齐，但问题仍残留' };
+      }
+      if (status === 'error') {
+        return { label: '人工复核', copy: '存在 duplicate 或坏 OHLC，不会自动删改' };
+      }
+      if (status === 'warn') {
+        return { label: '可自动修复', copy: '缺口 / bars 不足 / rollup 异常，可安全补齐' };
+      }
+      if (status === 'repairing') {
+        return { label: '修复中', copy: '后台正在跑补齐流程' };
+      }
+      return { label: '正常', copy: '当前未发现需要处理的数据异常' };
+    }
+
+    function formatAgoFromMs(value) {
+      const number = Number(value || 0);
+      if (!Number.isFinite(number) || number <= 0) return '--';
+      const diffMin = Math.max(0, Math.round((Date.now() - number) / 60000));
+      if (diffMin < 1) return '刚刚';
+      if (diffMin < 60) return `${diffMin} 分钟前`;
+      if (diffMin < 1440) return `${Math.floor(diffMin / 60)} 小时前`;
+      return `${Math.floor(diffMin / 1440)} 天前`;
+    }
+
+    function normalizeIsoValue(value) {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      return text.replace(/\.(\d{3})\d+([+-]\d{2}:\d{2}|Z)$/i, '.$1$2');
+    }
+
+    function formatDateTimeInZone(date, timeZone) {
+      const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      const parts = {};
+      formatter.formatToParts(date).forEach((part) => {
+        if (part.type !== 'literal') {
+          parts[part.type] = part.value;
+        }
+      });
+      if (!parts.year || !parts.month || !parts.day || !parts.hour || !parts.minute || !parts.second) {
+        return '--';
+      }
+      return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+    }
+
+    function formatIsoLabel(value) {
+      if (!value) return '--';
+      const normalized = normalizeIsoValue(value);
+      const timestamp = Date.parse(normalized);
+      if (Number.isNaN(timestamp)) return String(value);
+      return formatDateTimeInZone(new Date(timestamp), 'Asia/Shanghai');
+    }
+
+    function summarizeRepairResult(result) {
+      if (!result || typeof result !== 'object' || !result.attempted) {
+        return '尚未执行修复';
+      }
+      const parts = [];
+      if (result.deferred) {
+        parts.push(`已延后: ${result.defer_reason || '实时链路优先'}`);
+      }
+      if (result.history_error) {
+        parts.push(`历史回补失败: ${result.history_error}`);
+      }
+      if (Number.isFinite(Number(result.history_written))) {
+        parts.push(`回补 ${Number(result.history_written || 0)} 根 5m bars`);
+      }
+      if (result.history_period) {
+        parts.push(`历史窗口 ${result.history_period}`);
+      }
+      if (result.pipeline_ok === true) {
+        parts.push(`rollup 写入 ${Number(result.pipeline?.rollup_written || 0) || 0}`);
+      }
+      if (result.pipeline_ok === false) {
+        parts.push('pipeline 修复失败');
+      }
+      return parts.length ? parts.join('；') : '已触发修复，等待下一轮扫描确认';
+    }
+
+    function getDecisionMeta(item) {
+      const duplicateCount = Number(item.duplicate_count || 0) || 0;
+      const badOhlcCount = Number(item.bad_ohlc_count || 0) || 0;
+      if (duplicateCount > 0 || badOhlcCount > 0) {
+        return {
+          tone: 'manual',
+          title: '需人工复核',
+          copy: '检测到 duplicate 或 bad OHLC。系统不会自动删改这类记录，避免误修。'
+        };
+      }
+      if (String(item.status || '').toLowerCase() === 'repaired') {
+        return {
+          tone: 'auto',
+          title: '已自动修复',
+          copy: summarizeRepairResult(item.last_repair_result)
+        };
+      }
+      if (String(item.status || '').toLowerCase() === 'repair_failed') {
+        return {
+          tone: 'warn',
+          title: '自动修复后仍有残留',
+          copy: summarizeRepairResult(item.last_repair_result)
+        };
+      }
+      if (item.safe_repair && item.needs_repair) {
+        return {
+          tone: 'auto',
+          title: '会自动安全修复',
+          copy: '系统会回补 5m 历史、补齐 rollup；这里手动点按钮只是立刻再跑一轮。'
+        };
+      }
+      if (item.needs_repair) {
+        return {
+          tone: 'warn',
+          title: '待进一步确认',
+          copy: '当前仍有管道类问题，但不满足自动安全修复条件。'
+        };
+      }
+      return {
+        tone: 'ok',
+        title: '无需处理',
+        copy: '当前记录没有需要修复的问题。'
+      };
+    }
+
     function renderSummary(summary) {
       const grid = document.getElementById('summaryGrid');
       const statusCounts = summary.status_counts || {};
       const cards = [
-        { label: 'TOTAL', value: summary.total || 0, copy: `symbols ${Array.isArray(summary.symbols) ? summary.symbols.length : 0}` },
-        { label: 'NEEDS REPAIR', value: summary.needs_repair || 0, copy: 'bars 缺口 / bar 数不足 / rollup 缺失或滞后' },
-        { label: 'MANUAL REVIEW', value: summary.manual_review || 0, copy: '重复 bar 或坏 OHLC，不自动删数据' },
-        { label: 'WARN', value: statusCounts.warn || 0, copy: '可安全修复的问题' },
-        { label: 'ERROR', value: statusCounts.error || 0, copy: '需人工检查的数据异常' },
-        { label: 'REPAIRED', value: statusCounts.repaired || 0, copy: `最近修复 ${summary.latest_repair_at || '--'}` }
+        { label: '已扫描标的', value: summary.total || 0, copy: `当前范围内 symbol ${Array.isArray(summary.symbols) ? summary.symbols.length : 0} 个` },
+        { label: '正常', value: statusCounts.ok || 0, copy: '当前没有发现缺口、重复或 rollup 异常' },
+        { label: '待补齐', value: summary.needs_repair || 0, copy: 'bars 不足、gap、rollup 缺失或滞后' },
+        { label: '人工复核', value: summary.manual_review || 0, copy: 'duplicate 或 bad OHLC，不自动删改' },
+        { label: '已修复', value: statusCounts.repaired || 0, copy: `最近修复 ${formatIsoLabel(summary.latest_repair_at)}` },
+        { label: '修复未完成', value: statusCounts.repair_failed || 0, copy: '自动修复跑过，但仍残留问题' }
       ];
       grid.innerHTML = cards.map((item) => `
         <div class="summary-card">
@@ -548,13 +810,14 @@
           <div class="summary-copy">${escapeHtml(item.copy)}</div>
         </div>
       `).join('');
-      document.getElementById('summaryInfo').textContent = `最近扫描 ${summary.latest_scan_at || '--'} · 最近修复 ${summary.latest_repair_at || '--'}`;
+      document.getElementById('summaryInfo').textContent = `最近扫描 ${formatIsoLabel(summary.latest_scan_at)} · 最近修复 ${formatIsoLabel(summary.latest_repair_at)}`;
+      document.getElementById('summaryFootnote').textContent = '说明: “待补齐”统计的是可回补的管道类问题；它和“人工复核”可能重叠。如果同一个 symbol 同时存在 duplicate 或 bad OHLC，系统会停止自动修复并要求人工确认。';
     }
 
     function renderRows(items) {
       const tbody = document.getElementById('qualityTable');
       if (!Array.isArray(items) || !items.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="empty">当前过滤条件下没有记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">当前过滤条件下没有记录</td></tr>';
         return;
       }
       tbody.innerHTML = items.map((item) => {
@@ -564,54 +827,58 @@
           ? item.gap_examples.map((row) => `${row.prev_us_time || '--'} → ${row.next_us_time || '--'} (${row.missing_points || 1})`).join(' ; ')
           : '无';
         const canRepair = Boolean(item.safe_repair);
+        const statusMeta = formatStatusMeta(item);
+        const decisionMeta = getDecisionMeta(item);
+        const issueLines = [];
+        issueLines.push(`5m K线 ${Number(item.bar_count || 0) || 0} 根`);
+        if ((Number(item.gap_count || 0) || 0) > 0) issueLines.push(`缺口 ${Number(item.gap_count || 0) || 0} 处`);
+        if ((Number(item.duplicate_count || 0) || 0) > 0) issueLines.push(`重复 bar ${Number(item.duplicate_count || 0) || 0} 条`);
+        if ((Number(item.bad_ohlc_count || 0) || 0) > 0) issueLines.push(`坏 OHLC ${Number(item.bad_ohlc_count || 0) || 0} 条`);
+        if (Array.isArray(item.missing_intervals) && item.missing_intervals.length) issueLines.push(`rollup 缺失 ${missingIntervals}`);
+        if (Array.isArray(item.stale_intervals) && item.stale_intervals.length) issueLines.push(`rollup 滞后 ${staleIntervals}`);
+        if (issueLines.length === 1) issueLines.push('未发现额外异常');
         return `
           <tr>
             <td>
               <strong>${escapeHtml(item.symbol || '--')}</strong><br>
-              <span class="small-copy">${escapeHtml(item.market_date || '--')} · ${escapeHtml(item.interval || '5m')}</span>
+              <span class="small-copy">${escapeHtml(formatScopeLabel(item.scan_scope))} · ${escapeHtml(item.market_date || '--')} · ${escapeHtml(item.interval || '5m')}</span>
+              <span class="small-copy">修复尝试 ${escapeHtml(item.repair_attempts || 0)} 次</span>
             </td>
             <td>
-              <span class="status-chip ${statusClass(item.status)}">${escapeHtml(item.status || 'ok')}</span><br>
-              <span class="small-copy">${item.needs_repair ? 'needs_repair' : 'clean'}</span>
-            </td>
-            <td>
-              ${escapeHtml(item.scan_scope || '--')}<br>
-              <span class="small-copy">attempts ${escapeHtml(item.repair_attempts || 0)}</span>
-            </td>
-            <td>
-              <strong>${escapeHtml(item.bar_count || 0)}</strong><br>
-              <span class="small-copy">oldest ${item.oldest_loaded_ms ? escapeHtml(formatBarTimeMsToET(item.oldest_loaded_ms)) : '--'}</span>
-            </td>
-            <td>
-              <strong>${escapeHtml(item.gap_count || 0)}</strong><br>
-              <span class="small-copy">${escapeHtml(gapExamples)}</span>
-            </td>
-            <td>
-              <div class="pill-row">
-                <span class="pill">dup ${escapeHtml(item.duplicate_count || 0)}</span>
-                <span class="pill">bad ${escapeHtml(item.bad_ohlc_count || 0)}</span>
+              <div class="status-stack">
+                <span class="status-chip ${statusClass(item.status)}">${escapeHtml(statusMeta.label)}</span>
+                <span class="small-copy">${escapeHtml(statusMeta.copy)}</span>
+                <span class="small-copy code-copy">状态代码: ${escapeHtml(item.status || 'ok')}</span>
               </div>
             </td>
             <td>
-              <div class="pill-row">
-                <span class="pill">missing ${escapeHtml(missingIntervals)}</span>
-                <span class="pill">stale ${escapeHtml(staleIntervals)}</span>
+              <div class="issue-list">
+                ${issueLines.map((line) => `<div class="issue-item">${escapeHtml(line)}</div>`).join('')}
+                <div class="issue-item"><strong>缺口样本</strong> ${escapeHtml(gapExamples)}</div>
               </div>
             </td>
             <td>
-              ${item.latest_bar_us_time ? escapeHtml(item.latest_bar_us_time) : '--'}<br>
-              <span class="small-copy">${item.latest_bar_time_ms ? `${Math.max(0, Math.round((Date.now() - Number(item.latest_bar_time_ms || 0)) / 60000))} min ago` : 'no latest bar'}</span>
+              <div class="decision-box decision-${escapeHtml(decisionMeta.tone)}">
+                <div class="decision-title">${escapeHtml(decisionMeta.title)}</div>
+                <div class="decision-copy">${escapeHtml(decisionMeta.copy)}</div>
+              </div>
             </td>
             <td>
-              ${item.last_repair_at ? escapeHtml(item.last_repair_at) : '--'}<br>
-              <span class="small-copy">${escapeHtml((item.last_repair_result && JSON.stringify(item.last_repair_result)) || 'no repair result')}</span>
+              <div class="meta-list">
+                <div class="meta-item"><strong>最新 5m</strong> ${item.latest_bar_us_time ? escapeHtml(item.latest_bar_us_time) : '--'}</div>
+                <div class="meta-item"><strong>最新 bar 距今</strong> ${escapeHtml(item.latest_bar_time_ms ? formatAgoFromMs(item.latest_bar_time_ms) : '暂无 bar')}</div>
+                <div class="meta-item"><strong>最早已载入</strong> ${item.oldest_loaded_ms ? escapeHtml(formatBarTimeMsToET(item.oldest_loaded_ms)) : '--'}</div>
+                <div class="meta-item"><strong>最近扫描</strong> ${escapeHtml(formatIsoLabel(item.last_scan_at))}</div>
+                <div class="meta-item"><strong>最近修复</strong> ${escapeHtml(formatIsoLabel(item.last_repair_at))}</div>
+              </div>
             </td>
             <td>
               <div class="row-actions">
-                <button class="mini-btn" onclick="runRowAction('rescan', '${escapeHtml(item.symbol || '')}')">Rescan</button>
-                <button class="mini-btn" onclick="runRowAction('repair', '${escapeHtml(item.symbol || '')}')" ${canRepair ? '' : 'disabled'}>Repair</button>
-                <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: item.interval || '5m' }, { environment: currentEnvironment })}">Chart</a>
+                <button class="mini-btn" onclick="runRowAction('rescan', '${escapeHtml(item.symbol || '')}')">重扫</button>
+                <button class="mini-btn" onclick="runRowAction('repair', '${escapeHtml(item.symbol || '')}')" ${canRepair ? '' : 'disabled'}>修复</button>
+                <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: item.interval || '5m' }, { environment: currentEnvironment })}">图表</a>
               </div>
+              <span class="small-copy">${escapeHtml(summarizeRepairResult(item.last_repair_result))}</span>
             </td>
           </tr>
         `;
@@ -648,7 +915,7 @@
       } catch (error) {
         console.error('loadDataQuality failed:', error);
         document.getElementById('refreshInfo').textContent = '加载失败';
-        document.getElementById('qualityTable').innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
+        document.getElementById('qualityTable').innerHTML = `<tr><td colspan="6" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
         showToast(`加载失败: ${error.message || error}`);
       }
     }
@@ -716,6 +983,12 @@
           kicker: 'Console',
           label: '控制台',
           copy: '启动 / 2FA / compute'
+        },
+        {
+          path: '/ibkr_warmup.html',
+          kicker: 'Warmup',
+          label: '预热',
+          copy: 'startup / gate / repair / symbol status'
         },
         {
           path: '/ibkr_data_quality.html',

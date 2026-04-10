@@ -352,9 +352,16 @@ function showToast(msg, duration = 2500) {
     toast.className = 'toast';
     document.body.appendChild(toast);
   }
+  if (toast._hideTimer) {
+    clearTimeout(toast._hideTimer);
+    toast._hideTimer = null;
+  }
   toast.textContent = msg;
   toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), duration);
+  toast._hideTimer = setTimeout(() => {
+    toast.classList.remove('show');
+    toast._hideTimer = null;
+  }, duration);
 }
 
 // ── 底部导航 ──
@@ -1063,7 +1070,7 @@ function getCommonStyles() {
         position: fixed;
         top: 24px;
         left: 50%;
-        transform: translateX(-50%) translateY(-60px);
+        transform: translate(-50%, calc(-100% - 24px));
         background: var(--surface2);
         border: 1px solid var(--border);
         border-radius: 12px;
@@ -1071,12 +1078,22 @@ function getCommonStyles() {
         font-size: 13px;
         z-index: 200;
         white-space: nowrap;
-        transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        opacity: 0;
+        visibility: hidden;
+        transition:
+          transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+          opacity 0.2s ease,
+          visibility 0s linear 0.2s;
         pointer-events: none;
       }
 
       .toast.show {
-        transform: translateX(-50%) translateY(0);
+        transform: translate(-50%, 0);
+        opacity: 1;
+        visibility: visible;
+        transition:
+          transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+          opacity 0.2s ease;
       }
 
       .page-context-bar {

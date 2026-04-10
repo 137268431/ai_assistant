@@ -239,7 +239,7 @@ function fetchTradeGroupRecords(orderOrRecord) {
     try {
         return $app.findRecordsByFilter(
             "orders",
-            "trade_group_id = {:gid} && environment = {:env}",
+            "(trade_group_id = {:gid} || entry_order_unique_id = {:gid}) && environment = {:env}",
             "-created",
             100,
             0,
@@ -248,6 +248,51 @@ function fetchTradeGroupRecords(orderOrRecord) {
     } catch (err) {
         console.error("[FeishuOrder] 查询交易组失败:", tradeGroupId, err)
         return []
+    }
+}
+
+function resolveOrderActionContext(orderId, environment) {
+    var normalizedOrderId = String(orderId || "").trim()
+    if (!normalizedOrderId) {
+        return { actionRecord: null, primaryRecord: null, relatedRecords: [], tradeGroupId: "" }
+    }
+
+    var matchedRecords = $app.findRecordsByFilter(
+        "orders",
+        "(unique_id = {:id} || entry_order_unique_id = {:id} || trade_group_id = {:id}) && environment = {:env}",
+        "-created",
+        100,
+        0,
+        { id: normalizedOrderId, env: environment }
+    ) || []
+    if (!matchedRecords || matchedRecords.length === 0) {
+        return { actionRecord: null, primaryRecord: null, relatedRecords: [], tradeGroupId: "" }
+    }
+
+    var exactUniqueRecord = matchedRecords.filter(function(record) {
+        return String(record.get("unique_id") || "").trim() === normalizedOrderId
+    })[0] || null
+    var primaryFromMatches = matchedRecords.filter(function(item) {
+        return (item.get("role") || "") === "entry"
+    })[0] || matchedRecords.filter(function(item) {
+        var uniqueId = String(item.get("unique_id") || "").trim()
+        var entryOrderUniqueId = String(item.get("entry_order_unique_id") || "").trim()
+        return !!uniqueId && uniqueId === entryOrderUniqueId
+    })[0] || matchedRecords[0]
+    var actionRecord = exactUniqueRecord || primaryFromMatches
+    var relatedRecords = fetchTradeGroupRecords(primaryFromMatches || actionRecord)
+    if (!relatedRecords || relatedRecords.length === 0) {
+        relatedRecords = matchedRecords
+    }
+    var primaryRecord = relatedRecords.filter(function(item) {
+        return (item.get("role") || "") === "entry"
+    })[0] || primaryFromMatches || actionRecord
+
+    return {
+        actionRecord: actionRecord,
+        primaryRecord: primaryRecord,
+        relatedRecords: relatedRecords,
+        tradeGroupId: getTradeGroupId(primaryRecord || actionRecord)
     }
 }
 
@@ -750,22 +795,20 @@ function handleOrderCardCallback(c, options) {
     var environment = envUtils.normalizeRuntimeEnvironment(opts.environment || "", envUtils.LIVE_ENVIRONMENT)
     var updateToken = opts.updateToken || null
 
-    var records = $app.findRecordsByFilter("orders", "unique_id = {:id} && environment = {:env}", "", 1, 0, { id: orderId, env: environment })
-    if (!records || records.length === 0) {
+    var orderContext = resolveOrderActionContext(orderId, environment)
+    if (!orderContext || !orderContext.actionRecord) {
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "error", content: "订单不存在" },
             card: { type: "raw", data: null }
         }, updateToken)
     }
 
-    var record = records[0]
+    var record = orderContext.actionRecord
     var currentStatus = record.get("status")
     var currentRole = record.get("role") || ""
-    var tradeGroupId = record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id")
-    var relatedRecords = fetchTradeGroupRecords(record)
-    var primaryRecord = relatedRecords.filter(function(item) {
-        return (item.get("role") || "") === "entry"
-    })[0] || record
+    var tradeGroupId = orderContext.tradeGroupId || getTradeGroupId(record)
+    var relatedRecords = orderContext.relatedRecords || []
+    var primaryRecord = orderContext.primaryRecord || record
     var primaryFilledQty = toNumber(primaryRecord.get("filled_qty") || 0)
     var hasActiveChild = relatedRecords.some(function(item) {
         return (item.get("role") || "") !== "entry" && (item.get("relation_status") || "") === "active"

@@ -100,6 +100,11 @@ class OrderPlacer:
                      take_profit_price, stop_loss_price, acct_id)
 
         result = self._submit_orders(acct_id, orders)
+        if result.get("ok"):
+            result["order_ids"] = self._resolve_expected_order_ids(
+                expected_coids=[entry_coid, tp_coid, sl_coid],
+                initial_order_ids=result.get("order_ids", []),
+            )
 
         if result.get("ok"):
             self._order_count += 1
@@ -142,6 +147,113 @@ class OrderPlacer:
 
         return self._submit_orders(acct_id, orders)
 
+    def _extract_response_order_ids(self, payload: Any) -> List[str]:
+        order_ids: List[str] = []
+        seen = set()
+
+        def visit(node: Any) -> None:
+            if isinstance(node, dict):
+                order_id = str(node.get("order_id") or node.get("orderId") or "").strip()
+                if order_id and order_id not in seen:
+                    seen.add(order_id)
+                    order_ids.append(order_id)
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        visit(value)
+            elif isinstance(node, list):
+                for item in node:
+                    visit(item)
+
+        visit(payload)
+        return order_ids
+
+    def _fetch_live_orders(self, *, force: bool = True, timeout: int = 15) -> List[Dict[str, Any]]:
+        load_cookies(self._session)
+        resp = self._session.get(
+            self._api_url("/iserver/account/orders"),
+            params={"force": "true" if force else "false"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        save_cookies(self._session)
+        if not resp.text:
+            return []
+        data = resp.json()
+        if isinstance(data, dict):
+            orders = data.get("orders", [])
+        elif isinstance(data, list):
+            orders = data
+        else:
+            orders = []
+        return orders if isinstance(orders, list) else []
+
+    def _lookup_order_ids_by_coid(
+        self,
+        expected_coids: List[str],
+        *,
+        retries: int = 4,
+        retry_delay: float = 0.75,
+    ) -> List[str]:
+        normalized_coids = [str(item or "").strip() for item in (expected_coids or [])]
+        if not any(normalized_coids):
+            return []
+
+        resolved = {coid: "" for coid in normalized_coids if coid}
+        attempts = max(1, int(retries or 1))
+        for attempt in range(attempts):
+            try:
+                orders = self._fetch_live_orders(force=True, timeout=15)
+            except Exception as exc:
+                logger.warning("Live order lookup by cOID failed: %s", exc)
+                break
+
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                coid = str(
+                    order.get("cOID")
+                    or order.get("coid")
+                    or order.get("order_ref")
+                    or order.get("orderRef")
+                    or ""
+                ).strip()
+                order_id = str(order.get("orderId") or order.get("order_id") or order.get("id") or "").strip()
+                if coid in resolved and order_id:
+                    resolved[coid] = order_id
+
+            if all(resolved.get(coid) for coid in normalized_coids if coid):
+                break
+            if attempt + 1 < attempts:
+                time.sleep(max(0.0, float(retry_delay or 0.0)))
+
+        return [resolved.get(coid, "") if coid else "" for coid in normalized_coids]
+
+    def _resolve_expected_order_ids(self, expected_coids: List[str], initial_order_ids: List[str]) -> List[str]:
+        clean_initial_ids = [str(item or "").strip() for item in (initial_order_ids or [])]
+        normalized_coids = [str(item or "").strip() for item in (expected_coids or [])]
+        if not any(normalized_coids):
+            return [item for item in clean_initial_ids if item]
+
+        resolved_ids = self._lookup_order_ids_by_coid(normalized_coids)
+        for index in range(len(normalized_coids)):
+            if resolved_ids[index]:
+                continue
+            if index < len(clean_initial_ids) and clean_initial_ids[index]:
+                resolved_ids[index] = clean_initial_ids[index]
+
+        compact_ids = [item for item in resolved_ids if item]
+        if compact_ids and len(compact_ids) < len([item for item in normalized_coids if item]):
+            logger.warning(
+                "Bracket order ids partially resolved: expected=%s resolved=%s initial=%s",
+                normalized_coids,
+                resolved_ids,
+                clean_initial_ids,
+            )
+        if compact_ids:
+            last_non_empty_index = max(index for index, value in enumerate(resolved_ids) if value)
+            return resolved_ids[:last_non_empty_index + 1]
+        return [item for item in clean_initial_ids if item]
+
     def _submit_orders(self, acct_id: str, orders: List[Dict]) -> Dict[str, Any]:
         url = self._api_url(f"/iserver/account/{acct_id}/orders")
 
@@ -158,8 +270,8 @@ class OrderPlacer:
                     reply_id = first["id"]
                     logger.info("Order requires confirmation, replying to id=%s", reply_id)
                     return self._confirm_order(reply_id)
-                elif first.get("order_id"):
-                    order_ids = [item.get("order_id") for item in data if item.get("order_id")]
+                order_ids = self._extract_response_order_ids(data)
+                if order_ids:
                     return {"ok": True, "order_ids": order_ids, "raw": data}
                 elif first.get("error"):
                     return {"ok": False, "error": first.get("error"), "raw": data}
@@ -183,8 +295,8 @@ class OrderPlacer:
                 first = data[0]
                 if first.get("id"):
                     return self._confirm_order(first["id"])
-                elif first.get("order_id"):
-                    order_ids = [item.get("order_id") for item in data if item.get("order_id")]
+                order_ids = self._extract_response_order_ids(data)
+                if order_ids:
                     return {"ok": True, "order_ids": order_ids, "raw": data}
                 elif first.get("error"):
                     return {"ok": False, "error": first.get("error"), "raw": data}
@@ -207,7 +319,7 @@ class OrderPlacer:
             sl_unique_id = kwargs.get("sl_coid")
             symbol = kwargs.get("symbol")
             signal_id = kwargs.get("signal_id", "")
-            order_ids = [str(item).strip() for item in (kwargs.get("order_ids") or []) if str(item).strip()]
+            order_ids = [str(item or "").strip() for item in (kwargs.get("order_ids") or [])]
             entry_order_id = order_ids[0] if len(order_ids) > 0 else ""
             tp_order_id = order_ids[1] if len(order_ids) > 1 else ""
             sl_order_id = order_ids[2] if len(order_ids) > 2 else ""

@@ -1504,7 +1504,9 @@
         async function closePosition(uniqueId, symbol) {
             if (!confirm(`确认平仓 ${symbol} 的整组订单？`)) return;
             try {
-                await fetch(buildPageUrl('/webhook/order/close', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }));
+                await readOrderActionResponse(
+                    await fetch(buildPageUrl('/webhook/order/close', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }))
+                );
                 showToast('已发送平仓整组请求');
                 loadOrders({ showLoadingState: false });
             } catch (error) {
@@ -1515,12 +1517,39 @@
         async function cancelOrder(uniqueId, symbol) {
             if (!confirm(`确认取消 ${symbol} 的主入场单？`)) return;
             try {
-                await fetch(buildPageUrl('/webhook/order/cancel', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }));
+                await readOrderActionResponse(
+                    await fetch(buildPageUrl('/webhook/order/cancel', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }))
+                );
                 showToast('已发送取消主单请求');
                 loadOrders({ showLoadingState: false });
             } catch (error) {
                 showToast(`取消失败: ${error.message}`);
             }
+        }
+
+        async function readOrderActionResponse(response) {
+            const contentType = String(response?.headers?.get('content-type') || '').toLowerCase();
+            const isJson = contentType.includes('application/json');
+            const payload = isJson
+                ? await response.json().catch(() => null)
+                : await response.text().catch(() => '');
+
+            if (response.ok) return payload;
+
+            let message = '';
+            if (payload && typeof payload === 'object') {
+                message = payload.message || payload.error || payload.data?.message || '';
+            } else if (typeof payload === 'string' && payload.trim()) {
+                const text = payload.trim();
+                if (text.startsWith('<')) {
+                    const parsed = new DOMParser().parseFromString(text, 'text/html');
+                    message = parsed.body?.textContent?.replace(/\s+/g, ' ').trim() || '';
+                } else {
+                    message = text;
+                }
+            }
+
+            throw new Error(message || `请求失败 (${response.status})`);
         }
 
         function viewSignal(signalId) {

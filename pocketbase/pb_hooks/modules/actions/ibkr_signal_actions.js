@@ -42,6 +42,86 @@ var signalActionsResolveCancelableOrderId = function(record) {
     return ""
 }
 
+var signalActionsResolveTradeGroupId = function(record) {
+    if (!record) return ""
+    return String(record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id") || "").trim()
+}
+
+var signalActionsPickPrimaryRecord = function(records, fallbackRecord) {
+    const list = Array.isArray(records) ? records : []
+    return list.find((record) => String(record.get("role") || "").trim() === "entry")
+        || list.find((record) => {
+            const uniqueId = String(record.get("unique_id") || "").trim()
+            const entryOrderUniqueId = String(record.get("entry_order_unique_id") || "").trim()
+            return !!uniqueId && uniqueId === entryOrderUniqueId
+        })
+        || fallbackRecord
+        || list[0]
+        || null
+}
+
+var signalActionsFindTradeGroupRecords = function(environment, tradeGroupId) {
+    const groupId = String(tradeGroupId || "").trim()
+    if (!groupId) return []
+    try {
+        return $app.findRecordsByFilter(
+            "orders",
+            "(trade_group_id = {:gid} || entry_order_unique_id = {:gid}) && environment = {:env}",
+            "-created",
+            100,
+            0,
+            { gid: groupId, env: environment }
+        ) || []
+    } catch (err) {
+        console.error("[SignalActions] 查询交易组失败:", groupId, err)
+        return []
+    }
+}
+
+var signalActionsResolveOrderActionContext = function(environment, targetId) {
+    const normalizedTargetId = String(targetId || "").trim()
+    if (!normalizedTargetId) {
+        return {
+            actionRecord: null,
+            primaryRecord: null,
+            relatedRecords: [],
+            tradeGroupId: "",
+        }
+    }
+
+    const matchedRecords = $app.findRecordsByFilter(
+        "orders",
+        "(unique_id = {:id} || entry_order_unique_id = {:id} || trade_group_id = {:id}) && environment = {:env}",
+        "-created",
+        100,
+        0,
+        { id: normalizedTargetId, env: environment }
+    ) || []
+    if (matchedRecords.length === 0) {
+        return {
+            actionRecord: null,
+            primaryRecord: null,
+            relatedRecords: [],
+            tradeGroupId: "",
+        }
+    }
+
+    const exactUniqueMatch = matchedRecords.find((record) => String(record.get("unique_id") || "").trim() === normalizedTargetId) || null
+    const primaryFromMatches = signalActionsPickPrimaryRecord(matchedRecords, matchedRecords[0] || null)
+    const actionRecord = exactUniqueMatch || primaryFromMatches
+    const initialTradeGroupId = signalActionsResolveTradeGroupId(primaryFromMatches || actionRecord)
+    const relatedRecords = signalActionsFindTradeGroupRecords(environment, initialTradeGroupId)
+    const resolvedRelatedRecords = relatedRecords.length > 0 ? relatedRecords : matchedRecords
+    const primaryRecord = signalActionsPickPrimaryRecord(resolvedRelatedRecords, primaryFromMatches || actionRecord)
+
+    return {
+        actionRecord: actionRecord,
+        primaryRecord: primaryRecord,
+        relatedRecords: resolvedRelatedRecords,
+        tradeGroupId: signalActionsResolveTradeGroupId(primaryRecord || actionRecord),
+    }
+}
+
 var signalActionsCancelBrokerOrder = function(environment, orderId) {
     const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
     const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
@@ -891,17 +971,18 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
         return c.html(400, fail("参数错误", "缺少订单ID"))
     }
     try {
-        const records = $app.findRecordsByFilter("orders", "unique_id = {:id} && environment = {:env}", "", 1, 0, { id: uniqueId, env: environment })
-        if (!records || records.length === 0) {
+        const orderContext = signalActionsResolveOrderActionContext(environment, uniqueId)
+        if (!orderContext || !orderContext.actionRecord) {
             return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
         }
-        const record = records[0]
-        const status = record.get("status")
-        const symbol = record.get("symbol") || uniqueId
-        const filledQty = Number(record.get("filled_qty") || 0)
-        const tradeGroupId = record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id")
-        const role = record.get("role") || ((record.get("extra") || {}).role) || ""
-        console.log(`[OrderAction] 收到取消请求: unique_id=${uniqueId}, symbol=${symbol}, current_status=${status}`)
+        const record = orderContext.actionRecord
+        const primaryRecord = orderContext.primaryRecord || record
+        const status = primaryRecord.get("status")
+        const symbol = primaryRecord.get("symbol") || record.get("symbol") || uniqueId
+        const filledQty = Number(primaryRecord.get("filled_qty") || 0)
+        const tradeGroupId = orderContext.tradeGroupId || signalActionsResolveTradeGroupId(primaryRecord || record)
+        const role = String(record.get("role") || "").trim()
+        console.log(`[OrderAction] 收到取消请求: target_id=${uniqueId}, resolved_unique_id=${primaryRecord.get("unique_id") || record.get("unique_id") || "-"}, symbol=${symbol}, current_status=${status}`)
         if (role && role !== "entry") {
             return c.html(200, warn("只能取消主单", "止盈/止损等子单不能直接取消，请操作主入场单", symbol))
         }
@@ -917,14 +998,9 @@ routerAdd("GET", "/webhook/order/cancel", (c) => {
             const h = statusHints[status]
             return c.html(200, h.fn(h.title, h.msg, symbol))
         }
-        const relatedRecords = $app.findRecordsByFilter(
-            "orders",
-            "trade_group_id = {:gid} && environment = {:env}",
-            "-created",
-            100,
-            0,
-            { gid: tradeGroupId, env: environment }
-        ) || [record]
+        const relatedRecords = orderContext.relatedRecords && orderContext.relatedRecords.length > 0
+            ? orderContext.relatedRecords
+            : [primaryRecord]
         const cancelSummary = signalActionsCancelOrderGroupRecords({
             records: relatedRecords,
             environment: environment,
@@ -959,14 +1035,14 @@ routerAdd("GET", "/webhook/order/close", (c) => {
         return c.html(400, fail("参数错误", "缺少订单ID"))
     }
     try {
-        const records = $app.findRecordsByFilter("orders", "unique_id = {:id} && environment = {:env}", "", 1, 0, { id: uniqueId, env: environment })
-        if (!records || records.length === 0) {
+        const orderContext = signalActionsResolveOrderActionContext(environment, uniqueId)
+        if (!orderContext || !orderContext.primaryRecord) {
             return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
         }
-        const record = records[0]
+        const record = orderContext.primaryRecord
         const status = record.get("status")
         const symbol = record.get("symbol") || uniqueId
-        const tradeGroupId = record.get("trade_group_id") || record.get("entry_order_unique_id") || record.get("unique_id")
+        const tradeGroupId = orderContext.tradeGroupId || signalActionsResolveTradeGroupId(record)
         const entryOrderUniqueId = record.get("entry_order_unique_id") || record.get("unique_id")
         const statusHints = {
             Init:      { fn: warn, title: "订单未成交", msg: "只有成交的订单才能平仓" },
@@ -981,14 +1057,9 @@ routerAdd("GET", "/webhook/order/close", (c) => {
         if (status !== "Filled") {
             return c.html(200, warn("订单未成交", "只有成交的订单才能平仓", symbol))
         }
-        const relatedRecords = $app.findRecordsByFilter(
-            "orders",
-            "trade_group_id = {:gid} && environment = {:env}",
-            "-created",
-            100,
-            0,
-            { gid: tradeGroupId, env: environment }
-        ) || []
+        const relatedRecords = orderContext.relatedRecords && orderContext.relatedRecords.length > 0
+            ? orderContext.relatedRecords
+            : [record]
         relatedRecords.forEach((groupRecord) => {
             const currentGroupStatus = groupRecord.get("status")
             if (currentGroupStatus === "Canceled" || currentGroupStatus === "Closed") {

@@ -131,6 +131,7 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
 
     return {
         status: status || "requested",
+        has_request: hasRequest,
         active: active,
         pending_too_long: pendingTooLong,
         cycle_id: String(state.cycle_id || ""),
@@ -164,13 +165,14 @@ function buildAuthImmediateIssue(auth) {
     const gatewayReachable = auth.gateway_reachable === true
     const runtimeAuthenticated = auth.runtime_authenticated === true
     const runtimeStarted = auth.runtime_started === true
-    const active = auth.active === true || isAuthActiveStatus(status)
+    const hasRequest = auth.has_request === true || auth.active === true
+    const active = auth.active === true
 
-    if (!gatewayReachable && !active) {
+    if (!gatewayReachable && !active && !hasRequest) {
         return null
     }
 
-    if (status === "waiting_response") {
+    if (hasRequest && status === "waiting_response") {
         return {
             kind: "waiting_response",
             title: "IBKR 2FA 已切到 Challenge/Response",
@@ -178,7 +180,7 @@ function buildAuthImmediateIssue(auth) {
         }
     }
 
-    if (status === "waiting_confirm") {
+    if (hasRequest && status === "waiting_confirm") {
         return {
             kind: "waiting_confirm",
             title: "IBKR 2FA 已触发，等待确认",

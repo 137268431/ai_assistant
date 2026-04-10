@@ -2617,7 +2617,7 @@ routerAdd("POST", "/api/custom/ibkr/proxy", (c) => {
         return base
     }
 
-    const validActions = ["compute", "scan", "recompute", "chart/timeline"]
+    const validActions = ["compute", "scan", "recompute", "chart/timeline", "chart/compare"]
     if (!validActions.includes(action)) {
         return c.json(400, { ok: false, error: "Invalid action, must be: " + validActions.join("/") })
     }
