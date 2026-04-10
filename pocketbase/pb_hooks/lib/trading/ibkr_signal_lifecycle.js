@@ -92,7 +92,7 @@ function prepareSignalLifecycle(prepared, existingRecord, environment) {
 function syncSignalNotification(record, previousStatus) {
     if (!record) return
     const currentStatus = String(record.get("status") || "").trim()
-    if (currentStatus !== "awaiting_confirm" && currentStatus !== "pending") {
+    if (currentStatus !== "awaiting_confirm" && currentStatus !== "pending" && currentStatus !== "rejected") {
         return
     }
 
@@ -100,7 +100,11 @@ function syncSignalNotification(record, previousStatus) {
     const signalExtra = getSignalExtra(record)
     let syncResult = null
 
-    if (!signalExtra.feishu_signal_message_id) {
+    if (currentStatus === "rejected") {
+        syncResult = notifySignalStatus("rejected", record, {
+            messageId: signalExtra.feishu_signal_message_id || "",
+        })
+    } else if (!signalExtra.feishu_signal_message_id) {
         syncResult = notifyNewSignal(record)
     } else if (previousStatus !== currentStatus) {
         syncResult = notifySignalStatus(currentStatus, record, {

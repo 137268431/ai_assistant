@@ -140,6 +140,33 @@ function mergeSignalExtra(record, patch, saveAfterMerge) {
     return merged
 }
 
+function resolveSignalStatusReasonText(status, recordOrData) {
+    var extra = getSignalExtra(recordOrData)
+    var get = (recordOrData && typeof recordOrData.get === "function")
+        ? recordOrData.get.bind(recordOrData)
+        : function(k) { return recordOrData ? recordOrData[k] : undefined }
+    var raw = String(
+        extra.status_reason
+        || extra.initial_status_reason
+        || extra.expired_reason
+        || get("note")
+        || ""
+    ).trim()
+    if (!raw) return ""
+
+    var normalized = raw.toLowerCase()
+    var reasonMap = {
+        outside_trade_window: "当前不在交易窗口，系统已自动拒绝",
+        outside_order_window: "当前已超出下单窗口，系统已自动拒绝",
+        manual_confirmation_required: "等待人工确认",
+        signal_expired: "信号已过期",
+        manual_rejected: "已由用户手动拒绝",
+        duplicate_existing_broker_order: "检测到账户已有同方向挂单，系统已自动拒绝",
+        confirmed_by_user: "已由用户确认",
+    }
+    return reasonMap[normalized] || raw
+}
+
 function isSignalRecordLike(value) {
     return !!(value && typeof value.get === "function" && typeof value.set === "function")
 }
@@ -314,6 +341,8 @@ function buildSignalDisplayData(recordOrData) {
     var environment = get("environment") || extra.environment || envUtils.LIVE_ENVIRONMENT
     var bar_time_ms = Number(get("bar_time_ms") || extra.bar_time_ms || 0) || 0
     var sourceInfo = resolveSignalSourceInfo(extra, get("source"), get("source_kind"))
+    var status = get("status") || extra.current_status || ""
+    var statusReason = resolveSignalStatusReasonText(status, recordOrData)
 
     var reason = extra.reason || get("reason") || ""
     var changeDisplay = "N/A"
@@ -410,6 +439,7 @@ function buildSignalDisplayData(recordOrData) {
         rr: rr,
         signal_id: signal_id,
         environment: environment,
+        status: status,
         us_time: us_time,
         cn_time: cn_time,
         bar_time_ms: bar_time_ms,
@@ -418,6 +448,7 @@ function buildSignalDisplayData(recordOrData) {
         sourceKey: sourceInfo.key,
         sourceLabel: sourceInfo.label,
         sourceDetail: sourceInfo.detail,
+        statusReason: statusReason,
         changeDisplay: changeDisplay,
         tpProfit: tpProfit,
         slLoss: slLoss,
@@ -472,6 +503,10 @@ function buildSignalInfoElements(d) {
     }
     if (d.reason) {
         infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**原因:** " + d.reason } })
+    }
+    if (d.statusReason) {
+        var reasonLabel = (d.status === "rejected" || d.status === "expired") ? "处理原因" : "状态原因"
+        infoElements.push({ tag: "div", text: { tag: "lark_md", content: "**" + reasonLabel + ":** " + d.statusReason } })
     }
     if (d.marketInfoText) {
         infoElements.push({ tag: "div", text: { tag: "lark_md", content: d.marketInfoText } })
@@ -582,6 +617,14 @@ function buildSignalNotificationCard(signal) {
 }
 
 function getSignalStatusMessage(status) {
+    var signal = arguments.length > 1 ? arguments[1] : null
+    var statusReason = resolveSignalStatusReasonText(status, signal)
+    if (status === "rejected" && statusReason) {
+        return "信号已拒绝 · " + statusReason
+    }
+    if (status === "expired" && statusReason) {
+        return "信号已过期 · " + statusReason
+    }
     var map = {
         awaiting_confirm: "等待人工确认",
         pending: "信号已确认，等待执行",
@@ -601,7 +644,7 @@ function buildSignalStatusCard(signalOrRecord, options) {
     var color = d.direction === "long" ? "green" : "red"
     var currentStatus = get("status") || opts.status || "pending"
     var info = getSignalStatusInfo(currentStatus)
-    var message = opts.message || getSignalStatusMessage(currentStatus)
+    var message = opts.message || getSignalStatusMessage(currentStatus, signalOrRecord)
 
     return buildSignalCardV2(
         d.symbol,

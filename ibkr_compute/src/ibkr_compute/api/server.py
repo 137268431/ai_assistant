@@ -17,6 +17,10 @@ IBKR Compute — 指标计算 HTTP 服务
 import json
 import logging
 import os
+import platform
+import resource
+import shutil
+import socket
 import sys
 import time
 import traceback
@@ -3726,6 +3730,535 @@ def _build_ibkr_account_snapshot(service) -> dict:
     return payload
 
 
+def _copy_active_subscription_map(service) -> dict:
+    lock = getattr(service, "_subscription_lock", None)
+    if lock:
+        with lock:
+            return dict(getattr(service, "_active_subscription_map", {}) or {})
+    return dict(getattr(service, "_active_subscription_map", {}) or {})
+
+
+def _normalize_symbol_list(values) -> list[str]:
+    seen = set()
+    normalized = []
+    for item in values or []:
+        symbol = str(item or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        normalized.append(symbol)
+    normalized.sort()
+    return normalized
+
+
+def _parse_proc_kv_text(raw_text: str) -> dict[str, str]:
+    payload = {}
+    for line in str(raw_text or "").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        payload[str(key).strip()] = str(value).strip()
+    return payload
+
+
+def _parse_meminfo_text(raw_text: str) -> dict[str, int]:
+    payload = {}
+    for key, value in _parse_proc_kv_text(raw_text).items():
+        number_text = str(value).split()[0]
+        try:
+            payload[str(key)] = int(number_text) * 1024
+        except (TypeError, ValueError):
+            continue
+    return payload
+
+
+def _read_proc_text(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def _collect_host_memory_snapshot() -> dict:
+    meminfo = _parse_meminfo_text(_read_proc_text("/proc/meminfo"))
+    total_bytes = int(meminfo.get("MemTotal", 0) or 0)
+    available_bytes = int(meminfo.get("MemAvailable", meminfo.get("MemFree", 0)) or 0)
+    if total_bytes <= 0:
+        return {
+            "total_bytes": None,
+            "available_bytes": None,
+            "used_bytes": None,
+            "used_pct": None,
+            "source": "unavailable",
+        }
+    used_bytes = max(0, total_bytes - max(0, available_bytes))
+    return {
+        "total_bytes": total_bytes,
+        "available_bytes": max(0, available_bytes),
+        "used_bytes": used_bytes,
+        "used_pct": round((used_bytes / total_bytes) * 100.0, 2),
+        "source": "/proc/meminfo",
+    }
+
+
+def _collect_disk_snapshot(path: str | None = None) -> dict:
+    target_path = str(path or os.environ.get("IBKR_MONITOR_DISK_PATH", "/") or "/")
+    try:
+        usage = shutil.disk_usage(target_path)
+    except OSError:
+        return {
+            "path": target_path,
+            "total_bytes": None,
+            "free_bytes": None,
+            "used_bytes": None,
+            "used_pct": None,
+        }
+    used_bytes = max(0, int(usage.total or 0) - int(usage.free or 0))
+    used_pct = round((used_bytes / usage.total) * 100.0, 2) if usage.total else None
+    return {
+        "path": target_path,
+        "total_bytes": int(usage.total or 0),
+        "free_bytes": int(usage.free or 0),
+        "used_bytes": used_bytes,
+        "used_pct": used_pct,
+    }
+
+
+def _collect_load_snapshot() -> dict:
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except (AttributeError, OSError):
+        load1 = load5 = load15 = None
+    return {
+        "cpu_count": cpu_count,
+        "loadavg": {
+            "1": round(load1, 2) if load1 is not None else None,
+            "5": round(load5, 2) if load5 is not None else None,
+            "15": round(load15, 2) if load15 is not None else None,
+            "per_cpu_1": round(load1 / cpu_count, 3) if load1 is not None and cpu_count > 0 else None,
+        },
+    }
+
+
+def _resource_rss_bytes() -> int | None:
+    try:
+        rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss or 0)
+    except Exception:
+        return None
+    if rss <= 0:
+        return None
+    if sys.platform == "darwin":
+        return rss
+    return rss * 1024
+
+
+def _collect_process_snapshot() -> dict:
+    proc_status = _parse_proc_kv_text(_read_proc_text("/proc/self/status"))
+    thread_count = None
+    try:
+        thread_count = int(proc_status.get("Threads", "0") or 0)
+    except (TypeError, ValueError):
+        thread_count = None
+    fd_count = None
+    for path in ("/proc/self/fd", "/dev/fd"):
+        try:
+            fd_count = len([name for name in os.listdir(path) if name not in {".", ".."}])
+            break
+        except OSError:
+            continue
+    return {
+        "pid": os.getpid(),
+        "uptime_s": round(time.time() - _start_time, 1),
+        "rss_bytes": _resource_rss_bytes(),
+        "threads": thread_count if thread_count is not None else threading.active_count(),
+        "fd_count": fd_count,
+    }
+
+
+def _collect_host_snapshot() -> dict:
+    load_snapshot = _collect_load_snapshot()
+    return {
+        "hostname": socket.gethostname(),
+        "platform": platform.platform(),
+        "cpu_count": load_snapshot["cpu_count"],
+        "loadavg": load_snapshot["loadavg"],
+        "memory": _collect_host_memory_snapshot(),
+        "disk": _collect_disk_snapshot(),
+        "process": _collect_process_snapshot(),
+    }
+
+
+def _build_compute_summary() -> dict:
+    return {
+        "status": "running",
+        "total_engines": len(engines),
+        "ready_engines": sum(1 for engine in engines.values() if engine.is_ready()),
+        "tracked_cursors": len(last_processed_ms),
+        "compute_count": compute_count,
+        "error_count": error_count,
+        "last_compute": datetime.fromtimestamp(last_compute_time, timezone.utc).isoformat() if last_compute_time else None,
+        "last_scan": datetime.fromtimestamp(last_scan_time, timezone.utc).isoformat() if last_scan_time else None,
+        "uptime_s": round(time.time() - _start_time, 1),
+    }
+
+
+def _build_monitor_samples(service, runtime_status: dict) -> dict:
+    warmup = runtime_status.get("warmup") or {}
+    market_universe = runtime_status.get("market_universe") or {}
+    bar_aggregator = runtime_status.get("bar_aggregator") or {}
+    active_bars = bar_aggregator.get("active_bars") or {}
+    if not isinstance(active_bars, dict):
+        active_bars = {}
+
+    subscription_map = _copy_active_subscription_map(service)
+    trade_symbols = set(_normalize_symbol_list(market_universe.get("active_trade_symbols") or []))
+    monitor_symbols = set(_normalize_symbol_list(warmup.get("monitor_symbols") or []))
+    visible_symbols = set(_normalize_symbol_list(active_bars.keys()))
+
+    active_subscriptions = []
+    for symbol in sorted(subscription_map.keys()):
+        conid = subscription_map.get(symbol)
+        bar_info = active_bars.get(symbol) or active_bars.get(symbol.upper()) or {}
+        role = (
+            WATCHLIST_SYMBOL_ROLE_TRADE
+            if symbol in trade_symbols
+            else (WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR if symbol in monitor_symbols else "subscription")
+        )
+        active_subscriptions.append({
+            "symbol": symbol,
+            "conid": int(conid) if conid is not None else None,
+            "role": role,
+            "visible": symbol in visible_symbols,
+            "stale": symbol not in visible_symbols,
+            "last_update_age_s": (
+                round(float(bar_info.get("last_update_age_s")), 1)
+                if isinstance(bar_info, dict) and bar_info.get("last_update_age_s") is not None
+                else None
+            ),
+            "tick_count": int(bar_info.get("tick_count", 0) or 0) if isinstance(bar_info, dict) else 0,
+            "volume_updates": int(bar_info.get("volume_updates", 0) or 0) if isinstance(bar_info, dict) else 0,
+        })
+
+    active_bar_symbols = []
+    for symbol, item in sorted(active_bars.items()):
+        if not isinstance(item, dict):
+            continue
+        active_bar_symbols.append({
+            "symbol": str(symbol or "").strip().upper(),
+            "last_update_age_s": round(float(item.get("last_update_age_s", 0) or 0), 1),
+            "tick_count": int(item.get("tick_count", 0) or 0),
+            "volume_updates": int(item.get("volume_updates", 0) or 0),
+            "interval_start": item.get("interval_start"),
+        })
+
+    repair_reasons = [
+        {
+            "symbol": str(symbol or "").strip().upper(),
+            "reason": str(reason or ""),
+        }
+        for symbol, reason in sorted((market_universe.get("last_active_repair_reasons") or {}).items())
+    ]
+
+    stale_symbols = [
+        item["symbol"]
+        for item in active_subscriptions
+        if item.get("stale")
+    ]
+
+    return {
+        "active_subscriptions": active_subscriptions,
+        "active_bar_symbols": active_bar_symbols,
+        "pending_symbols": _normalize_symbol_list(warmup.get("pending_symbols") or []),
+        "stale_symbols": stale_symbols,
+        "repair_reasons": repair_reasons,
+    }
+
+
+def _build_api_utilization_snapshot(runtime_environment: str, runtime_status: dict, sample_payload: dict) -> dict:
+    websocket = runtime_status.get("websocket") or {}
+    market_universe = runtime_status.get("market_universe") or {}
+    data_backfill = runtime_status.get("data_backfill") or {}
+    active_subscription_count = int(
+        market_universe.get("active_subscription_count")
+        or len(sample_payload.get("active_subscriptions") or [])
+        or 0
+    )
+    ws_subscribed_count = int(
+        websocket.get("subscribed_count")
+        or len(websocket.get("subscribed_conids") or [])
+        or 0
+    )
+    pending_subscription_count = int(
+        websocket.get("pending_count")
+        or len(websocket.get("pending_conids") or [])
+        or 0
+    )
+    subscription_limit = max(
+        0,
+        int(cfg.get_for_environment("ibkr_target_subscription_limit", runtime_environment, "60") or 0),
+    )
+    utilization_pct = (
+        round((active_subscription_count / subscription_limit) * 100.0, 2)
+        if subscription_limit > 0 else None
+    )
+    return {
+        "subscription_limit": subscription_limit,
+        "active_subscription_count": active_subscription_count,
+        "active_trade_symbol_count": int(market_universe.get("active_target_count") or 0),
+        "ws_subscribed_count": ws_subscribed_count,
+        "pending_subscription_count": pending_subscription_count,
+        "utilization_pct": utilization_pct,
+        "request_count": int(data_backfill.get("request_count", 0) or 0),
+        "retry_count": int(data_backfill.get("retry_count", 0) or 0),
+        "throttle_count": int(data_backfill.get("throttle_count", 0) or 0),
+        "request_spacing_s": float(data_backfill.get("request_spacing_s", 0) or 0),
+        "max_concurrency": int(data_backfill.get("max_concurrency", 0) or 0),
+        "websocket_message_count": int(websocket.get("message_count", 0) or 0),
+        "order_update_count": int(websocket.get("order_update_count", 0) or 0),
+        "last_message": websocket.get("last_message"),
+        "last_message_age_s": websocket.get("last_message_age_s"),
+        "last_tic": websocket.get("last_tic"),
+        "last_tic_age_s": websocket.get("last_tic_age_s"),
+    }
+
+
+def _append_monitor_flag(flags: list[dict], severity: str, code: str, title: str, detail: str) -> None:
+    flags.append({
+        "severity": severity,
+        "code": code,
+        "title": title,
+        "detail": detail,
+    })
+
+
+def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snapshot: dict, sample_payload: dict) -> list[dict]:
+    flags = []
+    gateway = runtime_status.get("gateway") or {}
+    session = runtime_status.get("session") or {}
+    websocket = runtime_status.get("websocket") or {}
+    market_universe = runtime_status.get("market_universe") or {}
+
+    gateway_active = bool(gateway.get("running") or gateway.get("reachable"))
+    if not gateway_active:
+        _append_monitor_flag(
+            flags,
+            "error",
+            "gateway_offline",
+            "Gateway offline",
+            "Gateway 既不在运行也不可达，IBKR 链路当前不可用。",
+        )
+
+    if gateway_active and not bool(session.get("authenticated")):
+        _append_monitor_flag(
+            flags,
+            "warning",
+            "session_unauthenticated",
+            "Session unauthenticated",
+            "Gateway 已在线，但当前 Session 尚未认证，订阅与交易链路会降级。",
+        )
+
+    if not bool(websocket.get("connected")) or not bool(websocket.get("ready")):
+        _append_monitor_flag(
+            flags,
+            "error",
+            "websocket_not_ready",
+            "WebSocket not ready",
+            "实时行情 WebSocket 未连通或未进入 ready 状态。",
+        )
+
+    utilization_pct = api_utilization.get("utilization_pct")
+    if utilization_pct is not None:
+        if utilization_pct >= 95:
+            _append_monitor_flag(
+                flags,
+                "error",
+                "subscription_utilization_critical",
+                "Subscription utilization critical",
+                f"当前订阅占用 {utilization_pct:.2f}% ，已经逼近上限。",
+            )
+        elif utilization_pct >= 80:
+            _append_monitor_flag(
+                flags,
+                "warning",
+                "subscription_utilization_high",
+                "Subscription utilization high",
+                f"当前订阅占用 {utilization_pct:.2f}% ，需要关注扩容或收缩池子。",
+            )
+
+    pending_subscription_count = int(api_utilization.get("pending_subscription_count", 0) or 0)
+    if pending_subscription_count > 0:
+        _append_monitor_flag(
+            flags,
+            "warning",
+            "pending_subscriptions",
+            "Pending subscriptions",
+            f"当前还有 {pending_subscription_count} 个待完成订阅。",
+        )
+
+    throttle_count = int(api_utilization.get("throttle_count", 0) or 0)
+    if throttle_count > 0:
+        _append_monitor_flag(
+            flags,
+            "warning",
+            "history_throttle_detected",
+            "History throttle detected",
+            f"历史回填已累计出现 {throttle_count} 次节流。",
+        )
+
+    last_message_age_s = api_utilization.get("last_message_age_s")
+    active_subscription_count = int(api_utilization.get("active_subscription_count", 0) or 0)
+    if bool(session.get("authenticated")) and active_subscription_count > 0 and last_message_age_s is not None:
+        if float(last_message_age_s) > 180:
+            _append_monitor_flag(
+                flags,
+                "error",
+                "market_data_silent_critical",
+                "Market data silent",
+                f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s。",
+            )
+        elif float(last_message_age_s) > 60:
+            _append_monitor_flag(
+                flags,
+                "warning",
+                "market_data_silent",
+                "Market data slowed",
+                f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s。",
+            )
+
+    active_bar_symbols = sample_payload.get("active_bar_symbols") or []
+    if active_bar_symbols:
+        max_active_bar_age_s = max(float(item.get("last_update_age_s", 0) or 0) for item in active_bar_symbols)
+        max_active_bar_age_min = round(max_active_bar_age_s / 60.0, 2)
+        if max_active_bar_age_min > 15:
+            _append_monitor_flag(
+                flags,
+                "error",
+                "data_freshness_offline",
+                "Data freshness offline",
+                f"活跃订阅里最慢的 symbol 已经 {max_active_bar_age_min} 分钟没有更新。",
+            )
+        elif max_active_bar_age_min > 5:
+            _append_monitor_flag(
+                flags,
+                "warning",
+                "data_freshness_delayed",
+                "Data freshness delayed",
+                f"活跃订阅里最慢的 symbol 已经 {max_active_bar_age_min} 分钟没有更新。",
+            )
+
+    stale_symbols = sample_payload.get("stale_symbols") or []
+    if stale_symbols:
+        _append_monitor_flag(
+            flags,
+            "warning",
+            "stale_active_symbols",
+            "Stale active symbols",
+            f"当前有 {len(stale_symbols)} 个已订阅 symbol 没有出现在活跃 bar 列表。",
+        )
+
+    memory_used_pct = (host_snapshot.get("memory") or {}).get("used_pct")
+    if memory_used_pct is not None:
+        if float(memory_used_pct) >= 90:
+            _append_monitor_flag(
+                flags,
+                "error",
+                "host_memory_critical",
+                "Host memory critical",
+                f"主机内存占用 {memory_used_pct:.2f}% 。",
+            )
+        elif float(memory_used_pct) >= 80:
+            _append_monitor_flag(
+                flags,
+                "warning",
+                "host_memory_high",
+                "Host memory high",
+                f"主机内存占用 {memory_used_pct:.2f}% 。",
+            )
+
+    disk_used_pct = (host_snapshot.get("disk") or {}).get("used_pct")
+    if disk_used_pct is not None:
+        if float(disk_used_pct) >= 92:
+            _append_monitor_flag(
+                flags,
+                "error",
+                "host_disk_critical",
+                "Host disk critical",
+                f"磁盘占用 {disk_used_pct:.2f}% 。",
+            )
+        elif float(disk_used_pct) >= 85:
+            _append_monitor_flag(
+                flags,
+                "warning",
+                "host_disk_high",
+                "Host disk high",
+                f"磁盘占用 {disk_used_pct:.2f}% 。",
+            )
+
+    load_per_cpu = ((host_snapshot.get("loadavg") or {}).get("per_cpu_1"))
+    cpu_count = int(host_snapshot.get("cpu_count", 0) or 0)
+    if load_per_cpu is not None and cpu_count > 0:
+        if float(load_per_cpu) >= 1.5:
+            _append_monitor_flag(
+                flags,
+                "error",
+                "host_load_critical",
+                "Host load critical",
+                f"1 分钟 load / CPU = {load_per_cpu:.3f} 。",
+            )
+        elif float(load_per_cpu) >= 1.0:
+            _append_monitor_flag(
+                flags,
+                "warning",
+                "host_load_high",
+                "Host load high",
+                f"1 分钟 load / CPU = {load_per_cpu:.3f} 。",
+            )
+
+    if not flags and int(market_universe.get("active_subscription_count", 0) or 0) > 0:
+        _append_monitor_flag(
+            flags,
+            "info",
+            "monitor_nominal",
+            "Monitor nominal",
+            "当前没有触发阈值告警，链路处于可用状态。",
+        )
+    return flags
+
+
+def _derive_monitor_status(flags: list[dict]) -> str:
+    severities = {str(item.get("severity") or "").lower() for item in flags or []}
+    if "error" in severities:
+        return "error"
+    if "warning" in severities:
+        return "warning"
+    return "ok"
+
+
+def _build_ibkr_monitor_snapshot(service) -> dict:
+    runtime_environment = _ibkr_service_environment(service)
+    runtime_status = service.status() if hasattr(service, "status") else {}
+    compute_summary = _build_compute_summary()
+    sample_payload = _build_monitor_samples(service, runtime_status)
+    api_utilization = _build_api_utilization_snapshot(runtime_environment, runtime_status, sample_payload)
+    host_snapshot = _collect_host_snapshot()
+    flags = _build_monitor_flags(runtime_status, api_utilization, host_snapshot, sample_payload)
+    return {
+        "ok": True,
+        "status": _derive_monitor_status(flags),
+        "environment": runtime_environment,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "compute": compute_summary,
+        "runtime": runtime_status,
+        "runtime_control": get_ibkr_runtime_control(runtime_environment),
+        "api_utilization": api_utilization,
+        "samples": sample_payload,
+        "host": host_snapshot,
+        "flags": flags,
+    }
+
+
 @app.route("/ibkr/start", methods=["POST"])
 def ibkr_start():
     global _ibkr_restore_attempted
@@ -3808,6 +4341,15 @@ def ibkr_status():
     status_payload = service.status()
     status_payload["runtime_control"] = get_ibkr_runtime_control(_ibkr_service_environment(service))
     return jsonify({"ok": True, **status_payload})
+
+
+@app.route("/ibkr/monitor", methods=["GET"])
+def ibkr_monitor():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    _maybe_restore_ibkr_service(service)
+    return jsonify(_build_ibkr_monitor_snapshot(service))
 
 
 @app.route("/ibkr/2fa/takeover", methods=["POST"])

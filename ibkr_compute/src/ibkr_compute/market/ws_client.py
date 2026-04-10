@@ -329,12 +329,23 @@ class IBKRWebSocketClient:
             pending_conids = sorted(self._pending_subscriptions)
             order_updates_enabled = self._order_updates_enabled
             order_updates_subscribed = self._order_updates_subscribed
+        now_ts = time.time()
+        last_message_age_s = (
+            round(max(0.0, now_ts - float(self._last_message_time)), 1)
+            if self._last_message_time else None
+        )
+        last_tic_age_s = (
+            round(max(0.0, now_ts - float(self._last_tic_at)), 1)
+            if self._last_tic_at else None
+        )
         return {
             "connected": self._connected,
             "running": self._running,
             "ready": self._ready,
             "subscribed_conids": subscribed_conids,
             "pending_conids": pending_conids,
+            "subscribed_count": len(subscribed_conids),
+            "pending_count": len(pending_conids),
             "message_count": self._message_count,
             "order_update_count": self._order_update_count,
             "order_updates_enabled": order_updates_enabled,
@@ -342,6 +353,8 @@ class IBKRWebSocketClient:
             "ping_interval_s": self._ping_interval(),
             "resubscribe_batch_size": self._resubscribe_batch_size(),
             "resubscribe_gap_ms": round(self._resubscribe_gap_seconds() * 1000),
+            "last_message_age_s": last_message_age_s,
+            "last_tic_age_s": last_tic_age_s,
             "last_message": time.strftime("%H:%M:%S", time.localtime(self._last_message_time))
             if self._last_message_time else None,
             "last_tic": time.strftime("%H:%M:%S", time.localtime(self._last_tic_at))

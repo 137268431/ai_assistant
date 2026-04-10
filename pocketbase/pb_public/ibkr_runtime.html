@@ -863,43 +863,43 @@
             </div>
 
             <div class="action-section" id="actionSection">
-                <button class="action-btn action-primary" onclick="handleRuntimeAction('start')">
+                <button class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction('start')">
                     <span class="action-label">启动 IBKR 服务</span>
                     <span class="action-copy">启动登录、Session Keeper、行情订阅与后续数据链路。</span>
                 </button>
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('stop')">
+                <button class="action-btn action-danger" data-action="stop" onclick="handleRuntimeAction('stop')">
                     <span class="action-label">停止 IBKR 服务</span>
                     <span class="action-copy">停止当前运行中的 IBKR 服务线程，便于重新触发 2FA。</span>
                 </button>
-                <button class="action-btn action-accent" onclick="handleRuntimeAction('reauth')">
+                <button class="action-btn action-accent" data-action="reauth" onclick="handleRuntimeAction('reauth')">
                     <span class="action-label">请求 / 复用 2FA 卡片</span>
-                    <span class="action-copy">优先复用飞书里的活动卡片；当前已认证会直接提示无需 2FA。</span>
+                    <span class="action-copy">优先复用飞书里的当前卡片；如果已有 active 轮次，请继续当前轮次，不要重复触发。</span>
                 </button>
-                <button class="action-btn action-accent" onclick="handleRuntimeAction('reauth_force_new')">
-                    <span class="action-label">强制新一轮 2FA</span>
-                    <span class="action-copy">立即停止旧轮次并重开认证，同时刷新飞书卡片；适合第一次验证失败后马上再来一轮。</span>
+                <button class="action-btn action-accent" data-action="reauth_force_new" onclick="handleRuntimeAction('reauth_force_new')">
+                    <span class="action-label">开始新一轮 2FA</span>
+                    <span class="action-copy">仅在当前没有 active 轮次时使用；如果当前轮次已经乱掉，改用“放弃当前轮次并干净重开”。</span>
                 </button>
-                <button class="action-btn action-accent" onclick="handleRuntimeAction('takeover_on')">
+                <button class="action-btn action-accent" data-action="takeover_on" onclick="handleRuntimeAction('takeover_on')">
                     <span class="action-label">开始人工接管</span>
                     <span class="action-copy">你要去真实账户里查挂单时先点这个，系统会暂停把当前轮次误判为锁死，但仍持续静默探测。</span>
                 </button>
-                <button class="action-btn action-accent" onclick="handleRuntimeAction('takeover_off')">
+                <button class="action-btn action-accent" data-action="takeover_off" onclick="handleRuntimeAction('takeover_off')">
                     <span class="action-label">结束人工接管并探测</span>
                     <span class="action-copy">结束人工查看后立即恢复静默探测；如果会话其实已经恢复，页面会自动转成 success。</span>
                 </button>
-                <button class="action-btn action-accent" onclick="handleRuntimeAction('probe')">
+                <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
                     <span class="action-label">立即静默探测</span>
                     <span class="action-copy">不 stop/start，不新开 2FA，只快速确认当前 Gateway 会话是否已经恢复。</span>
                 </button>
-                <button class="action-btn action-accent" onclick="handleRuntimeAction('compute')">
+                <button class="action-btn action-accent" data-action="compute" onclick="handleRuntimeAction('compute')">
                     <span class="action-label">执行 Compute</span>
                     <span class="action-copy">通过 PocketBase 代理触发 `/compute`，检查 bars → indicators → signals。</span>
                 </button>
-                <button class="action-btn action-accent" onclick="handleRuntimeAction('scan')">
+                <button class="action-btn action-accent" data-action="scan" onclick="handleRuntimeAction('scan')">
                     <span class="action-label">执行 Scan</span>
                     <span class="action-copy">触发盘前扫描，把候选标的写入 `ibkr_targets`。</span>
                 </button>
-                <button class="action-btn" onclick="handleRuntimeAction('recompute')">
+                <button class="action-btn" data-action="recompute" onclick="handleRuntimeAction('recompute')">
                     <span class="action-label">重算历史缓存</span>
                     <span class="action-copy">清空内存引擎缓存后重新跑 compute，用于核对链路回放。</span>
                 </button>
@@ -918,33 +918,33 @@
             </div>
 
             <div class="action-section" id="emergencySection">
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_runtime')">
+                <button class="action-btn action-danger" data-action="emergency_runtime" onclick="handleRuntimeAction('emergency_runtime')">
                     <span class="action-label">急停运行线程</span>
                     <span class="action-copy">只停止当前 IBKR runtime，适合重新认证或排查网关问题。</span>
                 </button>
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_compute')">
+                <button class="action-btn action-danger" data-action="emergency_compute" onclick="handleRuntimeAction('emergency_compute')">
                     <span class="action-label">关闭计算调度</span>
                     <span class="action-copy">关闭自动 compute / scan，降低 PocketBase 和 compute 的持续负载。</span>
                 </button>
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_publish')">
+                <button class="action-btn action-danger" data-action="emergency_publish" onclick="handleRuntimeAction('emergency_publish')">
                     <span class="action-label">关闭 Bars 写入</span>
                     <span class="action-copy">停止新的 `ibkr_bars` 写入，适合快速止血排查数据库压力。</span>
                 </button>
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_scheduler')">
+                <button class="action-btn action-danger" data-action="emergency_scheduler" onclick="handleRuntimeAction('emergency_scheduler')">
                     <span class="action-label">关闭 PB 调度</span>
                     <span class="action-copy">暂停 PocketBase cron 调度，避免继续触发 compute / heartbeat / 清理任务。</span>
                 </button>
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_trading')">
+                <button class="action-btn action-danger" data-action="emergency_trading" onclick="handleRuntimeAction('emergency_trading')">
                     <span class="action-label">关闭交易执行</span>
                     <span class="action-copy">保留观测链路，但禁止继续下新单。</span>
                 </button>
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('emergency_all')">
+                <button class="action-btn action-danger" data-action="emergency_all" onclick="handleRuntimeAction('emergency_all')">
                     <span class="action-label">全部急停</span>
                     <span class="action-copy">一次关闭计算、交易、K线写入、PB 调度，并停止当前 runtime。</span>
                 </button>
-                <button class="action-btn action-danger" onclick="handleRuntimeAction('panic_reset_2fa')">
-                    <span class="action-label">全量清空并重新验证</span>
-                    <span class="action-copy">清空当前 2FA / Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起一轮干净验证。</span>
+                <button class="action-btn action-danger" data-action="panic_reset_2fa" onclick="handleRuntimeAction('panic_reset_2fa')">
+                    <span class="action-label">放弃当前轮次并干净重开</span>
+                    <span class="action-copy">这是唯一推荐的强制重开方式；会终止当前 2FA、清空旧 Challenge / Response，并重新拉起一轮全新验证。</span>
                 </button>
             </div>
 
@@ -1203,6 +1203,14 @@
             return String(value);
         }
 
+        function formatTimeLabelWithFallback(value) {
+            const formatted = formatTimeLabel(value);
+            if (formatted && formatted !== '--') return formatted;
+            const raw = String(value || '').trim();
+            if (!raw) return '--';
+            return raw.replace('T', ' ').slice(0, 19);
+        }
+
         function formatAgo(isoValue) {
             if (!isoValue) return '--';
             const date = new Date(isoValue);
@@ -1368,17 +1376,66 @@
             };
         }
 
+        function getTwoFactorStatusKey(twoFactorState = latestTwoFactorState) {
+            return String(twoFactorState?.status || '').trim().toLowerCase();
+        }
+
+        function isTwoFactorCycleActive(twoFactorState = latestTwoFactorState) {
+            return ['triggered', 'waiting_confirm', 'waiting_response'].includes(getTwoFactorStatusKey(twoFactorState));
+        }
+
+        function getTwoFactorActionLockReason(action, twoFactorState = latestTwoFactorState) {
+            const guarded = new Set(['start', 'reauth', 'reauth_force_new', 'probe']);
+            if (!guarded.has(action)) return '';
+
+            const status = getTwoFactorStatusKey(twoFactorState);
+            if (!isTwoFactorCycleActive(twoFactorState)) return '';
+
+            if (action === 'probe') {
+                return '当前已有一轮 2FA 正在进行，先等这一轮收口；此时再做静默探测只会增加判断噪音。';
+            }
+            if (action === 'reauth_force_new') {
+                return '当前已有一轮 2FA 正在进行。如要放弃当前轮次，请只使用“放弃当前轮次并干净重开”。';
+            }
+            if (status === 'waiting_response') {
+                return '当前已进入 Challenge/Response，请继续当前轮次并提交 Response Code，不要重复触发。';
+            }
+            if (status === 'waiting_confirm') {
+                return '当前正在等待手机确认，请继续当前轮次，不要重复触发。';
+            }
+            return '当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。';
+        }
+
+        function syncActionLocks() {
+            document.querySelectorAll('.action-btn').forEach((button) => {
+                const action = String(button?.dataset?.action || '').trim();
+                const lockReason = actionPending ? '' : getTwoFactorActionLockReason(action);
+                button.disabled = actionPending || Boolean(lockReason);
+                button.title = actionPending
+                    ? '动作执行中，请稍候。'
+                    : (lockReason || '');
+            });
+        }
+
         function summarizeAction(action, payload) {
             if (!payload || typeof payload !== 'object') {
                 return `${action} 已执行。`;
             }
             if (action === 'reauth' || action === 'reauth_force_new') {
                 if (payload.message) return payload.message;
+                const actionState = payload?.state || latestTwoFactorState;
+                const actionStatus = getTwoFactorStatusKey(actionState);
                 if (payload?.state?.runtime_authenticated && payload?.state?.gateway_reachable && Number(payload?.state?.gateway_status_code || 0) !== 401) {
                     return '当前 Gateway 会话已认证，无需再次确认。';
                 }
+                if (actionStatus === 'waiting_response') {
+                    return '当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。';
+                }
+                if (isTwoFactorCycleActive(actionState)) {
+                    return '当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。';
+                }
                 return action === 'reauth_force_new'
-                    ? '已强制开启新一轮 2FA，请立即查看手机通知或飞书卡片。'
+                    ? '已开始新一轮 2FA，请立即查看手机通知或飞书卡片。'
                     : '已请求 2FA 卡片，请在飞书点击按钮触发验证。';
             }
             if (action === 'takeover_on' || action === 'takeover_off' || action === 'probe' || action === 'panic_reset_2fa') {
@@ -1409,9 +1466,7 @@
 
         function setActionState(isPending) {
             actionPending = isPending;
-            document.querySelectorAll('.action-btn').forEach((button) => {
-                button.disabled = isPending;
-            });
+            syncActionLocks();
         }
 
         function renderMetricCards(summary, health, status, twoFactorState, latestBar) {
@@ -1530,12 +1585,12 @@
             } else if (twoFactorStatus === 'waiting_response') {
                 blocker.tone = 'warn';
                 blocker.title = `等待 Response Code${challengeCode ? ` · ${challengeCode}` : ''}`;
-                blocker.copy = '这一步不是点手机推送；请在 IBKR App 输入 Challenge，拿到 Response Code 后回到本页提交。';
+                blocker.copy = '这一步不是点手机推送；请在 IBKR App 输入 Challenge，拿到 Response Code 后回到本页提交。不要再点请求 2FA / 开始新一轮。';
             } else if (!sessionAuthenticated) {
                 blocker.tone = twoFactorStatus === 'waiting_confirm' ? 'warn' : 'error';
                 blocker.title = twoFactorStatus === 'waiting_confirm' ? '等待手机确认 2FA' : 'Session 仍未认证';
                 blocker.copy = twoFactorStatus === 'waiting_confirm'
-                    ? '浏览器已经停在手机确认阶段，确认完成后会自动继续；如果迟迟不成功，我会继续排查浏览器已认证但网关未放行的桥接问题。'
+                    ? '浏览器已经停在手机确认阶段，确认完成后会自动继续；请继续当前轮次，不要重复点重新验证 / 开始新一轮。'
                     : '当前还没有拿到可用 Session，新的 bars / backfill / 订单链路都不会继续刷新。';
             } else if (warmup.phase === 'failed') {
                 blocker.tone = 'error';
@@ -1651,6 +1706,7 @@
                 || status?.order_tracker?.running
             );
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
+            const keepCurrentCycleHint = isTwoFactorCycleActive(twoFactorState) ? ' · keep current cycle' : '';
             const authSummary = sessionAuthenticated
                 ? (runtimeMismatch
                     ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
@@ -1659,7 +1715,7 @@
                     ? 'runtime stopped · waiting manual start'
                 : (runtimeMismatch
                     ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
-                    : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${recoveryPhase ? ` · ${recoveryPhase}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}`);
+                    : `2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${recoveryPhase ? ` · ${recoveryPhase}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}${keepCurrentCycleHint}`);
             document.getElementById('authInfo').textContent = authSummary;
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
         }
@@ -1745,10 +1801,13 @@
 
         function renderTwoFactorPanel(twoFactorState) {
             latestTwoFactorState = twoFactorState || {};
-            const status = String(twoFactorState?.status || 'requested').toLowerCase();
+            const status = getTwoFactorStatusKey(twoFactorState) || 'requested';
             const mode = String(twoFactorState?.mode || '').trim();
             const challengeCode = String(twoFactorState?.challenge_code || '').trim();
             const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
+            const previousCycle = twoFactorState?.previous_cycle && typeof twoFactorState.previous_cycle === 'object'
+                ? twoFactorState.previous_cycle
+                : null;
             const canSubmit = status === 'waiting_response' && !!challengeCode;
             const runtimeMismatch = getRuntimeEnvironmentMismatch(latestRuntimeStatus, twoFactorState);
             let helper = twoFactorState?.last_result || '当前没有等待中的 Challenge。';
@@ -1763,11 +1822,16 @@
             } else if (status === 'requested') {
                 helper = '这一步只是把 2FA 卡片发到或刷新到飞书，还没有真正开始验证。需要去飞书点击“开始 2FA 验证”。';
             } else if (status === 'triggered') {
-                helper = twoFactorState?.last_result || '登录流程已经触发，等待 IBKR 返回手机确认或 Challenge/Response。';
+                helper = twoFactorState?.last_result || '登录流程已经触发，等待 IBKR 返回手机确认或 Challenge/Response。当前已有 active 轮次，请不要重复触发。';
             } else if (canSubmit) {
-                helper = '当前已切到 Challenge/Response。仅在手机上点确认不会完成验证；请在 IBKR App 的 Two-Factor Authentication 中输入上方 Challenge，拿到 Response Code 后回到这里提交。';
+                helper = '当前已切到 Challenge/Response。仅在手机上点确认不会完成验证；请在 IBKR App 的 Two-Factor Authentication 中输入上方 Challenge，拿到 Response Code 后回到这里提交。不要重复触发新一轮。';
             } else if (status === 'waiting_confirm') {
-                helper = '当前是手机推送模式，只需要点手机通知确认；如果页面后续切成 Challenge/Response，手机确认将不再够用，这里会出现 Challenge 与响应码输入框。';
+                helper = '当前是手机推送模式，只需要点手机通知确认；如果页面后续切成 Challenge/Response，手机确认将不再够用，这里会出现 Challenge 与响应码输入框。当前已有 active 轮次，请不要重复触发。';
+            }
+
+            if (previousCycle?.superseded_at) {
+                const previousStatus = String(previousCycle.status || 'unknown').trim() || 'unknown';
+                helper = `上一轮 ${previousStatus} 已在 ${formatTimeLabelWithFallback(previousCycle.superseded_at)} 被替换。后续请只跟当前这一轮。 ${helper}`;
             }
 
             document.getElementById('twoFactorPanel').innerHTML = `
@@ -1780,20 +1844,21 @@
                     </div>
                     <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || (runtimeMismatch ? `当前实际 runtime: ${String(runtimeMismatch.actual || '--').toUpperCase()}` : (status === 'success' ? '当前无需 Challenge' : '当前未检测到 Challenge')))}</div>
                     <div class="challenge-copy">${escapeHtml(helper)}</div>
-                    <label class="response-label" for="challengeResponseInput">Response Code</label>
-                    <div class="response-row">
-                        <input
-                            id="challengeResponseInput"
-                            class="response-input"
-                            type="text"
-                            inputmode="numeric"
-                            autocomplete="off"
-                            spellcheck="false"
-                            placeholder="${canSubmit ? '输入 Response Code' : (status === 'success' ? '当前无需 Response Code' : '等待 Challenge')}"
-                            ${canSubmit ? '' : 'disabled'}
-                        />
-                        <button id="challengeResponseSubmit" class="response-btn" onclick="submitTwoFactorResponse()" ${canSubmit ? '' : 'disabled'}>提交响应码</button>
-                    </div>
+                    ${canSubmit ? `
+                        <label class="response-label" for="challengeResponseInput">Response Code</label>
+                        <div class="response-row">
+                            <input
+                                id="challengeResponseInput"
+                                class="response-input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="off"
+                                spellcheck="false"
+                                placeholder="输入 Response Code"
+                            />
+                            <button id="challengeResponseSubmit" class="response-btn" onclick="submitTwoFactorResponse()">提交响应码</button>
+                        </div>
+                    ` : ''}
                 </div>
             `;
         }
@@ -2305,6 +2370,7 @@
                 renderRuntimeDetail(summary, health, status, twoFactorState, latestBar, latestIndicator, latestSignal);
                 renderConfigDetail(summary, runtimeConfig, cronDefinitions);
                 renderPipelinePanel(summary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
+                syncActionLocks();
                 renderEngineTable(status);
                 void loadEngineDetail(loadId, status);
                 renderBarsTable(barsItems);
@@ -2383,6 +2449,13 @@
                 showToast(runtimeMismatch.message);
                 return;
             }
+            const actionLockReason = getTwoFactorActionLockReason(action);
+            if (actionLockReason) {
+                document.getElementById('lastAction').textContent = `最近动作：${actionLockReason}`;
+                showToast(actionLockReason);
+                syncActionLocks();
+                return;
+            }
             if (action === 'recompute' && !window.confirm('确认执行 recompute？这会重置内存引擎缓存并重新跑一次 compute。')) {
                 return;
             }
@@ -2404,7 +2477,7 @@
             if (action === 'emergency_trading' && !window.confirm('确认关闭交易执行？新的自动下单会被阻止。')) {
                 return;
             }
-            if (action === 'panic_reset_2fa' && !window.confirm('确认执行全量清空并重新验证？这会清空当前 2FA / Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起新的验证流程。')) {
+            if (action === 'panic_reset_2fa' && !window.confirm('确认执行“放弃当前轮次并干净重开”？这会终止当前 2FA、清空旧 Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起新的验证流程。')) {
                 return;
             }
             if (!initRuntimeAuth()) return;
@@ -2419,7 +2492,7 @@
                         reason: 'manual_reauth',
                         source: 'runtime_page',
                         force_reset: true,
-                        message: '已从 PocketBase Runtime 页面请求 2FA，请在飞书中点击按钮触发验证。'
+                        message: '已从 PocketBase Runtime 页面请求 2FA；如果当前已有 active 轮次，请继续当前轮次，不要重复触发。'
                     }
                 },
                 reauth_force_new: {
@@ -2432,7 +2505,7 @@
                         force_restart: true,
                         trigger_now: true,
                         force_new: true,
-                        message: '已从 PocketBase Runtime 页面强制开启新一轮 2FA，请立即查看手机通知。'
+                        message: '已从 PocketBase Runtime 页面开始新一轮 2FA，请立即查看手机通知。'
                     }
                 },
                 takeover_on: {
@@ -2521,6 +2594,12 @@
                     kicker: 'Monitor',
                     label: '总览',
                     copy: '健康 / freshness / config'
+                },
+                {
+                    path: '/ibkr_monitor.html',
+                    kicker: 'Dashboard',
+                    label: '监控大盘',
+                    copy: '请求 / 订阅 / 主机健康'
                 },
                 {
                     path: '/ibkr_runtime.html',

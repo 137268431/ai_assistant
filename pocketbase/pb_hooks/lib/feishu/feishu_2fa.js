@@ -50,22 +50,22 @@ var STATUS_CONFIG = {
         emoji: "🚀",
         title: "IBKR 2FA 已触发",
         template: "blue",
-        summary: "已开始启动登录流程，请稍候。",
-        button: "重新触发"
+        summary: "登录流程已启动。当前已有一轮 2FA 在进行中，请打开 Runtime 跟当前轮次，不要重复触发。",
+        button: "查看当前轮次"
     },
     waiting_confirm: {
         emoji: "📲",
         title: "IBKR 2FA 待确认",
         template: "yellow",
-        summary: "请在 IBKR Mobile 上确认推送；如果后续切到 Challenge/Response，再按卡片提示改为输入 Response Code。",
-        button: "重新触发"
+        summary: "请在 IBKR Mobile 上确认推送。当前已有一轮 2FA 在进行中，不要重复触发；如果后续切到 Challenge/Response，再去 Runtime 页面提交 Response Code。",
+        button: "继续当前轮次"
     },
     waiting_response: {
         emoji: "🔢",
         title: "IBKR 2FA 待输入响应码",
         template: "orange",
-        summary: "当前不是手机点确认，而是要在 App 输入 Challenge 生成 Response Code，再去 Runtime 页面提交。",
-        button: "重新触发"
+        summary: "当前已进入 Challenge/Response。请在 App 输入 Challenge 生成 Response Code，并去 Runtime 页面提交；不要重复触发新一轮。",
+        button: "打开 Runtime 提交响应码"
     },
     success: {
         emoji: "✅",
@@ -144,6 +144,11 @@ function isActiveStatus(status) {
     return ACTIVE_STATUSES.indexOf(String(status || "")) !== -1
 }
 
+function isCurrentCycleActiveStatus(status) {
+    var text = String(status || "").trim().toLowerCase()
+    return ["triggered", "waiting_confirm", "waiting_response"].indexOf(text) !== -1
+}
+
 function isTerminalStatus(status) {
     return TERMINAL_STATUSES.indexOf(String(status || "")) !== -1
 }
@@ -164,6 +169,13 @@ function buildDeliveryFingerprint(stateData) {
         requested_at: stateData.requested_at || "",
         triggered_at: stateData.triggered_at || "",
         result_at: stateData.result_at || "",
+        restarted_from_active_cycle: stateData.restarted_from_active_cycle ? "yes" : "no",
+        previous_cycle: {
+            status: stateData.previous_cycle && stateData.previous_cycle.status || "",
+            mode: stateData.previous_cycle && stateData.previous_cycle.mode || "",
+            challenge_code: stateData.previous_cycle && stateData.previous_cycle.challenge_code || "",
+            superseded_at: stateData.previous_cycle && stateData.previous_cycle.superseded_at || "",
+        },
         detail: stateData.detail || {},
     })
 }
@@ -397,8 +409,6 @@ function getStatusConfig(status) {
 
 function buildActionButton(stateData, environment) {
     var cfg = getStatusConfig(stateData.status)
-    var status = String(stateData.status || "").trim().toLowerCase()
-    var forceRestart = ["triggered", "waiting_confirm", "waiting_response", "timeout", "failed"].indexOf(status) !== -1
     return {
         tag: "button",
         type: "primary",
@@ -409,15 +419,15 @@ function buildActionButton(stateData, environment) {
         value: {
             action: "ibkr_2fa_start",
             environment: environment,
-            force_restart: forceRestart,
+            force_restart: false,
         },
     }
 }
 
-function buildOpenButton(label, url) {
+function buildOpenButton(label, url, type) {
     return {
         tag: "button",
-        type: "default",
+        type: type || "default",
         width: "fill",
         text: { tag: "plain_text", content: label },
         multi_url: {
@@ -434,6 +444,8 @@ function build2faCard(stateData, environment) {
     var cfg = getStatusConfig(stateData.status)
     var summary = stateData.message || cfg.summary
     var detailMarkdown = buildDetailMarkdown(stateData.detail)
+    var previousCycle = stateData.previous_cycle && typeof stateData.previous_cycle === "object" ? stateData.previous_cycle : null
+    var currentCycleActive = isCurrentCycleActiveStatus(stateData.status)
     var runtimeUrl = PB_HOST + "/ibkr_runtime.html?environment=" + encodeURIComponent(runtimeEnvironment)
     var systemUrl = PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment)
     var metaLines = [
@@ -458,6 +470,10 @@ function build2faCard(stateData, environment) {
     if (stateData.response_submitted_at) metaLines.push("**响应码提交**: " + stateData.response_submitted_at)
     if (stateData.last_result) metaLines.push("**反馈**: " + stateData.last_result)
     if (stateData.last_error) metaLines.push("**异常**: " + stateData.last_error)
+    if (stateData.restarted_from_active_cycle) metaLines.push("**当前轮次**: 已替换上一轮")
+    if (previousCycle && previousCycle.superseded_at) metaLines.push("**上一轮替换时间**: " + previousCycle.superseded_at)
+    if (previousCycle && previousCycle.status) metaLines.push("**上一轮状态**: " + previousCycle.status)
+    if (previousCycle && previousCycle.mode) metaLines.push("**上一轮模式**: " + getModeLabel(previousCycle.mode))
 
     var elements = [
         {
@@ -478,11 +494,33 @@ function build2faCard(stateData, environment) {
         })
     }
 
+    if (previousCycle && previousCycle.superseded_at) {
+        var supersededLines = [
+            "**上一轮已被替换**: " + previousCycle.superseded_at,
+            previousCycle.status ? ("**上一轮状态**: " + previousCycle.status) : "",
+            previousCycle.mode ? ("**上一轮模式**: " + getModeLabel(previousCycle.mode)) : "",
+            previousCycle.challenge_code ? ("**上一轮 Challenge**: " + previousCycle.challenge_code) : "",
+        ].filter(Boolean).join("\n")
+        elements.push({ tag: "hr" })
+        elements.push({
+            tag: "markdown",
+            content: supersededLines
+        })
+    }
+
+    if (stateData.status === "triggered") {
+        elements.push({ tag: "hr" })
+        elements.push({
+            tag: "markdown",
+            content: "**当前阶段**: 当前已有一轮 2FA 在进行中，请打开 Runtime 页面查看当前轮次，不要重复触发。"
+        })
+    }
+
     if (stateData.status === "waiting_confirm") {
         elements.push({ tag: "hr" })
         elements.push({
             tag: "markdown",
-            content: "**当前阶段**: 只需要点手机通知确认；如果卡片稍后变成 Challenge/Response，再改去 Runtime 页面提交 Response Code。"
+            content: "**当前阶段**: 只需要点手机通知确认；如果卡片稍后变成 Challenge/Response，再改去 Runtime 页面提交 Response Code。当前已有 active 轮次，请不要重复触发。"
         })
     }
 
@@ -490,8 +528,19 @@ function build2faCard(stateData, environment) {
         elements.push({ tag: "hr" })
         elements.push({
             tag: "markdown",
-            content: "**操作提示**: 这一步不是点手机推送。请在 IBKR App 的 Two-Factor Authentication 输入当前 Challenge，拿到 Response Code 后打开 Runtime 页面提交。"
+            content: "**操作提示**: 这一步不是点手机推送。请在 IBKR App 的 Two-Factor Authentication 输入当前 Challenge，拿到 Response Code 后打开 Runtime 页面提交。当前已有 active 轮次，请不要重复触发。"
         })
+    }
+
+    var primaryButton = null
+    if ((stateData.status || "requested") !== "success") {
+        primaryButton = currentCycleActive
+            ? buildOpenButton(
+                stateData.status === "waiting_response" ? "打开 Runtime 提交响应码" : "打开 Runtime 查看当前轮次",
+                runtimeUrl,
+                "primary"
+            )
+            : buildActionButton(stateData, runtimeEnvironment)
     }
 
     elements.push({ tag: "hr" })
@@ -499,12 +548,12 @@ function build2faCard(stateData, environment) {
         tag: "column_set",
         horizontal_spacing: "default",
         columns: [
-            (stateData.status || "requested") !== "success"
+            primaryButton
                 ? {
                     tag: "column",
                     width: "weighted",
                     weight: 1,
-                    elements: [buildActionButton(stateData, runtimeEnvironment)]
+                    elements: [primaryButton]
                 }
                 : null,
             {
@@ -662,6 +711,7 @@ function request2faApproval(options) {
     var currentStatus = currentData.status || ""
     var currentMessageId = currentData.message_id || ""
     var lastRequestPushMs = toNumber(currentData.last_request_push_ms, 0)
+    var alreadyActive = isCurrentCycleActiveStatus(currentStatus)
     var activeCardExists = isActiveStatus(currentStatus) && !!currentMessageId
     var renotifyRemainingMs = activeCardExists && lastRequestPushMs > 0
         ? Math.max(0, REQUEST_RENOTIFY_COOLDOWN_MS - (Date.now() - lastRequestPushMs))
@@ -694,19 +744,21 @@ function request2faApproval(options) {
         delivered.data = refreshed
     }
 
-    systemEvents.writeSystemEvent(
-        "status_change",
-        "warning",
-        "ibkr_compute",
-        "IBKR 2FA 等待触发",
-        {
-            reason: saved.data.reason || "manual_reauth",
-            status: saved.data.status || "requested",
-            ...(saved.data.detail || {}),
-        },
-        saved.environment,
-        delivered.ok
-    )
+    if (!(alreadyActive && delivered.skipped_reason === "active_card_reused")) {
+        systemEvents.writeSystemEvent(
+            "status_change",
+            "info",
+            "ibkr_compute",
+            "IBKR 2FA 请求已发送",
+            {
+                reason: saved.data.reason || "manual_reauth",
+                status: saved.data.status || "requested",
+                ...(saved.data.detail || {}),
+            },
+            saved.environment,
+            delivered.ok
+        )
+    }
 
     return {
         ok: delivered.ok,
@@ -719,6 +771,7 @@ function request2faApproval(options) {
         skipped_reason: delivered.skipped_reason || "",
         renotify_remaining_ms: renotifyRemainingMs,
         error: delivered.result && delivered.result.success ? "" : (delivered.result.error || "send_failed"),
+        already_active: alreadyActive,
     }
 }
 
@@ -738,8 +791,22 @@ function trigger2faFlow(options) {
     var currentData = current.data || {}
     var callbackDriven = opts.source === "feishu_callback"
     var forceRestart = !!opts.forceRestart
+    var restartedFromActiveCycle = forceRestart && isCurrentCycleActiveStatus(currentData.status)
+    var triggerTime = timeUtils.getTimeStrings().us
+    var previousCycle = restartedFromActiveCycle ? {
+        status: currentData.status || "",
+        mode: currentData.mode || "",
+        requested_at: currentData.requested_at || "",
+        triggered_at: currentData.triggered_at || "",
+        challenge_code: currentData.challenge_code || "",
+        response_status: currentData.response_status || "",
+        source: currentData.source || "",
+        superseded_at: triggerTime,
+        superseded_reason: opts.reason || currentData.reason || "manual_reauth",
+        superseded_source: opts.source || currentData.source || "feishu_2fa",
+    } : null
 
-    if (!forceRestart && ["triggered", "waiting_confirm", "waiting_response"].indexOf(currentData.status || "") !== -1) {
+    if (!forceRestart && isCurrentCycleActiveStatus(currentData.status)) {
         return {
             ok: true,
             environment: runtimeEnvironment,
@@ -749,18 +816,20 @@ function trigger2faFlow(options) {
         }
     }
 
-    var triggerTime = timeUtils.getTimeStrings().us
     var triggerSaved = saveState(runtimeEnvironment, {
         status: "triggered",
         reason: opts.reason || currentData.reason || "manual_reauth",
         detail: opts.detail || currentData.detail || {},
         source: opts.source || currentData.source || "feishu_2fa",
+        message: restartedFromActiveCycle ? "已放弃上一轮并开启新的一轮 2FA。请只跟当前这一轮。" : "",
         requested_at: triggerTime,
         last_request_at: triggerTime,
         triggered_at: triggerTime,
         result_at: "",
         last_error: "",
-        last_result: opts.message || "已触发登录流程，等待网关提交 2FA。",
+        last_result: restartedFromActiveCycle
+            ? "已放弃上一轮并开启新的一轮 2FA。请只跟当前这一轮。"
+            : (opts.message || "已触发登录流程，等待网关提交 2FA。"),
         mode: "",
         challenge_code: "",
         challenge_detected_at: "",
@@ -783,6 +852,8 @@ function trigger2faFlow(options) {
         last_recovery_source: opts.source || currentData.source || "feishu_2fa",
         lock_owner: "",
         lock_expires_at: "",
+        restarted_from_active_cycle: restartedFromActiveCycle,
+        previous_cycle: restartedFromActiveCycle ? previousCycle : null,
     })
 
     var computeBaseUrl = envUtils.getIbkrComputePublicUrl(runtimeEnvironment, "https://qc.lzw-glory.top")
@@ -1044,7 +1115,20 @@ function handle2faCardCallback(c, options) {
     }
 
     var currentStatus = String(currentData.status || "").trim().toLowerCase()
-    var forceRestart = !!opts.forceRestart || ["triggered", "waiting_confirm", "waiting_response", "timeout", "failed"].indexOf(currentStatus) !== -1
+    var currentCycleActive = isCurrentCycleActiveStatus(currentStatus)
+    var forceRestart = !!opts.forceRestart
+
+    if (currentCycleActive && !forceRestart) {
+        return feishuApp.sendFeishuCallbackResponse(c, {
+            toast: {
+                type: "warning",
+                content: currentStatus === "waiting_response"
+                    ? "当前已进入 Challenge/Response，请打开 Runtime 页面提交 Response Code，不要重新触发。"
+                    : "当前已有一轮 2FA 进行中，请继续当前轮次，不要重复触发。"
+            },
+            card: { type: "raw", data: build2faCard(currentData, runtimeEnvironment) }
+        }, updateToken)
+    }
 
     var result = trigger2faFlow({
         environment: runtimeEnvironment,
@@ -1058,7 +1142,9 @@ function handle2faCardCallback(c, options) {
         toast: {
             type: result.ok ? "success" : "error",
             content: result.ok
-                ? (forceRestart ? "已强制重开新一轮 2FA，请立即查看 IBKR Mobile" : "2FA 已触发，请在 IBKR Mobile 确认")
+                ? (forceRestart && currentCycleActive
+                    ? "已放弃上一轮并开启新的一轮 2FA，请只跟当前这一轮。"
+                    : (forceRestart ? "已强制重开新一轮 2FA，请立即查看 IBKR Mobile" : "2FA 已触发，请在 IBKR Mobile 确认"))
                 : ("2FA 触发失败: " + (result.error || "unknown_error"))
         },
         card: { type: "raw", data: result.card || build2faCard(result.state || currentData, runtimeEnvironment) }

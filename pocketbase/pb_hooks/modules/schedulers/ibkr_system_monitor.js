@@ -658,6 +658,43 @@ function logRouteError(route, err) {
     return message
 }
 
+function loadRecentSystemEvents(environment, limit) {
+    const items = []
+    try {
+        const recent = $app.findRecordsByFilter("system_events", "environment = {:env}", "-created", Math.max(1, Number(limit) || 20), 0, { env: environment }) || []
+        for (let i = 0; i < recent.length; i++) {
+            items.push({
+                id: String(recent[i].getId() || ""),
+                event_type: String(recent[i].get("event_type") || ""),
+                level: String(recent[i].get("level") || ""),
+                source: String(recent[i].get("source") || ""),
+                environment: String(recent[i].get("environment") || environment),
+                title: String(recent[i].get("title") || ""),
+                notified: Boolean(recent[i].get("notified")),
+                us_time: String(recent[i].get("us_time") || ""),
+                created: String(recent[i].get("created") || ""),
+            })
+        }
+    } catch (_) {}
+    return items
+}
+
+function buildMonitorConfigMap(records) {
+    const selectedKeys = {
+        ibkr_target_subscription_limit: true,
+        ibkr_history_request_spacing: true,
+        ibkr_target_refresh_sec: true,
+        ibkr_watchlist_backfill_interval_min: true,
+    }
+    const config = {}
+    for (let i = 0; i < (records || []).length; i++) {
+        const key = String(records[i].get("key") || "")
+        if (!selectedKeys[key]) continue
+        config[key] = String(records[i].get("value") || "")
+    }
+    return config
+}
+
 routerAdd("POST", "/api/custom/system/event", (c) => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const { getRuntimeEnvironmentFromData, labelTitleWithEnvironment, addEnvironmentToDetail, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
@@ -893,6 +930,117 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             ok: false,
             error: logRouteError("/api/custom/system/summaryz", err),
         })
+    }
+})
+
+routerAdd("GET", "/api/custom/system/monitorz", (c) => {
+    try {
+        const { normalizeRuntimeEnvironment, getIbkrComputeInternalUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
+        const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
+        const upstream = `${computeBaseUrl}/ibkr/monitor`
+        const parseMonitorPayload = (resp) => {
+            if (!resp) return {}
+            const raw = typeof resp.raw === "string" ? resp.raw : String(resp.raw || "")
+            return raw ? JSON.parse(raw) : {}
+        }
+        const loadMonitorConfig = () => {
+            const selectedKeys = {
+                ibkr_target_subscription_limit: true,
+                ibkr_history_request_spacing: true,
+                ibkr_target_refresh_sec: true,
+                ibkr_watchlist_backfill_interval_min: true,
+            }
+            const config = {}
+            try {
+                const records = listEffectiveConfigRecords(environment) || []
+                for (let i = 0; i < records.length; i++) {
+                    const key = String(records[i].get("key") || "")
+                    if (!selectedKeys[key]) continue
+                    config[key] = String(records[i].get("value") || "")
+                }
+            } catch (_) {}
+            return config
+        }
+        const loadMonitorRecentEvents = (limit) => {
+            const items = []
+            try {
+                const recent = $app.findRecordsByFilter("system_events", "environment = {:env}", "-created", Math.max(1, Number(limit) || 20), 0, { env: environment }) || []
+                for (let i = 0; i < recent.length; i++) {
+                    items.push({
+                        id: String(recent[i].getId() || ""),
+                        event_type: String(recent[i].get("event_type") || ""),
+                        level: String(recent[i].get("level") || ""),
+                        source: String(recent[i].get("source") || ""),
+                        environment: String(recent[i].get("environment") || environment),
+                        title: String(recent[i].get("title") || ""),
+                        notified: Boolean(recent[i].get("notified")),
+                        us_time: String(recent[i].get("us_time") || ""),
+                        created: String(recent[i].get("created") || ""),
+                    })
+                }
+            } catch (_) {}
+            return items
+        }
+        let monitorPayload = {}
+        let upstreamError = ""
+        try {
+            const resp = $http.send({
+                url: upstream,
+                method: "GET",
+                timeout: 10,
+            })
+            if (Number(resp && resp.statusCode) >= 400) {
+                upstreamError = `upstream_http_${Number(resp && resp.statusCode)}`
+            } else {
+                monitorPayload = parseMonitorPayload(resp)
+            }
+        } catch (err) {
+            upstreamError = err.message || String(err)
+        }
+
+        const config = loadMonitorConfig()
+
+        const response = monitorPayload && typeof monitorPayload === "object" && !Array.isArray(monitorPayload)
+            ? { ...monitorPayload }
+            : {}
+
+        const actualRuntimeEnvironment = String(
+            response.environment
+            || ((response.runtime || {}).environment)
+            || environment
+        ).trim().toLowerCase() || environment
+
+        response.requested_environment = environment
+        response.actual_runtime_environment = actualRuntimeEnvironment
+        response.runtime_environment_mismatch = actualRuntimeEnvironment !== environment
+        response.config = config
+        response.recent_events = loadMonitorRecentEvents(20)
+        response.proxy_source = "pocketbase_ibkr_hook"
+        response.proxy_hook = "ibkr_system_monitor.pb.js"
+        response.proxy_route = "/api/custom/system/monitorz"
+        response.proxy_upstream = upstream
+
+        if (upstreamError) {
+            response.ok = false
+            response.status = "offline"
+            response.error = upstreamError
+            response.flags = Array.isArray(response.flags) ? response.flags : []
+        } else {
+            response.ok = response.ok !== false
+            response.status = String(response.status || "ok").trim().toLowerCase() || "ok"
+        }
+
+        return c.html(200, JSON.stringify(response))
+    } catch (err) {
+        return c.html(500, JSON.stringify({
+            ok: false,
+            status: "offline",
+            error: logRouteError("/api/custom/system/monitorz", err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_system_monitor.pb.js",
+            proxy_route: "/api/custom/system/monitorz",
+        }))
     }
 })
 

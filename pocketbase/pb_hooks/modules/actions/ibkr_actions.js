@@ -4372,8 +4372,16 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
         state.runtime_environment_mismatch = state.actual_runtime_environment !== environment
         if (runtimeStatusError) state.runtime_status_error = runtimeStatusError
         let message = ""
+        const activeStatus = String(state.status || "").trim().toLowerCase()
+        const currentCycleActive = ["triggered", "waiting_confirm", "waiting_response"].includes(activeStatus)
         if (state.runtime_authenticated && state.gateway_reachable && Number(state.gateway_status_code || 0) !== 401) {
             message = "当前 Gateway 会话已认证，无需再次确认。"
+        } else if (currentCycleActive || result.already_active) {
+            if (activeStatus === "waiting_response") {
+                message = "当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。"
+            } else {
+                message = "当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。"
+            }
         } else if (triggerNow && result.ok) {
             message = forceNew
                 ? "已强制开启新一轮 2FA，并刷新卡片。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
@@ -4484,6 +4492,15 @@ routerAdd("POST", "/api/custom/ibkr/2fa/takeover", (c) => {
     const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const parseHttpJson = (rawValue) => {
+        const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
+        if (!raw) return {}
+        try {
+            return JSON.parse(raw)
+        } catch (_) {
+            return { ok: false, raw: raw }
+        }
+    }
 
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
@@ -4504,9 +4521,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/takeover", (c) => {
             headers: { "Content-Type": "application/json" },
             timeout: 20,
         })
-        const payload = globalThis.ibkrActionsSafeParseHttpJson(resp.raw)
+        const payload = parseHttpJson(resp.raw)
         const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
-        const runtime = globalThis.ibkrActionsSafeParseHttpJson(runtimeResp.raw)
+        const runtime = parseHttpJson(runtimeResp.raw)
         const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
         return c.json((resp.statusCode || 200), {
             ok: payload.ok !== false,
@@ -4530,6 +4547,15 @@ routerAdd("POST", "/api/custom/ibkr/2fa/probe", (c) => {
     const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const parseHttpJson = (rawValue) => {
+        const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
+        if (!raw) return {}
+        try {
+            return JSON.parse(raw)
+        } catch (_) {
+            return { ok: false, raw: raw }
+        }
+    }
 
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
@@ -4548,9 +4574,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/probe", (c) => {
             headers: { "Content-Type": "application/json" },
             timeout: 20,
         })
-        const payload = globalThis.ibkrActionsSafeParseHttpJson(resp.raw)
+        const payload = parseHttpJson(resp.raw)
         const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
-        const runtime = globalThis.ibkrActionsSafeParseHttpJson(runtimeResp.raw)
+        const runtime = parseHttpJson(runtimeResp.raw)
         const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
         return c.json((resp.statusCode || 200), {
             ok: payload.ok !== false,
@@ -4571,6 +4597,15 @@ routerAdd("POST", "/api/custom/ibkr/2fa/panic-reset", (c) => {
     const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
     const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const parseHttpJson = (rawValue) => {
+        const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
+        if (!raw) return {}
+        try {
+            return JSON.parse(raw)
+        } catch (_) {
+            return { ok: false, raw: raw }
+        }
+    }
 
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
@@ -4592,9 +4627,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/panic-reset", (c) => {
             headers: { "Content-Type": "application/json" },
             timeout: 60,
         })
-        const payload = globalThis.ibkrActionsSafeParseHttpJson(resp.raw)
+        const payload = parseHttpJson(resp.raw)
         const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
-        const runtime = globalThis.ibkrActionsSafeParseHttpJson(runtimeResp.raw)
+        const runtime = parseHttpJson(runtimeResp.raw)
         const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
         return c.json((resp.statusCode || 200), {
             ok: payload.ok !== false,

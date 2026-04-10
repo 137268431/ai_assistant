@@ -366,6 +366,29 @@
             align-items: start;
         }
 
+        body.chart-focus-mode .hero,
+        body.chart-focus-mode #pageBridge {
+            display: none;
+        }
+
+        body.chart-focus-mode .workspace {
+            grid-template-columns: minmax(0, 1fr);
+            padding-top: 12px;
+        }
+
+        body.chart-focus-mode .rail-shell {
+            display: none;
+        }
+
+        body.chart-focus-mode .chart-stage {
+            height: 84vh;
+            min-height: 760px;
+        }
+
+        body.chart-focus-mode .chart-note {
+            display: none;
+        }
+
         .panel {
             border: 1px solid var(--border);
             border-radius: 18px;
@@ -807,6 +830,132 @@
             background: rgba(17, 31, 49, 0.96);
         }
 
+        .inspector-drawer {
+            position: fixed;
+            inset: 0;
+            z-index: 1460;
+            pointer-events: none;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .inspector-drawer.show {
+            pointer-events: auto;
+        }
+
+        .inspector-drawer-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(3, 7, 16, 0.42);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .inspector-drawer.show .inspector-drawer-backdrop {
+            opacity: 1;
+        }
+
+        .inspector-drawer-card {
+            position: relative;
+            width: min(390px, calc(100vw - 18px));
+            height: 100%;
+            margin-left: auto;
+            background: linear-gradient(180deg, rgba(9, 14, 24, 0.98), rgba(13, 20, 34, 0.98));
+            border-left: 1px solid rgba(99,179,237,0.14);
+            box-shadow: -24px 0 60px rgba(0, 0, 0, 0.28);
+            transform: translateX(104%);
+            transition: transform 0.22s ease;
+            overflow-y: auto;
+            padding: 18px 16px 24px;
+        }
+
+        .inspector-drawer.show .inspector-drawer-card {
+            transform: translateX(0);
+        }
+
+        .inspector-drawer-body {
+            margin-top: 14px;
+            display: grid;
+            gap: 10px;
+        }
+
+        .inspector-drawer-body .rail-card {
+            background: rgba(11, 17, 28, 0.9);
+        }
+
+        .mobile-gesture-hint {
+            position: fixed;
+            left: 12px;
+            right: 12px;
+            bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+            z-index: 1490;
+            opacity: 0;
+            transform: translateY(12px);
+            pointer-events: none;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .mobile-gesture-hint.show {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
+
+        .mobile-gesture-card {
+            border-radius: 18px;
+            border: 1px solid rgba(99,179,237,0.18);
+            background: rgba(7, 12, 20, 0.92);
+            backdrop-filter: blur(14px);
+            box-shadow: 0 18px 44px rgba(0,0,0,0.28);
+            padding: 12px;
+        }
+
+        .mobile-gesture-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .mobile-gesture-title {
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .mobile-gesture-close {
+            min-height: 30px;
+            padding: 0 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(18, 28, 46, 0.96);
+            color: #dff7ff;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+        }
+
+        .mobile-gesture-strip {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .mobile-gesture-chip {
+            display: inline-flex;
+            align-items: center;
+            min-height: 30px;
+            padding: 0 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(8, 12, 20, 0.78);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
         .rail-card {
             border: 1px solid rgba(99,179,237,0.1);
             border-radius: 16px;
@@ -1123,6 +1272,21 @@
         }
 
         @media (max-width: 768px) {
+            body.chart-focus-mode .workspace {
+                padding-top: 0;
+            }
+
+            body.chart-focus-mode .panel {
+                border-radius: 0;
+                border-left: none;
+                border-right: none;
+            }
+
+            body.chart-focus-mode .chart-stage {
+                height: 70dvh;
+                min-height: 460px;
+            }
+
             .hero {
                 padding: 6px 12px 10px;
             }
@@ -1381,6 +1545,11 @@
         }
 
         @media (max-width: 480px) {
+            body.chart-focus-mode .chart-stage {
+                height: 72dvh;
+                min-height: 420px;
+            }
+
             .hero-title {
                 font-size: 20px;
             }
@@ -1449,6 +1618,12 @@
                 bottom: calc(8px + env(safe-area-inset-bottom, 0px));
             }
 
+            .mobile-gesture-hint {
+                left: 10px;
+                right: 10px;
+                bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+            }
+
             .mobile-dock-btn {
                 min-width: 66px;
                 min-height: 40px;
@@ -1487,6 +1662,27 @@
             }
 
             .detail-drawer.show .detail-drawer-card {
+                transform: translateY(0);
+            }
+
+            .inspector-drawer {
+                justify-content: center;
+                align-items: flex-end;
+            }
+
+            .inspector-drawer-card {
+                width: min(100vw, 100vw);
+                height: auto;
+                max-height: min(84vh, 760px);
+                margin-left: 0;
+                border-left: none;
+                border-top: 1px solid rgba(99,179,237,0.14);
+                border-radius: 20px 20px 0 0;
+                transform: translateY(104%);
+                padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+            }
+
+            .inspector-drawer.show .inspector-drawer-card {
                 transform: translateY(0);
             }
         }
@@ -1591,6 +1787,40 @@
                 <div class="mobile-quick-label">范围</div>
                 <div class="mobile-quick-grid" id="mobileQuickRangeGroup"></div>
             </div>
+            <div class="mobile-quick-section">
+                <div class="mobile-quick-label">视图</div>
+                <div class="mobile-quick-grid" id="mobileQuickViewGroup"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="inspector-drawer" id="inspectorDrawer" aria-hidden="true">
+        <div class="inspector-drawer-backdrop" onclick="closeInspectorDrawer()"></div>
+        <div class="inspector-drawer-card" role="dialog" aria-modal="true" aria-label="图表检查面板">
+            <div class="drawer-head">
+                <div>
+                    <div class="drawer-kicker">Inspector</div>
+                    <div class="drawer-title" id="inspectorDrawerTitle">Chart Inspector</div>
+                    <div class="drawer-sub" id="inspectorDrawerSub">在焦点模式下也能快速查看分析卡和信号列表。</div>
+                </div>
+                <button class="drawer-close" type="button" onclick="closeInspectorDrawer()">×</button>
+            </div>
+            <div class="inspector-drawer-body" id="inspectorDrawerBody"></div>
+        </div>
+    </div>
+
+    <div class="mobile-gesture-hint" id="mobileGestureHint" aria-hidden="true">
+        <div class="mobile-gesture-card">
+            <div class="mobile-gesture-head">
+                <div class="mobile-gesture-title">触控提示</div>
+                <button class="mobile-gesture-close" type="button" onclick="dismissMobileGestureHint()">知道了</button>
+            </div>
+            <div class="mobile-gesture-strip">
+                <span class="mobile-gesture-chip">长按 锁定光标</span>
+                <span class="mobile-gesture-chip">轻扫 左右切 bar</span>
+                <span class="mobile-gesture-chip">双击 回到最新</span>
+                <span class="mobile-gesture-chip">Info 打开检查面板</span>
+            </div>
         </div>
     </div>
 
@@ -1598,6 +1828,8 @@
 
     <script>
         const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
+        const CHART_UI_PREFS_KEY = 'ibkr_chart_ui_prefs_v1';
+        const CHART_MOBILE_HINT_KEY = 'ibkr_chart_mobile_hint_seen_v1';
         const RANGE_PRESETS = [
             { key: '1d', shortLabel: '1D', longLabel: '最近1天', durationMs: 24 * 60 * 60 * 1000 },
             { key: '3d', shortLabel: '3D', longLabel: '最近3天', durationMs: 3 * 24 * 60 * 60 * 1000 },
@@ -1624,6 +1856,20 @@
         let chartViewportState = { start: 0, end: 100, startIndex: 0, endIndex: 0, visibleBars: 0, totalBars: 0 };
         let activeRailCardIndex = 0;
         let mobileQuickPanelOpen = false;
+        let chartFocusMode = false;
+        let chartPointerLocked = false;
+        let inspectorDrawerOpen = false;
+        let mobileGestureHintSeen = false;
+        let suppressNextChartClick = false;
+        let chartTouchSession = {
+            timer: 0,
+            startX: 0,
+            startY: 0,
+            moved: false,
+            lastTapAt: 0,
+            lastTapX: 0,
+            lastTapY: 0,
+        };
         let chartLayerState = {
             ema: true,
             vwap: true,
@@ -1811,6 +2057,63 @@
 
         function isPhoneViewport() {
             return Number(window.innerWidth || 0) <= 520;
+        }
+
+        function loadChartUiPrefs() {
+            try {
+                const raw = localStorage.getItem(CHART_UI_PREFS_KEY);
+                if (!raw) return;
+                const prefs = JSON.parse(raw);
+                if (prefs && typeof prefs === 'object') {
+                    if (prefs.layerState && typeof prefs.layerState === 'object') {
+                        chartLayerState = {
+                            ...chartLayerState,
+                            ...Object.fromEntries(
+                                Object.entries(prefs.layerState).map(([key, value]) => [key, Boolean(value)])
+                            )
+                        };
+                    }
+                    if (typeof prefs.focusMode === 'boolean') {
+                        chartFocusMode = prefs.focusMode;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        function saveChartUiPrefs() {
+            try {
+                localStorage.setItem(CHART_UI_PREFS_KEY, JSON.stringify({
+                    layerState: chartLayerState,
+                    focusMode: chartFocusMode,
+                }));
+            } catch (_) {}
+        }
+
+        function loadMobileGestureHintState() {
+            try {
+                mobileGestureHintSeen = localStorage.getItem(CHART_MOBILE_HINT_KEY) === '1';
+            } catch (_) {
+                mobileGestureHintSeen = false;
+            }
+        }
+
+        function applyChartFocusMode() {
+            document.body.classList.toggle('chart-focus-mode', chartFocusMode);
+            if (lastPayload) renderCursorStrip(lastPayload);
+            else renderChartWorkspaceChrome(null);
+            window.requestAnimationFrame(() => {
+                if (chartInstance) chartInstance.resize();
+            });
+        }
+
+        function setChartFocusMode(enabled) {
+            chartFocusMode = Boolean(enabled);
+            saveChartUiPrefs();
+            applyChartFocusMode();
+        }
+
+        function toggleChartFocusMode() {
+            setChartFocusMode(!chartFocusMode);
         }
 
         function getIntervalLabel(interval) {
@@ -2300,6 +2603,30 @@
             )).sort((a, b) => a - b);
         }
 
+        function findNearestSignalAnchor(payload, index, maxDistance = 0) {
+            const signalIndices = getSignalBarIndices(payload);
+            if (!signalIndices.length) return null;
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) return null;
+            const targetIndex = clampIndex(index, bars.length);
+            let bestIndex = -1;
+            let bestDistance = Infinity;
+            signalIndices.forEach((signalIndex) => {
+                const distance = Math.abs(signalIndex - targetIndex);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = signalIndex;
+                }
+            });
+            if (!Number.isInteger(bestIndex) || bestDistance > Number(maxDistance || 0)) return null;
+            const context = buildContext(payload, bestIndex, '');
+            const signal = context?.activeSignal || null;
+            return {
+                index: bestIndex,
+                signalId: String(signal?.signal_id || signal?.id || '')
+            };
+        }
+
         function renderChartToolbar(payload = lastPayload) {
             const toolbar = document.getElementById('chartToolbar');
             if (!toolbar) return;
@@ -2314,6 +2641,8 @@
                 prevSignal: 'Sig−',
                 nextSignal: 'Sig+',
                 latest: phone ? 'Now' : 'Latest',
+                focus: chartFocusMode ? 'Exit' : 'Focus',
+                inspect: 'Info',
                 center: 'Center',
                 zoomOut: '−',
                 zoomIn: '+',
@@ -2324,6 +2653,8 @@
                 prevSignal: 'Prev Signal',
                 nextSignal: 'Next Signal',
                 latest: 'Latest',
+                focus: chartFocusMode ? 'Exit Focus' : 'Focus',
+                inspect: 'Inspector',
                 center: 'Center',
                 zoomOut: '− Zoom',
                 zoomIn: '＋ Zoom',
@@ -2348,6 +2679,8 @@
                 </div>
                 <div class="tv-toolbar-cluster">
                     <button class="tv-tool-btn accent" type="button" onclick="focusLatestChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.latest)}</button>
+                    <button class="tv-tool-btn" type="button" onclick="toggleChartFocusMode()">${escapeHtml(labels.focus)}</button>
+                    <button class="tv-tool-btn ${inspectorDrawerOpen ? 'accent' : ''}" type="button" onclick="toggleInspectorDrawer()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.inspect)}</button>
                     <button class="tv-tool-btn" type="button" onclick="centerChartOnFocusBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.center)}</button>
                     <button class="tv-tool-btn" type="button" onclick="zoomOutChartView()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.zoomOut)}</button>
                     <button class="tv-tool-btn" type="button" onclick="zoomInChartView()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.zoomIn)}</button>
@@ -2389,6 +2722,7 @@
                         <div class="tv-floating-row">
                             <span class="tv-floating-pill brand">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>
                             <span class="tv-floating-pill">${escapeHtml(focusLabel)} ${escapeHtml((bar?.us_time || '--').slice(5))}</span>
+                            ${chartPointerLocked ? '<span class="tv-floating-pill brand">Locked</span>' : ''}
                             ${compareRow ? `<span class="tv-floating-pill ${getCompareStatusClass(compareRow?.status?.bar)}">${escapeHtml(getCompareStatusLabel(compareRow?.status?.bar))}</span>` : ''}
                         </div>
                     `,
@@ -2418,6 +2752,7 @@
                 <div class="tv-floating-row">
                     <span class="tv-floating-pill brand">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>
                     <span class="tv-floating-pill">${focusLabel} ${escapeHtml(bar?.us_time || '--')}</span>
+                    ${chartPointerLocked ? '<span class="tv-floating-pill brand">Locked</span>' : ''}
                     <span class="tv-floating-pill ${deltaClass}">${escapeHtml(formatPrice(bar?.close))} · ${escapeHtml(formatSignedPriceDelta(deltaValue))} · ${escapeHtml(formatPercent(deltaPercent))}</span>
                     ${compareRow ? `<span class="tv-floating-pill ${getCompareStatusClass(compareRow?.status?.bar)}">Compare ${escapeHtml(getCompareStatusLabel(compareRow?.status?.bar))}</span>` : ''}
                 </div>
@@ -2464,14 +2799,16 @@
                     `Visible ${viewport.visibleBars}/${bars.length}`,
                     `${startBar?.us_time || '--'} → ${endBar?.us_time || '--'}`.replace(/^(\d{4}-)/, ''),
                     `Focus ${(focus?.bar?.us_time || '--').replace(/^(\d{4}-)/, '')}`,
+                    chartPointerLocked ? 'Locked' : '',
                     signalHits ? `${signalHits} signal${signalHits > 1 ? 's' : ''}` : 'No signal'
-                ]
+                ].filter(Boolean)
                 : [
                     `Visible ${viewport.visibleBars}/${bars.length}`,
                     `${startBar?.us_time || '--'} → ${endBar?.us_time || '--'}`,
                     `Focus ${focus?.bar?.us_time || '--'}`,
+                    chartPointerLocked ? 'Locked' : '',
                     signalHits ? `${signalHits} signal${signalHits > 1 ? 's' : ''}` : 'No signal'
-                ];
+                ].filter(Boolean);
             statusRoot.innerHTML = statusItems.map((text) => `
                 <span class="chart-status-chip">${escapeHtml(text)}</span>
             `).join('');
@@ -2480,6 +2817,7 @@
                     ['Swipe', '滑状态'],
                     ['←/→', '切 bar'],
                     ['N/P', '跳信号'],
+                    ['Info', '检视'],
                     ['0', '重置'],
                 ]
                 : [
@@ -2487,6 +2825,7 @@
                     ['Drag', '平移'],
                     ['← / →', '切 K 线'],
                     ['N / P', '跳信号'],
+                    ['I', 'Inspect'],
                     ['+ / -', '缩放'],
                     ['0', '重置'],
                     ['Double', 'Latest'],
@@ -2562,7 +2901,8 @@
             const layerRoot = document.getElementById('mobileQuickLayerGroup');
             const timeframeRoot = document.getElementById('mobileQuickTimeframeGroup');
             const rangeRoot = document.getElementById('mobileQuickRangeGroup');
-            if (!panel || !layerRoot || !timeframeRoot || !rangeRoot) return;
+            const viewRoot = document.getElementById('mobileQuickViewGroup');
+            if (!panel || !layerRoot || !timeframeRoot || !rangeRoot || !viewRoot) return;
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!isCompactViewport() || !bars.length) {
                 panel.classList.remove('show');
@@ -2570,6 +2910,7 @@
                 layerRoot.innerHTML = '';
                 timeframeRoot.innerHTML = '';
                 rangeRoot.innerHTML = '';
+                viewRoot.innerHTML = '';
                 return;
             }
             panel.classList.toggle('show', mobileQuickPanelOpen);
@@ -2589,16 +2930,172 @@
             rangeRoot.innerHTML = RANGE_PRESETS.map((preset) => `
                 <button class="mobile-quick-chip ${preset.key === currentRangeKey ? 'active' : ''}" type="button" onclick="selectChartRange('${preset.key}')">${escapeHtml(preset.shortLabel)}</button>
             `).join('');
+            viewRoot.innerHTML = [
+                { active: chartFocusMode, label: chartFocusMode ? 'Exit Focus' : 'Focus', action: 'toggleChartFocusMode()' },
+                { active: inspectorDrawerOpen, label: inspectorDrawerOpen ? 'Hide Info' : 'Inspector', action: 'toggleInspectorDrawer()' },
+                { active: chartPointerLocked, label: chartPointerLocked ? 'Unlock Cursor' : 'Lock Cursor', action: chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(lastPayload))' },
+                { active: false, label: 'Reset Zoom', action: 'resetChartView()' },
+            ].map((item) => `
+                <button class="mobile-quick-chip ${item.active ? 'active' : ''}" type="button" onclick="${item.action}">${escapeHtml(item.label)}</button>
+            `).join('');
         }
 
         function openMobileQuickPanel() {
+            inspectorDrawerOpen = false;
+            renderInspectorDrawer(lastPayload);
+            closeSignalDrawer();
             mobileQuickPanelOpen = true;
             renderMobileQuickPanel(lastPayload);
+            renderMobileGestureHint(lastPayload);
         }
 
         function closeMobileQuickPanel() {
             mobileQuickPanelOpen = false;
             renderMobileQuickPanel(lastPayload);
+            renderMobileGestureHint(lastPayload);
+        }
+
+        function renderInspectorDrawer(payload = lastPayload) {
+            const drawer = document.getElementById('inspectorDrawer');
+            const title = document.getElementById('inspectorDrawerTitle');
+            const sub = document.getElementById('inspectorDrawerSub');
+            const body = document.getElementById('inspectorDrawerBody');
+            const rail = document.getElementById('infoRail');
+            if (!drawer || !title || !sub || !body) return;
+            const focus = payload ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
+            title.textContent = `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} Inspector`;
+            const stateText = comparePayload
+                ? 'Compare 已联动'
+                : chartFocusMode
+                ? '焦点模式'
+                : '工作台模式';
+            sub.innerHTML = `${escapeHtml(focus?.bar?.us_time || '等待图表数据')}<br>${escapeHtml(stateText)}`;
+            body.innerHTML = rail?.innerHTML || '<div class="rail-card"><div class="rail-kicker">Inspector</div><div class="rail-sub">等待图表数据...</div></div>';
+            drawer.classList.toggle('show', inspectorDrawerOpen);
+            drawer.setAttribute('aria-hidden', inspectorDrawerOpen ? 'false' : 'true');
+        }
+
+        function setInspectorDrawerOpen(enabled) {
+            inspectorDrawerOpen = Boolean(enabled);
+            if (inspectorDrawerOpen) {
+                mobileQuickPanelOpen = false;
+                closeSignalDrawer();
+            }
+            renderMobileQuickPanel(lastPayload);
+            renderInspectorDrawer(lastPayload);
+            renderMobileGestureHint(lastPayload);
+        }
+
+        function toggleInspectorDrawer() {
+            dismissMobileGestureHint();
+            setInspectorDrawerOpen(!inspectorDrawerOpen);
+        }
+
+        function closeInspectorDrawer() {
+            setInspectorDrawerOpen(false);
+        }
+
+        function dismissMobileGestureHint() {
+            if (isCompactViewport() && !mobileGestureHintSeen) {
+                mobileGestureHintSeen = true;
+                try {
+                    localStorage.setItem(CHART_MOBILE_HINT_KEY, '1');
+                } catch (_) {}
+            }
+            renderMobileGestureHint(lastPayload);
+        }
+
+        function renderMobileGestureHint(payload = lastPayload) {
+            const root = document.getElementById('mobileGestureHint');
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!root) return;
+            const hidden = !isCompactViewport()
+                || mobileGestureHintSeen
+                || !bars.length
+                || mobileQuickPanelOpen
+                || inspectorDrawerOpen
+                || Boolean(document.getElementById('signalDetailDrawer')?.classList.contains('show'));
+            root.classList.toggle('show', !hidden);
+            root.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+        }
+
+        function registerChartTouchInteractions() {
+            const canvas = document.getElementById('chartCanvas');
+            if (!canvas) return;
+            canvas.ontouchstart = null;
+            canvas.ontouchmove = null;
+            canvas.ontouchend = null;
+            canvas.ontouchcancel = null;
+            if (!isCompactViewport()) return;
+
+            canvas.ontouchstart = (event) => {
+                const touch = event.touches && event.touches[0];
+                if (!touch) return;
+                const startX = touch.clientX;
+                const startY = touch.clientY;
+                chartTouchSession.startX = startX;
+                chartTouchSession.startY = startY;
+                chartTouchSession.moved = false;
+                clearChartTouchTimer();
+                if ((event.touches?.length || 0) > 1) return;
+                chartTouchSession.timer = window.setTimeout(() => {
+                    const index = getBarIndexFromClientPoint(startX, startY);
+                    if (index < 0) return;
+                    suppressNextChartClick = true;
+                    chartTouchSession.lastTapAt = 0;
+                    lockChartPointerAtIndex(index);
+                    showToast('已锁定光标');
+                }, 360);
+            };
+
+            canvas.ontouchmove = (event) => {
+                const touch = event.touches && event.touches[0];
+                if (!touch) return;
+                const dx = Math.abs(touch.clientX - chartTouchSession.startX);
+                const dy = Math.abs(touch.clientY - chartTouchSession.startY);
+                if (dx > 10 || dy > 10) {
+                    chartTouchSession.moved = true;
+                    clearChartTouchTimer();
+                }
+            };
+
+            canvas.ontouchend = (event) => {
+                clearChartTouchTimer();
+                const touch = event.changedTouches && event.changedTouches[0];
+                if (!touch) return;
+                const dx = touch.clientX - chartTouchSession.startX;
+                const dy = touch.clientY - chartTouchSession.startY;
+                const absX = Math.abs(dx);
+                const absY = Math.abs(dy);
+                const now = Date.now();
+                if (absX > 42 && absX > absY * 1.2) {
+                    suppressNextChartClick = true;
+                    navigateTouchSwipe(dx);
+                    chartTouchSession.lastTapAt = 0;
+                    return;
+                }
+                if (chartPointerLocked && suppressNextChartClick) {
+                    chartTouchSession.lastTapAt = 0;
+                    return;
+                }
+                if (chartTouchSession.moved) return;
+                const isDoubleTap = chartTouchSession.lastTapAt
+                    && now - chartTouchSession.lastTapAt < 280
+                    && Math.abs(touch.clientX - chartTouchSession.lastTapX) < 24
+                    && Math.abs(touch.clientY - chartTouchSession.lastTapY) < 24;
+                chartTouchSession.lastTapAt = now;
+                chartTouchSession.lastTapX = touch.clientX;
+                chartTouchSession.lastTapY = touch.clientY;
+                if (isDoubleTap) {
+                    suppressNextChartClick = true;
+                    unlockChartPointer();
+                    focusLatestBarAction();
+                }
+            };
+
+            canvas.ontouchcancel = () => {
+                clearChartTouchTimer();
+            };
         }
 
         function renderMobileDock(payload = lastPayload) {
@@ -2617,12 +3114,18 @@
             const focusSignal = focus?.activeSignal || null;
             const compareText = comparePayload ? 'Diff' : 'Compare';
             const compareAction = comparePayload ? "scrollInfoRailCardByKicker('Comparison')" : 'runIbkrCompare()';
+            const lockAction = chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(lastPayload))';
+            const lockLabel = chartPointerLocked ? 'Unlock' : 'Lock';
+            const focusLabel = chartFocusMode ? 'Exit' : 'Focus';
             dock.innerHTML = `
                 <span class="mobile-dock-label">${escapeHtml(currentSymbol || '--')} · ${escapeHtml((focus?.bar?.us_time || '--').replace(/^(\d{4}-)/, ''))}</span>
                 <button class="mobile-dock-btn" type="button" onclick="focusPreviousChartBar()">◀</button>
                 <button class="mobile-dock-btn" type="button" onclick="focusNextChartBar()">▶</button>
                 <button class="mobile-dock-btn accent" type="button" onclick="focusLatestChartBar()">Now</button>
+                <button class="mobile-dock-btn" type="button" onclick="toggleChartFocusMode()">${escapeHtml(focusLabel)}</button>
                 <button class="mobile-dock-btn" type="button" onclick="openMobileQuickPanel()">Tools</button>
+                <button class="mobile-dock-btn ${inspectorDrawerOpen ? 'accent' : ''}" type="button" onclick="toggleInspectorDrawer()">Info</button>
+                <button class="mobile-dock-btn" type="button" onclick="${lockAction}">${escapeHtml(lockLabel)}</button>
                 <button class="mobile-dock-btn" type="button" onclick="centerChartOnFocusBar()">Center</button>
                 <button class="mobile-dock-btn" type="button" onclick="${focusSignal ? 'openFocusedSignalDrawer()' : 'focusNextChartSignal()'}">${focusSignal ? 'Signal' : 'Next Sig'}</button>
                 <button class="mobile-dock-btn" type="button" onclick="${compareAction}">${escapeHtml(compareText)}</button>
@@ -2635,6 +3138,8 @@
             renderChartBottomBar(payload);
             renderMobileDock(payload);
             renderMobileQuickPanel(payload);
+            renderInspectorDrawer(payload);
+            renderMobileGestureHint(payload);
         }
 
         function renderCursorStrip(payload) {
@@ -2737,9 +3242,80 @@
 
         function syncCursorIndex(index) {
             if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            if (chartPointerLocked) return;
             const safeIndex = Math.min(Math.max(Number(index) || 0, 0), lastPayload.bars.length - 1);
             hoverBarIndex = safeIndex;
             renderCursorStrip(lastPayload);
+        }
+
+        function clearChartTouchTimer() {
+            if (chartTouchSession.timer) {
+                window.clearTimeout(chartTouchSession.timer);
+                chartTouchSession.timer = 0;
+            }
+        }
+
+        function unlockChartPointer({ preserveHover = true } = {}) {
+            chartPointerLocked = false;
+            if (!preserveHover) hoverBarIndex = -1;
+            if (lastPayload) renderCursorStrip(lastPayload);
+        }
+
+        function getBarIndexFromClientPoint(clientX, clientY) {
+            const canvas = document.getElementById('chartCanvas');
+            if (!chartInstance || !canvas || clientX == null || clientY == null) return -1;
+            const rect = canvas.getBoundingClientRect();
+            const x = Number(clientX) - rect.left;
+            const y = Number(clientY) - rect.top;
+            if (x < 0 || y < 0 || x > rect.width || y > rect.height) return -1;
+            const point = [x, y];
+            let result = null;
+            try {
+                result = chartInstance.convertFromPixel({ seriesIndex: 0 }, point);
+            } catch (_) {
+                result = null;
+            }
+            const rawIndex = Array.isArray(result) ? result[0] : result;
+            const index = Math.round(Number(rawIndex));
+            if (!Number.isInteger(index)) return -1;
+            const bars = Array.isArray(lastPayload?.bars) ? lastPayload.bars : [];
+            return bars.length ? clampIndex(index, bars.length) : -1;
+        }
+
+        function lockChartPointerAtIndex(index, signalId = '') {
+            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const bars = lastPayload.bars;
+            let safeIndex = clampIndex(index, bars.length);
+            let safeSignalId = String(signalId || '');
+            if (!safeSignalId) {
+                const snapped = findNearestSignalAnchor(lastPayload, safeIndex, isCompactViewport() ? 1 : 0);
+                if (snapped) {
+                    safeIndex = snapped.index;
+                    safeSignalId = snapped.signalId;
+                }
+            }
+            dismissMobileGestureHint();
+            chartPointerLocked = true;
+            hoverBarIndex = safeIndex;
+            focusBarIndex(safeIndex, safeSignalId);
+            ensureBarVisible(safeIndex, lastPayload);
+            renderCursorStrip(lastPayload);
+            syncChartTooltip(safeIndex);
+        }
+
+        function navigateTouchSwipe(deltaX) {
+            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const magnitude = Math.abs(Number(deltaX) || 0);
+            if (magnitude < 40) return;
+            const step = magnitude >= 120 ? 5 : magnitude >= 70 ? 3 : 1;
+            dismissMobileGestureHint();
+            const directionStep = deltaX < 0 ? step : -step;
+            if (chartPointerLocked) {
+                const activeIndex = getEffectiveCursorIndex(lastPayload);
+                lockChartPointerAtIndex(activeIndex + directionStep);
+                return;
+            }
+            focusRelativeBar(directionStep);
         }
 
         function renderSignalDrawer(signal, context = null) {
@@ -2751,6 +3327,7 @@
                 drawer.setAttribute('aria-hidden', 'true');
                 content.innerHTML = '';
                 activeDrawerSignalId = '';
+                renderMobileGestureHint(lastPayload);
                 return;
             }
             const ctx = context || buildContext(lastPayload, selectedBarIndex >= 0 ? selectedBarIndex : 0, String(signal.signal_id || signal.id || ''));
@@ -2836,6 +3413,7 @@
             drawer.classList.add('show');
             drawer.setAttribute('aria-hidden', 'false');
             activeDrawerSignalId = String(signal.signal_id || signal.id || '');
+            renderMobileGestureHint(lastPayload);
         }
 
         function closeSignalDrawer() {
@@ -3111,6 +3689,7 @@
                     </div>
                 `;
                 renderRailNav();
+                renderInspectorDrawer(payload);
                 return;
             }
 
@@ -3190,6 +3769,7 @@
                 </div>
             `;
             renderRailNav();
+            renderInspectorDrawer(payload);
         }
 
         function formatChartLabel(item) {
@@ -3313,7 +3893,7 @@
                 note.textContent += ' 最近一次 IBKR 对比失败，可查看右侧错误卡。';
             }
             note.textContent += isCompactViewport()
-                ? ' 手机端会把状态卡和信息卡改成横向滑动区；仍支持触控缩放、拖动查看和信号跳转。'
+                ? ' 手机端会把状态卡和信息卡改成横向滑动区；支持长按锁定光标、轻扫切换 bar、双击回到最新。'
                 : ' 支持滚轮缩放、拖拽平移、双击回到最新，以及 ←/→ 与 N/P 键快速导航。';
 
             if (chartInstance) {
@@ -3559,11 +4139,25 @@
                 renderChartBottomBar(payload);
             });
             chartInstance.on('click', (params) => {
+                if (suppressNextChartClick) {
+                    suppressNextChartClick = false;
+                    return;
+                }
                 const index = Number.isInteger(params?.dataIndex)
                     ? params.dataIndex
                     : (Array.isArray(params?.value) && Number.isInteger(params.value[0]) ? params.value[0] : -1);
                 if (index < 0) return;
+                dismissMobileGestureHint();
                 const signalKey = params?.data?.signal_id ? String(params.data.signal_id) : '';
+                if (isCompactViewport() && chartPointerLocked) {
+                    lockChartPointerAtIndex(index, signalKey);
+                    const lockedContext = getFocusContext(lastPayload);
+                    if (lockedContext?.activeSignal) {
+                        openSignalDrawer(lockedContext.activeSignal, lockedContext);
+                    }
+                    return;
+                }
+                chartPointerLocked = false;
                 focusBarIndex(index, signalKey);
                 syncCursorIndex(index);
                 ensureBarVisible(index, payload);
@@ -3573,6 +4167,7 @@
                 }
             });
             chartInstance.on('dblclick', () => {
+                chartPointerLocked = false;
                 focusLatestBarAction();
                 resetChartViewAction();
             });
@@ -3580,10 +4175,12 @@
             if (zr) {
                 zr.off('globalout');
                 zr.on('globalout', () => {
+                    if (chartPointerLocked) return;
                     hoverBarIndex = -1;
                     renderCursorStrip(lastPayload);
                 });
             }
+            registerChartTouchInteractions();
 
             if (focus) {
                 selectedBarIndex = focus.index;
@@ -3605,6 +4202,9 @@
             }
             resetCompareState();
             closeMobileQuickPanel();
+            chartPointerLocked = false;
+            suppressNextChartClick = false;
+            clearChartTouchTimer();
 
             const input = document.getElementById('chartSymbolInput');
             if (input && currentSymbol) input.value = currentSymbol;
@@ -3768,6 +4368,7 @@
         window.toggleChartLayer = function(layer) {
             if (!Object.prototype.hasOwnProperty.call(chartLayerState, layer)) return;
             chartLayerState[layer] = !chartLayerState[layer];
+            saveChartUiPrefs();
             renderLayerStrip();
             if (lastPayload) renderChart(lastPayload);
         };
@@ -3885,15 +4486,25 @@
             if (lastPayload) renderCursorStrip(lastPayload);
         };
 
+        window.toggleChartFocusMode = toggleChartFocusMode;
+        window.lockChartPointerAtIndex = function(index) {
+            lockChartPointerAtIndex(index);
+        };
+        window.unlockChartPointer = unlockChartPointer;
+        window.toggleInspectorDrawer = toggleInspectorDrawer;
+        window.closeInspectorDrawer = closeInspectorDrawer;
+        window.openMobileQuickPanel = openMobileQuickPanel;
         window.closeSignalDrawer = closeSignalDrawer;
         window.openFocusedSignalDrawer = openFocusedSignalDrawer;
         window.closeMobileQuickPanel = closeMobileQuickPanel;
+        window.dismissMobileGestureHint = dismissMobileGestureHint;
 
         function handleChartHotkeys(event) {
             const targetTag = String(event?.target?.tagName || '').toLowerCase();
             const isTyping = ['input', 'textarea', 'select'].includes(targetTag) || Boolean(event?.target?.isContentEditable);
             if (isTyping) {
                 if (event.key === 'Escape') {
+                    closeInspectorDrawer();
                     closeMobileQuickPanel();
                     closeSignalDrawer();
                 }
@@ -3901,6 +4512,7 @@
             }
             if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) {
                 if (event.key === 'Escape') {
+                    closeInspectorDrawer();
                     closeMobileQuickPanel();
                     closeSignalDrawer();
                 }
@@ -3908,12 +4520,14 @@
             }
             if (event.metaKey || event.ctrlKey || event.altKey) {
                 if (event.key === 'Escape') {
+                    closeInspectorDrawer();
                     closeMobileQuickPanel();
                     closeSignalDrawer();
                 }
                 return;
             }
             if (event.key === 'Escape') {
+                closeInspectorDrawer();
                 closeMobileQuickPanel();
                 closeSignalDrawer();
                 return;
@@ -3972,6 +4586,16 @@
                 const focusIndex = getEffectiveCursorIndex(lastPayload);
                 ensureBarVisible(focusIndex, lastPayload, { center: true });
                 syncChartTooltip(focusIndex);
+                return;
+            }
+            if (event.key === 'f' || event.key === 'F') {
+                event.preventDefault();
+                toggleChartFocusMode();
+                return;
+            }
+            if (event.key === 'i' || event.key === 'I') {
+                event.preventDefault();
+                toggleInspectorDrawer();
             }
         }
 
@@ -4021,9 +4645,11 @@
                 await loadSymbolFromInput();
             });
 
+            loadChartUiPrefs();
+            loadMobileGestureHintState();
             renderLayerStrip();
             renderCompareButtons();
-            renderChartWorkspaceChrome(null);
+            applyChartFocusMode();
             await resolveInitialContext();
             await loadChartWorkspace();
 

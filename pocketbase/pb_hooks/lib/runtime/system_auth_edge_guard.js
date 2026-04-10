@@ -215,6 +215,11 @@ function buildAuthImmediateIssue(auth) {
     return null
 }
 
+function isOperational2faIssue(issue) {
+    const kind = String(issue && issue.kind || "")
+    return kind === "requested" || kind === "waiting_confirm" || kind === "waiting_response"
+}
+
 function buildAuthImmediateFingerprint(auth, issue) {
     return JSON.stringify({
         issue_kind: issue && issue.kind || "",
@@ -368,9 +373,15 @@ function runIbkrAuthEdgeGuard() {
             if (auth.last_error) detail["最近错误"] = auth.last_error
             if (auth.last_result) detail["最近结果"] = auth.last_result
 
-            const notified = feishuSystem.notifyWarning("ibkr_compute", issue.title, detail, environment)
-            writeSystemEvent("alert", "warning", "ibkr_compute", issue.title, detail, environment, notified)
-            console.log(`[IBKRAuthEdgeGuard] ${environment}: issue=${issue.kind}, notified=${notified}`)
+            const operationalOnly = isOperational2faIssue(issue)
+            let notified = false
+            if (operationalOnly) {
+                writeSystemEvent("status_change", "info", "ibkr_compute", issue.title, detail, environment, false)
+            } else {
+                notified = feishuSystem.notifyWarning("ibkr_compute", issue.title, detail, environment)
+                writeSystemEvent("alert", "warning", "ibkr_compute", issue.title, detail, environment, notified)
+            }
+            console.log(`[IBKRAuthEdgeGuard] ${environment}: issue=${issue.kind}, notified=${notified}, operational_only=${operationalOnly ? "yes" : "no"}`)
             saveStateData(AUTH_EDGE_MONITOR_STATE_KEY, environment, times.date, {
                 ...nextState,
                 last_auth_issue_at: times.us,
