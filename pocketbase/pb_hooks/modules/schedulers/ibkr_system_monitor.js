@@ -39,6 +39,8 @@ const MONITOR_ALERT_FLAG_CODES = {
     host_load_critical: true,
     host_cpu_high: true,
     host_cpu_critical: true,
+    pb_disk_high: true,
+    pb_disk_critical: true,
 }
 
 function getRuntimeKeys() {
@@ -1175,6 +1177,7 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
 routerAdd("GET", "/api/custom/system/monitorz", (c) => {
     try {
         const { normalizeRuntimeEnvironment, getIbkrComputeInternalUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const pocketbaseDiskMonitor = require(`${__hooks}/lib/pocketbase_disk_monitor.js`)
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
         const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
         const upstream = `${computeBaseUrl}/ibkr/monitor`
@@ -1268,6 +1271,8 @@ routerAdd("GET", "/api/custom/system/monitorz", (c) => {
             response.ok = response.ok !== false
             response.status = String(response.status || "ok").trim().toLowerCase() || "ok"
         }
+
+        pocketbaseDiskMonitor.enrichMonitorPayloadWithPocketBaseDisk(response, false)
 
         return c.html(200, JSON.stringify(response))
     } catch (err) {

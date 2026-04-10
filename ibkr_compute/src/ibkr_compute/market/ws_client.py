@@ -326,7 +326,10 @@ class IBKRWebSocketClient:
     def status(self) -> dict:
         with self._state_lock:
             subscribed_conids = sorted(self._subscribed_conids)
-            pending_conids = sorted(self._pending_subscriptions)
+            pending_conids = sorted(
+                conid for conid in self._pending_subscriptions
+                if conid not in self._subscribed_conids
+            )
             order_updates_enabled = self._order_updates_enabled
             order_updates_subscribed = self._order_updates_subscribed
         now_ts = time.time()

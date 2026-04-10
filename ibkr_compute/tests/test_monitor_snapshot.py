@@ -244,6 +244,69 @@ class MonitorSnapshotTest(unittest.TestCase):
         self.assertEqual(payload["api_utilization"]["subscription_limit"], 60)
         restore_mock.assert_called_once()
 
+    def test_subscription_utilization_does_not_warn_before_limit(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 59,
+                "utilization_pct": 84.29,
+                "pending_subscription_count": 0,
+            },
+            {},
+            {},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertNotIn("subscription_utilization_high", flag_codes)
+        self.assertNotIn("subscription_utilization_critical", flag_codes)
+
+    def test_subscription_utilization_warns_at_limit(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 70,
+                "utilization_pct": 100.0,
+                "pending_subscription_count": 0,
+            },
+            {},
+            {},
+        )
+
+        warning = next(item for item in flags if item["code"] == "subscription_utilization_high")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertIn("70/70", warning["detail"])
+
+    def test_subscription_utilization_critical_after_limit(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 71,
+                "utilization_pct": 101.43,
+                "pending_subscription_count": 0,
+            },
+            {},
+            {},
+        )
+
+        critical = next(item for item in flags if item["code"] == "subscription_utilization_critical")
+        self.assertEqual(critical["severity"], "error")
+        self.assertIn("71/70", critical["detail"])
+
     def test_monitor_route_returns_offline_snapshot_without_service(self):
         host_snapshot = {
             "hostname": "compute-1",

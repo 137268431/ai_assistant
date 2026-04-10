@@ -4404,22 +4404,24 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
         )
 
     utilization_pct = api_utilization.get("utilization_pct")
-    if utilization_pct is not None:
-        if utilization_pct >= 95:
+    subscription_limit = int(api_utilization.get("subscription_limit", 0) or 0)
+    active_subscription_count = int(api_utilization.get("active_subscription_count", 0) or 0)
+    if utilization_pct is not None and subscription_limit > 0:
+        if active_subscription_count > subscription_limit:
             _append_monitor_flag(
                 flags,
                 "error",
                 "subscription_utilization_critical",
                 "Subscription utilization critical",
-                f"当前订阅占用 {utilization_pct:.2f}% ，已经逼近上限。",
+                f"当前订阅占用 {active_subscription_count}/{subscription_limit} ({utilization_pct:.2f}%) ，已经超过上限。",
             )
-        elif utilization_pct >= 80:
+        elif active_subscription_count >= subscription_limit:
             _append_monitor_flag(
                 flags,
                 "warning",
                 "subscription_utilization_high",
                 "Subscription utilization high",
-                f"当前订阅占用 {utilization_pct:.2f}% ，需要关注扩容或收缩池子。",
+                f"当前订阅占用 {active_subscription_count}/{subscription_limit} ({utilization_pct:.2f}%) ，已经达到上限。",
             )
 
     pending_subscription_count = int(api_utilization.get("pending_subscription_count", 0) or 0)

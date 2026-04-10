@@ -19,6 +19,8 @@ const MONITOR_ALERT_FLAG_CODES = {
     host_load_critical: true,
     host_cpu_high: true,
     host_cpu_critical: true,
+    pb_disk_high: true,
+    pb_disk_critical: true,
 }
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
 
@@ -143,9 +145,25 @@ function buildMonitorAlertFingerprint(monitorPayload, flags) {
     })
 }
 
+function formatBytes(value) {
+    const bytes = Number(value)
+    if (!Number.isFinite(bytes) || bytes < 0) return "--"
+    if (bytes === 0) return "0 B"
+    const units = ["B", "KB", "MB", "GB", "TB"]
+    let size = bytes
+    let unitIndex = 0
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024
+        unitIndex += 1
+    }
+    const digits = size >= 100 ? 0 : (size >= 10 ? 1 : 2)
+    return `${size.toFixed(digits)} ${units[unitIndex]}`
+}
+
 function runSystemMonitorAlertGuard(logPrefix) {
     const prefix = logPrefix || "[IBKRMonitorAlert]"
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const pocketbaseDiskMonitor = require(`${__hooks}/lib/pocketbase_disk_monitor.js`)
     const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
@@ -160,14 +178,21 @@ function runSystemMonitorAlertGuard(logPrefix) {
             continue
         }
 
-        const monitorPayload = fetchComputeJson("/ibkr/monitor", 10, environment)
+        const monitorPayload = pocketbaseDiskMonitor.enrichMonitorPayloadWithPocketBaseDisk(
+            fetchComputeJson("/ibkr/monitor", 10, environment),
+            false
+        )
         if (!monitorPayload || typeof monitorPayload !== "object") {
             continue
         }
 
         const baseAlertFlags = selectMonitorAlertFlags(monitorPayload.flags || [])
+        const syntheticAlertFlags = buildSyntheticMonitorAlertFlags(monitorPayload)
         const alertFlags = baseAlertFlags.concat(
-            baseAlertFlags.length ? [] : buildSyntheticMonitorAlertFlags(monitorPayload)
+            syntheticAlertFlags.filter((item) => {
+                const syntheticCode = String(item && item.code || "").trim()
+                return !baseAlertFlags.some((baseItem) => String(baseItem && baseItem.code || "").trim() === syntheticCode)
+            })
         )
         if (!alertFlags.length) {
             saveStateData(MONITOR_ALERT_STATE_KEY, environment, times.date, {
@@ -205,6 +230,8 @@ function runSystemMonitorAlertGuard(logPrefix) {
         const memory = host.memory || {}
         const disk = host.disk || {}
         const loadavg = host.loadavg || {}
+        const pocketbaseDisk = ((monitorPayload.pocketbase || {}).disk) || {}
+        const pocketbaseFilesystem = pocketbaseDisk.filesystem || {}
         const level = alertFlags.some((item) => String(item && item.severity || "").trim().toLowerCase() === "error")
             ? "error"
             : "warning"
@@ -221,6 +248,9 @@ function runSystemMonitorAlertGuard(logPrefix) {
             "主机Load/CPU": loadavg.per_cpu_1 != null ? String(loadavg.per_cpu_1) : "--",
             "主机内存": memory.used_pct != null ? `${memory.used_pct}%` : "--",
             "主机磁盘": disk.used_pct != null ? `${disk.used_pct}%` : "--",
+            "PB磁盘": pocketbaseFilesystem.used_pct != null
+                ? `${pocketbaseFilesystem.used_pct}% · data=${formatBytes(pocketbaseDisk.data_size_bytes)} · free=${formatBytes(pocketbaseFilesystem.available_bytes)}`
+                : "--",
         }
 
         const notified = level === "error"

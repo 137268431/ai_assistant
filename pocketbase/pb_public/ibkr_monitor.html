@@ -527,6 +527,19 @@
                     <div class="metric-grid" id="hostGrid"></div>
                 </div>
             </section>
+
+            <section class="section">
+                <div class="section-header">
+                    <div>
+                        <div class="section-title">PocketBase 磁盘</div>
+                        <div class="section-copy">单独看 PB 主机的 `pb_data` 占用和所在文件系统余量，避免和 compute 主机混在一起。</div>
+                    </div>
+                    <div class="section-meta" id="pocketbaseMeta">pb --</div>
+                </div>
+                <div class="section-body">
+                    <div class="metric-grid" id="pocketbaseGrid"></div>
+                </div>
+            </section>
         </div>
 
         <div class="split-grid">
@@ -707,6 +720,21 @@
             if (hasError) return { tone: 'chip-error', label: 'ERROR' };
             if (hasWarn) return { tone: 'chip-warn', label: 'WARN' };
             return { tone: 'chip-ok', label: 'OK' };
+        }
+
+        function derivePocketBaseStatus(payload) {
+            const flags = Array.isArray(payload?.flags) ? payload.flags : [];
+            const pbFlags = flags.filter((item) => String(item?.code || '').startsWith('pb_'));
+            const hasError = pbFlags.some((item) => String(item?.severity || '').toLowerCase() === 'error');
+            const hasWarn = pbFlags.some((item) => String(item?.severity || '').toLowerCase() === 'warning');
+            if (hasError) return { tone: 'chip-error', label: 'ERROR' };
+            if (hasWarn) return { tone: 'chip-warn', label: 'WARN' };
+
+            const disk = payload?.pocketbase?.disk || {};
+            if (disk?.status === 'partial') return { tone: 'chip-warn', label: 'PARTIAL' };
+            if (disk?.status === 'unavailable') return { tone: 'chip-muted', label: 'UNKNOWN' };
+            if (disk?.data_exists || disk?.filesystem?.available) return { tone: 'chip-ok', label: 'OK' };
+            return { tone: 'chip-muted', label: 'UNKNOWN' };
         }
 
         function deriveAsyncPullStatus(payload) {
@@ -892,6 +920,7 @@
             const wsReady = Boolean(runtime?.websocket?.connected && runtime?.websocket?.ready);
             const dataStatus = deriveDataStatus(payload);
             const hostStatus = deriveHostStatus(payload);
+            const pocketbaseStatus = derivePocketBaseStatus(payload);
             const pullStatus = deriveAsyncPullStatus(payload);
             const pushStatus = deriveWebSocketPushStatus(payload);
             const monitorTone = payload?.status === 'error'
@@ -906,6 +935,7 @@
                 { label: `WS Push ${pushStatus.label}`, tone: pushStatus.tone },
                 { label: `Data ${dataStatus.label}`, tone: dataStatus.tone },
                 { label: `Host ${hostStatus.label}`, tone: hostStatus.tone },
+                { label: `PB ${pocketbaseStatus.label}`, tone: pocketbaseStatus.tone },
                 { label: `Env ${String(payload?.requested_environment || currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
             ];
             document.getElementById('heroChips').innerHTML = chips.map((chip) => `
@@ -920,6 +950,7 @@
                 `ws ${apiUtilization.ws_subscribed_count || 0} subscribed`,
                 pullStatus.summary,
                 pushStatus.summary,
+                `pb_data ${formatBytes(payload?.pocketbase?.disk?.data_size_bytes)}`,
                 `host ${host.hostname || '--'}`,
                 dataStatus.copy
             ].filter(Boolean).join(' · ');
@@ -1229,6 +1260,56 @@
             document.getElementById('hostGrid').innerHTML = cards.map(renderMetricCard).join('');
         }
 
+        function renderPocketBaseDisk(payload) {
+            const disk = payload?.pocketbase?.disk || {};
+            const filesystem = disk?.filesystem || {};
+            const topEntries = Array.isArray(disk?.top_entries) ? disk.top_entries : [];
+            const largest = topEntries[0] || null;
+            const availability = disk?.status === 'unavailable'
+                ? 'UNKNOWN'
+                : (disk?.status === 'partial' ? 'PARTIAL' : 'READY');
+
+            document.getElementById('pocketbaseMeta').textContent = [
+                disk?.data_path || '--',
+                filesystem?.mount_path ? `mount ${filesystem.mount_path}` : '',
+                `sample ${formatTimeLabel(disk?.collected_at)}`
+            ].filter(Boolean).join(' · ');
+
+            const cards = [
+                {
+                    label: 'PB Data',
+                    value: formatBytes(disk?.data_size_bytes),
+                    copy: `db ${formatBytes(disk?.db_size_bytes)} · storage ${formatBytes(disk?.storage_size_bytes)}`,
+                },
+                {
+                    label: 'PB Volume',
+                    value: filesystem?.used_pct != null ? formatPercent(filesystem.used_pct, 2) : '--',
+                    copy: `${formatBytes(filesystem?.used_bytes)} / ${formatBytes(filesystem?.total_bytes)} · free ${formatBytes(filesystem?.available_bytes)}`,
+                },
+                {
+                    label: 'PB Storage',
+                    value: formatBytes(disk?.storage_size_bytes),
+                    copy: `backups ${formatBytes(disk?.backups_size_bytes)} · aux ${formatBytes(disk?.aux_size_bytes)}`,
+                },
+                {
+                    label: 'PB Database',
+                    value: formatBytes(disk?.db_size_bytes),
+                    copy: disk?.db_path || '--',
+                },
+                {
+                    label: 'Largest Entry',
+                    value: largest?.name || '--',
+                    copy: largest ? `${formatBytes(largest.size_bytes)} · ${largest.path || '--'}` : (disk?.scan_error || 'pb_data 目录扫描正常'),
+                },
+                {
+                    label: 'Availability',
+                    value: availability,
+                    copy: disk?.scan_error || `cache ${formatSeconds(disk?.cache_ttl_s)} · ${disk?.source || 'unknown'}`,
+                }
+            ];
+            document.getElementById('pocketbaseGrid').innerHTML = cards.map(renderMetricCard).join('');
+        }
+
         function renderFlags(payload) {
             const flags = Array.isArray(payload?.flags) ? payload.flags : [];
             document.getElementById('flagMeta').textContent = `flags ${flags.length}`;
@@ -1287,6 +1368,7 @@
                 renderSubscriptionView(payload);
                 renderServicePerformance(payload);
                 renderHostHealth(payload);
+                renderPocketBaseDisk(payload);
                 renderFlags(payload);
                 renderRecentEvents(payload);
                 if (showToastOnSuccess) {
@@ -1296,7 +1378,7 @@
                 if (loadId !== latestMonitorLoadId) return;
                 document.getElementById('heroCopy').textContent = `监控数据加载失败：${error.message || error}`;
                 document.getElementById('heroCallout').innerHTML = `<div class="callout error">${escapeHtml(error.message || String(error))}</div>`;
-                ['utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'flagList', 'eventList'].forEach((id) => {
+                ['utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'pocketbaseGrid', 'flagList', 'eventList'].forEach((id) => {
                     const el = document.getElementById(id);
                     if (el) el.innerHTML = '<div class="empty-state">请求失败，请检查 PocketBase proxy 和 compute monitor 接口。</div>';
                 });

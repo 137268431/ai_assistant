@@ -219,6 +219,7 @@ class IBKRTradingService:
         self._warmup_wakeup = threading.Event()
         self._realtime_compute_runs = 0
         self._last_realtime_compute_at = 0.0
+        self._last_realtime_compute_started_at = 0.0
         self._last_realtime_compute_result = {}
         self._last_bar_close_at = 0.0
         self._current_market_date = ""
@@ -3425,6 +3426,7 @@ class IBKRTradingService:
                 bar_count += int(next_item or 0)
 
             try:
+                self._last_realtime_compute_started_at = time.time()
                 self.data_writer.flush()
                 result = self._trigger_realtime_compute()
                 self._realtime_compute_runs += 1
@@ -3443,6 +3445,8 @@ class IBKRTradingService:
                     self._signal_wakeup.set()
             except Exception as exc:
                 logger.error("Realtime compute loop error: %s", exc)
+            finally:
+                self._last_realtime_compute_started_at = 0.0
 
     def _bar_close_loop(self):
         logger.info("Bar close guard loop started")
@@ -3908,6 +3912,32 @@ class IBKRTradingService:
         logger.info("IBKR Trading Service stopped")
 
     def status(self) -> dict:
+        now_ts = time.time()
+        queue_size = int(self._compute_queue.qsize())
+        last_bar_close_at = float(self._last_bar_close_at or 0.0)
+        last_run_at = float(self._last_realtime_compute_at or 0.0)
+        last_started_at = float(self._last_realtime_compute_started_at or 0.0)
+        compute_thread_alive = bool(self._compute_thread and self._compute_thread.is_alive())
+        inflight = bool(last_started_at and last_started_at > last_run_at)
+        inflight_age_s = (
+            round(max(0.0, now_ts - last_started_at), 1)
+            if inflight else None
+        )
+        lag_since_last_run_s = 0.0
+        if last_bar_close_at and last_run_at and last_bar_close_at > last_run_at:
+            lag_since_last_run_s = round(max(0.0, last_bar_close_at - last_run_at), 1)
+        stalled = False
+        stall_reason = ""
+        if queue_size > 0 and not self._starting:
+            if not compute_thread_alive:
+                stalled = True
+                stall_reason = "thread_dead"
+            elif inflight and inflight_age_s is not None and inflight_age_s >= 300:
+                stalled = True
+                stall_reason = "inflight_timeout"
+            elif lag_since_last_run_s >= 600:
+                stalled = True
+                stall_reason = "lagging"
         return {
             "starting": self._starting,
             "startup_complete": bool(self._running and not self._starting),
@@ -3929,15 +3959,25 @@ class IBKRTradingService:
             "warmup": self._copy_warmup_state(),
             "realtime_compute": {
                 "runs": self._realtime_compute_runs,
-                "queue_size": self._compute_queue.qsize(),
+                "queue_size": queue_size,
+                "thread_alive": compute_thread_alive,
+                "inflight": inflight,
+                "inflight_age_s": inflight_age_s,
+                "stalled": stalled,
+                "stall_reason": stall_reason,
                 "last_bar_close": (
-                    datetime.fromtimestamp(self._last_bar_close_at, ET).isoformat()
-                    if self._last_bar_close_at else None
+                    datetime.fromtimestamp(last_bar_close_at, ET).isoformat()
+                    if last_bar_close_at else None
+                ),
+                "last_started": (
+                    datetime.fromtimestamp(last_started_at, ET).isoformat()
+                    if last_started_at else None
                 ),
                 "last_run": (
-                    datetime.fromtimestamp(self._last_realtime_compute_at, ET).isoformat()
-                    if self._last_realtime_compute_at else None
+                    datetime.fromtimestamp(last_run_at, ET).isoformat()
+                    if last_run_at else None
                 ),
+                "lag_since_last_run_s": lag_since_last_run_s,
                 "last_result": self._last_realtime_compute_result,
             },
             "interval_prime": self._copy_interval_prime_state(),

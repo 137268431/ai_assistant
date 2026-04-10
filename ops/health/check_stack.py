@@ -58,6 +58,16 @@ def format_us(ms):
     return datetime.fromtimestamp(int(ms) / 1000.0, ET).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def parse_iso_ms(text):
+    value = str(text or "").strip()
+    if not value:
+        return 0
+    try:
+        return int(datetime.fromisoformat(value).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
 def open_db():
     conn = sqlite3.connect(DB, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -306,6 +316,15 @@ if websocket.get("ready") is False:
 queue_size = int(realtime.get("queue_size") or 0)
 if queue_size > 10:
     warnings.append(f"runtime:compute_queue_high:{queue_size}")
+    if bool(realtime.get("stalled")):
+        failures.append(f"runtime:compute_stalled:{str(realtime.get('stall_reason') or 'unknown')}")
+    else:
+        last_bar_close_ms = parse_iso_ms(realtime.get("last_bar_close"))
+        last_run_ms = parse_iso_ms(realtime.get("last_run"))
+        if last_bar_close_ms and last_run_ms and last_bar_close_ms > last_run_ms:
+            backlog_age_min = round((last_bar_close_ms - last_run_ms) / 60000.0, 2)
+            if backlog_age_min >= 10:
+                failures.append(f"runtime:compute_stalled:lagging:{backlog_age_min}")
 
 if targets.get("total_count", 0) == 0:
     warnings.append("db:targets_missing")
