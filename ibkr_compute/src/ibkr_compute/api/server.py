@@ -135,6 +135,7 @@ IBKR_RUNTIME_CONTROL_STATE_DATE = "global"
 DEFAULT_TRADE_WINDOW_START = (9, 35)
 DEFAULT_TRADE_WINDOW_END = (15, 30)
 DEFAULT_ORDER_WINDOW_END = (15, 0)
+SIGNAL_SUPPRESSED_COMPUTE_SOURCES = {"history_repair", "recompute", "targeted_recompute"}
 
 
 def current_market_date(now: datetime | None = None) -> str:
@@ -192,6 +193,13 @@ def build_bar_environment_filter(environment: str, include_legacy_empty: bool = 
     if include_legacy_empty and runtime_environment == "live":
         clauses.append('environment = ""')
     return f"({' || '.join(clauses)})" if len(clauses) > 1 else clauses[0]
+
+
+def should_persist_compute_signals(payload: dict) -> bool:
+    if "persist_signals" in payload:
+        return bool(payload.get("persist_signals"))
+    source = str(payload.get("source") or "").strip().lower()
+    return source not in SIGNAL_SUPPRESSED_COMPUTE_SOURCES
 
 
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
@@ -381,6 +389,7 @@ def bootstrap_engine_state(
     before_bar_time_ms: int,
     inclusive: bool = True,
     force_rebuild: bool = False,
+    hydrate_signal_state: bool = True,
 ):
     runtime_environment = str(environment or "live").strip().lower() or "live"
     normalized_interval = normalize_interval(interval)
@@ -417,7 +426,7 @@ def bootstrap_engine_state(
     rows = list(reversed(rows))
 
     engine.reset()
-    if signal_generator:
+    if signal_generator and hydrate_signal_state:
         signal_generator.daily_reset()
 
     processed = 0
@@ -434,7 +443,13 @@ def bootstrap_engine_state(
             "cn_time": normalized_row.get("cn_time", ""),
             "session_type": normalized_row.get("session_type", "regular"),
         })
-        if normalized_interval == "5m" and signal_generator and snapshot and engine.is_ready():
+        if (
+            hydrate_signal_state
+            and normalized_interval == "5m"
+            and signal_generator
+            and snapshot
+            and engine.is_ready()
+        ):
             signal_generator.update(snapshot)
         processed += 1
 
@@ -449,7 +464,12 @@ def bootstrap_engine_state(
     return processed
 
 
-def materialize_engines_from_storage(environment: str, symbols, interval: str = "5m") -> dict:
+def materialize_engines_from_storage(
+    environment: str,
+    symbols,
+    interval: str = "5m",
+    hydrate_signal_state: bool = True,
+) -> dict:
     runtime_environment = str(environment or "live").strip().lower() or "live"
     normalized_interval = normalize_interval(interval)
     normalized_symbols = normalize_symbols(symbols)
@@ -498,6 +518,7 @@ def materialize_engines_from_storage(environment: str, symbols, interval: str = 
             target_ms,
             inclusive=True,
             force_rebuild=force_rebuild,
+            hydrate_signal_state=hydrate_signal_state,
         )
         engine = engines.get((runtime_environment, symbol, normalized_interval))
         return {
@@ -2341,6 +2362,7 @@ def compute():
         cfg.refresh()
         payload = request.get_json(silent=True) or {}
         source = str(payload.get("source") or "").strip().lower()
+        persist_signals = should_persist_compute_signals(payload)
         requested_symbols = get_requested_symbols(payload)
         targeted_rebuild = bool(requested_symbols) and source in {"history_repair", "recompute", "targeted_recompute"}
         skip_persisted_cursor = source in {"recompute", "history_repair", "targeted_recompute"}
@@ -2431,6 +2453,7 @@ def compute():
                                 interval,
                                 bootstrap_target_ms,
                                 inclusive=bootstrap_inclusive,
+                                hydrate_signal_state=persist_signals,
                             )
                             last_ms = int(last_processed_ms.get(key, 0) or 0)
 
@@ -2462,7 +2485,12 @@ def compute():
                             if len(indicator_batch) >= INDICATOR_BATCH_SIZE:
                                 flush_pending_indicators()
 
-                            if interval != "5m" or not signal_generator or symbol in market_monitor_symbols:
+                            if (
+                                not persist_signals
+                                or interval != "5m"
+                                or not signal_generator
+                                or symbol in market_monitor_symbols
+                            ):
                                 continue
 
                             signal = signal_generator.update(snapshot)
@@ -2489,6 +2517,7 @@ def compute():
             "symbols": requested_symbols,
             "processed": processed,
             "signals": signals_found,
+            "persist_signals": persist_signals,
             "errors": errors,
             "rollup": rollup_results,
             "engines": len(engines),
@@ -3000,6 +3029,7 @@ def _maybe_restore_ibkr_service(service):
 
     _ibkr_restore_attempted = True
     timestamps = build_runtime_timestamps()
+    restore_trigger_login = bool(control.get("last_restore_trigger_login", False))
     set_ibkr_runtime_control(
         runtime_environment,
         True,
@@ -3007,16 +3037,16 @@ def _maybe_restore_ibkr_service(service):
         reason="auto_restore",
         extra={
             "last_restore_attempt_at": timestamps.get("us", ""),
-            "last_restore_trigger_login": False,
+            "last_restore_trigger_login": restore_trigger_login,
         },
     )
     print(
         f"[IBKR] Auto-restore requested for env={runtime_environment}; "
-        "starting runtime with trigger_login=false"
+        f"starting runtime with trigger_login={restore_trigger_login}"
     )
     _background_start_ibkr_service(
         service,
-        trigger_login=False,
+        trigger_login=restore_trigger_login,
         reason="auto_restore",
         source="server_boot",
     )

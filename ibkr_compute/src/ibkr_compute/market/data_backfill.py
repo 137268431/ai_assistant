@@ -5,6 +5,7 @@ Historical bar backfill across the IBKR timeframes used by the pipeline.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone, timedelta
 import os
 import time
 import logging
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
+ET = timezone(timedelta(hours=-4))
 
 PERIOD_MAP = {
     "5m": ("4d", "5min"),
@@ -63,17 +65,68 @@ RETRY_BASE_DELAY_SECONDS = max(0.5, float(os.environ.get("IBKR_HISTORY_RETRY_BAS
 RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 
 
+def _regular_session_gap_summary(
+    rows: Sequence[Dict],
+    interval: str,
+    *,
+    same_day_only: bool = False,
+    example_limit: int = 4,
+) -> Dict[str, object]:
+    expected_ms = interval_to_ms(interval)
+    gap_count = 0
+    gap_examples: List[Dict[str, object]] = []
+
+    def market_date(row: Dict) -> str:
+        bar_time_ms = int(row.get("bar_time_ms", 0) or 0)
+        if bar_time_ms > 0:
+            try:
+                return datetime.fromtimestamp(bar_time_ms / 1000, ET).strftime("%Y-%m-%d")
+            except (TypeError, ValueError, OSError):
+                pass
+        us_time = str(row.get("us_time", "") or "").strip()
+        return us_time.split(" ", 1)[0] if us_time else ""
+
+    for index in range(1, len(rows)):
+        prev = rows[index - 1]
+        curr = rows[index]
+        if str(prev.get("session_type", "") or "").strip().lower() != "regular":
+            continue
+        if str(curr.get("session_type", "") or "").strip().lower() != "regular":
+            continue
+
+        prev_ms = int(prev.get("bar_time_ms", 0) or 0)
+        curr_ms = int(curr.get("bar_time_ms", 0) or 0)
+        if prev_ms <= 0 or curr_ms <= 0:
+            continue
+        if same_day_only and market_date(prev) != market_date(curr):
+            continue
+
+        delta_ms = curr_ms - prev_ms
+        if delta_ms <= expected_ms:
+            continue
+
+        gap_count += 1
+        if len(gap_examples) < example_limit:
+            gap_examples.append({
+                "prev_us_time": str(prev.get("us_time", "") or ""),
+                "next_us_time": str(curr.get("us_time", "") or ""),
+                "missing_points": max(int(round(delta_ms / expected_ms)) - 1, 1),
+            })
+
+    return {
+        "gap_count": gap_count,
+        "gap_examples": gap_examples,
+    }
+
+
 class DataBackfill:
-    def __init__(self, gateway_url: str = None, data_writer=None):
+    def __init__(self, gateway_url: str = None, data_writer=None, config=None, environment: str = ENVIRONMENT):
         self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
         self.data_writer = data_writer
         self.pb_client = getattr(data_writer, "pb_client", None) if data_writer else None
+        self.config = config
+        self.environment = str(environment or ENVIRONMENT).strip().lower() or ENVIRONMENT
         self.default_intervals = list(DEFAULT_BACKFILL_INTERVALS)
-        self.request_spacing = REQUEST_SPACING_SECONDS
-        self.interval_delay = INTERVAL_DELAY_SECONDS
-        self.max_concurrency = MAX_CONCURRENT_REQUESTS
-        self.max_retries = MAX_RETRIES
-        self.retry_base_delay = RETRY_BASE_DELAY_SECONDS
         self._backfill_count = 0
         self._request_count = 0
         self._retry_count = 0
@@ -100,8 +153,34 @@ class DataBackfill:
             return list(self.default_intervals)
         return _parse_intervals(",".join(str(item) for item in intervals), fallback=self.default_intervals)
 
+    def _get_int_setting(self, key: str, fallback: int) -> int:
+        if not self.config:
+            return fallback
+        return self.config.get_int_for_environment(key, self.environment, fallback)
+
+    def _get_float_setting(self, key: str, fallback: float) -> float:
+        if not self.config:
+            return fallback
+        return self.config.get_float_for_environment(key, self.environment, fallback)
+
+    def _request_spacing(self) -> float:
+        return max(0.0, self._get_float_setting("ibkr_history_request_spacing", REQUEST_SPACING_SECONDS))
+
+    def _interval_delay(self) -> float:
+        return max(0.0, self._get_float_setting("ibkr_history_interval_delay", INTERVAL_DELAY_SECONDS))
+
+    def _max_concurrency(self) -> int:
+        return max(1, min(5, self._get_int_setting("ibkr_history_max_concurrency", MAX_CONCURRENT_REQUESTS)))
+
+    def _max_retries(self) -> int:
+        return max(0, self._get_int_setting("ibkr_history_max_retries", MAX_RETRIES))
+
+    def _retry_base_delay(self) -> float:
+        return max(0.5, self._get_float_setting("ibkr_history_retry_base_delay", RETRY_BASE_DELAY_SECONDS))
+
     def _wait_for_request_slot(self):
-        if self.request_spacing <= 0:
+        request_spacing = self._request_spacing()
+        if request_spacing <= 0:
             return
 
         delay = 0.0
@@ -110,7 +189,7 @@ class DataBackfill:
             if self._next_request_at > now:
                 delay = self._next_request_at - now
                 now = self._next_request_at
-            self._next_request_at = now + self.request_spacing
+            self._next_request_at = now + request_spacing
 
         if delay > 0:
             time.sleep(delay)
@@ -133,7 +212,9 @@ class DataBackfill:
         if start_time:
             params["startTime"] = str(start_time)
 
-        for attempt in range(self.max_retries + 1):
+        max_retries = self._max_retries()
+        retry_base_delay = self._retry_base_delay()
+        for attempt in range(max_retries + 1):
             self._wait_for_request_slot()
             session = self._get_session()
             with self._count_lock:
@@ -145,8 +226,8 @@ class DataBackfill:
                 timeout=30,
             )
 
-            if resp.status_code in RETRYABLE_STATUS_CODES and attempt < self.max_retries:
-                delay = self.retry_base_delay * (2 ** attempt)
+            if resp.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries:
+                delay = retry_base_delay * (2 ** attempt)
                 with self._count_lock:
                     self._retry_count += 1
                     if resp.status_code == 429:
@@ -158,7 +239,7 @@ class DataBackfill:
                     conid,
                     resp.status_code,
                     attempt + 1,
-                    self.max_retries + 1,
+                    max_retries + 1,
                     delay,
                 )
                 time.sleep(delay)
@@ -317,26 +398,14 @@ class DataBackfill:
                     })
 
         recent_rows = list(reversed(rows[: max(3, int(gap_lookback or 0))]))
-        expected_ms = interval_to_ms(normalized)
-        for index in range(1, len(recent_rows)):
-            prev = recent_rows[index - 1]
-            curr = recent_rows[index]
-            if str(prev.get("session_type", "") or "") != "regular":
-                continue
-            if str(curr.get("session_type", "") or "") != "regular":
-                continue
-
-            prev_ms = int(prev.get("bar_time_ms", 0) or 0)
-            curr_ms = int(curr.get("bar_time_ms", 0) or 0)
-            delta_ms = curr_ms - prev_ms
-            if delta_ms > expected_ms and delta_ms <= (6 * expected_ms):
-                snapshot["gap_count"] += 1
-                if len(snapshot["gap_examples"]) < 4:
-                    snapshot["gap_examples"].append({
-                        "prev_us_time": str(prev.get("us_time", "") or ""),
-                        "next_us_time": str(curr.get("us_time", "") or ""),
-                        "missing_points": max(int(round(delta_ms / expected_ms)) - 1, 1),
-                    })
+        gap_summary = _regular_session_gap_summary(
+            recent_rows,
+            normalized,
+            same_day_only=True,
+            example_limit=4,
+        )
+        snapshot["gap_count"] = int(gap_summary.get("gap_count", 0) or 0)
+        snapshot["gap_examples"] = list(gap_summary.get("gap_examples") or [])
 
         return snapshot
 
@@ -475,8 +544,9 @@ class DataBackfill:
                 request_period=str((period_overrides or {}).get(normalized) or "").strip() or None,
             )
             results[normalized] = written
-            if self.interval_delay > 0:
-                time.sleep(self.interval_delay)
+            interval_delay = self._interval_delay()
+            if interval_delay > 0:
+                time.sleep(interval_delay)
         return results
 
     def _fetch_symbol_all_intervals(
@@ -499,8 +569,9 @@ class DataBackfill:
                 repair=repair,
                 request_period=str((period_overrides or {}).get(normalized) or "").strip() or None,
             )
-            if self.interval_delay > 0:
-                time.sleep(self.interval_delay)
+            interval_delay = self._interval_delay()
+            if interval_delay > 0:
+                time.sleep(interval_delay)
         return fetched
 
     def backfill_all(
@@ -522,7 +593,7 @@ class DataBackfill:
         if not conid_map:
             return results
 
-        worker_count = min(self.max_concurrency, len(conid_map))
+        worker_count = min(self._max_concurrency(), len(conid_map))
         logger.info(
             "Starting history backfill: symbols=%d, tasks=%d, intervals=%s, workers=%d",
             len(conid_map),
@@ -569,8 +640,9 @@ class DataBackfill:
             "request_count": self._request_count,
             "retry_count": self._retry_count,
             "throttle_count": self._throttle_count,
-            "environment": ENVIRONMENT,
+            "environment": self.environment,
             "intervals": list(self.default_intervals),
-            "max_concurrency": self.max_concurrency,
-            "request_spacing_s": self.request_spacing,
+            "max_concurrency": self._max_concurrency(),
+            "request_spacing_s": self._request_spacing(),
+            "interval_delay_s": self._interval_delay(),
         }

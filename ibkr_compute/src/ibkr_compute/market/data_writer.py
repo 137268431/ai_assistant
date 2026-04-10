@@ -22,14 +22,14 @@ BAR_FLUSH_RETRY_BACKOFF_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_
 
 
 class DataWriter:
-    def __init__(self, pb_client, collection: str = "ibkr_bars"):
+    def __init__(self, pb_client, collection: str = "ibkr_bars", config=None, environment: str = DEFAULT_ENVIRONMENT):
         self.pb_client = pb_client
         self.collection = collection
+        self.config = config
+        self.environment = str(environment or DEFAULT_ENVIRONMENT).strip().lower() or DEFAULT_ENVIRONMENT
         self._write_count = 0
         self._skip_count = 0
         self._error_count = 0
-        self._batch_size = BAR_BATCH_SIZE
-        self._flush_interval = BAR_FLUSH_INTERVAL_SECONDS
         self._pending_batch = []
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -39,6 +39,28 @@ class DataWriter:
             name="ibkr-bar-writer",
         )
         self._flush_thread.start()
+
+    def _get_int_setting(self, key: str, fallback: int) -> int:
+        if not self.config:
+            return fallback
+        return self.config.get_int_for_environment(key, self.environment, fallback)
+
+    def _get_float_setting(self, key: str, fallback: float) -> float:
+        if not self.config:
+            return fallback
+        return self.config.get_float_for_environment(key, self.environment, fallback)
+
+    def _batch_size(self) -> int:
+        return max(1, self._get_int_setting("ibkr_bar_batch_size", BAR_BATCH_SIZE))
+
+    def _flush_interval(self) -> float:
+        return max(0.5, self._get_float_setting("ibkr_bar_flush_interval", BAR_FLUSH_INTERVAL_SECONDS))
+
+    def _retry_attempts(self) -> int:
+        return max(1, self._get_int_setting("ibkr_bar_flush_retry_attempts", BAR_FLUSH_RETRY_ATTEMPTS))
+
+    def _retry_backoff_seconds(self) -> float:
+        return max(0.5, self._get_float_setting("ibkr_bar_flush_retry_backoff_seconds", BAR_FLUSH_RETRY_BACKOFF_SECONDS))
 
     def write_bar(self, bar_data: dict) -> bool:
         if not self._validate_bar(bar_data):
@@ -50,7 +72,7 @@ class DataWriter:
         batch_to_flush = None
         with self._lock:
             self._pending_batch.append(payload)
-            if len(self._pending_batch) >= self._batch_size:
+            if len(self._pending_batch) >= self._batch_size():
                 batch_to_flush = self._drain_batch_locked()
 
         if batch_to_flush:
@@ -72,9 +94,10 @@ class DataWriter:
         if not batch:
             return True
 
-        backoff_seconds = BAR_FLUSH_RETRY_BACKOFF_SECONDS
+        max_attempts = self._retry_attempts()
+        backoff_seconds = self._retry_backoff_seconds()
         last_error = None
-        for attempt in range(1, BAR_FLUSH_RETRY_ATTEMPTS + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 result = self.pb_client.upsert_bars(batch)
                 if not result.get("ok", False):
@@ -87,12 +110,12 @@ class DataWriter:
                 return True
             except Exception as exc:
                 last_error = exc
-                if attempt < BAR_FLUSH_RETRY_ATTEMPTS:
+                if attempt < max_attempts:
                     logger.warning(
                         "Retrying %d bars batch write (%d/%d): %s",
                         len(batch),
                         attempt,
-                        BAR_FLUSH_RETRY_ATTEMPTS,
+                        max_attempts,
                         exc,
                     )
                     time.sleep(backoff_seconds)
@@ -101,7 +124,7 @@ class DataWriter:
                 logger.error(
                     "Failed to write %d bars batch after %d attempts: %s",
                     len(batch),
-                    BAR_FLUSH_RETRY_ATTEMPTS,
+                    max_attempts,
                     exc,
                 )
 
@@ -119,7 +142,7 @@ class DataWriter:
         return self._flush_batch(batch)
 
     def _flush_loop(self):
-        while not self._stop_event.wait(self._flush_interval):
+        while not self._stop_event.wait(self._flush_interval()):
             try:
                 self.flush()
             except Exception as exc:
@@ -202,6 +225,6 @@ class DataWriter:
             "errors": self._error_count,
             "collection": self.collection,
             "pending_batch": pending,
-            "batch_size": self._batch_size,
-            "flush_interval_s": self._flush_interval,
+            "batch_size": self._batch_size(),
+            "flush_interval_s": self._flush_interval(),
         }

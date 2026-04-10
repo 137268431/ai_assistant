@@ -271,6 +271,158 @@ var signalActionsCancelOrderGroupRecords = function(options) {
     }
 }
 
+var signalActionsHandleOrderCancelRequest = function(c, uniqueId, environment) {
+    try {
+        const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
+        const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
+        const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
+        if (!uniqueId) {
+            return c.html(400, fail("参数错误", "缺少订单ID"))
+        }
+        const orderContext = signalActionsResolveOrderActionContext(environment, uniqueId)
+        if (!orderContext || !orderContext.actionRecord) {
+            return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
+        }
+        const record = orderContext.actionRecord
+        const primaryRecord = orderContext.primaryRecord || record
+        const status = primaryRecord.get("status")
+        const symbol = primaryRecord.get("symbol") || record.get("symbol") || uniqueId
+        const filledQty = Number(primaryRecord.get("filled_qty") || 0)
+        const tradeGroupId = orderContext.tradeGroupId || signalActionsResolveTradeGroupId(primaryRecord || record)
+        const role = String(record.get("role") || "").trim()
+        console.log(`[OrderAction] 收到取消请求: target_id=${uniqueId}, resolved_unique_id=${primaryRecord.get("unique_id") || record.get("unique_id") || "-"}, symbol=${symbol}, current_status=${status}`)
+        if (role && role !== "entry") {
+            return c.html(200, warn("只能取消主单", "止盈/止损等子单不能直接取消，请操作主入场单", symbol))
+        }
+        if (filledQty > 0) {
+            return c.html(200, warn("主单已部分成交", "主单已部分成交，不能直接取消，请改用平仓整组", symbol))
+        }
+        const statusHints = {
+            Filled:   { fn: warn, title: "订单已成交", msg: "订单已成交，无法取消" },
+            Canceled: { fn: warn, title: "订单已取消", msg: "无需重复操作" },
+            Closed:   { fn: warn, title: "订单已平仓", msg: "无法取消" },
+        }
+        if (statusHints[status]) {
+            const h = statusHints[status]
+            return c.html(200, h.fn(h.title, h.msg, symbol))
+        }
+        const relatedRecords = orderContext.relatedRecords && orderContext.relatedRecords.length > 0
+            ? orderContext.relatedRecords
+            : [primaryRecord]
+        const cancelSummary = signalActionsCancelOrderGroupRecords({
+            records: relatedRecords,
+            environment: environment,
+            appendOrderDetail: appendOrderDetail,
+            applyOrderStatusMeta: applyOrderStatusMeta,
+            applyOrderRelationship: applyOrderRelationship,
+            getOrderExtra: getOrderExtra,
+            mergeOrderExtra: mergeOrderExtra,
+            notifyOrder: notifyOrder,
+            source: "webhook/order/cancel",
+            reason: "页面取消主单",
+        })
+        if (!cancelSummary.ok) {
+            console.error("[OrderAction] IBKR 撤单失败:", JSON.stringify(cancelSummary.failed_order_ids || []))
+            return c.html(500, fail("订单取消失败", `账户撤单失败 ${cancelSummary.failed_order_ids.length} 条`, symbol))
+        }
+        console.log("[OrderAction] 交易组已取消:", tradeGroupId, "cancelled_order_ids=", (cancelSummary.cancelled_order_ids || []).join(",") || "-")
+        return c.html(200, ok("订单已取消", "状态已更新", symbol))
+    } catch (err) {
+        console.error("[OrderAction] 取消失败:", err)
+        return c.json(500, { ok: false, error: err && (err.message || String(err)) || "unknown_error", action: "cancel_group" })
+    }
+}
+
+var signalActionsHandleOrderCloseRequest = function(c, uniqueId, environment) {
+    try {
+        const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
+        const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
+        const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
+        if (!uniqueId) {
+            return c.html(400, fail("参数错误", "缺少订单ID"))
+        }
+        const orderContext = signalActionsResolveOrderActionContext(environment, uniqueId)
+        if (!orderContext || !orderContext.primaryRecord) {
+            return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
+        }
+        const record = orderContext.primaryRecord
+        const status = record.get("status")
+        const symbol = record.get("symbol") || uniqueId
+        const tradeGroupId = orderContext.tradeGroupId || signalActionsResolveTradeGroupId(record)
+        const entryOrderUniqueId = record.get("entry_order_unique_id") || record.get("unique_id")
+        const statusHints = {
+            Init:      { fn: warn, title: "订单未成交", msg: "只有成交的订单才能平仓" },
+            Submitted: { fn: warn, title: "订单未成交", msg: "请先取消挂单" },
+            Canceled: { fn: warn, title: "订单已取消", msg: "无法平仓" },
+            Closed:   { fn: warn, title: "订单已平仓", msg: "无需重复操作" },
+        }
+        if (statusHints[status]) {
+            const h = statusHints[status]
+            return c.html(200, h.fn(h.title, h.msg, symbol))
+        }
+        if (status !== "Filled") {
+            return c.html(200, warn("订单未成交", "只有成交的订单才能平仓", symbol))
+        }
+        const relatedRecords = orderContext.relatedRecords && orderContext.relatedRecords.length > 0
+            ? orderContext.relatedRecords
+            : [record]
+        relatedRecords.forEach((groupRecord) => {
+            const currentGroupStatus = groupRecord.get("status")
+            if (currentGroupStatus === "Canceled" || currentGroupStatus === "Closed") {
+                return
+            }
+            const nextStatus = groupRecord.get("unique_id") === entryOrderUniqueId ? "Closed" : "Canceled"
+            groupRecord.set("status", nextStatus)
+            applyOrderRelationship(groupRecord, {
+                relation_status: "closed",
+                status: nextStatus,
+            }, false)
+            const metaResult = applyOrderStatusMeta(groupRecord, {
+                status: nextStatus,
+                previous_status: currentGroupStatus,
+                source: "webhook/order/close",
+                reason: `页面平仓交易组 ${tradeGroupId}`,
+            }, false)
+            const eventTimes = metaResult.eventTimes
+            $app.save(groupRecord)
+            try {
+                appendOrderDetail(groupRecord, {
+                    environment: environment,
+                    status: nextStatus,
+                    source: "webhook/order/close",
+                    reason: `页面平仓交易组 ${tradeGroupId}`,
+                    us_time: eventTimes.us_time,
+                    cn_time: eventTimes.cn_time,
+                    bar_time_ms: eventTimes.bar_time_ms,
+                    extra: {
+                        action: "close_group",
+                        previous_status: currentGroupStatus,
+                        trade_group_id: tradeGroupId,
+                    },
+                })
+            } catch (detailErr) {
+                console.error("[OrderAction] 平仓写入 ibkr_order_details 失败:", detailErr)
+            }
+        })
+        const orderExtra = getOrderExtra(record)
+        const syncResult = notifyOrder("closed", record, {
+            messageId: orderExtra.feishu_order_message_id || "",
+            message: `交易组已平仓 (${tradeGroupId})`,
+        })
+        if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
+            mergeOrderExtra(record, {
+                feishu_order_message_id: syncResult.message_id,
+                feishu_order_card_version: 2,
+            }, true)
+        }
+        console.log("[OrderAction] 交易组已平仓:", tradeGroupId)
+        return c.html(200, ok("交易组已平仓", "状态已更新", symbol))
+    } catch (err) {
+        console.error("[OrderAction] 平仓失败:", err)
+        return c.json(500, { ok: false, error: err && (err.message || String(err)) || "unknown_error", action: "close_group" })
+    }
+}
+
 routerAdd("GET", "/webhook/signal/confirm", (c) => {
     const { appendOrderDetail } = require(`${__hooks}/lib/order_events.js`)
     const { getSignalExtra, mergeSignalExtra, notifySignalStatus } = require(`${__hooks}/lib/feishu_signal.js`)
@@ -962,159 +1114,45 @@ routerAdd("POST", "/api/custom/ibkr/signals/ack", (c) => {
 // ── 订单操作（飞书按钮直接更新状态） ──
 
 routerAdd("GET", "/webhook/order/cancel", (c) => {
-    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
-    const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
-    const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
-    const uniqueId = c.request.url.query().get("id") || ""
-    const environment = getSignalActionsRequestEnvironment(c)
-    if (!uniqueId) {
-        return c.html(400, fail("参数错误", "缺少订单ID"))
-    }
-    try {
-        const orderContext = signalActionsResolveOrderActionContext(environment, uniqueId)
-        if (!orderContext || !orderContext.actionRecord) {
-            return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
-        }
-        const record = orderContext.actionRecord
-        const primaryRecord = orderContext.primaryRecord || record
-        const status = primaryRecord.get("status")
-        const symbol = primaryRecord.get("symbol") || record.get("symbol") || uniqueId
-        const filledQty = Number(primaryRecord.get("filled_qty") || 0)
-        const tradeGroupId = orderContext.tradeGroupId || signalActionsResolveTradeGroupId(primaryRecord || record)
-        const role = String(record.get("role") || "").trim()
-        console.log(`[OrderAction] 收到取消请求: target_id=${uniqueId}, resolved_unique_id=${primaryRecord.get("unique_id") || record.get("unique_id") || "-"}, symbol=${symbol}, current_status=${status}`)
-        if (role && role !== "entry") {
-            return c.html(200, warn("只能取消主单", "止盈/止损等子单不能直接取消，请操作主入场单", symbol))
-        }
-        if (filledQty > 0) {
-            return c.html(200, warn("主单已部分成交", "主单已部分成交，不能直接取消，请改用平仓整组", symbol))
-        }
-        const statusHints = {
-            Filled:   { fn: warn, title: "订单已成交", msg: "订单已成交，无法取消" },
-            Canceled: { fn: warn, title: "订单已取消", msg: "无需重复操作" },
-            Closed:   { fn: warn, title: "订单已平仓", msg: "无法取消" },
-        }
-        if (statusHints[status]) {
-            const h = statusHints[status]
-            return c.html(200, h.fn(h.title, h.msg, symbol))
-        }
-        const relatedRecords = orderContext.relatedRecords && orderContext.relatedRecords.length > 0
-            ? orderContext.relatedRecords
-            : [primaryRecord]
-        const cancelSummary = signalActionsCancelOrderGroupRecords({
-            records: relatedRecords,
-            environment: environment,
-            appendOrderDetail: appendOrderDetail,
-            applyOrderStatusMeta: applyOrderStatusMeta,
-            applyOrderRelationship: applyOrderRelationship,
-            getOrderExtra: getOrderExtra,
-            mergeOrderExtra: mergeOrderExtra,
-            notifyOrder: notifyOrder,
-            source: "webhook/order/cancel",
-            reason: "页面取消主单",
-        })
-        if (!cancelSummary.ok) {
-            console.error("[OrderAction] IBKR 撤单失败:", JSON.stringify(cancelSummary.failed_order_ids || []))
-            return c.html(500, fail("订单取消失败", `账户撤单失败 ${cancelSummary.failed_order_ids.length} 条`, symbol))
-        }
-        console.log("[OrderAction] 交易组已取消:", tradeGroupId, "cancelled_order_ids=", (cancelSummary.cancelled_order_ids || []).join(",") || "-")
-        return c.html(200, ok("订单已取消", "状态已更新", symbol))
-    } catch (err) {
-        console.error("[OrderAction] 取消失败:", err)
-        return c.html(500, fail("操作失败", String(err)))
-    }
+    return signalActionsHandleOrderCancelRequest(
+        c,
+        c.request.url.query().get("id") || "",
+        getSignalActionsRequestEnvironment(c)
+    )
 })
 
 routerAdd("GET", "/webhook/order/close", (c) => {
-    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
-    const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
-    const { ok, warn, fail } = require(`${__hooks}/lib/_page.js`)
-    const uniqueId = c.request.url.query().get("id") || ""
-    const environment = getSignalActionsRequestEnvironment(c)
-    if (!uniqueId) {
-        return c.html(400, fail("参数错误", "缺少订单ID"))
-    }
-    try {
-        const orderContext = signalActionsResolveOrderActionContext(environment, uniqueId)
-        if (!orderContext || !orderContext.primaryRecord) {
-            return c.html(404, fail("订单不存在", "找不到订单", uniqueId))
-        }
-        const record = orderContext.primaryRecord
-        const status = record.get("status")
-        const symbol = record.get("symbol") || uniqueId
-        const tradeGroupId = orderContext.tradeGroupId || signalActionsResolveTradeGroupId(record)
-        const entryOrderUniqueId = record.get("entry_order_unique_id") || record.get("unique_id")
-        const statusHints = {
-            Init:      { fn: warn, title: "订单未成交", msg: "只有成交的订单才能平仓" },
-            Submitted: { fn: warn, title: "订单未成交", msg: "请先取消挂单" },
-            Canceled: { fn: warn, title: "订单已取消", msg: "无法平仓" },
-            Closed:   { fn: warn, title: "订单已平仓", msg: "无需重复操作" },
-        }
-        if (statusHints[status]) {
-            const h = statusHints[status]
-            return c.html(200, h.fn(h.title, h.msg, symbol))
-        }
-        if (status !== "Filled") {
-            return c.html(200, warn("订单未成交", "只有成交的订单才能平仓", symbol))
-        }
-        const relatedRecords = orderContext.relatedRecords && orderContext.relatedRecords.length > 0
-            ? orderContext.relatedRecords
-            : [record]
-        relatedRecords.forEach((groupRecord) => {
-            const currentGroupStatus = groupRecord.get("status")
-            if (currentGroupStatus === "Canceled" || currentGroupStatus === "Closed") {
-                return
-            }
-            const nextStatus = groupRecord.get("unique_id") === entryOrderUniqueId ? "Closed" : "Canceled"
-            groupRecord.set("status", nextStatus)
-            applyOrderRelationship(groupRecord, {
-                relation_status: "closed",
-                status: nextStatus,
-            }, false)
-            const metaResult = applyOrderStatusMeta(groupRecord, {
-                status: nextStatus,
-                previous_status: currentGroupStatus,
-                source: "webhook/order/close",
-                reason: `页面平仓交易组 ${tradeGroupId}`,
-            }, false)
-            const eventTimes = metaResult.eventTimes
-            $app.save(groupRecord)
-            try {
-                appendOrderDetail(groupRecord, {
-                    environment: environment,
-                    status: nextStatus,
-                    source: "webhook/order/close",
-                    reason: `页面平仓交易组 ${tradeGroupId}`,
-                    us_time: eventTimes.us_time,
-                    cn_time: eventTimes.cn_time,
-                    bar_time_ms: eventTimes.bar_time_ms,
-                    extra: {
-                        action: "close_group",
-                        previous_status: currentGroupStatus,
-                        trade_group_id: tradeGroupId,
-                    },
-                })
-            } catch (detailErr) {
-                console.error("[OrderAction] 平仓写入 ibkr_order_details 失败:", detailErr)
-            }
-        })
-        const orderExtra = getOrderExtra(record)
-        const syncResult = notifyOrder("closed", record, {
-            messageId: orderExtra.feishu_order_message_id || "",
-            message: `交易组已平仓 (${tradeGroupId})`,
-        })
-        if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
-            mergeOrderExtra(record, {
-                feishu_order_message_id: syncResult.message_id,
-                feishu_order_card_version: 2,
-            }, true)
-        }
-        console.log("[OrderAction] 交易组已平仓:", tradeGroupId)
-        return c.html(200, ok("交易组已平仓", "状态已更新", symbol))
-    } catch (err) {
-        console.error("[OrderAction] 平仓失败:", err)
-        return c.html(500, fail("操作失败", String(err)))
-    }
+    return signalActionsHandleOrderCloseRequest(
+        c,
+        c.request.url.query().get("id") || "",
+        getSignalActionsRequestEnvironment(c)
+    )
+})
+
+routerAdd("POST", "/api/custom/ibkr/orders/cancel_group", (c) => {
+    const data = c.requestInfo().body || c.requestInfo().data || {}
+    const uniqueId = String(
+        data.id
+        || data.unique_id
+        || data.entry_order_unique_id
+        || data.trade_group_id
+        || data.order_id
+        || ""
+    ).trim()
+    return signalActionsHandleOrderCancelRequest(c, uniqueId, getSignalActionsDataEnvironment(data))
+})
+
+routerAdd("POST", "/api/custom/ibkr/orders/close_group", (c) => {
+    const data = c.requestInfo().body || c.requestInfo().data || {}
+    const uniqueId = String(
+        data.id
+        || data.unique_id
+        || data.entry_order_unique_id
+        || data.trade_group_id
+        || data.order_id
+        || ""
+    ).trim()
+    return signalActionsHandleOrderCloseRequest(c, uniqueId, getSignalActionsDataEnvironment(data))
 })
 
 console.log('[SignalActions] Hook 文件加载完成');

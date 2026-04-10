@@ -20,6 +20,23 @@ function ibkrActionsParseHttpJson(rawValue) {
 }
 globalThis.ibkrActionsParseHttpJson = ibkrActionsParseHttpJson
 
+function ibkrActionsSafeParseHttpJson(rawValue) {
+    const parser = typeof globalThis.ibkrActionsParseHttpJson === "function"
+        ? globalThis.ibkrActionsParseHttpJson
+        : null
+    if (parser) {
+        return parser(rawValue)
+    }
+    const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
+    if (!raw) return {}
+    try {
+        return JSON.parse(raw)
+    } catch (_) {
+        return { ok: false, raw: raw }
+    }
+}
+globalThis.ibkrActionsSafeParseHttpJson = ibkrActionsSafeParseHttpJson
+
 const IBKR_ACTIONS_VOLATILE_COMPARE_KEYS = {
     computed_at_ms: true,
     computed_at_us: true,
@@ -149,6 +166,7 @@ function ibkrActionsToNumber(value, fallback) {
 function ibkrActionsToText(value) {
     return String(value == null ? "" : value).trim()
 }
+globalThis.ibkrActionsToText = ibkrActionsToText
 
 function ibkrActionsParseJsonObject(value) {
     if (!value) return {}
@@ -172,6 +190,7 @@ function ibkrActionsPickFirstNonEmpty(values) {
     }
     return ""
 }
+globalThis.ibkrActionsPickFirstNonEmpty = ibkrActionsPickFirstNonEmpty
 
 function ibkrActionsOrderStatusWeight(status) {
     const key = ibkrActionsToText(status).toUpperCase()
@@ -247,6 +266,7 @@ function ibkrActionsNormalizeOrderRecord(record) {
         status_weight: ibkrActionsOrderStatusWeight(status),
     }
 }
+globalThis.ibkrActionsNormalizeOrderRecord = ibkrActionsNormalizeOrderRecord
 
 function ibkrActionsNormalizeSignalRecord(record) {
     const extra = ibkrActionsParseJsonObject(record.get("extra"))
@@ -267,6 +287,377 @@ function ibkrActionsNormalizeSignalRecord(record) {
         status_weight: ibkrActionsSignalStatusWeight(status),
     }
 }
+
+function ibkrActionsOrderStatusKey(status) {
+    return ibkrActionsToText(status).toUpperCase()
+}
+globalThis.ibkrActionsOrderStatusKey = ibkrActionsOrderStatusKey
+
+function ibkrActionsIsOrderClosedStatus(status) {
+    const key = ibkrActionsOrderStatusKey(status)
+    return key === "FILLED" || key === "EXECUTED" || key === "CANCELED" || key === "CANCELLED" || key === "CLOSED"
+}
+globalThis.ibkrActionsIsOrderClosedStatus = ibkrActionsIsOrderClosedStatus
+
+function ibkrActionsResolveTradeGroupId(record) {
+    if (!record) return ""
+    const extra = ibkrActionsParseJsonObject(record.get("extra"))
+    return ibkrActionsPickFirstNonEmpty([
+        record.get("trade_group_id"),
+        extra.trade_group_id,
+        record.get("entry_order_unique_id"),
+        extra.entry_order_unique_id,
+        record.get("unique_id"),
+        extra.unique_id,
+        record.get("order_id"),
+    ])
+}
+globalThis.ibkrActionsResolveTradeGroupId = ibkrActionsResolveTradeGroupId
+
+function ibkrActionsResolveCancelableBrokerOrderId(record) {
+    if (!record) return ""
+    const extra = ibkrActionsParseJsonObject(record.get("extra"))
+    const candidates = [
+        record.get("broker_order_id"),
+        extra.broker_order_id,
+        record.get("order_id"),
+        extra.order_id,
+    ]
+    for (let i = 0; i < candidates.length; i++) {
+        const value = ibkrActionsToText(candidates[i])
+        if (/^\d+$/.test(value)) {
+            return value
+        }
+    }
+    return ""
+}
+globalThis.ibkrActionsResolveCancelableBrokerOrderId = ibkrActionsResolveCancelableBrokerOrderId
+
+function ibkrActionsPickPrimaryOrderRecord(records, fallbackRecord) {
+    const list = Array.isArray(records) ? records : []
+    return list.find((record) => ibkrActionsToText(record.get("role")) === "entry")
+        || list.find((record) => {
+            const uniqueId = ibkrActionsToText(record.get("unique_id"))
+            const entryOrderUniqueId = ibkrActionsToText(record.get("entry_order_unique_id"))
+            return !!uniqueId && uniqueId === entryOrderUniqueId
+        })
+        || fallbackRecord
+        || list[0]
+        || null
+}
+globalThis.ibkrActionsPickPrimaryOrderRecord = ibkrActionsPickPrimaryOrderRecord
+
+function ibkrActionsUniqueRecords(records) {
+    const list = Array.isArray(records) ? records : []
+    const seen = {}
+    const unique = []
+    for (let i = 0; i < list.length; i++) {
+        const record = list[i]
+        if (!record) continue
+        const key = ibkrActionsPickFirstNonEmpty([record.get("id"), record.id, record.get("unique_id"), record.get("order_id")]) || `idx_${i}`
+        if (seen[key]) continue
+        seen[key] = true
+        unique.push(record)
+    }
+    return unique
+}
+globalThis.ibkrActionsUniqueRecords = ibkrActionsUniqueRecords
+
+function ibkrActionsFindTradeGroupRecords(environment, tradeGroupId) {
+    const groupId = ibkrActionsToText(tradeGroupId)
+    if (!groupId) return []
+    try {
+        return $app.findRecordsByFilter(
+            "orders",
+            "(trade_group_id = {:gid} || entry_order_unique_id = {:gid} || unique_id = {:gid}) && environment = {:env}",
+            "-created",
+            100,
+            0,
+            { gid: groupId, env: environment }
+        ) || []
+    } catch (err) {
+        console.error("[IBKRActions] 查询交易组失败:", groupId, err)
+        return []
+    }
+}
+globalThis.ibkrActionsFindTradeGroupRecords = ibkrActionsFindTradeGroupRecords
+
+function ibkrActionsResolveOrderActionContext(environment, data) {
+    const payload = data && typeof data === "object" ? data : {}
+    const targetId = ibkrActionsPickFirstNonEmpty([
+        payload.id,
+        payload.unique_id,
+        payload.entry_order_unique_id,
+        payload.trade_group_id,
+    ])
+    const brokerOrderId = ibkrActionsPickFirstNonEmpty([
+        payload.broker_order_id,
+        payload.order_id,
+    ])
+
+    let matchedRecords = []
+    if (targetId) {
+        try {
+            matchedRecords = $app.findRecordsByFilter(
+                "orders",
+                "(unique_id = {:id} || entry_order_unique_id = {:id} || trade_group_id = {:id}) && environment = {:env}",
+                "-created",
+                100,
+                0,
+                { id: targetId, env: environment }
+            ) || []
+        } catch (err) {
+            console.error("[IBKRActions] 查询订单动作上下文失败:", targetId, err)
+        }
+    }
+
+    const brokerLookupId = brokerOrderId || (/^\d+$/.test(targetId) ? targetId : "")
+    if ((!matchedRecords || matchedRecords.length === 0) && brokerLookupId) {
+        try {
+            matchedRecords = $app.findRecordsByFilter(
+                "orders",
+                "(broker_order_id = {:oid} || order_id = {:oid}) && environment = {:env}",
+                "-created",
+                100,
+                0,
+                { oid: brokerLookupId, env: environment }
+            ) || []
+        } catch (err) {
+            console.error("[IBKRActions] 通过 broker_order_id 查询订单失败:", brokerLookupId, err)
+        }
+    }
+
+    const uniqueRecords = ibkrActionsUniqueRecords(matchedRecords)
+    if (!uniqueRecords.length) {
+        return {
+            actionRecord: null,
+            primaryRecord: null,
+            relatedRecords: [],
+            tradeGroupId: "",
+            targetId: targetId,
+            brokerOrderId: brokerOrderId,
+        }
+    }
+
+    const exactBrokerMatch = brokerLookupId
+        ? uniqueRecords.find((record) => ibkrActionsResolveCancelableBrokerOrderId(record) === brokerLookupId) || null
+        : null
+    const exactUniqueMatch = targetId
+        ? uniqueRecords.find((record) => ibkrActionsToText(record.get("unique_id")) === targetId) || null
+        : null
+    const primaryFromMatches = ibkrActionsPickPrimaryOrderRecord(uniqueRecords, uniqueRecords[0] || null)
+    const actionRecord = exactBrokerMatch || exactUniqueMatch || primaryFromMatches
+    const initialTradeGroupId = ibkrActionsResolveTradeGroupId(primaryFromMatches || actionRecord)
+    const relatedRecords = ibkrActionsFindTradeGroupRecords(environment, initialTradeGroupId)
+    const resolvedRelatedRecords = ibkrActionsUniqueRecords(relatedRecords.length > 0 ? relatedRecords : uniqueRecords)
+    const primaryRecord = ibkrActionsPickPrimaryOrderRecord(resolvedRelatedRecords, primaryFromMatches || actionRecord)
+
+    return {
+        actionRecord: actionRecord,
+        primaryRecord: primaryRecord,
+        relatedRecords: resolvedRelatedRecords,
+        tradeGroupId: ibkrActionsResolveTradeGroupId(primaryRecord || actionRecord),
+        targetId: targetId,
+        brokerOrderId: brokerOrderId,
+    }
+}
+globalThis.ibkrActionsResolveOrderActionContext = ibkrActionsResolveOrderActionContext
+
+function ibkrActionsCancelBrokerOrder(environment, orderId, data) {
+    const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
+    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
+    const brokerOrderId = ibkrActionsToText(orderId)
+    const payloadBody = {
+        order_id: brokerOrderId,
+        environment: environment,
+    }
+    const accountId = ibkrActionsToText(data && data.account_id)
+    if (accountId) {
+        payloadBody.account_id = accountId
+    }
+    try {
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(payloadBody),
+            headers: { "Content-Type": "application/json" },
+        })
+        const payload = ibkrActionsParseHttpJson(resp.raw)
+        return {
+            ok: !!(payload && payload.ok),
+            statusCode: Number(resp && resp.statusCode) || 200,
+            payload: payload,
+            upstream: upstream,
+            order_id: brokerOrderId,
+        }
+    } catch (err) {
+        return {
+            ok: false,
+            statusCode: 502,
+            payload: { ok: false, error: err.message || String(err) },
+            upstream: upstream,
+            order_id: brokerOrderId,
+        }
+    }
+}
+globalThis.ibkrActionsCancelBrokerOrder = ibkrActionsCancelBrokerOrder
+
+function ibkrActionsCancelOrderGroupRecords(options) {
+    const opts = options || {}
+    const records = ibkrActionsUniqueRecords(opts.records)
+    const environment = ibkrActionsToText(opts.environment || "live").toLowerCase() || "live"
+    const appendOrderDetail = opts.appendOrderDetail
+    const applyOrderStatusMeta = opts.applyOrderStatusMeta
+    const applyOrderRelationship = opts.applyOrderRelationship
+    const getOrderExtra = opts.getOrderExtra
+    const mergeOrderExtra = opts.mergeOrderExtra
+    const notifyOrder = opts.notifyOrder
+    const source = opts.source || "ibkr_actions_cancel_sync"
+    const reason = opts.reason || "manual_cancel"
+    const requestData = opts.data && typeof opts.data === "object" ? opts.data : {}
+
+    const cancelIds = []
+    records.forEach((record) => {
+        const currentStatus = ibkrActionsNormalizeOrderRecord(record).status
+        if (ibkrActionsIsOrderClosedStatus(currentStatus)) {
+            return
+        }
+        const cancelId = ibkrActionsResolveCancelableBrokerOrderId(record)
+        if (cancelId && cancelIds.indexOf(cancelId) === -1) {
+            cancelIds.push(cancelId)
+        }
+    })
+
+    if (!cancelIds.length) {
+        return {
+            ok: false,
+            error: "未找到可取消的 IBKR 订单号",
+            cancelled_order_ids: [],
+            failed_order_ids: [],
+            updated_record_ids: [],
+        }
+    }
+
+    const cancelledOrderIds = []
+    const failedOrderIds = []
+    const upstreams = []
+    for (let i = 0; i < cancelIds.length; i++) {
+        const orderId = cancelIds[i]
+        const result = ibkrActionsCancelBrokerOrder(environment, orderId, requestData)
+        if (result.upstream && upstreams.indexOf(result.upstream) === -1) {
+            upstreams.push(result.upstream)
+        }
+        if (result.ok) {
+            cancelledOrderIds.push(orderId)
+        } else {
+            failedOrderIds.push({
+                order_id: orderId,
+                error: ibkrActionsPickFirstNonEmpty([
+                    result.payload && result.payload.error,
+                    result.payload && result.payload.message,
+                    result.payload && result.payload.result && result.payload.result.error,
+                    `status_${result.statusCode || 500}`,
+                ]),
+            })
+        }
+    }
+
+    if (failedOrderIds.length > 0) {
+        return {
+            ok: false,
+            error: `IBKR 撤单失败 ${failedOrderIds.length} 条`,
+            cancelled_order_ids: cancelledOrderIds,
+            failed_order_ids: failedOrderIds,
+            updated_record_ids: [],
+            upstreams: upstreams,
+        }
+    }
+
+    const primaryRecord = ibkrActionsPickPrimaryOrderRecord(records, records[0] || null)
+    const tradeGroupId = ibkrActionsResolveTradeGroupId(primaryRecord || records[0] || null)
+    const updatedRecordIds = []
+    records.forEach((groupRecord) => {
+        const currentStatus = ibkrActionsNormalizeOrderRecord(groupRecord).status
+        if (ibkrActionsIsOrderClosedStatus(currentStatus)) {
+            return
+        }
+        groupRecord.set("status", "Canceled")
+        if (typeof applyOrderRelationship === "function") {
+            applyOrderRelationship(groupRecord, {
+                relation_status: "closed",
+                status: "Canceled",
+            }, false)
+        }
+        let eventTimes = {
+            us_time: groupRecord.get("us_time") || "",
+            cn_time: groupRecord.get("cn_time") || "",
+            bar_time_ms: groupRecord.get("bar_time_ms") || 0,
+        }
+        if (typeof applyOrderStatusMeta === "function") {
+            const metaResult = applyOrderStatusMeta(groupRecord, {
+                status: "Canceled",
+                previous_status: currentStatus,
+                source: source,
+                reason: reason,
+            }, false)
+            if (metaResult && metaResult.eventTimes) {
+                eventTimes = metaResult.eventTimes
+            }
+        }
+        $app.save(groupRecord)
+        updatedRecordIds.push(ibkrActionsPickFirstNonEmpty([groupRecord.get("id"), groupRecord.id, groupRecord.get("unique_id")]))
+        if (typeof appendOrderDetail === "function") {
+            try {
+                appendOrderDetail(groupRecord, {
+                    environment: environment,
+                    status: "Canceled",
+                    source: source,
+                    reason: reason,
+                    us_time: eventTimes.us_time,
+                    cn_time: eventTimes.cn_time,
+                    bar_time_ms: eventTimes.bar_time_ms,
+                    extra: {
+                        previous_status: currentStatus,
+                        action: "cancel_sync",
+                        trade_group_id: tradeGroupId,
+                        cancelled_order_ids: cancelledOrderIds,
+                    },
+                })
+            } catch (detailErr) {
+                console.error("[IBKRActions] 写入 ibkr_order_details 失败:", detailErr)
+            }
+        }
+    })
+
+    if (primaryRecord && typeof notifyOrder === "function" && typeof getOrderExtra === "function" && typeof mergeOrderExtra === "function") {
+        try {
+            const orderExtra = getOrderExtra(primaryRecord)
+            const syncResult = notifyOrder("canceled", primaryRecord, {
+                messageId: orderExtra.feishu_order_message_id || "",
+                message: cancelledOrderIds.length > 0 ? "主单与系统订单已同步撤销" : "交易组已取消",
+            })
+            if (syncResult.success && syncResult.message_id && syncResult.message_id !== orderExtra.feishu_order_message_id) {
+                mergeOrderExtra(primaryRecord, {
+                    feishu_order_message_id: syncResult.message_id,
+                    feishu_order_card_version: 2,
+                }, true)
+            }
+        } catch (notifyErr) {
+            console.error("[IBKRActions] 同步订单卡片失败:", notifyErr)
+        }
+    }
+
+    return {
+        ok: true,
+        trade_group_id: tradeGroupId,
+        cancelled_order_ids: cancelledOrderIds,
+        failed_order_ids: [],
+        updated_record_ids: updatedRecordIds,
+        upstreams: upstreams,
+    }
+}
+globalThis.ibkrActionsCancelOrderGroupRecords = ibkrActionsCancelOrderGroupRecords
 
 function ibkrActionsBuildAccountRelationContext(environment, symbols) {
     const normalizedSymbols = []
@@ -3329,6 +3720,166 @@ routerAdd("POST", "/api/custom/ibkr/orders/cancel", (c) => {
     }
 })
 
+routerAdd("POST", "/api/custom/ibkr/orders/cancel_sync", (c) => {
+    const route = "/api/custom/ibkr/orders/cancel_sync"
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
+    const { notifyOrder } = require(`${__hooks}/lib/feishu_order.js`)
+    const cancelUtils = require(`${__hooks}/lib/ibkr_order_cancel.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+
+    try {
+        const orderContext = cancelUtils.resolveOrderActionContext(environment, d)
+        if (!orderContext || !orderContext.primaryRecord) {
+            return c.json(404, {
+                ok: false,
+                error: "找不到订单或交易组",
+                environment: environment,
+                requested_id: cancelUtils.pickFirstNonEmpty([d.id, d.unique_id, d.entry_order_unique_id, d.trade_group_id]),
+                requested_order_id: cancelUtils.pickFirstNonEmpty([d.order_id, d.broker_order_id]),
+                proxy_source: "pocketbase_ibkr_hook",
+                proxy_hook: "ibkr_actions.pb.js",
+                proxy_route: route,
+            })
+        }
+
+        const actionRecord = orderContext.actionRecord || orderContext.primaryRecord
+        const primaryRecord = orderContext.primaryRecord
+        const relatedRecords = orderContext.relatedRecords && orderContext.relatedRecords.length > 0
+            ? orderContext.relatedRecords
+            : [primaryRecord]
+        const normalizedAction = cancelUtils.normalizeOrderRecord(actionRecord)
+        const normalizedPrimary = cancelUtils.normalizeOrderRecord(primaryRecord)
+        const primaryStatus = normalizedPrimary.status
+        const primaryStatusKey = cancelUtils.orderStatusKey(primaryStatus)
+        const symbol = normalizedPrimary.symbol || actionRecord.get("symbol") || ""
+        const filledQty = Number(normalizedPrimary.filled_qty || 0)
+
+        if (normalizedAction.role && normalizedAction.role !== "entry") {
+            return c.json(400, {
+                ok: false,
+                error: "只能取消主入场单，子单请随主单一起取消",
+                environment: environment,
+                symbol: symbol,
+                role: normalizedAction.role,
+                trade_group_id: orderContext.tradeGroupId,
+                proxy_source: "pocketbase_ibkr_hook",
+                proxy_hook: "ibkr_actions.pb.js",
+                proxy_route: route,
+            })
+        }
+        if (filledQty > 0) {
+            return c.json(400, {
+                ok: false,
+                error: "主单已部分成交，不能直接取消，请改用平仓整组",
+                environment: environment,
+                symbol: symbol,
+                status: primaryStatus,
+                trade_group_id: orderContext.tradeGroupId,
+                proxy_source: "pocketbase_ibkr_hook",
+                proxy_hook: "ibkr_actions.pb.js",
+                proxy_route: route,
+            })
+        }
+        if (primaryStatusKey === "CANCELED" || primaryStatusKey === "CANCELLED") {
+            return c.json(200, {
+                ok: true,
+                already_canceled: true,
+                message: "订单已取消",
+                environment: environment,
+                symbol: symbol,
+                trade_group_id: orderContext.tradeGroupId,
+                proxy_source: "pocketbase_ibkr_hook",
+                proxy_hook: "ibkr_actions.pb.js",
+                proxy_route: route,
+            })
+        }
+        if (primaryStatusKey === "CLOSED") {
+            return c.json(400, {
+                ok: false,
+                error: "订单已平仓，无法取消",
+                environment: environment,
+                symbol: symbol,
+                trade_group_id: orderContext.tradeGroupId,
+                proxy_source: "pocketbase_ibkr_hook",
+                proxy_hook: "ibkr_actions.pb.js",
+                proxy_route: route,
+            })
+        }
+        if (primaryStatusKey === "FILLED" || primaryStatusKey === "EXECUTED") {
+            return c.json(400, {
+                ok: false,
+                error: "订单已成交，无法取消",
+                environment: environment,
+                symbol: symbol,
+                trade_group_id: orderContext.tradeGroupId,
+                proxy_source: "pocketbase_ibkr_hook",
+                proxy_hook: "ibkr_actions.pb.js",
+                proxy_route: route,
+            })
+        }
+
+        const cancelSummary = cancelUtils.cancelOrderGroupRecords({
+            records: relatedRecords,
+            environment: environment,
+            data: d,
+            appendOrderDetail: appendOrderDetail,
+            applyOrderStatusMeta: applyOrderStatusMeta,
+            applyOrderRelationship: applyOrderRelationship,
+            getOrderExtra: getOrderExtra,
+            mergeOrderExtra: mergeOrderExtra,
+            notifyOrder: notifyOrder,
+            source: route,
+            reason: cancelUtils.toText(d.reason) || "页面取消主单",
+        })
+        if (!cancelSummary.ok) {
+            return c.json(cancelSummary.failed_order_ids && cancelSummary.failed_order_ids.length > 0 ? 502 : 400, {
+                ok: false,
+                error: cancelSummary.error || "取消失败",
+                environment: environment,
+                symbol: symbol,
+                trade_group_id: orderContext.tradeGroupId,
+                cancelled_order_ids: cancelSummary.cancelled_order_ids || [],
+                failed_order_ids: cancelSummary.failed_order_ids || [],
+                updated_record_ids: cancelSummary.updated_record_ids || [],
+                proxy_source: "pocketbase_ibkr_hook",
+                proxy_hook: "ibkr_actions.pb.js",
+                proxy_route: route,
+                proxy_upstreams: cancelSummary.upstreams || [],
+            })
+        }
+
+        return c.json(200, {
+            ok: true,
+            message: "主单与系统订单已同步取消",
+            environment: environment,
+            symbol: symbol,
+            trade_group_id: cancelSummary.trade_group_id || orderContext.tradeGroupId,
+            primary_unique_id: normalizedPrimary.unique_id,
+            primary_broker_order_id: normalizedPrimary.broker_order_id,
+            cancelled_order_ids: cancelSummary.cancelled_order_ids || [],
+            failed_order_ids: [],
+            updated_record_ids: cancelSummary.updated_record_ids || [],
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: route,
+            proxy_upstreams: cancelSummary.upstreams || [],
+        })
+    } catch (err) {
+        console.error("[IBKRActions] cancel_sync 失败:", err)
+        return c.json(500, {
+            ok: false,
+            error: err && (err.message || String(err)) || "unknown_error",
+            environment: environment,
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: route,
+        })
+    }
+})
+
 routerAdd("POST", "/api/custom/ibkr/orders/cancel_all", (c) => {
     const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const reqInfo = c.requestInfo()
@@ -3953,9 +4504,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/takeover", (c) => {
             headers: { "Content-Type": "application/json" },
             timeout: 20,
         })
-        const payload = ibkrActionsParseHttpJson(resp.raw)
+        const payload = globalThis.ibkrActionsSafeParseHttpJson(resp.raw)
         const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
-        const runtime = ibkrActionsParseHttpJson(runtimeResp.raw)
+        const runtime = globalThis.ibkrActionsSafeParseHttpJson(runtimeResp.raw)
         const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
         return c.json((resp.statusCode || 200), {
             ok: payload.ok !== false,
@@ -3997,9 +4548,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/probe", (c) => {
             headers: { "Content-Type": "application/json" },
             timeout: 20,
         })
-        const payload = ibkrActionsParseHttpJson(resp.raw)
+        const payload = globalThis.ibkrActionsSafeParseHttpJson(resp.raw)
         const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
-        const runtime = ibkrActionsParseHttpJson(runtimeResp.raw)
+        const runtime = globalThis.ibkrActionsSafeParseHttpJson(runtimeResp.raw)
         const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
         return c.json((resp.statusCode || 200), {
             ok: payload.ok !== false,
@@ -4041,9 +4592,9 @@ routerAdd("POST", "/api/custom/ibkr/2fa/panic-reset", (c) => {
             headers: { "Content-Type": "application/json" },
             timeout: 60,
         })
-        const payload = ibkrActionsParseHttpJson(resp.raw)
+        const payload = globalThis.ibkrActionsSafeParseHttpJson(resp.raw)
         const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
-        const runtime = ibkrActionsParseHttpJson(runtimeResp.raw)
+        const runtime = globalThis.ibkrActionsSafeParseHttpJson(runtimeResp.raw)
         const state = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
         return c.json((resp.statusCode || 200), {
             ok: payload.ok !== false,

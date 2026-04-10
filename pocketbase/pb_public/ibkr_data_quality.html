@@ -419,9 +419,9 @@
     <section class="hero">
       <div class="hero-top">
         <div>
-          <div class="hero-kicker">IBKR Bars Integrity</div>
-          <div class="hero-title">把 watchlist 和 active targets 的 5m 数据完整性、rollup 同步、修复结果统一落到 PocketBase 里。</div>
-          <div class="hero-copy">这里会展示每个 symbol 的缺口、重复 bar、坏 OHLC、15m/30m/1h/4h/1d rollup 缺失或滞后，以及最近一次自动修复的结果。页面可直接触发重扫和安全修复。</div>
+          <div class="hero-kicker">IBKR 数据质量</div>
+          <div class="hero-title">把观察池和当前交易标的的 5 分钟K线完整性、派生周期同步和修复结果统一沉淀到 PocketBase。</div>
+          <div class="hero-copy">这里会展示每个标的的缺口、重复K线、开高低收异常、15m/30m/1h/4h/1d 派生周期缺失或滞后，以及最近一次自动修复结果。页面也可以直接触发重扫和安全修复。</div>
         </div>
         <div class="hero-meta">
           <div id="environmentHeader"></div>
@@ -438,16 +438,16 @@
       <div class="panel-copy">这页先告诉你问题属于哪一类，再告诉你系统会不会自动修，不再只堆原始字段。</div>
       <div class="legend-grid">
         <div class="legend-card">
-          <div class="legend-title">黄色 / warn</div>
-          <div class="legend-copy">表示 5m bars 不足、存在缺口，或者 15m/30m/1h/4h/1d rollup 缺失或滞后。这类通常可安全自动修复。</div>
+          <div class="legend-title">黄色 / 可自动修复</div>
+          <div class="legend-copy">表示 5 分钟K线数量不足、存在缺口，或者 15m/30m/1h/4h/1d 派生周期缺失或滞后。这类通常可安全自动修复。</div>
         </div>
         <div class="legend-card">
-          <div class="legend-title">红色 / error</div>
-          <div class="legend-copy">表示发现 duplicate bar 或 bad OHLC。因为涉及潜在误删，这类只会标记人工复核，不会自动清洗。</div>
+          <div class="legend-title">红色 / 人工复核</div>
+          <div class="legend-copy">表示发现重复K线或开高低收异常。因为涉及潜在误删，这类只会标记人工复核，不会自动清洗。</div>
         </div>
         <div class="legend-card">
           <div class="legend-title">自动修复策略</div>
-          <div class="legend-copy">系统平时会在 warmup、active target、watchlist 巡检里自动补齐安全问题。这里的“安全修复”按钮只是立即再跑一轮。</div>
+          <div class="legend-copy">系统平时会在预热、当前交易标的和观察池巡检里自动补齐安全问题。这里的“安全修复”按钮只是立即再跑一轮。</div>
         </div>
         <div class="legend-card">
           <div class="legend-title">你最该看什么</div>
@@ -458,7 +458,7 @@
 
     <section class="panel">
       <div class="panel-title">过滤与动作</div>
-      <div class="panel-copy">支持按环境、日期、范围、状态、symbol 过滤。没有指定 symbol 时，手动重扫/修复会按当前范围执行；系统平时也会自动补齐安全问题。</div>
+      <div class="panel-copy">支持按环境、日期、范围、状态、标的过滤。没有指定标的时，手动重扫或修复会按当前范围执行；系统平时也会自动补齐安全问题。</div>
       <div class="filters">
         <div class="field">
           <label for="marketDate">交易日</label>
@@ -468,20 +468,20 @@
           <label for="scanScope">范围</label>
           <select id="scanScope">
             <option value="">全部</option>
-            <option value="active_target">active_target 当前交易标的</option>
-            <option value="watchlist">watchlist 观察池</option>
-            <option value="manual">manual 手动</option>
+            <option value="active_target">当前交易标的（active_target）</option>
+            <option value="watchlist">观察池（watchlist）</option>
+            <option value="manual">手动（manual）</option>
           </select>
         </div>
         <div class="field">
           <label for="statusFilter">状态</label>
           <select id="statusFilter">
             <option value="">全部</option>
-            <option value="ok">ok 正常</option>
-            <option value="warn">warn 可自动修复</option>
-            <option value="error">error 人工复核</option>
-            <option value="repaired">repaired 已修复</option>
-            <option value="repair_failed">repair_failed 修复未完成</option>
+            <option value="ok">正常（ok）</option>
+            <option value="warn">可自动修复（warn）</option>
+            <option value="error">人工复核（error）</option>
+            <option value="repaired">已修复（repaired）</option>
+            <option value="repair_failed">修复未完成（repair_failed）</option>
           </select>
         </div>
         <div class="field">
@@ -504,19 +504,19 @@
       <div class="action-grid">
         <button class="action-btn" onclick="applyFilters()">
           <strong>应用过滤</strong>
-          <span>刷新 summary/list，并把当前过滤条件写入 URL。</span>
+          <span>刷新概览和列表，并把当前过滤条件写入 URL。</span>
         </button>
         <button class="action-btn" onclick="runGlobalAction('rescan')">
           <strong>手动重扫</strong>
-          <span>当前 symbol 存在时只扫该 symbol；否则按当前 scope 扫一批。</span>
+          <span>当前标的存在时只扫该标的；否则按当前范围扫一批。</span>
         </button>
         <button class="action-btn" onclick="runGlobalAction('repair')">
           <strong>立即安全修复</strong>
-          <span>只补 bars 缺口、bar 数不足、rollup 缺失/滞后；duplicate 和坏 OHLC 仍保留给人工审查。</span>
+          <span>只补K线缺口、K线数量不足、派生周期缺失或滞后；重复K线和开高低收异常仍保留给人工审查。</span>
         </button>
         <button class="action-btn" onclick="loadDataQuality(true)">
           <strong>刷新页面</strong>
-          <span>重新读取 summary/list，校验最新自动巡检与修复回写状态。</span>
+          <span>重新读取概览和列表，校验最新自动巡检与修复回写状态。</span>
         </button>
       </div>
     </section>
@@ -663,10 +663,10 @@
         return { label: '修复未完成', copy: '系统试过补齐，但问题仍残留' };
       }
       if (status === 'error') {
-        return { label: '人工复核', copy: '存在 duplicate 或坏 OHLC，不会自动删改' };
+        return { label: '人工复核', copy: '存在重复K线或开高低收异常，不会自动删改' };
       }
       if (status === 'warn') {
-        return { label: '可自动修复', copy: '缺口 / bars 不足 / rollup 异常，可安全补齐' };
+        return { label: '可自动修复', copy: '缺口 / K线不足 / 派生周期异常，可安全补齐' };
       }
       if (status === 'repairing') {
         return { label: '修复中', copy: '后台正在跑补齐流程' };
@@ -733,16 +733,16 @@
         parts.push(`历史回补失败: ${result.history_error}`);
       }
       if (Number.isFinite(Number(result.history_written))) {
-        parts.push(`回补 ${Number(result.history_written || 0)} 根 5m bars`);
+        parts.push(`回补 ${Number(result.history_written || 0)} 根 5 分钟K线`);
       }
       if (result.history_period) {
         parts.push(`历史窗口 ${result.history_period}`);
       }
       if (result.pipeline_ok === true) {
-        parts.push(`rollup 写入 ${Number(result.pipeline?.rollup_written || 0) || 0}`);
+        parts.push(`派生周期写入 ${Number(result.pipeline?.rollup_written || 0) || 0}`);
       }
       if (result.pipeline_ok === false) {
-        parts.push('pipeline 修复失败');
+        parts.push('派生周期修复失败');
       }
       return parts.length ? parts.join('；') : '已触发修复，等待下一轮扫描确认';
     }
@@ -754,7 +754,7 @@
         return {
           tone: 'manual',
           title: '需人工复核',
-          copy: '检测到 duplicate 或 bad OHLC。系统不会自动删改这类记录，避免误修。'
+          copy: '检测到重复K线或开高低收异常。系统不会自动删改这类记录，避免误修。'
         };
       }
       if (String(item.status || '').toLowerCase() === 'repaired') {
@@ -775,7 +775,7 @@
         return {
           tone: 'auto',
           title: '会自动安全修复',
-          copy: '系统会回补 5m 历史、补齐 rollup；这里手动点按钮只是立刻再跑一轮。'
+          copy: '系统会回补 5 分钟历史K线并补齐派生周期；这里手动点按钮只是立刻再跑一轮。'
         };
       }
       if (item.needs_repair) {
@@ -796,10 +796,10 @@
       const grid = document.getElementById('summaryGrid');
       const statusCounts = summary.status_counts || {};
       const cards = [
-        { label: '已扫描标的', value: summary.total || 0, copy: `当前范围内 symbol ${Array.isArray(summary.symbols) ? summary.symbols.length : 0} 个` },
-        { label: '正常', value: statusCounts.ok || 0, copy: '当前没有发现缺口、重复或 rollup 异常' },
-        { label: '待补齐', value: summary.needs_repair || 0, copy: 'bars 不足、gap、rollup 缺失或滞后' },
-        { label: '人工复核', value: summary.manual_review || 0, copy: 'duplicate 或 bad OHLC，不自动删改' },
+        { label: '已扫描标的', value: summary.total || 0, copy: `当前范围内标的 ${Array.isArray(summary.symbols) ? summary.symbols.length : 0} 个` },
+        { label: '正常', value: statusCounts.ok || 0, copy: '当前没有发现缺口、重复K线或派生周期异常' },
+        { label: '待补齐', value: summary.needs_repair || 0, copy: 'K线不足、缺口、派生周期缺失或滞后' },
+        { label: '人工复核', value: summary.manual_review || 0, copy: '重复K线或开高低收异常，不自动删改' },
         { label: '已修复', value: statusCounts.repaired || 0, copy: `最近修复 ${formatIsoLabel(summary.latest_repair_at)}` },
         { label: '修复未完成', value: statusCounts.repair_failed || 0, copy: '自动修复跑过，但仍残留问题' }
       ];
@@ -811,7 +811,7 @@
         </div>
       `).join('');
       document.getElementById('summaryInfo').textContent = `最近扫描 ${formatIsoLabel(summary.latest_scan_at)} · 最近修复 ${formatIsoLabel(summary.latest_repair_at)}`;
-      document.getElementById('summaryFootnote').textContent = '说明: “待补齐”统计的是可回补的管道类问题；它和“人工复核”可能重叠。如果同一个 symbol 同时存在 duplicate 或 bad OHLC，系统会停止自动修复并要求人工确认。';
+      document.getElementById('summaryFootnote').textContent = '说明: “待补齐”统计的是可回补的链路类问题；它和“人工复核”可能重叠。如果同一个标的同时存在重复K线或开高低收异常，系统会停止自动修复并要求人工确认。';
     }
 
     function renderRows(items) {
@@ -830,12 +830,12 @@
         const statusMeta = formatStatusMeta(item);
         const decisionMeta = getDecisionMeta(item);
         const issueLines = [];
-        issueLines.push(`5m K线 ${Number(item.bar_count || 0) || 0} 根`);
+        issueLines.push(`5 分钟K线 ${Number(item.bar_count || 0) || 0} 根`);
         if ((Number(item.gap_count || 0) || 0) > 0) issueLines.push(`缺口 ${Number(item.gap_count || 0) || 0} 处`);
-        if ((Number(item.duplicate_count || 0) || 0) > 0) issueLines.push(`重复 bar ${Number(item.duplicate_count || 0) || 0} 条`);
-        if ((Number(item.bad_ohlc_count || 0) || 0) > 0) issueLines.push(`坏 OHLC ${Number(item.bad_ohlc_count || 0) || 0} 条`);
-        if (Array.isArray(item.missing_intervals) && item.missing_intervals.length) issueLines.push(`rollup 缺失 ${missingIntervals}`);
-        if (Array.isArray(item.stale_intervals) && item.stale_intervals.length) issueLines.push(`rollup 滞后 ${staleIntervals}`);
+        if ((Number(item.duplicate_count || 0) || 0) > 0) issueLines.push(`重复K线 ${Number(item.duplicate_count || 0) || 0} 条`);
+        if ((Number(item.bad_ohlc_count || 0) || 0) > 0) issueLines.push(`开高低收异常 ${Number(item.bad_ohlc_count || 0) || 0} 条`);
+        if (Array.isArray(item.missing_intervals) && item.missing_intervals.length) issueLines.push(`派生周期缺失 ${missingIntervals}`);
+        if (Array.isArray(item.stale_intervals) && item.stale_intervals.length) issueLines.push(`派生周期滞后 ${staleIntervals}`);
         if (issueLines.length === 1) issueLines.push('未发现额外异常');
         return `
           <tr>
@@ -865,8 +865,8 @@
             </td>
             <td>
               <div class="meta-list">
-                <div class="meta-item"><strong>最新 5m</strong> ${item.latest_bar_us_time ? escapeHtml(item.latest_bar_us_time) : '--'}</div>
-                <div class="meta-item"><strong>最新 bar 距今</strong> ${escapeHtml(item.latest_bar_time_ms ? formatAgoFromMs(item.latest_bar_time_ms) : '暂无 bar')}</div>
+                <div class="meta-item"><strong>最新 5 分钟K线</strong> ${item.latest_bar_us_time ? escapeHtml(item.latest_bar_us_time) : '--'}</div>
+                <div class="meta-item"><strong>最新K线距今</strong> ${escapeHtml(item.latest_bar_time_ms ? formatAgoFromMs(item.latest_bar_time_ms) : '暂无K线')}</div>
                 <div class="meta-item"><strong>最早已载入</strong> ${item.oldest_loaded_ms ? escapeHtml(formatBarTimeMsToET(item.oldest_loaded_ms)) : '--'}</div>
                 <div class="meta-item"><strong>最近扫描</strong> ${escapeHtml(formatIsoLabel(item.last_scan_at))}</div>
                 <div class="meta-item"><strong>最近修复</strong> ${escapeHtml(formatIsoLabel(item.last_repair_at))}</div>
@@ -969,7 +969,7 @@
       setFiltersFromUrl();
       document.getElementById('nav').innerHTML = renderNav('/ibkr_data_quality.html');
       document.getElementById('contextBar').innerHTML = renderPageContextBar('🧩 数据质量', {
-        description: 'bars 完整性 / rollup 同步 / 修复回写'
+        description: '5 分钟K线完整性 / 派生周期同步 / 修复回写'
       });
       document.getElementById('pageBridge').innerHTML = renderPageBridge([
         {
@@ -988,13 +988,13 @@
           path: '/ibkr_warmup.html',
           kicker: 'Warmup',
           label: '预热',
-          copy: 'startup / gate / repair / symbol status'
+          copy: '启动 / 闸门 / 修复 / 标的状态'
         },
         {
           path: '/ibkr_data_quality.html',
           kicker: 'Quality',
           label: '数据质量',
-          copy: 'bars integrity / safe repair',
+          copy: 'K线完整性 / 安全修复',
           active: true
         }
       ]);

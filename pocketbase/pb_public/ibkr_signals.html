@@ -2390,16 +2390,65 @@
             return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
         }
 
+        function getSignalActionHeaders(extra = {}) {
+            const headers = { ...extra };
+            const token = getToken();
+            if (token) headers.Authorization = `Bearer ${token}`;
+            return headers;
+        }
+
+        function findSignalRecord(id) {
+            return allSignals.find((signal) => String(signal.id || '') === String(id || '')) || null;
+        }
+
+        async function patchSignalRecord(id, payload) {
+            const response = await fetch(`${BASE_URL}/api/collections/ibkr_signals/records/${encodeURIComponent(id)}`, {
+                method: 'PATCH',
+                headers: getSignalActionHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(payload)
+            });
+
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+
+            let data = {};
+            try {
+                data = await response.json();
+            } catch (_) {
+                data = {};
+            }
+
+            if (!response.ok) {
+                throw new Error(data.message || data.error || `Request failed (${response.status})`);
+            }
+
+            return data;
+        }
+
         async function confirmSignal(id) {
             if (!confirm('确认执行此信号？')) return;
             try {
-                const resp = await fetch(`/webhook/signal/confirm?id=${encodeURIComponent(id)}&environment=${encodeURIComponent(currentEnvironment)}`, {
-                    method: 'GET',
-                    credentials: 'include'
-                });
-                if (!resp.ok) {
-                    throw new Error(`HTTP ${resp.status}`);
+                const signal = findSignalRecord(id);
+                if (!signal) throw new Error('找不到信号记录');
+                if (signal.status !== 'awaiting_confirm') {
+                    throw new Error(`当前状态不可确认: ${signal.status || 'unknown'}`);
                 }
+
+                const nextExtra = {
+                    ...(signal.extra || {}),
+                    confirmed_by: 'manual',
+                    confirmed_at: new Date().toISOString(),
+                    status_reason: 'confirmed_by_user'
+                };
+
+                await patchSignalRecord(id, {
+                    status: 'pending',
+                    note: '',
+                    extra: nextExtra,
+                    environment: currentEnvironment
+                });
                 showToast('✓ 信号已确认，等待执行');
                 await loadSignals();
             } catch (error) {
@@ -2411,13 +2460,27 @@
         async function cancelSignal(id) {
             if (!confirm('确认拒绝此信号？')) return;
             try {
-                const resp = await fetch(`/webhook/signal/cancel?id=${encodeURIComponent(id)}&environment=${encodeURIComponent(currentEnvironment)}`, {
-                    method: 'GET',
-                    credentials: 'include'
-                });
-                if (!resp.ok) {
-                    throw new Error(`HTTP ${resp.status}`);
+                const signal = findSignalRecord(id);
+                if (!signal) throw new Error('找不到信号记录');
+                if (signal.status !== 'awaiting_confirm') {
+                    throw new Error(`当前状态不可拒绝: ${signal.status || 'unknown'}`);
                 }
+
+                const nextExtra = {
+                    ...(signal.extra || {}),
+                    rejected_by: 'manual',
+                    rejected_at: new Date().toISOString(),
+                    status_reason: 'manual_rejected',
+                    cancel_order_failures: [],
+                    cancelled_order_ids: []
+                };
+
+                await patchSignalRecord(id, {
+                    status: 'rejected',
+                    note: 'manual_rejected',
+                    extra: nextExtra,
+                    environment: currentEnvironment
+                });
                 showToast('✓ 信号已拒绝');
                 await loadSignals();
             } catch (error) {

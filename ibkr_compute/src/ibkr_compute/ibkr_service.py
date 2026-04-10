@@ -25,10 +25,11 @@ from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.ws_client import IBKRWebSocketClient
 from ibkr_compute.market.bar_aggregator import BarAggregator
 from ibkr_compute.market.data_writer import DataWriter
-from ibkr_compute.market.data_backfill import DataBackfill
+from ibkr_compute.market.data_backfill import DataBackfill, _regular_session_gap_summary
 from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, bucket_start_ms, format_us_time, interval_to_ms
+from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
 from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.order.order_tracker import OrderTracker
 from ibkr_compute.order.order_modifier import OrderModifier
@@ -106,6 +107,7 @@ class IBKRTradingService:
     def __init__(self):
         self.pb = PBClient(base_url=PB_BASE_URL)
         self.config = Config(pb_client=self.pb)
+        self.config.refresh()
 
         self.gateway_manager = GatewayManager()
         self.auth_handler = AuthHandler(gateway_url=GATEWAY_URL, pb_client=self.pb)
@@ -117,8 +119,13 @@ class IBKRTradingService:
         )
 
         self.conid_resolver = ConidResolver(gateway_url=GATEWAY_URL, pb_client=self.pb)
-        self.data_writer = DataWriter(pb_client=self.pb)
-        self.data_backfill = DataBackfill(gateway_url=GATEWAY_URL, data_writer=self.data_writer)
+        self.data_writer = DataWriter(pb_client=self.pb, config=self.config, environment=ENVIRONMENT)
+        self.data_backfill = DataBackfill(
+            gateway_url=GATEWAY_URL,
+            data_writer=self.data_writer,
+            config=self.config,
+            environment=ENVIRONMENT,
+        )
         self.data_retention = DataRetention(pb_client=self.pb)
         self.timeframe_builder = TimeframeBarBuilder()
 
@@ -126,15 +133,25 @@ class IBKRTradingService:
         self.ws_client = IBKRWebSocketClient(
             gateway_url=GATEWAY_URL,
             on_tick=self.bar_aggregator.on_tick,
+            config=self.config,
+            environment=ENVIRONMENT,
         )
 
-        self.order_placer = OrderPlacer(gateway_url=GATEWAY_URL, pb_client=self.pb)
+        self.order_placer = OrderPlacer(
+            gateway_url=GATEWAY_URL,
+            pb_client=self.pb,
+            config=self.config,
+            environment=ENVIRONMENT,
+        )
         self.order_modifier = OrderModifier(gateway_url=GATEWAY_URL, pb_client=self.pb)
         self.order_tracker = OrderTracker(
             gateway_url=GATEWAY_URL, pb_client=self.pb,
             on_fill=self._on_order_fill,
             on_cancel=self._on_order_cancel,
+            config=self.config,
+            environment=ENVIRONMENT,
         )
+        self.ws_client.set_order_update_callback(self.order_tracker.on_order_update)
         self.order_lifecycle = OrderLifecycle(
             gateway_url=GATEWAY_URL, pb_client=self.pb,
             order_modifier=self.order_modifier,
@@ -231,6 +248,10 @@ class IBKRTradingService:
             "last_error": "",
             "last_source": "",
         }
+        self._refresh_runtime_settings()
+
+    def _refresh_runtime_settings(self):
+        self.ws_client.set_order_updates_enabled(self.order_tracker.uses_websocket_updates())
 
     def _build_2fa_detail(self, reason: str) -> dict:
         return {
@@ -353,14 +374,7 @@ class IBKRTradingService:
         if not normalized_symbol:
             return snapshot
 
-        min_bars = max(
-            60,
-            self.config.get_int_for_environment(
-                "ibkr_history_repair_min_bars_5m",
-                ENVIRONMENT,
-                260,
-            ),
-        )
+        min_bars = max(60, indicator_ready_bar_count())
         expected_ms = interval_to_ms("5m")
         bars_needed = max(400, min_bars + 20)
         max_pages = max(2, min(8, (bars_needed + 199) // 200))
@@ -422,18 +436,14 @@ class IBKRTradingService:
                 (today_regular_rows[-1] or {}).get("bar_time_ms", 0) or 0
             )
 
-        for index in range(1, len(today_regular_rows)):
-            previous_ms = int((today_regular_rows[index - 1] or {}).get("bar_time_ms", 0) or 0)
-            current_ms = int((today_regular_rows[index] or {}).get("bar_time_ms", 0) or 0)
-            delta_ms = current_ms - previous_ms
-            if delta_ms > expected_ms and delta_ms <= (6 * expected_ms):
-                snapshot["today_gap_count"] += 1
-                if len(snapshot["today_gap_examples"]) < 4:
-                    snapshot["today_gap_examples"].append({
-                        "prev_us_time": str((today_regular_rows[index - 1] or {}).get("us_time", "") or ""),
-                        "next_us_time": str((today_regular_rows[index] or {}).get("us_time", "") or ""),
-                        "missing_points": max(int(round(delta_ms / expected_ms)) - 1, 1),
-                    })
+        today_gap_summary = _regular_session_gap_summary(
+            today_regular_rows,
+            "5m",
+            same_day_only=False,
+            example_limit=4,
+        )
+        snapshot["today_gap_count"] = int(today_gap_summary.get("gap_count", 0) or 0)
+        snapshot["today_gap_examples"] = list(today_gap_summary.get("gap_examples") or [])
 
         reasons = []
         if snapshot["stored_bar_count"] < min_bars:
@@ -875,6 +885,19 @@ class IBKRTradingService:
         with self._auth_recovery_lock:
             thread = self._auth_restart_thread
             if thread and thread.is_alive():
+                return False
+            current = self._copy_auth_recovery_state()
+            current_phase = str(current.get("recovery_phase") or "")
+            current_lock_owner = str(current.get("lock_owner") or "")
+            if self._manual_takeover_active(current):
+                logger.info("Skip auth recovery restart during manual takeover")
+                return False
+            if current_phase in {"panic_resetting", "starting_runtime"} or current_lock_owner in {"panic_reset", "runtime_start"}:
+                logger.info(
+                    "Skip auth recovery restart while phase=%s lock_owner=%s",
+                    current_phase or "-",
+                    current_lock_owner or "-",
+                )
                 return False
 
             def worker():
@@ -1588,6 +1611,7 @@ class IBKRTradingService:
                 ENVIRONMENT,
                 snapshot["symbols"],
                 DEFAULT_WARMUP_REQUIRED_INTERVAL,
+                hydrate_signal_state=False,
             )
             warmup_timings["storage_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
             if storage_bootstrap:
@@ -1601,6 +1625,7 @@ class IBKRTradingService:
                     ENVIRONMENT,
                     readiness["pending_symbols"],
                     DEFAULT_WARMUP_REQUIRED_INTERVAL,
+                    hydrate_signal_state=False,
                 )
                 warmup_timings["pending_storage_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
                 if pending_storage_bootstrap:
@@ -1762,6 +1787,7 @@ class IBKRTradingService:
                     ENVIRONMENT,
                     list(pending_map.keys()),
                     DEFAULT_WARMUP_REQUIRED_INTERVAL,
+                    hydrate_signal_state=False,
                 )
                 warmup_timings["after_backfill_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
                 compute_result["after_backfill"] = after_backfill_result
@@ -1908,6 +1934,7 @@ class IBKRTradingService:
 
             self.auth_handler.reset_cancel()
             self.config.refresh()
+            self._refresh_runtime_settings()
 
             if not self._ensure_gateway():
                 logger.error("Gateway setup failed, exiting")
@@ -2456,6 +2483,7 @@ class IBKRTradingService:
         while self._running:
             try:
                 self.config.refresh()
+                self._refresh_runtime_settings()
                 self._sync_session_transition()
                 self._reset_for_new_market_day(force=False)
                 if self.session_keeper.is_authenticated:
@@ -2561,6 +2589,7 @@ class IBKRTradingService:
         while self._running:
             try:
                 self.config.refresh()
+                self._refresh_runtime_settings()
                 self._run_active_repair_cycle()
             except Exception as exc:
                 logger.error("Active target repair loop error: %s", exc)
@@ -2623,6 +2652,7 @@ class IBKRTradingService:
         while self._running:
             try:
                 self.config.refresh()
+                self._refresh_runtime_settings()
                 self._run_watchlist_backfill_cycle()
             except Exception as exc:
                 logger.error("Watchlist backfill loop error: %s", exc)
@@ -2957,6 +2987,7 @@ class IBKRTradingService:
             return {"ok": True, "rows": [], "summary": {"symbols": [], "repair_candidate_symbols": []}}
 
         self.config.refresh()
+        self._refresh_runtime_settings()
         min_bars = max(60, self.config.get_int_for_environment("ibkr_history_repair_min_bars_5m", ENVIRONMENT, 260))
         gap_lookback = max(20, self.config.get_int_for_environment("ibkr_history_repair_gap_lookback", ENVIRONMENT, 80))
         rollup_repair_enabled = self.config.get_bool_for_environment(
@@ -3339,6 +3370,7 @@ class IBKRTradingService:
         while self._running:
             try:
                 self.config.refresh()
+                self._refresh_runtime_settings()
                 self._sync_session_transition()
                 signal_poll_interval = max(15, self.config.get_int_for_environment("signal_poll_interval_sec", ENVIRONMENT, DEFAULT_SIGNAL_POLL_INTERVAL))
                 if signal_poll_interval != last_logged_interval:

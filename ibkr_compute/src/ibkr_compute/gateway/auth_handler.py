@@ -685,6 +685,27 @@ class AuthHandler:
             logger.debug("PB 2FA response poll failed: %s", exc)
             return ""
 
+    def _extract_challenge_code(self, page_text: str = "") -> str:
+        if self._driver:
+            try:
+                from selenium.webdriver.common.by import By
+
+                challenge = self._driver.find_element(By.CSS_SELECTOR, ".xyz-goldchallenge")
+                text = str(challenge.text or "").strip()
+                normalized = self._normalize_code(text)
+                if normalized:
+                    return normalized
+                if text:
+                    return text
+            except Exception:
+                pass
+
+        body_text = str(page_text or "")
+        match = re.search(r"challenge(?:\s+code)?[^A-Za-z0-9]*([A-Za-z0-9]{6,16})", body_text, re.IGNORECASE)
+        if not match:
+            return ""
+        return self._normalize_code(match.group(1))
+
     def _submit_challenge_response(self, response_code: str) -> bool:
         if not self._driver:
             return False
@@ -1255,22 +1276,74 @@ class AuthHandler:
                 # Detect challenge/response mode.
                 page_text_lower = page_text.lower()
                 if "enter the challenge code below" in page_text_lower or "response code" in page_text_lower:
-                    logger.warning("[2FA %ds] Challenge/Response detected, aborting this round", elapsed)
-                    page_state = {"mode": "challenge_response", "url": page_url, "body_excerpt": page_text[:240]}
-                    page_state["abort_reason"] = "challenge_response_unsupported"
+                    challenge_code = self._extract_challenge_code(page_text)
+                    if challenge_code and challenge_code != active_challenge_code:
+                        active_challenge_code = challenge_code
+                        submitted_response = ""
+
+                    challenge_deadline = max(challenge_deadline, now + CHALLENGE_RESPONSE_WAIT)
+                    page_state = {
+                        "mode": "challenge_response",
+                        "url": page_url,
+                        "body_excerpt": page_text[:240],
+                        "challenge_code": active_challenge_code,
+                    }
                     self._last_wait_context = page_state
-                    self._report_2fa_status(
-                        status="timeout",
-                        reason=reason,
-                        source=source,
-                        attempt=attempt,
-                        detail=self._build_wait_detail(page_state, detail),
-                        message="IBKR 当前进入 Challenge/Response；当前策略不走 challenge，本轮将结束并重新触发新的 push。",
-                        last_result="检测到 challenge_response；本轮不会进入 challenge 提交流程。",
-                        error="challenge_response_unsupported",
-                        state_patch=self._build_state_patch(page_state, cycle_state_patch),
-                    )
-                    return False
+                    response_code = self._get_pending_response_code(active_challenge_code)
+                    if response_code and response_code != submitted_response:
+                        if self._submit_challenge_response(response_code):
+                            submitted_response = response_code
+                            response_deadline = max(response_deadline, time.time() + POST_RESPONSE_GRACE_SECONDS)
+                            logger.info("[2FA %ds] Submitted challenge response for challenge=%s", elapsed, active_challenge_code or "-")
+                            report_key = f"challenge_response_submitted:{active_challenge_code}:{submitted_response}"
+                            if report_key != last_report_key:
+                                last_report_key = report_key
+                                self._report_2fa_status(
+                                    status="waiting_response",
+                                    reason=reason,
+                                    source=source,
+                                    attempt=attempt,
+                                    detail=self._build_wait_detail(page_state, detail),
+                                    message="已收到并提交 Response Code，等待 Gateway 会话恢复认证。",
+                                    last_result="Response Code 已提交，等待 Gateway 认证。",
+                                    state_patch=self._build_state_patch(
+                                        page_state,
+                                        {
+                                            **(cycle_state_patch or {}),
+                                            "response_status": "submitted",
+                                            "response_submitted_at": self._now_et(),
+                                        },
+                                    ),
+                                )
+                        else:
+                            report_key = f"challenge_response_submit_failed:{active_challenge_code}:{response_code}"
+                            if report_key != last_report_key:
+                                last_report_key = report_key
+                                self._report_2fa_status(
+                                    status="waiting_response",
+                                    reason=reason,
+                                    source=source,
+                                    attempt=attempt,
+                                    detail=self._build_wait_detail(page_state, detail),
+                                    message="已收到 Response Code，但浏览器提交失败；请重新检查当前 Challenge 与 Response 是否匹配。",
+                                    last_result="Response Code 提交失败，等待重试。",
+                                    error="challenge_response_submit_failed",
+                                    state_patch=self._build_state_patch(page_state, cycle_state_patch),
+                                )
+                    else:
+                        report_key = f"challenge_response_waiting:{active_challenge_code}"
+                        if report_key != last_report_key:
+                            last_report_key = report_key
+                            self._report_2fa_status(
+                                status="waiting_response",
+                                reason=reason,
+                                source=source,
+                                attempt=attempt,
+                                detail=self._build_wait_detail(page_state, detail),
+                                message="IBKR 已切到 Challenge/Response，请在 Runtime 页面提交 Response Code。",
+                                last_result="等待 Challenge Response Code。",
+                                state_patch=self._build_state_patch(page_state, cycle_state_patch),
+                            )
 
                 # Backend auth check via Python requests.
                 backend_result = self._check_backend_auth(session)

@@ -19,25 +19,67 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
-POLL_INTERVAL = 5
+ORDER_UPDATES_MODE = str(os.environ.get("IBKR_ORDER_UPDATES_MODE", "hybrid") or "hybrid").strip().lower() or "hybrid"
+POLL_INTERVAL_ACTIVE = max(5, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_ACTIVE_SEC", "5")))
+POLL_INTERVAL_IDLE = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_IDLE_SEC", "15")))
+ORDER_FAST_TRACK_WINDOW = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_FAST_TRACK_SEC", "30")))
 ET = timezone(timedelta(hours=-4))
 
 
 class OrderTracker:
     def __init__(self, gateway_url: str = None, account_id: str = None,
-                 pb_client=None, on_fill: Callable = None, on_cancel: Callable = None):
+                 pb_client=None, on_fill: Callable = None, on_cancel: Callable = None,
+                 config=None, environment: str = "live"):
         self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.on_fill = on_fill
         self.on_cancel = on_cancel
+        self.config = config
+        self.environment = str(environment or "live").strip().lower() or "live"
 
         self._session_local = threading.local()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._known_orders: Dict[str, dict] = {}
         self._last_poll: Optional[float] = None
+        self._last_live_update: Optional[float] = None
+        self._last_order_activity: Optional[float] = None
+        self._live_update_count = 0
         self._account_selected = False
+        self._poll_wakeup = threading.Event()
+        self._initial_snapshot_pending = True
+
+    def _get_int_setting(self, key: str, fallback: int) -> int:
+        if not self.config:
+            return fallback
+        return self.config.get_int_for_environment(key, self.environment, fallback)
+
+    def _get_mode_setting(self, key: str, fallback: str) -> str:
+        if not self.config:
+            return fallback
+        return str(self.config.get_for_environment(key, self.environment, fallback) or fallback).strip().lower() or fallback
+
+    def _updates_mode(self) -> str:
+        mode = self._get_mode_setting("ibkr_order_updates_mode", ORDER_UPDATES_MODE)
+        if mode not in {"poll", "websocket", "hybrid"}:
+            return ORDER_UPDATES_MODE
+        return mode
+
+    def uses_websocket_updates(self) -> bool:
+        return self._updates_mode() in {"websocket", "hybrid"}
+
+    def _active_poll_interval(self) -> int:
+        return max(5, self._get_int_setting("ibkr_order_poll_interval_active_sec", POLL_INTERVAL_ACTIVE))
+
+    def _idle_poll_interval(self) -> int:
+        return max(self._active_poll_interval(), self._get_int_setting("ibkr_order_poll_interval_idle_sec", POLL_INTERVAL_IDLE))
+
+    def _fast_track_window(self) -> int:
+        return max(self._active_poll_interval(), self._get_int_setting("ibkr_order_fast_track_sec", ORDER_FAST_TRACK_WINDOW))
+
+    def _mark_order_activity(self):
+        self._last_order_activity = time.time()
 
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
@@ -376,6 +418,51 @@ class OrderTracker:
             return True
         return self._order_sync_signature(previous) != self._order_sync_signature(current)
 
+    def _emit_order_transition_callbacks(self, previous_status: str, merged: Dict):
+        status = self._extract_order_status(merged)
+        if status in ("FILLED", "EXECUTED") and previous_status not in ("FILLED", "EXECUTED"):
+            logger.info(
+                "Order FILLED: %s %s %s@%s",
+                merged.get("ticker"),
+                merged.get("side"),
+                merged.get("filledQuantity"),
+                merged.get("avgPrice"),
+            )
+            if self.on_fill:
+                try:
+                    self.on_fill(merged)
+                except Exception as exc:
+                    logger.error("on_fill callback error: %s", exc)
+        elif status in ("CANCELLED", "CANCELED", "INACTIVE", "REJECTED") and previous_status not in ("CANCELLED", "CANCELED", "INACTIVE", "REJECTED"):
+            logger.info("Order CLOSED: %s %s status=%s", merged.get("ticker"), merged.get("orderId"), status)
+            if self.on_cancel:
+                try:
+                    self.on_cancel(merged)
+                except Exception as exc:
+                    logger.error("on_cancel callback error: %s", exc)
+
+    def _handle_live_order_payload(self, order: Dict, source: str) -> bool:
+        order_id = self._normalize_text(order.get("orderId") or order.get("order_id"))
+        if not order_id:
+            return False
+
+        prev = dict(self._known_orders.get(order_id, {}))
+        prev_status = self._extract_order_status(prev)
+        merged = dict(prev)
+        merged.update(order)
+        merged["orderId"] = order_id
+        merged = self._stamp_known_order(merged, seen_live=True)
+        status = self._extract_order_status(merged)
+        should_sync = self._order_needs_sync(prev, merged)
+        self._known_orders[order_id] = merged
+
+        if should_sync:
+            self._sync_to_pb(merged)
+            self._emit_order_transition_callbacks(prev_status, merged)
+
+        logger.debug("Order update applied: source=%s order_id=%s status=%s sync=%s", source, order_id, status, should_sync)
+        return True
+
     def _infer_disappeared_order_status(self, previous: Dict) -> str:
         status = self._extract_order_status(previous)
         if status in {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}:
@@ -451,6 +538,19 @@ class OrderTracker:
                 "cOID": sl_unique_id,
             }, seen_live=False)
 
+        self._mark_order_activity()
+        self._initial_snapshot_pending = True
+        self._poll_wakeup.set()
+
+    def on_order_update(self, order: Dict):
+        if not isinstance(order, dict):
+            return
+        applied = self._handle_live_order_payload(order, source="ws")
+        if applied:
+            self._live_update_count += 1
+            self._last_live_update = time.time()
+            self._mark_order_activity()
+
     def _finalize_disappeared_orders(self, current_order_ids: set[str]):
         closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}
         missing_ids = [order_id for order_id in list(self._known_orders.keys()) if order_id not in current_order_ids]
@@ -507,62 +607,47 @@ class OrderTracker:
                 self._known_orders[order_id] = merged
 
     def _poll_loop(self):
-        logger.info("Order tracker started (interval=%ds)", POLL_INTERVAL)
+        logger.info(
+            "Order tracker started (mode=%s active_poll=%ds idle_poll=%ds)",
+            self._updates_mode(),
+            self._active_poll_interval(),
+            self._idle_poll_interval(),
+        )
         while self._running:
             try:
-                self._poll_orders()
+                force_snapshot = self._initial_snapshot_pending or self._updates_mode() == "poll"
+                self._poll_orders(force=force_snapshot)
+                self._initial_snapshot_pending = False
             except Exception as e:
                 logger.error("Order poll error: %s", e)
 
-            for _ in range(POLL_INTERVAL):
-                if not self._running:
-                    break
-                time.sleep(1)
+            if not self._running:
+                break
+            self._poll_wakeup.wait(timeout=self._next_poll_interval())
+            self._poll_wakeup.clear()
 
-    def _poll_orders(self):
-        orders = self.get_live_orders()
+    def _next_poll_interval(self) -> int:
+        if self._updates_mode() == "poll":
+            return self._active_poll_interval()
+
+        active_orders = any(self._is_open_order_status(self._extract_order_status(order)) for order in self._known_orders.values())
+        last_activity = float(self._last_order_activity or 0.0)
+        if last_activity > 0 and (time.time() - last_activity) <= self._fast_track_window():
+            active_orders = True
+        return self._active_poll_interval() if active_orders else self._idle_poll_interval()
+
+    def _poll_orders(self, force: bool = False):
+        snapshot_force = bool(force or self._updates_mode() == "poll")
+        orders = self.get_live_orders(force=snapshot_force)
         self._last_poll = time.time()
         current_order_ids = set()
 
         for order in orders:
-            order_id = str(order.get("orderId", ""))
+            order_id = self._normalize_text(order.get("orderId") or order.get("order_id"))
             if not order_id:
                 continue
             current_order_ids.add(order_id)
-
-            prev = self._known_orders.get(order_id, {})
-            prev_status = self._extract_order_status(prev)
-            merged = dict(prev)
-            merged.update(order)
-            merged["orderId"] = order_id
-            merged = self._stamp_known_order(merged, seen_live=True)
-            status = self._extract_order_status(merged)
-            should_sync = self._order_needs_sync(prev, merged)
-
-            if should_sync:
-                self._known_orders[order_id] = merged
-                self._sync_to_pb(merged)
-
-                if status in ("FILLED", "EXECUTED") and prev_status not in ("FILLED", "EXECUTED"):
-                    logger.info("Order FILLED: %s %s %s@%s",
-                                merged.get("ticker"), merged.get("side"),
-                                merged.get("filledQuantity"), merged.get("avgPrice"))
-                    if self.on_fill:
-                        try:
-                            self.on_fill(merged)
-                        except Exception as e:
-                            logger.error("on_fill callback error: %s", e)
-
-                elif status in ("CANCELLED", "CANCELED"):
-                    logger.info("Order CANCELLED: %s %s", merged.get("ticker"), order_id)
-                    if self.on_cancel:
-                        try:
-                            self.on_cancel(merged)
-                        except Exception as e:
-                            logger.error("on_cancel callback error: %s", e)
-
-            else:
-                self._known_orders[order_id] = merged
+            self._handle_live_order_payload(order, source="poll")
 
         self._finalize_disappeared_orders(current_order_ids)
 
@@ -700,9 +785,11 @@ class OrderTracker:
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="order-tracker")
         self._thread.start()
+        self._poll_wakeup.set()
 
     def stop(self):
         self._running = False
+        self._poll_wakeup.set()
         if self._thread:
             self._thread.join(timeout=10)
             self._thread = None
@@ -710,7 +797,14 @@ class OrderTracker:
     def status(self) -> dict:
         return {
             "running": self._running,
+            "mode": self._updates_mode(),
             "tracked_orders": len(self._known_orders),
+            "active_poll_interval_s": self._active_poll_interval(),
+            "idle_poll_interval_s": self._idle_poll_interval(),
+            "fast_track_window_s": self._fast_track_window(),
+            "live_update_count": self._live_update_count,
             "last_poll": datetime.fromtimestamp(self._last_poll).isoformat()
             if self._last_poll else None,
+            "last_live_update": datetime.fromtimestamp(self._last_live_update).isoformat()
+            if self._last_live_update else None,
         }

@@ -23,17 +23,56 @@ ET = timezone(timedelta(hours=-4))
 
 
 class OrderPlacer:
-    def __init__(self, gateway_url: str = None, account_id: str = None, pb_client=None):
+    def __init__(self, gateway_url: str = None, account_id: str = None, pb_client=None, config=None, environment: str = "live"):
         self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
+        self.config = config
+        self.environment = str(environment or "live").strip().lower() or "live"
         self._session = requests.Session()
         self._session.verify = False
         load_cookies(self._session)
         self._order_count = 0
+        self._suppression_attempted = False
+        self._suppression_enabled = False
+        self._suppression_message_ids: List[str] = []
 
     def _api_url(self, path: str) -> str:
         return f"{self.gateway_url}/v1/api{path}"
+
+    def _get_bool_setting(self, key: str, fallback: bool = False) -> bool:
+        if not self.config:
+            return fallback
+        return self.config.get_bool_for_environment(key, self.environment, fallback)
+
+    def _get_str_setting(self, key: str, fallback: str = "") -> str:
+        if not self.config:
+            return fallback
+        return str(self.config.get_for_environment(key, self.environment, fallback) or fallback)
+
+    def _suppress_order_questions_if_enabled(self):
+        enabled = self._get_bool_setting("ibkr_order_question_suppress_enabled", False)
+        raw_message_ids = self._get_str_setting("ibkr_order_question_suppress_message_ids", "")
+        message_ids = [item.strip() for item in raw_message_ids.split(",") if item.strip()]
+        self._suppression_enabled = enabled
+        self._suppression_message_ids = list(message_ids)
+
+        if not enabled or not message_ids or self._suppression_attempted:
+            return
+
+        try:
+            load_cookies(self._session)
+            resp = self._session.post(
+                self._api_url("/iserver/questions/suppress"),
+                json={"messageIds": message_ids},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            save_cookies(self._session)
+            self._suppression_attempted = True
+            logger.info("Suppressed IBKR order questions for messageIds=%s", ",".join(message_ids))
+        except Exception as exc:
+            logger.warning("Failed to suppress IBKR order questions: %s", exc)
 
     def get_active_account_id(self, use_paper: bool = False) -> str:
         if use_paper:
@@ -258,6 +297,7 @@ class OrderPlacer:
         url = self._api_url(f"/iserver/account/{acct_id}/orders")
 
         try:
+            self._suppress_order_questions_if_enabled()
             load_cookies(self._session)
             resp = self._session.post(url, json={"orders": orders}, timeout=15)
             resp.raise_for_status()
@@ -388,4 +428,7 @@ class OrderPlacer:
         return {
             "account_id": self.account_id,
             "total_orders": self._order_count,
+            "question_suppression_enabled": self._suppression_enabled,
+            "question_suppression_attempted": self._suppression_attempted,
+            "question_suppression_message_ids": list(self._suppression_message_ids),
         }

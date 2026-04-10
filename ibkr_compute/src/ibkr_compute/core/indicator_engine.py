@@ -42,6 +42,29 @@ DEFAULT_PARAMS = {
 }
 
 
+def indicator_ready_bar_count(params: dict | None = None) -> int:
+    effective = {**DEFAULT_PARAMS, **(params or {})}
+
+    ema_slope_lookback = int(effective.get("ema_slope_lookback", 12))
+    sd_length = int(effective.get("sd_length", 128))
+    dtp_sma_length = int(effective.get("dtp_sma_length", 100))
+    dtp_atr_length = int(effective.get("dtp_atr_length", 200))
+    atr_length = int(effective.get("atr_length", 10))
+    crsi_domcycle = int(effective.get("crsi_domcycle", 20))
+    crsi_vibration = int(effective.get("crsi_vibration", 6))
+
+    crsi_cycle_len = crsi_domcycle // 2
+    crsi_phasing_lag = round((crsi_vibration - 1) / 2.0)
+
+    return max(
+        200 + ema_slope_lookback,
+        sd_length,
+        max(dtp_sma_length, dtp_atr_length),
+        atr_length + 1,
+        crsi_cycle_len + crsi_phasing_lag + 2,
+    )
+
+
 class IndicatorEngine:
     MAX_HISTORY = 300
 

@@ -1004,7 +1004,7 @@ function submit2faResponse(options) {
     var saved = saveState(runtimeEnvironment, {
         status: currentData.status === "success" ? "success" : "waiting_response",
         response_code: responseCode,
-        response_status: "pending",
+        response_status: "received",
         response_received_at: timeUtils.getTimeStrings().us,
         source: opts.source || currentData.source || "runtime_page",
         last_result: "已收到 Response Code，等待浏览器提交流程。",

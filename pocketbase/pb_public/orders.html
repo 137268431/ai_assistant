@@ -1289,10 +1289,12 @@
                         ? `保护单已预创建 (${group.plannedChildCount})`
                         : '等待后续状态';
             const actionTargetId = primary?.entry_order_unique_id || primary?.unique_id || group.trade_group_id;
+            const cancelTargetOrderId = primary?.broker_order_id || primary?.order_id || '';
             const canCancel = primary?.role === 'entry'
                 && (primary?.status === 'Init' || primary?.status === 'Submitted')
                 && Number(primary?.filled_qty || 0) === 0
-                && group.activeChildCount === 0;
+                && group.activeChildCount === 0
+                && !!cancelTargetOrderId;
             const canClose = primary?.role === 'entry' && primary?.status === 'Filled';
 
             return `
@@ -1342,7 +1344,7 @@
                             <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}', '${encodeURIComponent(group.signal_id || '')}')">📜 交易组明细</button>
                         </div>
                         <div class="action-row">
-                            ${!isOrdersDatasetPartial && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
+                            ${!isOrdersDatasetPartial && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId || cancelTargetOrderId)}', '${encodeURIComponent(cancelTargetOrderId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
                             ${!isOrdersDatasetPartial && canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓整组</button>` : ''}
                         </div>
                     </div>
@@ -1504,9 +1506,7 @@
         async function closePosition(uniqueId, symbol) {
             if (!confirm(`确认平仓 ${symbol} 的整组订单？`)) return;
             try {
-                await readOrderActionResponse(
-                    await fetch(buildPageUrl('/webhook/order/close', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }))
-                );
+                await requestOrderAction('/api/custom/ibkr/orders/close_group', uniqueId);
                 showToast('已发送平仓整组请求');
                 loadOrders({ showLoadingState: false });
             } catch (error) {
@@ -1514,20 +1514,72 @@
             }
         }
 
-        async function cancelOrder(uniqueId, symbol) {
+        async function cancelOrder(targetId, brokerOrderId, symbol) {
             if (!confirm(`确认取消 ${symbol} 的主入场单？`)) return;
             try {
-                await readOrderActionResponse(
-                    await fetch(buildPageUrl('/webhook/order/cancel', { id: decodeURIComponent(uniqueId), environment: currentEnvironment }))
-                );
-                showToast('已发送取消主单请求');
-                loadOrders({ showLoadingState: false });
+                await requestCancelSync(targetId, brokerOrderId);
+                showToast('已同步撤销 IBKR 与系统订单');
+                setTimeout(() => loadOrders({ showLoadingState: false }), 1200);
             } catch (error) {
                 showToast(`取消失败: ${error.message}`);
             }
         }
 
+        function getOrderActionHeaders(extra = {}) {
+            const headers = { ...extra };
+            const token = getToken();
+            if (token) headers.Authorization = `Bearer ${token}`;
+            return headers;
+        }
+
+        async function requestOrderAction(path, uniqueId) {
+            return readOrderActionResponse(
+                await fetchWithRetry(
+                    buildPageUrl(path, {}, { environment: currentEnvironment }),
+                    {
+                        method: 'POST',
+                        headers: getOrderActionHeaders({ 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({
+                            id: decodeURIComponent(uniqueId),
+                            environment: currentEnvironment
+                        })
+                    },
+                    { attempts: 2, retryDelayMs: 400 }
+                )
+            );
+        }
+
+        async function requestCancelSync(targetId, brokerOrderId) {
+            const response = await fetchWithRetry(
+                buildPageUrl('/api/custom/ibkr/orders/cancel_sync', {}, { environment: currentEnvironment }),
+                {
+                    method: 'POST',
+                    headers: getOrderActionHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({
+                        id: decodeURIComponent(targetId || ''),
+                        order_id: decodeURIComponent(brokerOrderId || ''),
+                        broker_order_id: decodeURIComponent(brokerOrderId || ''),
+                        environment: currentEnvironment
+                    })
+                },
+                { attempts: 2, retryDelayMs: 400 }
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+            if (!response.ok || payload?.ok === false) {
+                throw new Error(payload?.error || payload?.message || `请求失败 (${response.status})`);
+            }
+            return payload;
+        }
+
         async function readOrderActionResponse(response) {
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
             const contentType = String(response?.headers?.get('content-type') || '').toLowerCase();
             const isJson = contentType.includes('application/json');
             const payload = isJson
