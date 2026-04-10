@@ -628,6 +628,11 @@
             return `${Math.round(deltaSeconds / 3600)}h ago`;
         }
 
+        function ageSecondsFromIso(value) {
+            const ms = parseIsoMs(value);
+            return ms ? Math.max(0, Math.round((Date.now() - ms) / 1000)) : null;
+        }
+
         function formatNumber(value, digits = 0) {
             const num = Number(value);
             return Number.isFinite(num) ? num.toFixed(digits) : '--';
@@ -704,6 +709,126 @@
             return { tone: 'chip-ok', label: 'OK' };
         }
 
+        function deriveAsyncPullStatus(payload) {
+            const runtime = payload?.runtime || {};
+            const marketUniverse = runtime?.market_universe || {};
+            const orderTracker = runtime?.order_tracker || {};
+            const signalRouter = runtime?.signal_router || {};
+            const gateway = runtime?.gateway || {};
+            const session = runtime?.session || {};
+            const refreshSec = Math.max(15, Number(payload?.config?.ibkr_target_refresh_sec || 0) || 60);
+            const orderPollSec = Math.max(5, Number(orderTracker?.active_poll_interval_s || orderTracker?.idle_poll_interval_s || 0) || 15);
+            const targetAgeS = ageSecondsFromIso(marketUniverse?.last_target_refresh);
+            const orderAgeS = ageSecondsFromIso(orderTracker?.last_poll);
+            const signalAgeS = ageSecondsFromIso(signalRouter?.last_poll);
+            const observed = [targetAgeS, orderAgeS, signalAgeS].filter((item) => item != null);
+            const runtimeStarting = Boolean(runtime?.starting);
+            const runtimeOnline = Boolean(
+                gateway?.running
+                || gateway?.reachable
+                || session?.running
+                || orderTracker?.running
+                || signalRouter?.running
+            );
+            const copyParts = [
+                `target ${marketUniverse?.last_target_refresh ? formatAgo(marketUniverse.last_target_refresh) : '--'}`,
+                `order ${orderTracker?.last_poll ? formatAgo(orderTracker.last_poll) : '--'}`,
+                signalRouter?.last_poll ? `signal ${formatAgo(signalRouter.last_poll)}` : ''
+            ].filter(Boolean);
+            if (!observed.length) {
+                if (runtimeStarting) {
+                    return {
+                        tone: 'chip-warn',
+                        label: 'STARTING',
+                        copy: 'runtime 仍在启动，拉取轮询尚未稳定',
+                        summary: 'pull starting',
+                    };
+                }
+                if (!runtimeOnline) {
+                    return {
+                        tone: 'chip-error',
+                        label: 'ERROR',
+                        copy: 'runtime 当前离线，目标刷新 / 轮询未在运行',
+                        summary: 'pull down',
+                    };
+                }
+                return {
+                    tone: 'chip-muted',
+                    label: 'UNKNOWN',
+                    copy: '还没有目标刷新 / 轮询时间戳',
+                    summary: 'pull --',
+                };
+            }
+
+            const hasError = (
+                (targetAgeS != null && targetAgeS > Math.max(refreshSec * 4, 300))
+                || (orderAgeS != null && orderAgeS > Math.max(orderPollSec * 8, 180))
+                || (signalAgeS != null && signalAgeS > 360)
+            );
+            const hasWarn = (
+                (targetAgeS != null && targetAgeS > Math.max(refreshSec * 2, 120))
+                || (orderAgeS != null && orderAgeS > Math.max(orderPollSec * 4, 60))
+                || (signalAgeS != null && signalAgeS > 180)
+            );
+
+            return {
+                tone: hasError ? 'chip-error' : (hasWarn ? 'chip-warn' : 'chip-ok'),
+                label: hasError ? 'ERROR' : (hasWarn ? 'SLOW' : 'OK'),
+                copy: copyParts.join(' · '),
+                summary: copyParts.slice(0, 2).join(' · '),
+            };
+        }
+
+        function deriveWebSocketPushStatus(payload) {
+            const runtime = payload?.runtime || {};
+            const websocket = runtime?.websocket || {};
+            const apiUtilization = payload?.api_utilization || {};
+            const activeSubscriptionCount = Number(apiUtilization?.active_subscription_count || 0) || 0;
+            const lastMessageAgeS = apiUtilization?.last_message_age_s == null
+                ? Number.NaN
+                : Number(apiUtilization.last_message_age_s);
+            const pingIntervalS = Math.max(15, Number(websocket?.ping_interval_s || 0) || 45);
+            const copy = [
+                `msg ${formatSeconds(apiUtilization?.last_message_age_s)}`,
+                `tic ${formatSeconds(apiUtilization?.last_tic_age_s)}`,
+                `subs ${formatInteger(apiUtilization?.ws_subscribed_count || activeSubscriptionCount)}`
+            ].join(' · ');
+
+            if (!websocket.connected || !websocket.ready) {
+                return {
+                    tone: 'chip-error',
+                    label: 'ERROR',
+                    copy: `connected ${websocket.connected ? 'yes' : 'no'} · ready ${websocket.ready ? 'yes' : 'no'} · ${copy}`,
+                    summary: `push ${websocket.ready ? 'partial' : 'down'}`,
+                };
+            }
+            if (!activeSubscriptionCount) {
+                return {
+                    tone: 'chip-muted',
+                    label: 'IDLE',
+                    copy,
+                    summary: 'push idle',
+                };
+            }
+            if (!Number.isFinite(lastMessageAgeS)) {
+                return {
+                    tone: 'chip-warn',
+                    label: 'UNKNOWN',
+                    copy,
+                    summary: 'push --',
+                };
+            }
+
+            const hasError = lastMessageAgeS > (pingIntervalS * 4);
+            const hasWarn = lastMessageAgeS > (pingIntervalS * 2);
+            return {
+                tone: hasError ? 'chip-error' : (hasWarn ? 'chip-warn' : 'chip-ok'),
+                label: hasError ? 'ERROR' : (hasWarn ? 'SLOW' : 'OK'),
+                copy,
+                summary: `msg ${formatSeconds(lastMessageAgeS)}`,
+            };
+        }
+
         function deriveRefreshDelta(apiUtilization) {
             const deltas = {};
             const nextSnapshot = {};
@@ -767,6 +892,8 @@
             const wsReady = Boolean(runtime?.websocket?.connected && runtime?.websocket?.ready);
             const dataStatus = deriveDataStatus(payload);
             const hostStatus = deriveHostStatus(payload);
+            const pullStatus = deriveAsyncPullStatus(payload);
+            const pushStatus = deriveWebSocketPushStatus(payload);
             const monitorTone = payload?.status === 'error'
                 ? 'chip-error'
                 : (payload?.status === 'warning' ? 'chip-warn' : 'chip-ok');
@@ -775,6 +902,8 @@
                 { label: `Gateway ${gatewayActive ? 'ACTIVE' : 'OFFLINE'}`, tone: gatewayActive ? 'chip-ok' : 'chip-error' },
                 { label: `Session ${sessionAuthed ? 'AUTHED' : 'PENDING'}`, tone: sessionAuthed ? 'chip-ok' : 'chip-warn' },
                 { label: `WebSocket ${wsReady ? 'READY' : 'PENDING'}`, tone: wsReady ? 'chip-ok' : 'chip-error' },
+                { label: `Pull ${pullStatus.label}`, tone: pullStatus.tone },
+                { label: `WS Push ${pushStatus.label}`, tone: pushStatus.tone },
                 { label: `Data ${dataStatus.label}`, tone: dataStatus.tone },
                 { label: `Host ${hostStatus.label}`, tone: hostStatus.tone },
                 { label: `Env ${String(payload?.requested_environment || currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
@@ -789,6 +918,8 @@
             document.getElementById('heroCopy').textContent = [
                 `subscription ${apiUtilization.active_subscription_count || 0}/${apiUtilization.subscription_limit || 0}`,
                 `ws ${apiUtilization.ws_subscribed_count || 0} subscribed`,
+                pullStatus.summary,
+                pushStatus.summary,
                 `host ${host.hostname || '--'}`,
                 dataStatus.copy
             ].filter(Boolean).join(' · ');
@@ -968,6 +1099,8 @@
             const compute = payload?.compute || {};
             const runtime = payload?.runtime || {};
             const samples = payload?.samples || {};
+            const pullStatus = deriveAsyncPullStatus(payload);
+            const pushStatus = deriveWebSocketPushStatus(payload);
             const activeBars = Array.isArray(samples.active_bar_symbols) ? samples.active_bar_symbols : [];
             const realtime = runtime?.realtime_compute || {};
             const lastBarCloseMs = parseIsoMs(realtime.last_bar_close);
@@ -993,6 +1126,16 @@
                     label: 'Ready Engines',
                     value: `${compute.ready_engines || 0}/${compute.total_engines || 0}`,
                     copy: `tracked cursors ${compute.tracked_cursors || 0} · compute count ${compute.compute_count || 0}`,
+                },
+                {
+                    label: 'Async Pull',
+                    value: pullStatus.label,
+                    copy: pullStatus.copy,
+                },
+                {
+                    label: 'WS Push',
+                    value: pushStatus.label,
+                    copy: pushStatus.copy,
                 },
                 {
                     label: 'Close Delay',
@@ -1035,6 +1178,7 @@
 
         function renderHostHealth(payload) {
             const host = payload?.host || {};
+            const cpu = host?.cpu || {};
             const loadavg = host?.loadavg || {};
             const memory = host?.memory || {};
             const disk = host?.disk || {};
@@ -1042,6 +1186,13 @@
             document.getElementById('hostMeta').textContent = `${host.hostname || '--'} · pid ${process.pid || '--'} · ${host.platform || '--'}`;
 
             const cards = [
+                {
+                    label: 'CPU Used',
+                    value: cpu.used_pct != null ? formatPercent(cpu.used_pct, 2) : '--',
+                    copy: cpu.used_pct != null
+                        ? `sample ${formatSeconds(cpu.sample_span_s)} · idle ${formatPercent(cpu.idle_pct, 2)}`
+                        : (cpu.source || 'unavailable'),
+                },
                 {
                     label: 'Load / CPU',
                     value: loadavg.per_cpu_1 != null ? formatNumber(loadavg.per_cpu_1, 3) : '--',

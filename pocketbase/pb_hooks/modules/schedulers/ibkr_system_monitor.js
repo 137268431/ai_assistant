@@ -18,6 +18,28 @@ const AUTH_EDGE_MONITOR_STATE_KEY = "system_auth_edge_monitor"
 const AUTH_PENDING_ALERT_TRIGGER_MS = 15 * 60 * 1000
 const AUTH_PENDING_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const AUTH_MONITOR_STATE_KEY = "system_auth_monitor"
+const MONITOR_ALERT_COOLDOWN_MS = 15 * 60 * 1000
+const MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
+const MONITOR_ALERT_FLAG_CODES = {
+    monitor_endpoint_unavailable: true,
+    gateway_offline: true,
+    session_unauthenticated: true,
+    websocket_not_ready: true,
+    subscription_utilization_high: true,
+    subscription_utilization_critical: true,
+    market_data_silent: true,
+    market_data_silent_critical: true,
+    data_freshness_delayed: true,
+    data_freshness_offline: true,
+    host_memory_high: true,
+    host_memory_critical: true,
+    host_disk_high: true,
+    host_disk_critical: true,
+    host_load_high: true,
+    host_load_critical: true,
+    host_cpu_high: true,
+    host_cpu_critical: true,
+}
 
 function getRuntimeKeys() {
     return ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
@@ -92,8 +114,66 @@ function saveStateData(stateKey, environment, dateToken, patch) {
 
 function parseHttpJson(resp) {
     if (!resp) return {}
-    const raw = typeof resp.raw === "string" ? resp.raw : String(resp.raw || "")
+    const raw = typeof resp === "string"
+        ? resp
+        : (typeof resp.raw === "string" ? resp.raw : String(resp.raw || ""))
     return raw ? JSON.parse(raw) : {}
+}
+
+function runHistoryRetentionCleanup(logPrefix, cronId) {
+    const prefix = logPrefix || "[IBKRHistoryRetention]"
+    const { getRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
+    const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+
+    let executedCount = 0
+    let totalDeleted = 0
+    let totalErrors = 0
+
+    for (const environment of getRuntimeEnvironments()) {
+        const cronState = getPbCronToggleState(cronId, environment)
+        if (!cronState.effective_enabled) {
+            console.log(`${prefix} ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+            continue
+        }
+
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/retention/cleanup`
+        try {
+            const resp = $http.send({
+                url: upstream,
+                method: "POST",
+                timeout: 180,
+                body: JSON.stringify({ environment: environment, source: "pb_cron" }),
+                headers: { "Content-Type": "application/json" },
+            })
+            const payload = parseHttpJson(resp)
+            if (Number(resp.statusCode || 0) !== 200) {
+                totalErrors += 1
+                console.log(`${prefix} ${environment}: status=${resp.statusCode}, upstream=${upstream}, raw=${resp.raw}`)
+                continue
+            }
+
+            const environments = Array.isArray(payload.environments) ? payload.environments : []
+            const envPayload = environments.find((item) => String(item && item.environment || "") === environment) || {}
+            const deleted = Number(envPayload.total_deleted || payload.total_deleted || 0) || 0
+            const errors = Number(envPayload.total_errors || 0) || 0
+            const retentionDays = Number(envPayload.retention_days || 0) || 0
+            totalDeleted += deleted
+            totalErrors += errors
+            executedCount += 1
+
+            console.log(
+                `${prefix} ${environment}: upstream=${upstream}, ok=${payload.ok !== false}, retention_days=${retentionDays || "-"}, deleted=${deleted}, errors=${errors}`
+            )
+        } catch (err) {
+            totalErrors += 1
+            console.log(`${prefix} ${environment}: upstream=${upstream}, error=${err.message || err}`)
+        }
+    }
+
+    if (executedCount > 0 || totalDeleted > 0 || totalErrors > 0) {
+        console.log(`${prefix} summary: executed=${executedCount}, deleted=${totalDeleted}, errors=${totalErrors}`)
+    }
 }
 
 function parseShiftedTimeMs(value, offsetMinutes) {
@@ -695,6 +775,140 @@ function buildMonitorConfigMap(records) {
     return config
 }
 
+function selectMonitorAlertFlags(flags) {
+    const items = []
+    for (let i = 0; i < (flags || []).length; i++) {
+        const item = flags[i]
+        const code = String(item && item.code || "").trim()
+        const severity = String(item && item.severity || "").trim().toLowerCase()
+        if (!MONITOR_ALERT_FLAG_CODES[code]) continue
+        if (severity !== "warning" && severity !== "error") continue
+        items.push(item)
+    }
+    return items
+}
+
+function buildSyntheticMonitorAlertFlags(monitorPayload) {
+    const status = String(monitorPayload && monitorPayload.status || "").trim().toLowerCase()
+    const code = toNumber(monitorPayload && monitorPayload.code, 0)
+    const error = String(monitorPayload && monitorPayload.error || "").trim()
+    if (!error && status !== "offline" && status !== "error" && code < 500) {
+        return []
+    }
+    const detail = error || (code > 0
+        ? `compute /ibkr/monitor 返回 HTTP ${code}`
+        : "compute /ibkr/monitor 当前不可用")
+    return [{
+        severity: "error",
+        code: "monitor_endpoint_unavailable",
+        title: "Monitor endpoint unavailable",
+        detail: detail,
+    }]
+}
+
+function buildMonitorAlertFingerprint(monitorPayload, flags) {
+    const payload = {
+        status: String(monitorPayload && monitorPayload.status || "").trim().toLowerCase(),
+        flag_codes: (flags || []).map((item) => String(item && item.code || "").trim()).filter(Boolean).sort(),
+    }
+    return JSON.stringify(payload)
+}
+
+function runSystemMonitorAlertGuard(logPrefix) {
+    const prefix = logPrefix || "[IBKRMonitorAlert]"
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+
+    const times = getTimeStrings()
+    const nowMs = Date.now()
+    const runtimeKeys = getRuntimeKeys()
+    const environments = getActiveRuntimeEnvironments(runtimeKeys)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        if (!getComputeEnabledForEnvironment(environment, runtimeKeys)) {
+            continue
+        }
+
+        const monitorPayload = fetchComputeJson("/ibkr/monitor", 10, environment)
+        if (!monitorPayload || typeof monitorPayload !== "object") {
+            continue
+        }
+
+        const baseAlertFlags = selectMonitorAlertFlags(monitorPayload.flags || [])
+        const alertFlags = baseAlertFlags.concat(
+            baseAlertFlags.length ? [] : buildSyntheticMonitorAlertFlags(monitorPayload)
+        )
+        if (!alertFlags.length) {
+            saveStateData(MONITOR_ALERT_STATE_KEY, environment, times.date, {
+                last_monitor_check_at: times.us,
+                last_monitor_issue_at: "",
+                last_monitor_alert_hash: "",
+                last_monitor_alert_ms: 0,
+            })
+            continue
+        }
+
+        const fingerprint = buildMonitorAlertFingerprint(monitorPayload, alertFlags)
+        const state = getStateData(MONITOR_ALERT_STATE_KEY, environment, times.date).data || {}
+        const lastAlertHash = String(state.last_monitor_alert_hash || "")
+        const lastAlertMs = toNumber(state.last_monitor_alert_ms, 0)
+        const shouldNotify = (
+            fingerprint !== lastAlertHash
+            || lastAlertMs <= 0
+            || (nowMs - lastAlertMs) >= MONITOR_ALERT_COOLDOWN_MS
+        )
+
+        if (!shouldNotify) {
+            saveStateData(MONITOR_ALERT_STATE_KEY, environment, times.date, {
+                last_monitor_check_at: times.us,
+                last_monitor_issue_at: String(state.last_monitor_issue_at || times.us),
+                last_monitor_alert_hash: lastAlertHash,
+                last_monitor_alert_ms: lastAlertMs,
+            })
+            continue
+        }
+
+        const apiUtilization = monitorPayload.api_utilization || {}
+        const host = monitorPayload.host || {}
+        const cpu = host.cpu || {}
+        const memory = host.memory || {}
+        const disk = host.disk || {}
+        const loadavg = host.loadavg || {}
+        const level = alertFlags.some((item) => String(item && item.severity || "").trim().toLowerCase() === "error")
+            ? "error"
+            : "warning"
+        const title = level === "error"
+            ? `IBKR Monitor 严重告警（${alertFlags.length}项）`
+            : `IBKR Monitor 告警（${alertFlags.length}项）`
+        const detail = {
+            "检查时间": times.us,
+            "监控状态": String(monitorPayload.status || "unknown").toUpperCase(),
+            "触发项": alertFlags.slice(0, 4).map((item) => `${item.title || item.code}: ${item.detail || ""}`).join(" | "),
+            "订阅占用": `${toNumber(apiUtilization.active_subscription_count, 0)}/${toNumber(apiUtilization.subscription_limit, 0)} (${toNumber(apiUtilization.utilization_pct, 0).toFixed(2)}%)`,
+            "WebSocket": `msg_age=${apiUtilization.last_message_age_s != null ? `${apiUtilization.last_message_age_s}s` : "--"} · subs=${toNumber(apiUtilization.ws_subscribed_count, 0)} · pending=${toNumber(apiUtilization.pending_subscription_count, 0)}`,
+            "主机CPU": cpu.used_pct != null ? `${cpu.used_pct}%` : "--",
+            "主机Load/CPU": loadavg.per_cpu_1 != null ? String(loadavg.per_cpu_1) : "--",
+            "主机内存": memory.used_pct != null ? `${memory.used_pct}%` : "--",
+            "主机磁盘": disk.used_pct != null ? `${disk.used_pct}%` : "--",
+        }
+
+        const notified = level === "error"
+            ? feishuSystem.notifyAlert("ibkr_compute", title, detail, environment)
+            : feishuSystem.notifyWarning("ibkr_compute", title, detail, environment)
+        writeSystemEvent("alert", level, "ibkr_compute", title, detail, environment, notified)
+        saveStateData(MONITOR_ALERT_STATE_KEY, environment, times.date, {
+            last_monitor_check_at: times.us,
+            last_monitor_issue_at: times.us,
+            last_monitor_alert_hash: fingerprint,
+            last_monitor_alert_ms: nowMs,
+        })
+        console.log(`${prefix} ${environment}: level=${level}, notified=${notified}, flags=${alertFlags.map((item) => item.code).join(",")}`)
+    }
+}
+
 routerAdd("POST", "/api/custom/system/event", (c) => {
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const { getRuntimeEnvironmentFromData, labelTitleWithEnvironment, addEnvironmentToDetail, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
@@ -708,6 +922,7 @@ routerAdd("POST", "/api/custom/system/event", (c) => {
     const eventType = d.event_type || "status_change"
     const level = d.level || "info"
     const source = d.source || "pb"
+    const messageId = String(d.message_id || "").trim()
     const title = labelTitleWithEnvironment(rawTitle, environment)
     const detail = addEnvironmentToDetail(rawDetail, environment)
 
@@ -715,13 +930,37 @@ routerAdd("POST", "/api/custom/system/event", (c) => {
         return c.json(400, { ok: false, error: "title required" })
     }
 
-    let notified = false
+    let notifyResult = {
+        success: false,
+        message_id: messageId,
+        updated: false,
+        skipped: false,
+        suppressed: false,
+        error: "",
+    }
     if (level === "error" || level === "warning" || eventType === "status_change" || eventType === "daily_report") {
-        notified = feishuSystem.notifySystemEvent(eventType, level, source, title, detail, environment)
+        notifyResult = feishuSystem.notifySystemEventDetailed(
+            eventType,
+            level,
+            source,
+            title,
+            detail,
+            environment,
+            { message_id: messageId },
+        )
     }
 
+    const notified = !!(notifyResult && notifyResult.success && !notifyResult.suppressed)
     writeSystemEvent(eventType, level, source, rawTitle, rawDetail, environment, notified)
-    return c.json(200, { ok: true, notified: notified })
+    return c.json(200, {
+        ok: true,
+        notified: notified,
+        message_id: String((notifyResult && notifyResult.message_id) || messageId || ""),
+        updated: !!(notifyResult && notifyResult.updated),
+        skipped: !!(notifyResult && notifyResult.skipped),
+        suppressed: !!(notifyResult && notifyResult.suppressed),
+        error: String((notifyResult && notifyResult.error) || ""),
+    })
 })
 
 routerAdd("GET", "/api/custom/system/cronz", (c) => {
@@ -990,10 +1229,9 @@ routerAdd("GET", "/api/custom/system/monitorz", (c) => {
                 method: "GET",
                 timeout: 10,
             })
-            if (Number(resp && resp.statusCode) >= 400) {
+            monitorPayload = parseMonitorPayload(resp)
+            if (Number(resp && resp.statusCode) >= 400 && (!monitorPayload || Object.keys(monitorPayload).length === 0)) {
                 upstreamError = `upstream_http_${Number(resp && resp.statusCode)}`
-            } else {
-                monitorPayload = parseMonitorPayload(resp)
             }
         } catch (err) {
             upstreamError = err.message || String(err)
@@ -1053,7 +1291,9 @@ cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {
     }
     try {
         const systemNotify = require(`${__hooks}/lib/system_notify_scheduler.js`)
+        const monitorAlertGuard = require(`${__hooks}/lib/system_monitor_alert_guard.js`)
         systemNotify.runSystemHeartbeatTick("[IBKRComputeCron]", "ibkr_compute_runtime")
+        monitorAlertGuard.runSystemMonitorAlertGuard("[IBKRMonitorAlert]")
         const minute = new Date().getMinutes()
         if (minute === 0 || minute === 30) {
             systemNotify.runSystemStatusReminderTick("[IBKRComputeCron]", "ibkr_compute_runtime")
@@ -1066,6 +1306,14 @@ cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {
 cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
     const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
     runIbkrScheduledAction("scan", 60, "[IBKRComputeCron]", "ibkr_scan_runtime")
+})
+
+cronAdd("ibkr_history_retention", "10 * * * *", () => {
+    try {
+        runHistoryRetentionCleanup("[IBKRHistoryRetention]", "ibkr_history_retention")
+    } catch (err) {
+        console.log(`[IBKRHistoryRetention] fatal error: ${err.message || err}`)
+    }
 })
 
 // System heartbeat / status reminder piggyback on ibkr_compute_runtime via lib/system_notify_scheduler.js

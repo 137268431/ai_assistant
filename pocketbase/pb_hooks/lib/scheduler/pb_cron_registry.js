@@ -179,6 +179,24 @@ const PB_CRON_DEFINITIONS = [
         note: "日报是否真正发送，还受 daily_summary_notify_enabled 控制。",
         hook_file: "ibkr_system_monitor.pb.js",
     },
+    {
+        id: "ibkr_history_retention",
+        config_key: "pb_cron_ibkr_history_retention_enabled",
+        display_name: "历史数据留存 Cron",
+        config_display_name: "历史数据留存",
+        group_name: "PB Cron 调度",
+        sort_order: 140,
+        default_value: "TRUE",
+        cron_expr: "10 * * * *",
+        cycle_label: "每小时第 10 分钟",
+        beijing_cycle_label: "北京时间 每小时第 10 分钟",
+        et_cycle_label: "美东时间 每小时第 10 分钟",
+        window_label: "全天",
+        function_summary: "清理超过留存窗口的 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity 历史数据。",
+        scope_label: "按环境执行",
+        note: "受 PB 调度总开关、本开关以及 ibkr_history_retention_enabled / ibkr_history_retention_days 配置共同控制；运行态线程会在每小时第 12 分钟做同小时兜底。",
+        hook_file: "ibkr_system_monitor.pb.js",
+    },
 ]
 
 function cloneDefinition(definition) {

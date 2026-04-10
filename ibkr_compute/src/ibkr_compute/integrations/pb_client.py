@@ -280,6 +280,7 @@ class PBClient:
         level: str = "info",
         source: str = "ibkr_compute",
         environment: Optional[str] = None,
+        message_id: str = "",
     ) -> Dict[str, Any]:
         payload = {
             "title": title,
@@ -289,6 +290,8 @@ class PBClient:
             "source": source,
             "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
         }
+        if message_id:
+            payload["message_id"] = message_id
         return self.call_custom_api("system/event", method="POST", data=payload, timeout=5)
 
     def request_ibkr_2fa(

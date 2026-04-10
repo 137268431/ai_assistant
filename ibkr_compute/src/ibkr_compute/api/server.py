@@ -6,6 +6,7 @@ IBKR Compute — 指标计算 HTTP 服务
   POST /compute     — 读最新 ibkr_bars, 更新引擎, 写 ibkr_indicators / ibkr_signals
   POST /scan        — 盘前扫描, 写 ibkr_targets
   POST /recompute   — 全量重算 (清空缓存, 从 ibkr_bars 历史重建)
+  POST /retention/cleanup — 清理超过留存窗口的历史行情链路数据
   POST /chart/timeline — 基于 ibkr_bars 现算图表指标 / 信号时间线
   POST /chart/compare — 对比 IBKR API bars 链路 vs ibkr_bars 链路
   GET  /contracts/search — 通过 IBKR API 搜索可用合约候选
@@ -39,6 +40,7 @@ from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
@@ -93,6 +95,8 @@ metadata_cache_updated_at = 0.0
 compute_lock = threading.RLock()
 ibkr_account_snapshot_cache = {}
 ibkr_account_snapshot_cache_lock = threading.Lock()
+host_cpu_snapshot_lock = threading.Lock()
+host_cpu_snapshot_cache = None
 
 INTERVALS = list(COMPUTE_INTERVALS)
 SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
@@ -2591,6 +2595,36 @@ def recompute():
     })
 
 
+@app.route("/retention/cleanup", methods=["POST"])
+def retention_cleanup():
+    cfg.refresh()
+    payload = request.get_json(silent=True) or {}
+    requested_environments = get_requested_environments(defaults=SUPPORTED_COMPUTE_ENVIRONMENTS)
+    try:
+        retention_days = int(payload.get("retention_days") or 0) or 0
+    except (TypeError, ValueError):
+        retention_days = 0
+    source = str(payload.get("source") or "").strip().lower() or "api"
+    force = str(payload.get("force") or "").strip().lower() in ("1", "true", "yes", "on")
+    retention = DataRetention(
+        pb_client=pb,
+        config=cfg,
+        default_environments=requested_environments,
+    )
+    result = retention.cleanup(
+        environments=requested_environments,
+        retention_days=retention_days if retention_days > 0 else None,
+        source=source,
+        force=force,
+    )
+    return jsonify({
+        "ok": bool(result.get("ok", True)),
+        "action": "retention_cleanup",
+        "requested_environments": requested_environments,
+        **result,
+    })
+
+
 @app.route("/backtest/run", methods=["POST"])
 def backtest_run():
     payload = request.get_json(silent=True) or {}
@@ -3069,9 +3103,17 @@ def get_ibkr_service():
     return _ibkr_service
 
 
+def _normalize_runtime_environment_name(value, default: str = "live") -> str:
+    normalized = str(value or "").strip().lower() or default
+    if normalized in SUPPORTED_COMPUTE_ENVIRONMENTS:
+        return normalized
+    fallback = str(default or "live").strip().lower() or "live"
+    return fallback if fallback in SUPPORTED_COMPUTE_ENVIRONMENTS else "live"
+
+
 def _ibkr_service_environment(service) -> str:
     try:
-        return str(service.status().get("environment") or "live").strip().lower() or "live"
+        return _normalize_runtime_environment_name(service.status().get("environment"), "live")
     except Exception:
         return "live"
 
@@ -3156,6 +3198,40 @@ def _coerce_live_bool(value, default: bool = False) -> bool:
     return default
 
 
+def _coerce_time_ms(value) -> int:
+    if value in (None, ""):
+        return 0
+    if isinstance(value, (int, float)):
+        try:
+            number = float(value)
+        except Exception:
+            return 0
+        if number <= 0:
+            return 0
+        return int(number if number > 1e12 else number * 1000)
+
+    text = str(value).strip()
+    if not text:
+        return 0
+    if text.isdigit():
+        number = int(text)
+        return int(number if number > 1_000_000_000_000 else number * 1000)
+    if len(text) == 17 and text[8] == "-" and text[:8].isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:8]}T{text[9:]}"
+    elif len(text) == 8 and text.isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    else:
+        text = text.replace(" ", "T")
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
 def _normalize_live_position(position: dict) -> dict:
     quantity = float(_coerce_float(position.get("position"), 0.0) or 0.0)
     market_price = float(_coerce_float(position.get("mktPrice"), 0.0) or 0.0)
@@ -3185,6 +3261,7 @@ def _normalize_live_order(order: dict) -> dict:
     # Support both bulk /iserver/account/orders format and individual /iserver/account/order/status/{id} format
     status = str(order.get("status") or order.get("order_status") or order.get("orderStatus") or "").strip()
     parent_id = str(order.get("parentId") or order.get("parent_order_id") or "").strip()
+    client_order_id = _extract_live_order_text(order, "cOID", "coid", "order_ref", "orderRef")
     order_type = str(order.get("orderType") or order.get("order_type") or order.get("orderDesc") or "").strip().upper()
     total_quantity = float(
         _coerce_float(
@@ -3199,8 +3276,9 @@ def _normalize_live_order(order: dict) -> dict:
     if remaining_quantity is None:
         remaining_quantity = max(total_quantity - filled_quantity, 0.0)
 
-    closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED"}
+    closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"}
     normalized_status = status.upper()
+    canonical_status = _canonical_order_status(status)
     if not parent_id:
         role = "entry"
     elif "STP" in order_type or "STOP" in order_type:
@@ -3213,14 +3291,25 @@ def _normalize_live_order(order: dict) -> dict:
     # price: bulk uses "price", individual status uses "limit_price" / "stop_price"
     price = float(_coerce_float(order.get("price") or order.get("limit_price"), 0.0) or 0.0)
     trigger_price = float(_coerce_float(order.get("auxPrice") or order.get("stop_price"), 0.0) or 0.0)
+    submitted_time = _extract_live_order_text(order, "submittedTime", "submitTime", "order_time", "createdTime", "createTime")
+    last_execution_time = _extract_live_order_text(order, "lastExecutionTime", "lastFillTime", "lastExecutionTime_r")
+    good_till_date = _extract_live_order_text(order, "goodTillDate")
+    is_open = bool(normalized_status and normalized_status not in closed_statuses)
+    seed_sources = order.get("_seed_sources") or order.get("seed_sources") or []
+    if isinstance(seed_sources, (tuple, set)):
+        seed_sources = list(seed_sources)
+    if not isinstance(seed_sources, list):
+        seed_sources = [str(seed_sources)]
 
     return {
         "order_id": str(order.get("orderId") or order.get("order_id") or order.get("id") or "").strip(),
         "parent_id": parent_id,
+        "client_order_id": client_order_id,
         "symbol": str(order.get("ticker") or order.get("symbol") or order.get("contractDesc") or order.get("contract_description_1") or "").strip().upper(),
         "conid": int(_coerce_float(order.get("conid") or order.get("conidex"), 0) or 0),
         "side": str(order.get("side") or "").strip().upper(),
         "status": status,
+        "status_key": canonical_status,
         "role": role,
         "order_type": order_type,
         "order_description": _extract_live_order_text(order, "orderDesc", "order_description", "order_description_with_contract", "description"),
@@ -3235,19 +3324,26 @@ def _normalize_live_order(order: dict) -> dict:
         "currency": str(order.get("currency") or "USD").strip().upper(),
         "asset_class": _extract_live_order_text(order, "secType", "sec_type", "assetClass").upper(),
         "listing_exchange": _extract_live_order_text(order, "listingExchange", "listing_exchange", "exchange"),
-        "submitted_time": _extract_live_order_text(order, "submittedTime", "submitTime", "order_time", "createdTime", "createTime"),
-        "last_execution_time": _extract_live_order_text(order, "lastExecutionTime", "lastFillTime", "lastExecutionTime_r"),
-        "good_till_date": _extract_live_order_text(order, "goodTillDate"),
+        "submitted_time": submitted_time,
+        "submitted_time_ms": _coerce_time_ms(submitted_time),
+        "last_execution_time": last_execution_time,
+        "last_execution_time_ms": _coerce_time_ms(last_execution_time),
+        "good_till_date": good_till_date,
+        "good_till_date_ms": _coerce_time_ms(good_till_date),
         "outside_rth": _coerce_live_bool(order.get("outsideRth") or order.get("outside_rth"), False),
-        "can_cancel": bool(normalized_status and normalized_status not in closed_statuses and not _coerce_live_bool(order.get("cannot_cancel_order"), False)),
-        "can_modify": bool(normalized_status and normalized_status not in closed_statuses and not _coerce_live_bool(order.get("order_not_editable"), False)),
+        "is_open": is_open,
+        "is_child": bool(parent_id),
+        "can_cancel": bool(is_open and not _coerce_live_bool(order.get("cannot_cancel_order"), False)),
+        "can_modify": bool(is_open and not _coerce_live_bool(order.get("order_not_editable"), False)),
+        "recovery_source": _extract_live_order_text(order, "_recovery_source", "recovery_source") or "bulk",
+        "seed_sources": [str(item).strip() for item in seed_sources if str(item).strip()],
         "raw": order,
     }
 
 
 def _canonical_order_status(value) -> str:
     text = str(value or "").strip().upper()
-    if text in {"PENDING", "PRESUBMITTED", "SUBMITTED", "PENDINGSUBMIT", "INPROGRESS"}:
+    if text in {"PENDING", "PRESUBMITTED", "SUBMITTED", "PENDINGSUBMIT", "INPROGRESS", "INIT"}:
         return "SUBMITTED"
     if text in {"FILLED", "EXECUTED"}:
         return "FILLED"
@@ -3618,65 +3714,97 @@ def _build_ibkr_account_snapshot(service) -> dict:
     try:
         pb_active = pb.get_records(
             "orders",
-            filter=f'environment="{_ibkr_service_environment(service)}" && broker_order_id!="" && (status="Submitted" || status="Init" || status="PreSubmitted")',
+            filter=(
+                f'environment="{_ibkr_service_environment(service)}" && broker_order_id!="" '
+                '&& (relation_status="active" || relation_status="planned" || status="Submitted" || '
+                'status="Init" || status="PreSubmitted" || status="PendingSubmit" || status="Pending")'
+            ),
             sort="-updated",
-            per_page=50,
+            per_page=200,
         )
         fallback_ids = [str(r.get("broker_order_id") or "").strip() for r in (pb_active or []) if r.get("broker_order_id")]
     except Exception as exc:
         logger.debug("Live orders PB fallback seed load failed: %s", exc)
 
-    # The Gateway bulk orders endpoint can be empty after session restart, and it can
-    # also occasionally omit a subset of still-active orders. Supplement it with
-    # per-order status lookups for PB-tracked active broker ids.
-    if fallback_ids:
-        existing_ids = {
-            str(item.get("orderId") or item.get("order_id") or item.get("id") or "").strip()
-            for item in (orders_raw or [])
-            if isinstance(item, dict)
-        }
-        missing_ids = [order_id for order_id in fallback_ids if order_id and order_id not in existing_ids]
-        if not orders_raw:
-            missing_ids = fallback_ids
-        if missing_ids:
-            try:
-                recovered_orders = service.order_tracker.get_orders_by_ids(missing_ids)
-                if recovered_orders:
-                    if orders_raw:
-                        merged_orders = list(orders_raw)
-                        merged_ids = set(existing_ids)
-                        recovered_count = 0
-                        for item in recovered_orders:
-                            order_id = str(item.get("orderId") or item.get("order_id") or item.get("id") or "").strip()
-                            if not order_id or order_id in merged_ids:
-                                continue
-                            merged_orders.append(item)
-                            merged_ids.add(order_id)
-                            recovered_count += 1
-                        if recovered_count:
-                            orders_raw = merged_orders
-                            logger.info(
-                                "Live orders supplemental fallback: bulk=%d recovered=%d total=%d",
-                                len(existing_ids),
-                                recovered_count,
-                                len(orders_raw),
-                            )
-                    else:
-                        orders_raw = recovered_orders
-                        logger.info(
-                            "Live orders fallback: bulk returned empty, recovered %d orders via individual status fetch",
-                            len(orders_raw),
-                        )
-            except Exception as exc:
-                logger.debug("Live orders fallback failed: %s", exc)
+    live_open_payload = {
+        "orders": [],
+        "coverage": {
+            "coverage_state": "complete",
+            "bulk_open_count": 0,
+            "recovered_from_status_count": 0,
+            "tracker_seed_count": 0,
+            "pb_seed_count": len(fallback_ids),
+            "unresolved_seed_count": 0,
+            "unresolved_order_ids": [],
+        },
+        "diagnostics": {
+            "seed_sources": {},
+            "recovered_order_ids": [],
+            "resolved_closed_order_ids": [],
+            "bulk_order_ids": [],
+        },
+    }
+    if hasattr(service, "order_tracker") and service.order_tracker:
+        try:
+            live_open_payload = service.order_tracker.get_complete_live_open_orders(
+                pb_seed_ids=fallback_ids,
+                bulk_orders=orders_raw,
+                force=True,
+            )
+            existing_ids = {
+                str(item.get("orderId") or item.get("order_id") or item.get("id") or "").strip()
+                for item in (orders_raw or [])
+                if isinstance(item, dict)
+            }
+            merged_orders = list(orders_raw or [])
+            recovered_count = 0
+            for item in live_open_payload.get("orders") or []:
+                if not isinstance(item, dict):
+                    continue
+                order_id = str(item.get("orderId") or item.get("order_id") or item.get("id") or "").strip()
+                if not order_id or order_id in existing_ids:
+                    continue
+                merged_orders.append(item)
+                existing_ids.add(order_id)
+                recovered_count += 1
+            if recovered_count:
+                orders_raw = merged_orders
+                logger.info(
+                    "Live orders supplemental fallback: bulk=%d recovered=%d total=%d",
+                    max(len(existing_ids) - recovered_count, 0),
+                    recovered_count,
+                    len(orders_raw),
+                )
+        except Exception as exc:
+            logger.debug("Live open order recovery failed: %s", exc)
 
     positions = [_normalize_live_position(item) for item in (positions_raw or []) if isinstance(item, dict)]
     orders = [_normalize_live_order(item) for item in (orders_raw or []) if isinstance(item, dict)]
+    live_open_orders = [_normalize_live_order(item) for item in (live_open_payload.get("orders") or []) if isinstance(item, dict)]
+    if not live_open_orders:
+        existing_coverage = live_open_payload.get("coverage") or {}
+        live_open_orders = [item for item in orders if item.get("is_open")]
+        live_open_payload["coverage"] = {
+            "coverage_state": str(existing_coverage.get("coverage_state") or "complete"),
+            "bulk_open_count": int(existing_coverage.get("bulk_open_count") or len(live_open_orders)),
+            "recovered_from_status_count": int(existing_coverage.get("recovered_from_status_count") or 0),
+            "tracker_seed_count": int(existing_coverage.get("tracker_seed_count") or 0),
+            "pb_seed_count": int(existing_coverage.get("pb_seed_count") or len(fallback_ids)),
+            "unresolved_seed_count": int(existing_coverage.get("unresolved_seed_count") or 0),
+            "unresolved_order_ids": list(existing_coverage.get("unresolved_order_ids") or []),
+        }
     summary_map = _summary_lookup(summary_raw)
 
     total_unrealized = sum(float(item.get("unrealized_pnl", 0) or 0) for item in positions)
     total_market_value = sum(abs(float(item.get("market_value", 0) or 0)) for item in positions)
-    open_orders_count = len([item for item in orders if item.get("can_cancel")])
+    open_orders_count = len(live_open_orders)
+    cancelable_orders_count = len([item for item in live_open_orders if item.get("can_cancel")])
+    editable_orders_count = len([item for item in live_open_orders if item.get("can_modify")])
+    outside_rth_orders_count = len([item for item in live_open_orders if item.get("outside_rth")])
+    recovered_open_orders_count = len([
+        item for item in live_open_orders
+        if str(item.get("recovery_source") or "").strip() == "status_recovered"
+    ])
 
     summary = {
         "account_code": _extract_summary_text(summary_map, "accountcode") or account_id,
@@ -3708,11 +3836,18 @@ def _build_ibkr_account_snapshot(service) -> dict:
         "summary_raw": summary_raw if isinstance(summary_raw, dict) else {},
         "positions": positions,
         "orders": orders,
+        "live_open_orders": live_open_orders,
+        "live_order_coverage": live_open_payload.get("coverage") or {},
+        "recovery_diagnostics": live_open_payload.get("diagnostics") or {},
         "counts": {
             "positions": len(positions),
             "open_positions": len([item for item in positions if float(item.get("quantity", 0) or 0) != 0]),
             "orders": len(orders),
             "open_orders": open_orders_count,
+            "cancelable_orders": cancelable_orders_count,
+            "editable_orders": editable_orders_count,
+            "outside_rth_orders": outside_rth_orders_count,
+            "recovered_open_orders": recovered_open_orders_count,
         },
         "errors": {
             "summary": summary_error,
@@ -3778,6 +3913,85 @@ def _read_proc_text(path: str) -> str:
             return handle.read()
     except OSError:
         return ""
+
+
+def _read_proc_cpu_times() -> dict | None:
+    raw_text = _read_proc_text("/proc/stat")
+    if not raw_text:
+        return None
+    for line in raw_text.splitlines():
+        if not line.startswith("cpu "):
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            return None
+        try:
+            values = [int(item) for item in parts[1:]]
+        except (TypeError, ValueError):
+            return None
+        total = sum(values)
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        return {
+            "total": total,
+            "idle": idle,
+            "sampled_at": time.time(),
+        }
+    return None
+
+
+def _build_cpu_usage_snapshot(previous: dict | None, current: dict | None, source: str = "/proc/stat") -> dict:
+    if not previous or not current:
+        return {
+            "used_pct": None,
+            "idle_pct": None,
+            "sample_span_s": None,
+            "source": source,
+        }
+
+    total_delta = int(current.get("total", 0) or 0) - int(previous.get("total", 0) or 0)
+    idle_delta = int(current.get("idle", 0) or 0) - int(previous.get("idle", 0) or 0)
+    sample_span_s = max(0.0, float(current.get("sampled_at", 0) or 0) - float(previous.get("sampled_at", 0) or 0))
+    if total_delta <= 0:
+        return {
+            "used_pct": None,
+            "idle_pct": None,
+            "sample_span_s": round(sample_span_s, 3) if sample_span_s > 0 else None,
+            "source": source,
+        }
+
+    used_pct = max(0.0, min(100.0, ((total_delta - idle_delta) / total_delta) * 100.0))
+    idle_pct = max(0.0, min(100.0, (idle_delta / total_delta) * 100.0))
+    return {
+        "used_pct": round(used_pct, 2),
+        "idle_pct": round(idle_pct, 2),
+        "sample_span_s": round(sample_span_s, 3) if sample_span_s > 0 else None,
+        "source": source,
+    }
+
+
+def _collect_cpu_usage_snapshot(prime_interval_s: float = 0.05) -> dict:
+    global host_cpu_snapshot_cache
+
+    with host_cpu_snapshot_lock:
+        previous = host_cpu_snapshot_cache
+        current = _read_proc_cpu_times()
+        if not current:
+            return {
+                "used_pct": None,
+                "idle_pct": None,
+                "sample_span_s": None,
+                "source": "unavailable",
+            }
+
+        # Prime the cache on the first request so the dashboard has an immediate CPU sample.
+        if previous is None and prime_interval_s > 0:
+            previous = current
+            time.sleep(prime_interval_s)
+            current = _read_proc_cpu_times() or current
+
+        host_cpu_snapshot_cache = current
+
+    return _build_cpu_usage_snapshot(previous, current)
 
 
 def _collect_host_memory_snapshot() -> dict:
@@ -3883,6 +4097,7 @@ def _collect_host_snapshot() -> dict:
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
         "cpu_count": load_snapshot["cpu_count"],
+        "cpu": _collect_cpu_usage_snapshot(),
         "loadavg": load_snapshot["loadavg"],
         "memory": _collect_host_memory_snapshot(),
         "disk": _collect_disk_snapshot(),
@@ -3976,7 +4191,7 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
     }
 
 
-def _build_api_utilization_snapshot(runtime_environment: str, runtime_status: dict, sample_payload: dict) -> dict:
+def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_status: dict, sample_payload: dict) -> dict:
     websocket = runtime_status.get("websocket") or {}
     market_universe = runtime_status.get("market_universe") or {}
     data_backfill = runtime_status.get("data_backfill") or {}
@@ -3995,9 +4210,15 @@ def _build_api_utilization_snapshot(runtime_environment: str, runtime_status: di
         or len(websocket.get("pending_conids") or [])
         or 0
     )
+    config_source = getattr(service, "config", None) or cfg
+    if hasattr(config_source, "refresh"):
+        try:
+            config_source.refresh()
+        except Exception:
+            pass
     subscription_limit = max(
         0,
-        int(cfg.get_for_environment("ibkr_target_subscription_limit", runtime_environment, "60") or 0),
+        int(config_source.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 60) or 0),
     )
     utilization_pct = (
         round((active_subscription_count / subscription_limit) * 100.0, 2)
@@ -4021,6 +4242,120 @@ def _build_api_utilization_snapshot(runtime_environment: str, runtime_status: di
         "last_message_age_s": websocket.get("last_message_age_s"),
         "last_tic": websocket.get("last_tic"),
         "last_tic_age_s": websocket.get("last_tic_age_s"),
+    }
+
+
+def _build_uninitialized_runtime_status(runtime_environment: str, error: str | None = None) -> dict:
+    detail = str(error or "IBKR service not initialized").strip() or "IBKR service not initialized"
+    return {
+        "ok": False,
+        "environment": _normalize_runtime_environment_name(runtime_environment, "live"),
+        "error": detail,
+        "starting": False,
+        "startup_complete": False,
+        "runtime_phase": "stopped",
+        "gateway": {
+            "managed_by": "",
+            "pid": 0,
+            "reachable": False,
+            "running": False,
+            "status_code": 0,
+            "uptime_s": 0,
+        },
+        "session": {
+            "authenticated": False,
+            "consecutive_failures": 0,
+            "last_tickle": "",
+            "running": False,
+        },
+        "websocket": {
+            "connected": False,
+            "last_message": "",
+            "message_count": 0,
+            "order_update_count": 0,
+            "pending_count": 0,
+            "ping_interval_s": 45,
+            "ready": False,
+            "running": False,
+            "subscribed_count": 0,
+        },
+        "bar_aggregator": {
+            "active_bars": {},
+        },
+        "data_backfill": {
+            "max_concurrency": 0,
+            "request_count": 0,
+            "request_spacing_s": 0,
+            "retry_count": 0,
+            "throttle_count": 0,
+            "total_backfilled": 0,
+        },
+        "order_tracker": {
+            "last_poll": "",
+            "running": False,
+            "tracked_orders": 0,
+        },
+        "signal_router": {
+            "last_poll": "",
+            "running": False,
+        },
+        "realtime_compute": {
+            "last_bar_close": "",
+            "last_elapsed_s": 0,
+            "last_errors": 0,
+            "last_processed": 0,
+            "last_run": "",
+            "last_signals": 0,
+            "queue_size": 0,
+            "runs": 0,
+        },
+        "market_universe": {
+            "active_repair_interval_min": 0,
+            "active_subscription_count": 0,
+            "active_target_count": 0,
+            "active_target_date": "",
+            "active_trade_symbols": [],
+            "last_active_repair": "",
+            "last_active_repair_reasons": {},
+            "last_active_repair_symbols": [],
+            "last_active_repair_symbols_total": 0,
+            "last_daily_reset": "",
+            "last_target_refresh": "",
+            "last_watchlist_backfill": "",
+            "market_date": "",
+            "watchlist_backfill_interval_min": 0,
+            "watchlist_pool_count": 0,
+        },
+        "warmup": {
+            "finished_at": "",
+            "integrity_pending_symbols": [],
+            "integrity_pending_symbols_total": 0,
+            "integrity_repair_reasons": {},
+            "last_error": detail,
+            "last_success_at": "",
+            "monitor_symbols": [],
+            "monitor_symbols_total": 0,
+            "pending_symbols": [],
+            "pending_symbols_total": 0,
+            "phase": "idle",
+            "preflight_repair": {},
+            "ready_monitor_symbols": 0,
+            "ready_symbols": 0,
+            "ready_symbols_list": [],
+            "ready_trade_symbols": 0,
+            "reason": detail,
+            "requested_at": "",
+            "required_interval": "",
+            "started_at": "",
+            "symbol_status": [],
+            "symbols": [],
+            "symbols_total": 0,
+            "target_date": "",
+            "trade_symbols": [],
+            "trade_symbols_total": 0,
+            "trading_gate_open": False,
+            "trading_gate_reason": "runtime_unavailable",
+        },
     }
 
 
@@ -4216,6 +4551,25 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
                 f"1 分钟 load / CPU = {load_per_cpu:.3f} 。",
             )
 
+    cpu_used_pct = ((host_snapshot.get("cpu") or {}).get("used_pct"))
+    if cpu_used_pct is not None:
+        if float(cpu_used_pct) >= 95:
+            _append_monitor_flag(
+                flags,
+                "error",
+                "host_cpu_critical",
+                "Host CPU critical",
+                f"主机 CPU 占用 {cpu_used_pct:.2f}% 。",
+            )
+        elif float(cpu_used_pct) >= 85:
+            _append_monitor_flag(
+                flags,
+                "warning",
+                "host_cpu_high",
+                "Host CPU high",
+                f"主机 CPU 占用 {cpu_used_pct:.2f}% 。",
+            )
+
     if not flags and int(market_universe.get("active_subscription_count", 0) or 0) > 0:
         _append_monitor_flag(
             flags,
@@ -4236,16 +4590,24 @@ def _derive_monitor_status(flags: list[dict]) -> str:
     return "ok"
 
 
-def _build_ibkr_monitor_snapshot(service) -> dict:
-    runtime_environment = _ibkr_service_environment(service)
-    runtime_status = service.status() if hasattr(service, "status") else {}
+def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = None, service_error: str | None = None) -> dict:
+    runtime_environment = _normalize_runtime_environment_name(
+        requested_environment or _ibkr_service_environment(service),
+        "live",
+    )
+    service_available = service is not None
+    runtime_status = (
+        service.status()
+        if service_available and hasattr(service, "status")
+        else _build_uninitialized_runtime_status(runtime_environment, service_error)
+    )
     compute_summary = _build_compute_summary()
     sample_payload = _build_monitor_samples(service, runtime_status)
-    api_utilization = _build_api_utilization_snapshot(runtime_environment, runtime_status, sample_payload)
+    api_utilization = _build_api_utilization_snapshot(service, runtime_environment, runtime_status, sample_payload)
     host_snapshot = _collect_host_snapshot()
     flags = _build_monitor_flags(runtime_status, api_utilization, host_snapshot, sample_payload)
-    return {
-        "ok": True,
+    payload = {
+        "ok": service_available,
         "status": _derive_monitor_status(flags),
         "environment": runtime_environment,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -4257,6 +4619,9 @@ def _build_ibkr_monitor_snapshot(service) -> dict:
         "host": host_snapshot,
         "flags": flags,
     }
+    if not service_available and service_error:
+        payload["error"] = str(service_error)
+    return payload
 
 
 @app.route("/ibkr/start", methods=["POST"])
@@ -4345,11 +4710,18 @@ def ibkr_status():
 
 @app.route("/ibkr/monitor", methods=["GET"])
 def ibkr_monitor():
+    requested_environment = _normalize_runtime_environment_name(request.args.get("environment"), "live")
     service = get_ibkr_service()
     if not service:
-        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+        return jsonify(
+            _build_ibkr_monitor_snapshot(
+                None,
+                requested_environment=requested_environment,
+                service_error="IBKR service not initialized",
+            )
+        )
     _maybe_restore_ibkr_service(service)
-    return jsonify(_build_ibkr_monitor_snapshot(service))
+    return jsonify(_build_ibkr_monitor_snapshot(service, requested_environment=requested_environment))
 
 
 @app.route("/ibkr/2fa/takeover", methods=["POST"])

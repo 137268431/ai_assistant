@@ -515,6 +515,177 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
+        .coverage-banner {
+            display: grid;
+            gap: 8px;
+            margin-bottom: 12px;
+            border-radius: 14px;
+            border: 1px solid rgba(125, 211, 252, 0.18);
+            background: rgba(12, 18, 30, 0.88);
+            padding: 12px 14px;
+        }
+
+        .coverage-banner.warn {
+            border-color: rgba(246,173,85,0.28);
+            background: rgba(42, 24, 10, 0.92);
+        }
+
+        .coverage-banner.danger {
+            border-color: rgba(252,129,129,0.30);
+            background: rgba(46, 18, 18, 0.94);
+        }
+
+        .coverage-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .coverage-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .orders-toolbar {
+            display: grid;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .orders-search {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--text);
+            padding: 11px 13px;
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
+
+        .orders-search:focus {
+            border-color: rgba(99,179,237,0.42);
+            box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+        }
+
+        .filter-chip-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .filter-chip {
+            border: 1px solid rgba(160,174,192,0.18);
+            border-radius: 999px;
+            padding: 6px 10px;
+            background: rgba(12, 18, 30, 0.84);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+        }
+
+        .filter-chip.active {
+            border-color: rgba(99,179,237,0.30);
+            color: var(--accent);
+            background: rgba(99,179,237,0.10);
+        }
+
+        .orders-section-stack {
+            display: grid;
+            gap: 16px;
+        }
+
+        .orders-section-card {
+            display: grid;
+            gap: 12px;
+        }
+
+        .section-note {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .chain-card {
+            display: grid;
+            gap: 12px;
+        }
+
+        .chain-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .chain-summary-item {
+            background: rgba(20,28,46,0.9);
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+
+        .chain-summary-value {
+            margin-top: 6px;
+            font-size: 14px;
+            font-weight: 700;
+            word-break: break-word;
+        }
+
+        .order-row {
+            border-top: 1px solid rgba(255,255,255,0.06);
+            padding-top: 12px;
+            display: grid;
+            gap: 12px;
+        }
+
+        .order-row:first-of-type {
+            border-top: none;
+            padding-top: 0;
+        }
+
+        .order-row-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .order-row-title {
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .raw-details {
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 12px;
+            background: rgba(10, 16, 28, 0.76);
+            padding: 10px 12px;
+        }
+
+        .raw-details summary {
+            cursor: pointer;
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .raw-pre {
+            margin: 10px 0 0;
+            max-height: 260px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 11px;
+            line-height: 1.6;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
 
 
         .detail-row {
@@ -612,7 +783,8 @@
             .meta-grid,
             .position-grid,
             .order-grid,
-            .orders-summary-grid {
+            .orders-summary-grid,
+            .chain-summary-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
         }
@@ -631,7 +803,8 @@
             .ticket-grid,
             .position-grid,
             .order-grid,
-            .orders-summary-grid {
+            .orders-summary-grid,
+            .chain-summary-grid {
                 grid-template-columns: 1fr;
             }
             .record-symbol {
@@ -833,6 +1006,7 @@
         let latestSnapshot = null;
         let actionBusy = false;
         let ticketDrawerOpen = false;
+        let orderViewState = { search: '', scope: 'all' };
 
         function initAuth() {
             const token = getToken();
@@ -1134,94 +1308,215 @@
             window.location.href = buildPageUrl('/orders.html', {}, { environment: currentEnvironment });
         }
 
+        function getLiveOrders(snapshot) {
+            const liveOrders = Array.isArray(snapshot?.live_open_orders) ? snapshot.live_open_orders.slice() : [];
+            if (liveOrders.length) return liveOrders;
+            const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.slice() : [];
+            return orders.filter((order) => order?.is_open || order?.can_cancel);
+        }
 
-        function renderOrdersSummary(orders, snapshot) {
+        function buildFallbackLiveGroups(liveOrders) {
+            const grouped = new Map();
+            (liveOrders || []).forEach((order) => {
+                const key = String(order?.trade_group_id || order?.entry_order_unique_id || order?.parent_id || order?.order_id || order?.client_order_id || getOrderChainKey(order)).trim();
+                if (!key) return;
+                const orderMatchState = String(order?.match_state || order?.pb_context?.match_state || 'broker_only').trim().toLowerCase() === 'matched'
+                    ? 'matched'
+                    : 'broker_only';
+                const recoverySource = String(order?.recovery_source || '').trim();
+                const current = grouped.get(key) || {
+                    group_key: key,
+                    symbol: String(order?.symbol || '').trim().toUpperCase(),
+                    signal_id: String(order?.signal_id || order?.pb_context?.signal_id || '').trim(),
+                    trade_group_id: String(order?.trade_group_id || order?.pb_context?.trade_group_id || key).trim(),
+                    entry_order_unique_id: String(order?.entry_order_unique_id || order?.pb_context?.entry_order_unique_id || order?.client_order_id || order?.order_id || '').trim(),
+                    latest_updated: '',
+                    latest_updated_ms: 0,
+                    latest_order_status: '',
+                    match_state: orderMatchState,
+                    live_order_count: 0,
+                    matched_live_orders: 0,
+                    broker_only_live_orders: 0,
+                    cancelable_orders: 0,
+                    editable_orders: 0,
+                    outside_rth_orders: 0,
+                    total_quantity: 0,
+                    filled_quantity: 0,
+                    remaining_quantity: 0,
+                    recovery_sources: [],
+                    orders: [],
+                };
+                current.live_order_count += 1;
+                current.matched_live_orders += orderMatchState === 'matched' ? 1 : 0;
+                current.broker_only_live_orders += orderMatchState === 'matched' ? 0 : 1;
+                if (orderMatchState === 'matched') current.match_state = 'matched';
+                if (order?.can_cancel) current.cancelable_orders += 1;
+                if (order?.can_modify) current.editable_orders += 1;
+                if (order?.outside_rth) current.outside_rth_orders += 1;
+                current.total_quantity += Math.abs(Number(order?.total_quantity || 0));
+                current.filled_quantity += Math.abs(Number(order?.filled_quantity || 0));
+                current.remaining_quantity += Math.abs(Number(order?.remaining_quantity || 0));
+                if (recoverySource && !current.recovery_sources.includes(recoverySource)) {
+                    current.recovery_sources.push(recoverySource);
+                }
+                current.orders.push(order);
+                const updatedMs = parseTimeValue(order?.last_execution_time || order?.submitted_time);
+                if (updatedMs >= current.latest_updated_ms) {
+                    current.latest_updated_ms = updatedMs;
+                    current.latest_updated = order?.last_execution_time || order?.submitted_time || '';
+                    current.latest_order_status = order?.status || '';
+                }
+                grouped.set(key, current);
+            });
+            return Array.from(grouped.values()).sort((a, b) => Number(b.latest_updated_ms || 0) - Number(a.latest_updated_ms || 0));
+        }
+
+        function getLiveGroups(snapshot, liveOrders) {
+            const groups = Array.isArray(snapshot?.live_order_groups) ? snapshot.live_order_groups.slice() : [];
+            return groups.length ? groups : buildFallbackLiveGroups(liveOrders);
+        }
+
+        function getGroupSearchText(group) {
+            const parts = [
+                group?.symbol,
+                group?.signal_id,
+                group?.trade_group_id,
+                group?.entry_order_unique_id,
+                group?.group_key,
+            ];
+            (group?.orders || []).forEach((order) => {
+                parts.push(
+                    order?.order_id,
+                    order?.client_order_id,
+                    order?.parent_id,
+                    order?.match_state,
+                    order?.status,
+                    order?.diagnostic_note,
+                    ...(Array.isArray(order?.diagnostic_tags) ? order.diagnostic_tags : [])
+                );
+            });
+            return parts.map((item) => String(item || '').trim().toLowerCase()).join(' ');
+        }
+
+        function groupMatchesSearch(group, query) {
+            const normalized = String(query || '').trim().toLowerCase();
+            if (!normalized) return true;
+            return getGroupSearchText(group).includes(normalized);
+        }
+
+        function groupMatchesScope(group, scope) {
+            const normalized = String(scope || 'all').trim().toLowerCase();
+            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            if (normalized === 'all') return true;
+            if (normalized === 'matched') return String(group?.match_state || '').toLowerCase() === 'matched';
+            if (normalized === 'broker_only') return String(group?.match_state || '').toLowerCase() === 'broker_only';
+            if (normalized === 'pb_shadow') return Boolean(group?.is_pb_shadow);
+            if (normalized === 'cancelable') return orders.some((order) => order?.can_cancel);
+            if (normalized === 'editable') return orders.some((order) => order?.can_modify);
+            if (normalized === 'entry' || normalized === 'tp' || normalized === 'stop') {
+                return orders.some((order) => {
+                    const label = getOrderRoleLabel(order).toLowerCase();
+                    return normalized === 'entry' ? label === 'entry' : normalized === 'tp' ? label === 'tp' : label === 'stop';
+                });
+            }
+            return true;
+        }
+
+        function filterOrderGroups(groups) {
+            return (groups || []).filter((group) => groupMatchesSearch(group, orderViewState.search) && groupMatchesScope(group, orderViewState.scope));
+        }
+
+        function getCoverageTone(snapshot) {
+            const coverageState = String(snapshot?.live_order_coverage?.coverage_state || snapshot?.order_reconciliation?.coverage_state || 'complete').trim().toLowerCase();
+            if (coverageState === 'degraded') return 'danger';
+            if (coverageState === 'recovered') return 'warn';
+            return '';
+        }
+
+        function renderFilterChip(label, scope) {
+            const active = orderViewState.scope === scope ? ' active' : '';
+            return `<button class="filter-chip${active}" type="button" onclick="setOrderScope('${escapeHtml(scope)}')">${escapeHtml(label)}</button>`;
+        }
+
+        function formatRecoverySummary(order) {
+            const recovery = String(order?.recovery_source || 'bulk').trim();
+            const seeds = Array.isArray(order?.seed_sources) ? order.seed_sources.filter(Boolean).join('+') : '';
+            return seeds ? `${recovery} / ${seeds}` : recovery;
+        }
+
+        function renderCoverageBanner(snapshot, liveOrders) {
+            const reconciliation = snapshot?.order_reconciliation || {};
+            const coverage = snapshot?.live_order_coverage || {};
+            const reconciliationUnresolved = Array.isArray(reconciliation.unresolved_order_ids) ? reconciliation.unresolved_order_ids : [];
+            const coverageUnresolved = Array.isArray(coverage.unresolved_order_ids) ? coverage.unresolved_order_ids : [];
+            const unresolvedIds = reconciliationUnresolved.length ? reconciliationUnresolved : coverageUnresolved;
+            const coverageState = String(coverage.coverage_state || reconciliation.coverage_state || 'complete').trim().toLowerCase();
+            const tone = getCoverageTone(snapshot);
+            const rows = [
+                `bulk=${Number(coverage.bulk_open_count || reconciliation.bulk_open_count || 0)} · recovered=${Number(coverage.recovered_from_status_count || reconciliation.recovered_open_orders || 0)} · unresolved=${Number(coverage.unresolved_seed_count || reconciliation.unresolved_seed_count || 0)}`,
+                `live_open=${Number(snapshot?.counts?.open_orders || liveOrders.length || 0)} · cancelable=${Number(snapshot?.counts?.cancelable_orders || reconciliation.cancelable_orders || 0)} · editable=${Number(snapshot?.counts?.editable_orders || reconciliation.editable_orders || 0)}`,
+            ];
+            if (unresolvedIds.length) rows.push(`unresolved ids: ${unresolvedIds.join(', ')}`);
+            const title = coverageState === 'degraded'
+                ? '当前实时挂单视图可能不完整'
+                : coverageState === 'recovered'
+                    ? '已对实时挂单做补回恢复'
+                    : '实时挂单集合已对齐';
+            return `
+                <div class="coverage-banner ${tone}">
+                    <div class="coverage-title">${escapeHtml(title)}</div>
+                    ${rows.map((line) => `<div class="coverage-copy">${escapeHtml(line)}</div>`).join('')}
+                </div>
+            `;
+        }
+
+        function renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroups) {
             const area = document.getElementById('ordersSummary');
             if (!area) return;
-            const managedGroups = Array.isArray(snapshot?.managed_order_groups) ? snapshot.managed_order_groups : [];
-            const pbOnlyGroups = Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups : [];
-            const reconciliation = snapshot?.order_reconciliation || {};
-
-            if (!orders.length && !managedGroups.length) {
+            if (!liveOrders.length && !pbOnlyGroups.length) {
                 area.innerHTML = '';
                 return;
             }
 
-            const openOrders = orders.filter((order) => order.can_cancel);
-            const focusOrders = openOrders.length ? openOrders : orders;
+            const reconciliation = snapshot?.order_reconciliation || {};
             const symbols = new Set();
             const statusCounts = {};
             const symbolCounts = {};
-            let entryCount = 0;
-            let tpCount = 0;
-            let stopCount = 0;
-            let otherChildren = 0;
-            let remainingQty = 0;
+            liveOrders.forEach((order) => {
+                const symbol = String(order.symbol || '').trim().toUpperCase();
+                const status = String(order.status_key || order.status || '--').trim().toUpperCase();
+                if (symbol) {
+                    symbols.add(symbol);
+                    symbolCounts[symbol] = (symbolCounts[symbol] || 0) + 1;
+                }
+                statusCounts[status] = (statusCounts[status] || 0) + 1;
+            });
 
-            if (focusOrders.length) {
-                focusOrders.forEach((order) => {
-                    const symbol = String(order.symbol || '').trim().toUpperCase();
-                    const status = String(order.status || '--').trim().toUpperCase();
-                    const role = getOrderRole(order);
-                    if (symbol) {
-                        symbols.add(symbol);
-                        symbolCounts[symbol] = (symbolCounts[symbol] || 0) + 1;
-                    }
-                    statusCounts[status] = (statusCounts[status] || 0) + 1;
-                    if (role === 'entry') entryCount += 1;
-                    else if (role === 'take_profit') tpCount += 1;
-                    else if (role === 'stop_loss') stopCount += 1;
-                    else otherChildren += 1;
-                });
-                remainingQty = computeBracketAwareRemainingQty(focusOrders);
-            } else {
-                managedGroups.forEach((group) => {
-                    const symbol = String(group.symbol || '').trim().toUpperCase();
-                    const status = String(group.latest_order_status || '--').trim().toUpperCase();
-                    if (symbol) {
-                        symbols.add(symbol);
-                        symbolCounts[symbol] = (symbolCounts[symbol] || 0) + 1;
-                    }
-                    statusCounts[status] = (statusCounts[status] || 0) + 1;
-                    const ordersInGroup = Array.isArray(group.orders) ? group.orders : [];
-                    ordersInGroup.forEach((order) => {
-                        const role = String(order.role || '').trim().toLowerCase();
-                        if (role === 'entry') entryCount += 1;
-                        else if (role === 'take_profit') tpCount += 1;
-                        else if (role === 'stop_loss') stopCount += 1;
-                        else otherChildren += 1;
-                        remainingQty += Math.abs(Number(order.quantity || 0) - Number(order.filled_qty || 0));
-                    });
-                });
-            }
-
-            const cards = focusOrders.length ? [
-                ['Open Orders', String(snapshot?.counts?.open_orders || openOrders.length || 0), '当前可撤挂单'],
-                ['Symbols', String(symbols.size), '有挂单的标的数'],
-                ['Entry / Exit', `${entryCount} / ${tpCount + stopCount + otherChildren}`, '入场单 / 保护单'],
-                ['Remaining Qty', formatQty(remainingQty), '按订单链去重后的待成交数量'],
-            ] : [
-                ['Broker Open', String(reconciliation.broker_open_orders || 0), 'IBKR 当前返回挂单'],
-                ['PB Groups', String(reconciliation.pb_active_order_groups || managedGroups.length || 0), '系统仍认定活跃订单组'],
-                ['PB Only', String(reconciliation.pb_only_active_order_groups || pbOnlyGroups.length || 0), 'PB 有但 broker 当前未返回'],
-                ['Symbols', String(symbols.size), '涉及标的数'],
-            ];
+            const roleLine = summarizeOrderRoles(liveOrders).text || '--';
             const statusLine = formatCompactCountMap(statusCounts, (key, count) => `${key}×${count}`) || '--';
             const symbolLine = formatCompactCountMap(symbolCounts, (key, count) => `${key}×${count}`) || '--';
-            const roleLine = summarizeOrderRoles(focusOrders.length ? focusOrders : collectManagedGroupOrders(managedGroups)).text;
-            const extraNotes = [];
-            if (pbOnlyGroups.length > 0) {
-                extraNotes.push(`PB 侧仍有 ${pbOnlyGroups.length} 个活跃订单组，但 broker 当前实时挂单接口未返回`)
-                const shadowRoleLine = summarizeOrderRoles(collectManagedGroupOrders(pbOnlyGroups)).text;
-                if (shadowRoleLine) {
-                    extraNotes.push(`PB shadow 角色: ${shadowRoleLine}`)
-                }
+            const cards = [
+                ['Live Open', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'Broker 已确认仍在挂着的订单'],
+                ['Chains', String(liveGroups.length || 0), '按订单链 / bracket 聚合'],
+                ['Matched', String(reconciliation.broker_matched_groups || 0), '已关联到 PB 订单链'],
+                ['Broker Only', String(reconciliation.broker_only_groups || 0), 'broker 有，PB 未匹配'],
+                ['PB Shadow', String(reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), 'PB 仍活跃，但 broker 未确认'],
+                ['Editable / Cancelable', `${snapshot?.counts?.editable_orders || 0} / ${snapshot?.counts?.cancelable_orders || 0}`, '可改 / 可撤'],
+                ['Outside RTH', String(snapshot?.counts?.outside_rth_orders || 0), '盘前盘后订单数'],
+                ['Remaining Qty', formatQty(computeBracketAwareRemainingQty(liveOrders)), '去重后的剩余待成交数量'],
+            ];
+            const extraNotes = [
+                `当前筛选后显示 ${visibleGroups} 个订单链`,
+            ];
+            if (Number(reconciliation.missing_client_order_id_orders || 0) > 0) {
+                extraNotes.push(`有 ${reconciliation.missing_client_order_id_orders} 条实时挂单缺少 client_order_id`)
             }
-            if (Number(reconciliation.broker_only_open_orders || 0) > 0) {
-                extraNotes.push(`broker 有 ${reconciliation.broker_only_open_orders} 条挂单未关联到 PB 订单表`)
+            if (Number(reconciliation.status_mismatch_orders || 0) > 0 || Number(reconciliation.quantity_mismatch_orders || 0) > 0 || Number(reconciliation.filled_qty_mismatch_orders || 0) > 0) {
+                extraNotes.push(`PB 对账差异: status=${reconciliation.status_mismatch_orders || 0} · qty=${reconciliation.quantity_mismatch_orders || 0} · filled=${reconciliation.filled_qty_mismatch_orders || 0}`)
             }
 
             area.innerHTML = `
+                ${renderCoverageBanner(snapshot, liveOrders)}
                 <div class="orders-summary-grid">
                     ${cards.map(([label, value, copy]) => `
                         <div class="summary-mini-card">
@@ -1231,9 +1526,23 @@
                         </div>
                     `).join('')}
                 </div>
+                <div class="orders-toolbar">
+                    <input class="orders-search" type="text" placeholder="搜索 symbol / order_id / client_order_id / trade_group_id / signal_id" value="${escapeHtml(orderViewState.search)}" oninput="onOrderSearchChange(this.value)">
+                    <div class="filter-chip-row">
+                        ${renderFilterChip('全部', 'all')}
+                        ${renderFilterChip('Matched', 'matched')}
+                        ${renderFilterChip('Broker Only', 'broker_only')}
+                        ${renderFilterChip('PB Shadow', 'pb_shadow')}
+                        ${renderFilterChip('可撤', 'cancelable')}
+                        ${renderFilterChip('可改', 'editable')}
+                        ${renderFilterChip('ENTRY', 'entry')}
+                        ${renderFilterChip('TP', 'tp')}
+                        ${renderFilterChip('STOP', 'stop')}
+                    </div>
+                </div>
                 <div class="orders-summary-notes">
                     <div class="orders-summary-note">状态分布: ${escapeHtml(statusLine)}</div>
-                    <div class="orders-summary-note">挂单角色: ${escapeHtml(roleLine || '--')}</div>
+                    <div class="orders-summary-note">挂单角色: ${escapeHtml(roleLine)}</div>
                     <div class="orders-summary-note">当前标的: ${escapeHtml(symbolLine)}</div>
                     ${extraNotes.map((line) => `<div class="orders-summary-note">${escapeHtml(line)}</div>`).join('')}
                 </div>
@@ -1464,158 +1773,273 @@
             `).join('')}</div>`;
         }
 
-        function renderOrders(snapshot) {
-            const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.slice() : [];
-            const managedGroups = Array.isArray(snapshot?.managed_order_groups) ? snapshot.managed_order_groups.slice() : [];
-            const pbOnlyGroups = Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups.slice() : [];
-            const reconciliation = snapshot?.order_reconciliation || {};
-            orders.sort((a, b) => {
-                const leftOpen = a.can_cancel ? 1 : 0;
-                const rightOpen = b.can_cancel ? 1 : 0;
-                if (leftOpen !== rightOpen) return rightOpen - leftOpen;
-                const leftTime = parseTimeValue(a.submitted_time || a.last_execution_time);
-                const rightTime = parseTimeValue(b.submitted_time || b.last_execution_time);
-                if (leftTime !== rightTime) return rightTime - leftTime;
-                return String(a.symbol || '').localeCompare(String(b.symbol || ''));
-            });
-            document.getElementById('ordersMeta').textContent = `${orders.length} items · open ${snapshot?.counts?.open_orders || 0}`;
-            const area = document.getElementById('ordersArea');
-            renderOrdersSummary(orders, snapshot);
-            if (!orders.length) {
-                if (!managedGroups.length) {
-                    area.innerHTML = '<div class="empty-state">当前没有实时挂单。</div>';
-                    return;
-                }
-                area.innerHTML = `
-                    <div class="empty-state">
-                        Broker 当前没有返回实时挂单，但系统侧仍检测到 ${escapeHtml(String(managedGroups.length))} 个活跃订单组。
-                        ${Number(reconciliation.pb_only_active_order_groups || pbOnlyGroups.length || 0) > 0 ? `其中 ${escapeHtml(String(reconciliation.pb_only_active_order_groups || pbOnlyGroups.length || 0))} 个是 PB-only，需要重点排查订单同步。` : ''}
-                    </div>
-                    <div class="order-grid">${managedGroups.map((group) => {
-                        const ordersInGroup = Array.isArray(group.orders) ? group.orders : [];
-                        const signalId = String(group.signal_id || '');
-                        const tradeGroupId = String(group.trade_group_id || group.entry_order_unique_id || '');
-                        const latestStatus = String(group.latest_order_status || '--');
-                        const matchedText = group.broker_matched ? 'broker matched' : 'broker missing';
-                        return `
-                            <div class="surface-card">
-                                <div class="record-head">
-                                    <div>
-                                        <div class="record-symbol">${escapeHtml(group.symbol || '--')}</div>
-                                        <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
-                                    </div>
-                                    <div class="badge-row">
-                                        <span class="${badgeClass(group.has_open_exposure ? 'long' : group.has_active_order ? 'pending' : 'neutral')}">${escapeHtml(group.has_open_exposure ? 'OPEN' : 'PENDING')}</span>
-                                        <span class="${badgeClass(group.broker_matched ? 'ready' : 'warning')}">${escapeHtml(matchedText.toUpperCase())}</span>
-                                        <span class="${badgeClass(String(latestStatus).toLowerCase())}">${escapeHtml(String(latestStatus).toUpperCase())}</span>
-                                    </div>
-                                </div>
-                                <div class="metric-grid">
-                                    <div class="metric-item"><div class="metric-label">Orders</div><div class="metric-value">${escapeHtml(String(group.order_count || ordersInGroup.length || 0))}</div></div>
-                                    <div class="metric-item"><div class="metric-label">Broker Match</div><div class="metric-value">${escapeHtml(String(group.matched_broker_orders || 0))}</div></div>
-                                    <div class="metric-item"><div class="metric-label">Updated</div><div class="metric-value">${escapeHtml(formatTimeLabel(group.latest_updated))}</div></div>
-                                    <div class="metric-item"><div class="metric-label">State</div><div class="metric-value">${escapeHtml(group.has_open_exposure ? 'Open Exposure' : 'Pending Only')}</div></div>
-                                </div>
-                                <div class="detail-row">
-                                    ${ordersInGroup.map((order) => `<span class="detail-pill">${escapeHtml(String(order.role || '--').toUpperCase())}:${escapeHtml(String(order.status || '--'))}${order.broker_order_id ? ` · ${escapeHtml(order.broker_order_id)}` : ''}</span>`).join('')}
-                                </div>
-                                <div class="record-actions">
-                                    ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
-                                    ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
-                                    <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(group.symbol || '')})">图表页</button>
-                                </div>
-                            </div>
-                        `;
-                    }).join('')}</div>
-                `;
-                return;
-            }
-            const shadowSection = pbOnlyGroups.length ? `
-                <div class="surface-card" style="margin-bottom:16px;">
-                    <div class="record-head">
+        function countOrdersInGroups(groups) {
+            return (groups || []).reduce((total, group) => total + (Array.isArray(group?.orders) ? group.orders.length : 0), 0);
+        }
+
+        function renderLiveOrderRow(order) {
+            const pbContext = order?.pb_context || {};
+            const diagnosticTags = Array.isArray(order?.diagnostic_tags) ? order.diagnostic_tags : [];
+            const rawPayload = order?.raw && typeof order.raw === 'object' ? order.raw : {};
+            const signalId = String(order?.signal_id || pbContext.signal_id || '').trim();
+            const tradeGroupId = String(order?.trade_group_id || pbContext.trade_group_id || '').trim();
+            const entryUniqueId = String(order?.entry_order_unique_id || pbContext.entry_order_unique_id || '').trim();
+            return `
+                <div class="order-row">
+                    <div class="order-row-head">
                         <div>
-                            <div class="record-symbol">PB Shadow</div>
-                            <div class="summary-sub">这些订单组在 PB 仍是活跃状态，但 broker 实时挂单接口没有返回；常见原因是 broker_order_id 缺失，或 Gateway bulk live orders 漏掉了子单。</div>
+                            <div class="order-row-title">${escapeHtml(order?.order_id || '--')}</div>
+                            <div class="summary-sub mono">parent=${escapeHtml(order?.parent_id || '--')} · client=${escapeHtml(order?.client_order_id || '--')} · acct=${escapeHtml(order?.account || '--')}</div>
                         </div>
                         <div class="badge-row">
-                            <span class="badge warn">${escapeHtml(String(pbOnlyGroups.length))} GROUPS</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="order-grid" style="margin-bottom:16px;">${pbOnlyGroups.map((group) => {
-                    const ordersInGroup = Array.isArray(group.orders) ? group.orders : [];
-                    const signalId = String(group.signal_id || '');
-                    const tradeGroupId = String(group.trade_group_id || group.entry_order_unique_id || '');
-                    const latestStatus = String(group.latest_order_status || '--');
-                    const roleSummary = summarizeOrderRoles(ordersInGroup);
-                    return `
-                        <div class="surface-card">
-                            <div class="record-head">
-                                <div>
-                                    <div class="record-symbol">${escapeHtml(group.symbol || '--')}</div>
-                                    <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
-                                </div>
-                                <div class="badge-row">
-                                    <span class="badge warn">PB SHADOW</span>
-                                    <span class="${badgeClass(String(latestStatus).toLowerCase())}">${escapeHtml(String(latestStatus).toUpperCase())}</span>
-                                </div>
-                            </div>
-                            <div class="metric-grid">
-                                <div class="metric-item"><div class="metric-label">Orders</div><div class="metric-value">${escapeHtml(String(group.order_count || ordersInGroup.length || 0))}</div></div>
-                                <div class="metric-item"><div class="metric-label">Broker Match</div><div class="metric-value">${escapeHtml(String(group.matched_broker_orders || 0))}</div></div>
-                                <div class="metric-item"><div class="metric-label">Roles</div><div class="metric-value">${escapeHtml(roleSummary.text || '--')}</div></div>
-                                <div class="metric-item"><div class="metric-label">Updated</div><div class="metric-value">${escapeHtml(formatTimeLabel(group.latest_updated))}</div></div>
-                            </div>
-                            <div class="detail-row">
-                                ${ordersInGroup.map((order) => `<span class="detail-pill">${escapeHtml(String(order.role || '--').toUpperCase())}:${escapeHtml(String(order.status || '--'))}${order.broker_order_id ? ` · ${escapeHtml(order.broker_order_id)}` : ' · broker missing'}</span>`).join('')}
-                            </div>
-                            <div class="record-actions">
-                                ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
-                                ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
-                                <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(group.symbol || '')})">图表页</button>
-                            </div>
-                        </div>
-                    `;
-                }).join('')}</div>
-            ` : '';
-            area.innerHTML = `${shadowSection}<div class="order-grid">${orders.map((order) => `
-                <div class="surface-card">
-                    <div class="record-head">
-                        <div>
-                            <div class="record-symbol">${escapeHtml(order.symbol || '--')}</div>
-                            <div class="summary-sub mono">order_id=${escapeHtml(order.order_id || '--')} · parent=${escapeHtml(order.parent_id || '--')} · acct=${escapeHtml(order.account || '--')}</div>
-                        </div>
-                        <div class="badge-row">
-                            <span class="${badgeClass(order.side === 'BUY' ? 'long' : order.side === 'SELL' ? 'short' : '')}">${escapeHtml(order.side || '--')}</span>
-                            <span class="${badgeClass(order.can_cancel ? 'pending' : 'neutral')}">${escapeHtml((order.status || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(order?.side === 'BUY' ? 'long' : order?.side === 'SELL' ? 'short' : '')}">${escapeHtml(order?.side || '--')}</span>
+                            <span class="${badgeClass(order?.can_cancel ? 'pending' : 'neutral')}">${escapeHtml(String(order?.status_key || order?.status || '--').toUpperCase())}</span>
                             <span class="${getOrderRoleBadgeClass(order)}">${escapeHtml(getOrderRoleLabel(order))}</span>
-                            ${order.outside_rth ? '<span class="badge warn">EXT</span>' : '<span class="badge neutral">RTH</span>'}
+                            <span class="${badgeClass(String(order?.match_state || pbContext.match_state || '').toLowerCase() === 'matched' ? 'ready' : 'warning')}">${escapeHtml(String(order?.match_state || pbContext.match_state || 'broker_only').toUpperCase())}</span>
+                            ${order?.outside_rth ? '<span class="badge warn">EXT</span>' : '<span class="badge neutral">RTH</span>'}
                         </div>
                     </div>
                     <div class="metric-grid">
-                        <div class="metric-item"><div class="metric-label">Type</div><div class="metric-value">${escapeHtml(order.order_type || '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">Type</div><div class="metric-value">${escapeHtml(order?.order_type || '--')}</div></div>
                         <div class="metric-item"><div class="metric-label">Price Plan</div><div class="metric-value">${escapeHtml(formatOrderPrice(order))}</div></div>
-                        <div class="metric-item"><div class="metric-label">TIF</div><div class="metric-value">${escapeHtml(order.time_in_force || '--')}</div></div>
-                        <div class="metric-item"><div class="metric-label">Avg Fill</div><div class="metric-value">${escapeHtml(formatOptionalMoney(order.avg_price))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Total / Filled</div><div class="metric-value">${escapeHtml(formatQty(order.total_quantity))} / ${escapeHtml(formatQty(order.filled_quantity))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Remaining</div><div class="metric-value">${escapeHtml(formatQty(order.remaining_quantity))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Submitted</div><div class="metric-value">${escapeHtml(formatTimeLabel(order.submitted_time))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Good Till</div><div class="metric-value">${escapeHtml(formatTimeLabel(order.good_till_date))}</div></div>
+                        <div class="metric-item"><div class="metric-label">TIF</div><div class="metric-value">${escapeHtml(order?.time_in_force || '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">Avg Fill</div><div class="metric-value">${escapeHtml(formatOptionalMoney(order?.avg_price))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Total / Filled</div><div class="metric-value">${escapeHtml(formatQty(order?.total_quantity))} / ${escapeHtml(formatQty(order?.filled_quantity))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Remaining</div><div class="metric-value">${escapeHtml(formatQty(order?.remaining_quantity))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Submitted</div><div class="metric-value">${escapeHtml(formatTimeLabel(order?.submitted_time))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Good Till</div><div class="metric-value">${escapeHtml(formatTimeLabel(order?.good_till_date))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Signal / Group</div><div class="metric-value">${escapeHtml(signalId || '--')} / ${escapeHtml(tradeGroupId || '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">Entry Unique</div><div class="metric-value">${escapeHtml(entryUniqueId || '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">Recovery</div><div class="metric-value">${escapeHtml(formatRecoverySummary(order))}</div></div>
+                        <div class="metric-item"><div class="metric-label">PB Relation</div><div class="metric-value">${escapeHtml(String(pbContext.relation_status || '--').toUpperCase())}</div></div>
                     </div>
-                    ${order.order_description ? `<div class="record-copy mono">${escapeHtml(order.order_description)}</div>` : ''}
+                    ${order?.order_description ? `<div class="record-copy mono">${escapeHtml(order.order_description)}</div>` : ''}
                     <div class="detail-row">
-                        <span class="detail-pill">exchange=${escapeHtml(order.listing_exchange || '--')}</span>
-                        <span class="detail-pill">asset=${escapeHtml(order.asset_class || '--')}</span>
-                        <span class="detail-pill">conid=${escapeHtml(String(order.conid || '--'))}</span>
-                        <span class="detail-pill">last_exec=${escapeHtml(formatTimeLabel(order.last_execution_time))}</span>
+                        <span class="detail-pill">exchange=${escapeHtml(order?.listing_exchange || '--')}</span>
+                        <span class="detail-pill">asset=${escapeHtml(order?.asset_class || '--')}</span>
+                        <span class="detail-pill">conid=${escapeHtml(String(order?.conid || '--'))}</span>
+                        <span class="detail-pill">currency=${escapeHtml(order?.currency || '--')}</span>
+                        <span class="detail-pill">last_exec=${escapeHtml(formatTimeLabel(order?.last_execution_time))}</span>
+                        <span class="detail-pill">pb_status=${escapeHtml(pbContext.pb_status || '--')}</span>
+                        <span class="detail-pill">pb_qty=${escapeHtml(formatQty(pbContext.pb_quantity || 0))}</span>
+                        <span class="detail-pill">pb_filled=${escapeHtml(formatQty(pbContext.pb_filled_qty || 0))}</span>
                     </div>
+                    ${diagnosticTags.length ? `<div class="detail-row">${diagnosticTags.map((tag) => `<span class="detail-pill">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+                    ${order?.diagnostic_note ? `<div class="record-copy mono">${escapeHtml(order.diagnostic_note)}</div>` : ''}
+                    <details class="raw-details">
+                        <summary>Raw broker payload</summary>
+                        <pre class="raw-pre">${escapeHtml(JSON.stringify(rawPayload, null, 2))}</pre>
+                    </details>
                     <div class="record-actions">
-                        <button class="action-btn view" type="button" onclick="openAccountChart('${escapeHtml(order.symbol || '')}')">图表页</button>
-                        ${order.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder('${escapeHtml(order.order_id)}', ${Number(order.price || 0)}, ${Number(order.total_quantity || 0)})">改单</button>` : ''}
-                        ${order.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder('${escapeHtml(order.order_id)}')">撤单</button>` : ''}
+                        <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(order?.symbol || '')})">图表页</button>
+                        ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
+                        ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
+                        ${order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringLiteral(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)})">改单</button>` : ''}
+                        ${order?.can_cancel ? `<button class="action-btn cancel" type="button" onclick="cancelOrder(${toJsStringLiteral(order?.order_id || '')})">撤单</button>` : ''}
                     </div>
                 </div>
-            `).join('')}</div>`;
+            `;
+        }
+
+        function renderPbShadowOrderRow(order) {
+            return `
+                <div class="order-row">
+                    <div class="order-row-head">
+                        <div>
+                            <div class="order-row-title">${escapeHtml(String(order?.role || '--').toUpperCase())}</div>
+                            <div class="summary-sub mono">broker=${escapeHtml(order?.broker_order_id || '--')} · unique=${escapeHtml(order?.unique_id || '--')}</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="badge warn">PB SHADOW</span>
+                            <span class="${badgeClass(String(order?.status || '').toLowerCase())}">${escapeHtml(String(order?.status || '--').toUpperCase())}</span>
+                        </div>
+                    </div>
+                    <div class="metric-grid">
+                        <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(order?.quantity))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Filled</div><div class="metric-value">${escapeHtml(formatQty(order?.filled_qty))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Relation</div><div class="metric-value">${escapeHtml(String(order?.relation_status || '--').toUpperCase())}</div></div>
+                        <div class="metric-item"><div class="metric-label">Updated</div><div class="metric-value">${escapeHtml(formatTimeLabel(order?.updated))}</div></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderLiveGroupCard(group) {
+            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const signalId = String(group?.signal_id || '').trim();
+            const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
+            const roleSummary = summarizeOrderRoles(orders).text || '--';
+            const statusSummary = formatCompactCountMap(
+                orders.reduce((acc, order) => {
+                    const key = String(order?.status_key || order?.status || '--').trim().toUpperCase();
+                    acc[key] = (acc[key] || 0) + 1;
+                    return acc;
+                }, {}),
+                (key, count) => `${key}×${count}`
+            ) || '--';
+            return `
+                <div class="surface-card chain-card">
+                    <div class="record-head">
+                        <div>
+                            <div class="record-symbol">${escapeHtml(group?.symbol || '--')}</div>
+                            <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="${badgeClass(String(group?.match_state || '').toLowerCase() === 'matched' ? 'ready' : 'warning')}">${escapeHtml(String(group?.match_state || 'broker_only').toUpperCase())}</span>
+                            <span class="${badgeClass(group?.cancelable_orders ? 'pending' : 'neutral')}">${escapeHtml(`${Number(group?.live_order_count || orders.length || 0)} LIVE`)}</span>
+                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
+                        </div>
+                    </div>
+                    <div class="chain-summary-grid">
+                        <div class="chain-summary-item"><div class="metric-label">Roles</div><div class="chain-summary-value">${escapeHtml(roleSummary)}</div></div>
+                        <div class="chain-summary-item"><div class="metric-label">Status</div><div class="chain-summary-value">${escapeHtml(statusSummary)}</div></div>
+                        <div class="chain-summary-item"><div class="metric-label">Cancelable / Editable</div><div class="chain-summary-value">${escapeHtml(`${group?.cancelable_orders || 0} / ${group?.editable_orders || 0}`)}</div></div>
+                        <div class="chain-summary-item"><div class="metric-label">Remaining</div><div class="chain-summary-value">${escapeHtml(formatQty(group?.remaining_quantity || 0))}</div></div>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-pill">matched=${escapeHtml(String(group?.matched_live_orders || 0))}</span>
+                        <span class="detail-pill">broker_only=${escapeHtml(String(group?.broker_only_live_orders || 0))}</span>
+                        <span class="detail-pill">outside_rth=${escapeHtml(String(group?.outside_rth_orders || 0))}</span>
+                        <span class="detail-pill">updated=${escapeHtml(formatTimeLabel(group?.latest_updated))}</span>
+                        ${(Array.isArray(group?.recovery_sources) ? group.recovery_sources : []).map((item) => `<span class="detail-pill">${escapeHtml(item)}</span>`).join('')}
+                    </div>
+                    <div class="record-actions">
+                        <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(group?.symbol || '')})">图表页</button>
+                        ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
+                        ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
+                    </div>
+                    ${orders.map((order) => renderLiveOrderRow(order)).join('')}
+                </div>
+            `;
+        }
+
+        function renderPbShadowGroupCard(group) {
+            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const signalId = String(group?.signal_id || '').trim();
+            const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || '').trim();
+            const roleSummary = summarizeOrderRoles(orders).text || '--';
+            return `
+                <div class="surface-card chain-card">
+                    <div class="record-head">
+                        <div>
+                            <div class="record-symbol">${escapeHtml(group?.symbol || '--')}</div>
+                            <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="badge warn">PB SHADOW</span>
+                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
+                        </div>
+                    </div>
+                    <div class="chain-summary-grid">
+                        <div class="chain-summary-item"><div class="metric-label">Orders</div><div class="chain-summary-value">${escapeHtml(String(group?.order_count || orders.length || 0))}</div></div>
+                        <div class="chain-summary-item"><div class="metric-label">Broker Match</div><div class="chain-summary-value">${escapeHtml(String(group?.matched_broker_orders || 0))}</div></div>
+                        <div class="chain-summary-item"><div class="metric-label">Roles</div><div class="chain-summary-value">${escapeHtml(roleSummary)}</div></div>
+                        <div class="chain-summary-item"><div class="metric-label">Updated</div><div class="chain-summary-value">${escapeHtml(formatTimeLabel(group?.latest_updated))}</div></div>
+                    </div>
+                    <div class="record-actions">
+                        <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(group?.symbol || '')})">图表页</button>
+                        ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
+                        ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
+                    </div>
+                    ${orders.map((order) => renderPbShadowOrderRow(order)).join('')}
+                </div>
+            `;
+        }
+
+        function renderOrdersSection(title, copy, groups, renderer) {
+            if (!(groups || []).length) return '';
+            return `
+                <div class="orders-section-card">
+                    <div class="surface-card">
+                        <div class="record-head" style="margin-bottom:0;">
+                            <div>
+                                <div class="section-kicker">Orders Section</div>
+                                <div class="section-title">${escapeHtml(title)}</div>
+                                <div class="section-note">${escapeHtml(copy)}</div>
+                            </div>
+                            <div class="badge-row">
+                                <span class="badge neutral">${escapeHtml(String(groups.length))} CHAINS</span>
+                                <span class="badge neutral">${escapeHtml(String(countOrdersInGroups(groups)))} ORDERS</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="order-grid">
+                        ${groups.map((group) => renderer(group)).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderOrders(snapshot) {
+            const liveOrders = getLiveOrders(snapshot);
+            const liveGroups = getLiveGroups(snapshot, liveOrders);
+            const matchedGroups = Array.isArray(snapshot?.matched_order_groups) && snapshot.matched_order_groups.length
+                ? snapshot.matched_order_groups.slice()
+                : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() === 'matched');
+            const brokerOnlyGroups = Array.isArray(snapshot?.broker_only_order_groups) && snapshot.broker_only_order_groups.length
+                ? snapshot.broker_only_order_groups.slice()
+                : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() !== 'matched');
+            const pbOnlyGroups = (Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups.slice() : []).map((group) => ({ ...group, is_pb_shadow: true }));
+            const filteredMatchedGroups = filterOrderGroups(matchedGroups);
+            const filteredBrokerOnlyGroups = filterOrderGroups(brokerOnlyGroups);
+            const filteredPbOnlyGroups = filterOrderGroups(pbOnlyGroups);
+            const visibleGroupCount = filteredMatchedGroups.length + filteredBrokerOnlyGroups.length + filteredPbOnlyGroups.length;
+            const reconciliation = snapshot?.order_reconciliation || {};
+            document.getElementById('ordersMeta').textContent = `${liveOrders.length} live · groups ${liveGroups.length} · showing ${visibleGroupCount}`;
+            const area = document.getElementById('ordersArea');
+            renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroupCount);
+
+            const sections = [];
+            if (filteredBrokerOnlyGroups.length) {
+                sections.push(renderOrdersSection(
+                    'Broker Only Live Chains',
+                    '这些订单已被 broker 实时确认仍在挂着，但当前没有匹配到 PB 订单记录，优先排查 broker_order_id / client_order_id 回填。',
+                    filteredBrokerOnlyGroups,
+                    renderLiveGroupCard,
+                ));
+            }
+            if (filteredMatchedGroups.length) {
+                sections.push(renderOrdersSection(
+                    'Matched Live Chains',
+                    '这些订单链已完成 broker 实时挂单与 PB 订单链关联，可以直接从单条订单查看完整 broker + PB 维度。',
+                    filteredMatchedGroups,
+                    renderLiveGroupCard,
+                ));
+            }
+            if (filteredPbOnlyGroups.length) {
+                sections.push(renderOrdersSection(
+                    'PB Shadow Chains',
+                    'PB 仍认为这些订单组处于活跃状态，但 broker 当前没有确认对应的实时挂单。它们不计入当前实时挂单数。',
+                    filteredPbOnlyGroups,
+                    renderPbShadowGroupCard,
+                ));
+            }
+
+            if (!liveOrders.length && !pbOnlyGroups.length) {
+                if (String(reconciliation.coverage_state || '').toLowerCase() === 'degraded') {
+                    area.innerHTML = `<div class="empty-state">当前无法确认完整实时挂单列表。未解析订单: ${escapeHtml((reconciliation.unresolved_order_ids || []).join(', ') || '--')}</div>`;
+                } else {
+                    area.innerHTML = '<div class="empty-state">当前没有 broker 已确认仍在挂着的实时订单。</div>';
+                }
+                return;
+            }
+
+            if (!sections.length) {
+                area.innerHTML = '<div class="empty-state">当前筛选未命中任何订单链。</div>';
+                return;
+            }
+
+            area.innerHTML = `<div class="orders-section-stack">${sections.join('')}</div>`;
+        }
+
+        function onOrderSearchChange(value) {
+            orderViewState.search = String(value || '').trim();
+            if (latestSnapshot) renderOrders(latestSnapshot);
+        }
+
+        function setOrderScope(scope) {
+            orderViewState.scope = String(scope || 'all').trim().toLowerCase() || 'all';
+            if (latestSnapshot) renderOrders(latestSnapshot);
         }
 
         async function loadAccountSnapshot(showFeedback = false) {
@@ -1837,6 +2261,8 @@
         window.renderTicketPreview = renderTicketPreview;
         window.toggleEntryPriceField = toggleEntryPriceField;
         window.openHistoryOrdersPage = openHistoryOrdersPage;
+        window.onOrderSearchChange = onOrderSearchChange;
+        window.setOrderScope = setOrderScope;
         window.openTicketDrawer = openTicketDrawer;
         window.closeTicketDrawer = closeTicketDrawer;
         window.onTicketDrawerBackdrop = onTicketDrawerBackdrop;

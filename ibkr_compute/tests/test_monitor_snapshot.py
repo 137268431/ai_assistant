@@ -51,12 +51,18 @@ logging.disable(logging.NOTSET)
 
 
 class FakeService:
-    def __init__(self):
+    def __init__(self, subscription_limit=60):
         self._subscription_lock = threading.RLock()
         self._active_subscription_map = {
             "AAPL": 265598,
             "MSFT": 272093,
         }
+        self.config = types.SimpleNamespace(
+            refresh=lambda: None,
+            get_int_for_environment=lambda key, environment, default=0: (
+                int(subscription_limit) if key == "ibkr_target_subscription_limit" else int(default)
+            ),
+        )
 
     def status(self) -> dict:
         return {
@@ -125,6 +131,17 @@ class FakeService:
 
 
 class MonitorSnapshotTest(unittest.TestCase):
+    def test_build_cpu_usage_snapshot_percent(self):
+        payload = server._build_cpu_usage_snapshot(
+            {"total": 200, "idle": 80, "sampled_at": 10.0},
+            {"total": 260, "idle": 92, "sampled_at": 11.5},
+        )
+
+        self.assertEqual(payload["used_pct"], 80.0)
+        self.assertEqual(payload["idle_pct"], 20.0)
+        self.assertEqual(payload["sample_span_s"], 1.5)
+        self.assertEqual(payload["source"], "/proc/stat")
+
     def test_parse_meminfo_text_to_bytes(self):
         parsed = server._parse_meminfo_text(
             "MemTotal:       1024 kB\n"
@@ -137,7 +154,7 @@ class MonitorSnapshotTest(unittest.TestCase):
         self.assertEqual(parsed["Buffers"], 12 * 1024)
 
     def test_build_monitor_snapshot_includes_roles_and_utilization(self):
-        fake_service = FakeService()
+        fake_service = FakeService(subscription_limit=10)
         host_snapshot = {
             "hostname": "compute-1",
             "platform": "Linux-6.8.0",
@@ -166,10 +183,9 @@ class MonitorSnapshotTest(unittest.TestCase):
             },
         }
 
-        with mock.patch.object(server.cfg, "get_for_environment", return_value="10"):
-            with mock.patch.object(server, "_collect_host_snapshot", return_value=host_snapshot):
-                with mock.patch.object(server, "get_ibkr_runtime_control", return_value={"environment": "live", "desired_running": True}):
-                    payload = server._build_ibkr_monitor_snapshot(fake_service)
+        with mock.patch.object(server, "_collect_host_snapshot", return_value=host_snapshot):
+            with mock.patch.object(server, "get_ibkr_runtime_control", return_value={"environment": "live", "desired_running": True}):
+                payload = server._build_ibkr_monitor_snapshot(fake_service)
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["environment"], "live")
@@ -189,7 +205,7 @@ class MonitorSnapshotTest(unittest.TestCase):
         self.assertIn("history_throttle_detected", flag_codes)
 
     def test_monitor_route_returns_payload(self):
-        fake_service = FakeService()
+        fake_service = FakeService(subscription_limit=60)
         host_snapshot = {
             "hostname": "compute-1",
             "platform": "Linux",
@@ -220,21 +236,63 @@ class MonitorSnapshotTest(unittest.TestCase):
 
         with mock.patch.object(server, "get_ibkr_service", return_value=fake_service):
             with mock.patch.object(server, "_maybe_restore_ibkr_service") as restore_mock:
-                with mock.patch.object(server.cfg, "get_for_environment", return_value="60"):
-                    with mock.patch.object(server, "_collect_host_snapshot", return_value=host_snapshot):
-                        with mock.patch.object(server, "get_ibkr_runtime_control", return_value={"environment": "live", "desired_running": True}):
-                            payload = server.ibkr_monitor()
+                with mock.patch.object(server, "_collect_host_snapshot", return_value=host_snapshot):
+                    with mock.patch.object(server, "get_ibkr_runtime_control", return_value={"environment": "live", "desired_running": True}):
+                        payload = server.ibkr_monitor()
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["api_utilization"]["subscription_limit"], 60)
         restore_mock.assert_called_once()
 
-    def test_monitor_route_returns_503_without_service(self):
+    def test_monitor_route_returns_offline_snapshot_without_service(self):
+        host_snapshot = {
+            "hostname": "compute-1",
+            "platform": "Linux",
+            "cpu_count": 4,
+            "cpu": {
+                "used_pct": 22.5,
+                "idle_pct": 77.5,
+                "sample_span_s": 1.0,
+                "source": "/proc/stat",
+            },
+            "loadavg": {"1": 0.4, "5": 0.3, "15": 0.2, "per_cpu_1": 0.1},
+            "memory": {
+                "total_bytes": 1024,
+                "available_bytes": 512,
+                "used_bytes": 512,
+                "used_pct": 50.0,
+                "source": "/proc/meminfo",
+            },
+            "disk": {
+                "path": "/",
+                "total_bytes": 4096,
+                "free_bytes": 2048,
+                "used_bytes": 2048,
+                "used_pct": 50.0,
+            },
+            "process": {
+                "pid": 321,
+                "uptime_s": 10.0,
+                "rss_bytes": 2048,
+                "threads": 4,
+                "fd_count": 9,
+            },
+        }
         with mock.patch.object(server, "get_ibkr_service", return_value=None):
-            payload, status_code = server.ibkr_monitor()
+            with mock.patch.object(server, "_collect_host_snapshot", return_value=host_snapshot):
+                with mock.patch.object(server, "get_ibkr_runtime_control", return_value={"environment": "live", "desired_running": True}):
+                    with mock.patch.object(server.cfg, "refresh", return_value=None):
+                        with mock.patch.object(server.cfg, "get_int_for_environment", return_value=70):
+                            payload = server.ibkr_monitor()
 
-        self.assertEqual(status_code, 503)
         self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["environment"], "live")
+        self.assertEqual(payload["api_utilization"]["subscription_limit"], 70)
+        self.assertEqual(payload["host"]["cpu"]["used_pct"], 22.5)
+        flag_codes = {item["code"] for item in payload["flags"]}
+        self.assertIn("gateway_offline", flag_codes)
+        self.assertIn("websocket_not_ready", flag_codes)
 
 
 if __name__ == "__main__":

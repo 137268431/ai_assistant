@@ -85,4 +85,8 @@ if [[ "$INSTALL_MODE" == "always" ]] || [[ "$INSTALL_MODE" == "auto" && ! -d "$W
 fi
 
 cd "$WORKSPACE"
-exec node "$SMOKE_SCRIPT" "${passthrough[@]}"
+if [[ ${#passthrough[@]} -gt 0 ]]; then
+  exec node "$SMOKE_SCRIPT" "${passthrough[@]}"
+fi
+
+exec node "$SMOKE_SCRIPT"

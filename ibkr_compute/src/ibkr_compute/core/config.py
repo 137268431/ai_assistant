@@ -19,6 +19,8 @@ class Config:
         "ibkr_watchlist_integrity_enabled": "true",
         "ibkr_watchlist_integrity_batch_size": "8",
         "ibkr_history_repair_enabled": "true",
+        "ibkr_history_retention_enabled": "true",
+        "ibkr_history_retention_days": "365",
         "ibkr_history_repair_min_bars_5m": "260",
         "ibkr_history_repair_gap_lookback": "80",
         "ibkr_history_repair_rollup_enabled": "true",

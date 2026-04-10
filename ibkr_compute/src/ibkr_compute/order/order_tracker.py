@@ -236,6 +236,117 @@ class OrderTracker:
                 logger.debug("get_orders_by_ids failed for %s: %s", oid, exc)
         return results
 
+    def _build_live_seed_source_map(self, pb_seed_ids: Optional[List[str]] = None) -> Dict[str, List[str]]:
+        seed_sources: Dict[str, List[str]] = {}
+
+        for tracked in list(self._known_orders.values()):
+            order_id = self._normalize_text(tracked.get("orderId") or tracked.get("order_id"))
+            if not order_id:
+                continue
+            status = self._extract_order_status(tracked)
+            if not self._is_open_order_status(status):
+                continue
+            if order_id not in seed_sources:
+                seed_sources[order_id] = []
+            if "tracker" not in seed_sources[order_id]:
+                seed_sources[order_id].append("tracker")
+
+        for oid in (pb_seed_ids or []):
+            order_id = self._normalize_text(oid)
+            if not order_id:
+                continue
+            if order_id not in seed_sources:
+                seed_sources[order_id] = []
+            if "pb" not in seed_sources[order_id]:
+                seed_sources[order_id].append("pb")
+
+        return seed_sources
+
+    def get_complete_live_open_orders(
+        self,
+        *,
+        pb_seed_ids: Optional[List[str]] = None,
+        bulk_orders: Optional[List[Dict]] = None,
+        retries: int = 3,
+        retry_delay: float = 0.5,
+        force: bool = True,
+    ) -> Dict[str, Any]:
+        seed_sources = self._build_live_seed_source_map(pb_seed_ids)
+        bulk_list = bulk_orders if bulk_orders is not None else self.get_live_orders(
+            retries=retries,
+            retry_delay=retry_delay,
+            force=force,
+        )
+        existing_ids = set()
+        open_orders: List[Dict[str, Any]] = []
+
+        for item in (bulk_list or []):
+            if not isinstance(item, dict):
+                continue
+            order_id = self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+            if not order_id or order_id in existing_ids:
+                continue
+            status = self._extract_order_status(item)
+            if not self._is_open_order_status(status):
+                continue
+            merged = dict(item)
+            merged["orderId"] = order_id
+            merged["_recovery_source"] = "bulk"
+            merged["_seed_sources"] = list(seed_sources.get(order_id) or [])
+            open_orders.append(merged)
+            existing_ids.add(order_id)
+
+        recovered_order_ids: List[str] = []
+        resolved_closed_ids: List[str] = []
+        unresolved_order_ids: List[str] = []
+
+        for order_id, sources in seed_sources.items():
+            if order_id in existing_ids:
+                continue
+            payload = self.get_order_status(order_id)
+            if payload and isinstance(payload, dict):
+                status = self._extract_order_status(payload)
+                if status and self._is_open_order_status(status):
+                    merged = dict(payload)
+                    merged["orderId"] = order_id
+                    merged["_recovery_source"] = "status_recovered"
+                    merged["_seed_sources"] = list(sources or [])
+                    open_orders.append(merged)
+                    existing_ids.add(order_id)
+                    recovered_order_ids.append(order_id)
+                    continue
+                if status:
+                    resolved_closed_ids.append(order_id)
+                    continue
+            unresolved_order_ids.append(order_id)
+
+        tracker_seed_count = len([order_id for order_id, sources in seed_sources.items() if "tracker" in sources])
+        pb_seed_count = len([order_id for order_id, sources in seed_sources.items() if "pb" in sources])
+        coverage_state = "degraded" if unresolved_order_ids else ("recovered" if recovered_order_ids else "complete")
+
+        return {
+            "orders": open_orders,
+            "coverage": {
+                "coverage_state": coverage_state,
+                "bulk_open_count": len([item for item in open_orders if str(item.get("_recovery_source") or "") == "bulk"]),
+                "recovered_from_status_count": len(recovered_order_ids),
+                "tracker_seed_count": tracker_seed_count,
+                "pb_seed_count": pb_seed_count,
+                "unresolved_seed_count": len(unresolved_order_ids),
+                "unresolved_order_ids": unresolved_order_ids,
+            },
+            "diagnostics": {
+                "seed_sources": seed_sources,
+                "recovered_order_ids": recovered_order_ids,
+                "resolved_closed_order_ids": resolved_closed_ids,
+                "bulk_order_ids": [
+                    self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+                    for item in (bulk_list or [])
+                    if isinstance(item, dict) and self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
+                ],
+            },
+        }
+
     def sync_live_orders_snapshot(self, orders: Optional[List[Dict]] = None) -> int:
         live_orders = orders if orders is not None else self.get_live_orders()
         synced = 0

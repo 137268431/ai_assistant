@@ -126,7 +126,11 @@ class IBKRTradingService:
             config=self.config,
             environment=ENVIRONMENT,
         )
-        self.data_retention = DataRetention(pb_client=self.pb)
+        self.data_retention = DataRetention(
+            pb_client=self.pb,
+            config=self.config,
+            default_environments=[ENVIRONMENT],
+        )
         self.timeframe_builder = TimeframeBarBuilder()
 
         self.bar_aggregator = BarAggregator(on_bar_close=self._on_bar_close)
@@ -234,6 +238,7 @@ class IBKRTradingService:
         self._startup_reason = ""
         self._startup_source = ""
         self._startup_trigger_login = False
+        self._startup_status_message_id = ""
         self._interval_prime_thread = None
         self._interval_prime_lock = threading.Lock()
         self._interval_prime_state = {
@@ -291,6 +296,46 @@ class IBKRTradingService:
         if self._running:
             return "running"
         return "stopped"
+
+    def _build_startup_pending_detail(self, reason: str, source: str, trigger_login: bool) -> dict:
+        detail = {
+            "状态结论": "IBKR Runtime 正在启动，交易链路暂未开放。",
+            "系统简介": "负责 Gateway 会话、实时行情、订单链路、信号处理与启动预热。",
+            "启动成功条件": (
+                "1. Gateway 可用并完成 Session/2FA 认证\n"
+                "2. Watchlist/Targets 与订阅装载完成\n"
+                "3. WebSocket、订单链路与后台线程已启动\n"
+                "4. 活动标的完成 5m warmup，交易门可开放\n"
+                "5. 启动前历史回补与完整性预检完成或切入后台继续"
+            ),
+            "检查时间": self._now_et(),
+            "Runtime阶段": "starting",
+            "启动原因": reason or "manual_start",
+            "启动来源": source or "api_start",
+            "触发登录": "yes" if trigger_login else "no",
+        }
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            detail["运行页"] = runtime_url
+        return detail
+
+    def _record_startup_status_message_id(self, message_id: str):
+        normalized = str(message_id or "").strip()
+        if not normalized:
+            return
+        with self._state_lock:
+            if self._starting:
+                self._startup_status_message_id = normalized
+
+    def _announce_startup_pending(self, reason: str, source: str, trigger_login: bool):
+        result = self._emit_system_event(
+            "status_change",
+            "info",
+            "IBKR Runtime 启动中",
+            self._build_startup_pending_detail(reason, source, trigger_login),
+        )
+        if isinstance(result, dict):
+            self._record_startup_status_message_id(result.get("message_id", ""))
 
     def _format_symbol_list(self, symbols: list[str], limit: int = 12) -> str:
         items = [str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()]
@@ -475,9 +520,11 @@ class IBKRTradingService:
             startup_reason = self._startup_reason
             startup_source = self._startup_source
             startup_trigger_login = self._startup_trigger_login
+            startup_message_id = self._startup_status_message_id
             self._startup_reason = ""
             self._startup_source = ""
             self._startup_trigger_login = False
+            self._startup_status_message_id = ""
 
         payload = {
             "状态结论": "IBKR Runtime 已完成启动前回补与预热，当前服务可用。",
@@ -490,13 +537,21 @@ class IBKRTradingService:
         runtime_url = self._runtime_page_url()
         if runtime_url:
             payload["运行页"] = runtime_url
+        if title and title != "IBKR Runtime 启动完成":
+            payload["启动结果"] = title
         if detail:
             payload.update(detail)
         started_at = str(payload.get("预热开始") or "").strip()
         finished_at = str(payload.get("预热完成") or "").strip()
         if started_at and finished_at and "预热耗时" not in payload:
             payload["预热耗时"] = self._format_elapsed_between(started_at, finished_at)
-        self._emit_system_event("status_change", "info", title, payload)
+        self._emit_system_event(
+            "status_change",
+            "info",
+            "IBKR Runtime 启动完成",
+            payload,
+            message_id=startup_message_id,
+        )
         return True
 
     def _copy_interval_prime_state(self) -> dict:
@@ -584,20 +639,30 @@ class IBKRTradingService:
         self._interval_prime_thread.start()
         return True
 
-    def _emit_system_event(self, event_type: str, level: str, title: str, detail: dict):
+    def _emit_system_event(
+        self,
+        event_type: str,
+        level: str,
+        title: str,
+        detail: dict,
+        *,
+        message_id: str = "",
+    ):
         if not self.pb:
-            return
+            return {}
         try:
-            self.pb.notify_system_event(
+            return self.pb.notify_system_event(
                 title=title,
                 detail=detail,
                 event_type=event_type,
                 level=level,
                 source="ibkr_compute",
                 environment=ENVIRONMENT,
+                message_id=message_id,
             )
         except Exception as exc:
             logger.warning("System event emit failed (%s/%s): %s", event_type, title, exc)
+            return {}
 
     def _notify_session_issue(
         self,
@@ -1917,8 +1982,10 @@ class IBKRTradingService:
             self._startup_reason = reason
             self._startup_source = source
             self._startup_trigger_login = bool(trigger_login)
+            self._startup_status_message_id = ""
 
         startup_ok = False
+        startup_exit_notice = None
 
         try:
             logger.info("=" * 60)
@@ -1935,9 +2002,22 @@ class IBKRTradingService:
             self.auth_handler.reset_cancel()
             self.config.refresh()
             self._refresh_runtime_settings()
+            self._announce_startup_pending(reason, source, trigger_login)
 
             if not self._ensure_gateway():
                 logger.error("Gateway setup failed, exiting")
+                startup_exit_notice = {
+                    "event_type": "alert",
+                    "level": "error",
+                    "title": "IBKR Runtime 启动失败",
+                    "detail": {
+                        "异常结论": "Gateway 启动失败，Runtime 未能进入运行态。",
+                        "检查时间": self._now_et(),
+                        "失败阶段": "gateway",
+                        "启动原因": reason or "manual_start",
+                        "启动来源": source or "api_start",
+                    },
+                }
                 return
 
             # Do a one-shot auth check WITHOUT starting the keeper loop.
@@ -1959,6 +2039,19 @@ class IBKRTradingService:
                         lock_owner="",
                         lock_expires_at="",
                     )
+                    startup_exit_notice = {
+                        "event_type": "alert",
+                        "level": "warning",
+                        "title": "IBKR Runtime 等待 2FA",
+                        "detail": {
+                            "状态结论": "检测到 Gateway 当前未认证，Runtime 尚未完成启动。",
+                            "检查时间": self._now_et(),
+                            "当前动作": "等待飞书 2FA 审批或人工重新触发启动。",
+                            "启动原因": reason or "manual_start",
+                            "启动来源": source or "api_start",
+                            "触发登录": "no",
+                        },
+                    }
                     return
                 logger.info("Not authenticated, attempting login (session_keeper paused)...")
                 if not self.auth_handler.login(
@@ -1976,6 +2069,19 @@ class IBKRTradingService:
                         lock_owner="",
                         lock_expires_at="",
                     )
+                    startup_exit_notice = {
+                        "event_type": "alert",
+                        "level": "error",
+                        "title": "IBKR Runtime 启动失败",
+                        "detail": {
+                            "异常结论": "Session/2FA 登录失败，Runtime 未能进入运行态。",
+                            "检查时间": self._now_et(),
+                            "失败阶段": "session_login",
+                            "启动原因": reason or "manual_start",
+                            "启动来源": source or "api_start",
+                            "触发登录": "yes",
+                        },
+                    }
                     return
 
                 # Login succeeded — re-check auth once with the shared cookie store
@@ -2067,13 +2173,42 @@ class IBKRTradingService:
                     },
                 )
             logger.info("IBKR Trading Service core components started; waiting for warmup readiness")
+        except Exception as exc:
+            startup_exit_notice = {
+                "event_type": "alert",
+                "level": "error",
+                "title": "IBKR Runtime 启动失败",
+                "detail": {
+                    "异常结论": "启动过程中发生未处理异常，Runtime 未能完成启动。",
+                    "检查时间": self._now_et(),
+                    "失败阶段": "startup_exception",
+                    "启动原因": reason or "manual_start",
+                    "启动来源": source or "api_start",
+                    "异常": str(exc),
+                },
+            }
+            raise
         finally:
+            exit_notice = None
             with self._state_lock:
                 if not startup_ok and not self._running:
+                    startup_message_id = self._startup_status_message_id
                     self._starting = False
                     self._startup_reason = ""
                     self._startup_source = ""
                     self._startup_trigger_login = False
+                    self._startup_status_message_id = ""
+                    if startup_exit_notice:
+                        exit_notice = dict(startup_exit_notice)
+                        exit_notice["message_id"] = startup_message_id
+            if exit_notice:
+                self._emit_system_event(
+                    exit_notice.get("event_type", "alert"),
+                    exit_notice.get("level", "error"),
+                    exit_notice.get("title", "IBKR Runtime 启动失败"),
+                    exit_notice.get("detail", {}),
+                    message_id=exit_notice.get("message_id", ""),
+                )
 
     def _ensure_gateway(self) -> bool:
         if not self.gateway_manager.is_running:
@@ -3693,11 +3828,23 @@ class IBKRTradingService:
 
     def _schedule_retention(self):
         def retention_loop():
+            last_handled_hour = ""
             while self._running:
                 et_now = datetime.now(ET)
-                if et_now.hour == 3 and et_now.minute < 5:
-                    self.data_retention.cleanup()
-                time.sleep(300)
+                hour_key = et_now.strftime("%Y-%m-%d %H")
+                if et_now.minute == 12 and hour_key != last_handled_hour:
+                    result = self.data_retention.cleanup(source="runtime_thread")
+                    env_result = (result.get("environments") or [{}])[0]
+                    logger.info(
+                        "Runtime retention cleanup finished: environment=%s deleted=%s errors=%s skipped=%s reason=%s",
+                        ENVIRONMENT,
+                        int(result.get("total_deleted", 0) or 0),
+                        int(result.get("total_errors", 0) or 0),
+                        bool(env_result.get("skipped")),
+                        str(env_result.get("reason") or ""),
+                    )
+                    last_handled_hour = hour_key
+                time.sleep(30)
 
         t = threading.Thread(target=retention_loop, daemon=True, name="data-retention")
         t.start()

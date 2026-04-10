@@ -249,8 +249,7 @@ function getTargetChatId(eventType, level, environment, source, title, detail) {
     return getSystemChatId(environment)
 }
 
-function notifySystemEvent(eventType, level, source, title, detail, environment) {
-    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+function buildDetailFields(detail) {
     var detailFields = []
     if (detail && typeof detail === "object") {
         var keys = Object.keys(detail)
@@ -260,22 +259,62 @@ function notifySystemEvent(eventType, level, source, title, detail, environment)
     } else if (detail && typeof detail === "string") {
         detailFields.push({ label: "详情", value: detail })
     }
+    return detailFields
+}
+
+function notifySystemEventDetailed(eventType, level, source, title, detail, environment, options) {
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+    var detailFields = buildDetailFields(detail)
+    var messageId = String((options && (options.message_id || options.messageId)) || "").trim()
 
     if (!shouldNotifyEvent(eventType, level, source, title, runtimeEnvironment)) {
-        return false
+        return {
+            success: false,
+            skipped: true,
+            message_id: messageId,
+            reason: "notify_disabled"
+        }
     }
 
     if (runtimeEnvironment === "paper") {
         console.log("[FeishuSystem] 发送跳过: " + title + " environment=paper")
-        return false
+        return {
+            success: false,
+            skipped: true,
+            suppressed: true,
+            message_id: messageId,
+            reason: "paper_environment_disabled"
+        }
     }
 
     var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment)
-    var success = feishuApp.sendMessage("interactive", card, getTargetChatId(eventType, level, runtimeEnvironment, source, title, detail), "chat_id", runtimeEnvironment)
-    if (!success) {
+    var result = messageId
+        ? feishuApp.updateMessageCard(messageId, card, runtimeEnvironment)
+        : feishuApp.sendMessageDetailed(
+            "interactive",
+            card,
+            getTargetChatId(eventType, level, runtimeEnvironment, source, title, detail),
+            "chat_id",
+            runtimeEnvironment
+        )
+    if (!result || typeof result !== "object") {
+        result = { success: false, message_id: messageId, error: "empty_result" }
+    }
+    if (!result.message_id && messageId) {
+        result.message_id = messageId
+    }
+    if (messageId) {
+        result.updated = !!result.success
+    }
+    if (!result.success) {
         console.error("[FeishuSystem] 发送失败: " + title)
     }
-    return success
+    return result
+}
+
+function notifySystemEvent(eventType, level, source, title, detail, environment, options) {
+    var result = notifySystemEventDetailed(eventType, level, source, title, detail, environment, options)
+    return !!(result && result.success && !result.suppressed)
 }
 
 function notifyHeartbeat(source, status, extra) {
@@ -313,6 +352,7 @@ function notifyDailyReport(report, environment) {
 
 module.exports = {
     notifySystemEvent: notifySystemEvent,
+    notifySystemEventDetailed: notifySystemEventDetailed,
     notifyHeartbeat: notifyHeartbeat,
     notifyAlert: notifyAlert,
     notifyWarning: notifyWarning,
