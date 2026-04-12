@@ -343,6 +343,104 @@ async function apiFetch(collection, params = {}) {
   return res.json();
 }
 
+let realtimeQuoteCache = {};
+let realtimeQuoteCacheUpdatedAt = 0;
+
+function normalizeRealtimeQuoteRecord(record) {
+  if (!record || typeof record !== 'object') return null;
+  const symbol = String(record.symbol || '').trim().toUpperCase();
+  if (!symbol) return null;
+  return {
+    ...record,
+    symbol,
+    last_price: record.last_price != null ? Number(record.last_price) : null,
+    prev_close: record.prev_close != null ? Number(record.prev_close) : null,
+    day_change: record.day_change != null ? Number(record.day_change) : null,
+    day_change_pct: record.day_change_pct != null ? Number(record.day_change_pct) : null,
+    quote_age_s: record.quote_age_s != null ? Number(record.quote_age_s) : null,
+  };
+}
+
+function cacheRealtimeQuoteItems(items, { reset = false, requestedSymbols = [] } = {}) {
+  const nextCache = reset ? {} : { ...realtimeQuoteCache };
+  const requestedSet = new Set((Array.isArray(requestedSymbols) ? requestedSymbols : [])
+    .map((symbol) => String(symbol || '').trim().toUpperCase())
+    .filter(Boolean));
+
+  // Requested symbols should mirror the latest response so pages don't keep
+  // rendering quotes that are no longer present upstream.
+  requestedSet.forEach((symbol) => {
+    delete nextCache[symbol];
+  });
+
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const normalized = normalizeRealtimeQuoteRecord(item);
+    if (!normalized) return;
+    nextCache[normalized.symbol] = normalized;
+  });
+  realtimeQuoteCache = nextCache;
+  realtimeQuoteCacheUpdatedAt = Date.now();
+  return realtimeQuoteCache;
+}
+
+function getRealtimeQuote(symbol) {
+  const normalized = String(symbol || '').trim().toUpperCase();
+  if (!normalized) return null;
+  return realtimeQuoteCache[normalized] || null;
+}
+
+async function fetchRealtimeQuotes(symbols = [], { reset = false } = {}) {
+  const uniqueSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
+    .map((symbol) => String(symbol || '').trim().toUpperCase())
+    .filter(Boolean))];
+  if (!uniqueSymbols.length) {
+    if (reset) {
+      realtimeQuoteCache = {};
+      realtimeQuoteCacheUpdatedAt = Date.now();
+    }
+    return { ok: true, count: 0, items: [] };
+  }
+
+  const token = getToken();
+  const headers = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const url = `${BASE_URL}${buildPageUrl('/api/custom/ibkr/quotes', { symbols: uniqueSymbols.join(',') })}`;
+  const response = await fetchWithRetry(url, { method: 'GET', headers }, { attempts: 3, retryDelayMs: 400 });
+  if (response.status === 401 || response.status === 403) {
+    handleAuthError();
+    throw new Error('Authentication failed');
+  }
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || payload.message || `Quotes request failed (${response.status})`);
+  }
+  cacheRealtimeQuoteItems(payload.items || [], { reset, requestedSymbols: uniqueSymbols });
+  return payload;
+}
+
+function mergeIndicatorWithRealtimeQuote(indicator, realtimeQuoteOverride = null) {
+  if (!indicator) return null;
+  const merged = { ...indicator };
+  const quote = realtimeQuoteOverride || getRealtimeQuote(merged.symbol);
+  if (!quote) {
+    merged.display_close = merged.close;
+    merged.display_day_change_pct = merged.day_change_pct;
+    merged.display_prev_close_change_pct = merged.prev_close_change_pct;
+    merged.display_change_7d = merged.change_7d;
+    return merged;
+  }
+  merged.realtime_quote = quote;
+  merged.display_close = quote.last_price != null ? quote.last_price : merged.close;
+  merged.display_day_change = quote.day_change != null ? quote.day_change : null;
+  merged.display_day_change_pct = quote.day_change_pct != null ? quote.day_change_pct : merged.day_change_pct;
+  merged.display_prev_close_change_pct = merged.prev_close_change_pct;
+  merged.display_change_7d = merged.change_7d;
+  merged.realtime_quote_age_s = quote.quote_age_s;
+  return merged;
+}
+
 // ── Toast 通知 ──
 function showToast(msg, duration = 2500) {
   let toast = document.getElementById('toast');
@@ -569,10 +667,10 @@ function buildIndicatorBadges(signal, latestIndicator) {
   const badges = [];
 
   // 涨幅徽章（从最新指标数据获取）
-  const indicator = latestIndicator || {};
-  const dayChangePct = indicator.dayChangePct || indicator.day_change_pct || 0;
-  const prevCloseChangePct = indicator.prevCloseChangePct || indicator.prev_close_change_pct || 0;
-  const change7d = indicator.change7d || indicator.change_7d || 0;
+  const indicator = mergeIndicatorWithRealtimeQuote(latestIndicator || {}) || {};
+  const dayChangePct = indicator.display_day_change_pct ?? indicator.dayChangePct ?? indicator.day_change_pct ?? 0;
+  const prevCloseChangePct = indicator.display_prev_close_change_pct ?? indicator.prevCloseChangePct ?? indicator.prev_close_change_pct ?? 0;
+  const change7d = indicator.display_change_7d ?? indicator.change7d ?? indicator.change_7d ?? 0;
 
   if (dayChangePct !== 0) {
     const changeClass = dayChangePct > 0 ? 'badge-change-up' : 'badge-change-down';
@@ -628,6 +726,7 @@ function buildIndicatorBadges(signal, latestIndicator) {
 // ── 渲染技术指标详情浮层 ──
 function renderIndicatorModal(latestIndicator) {
   if (!latestIndicator) return '<div class="modal-section">暂无技术指标数据</div>';
+  const indicatorView = mergeIndicatorWithRealtimeQuote(latestIndicator) || latestIndicator;
 
   // 时间信息 section（放在最上面）
   const timeSection = `
@@ -661,7 +760,7 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-grid">
         <div class="modal-item">
           <div class="modal-label">收盘价</div>
-          <div class="modal-value">$${(latestIndicator.close || 0).toFixed(2)}</div>
+          <div class="modal-value">$${(indicatorView.display_close || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">最高价</div>
@@ -677,8 +776,8 @@ function renderIndicatorModal(latestIndicator) {
         </div>
         <div class="modal-item">
           <div class="modal-label">涨幅</div>
-          <div class="modal-value" style="color: ${latestIndicator.day_change_pct > 0 ? 'var(--long)' : 'var(--short)'}">
-            ${latestIndicator.day_change_pct > 0 ? '+' : ''}${(latestIndicator.day_change_pct || 0).toFixed(2)}% / ${latestIndicator.prev_close_change_pct > 0 ? '+' : ''}${(latestIndicator.prev_close_change_pct || 0).toFixed(2)}% / ${latestIndicator.change_7d > 0 ? '+' : ''}${(latestIndicator.change_7d || 0).toFixed(2)}%
+          <div class="modal-value" style="color: ${(indicatorView.display_day_change_pct || 0) > 0 ? 'var(--long)' : 'var(--short)'}">
+            ${(indicatorView.display_day_change_pct || 0) > 0 ? '+' : ''}${((indicatorView.display_day_change_pct || 0)).toFixed(2)}% / ${(indicatorView.display_prev_close_change_pct || 0) > 0 ? '+' : ''}${((indicatorView.display_prev_close_change_pct || 0)).toFixed(2)}% / ${(indicatorView.display_change_7d || 0) > 0 ? '+' : ''}${((indicatorView.display_change_7d || 0)).toFixed(2)}%
           </div>
         </div>
         <div class="modal-item">

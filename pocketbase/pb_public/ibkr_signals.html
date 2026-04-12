@@ -1479,6 +1479,9 @@
                 signalIndicatorsMap = {};
                 reverseSignalsMap = {};
                 ordersMap = {};
+                await fetchRealtimeQuotes(allSignals.map((signal) => signal.symbol), { reset: true }).catch((error) => {
+                    console.warn('加载实时行情失败:', error);
+                });
 
                 // 更新分页状态
                 hasMore = result.items.length === perPage;
@@ -2031,6 +2034,9 @@
                 const newSignals = Array.isArray(result?.items) ? result.items : [];
 
                 allSignals = [...allSignals, ...newSignals];
+                await fetchRealtimeQuotes(allSignals.map((signal) => signal.symbol), { reset: true }).catch((error) => {
+                    console.warn('加载实时行情失败:', error);
+                });
                 hasMore = newSignals.length === itemsPerPage;
                 totalItems = result.totalItems;
 
@@ -2175,7 +2181,7 @@
                 const expectedLoss = lossPerShare * shares;
 
                 // ATR波动率数据（优先从 latestIndicator 获取，没有则从 signal.extra 获取）
-                const latestIndicator = signalIndicatorsMap[signal.id] || null;
+                const latestIndicator = mergeIndicatorWithRealtimeQuote(signalIndicatorsMap[signal.id] || null) || signalIndicatorsMap[signal.id] || null;
                 const signalExtra = signal.extra || {};
                 const closeTimeMs = getSignalCloseTimeMs(signal);
                 const createdMs = getSignalCreatedMs(signal);
@@ -2203,10 +2209,10 @@
                 // 当日 / 前一日 / 近7日涨幅
                 let dayChangePct = '';
                 let dayChangeClass = '';
-                if (latestIndicator?.day_change_pct !== undefined) {
-                    const dayPct = latestIndicator.day_change_pct;
-                    const prevClosePct = latestIndicator.prev_close_change_pct || 0;
-                    const change7d = latestIndicator.change_7d || 0;
+                if (latestIndicator?.display_day_change_pct !== undefined || latestIndicator?.day_change_pct !== undefined) {
+                    const dayPct = latestIndicator?.display_day_change_pct ?? latestIndicator.day_change_pct;
+                    const prevClosePct = latestIndicator?.display_prev_close_change_pct ?? (latestIndicator.prev_close_change_pct || 0);
+                    const change7d = latestIndicator?.display_change_7d ?? (latestIndicator.change_7d || 0);
                     dayChangePct = `${dayPct > 0 ? '+' : ''}${dayPct.toFixed(2)}%/${prevClosePct > 0 ? '+' : ''}${prevClosePct.toFixed(2)}%/${change7d > 0 ? '+' : ''}${change7d.toFixed(2)}%`;
                     dayChangeClass = dayPct > 0 ? 'text-long' : dayPct < 0 ? 'text-short' : '';
                 }

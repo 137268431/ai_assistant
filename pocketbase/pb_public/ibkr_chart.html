@@ -1845,6 +1845,12 @@
         let currentIndicatorId = '';
         let chartInstance = null;
         let lastPayload = null;
+        let chartDisplayPayload = null;
+        let realtimeQuoteSnapshot = null;
+        let formingBarSnapshot = null;
+        let chartRealtimeQuoteError = '';
+        let chartRealtimePreviewError = '';
+        let chartRealtimePollTimer = 0;
         let comparePayload = null;
         let compareLoading = false;
         let compareError = '';
@@ -1875,6 +1881,11 @@
             vwap: true,
             signals: true,
             volume: true,
+        };
+        const CHART_REALTIME_WARN_INTERVAL_MS = 60 * 1000;
+        const chartRealtimeWarnState = {
+            quote: { key: '', at: 0 },
+            preview: { key: '', at: 0 },
         };
 
         function escapeHtml(value) {
@@ -2099,7 +2110,7 @@
 
         function applyChartFocusMode() {
             document.body.classList.toggle('chart-focus-mode', chartFocusMode);
-            if (lastPayload) renderCursorStrip(lastPayload);
+            if (lastPayload) renderCursorStrip(getChartDisplayPayload());
             else renderChartWorkspaceChrome(null);
             window.requestAnimationFrame(() => {
                 if (chartInstance) chartInstance.resize();
@@ -2295,6 +2306,118 @@
             throw lastError || new Error(`Failed to request ${path}`);
         }
 
+        async function requestChartRuntimeJson(path, params = {}, maxRetries = 1) {
+            let lastError = null;
+            const url = `${BASE_URL}${buildPageUrl(path, params, { environment: currentEnvironment })}`;
+            for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        cache: 'no-store',
+                        headers: getAuthHeaders()
+                    });
+                    if (response.status === 401 || response.status === 403) {
+                        clearToken();
+                        location.href = `/login.html?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`;
+                        throw new Error('Authentication failed');
+                    }
+                    const text = await response.text();
+                    let data = {};
+                    try {
+                        data = text ? JSON.parse(text) : {};
+                    } catch (_) {
+                        data = { ok: false, raw: text };
+                    }
+                    if (!response.ok || data.ok === false) {
+                        throw new Error(data.error || data.message || `Request failed (${response.status})`);
+                    }
+                    return data;
+                } catch (error) {
+                    lastError = error;
+                    const message = String(error?.message || error || '');
+                    const retryable = message.includes('502') || message.includes('Failed to fetch');
+                    if (!retryable || attempt === maxRetries) break;
+                    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+                }
+            }
+            throw lastError || new Error(`Failed to request ${path}`);
+        }
+
+        function stopChartRealtimePolling() {
+            if (chartRealtimePollTimer) {
+                clearInterval(chartRealtimePollTimer);
+                chartRealtimePollTimer = 0;
+            }
+        }
+
+        function resetChartRealtimeWarnings() {
+            chartRealtimeWarnState.quote = { key: '', at: 0 };
+            chartRealtimeWarnState.preview = { key: '', at: 0 };
+        }
+
+        function warnChartRealtimeOnce(channel, label, error) {
+            const state = chartRealtimeWarnState[channel];
+            if (!state) {
+                console.warn(`${label}:`, error);
+                return;
+            }
+            const message = String(error?.message || error || 'unknown error');
+            const key = `${label}:${message}`;
+            const now = Date.now();
+            if (state.key === key && now - state.at < CHART_REALTIME_WARN_INTERVAL_MS) {
+                return;
+            }
+            state.key = key;
+            state.at = now;
+            if (message.includes('Failed to fetch')) {
+                return;
+            }
+            console.warn(`${label}:`, error);
+        }
+
+        async function refreshChartRealtimeState({ render = false } = {}) {
+            if (!currentSymbol) return;
+            try {
+                await fetchRealtimeQuotes([currentSymbol], { reset: false });
+                realtimeQuoteSnapshot = getRealtimeQuote(currentSymbol);
+                chartRealtimeQuoteError = '';
+            } catch (error) {
+                chartRealtimeQuoteError = String(error?.message || error || 'unknown error');
+                warnChartRealtimeOnce('quote', '加载实时价格失败', error);
+            }
+
+            formingBarSnapshot = null;
+            chartRealtimePreviewError = '';
+            if (currentInterval === '5m') {
+                try {
+                    const payload = await requestChartRuntimeJson('/api/custom/ibkr/quotes/forming_bar', {
+                        symbol: currentSymbol,
+                    });
+                    formingBarSnapshot = payload?.preview ? payload.bar || null : null;
+                    chartRealtimePreviewError = '';
+                } catch (error) {
+                    chartRealtimePreviewError = String(error?.message || error || 'unknown error');
+                    warnChartRealtimeOnce('preview', '加载未收盘预览 bar 失败', error);
+                }
+            }
+
+            if (render && lastPayload) {
+                renderHeroStatus(lastPayload);
+                renderSummaryStrip(lastPayload);
+                renderChart(lastPayload);
+            }
+        }
+
+        function startChartRealtimePolling() {
+            stopChartRealtimePolling();
+            if (!currentSymbol) return;
+            refreshChartRealtimeState({ render: true });
+            chartRealtimePollTimer = window.setInterval(() => {
+                if (document.hidden) return;
+                refreshChartRealtimeState({ render: true });
+            }, 3000);
+        }
+
         function buildTimelinePayloadFromResponse(response) {
             const bars = Array.isArray(response?.bars)
                 ? response.bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
@@ -2312,6 +2435,52 @@
                 indicators,
                 signals,
                 meta: response?.meta && typeof response.meta === 'object' ? response.meta : {}
+            };
+        }
+
+        function getChartDisplayPayload() {
+            return chartDisplayPayload || lastPayload;
+        }
+
+        function buildChartDisplayPayload(payload) {
+            if (!payload || typeof payload !== 'object') return null;
+            const baseBars = Array.isArray(payload?.bars) ? payload.bars.slice() : [];
+            if (!baseBars.length || currentInterval !== '5m' || !formingBarSnapshot?.bar_time_ms) {
+                return payload;
+            }
+            const previewBarTimeMs = Number(formingBarSnapshot.bar_time_ms || 0);
+            const latestFormalBarMs = Number(baseBars[baseBars.length - 1]?.bar_time_ms || 0);
+            if (!previewBarTimeMs || (latestFormalBarMs && previewBarTimeMs <= latestFormalBarMs)) {
+                return payload;
+            }
+
+            const previewBar = {
+                ...formingBarSnapshot,
+                symbol: formingBarSnapshot?.symbol || currentSymbol || '',
+                preview: true,
+                is_preview: true,
+            };
+            const livePrice = Number(realtimeQuoteSnapshot?.last_price);
+            const previewOpen = Number(previewBar.open || 0);
+            const previewHigh = Number(previewBar.high || 0);
+            const previewLow = Number(previewBar.low || 0);
+            const previewClose = Number.isFinite(livePrice) && livePrice > 0
+                ? livePrice
+                : Number(previewBar.close || 0);
+            if (!Number.isFinite(previewClose) || previewClose <= 0) {
+                return payload;
+            }
+
+            previewBar.close = previewClose;
+            if (previewOpen > 0) {
+                previewBar.high = Math.max(previewHigh || previewOpen, previewOpen, previewClose);
+                previewBar.low = Math.min(previewLow || previewOpen || previewClose, previewOpen, previewClose);
+            }
+            previewBar.volume = Number(previewBar.volume || 0);
+            return {
+                ...payload,
+                bars: [...baseBars, previewBar],
+                preview_bar: previewBar,
             };
         }
 
@@ -2508,6 +2677,16 @@
                 `<span class="hero-chip">${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>`,
                 `<span class="hero-chip">最后bar ${escapeHtml(latest?.us_time || (payload?.bars?.length ? payload.bars[payload.bars.length - 1]?.us_time || '--' : '--'))}</span>`
             ];
+            if (realtimeQuoteSnapshot?.last_price != null) {
+                chips.push(
+                    `<span class="hero-chip">实时 ${escapeHtml(formatPrice(realtimeQuoteSnapshot.last_price))} · ${escapeHtml(formatSignedPercent(realtimeQuoteSnapshot.day_change_pct))}</span>`
+                );
+            } else if (chartRealtimeQuoteError) {
+                chips.push('<span class="hero-chip">实时价连接异常</span>');
+            }
+            if (currentInterval === '5m' && chartRealtimePreviewError) {
+                chips.push('<span class="hero-chip">预览bar连接异常</span>');
+            }
             if (compareLoading) {
                 chips.push('<span class="hero-chip">IBKR 对比中</span>');
             } else if (comparePayload) {
@@ -2546,6 +2725,17 @@
                 `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`,
                 `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`
             ];
+            if (realtimeQuoteSnapshot?.last_price != null) {
+                chips.push(`live ${formatPrice(realtimeQuoteSnapshot.last_price)}`);
+                chips.push(`day ${formatSignedPercent(realtimeQuoteSnapshot.day_change_pct)}`);
+            } else if (chartRealtimeQuoteError) {
+                chips.push('live unavailable');
+            }
+            if (formingBarSnapshot?.bar_time_ms) {
+                chips.push(`preview ${formatChartLabel(formingBarSnapshot)}`);
+            } else if (currentInterval === '5m' && chartRealtimePreviewError) {
+                chips.push('preview unavailable');
+            }
             if (compareLoading) {
                 chips.push('IBKR compare loading');
             } else if (comparePayload) {
@@ -2574,10 +2764,12 @@
             const activeSignal = signalMatches.find((item) => String(item?.signal_id || item?.id || '') === String(signalId || ''))
                 || signalMatches[0]
                 || null;
+            const exactIndicator = indicatorMap.get(Number(bar?.bar_time_ms || 0)) || null;
+            const isPreviewBar = Boolean(bar?.preview || bar?.is_preview);
             return {
                 index: safeIndex,
                 bar,
-                indicator: indicatorMap.get(Number(bar?.bar_time_ms || 0)) || payload?.latestIndicator || null,
+                indicator: exactIndicator || (isPreviewBar ? null : payload?.latestIndicator || null),
                 signalMatches,
                 activeSignal,
             };
@@ -2627,7 +2819,7 @@
             };
         }
 
-        function renderChartToolbar(payload = lastPayload) {
+        function renderChartToolbar(payload = getChartDisplayPayload()) {
             const toolbar = document.getElementById('chartToolbar');
             if (!toolbar) return;
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
@@ -2692,7 +2884,7 @@
             `;
         }
 
-        function renderChartFloatingLegend(payload = lastPayload) {
+        function renderChartFloatingLegend(payload = getChartDisplayPayload()) {
             const root = document.getElementById('chartFloatingLegend');
             const watermark = document.getElementById('chartWatermarkSymbol');
             if (watermark) watermark.textContent = currentSymbol || '--';
@@ -2776,7 +2968,7 @@
             `;
         }
 
-        function renderChartBottomBar(payload = lastPayload) {
+        function renderChartBottomBar(payload = getChartDisplayPayload()) {
             const statusRoot = document.getElementById('chartBottomStatus');
             const shortcutRoot = document.getElementById('chartShortcutStrip');
             if (!statusRoot || !shortcutRoot) return;
@@ -2896,7 +3088,7 @@
             target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' });
         }
 
-        function renderMobileQuickPanel(payload = lastPayload) {
+        function renderMobileQuickPanel(payload = getChartDisplayPayload()) {
             const panel = document.getElementById('mobileQuickPanel');
             const layerRoot = document.getElementById('mobileQuickLayerGroup');
             const timeframeRoot = document.getElementById('mobileQuickTimeframeGroup');
@@ -2933,7 +3125,7 @@
             viewRoot.innerHTML = [
                 { active: chartFocusMode, label: chartFocusMode ? 'Exit Focus' : 'Focus', action: 'toggleChartFocusMode()' },
                 { active: inspectorDrawerOpen, label: inspectorDrawerOpen ? 'Hide Info' : 'Inspector', action: 'toggleInspectorDrawer()' },
-                { active: chartPointerLocked, label: chartPointerLocked ? 'Unlock Cursor' : 'Lock Cursor', action: chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(lastPayload))' },
+                { active: chartPointerLocked, label: chartPointerLocked ? 'Unlock Cursor' : 'Lock Cursor', action: chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(getChartDisplayPayload()))' },
                 { active: false, label: 'Reset Zoom', action: 'resetChartView()' },
             ].map((item) => `
                 <button class="mobile-quick-chip ${item.active ? 'active' : ''}" type="button" onclick="${item.action}">${escapeHtml(item.label)}</button>
@@ -2942,20 +3134,20 @@
 
         function openMobileQuickPanel() {
             inspectorDrawerOpen = false;
-            renderInspectorDrawer(lastPayload);
+            renderInspectorDrawer(getChartDisplayPayload());
             closeSignalDrawer();
             mobileQuickPanelOpen = true;
-            renderMobileQuickPanel(lastPayload);
-            renderMobileGestureHint(lastPayload);
+            renderMobileQuickPanel(getChartDisplayPayload());
+            renderMobileGestureHint(getChartDisplayPayload());
         }
 
         function closeMobileQuickPanel() {
             mobileQuickPanelOpen = false;
-            renderMobileQuickPanel(lastPayload);
-            renderMobileGestureHint(lastPayload);
+            renderMobileQuickPanel(getChartDisplayPayload());
+            renderMobileGestureHint(getChartDisplayPayload());
         }
 
-        function renderInspectorDrawer(payload = lastPayload) {
+        function renderInspectorDrawer(payload = getChartDisplayPayload()) {
             const drawer = document.getElementById('inspectorDrawer');
             const title = document.getElementById('inspectorDrawerTitle');
             const sub = document.getElementById('inspectorDrawerSub');
@@ -2981,9 +3173,9 @@
                 mobileQuickPanelOpen = false;
                 closeSignalDrawer();
             }
-            renderMobileQuickPanel(lastPayload);
-            renderInspectorDrawer(lastPayload);
-            renderMobileGestureHint(lastPayload);
+            renderMobileQuickPanel(getChartDisplayPayload());
+            renderInspectorDrawer(getChartDisplayPayload());
+            renderMobileGestureHint(getChartDisplayPayload());
         }
 
         function toggleInspectorDrawer() {
@@ -3002,10 +3194,10 @@
                     localStorage.setItem(CHART_MOBILE_HINT_KEY, '1');
                 } catch (_) {}
             }
-            renderMobileGestureHint(lastPayload);
+            renderMobileGestureHint(getChartDisplayPayload());
         }
 
-        function renderMobileGestureHint(payload = lastPayload) {
+        function renderMobileGestureHint(payload = getChartDisplayPayload()) {
             const root = document.getElementById('mobileGestureHint');
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!root) return;
@@ -3098,7 +3290,7 @@
             };
         }
 
-        function renderMobileDock(payload = lastPayload) {
+        function renderMobileDock(payload = getChartDisplayPayload()) {
             const dock = document.getElementById('mobileDock');
             if (!dock) return;
             if (!isCompactViewport()) {
@@ -3114,7 +3306,7 @@
             const focusSignal = focus?.activeSignal || null;
             const compareText = comparePayload ? 'Diff' : 'Compare';
             const compareAction = comparePayload ? "scrollInfoRailCardByKicker('Comparison')" : 'runIbkrCompare()';
-            const lockAction = chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(lastPayload))';
+            const lockAction = chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(getChartDisplayPayload()))';
             const lockLabel = chartPointerLocked ? 'Unlock' : 'Lock';
             const focusLabel = chartFocusMode ? 'Exit' : 'Focus';
             dock.innerHTML = `
@@ -3132,7 +3324,7 @@
             `;
         }
 
-        function renderChartWorkspaceChrome(payload = lastPayload) {
+        function renderChartWorkspaceChrome(payload = getChartDisplayPayload()) {
             renderChartToolbar(payload);
             renderChartFloatingLegend(payload);
             renderChartBottomBar(payload);
@@ -3241,11 +3433,12 @@
         }
 
         function syncCursorIndex(index) {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
             if (chartPointerLocked) return;
-            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), lastPayload.bars.length - 1);
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), payload.bars.length - 1);
             hoverBarIndex = safeIndex;
-            renderCursorStrip(lastPayload);
+            renderCursorStrip(payload);
         }
 
         function clearChartTouchTimer() {
@@ -3258,7 +3451,7 @@
         function unlockChartPointer({ preserveHover = true } = {}) {
             chartPointerLocked = false;
             if (!preserveHover) hoverBarIndex = -1;
-            if (lastPayload) renderCursorStrip(lastPayload);
+            if (lastPayload) renderCursorStrip(getChartDisplayPayload());
         }
 
         function getBarIndexFromClientPoint(clientX, clientY) {
@@ -3278,13 +3471,14 @@
             const rawIndex = Array.isArray(result) ? result[0] : result;
             const index = Math.round(Number(rawIndex));
             if (!Number.isInteger(index)) return -1;
-            const bars = Array.isArray(lastPayload?.bars) ? lastPayload.bars : [];
+            const bars = Array.isArray(getChartDisplayPayload()?.bars) ? getChartDisplayPayload().bars : [];
             return bars.length ? clampIndex(index, bars.length) : -1;
         }
 
         function lockChartPointerAtIndex(index, signalId = '') {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
-            const bars = lastPayload.bars;
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            const bars = payload.bars;
             let safeIndex = clampIndex(index, bars.length);
             let safeSignalId = String(signalId || '');
             if (!safeSignalId) {
@@ -3298,20 +3492,21 @@
             chartPointerLocked = true;
             hoverBarIndex = safeIndex;
             focusBarIndex(safeIndex, safeSignalId);
-            ensureBarVisible(safeIndex, lastPayload);
-            renderCursorStrip(lastPayload);
+            ensureBarVisible(safeIndex, payload);
+            renderCursorStrip(payload);
             syncChartTooltip(safeIndex);
         }
 
         function navigateTouchSwipe(deltaX) {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
             const magnitude = Math.abs(Number(deltaX) || 0);
             if (magnitude < 40) return;
             const step = magnitude >= 120 ? 5 : magnitude >= 70 ? 3 : 1;
             dismissMobileGestureHint();
             const directionStep = deltaX < 0 ? step : -step;
             if (chartPointerLocked) {
-                const activeIndex = getEffectiveCursorIndex(lastPayload);
+                const activeIndex = getEffectiveCursorIndex(payload);
                 lockChartPointerAtIndex(activeIndex + directionStep);
                 return;
             }
@@ -3327,10 +3522,10 @@
                 drawer.setAttribute('aria-hidden', 'true');
                 content.innerHTML = '';
                 activeDrawerSignalId = '';
-                renderMobileGestureHint(lastPayload);
+                renderMobileGestureHint(getChartDisplayPayload());
                 return;
             }
-            const ctx = context || buildContext(lastPayload, selectedBarIndex >= 0 ? selectedBarIndex : 0, String(signal.signal_id || signal.id || ''));
+            const ctx = context || buildContext(getChartDisplayPayload(), selectedBarIndex >= 0 ? selectedBarIndex : 0, String(signal.signal_id || signal.id || ''));
             const bar = ctx?.bar || null;
             const indicator = ctx?.indicator || null;
             const signalDate = deriveItemDate(signal);
@@ -3413,7 +3608,7 @@
             drawer.classList.add('show');
             drawer.setAttribute('aria-hidden', 'false');
             activeDrawerSignalId = String(signal.signal_id || signal.id || '');
-            renderMobileGestureHint(lastPayload);
+            renderMobileGestureHint(getChartDisplayPayload());
         }
 
         function closeSignalDrawer() {
@@ -3425,7 +3620,7 @@
         }
 
         function openFocusedSignalDrawer() {
-            const context = getFocusContext(lastPayload);
+            const context = getFocusContext(getChartDisplayPayload());
             if (!context?.activeSignal) {
                 showToast('当前焦点没有信号');
                 return;
@@ -3434,13 +3629,14 @@
         }
 
         function focusBarIndex(index, signalId = '') {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
-            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), lastPayload.bars.length - 1);
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            const safeIndex = Math.min(Math.max(Number(index) || 0, 0), payload.bars.length - 1);
             selectedBarIndex = safeIndex;
             selectedSignalId = signalId ? decodeURIComponent(signalId) : '';
-            renderInfoRail(lastPayload);
-            renderCursorStrip(lastPayload);
-            const context = buildContext(lastPayload, safeIndex, selectedSignalId);
+            renderInfoRail(payload);
+            renderCursorStrip(payload);
+            const context = buildContext(payload, safeIndex, selectedSignalId);
             if (document.getElementById('signalDetailDrawer')?.classList.contains('show')) {
                 if (context?.activeSignal) openSignalDrawer(context.activeSignal, context);
                 else closeSignalDrawer();
@@ -3448,7 +3644,7 @@
             syncChartTooltip(safeIndex);
         }
 
-        function setChartZoomWindow(zoom, payload = lastPayload) {
+        function setChartZoomWindow(zoom, payload = getChartDisplayPayload()) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!chartInstance || !bars.length) return;
             const viewport = applyChartViewportState(zoom, bars.length);
@@ -3465,7 +3661,7 @@
             chartViewportState = { start: 0, end: 100, startIndex: 0, endIndex: 0, visibleBars: 0, totalBars: 0 };
         }
 
-        function ensureBarVisible(index, payload = lastPayload, { center = false, paddingBars = 10 } = {}) {
+        function ensureBarVisible(index, payload = getChartDisplayPayload(), { center = false, paddingBars = 10 } = {}) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!chartInstance || !bars.length) return;
             const targetIndex = clampIndex(index, bars.length);
@@ -3485,7 +3681,7 @@
             }, payload);
         }
 
-        function zoomChartAroundFocus(factor, payload = lastPayload) {
+        function zoomChartAroundFocus(factor, payload = getChartDisplayPayload()) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!chartInstance || !bars.length) return;
             const viewport = chartViewportState.totalBars === bars.length
@@ -3507,14 +3703,15 @@
         }
 
         function focusRelativeBar(delta) {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
-            const bars = lastPayload.bars;
-            const activeIndex = getEffectiveCursorIndex(lastPayload);
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            const bars = payload.bars;
+            const activeIndex = getEffectiveCursorIndex(payload);
             const targetIndex = clampIndex(activeIndex + Number(delta || 0), bars.length);
             focusBarIndex(targetIndex);
             hoverBarIndex = targetIndex;
-            ensureBarVisible(targetIndex, lastPayload);
-            renderCursorStrip(lastPayload);
+            ensureBarVisible(targetIndex, payload);
+            renderCursorStrip(payload);
         }
 
         function focusSignalByStep(step) {
@@ -3527,7 +3724,8 @@
                 showToast('当前窗口暂无可定位信号');
                 return;
             }
-            const currentIndex = getEffectiveCursorIndex(lastPayload);
+            const displayPayload = getChartDisplayPayload();
+            const currentIndex = getEffectiveCursorIndex(displayPayload || lastPayload);
             let targetIndex = -1;
             if (step > 0) {
                 targetIndex = signalIndices.find((index) => index > currentIndex);
@@ -3538,26 +3736,28 @@
             }
             focusBarIndex(targetIndex);
             hoverBarIndex = targetIndex;
-            ensureBarVisible(targetIndex, lastPayload, { center: true });
-            const context = buildContext(lastPayload, targetIndex, selectedSignalId);
+            ensureBarVisible(targetIndex, displayPayload || lastPayload, { center: true });
+            const context = buildContext(displayPayload || lastPayload, targetIndex, selectedSignalId);
             if (context?.activeSignal) openSignalDrawer(context.activeSignal, context);
-            renderCursorStrip(lastPayload);
+            renderCursorStrip(displayPayload || lastPayload);
         }
 
         function focusLatestBarAction() {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
-            const latestIndex = lastPayload.bars.length - 1;
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            const latestIndex = payload.bars.length - 1;
             focusBarIndex(latestIndex);
             hoverBarIndex = latestIndex;
-            ensureBarVisible(latestIndex, lastPayload, { center: true });
-            renderCursorStrip(lastPayload);
+            ensureBarVisible(latestIndex, payload, { center: true });
+            renderCursorStrip(payload);
         }
 
         function resetChartViewAction() {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
-            setChartZoomWindow(getInitialZoom(currentRangeKey, lastPayload.bars.length), lastPayload);
-            const focusIndex = getEffectiveCursorIndex(lastPayload);
-            syncChartTooltip(focusIndex >= 0 ? focusIndex : lastPayload.bars.length - 1);
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            setChartZoomWindow(getInitialZoom(currentRangeKey, payload.bars.length), payload);
+            const focusIndex = getEffectiveCursorIndex(payload);
+            syncChartTooltip(focusIndex >= 0 ? focusIndex : payload.bars.length - 1);
         }
 
         function renderInfoRail(payload) {
@@ -3806,6 +4006,11 @@
             const signal = context?.activeSignal || null;
             const direction = String(signal?.direction || '').toLowerCase();
             const signalColor = direction === 'short' ? '#FC8181' : '#48BB78';
+            const signalText = bar?.preview || bar?.is_preview
+                ? 'Forming preview bar · 正式 5m 仍以收盘写入为准'
+                : signal
+                ? `${escapeHtml(String(signal.signal || signal.direction || '--'))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}`
+                : 'No signal on this bar';
             return `
                 <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.75;min-width:240px;">
                     <div style="font-size:12px;font-weight:700;color:#E2EAF4;margin-bottom:6px;">${escapeHtml(bar.us_time || '--')}</div>
@@ -3815,13 +4020,16 @@
                     <div style="margin-top:6px;color:#8BA4C4;">EMA20 ${indicator ? escapeHtml(formatPrice(indicator.ema_fast)) : '--'} · EMA50 ${indicator ? escapeHtml(formatPrice(indicator.ema_slow)) : '--'}</div>
                     <div style="color:#8BA4C4;">EMA100 ${indicator ? escapeHtml(formatPrice(indicator.ema_trend)) : '--'} · VWAP ${indicator ? escapeHtml(formatPrice(indicator.vwap)) : '--'}</div>
                     <div style="color:#8BA4C4;">CRSI ${indicator ? escapeHtml(formatNumber(indicator.crsi)) : '--'} · OBV ${indicator ? escapeHtml(formatNumber(indicator.obv_rsi)) : '--'} · ATR ${indicator ? escapeHtml(formatPercent(indicator.atr_pct)) : '--'}</div>
-                    <div style="margin-top:6px;color:${signal ? signalColor : '#8BA4C4'};">${signal ? `${escapeHtml(String(signal.signal || signal.direction || '--'))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}` : 'No signal on this bar'}</div>
+                    <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
                 </div>
             `;
         }
 
         function renderChart(payload) {
-            const bars = Array.isArray(payload?.bars) ? payload.bars.slice() : [];
+            const displayPayload = buildChartDisplayPayload(payload);
+            chartDisplayPayload = displayPayload || payload || null;
+            const bars = Array.isArray(displayPayload?.bars) ? displayPayload.bars.slice() : [];
+            const formalBars = Array.isArray(payload?.bars) ? payload.bars.slice() : [];
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators.slice() : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals.slice() : [];
             const latest = payload?.latestIndicator || null;
@@ -3836,13 +4044,15 @@
                 resetChartZoomState();
                 canvas.innerHTML = '<div class="chart-empty">当前没有可绘制的 bars 数据。<br>请先确认 ibkr_bars 已经写入该标的该周期。</div>';
                 note.textContent = '图表指标与信号基于 ibkr_bars 实时重算；如果 bars 为空，图表不会展示。';
-                renderChartWorkspaceChrome(payload);
+                renderChartWorkspaceChrome(displayPayload);
                 return;
             }
 
             const sortedBars = bars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0));
+            const sortedFormalBars = formalBars.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0));
             const indicatorMap = new Map(indicators.map((item) => [Number(item.bar_time_ms || 0), item]));
-            const barMap = new Map(sortedBars.map((item) => [Number(item.bar_time_ms || 0), item]));
+            const barMap = new Map(sortedFormalBars.map((item) => [Number(item.bar_time_ms || 0), item]));
+            const previewBar = sortedBars.find((item) => item?.preview || item?.is_preview) || null;
             const categories = sortedBars.map((bar) => formatChartLabel(bar));
             const candle = sortedBars.map((bar) => [Number(bar.open || 0), Number(bar.close || 0), Number(bar.low || 0), Number(bar.high || 0)]);
             const emaFast = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_fast));
@@ -3855,18 +4065,18 @@
             const volume = sortedBars.map((bar) => Number(bar.volume || 0));
             const longSignals = buildSignalScatter(
                 signals.filter((item) => String(item.direction || '').toLowerCase() === 'long'),
-                sortedBars,
+                sortedFormalBars,
                 (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
                 '#48BB78'
             );
             const shortSignals = buildSignalScatter(
                 signals.filter((item) => String(item.direction || '').toLowerCase() === 'short'),
-                sortedBars,
+                sortedFormalBars,
                 (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
                 '#FC8181'
             );
-            const focus = getFocusContext(payload) || buildContext(payload, sortedBars.length - 1, selectedSignalId);
-            const latestClose = Number(latest?.close || sortedBars[sortedBars.length - 1]?.close || 0);
+            const focus = getFocusContext(displayPayload) || buildContext(displayPayload, sortedBars.length - 1, selectedSignalId);
+            const latestClose = Number(realtimeQuoteSnapshot?.last_price ?? previewBar?.close ?? latest?.close ?? sortedBars[sortedBars.length - 1]?.close ?? 0);
             const previousClose = Number(sortedBars.length > 1 ? sortedBars[sortedBars.length - 2]?.close : latestClose);
             const latestLineColor = latestClose >= previousClose ? '#4ADE80' : '#FB7185';
             const focusMarker = focus?.bar
@@ -3879,14 +4089,21 @@
 
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)} 图表页`;
             const compareSummary = comparePayload?.comparison?.summary || null;
+            const barsMetaText = `${sortedFormalBars.length} bars${previewBar ? ' + live preview' : ''}`;
             document.getElementById('chartMeta').textContent = compareSummary
-                ? `${sortedBars.length} bars · ${indicators.length} ind · ${signals.length} signals · compare bar ${compareSummary.bar_mismatch_count || 0} / ind ${compareSummary.indicator_mismatch_count || 0} / sig ${compareSummary.signal_mismatch_count || 0}`
-                : `${sortedBars.length} bars · ${indicators.length} ind · ${signals.length} signals · ${latest?.us_time || sortedBars[sortedBars.length - 1]?.us_time || '--'}`;
+                ? `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals · compare bar ${compareSummary.bar_mismatch_count || 0} / ind ${compareSummary.indicator_mismatch_count || 0} / sig ${compareSummary.signal_mismatch_count || 0}`
+                : `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals · ${latest?.us_time || sortedFormalBars[sortedFormalBars.length - 1]?.us_time || '--'}`;
             note.textContent = !indicators.length
                 ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
                 ? `可用上方工具条与键盘在 bars / signals 间导航；当前主图${chartLayerState.signals ? '已叠加' : '未叠加'}实时重算信号点。`
                 : '当前为非 5m 周期，主图只展示 bars 实时重算出的价格结构与指标轨迹；仍可用工具条和图层按钮快速切换视角。';
+            if (realtimeQuoteSnapshot?.last_price != null) {
+                note.textContent += ' 价格与日内涨幅来自 WS 实时快照。';
+            }
+            if (previewBar) {
+                note.textContent += ' 当前 5m 叠加了一根未收盘 preview bar；正式写库与指标计算仍只认官方收盘 bar。';
+            }
             if (comparePayload) {
                 note.textContent += ' 当前主图仍展示 stored bars 链路；右侧 Compare 与上方 Cursor 显示 IBKR API 临时对比结果。';
             } else if (compareError) {
@@ -4007,7 +4224,7 @@
                         const axisParam = list.find((item) => Number.isInteger(item?.dataIndex));
                         const index = Number(axisParam?.dataIndex);
                         if (!Number.isInteger(index) || index < 0) return '';
-                        return buildTooltipHtml(payload, index);
+                        return buildTooltipHtml(displayPayload, index);
                     }
                 },
                 axisPointer: {
@@ -4136,7 +4353,7 @@
                 const end = Number(batch?.end);
                 if (!Number.isFinite(start) || !Number.isFinite(end)) return;
                 applyChartViewportState({ start, end }, sortedBars.length);
-                renderChartBottomBar(payload);
+                renderChartBottomBar(displayPayload);
             });
             chartInstance.on('click', (params) => {
                 if (suppressNextChartClick) {
@@ -4151,7 +4368,7 @@
                 const signalKey = params?.data?.signal_id ? String(params.data.signal_id) : '';
                 if (isCompactViewport() && chartPointerLocked) {
                     lockChartPointerAtIndex(index, signalKey);
-                    const lockedContext = getFocusContext(lastPayload);
+                    const lockedContext = getFocusContext(getChartDisplayPayload());
                     if (lockedContext?.activeSignal) {
                         openSignalDrawer(lockedContext.activeSignal, lockedContext);
                     }
@@ -4160,8 +4377,8 @@
                 chartPointerLocked = false;
                 focusBarIndex(index, signalKey);
                 syncCursorIndex(index);
-                ensureBarVisible(index, payload);
-                const context = buildContext(payload, index, signalKey);
+                ensureBarVisible(index, displayPayload);
+                const context = buildContext(displayPayload, index, signalKey);
                 if (context?.activeSignal) {
                     openSignalDrawer(context.activeSignal, context);
                 }
@@ -4177,7 +4394,7 @@
                 zr.on('globalout', () => {
                     if (chartPointerLocked) return;
                     hoverBarIndex = -1;
-                    renderCursorStrip(lastPayload);
+                    renderCursorStrip(getChartDisplayPayload());
                 });
             }
             registerChartTouchInteractions();
@@ -4187,11 +4404,11 @@
                 if (!selectedSignalId && focus.activeSignal) {
                     selectedSignalId = String(focus.activeSignal.signal_id || focus.activeSignal.id || '');
                 }
-                renderInfoRail(payload);
+                renderInfoRail(displayPayload);
                 hoverBarIndex = -1;
-                renderCursorStrip(payload);
+                renderCursorStrip(displayPayload);
                 syncChartTooltip(focus.index);
-                ensureBarVisible(focus.index, payload);
+                ensureBarVisible(focus.index, displayPayload);
             }
         }
 
@@ -4205,6 +4422,13 @@
             chartPointerLocked = false;
             suppressNextChartClick = false;
             clearChartTouchTimer();
+            stopChartRealtimePolling();
+            realtimeQuoteSnapshot = null;
+            formingBarSnapshot = null;
+            chartRealtimeQuoteError = '';
+            chartRealtimePreviewError = '';
+            resetChartRealtimeWarnings();
+            chartDisplayPayload = null;
 
             const input = document.getElementById('chartSymbolInput');
             if (input && currentSymbol) input.value = currentSymbol;
@@ -4257,13 +4481,16 @@
                 currentIndicatorId = '';
 
                 lastPayload = timelinePayload;
+                await refreshChartRealtimeState({ render: false });
                 renderHeroStatus(lastPayload);
                 renderSummaryStrip(lastPayload);
-                renderInfoRail(lastPayload);
                 renderChart(lastPayload);
                 renderCompareButtons();
                 updateQueryState();
+                startChartRealtimePolling();
             } catch (error) {
+                stopChartRealtimePolling();
+                chartDisplayPayload = null;
                 if (chartInstance) {
                     chartInstance.dispose();
                     chartInstance = null;
@@ -4295,8 +4522,8 @@
             renderCompareButtons();
             renderHeroStatus(lastPayload);
             renderSummaryStrip(lastPayload);
-            renderInfoRail(lastPayload);
-            renderCursorStrip(lastPayload);
+            renderInfoRail(getChartDisplayPayload());
+            renderCursorStrip(getChartDisplayPayload());
 
             const cappedMs = currentAnchorMs || Number(lastPayload.bars[lastPayload.bars.length - 1]?.bar_time_ms || Date.now()) || Date.now();
             const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
@@ -4321,7 +4548,6 @@
                 }
                 renderHeroStatus(lastPayload);
                 renderSummaryStrip(lastPayload);
-                renderInfoRail(lastPayload);
                 renderChart(lastPayload);
                 renderCompareButtons();
             } catch (error) {
@@ -4329,15 +4555,15 @@
                 comparePayload = null;
                 renderHeroStatus(lastPayload);
                 renderSummaryStrip(lastPayload);
-                renderInfoRail(lastPayload);
-                renderCursorStrip(lastPayload);
+                renderInfoRail(getChartDisplayPayload());
+                renderCursorStrip(getChartDisplayPayload());
                 renderCompareButtons();
             } finally {
                 compareLoading = false;
                 renderHeroStatus(lastPayload);
                 renderSummaryStrip(lastPayload);
-                renderInfoRail(lastPayload);
-                renderCursorStrip(lastPayload);
+                renderInfoRail(getChartDisplayPayload());
+                renderCursorStrip(getChartDisplayPayload());
                 renderCompareButtons();
             }
         }
@@ -4380,9 +4606,10 @@
                 showToast('当前窗口未包含该信号');
                 return;
             }
+            const displayPayload = getChartDisplayPayload();
             focusBarIndex(index, signalId);
-            ensureBarVisible(index, lastPayload, { center: true });
-            const context = buildContext(lastPayload, index, signalId ? decodeURIComponent(signalId) : '');
+            ensureBarVisible(index, displayPayload || lastPayload, { center: true });
+            const context = buildContext(displayPayload || lastPayload, index, signalId ? decodeURIComponent(signalId) : '');
             if (context?.activeSignal) {
                 openSignalDrawer(context.activeSignal, context);
             }
@@ -4418,7 +4645,6 @@
             if (lastPayload) {
                 renderHeroStatus(lastPayload);
                 renderSummaryStrip(lastPayload);
-                renderInfoRail(lastPayload);
                 renderChart(lastPayload);
             }
         };
@@ -4430,8 +4656,9 @@
                 showToast('该异常 bar 不在当前 stored bars 主图中');
                 return;
             }
+            const displayPayload = getChartDisplayPayload();
             focusBarIndex(index, '');
-            ensureBarVisible(index, lastPayload, { center: true });
+            ensureBarVisible(index, displayPayload || lastPayload, { center: true });
         };
 
         window.scrollInfoRailCard = function(index) {
@@ -4467,9 +4694,10 @@
         };
 
         window.centerChartOnFocusBar = function() {
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) return;
-            const focusIndex = getEffectiveCursorIndex(lastPayload);
-            ensureBarVisible(focusIndex, lastPayload, { center: true });
+            const payload = getChartDisplayPayload();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            const focusIndex = getEffectiveCursorIndex(payload);
+            ensureBarVisible(focusIndex, payload, { center: true });
             syncChartTooltip(focusIndex);
         };
 
@@ -4483,7 +4711,7 @@
 
         window.resetChartView = function() {
             resetChartViewAction();
-            if (lastPayload) renderCursorStrip(lastPayload);
+            if (lastPayload) renderCursorStrip(getChartDisplayPayload());
         };
 
         window.toggleChartFocusMode = toggleChartFocusMode;
@@ -4510,7 +4738,8 @@
                 }
                 return;
             }
-            if (!lastPayload || !Array.isArray(lastPayload.bars) || !lastPayload.bars.length) {
+            const displayPayload = getChartDisplayPayload();
+            if (!displayPayload || !Array.isArray(displayPayload.bars) || !displayPayload.bars.length) {
                 if (event.key === 'Escape') {
                     closeInspectorDrawer();
                     closeMobileQuickPanel();
@@ -4546,8 +4775,8 @@
                 event.preventDefault();
                 focusBarIndex(0);
                 hoverBarIndex = 0;
-                ensureBarVisible(0, lastPayload, { center: true });
-                renderCursorStrip(lastPayload);
+                ensureBarVisible(0, displayPayload, { center: true });
+                renderCursorStrip(displayPayload);
                 return;
             }
             if (event.key === 'End') {
@@ -4578,13 +4807,13 @@
             if (event.key === '0') {
                 event.preventDefault();
                 resetChartViewAction();
-                if (lastPayload) renderCursorStrip(lastPayload);
+                if (lastPayload) renderCursorStrip(getChartDisplayPayload());
                 return;
             }
             if (event.key === 'c' || event.key === 'C') {
                 event.preventDefault();
-                const focusIndex = getEffectiveCursorIndex(lastPayload);
-                ensureBarVisible(focusIndex, lastPayload, { center: true });
+                const focusIndex = getEffectiveCursorIndex(displayPayload);
+                ensureBarVisible(focusIndex, displayPayload, { center: true });
                 syncChartTooltip(focusIndex);
                 return;
             }
@@ -4656,10 +4885,11 @@
             document.addEventListener('keydown', handleChartHotkeys);
 
             window.addEventListener('resize', () => {
-                if (lastPayload) renderCursorStrip(lastPayload);
+                if (lastPayload) renderCursorStrip(getChartDisplayPayload());
                 else renderChartWorkspaceChrome(null);
                 if (chartInstance) chartInstance.resize();
             });
+            window.addEventListener('beforeunload', stopChartRealtimePolling);
         });
     </script>
 </body>

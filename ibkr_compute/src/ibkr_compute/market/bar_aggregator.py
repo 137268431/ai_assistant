@@ -145,6 +145,40 @@ class BarAggregator:
         with self._lock:
             self._current_bars.clear()
 
+    def get_preview_bar(self, symbol: str) -> dict | None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return None
+        now_ts = time.time()
+        with self._lock:
+            items = list(self._current_bars.values())
+        for bar in items:
+            if str(bar.symbol or "").upper() != normalized_symbol:
+                continue
+            age_seconds = max(0.0, now_ts - float(bar.last_update or 0.0))
+            if bar.last_update and age_seconds > (BAR_INTERVAL_SECONDS * 2):
+                return None
+            return {
+                "symbol": normalized_symbol,
+                "conid": int(bar.conid),
+                "interval": "5m",
+                "bar_time_ms": int(bar.interval_start.timestamp() * 1000),
+                "us_time": format_us_time(int(bar.interval_start.timestamp() * 1000)),
+                "cn_time": format_cn_time(int(bar.interval_start.timestamp() * 1000)),
+                "session_type": classify_session(bar_time_ms=int(bar.interval_start.timestamp() * 1000)),
+                "interval_start": bar.interval_start.strftime("%H:%M"),
+                "open": round(float(bar.open), 4),
+                "high": round(float(bar.high), 4),
+                "low": round(float(bar.low), 4),
+                "close": round(float(bar.close), 4),
+                "volume": round(float(bar.volume), 2),
+                "volume_updates": int(bar.volume_update_count),
+                "volume_source": bar.volume_source or "",
+                "tick_count": int(bar.tick_count),
+                "last_update_age_s": round(age_seconds, 1),
+            }
+        return None
+
     def on_tick(self, tick_data: dict):
         conid = tick_data.get("conid") or tick_data.get("conidEx")
         if not conid:
@@ -283,8 +317,11 @@ class BarAggregator:
                 stale_symbols += 1
                 continue
             active_bars[bar.symbol] = {
+                "bar_time_ms": int(bar.interval_start.timestamp() * 1000),
                 "interval_start": bar.interval_start.strftime("%H:%M"),
                 "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
                 "close": bar.close,
                 "volume": round(bar.volume, 2),
                 "volume_updates": bar.volume_update_count,
@@ -294,6 +331,7 @@ class BarAggregator:
             }
 
         return {
+            "mode": "preview_only",
             "active_symbols": len(items),
             "active_symbols_visible": len(active_bars),
             "stale_symbols": stale_symbols,

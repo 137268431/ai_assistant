@@ -45,9 +45,11 @@ from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
     HIGHER_INTERVALS,
+    bucket_start_ms,
     build_runtime_timestamps,
     classify_session,
     build_signal_id,
+    format_us_time,
     interval_to_chart_tf,
     interval_to_ms,
     ms_to_et,
@@ -2373,6 +2375,7 @@ def compute():
         persist_signals = should_persist_compute_signals(payload)
         requested_symbols = get_requested_symbols(payload)
         targeted_rebuild = bool(requested_symbols) and source in {"history_repair", "recompute", "targeted_recompute"}
+        targeted_rollup = bool(requested_symbols) and source in {"history_repair", "recompute", "targeted_recompute", "canonical_close"}
         skip_persisted_cursor = source in {"recompute", "history_repair", "targeted_recompute"}
         requested_environments = get_requested_environments()
         enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
@@ -2389,7 +2392,7 @@ def compute():
         processed = 0
         signals_found = 0
         errors = 0
-        force_rollup = bool(payload.get("force_rollup")) or source in {"recompute", "history_repair", "targeted_recompute"}
+        force_rollup = bool(payload.get("force_rollup")) or source in {"recompute", "history_repair", "targeted_recompute", "canonical_close"}
         indicator_batch = []
         signal_batch = []
         dirty_cursor_environments = set()
@@ -2415,7 +2418,7 @@ def compute():
         rollup_results = ensure_higher_timeframe_bars(
             enabled_environments,
             force=force_rollup,
-            symbols=requested_symbols if targeted_rebuild else None,
+            symbols=requested_symbols if targeted_rollup else None,
         )
         errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
         refresh_daily_close_cache(enabled_environments)
@@ -2736,6 +2739,90 @@ def chart_compare():
                 "session_authenticated": bool((service_status.get("session") or {}).get("authenticated")),
             }
         ), 500
+
+
+@app.route("/ibkr/quotes", methods=["GET"])
+def ibkr_quotes():
+    requested_environment = _normalize_runtime_environment_name(request.args.get("environment"), "live")
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    _maybe_restore_ibkr_service(service)
+    runtime_status = service.status() if hasattr(service, "status") else {}
+    symbols = _normalize_symbol_list(str(request.args.get("symbols") or "").split(","))
+    items = service.realtime_quote_book.get_quotes(symbols=symbols)
+    return jsonify(
+        {
+            "ok": True,
+            "requested_environment": requested_environment,
+            "environment": _ibkr_service_environment(service),
+            "runtime_environment_mismatch": _ibkr_service_environment(service) != requested_environment,
+            "count": len(items),
+            "symbols": symbols,
+            "items": items,
+            "summary": (runtime_status.get("realtime_quotes") or {}),
+        }
+    )
+
+
+@app.route("/ibkr/quotes/forming_bar", methods=["GET"])
+def ibkr_forming_bar():
+    requested_environment = _normalize_runtime_environment_name(request.args.get("environment"), "live")
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    symbol = str(request.args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return jsonify({"ok": False, "error": "missing_symbol"}), 400
+    _maybe_restore_ibkr_service(service)
+    preview = service.bar_aggregator.get_preview_bar(symbol)
+    current_bucket_ms = bucket_start_ms(int(time.time() * 1000), "5m")
+    if preview and int(preview.get("bar_time_ms", 0) or 0) != current_bucket_ms:
+        preview = None
+    quote = service.realtime_quote_book.get_quote(symbol)
+    return jsonify(
+        {
+            "ok": True,
+            "requested_environment": requested_environment,
+            "environment": _ibkr_service_environment(service),
+            "runtime_environment_mismatch": _ibkr_service_environment(service) != requested_environment,
+            "symbol": symbol,
+            "interval": "5m",
+            "preview": bool(preview),
+            "current_bucket_ms": current_bucket_ms,
+            "current_bucket_us": format_us_time(current_bucket_ms),
+            "bar": preview,
+            "quote": quote,
+        }
+    )
+
+
+@app.route("/ibkr/ingest/close", methods=["POST"])
+def ibkr_ingest_close():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    payload = request.get_json(silent=True) or {}
+    symbols = get_requested_symbols(payload)
+    _maybe_restore_ibkr_service(service)
+    service._run_official_5m_close_cycle(symbols_override=symbols or None)
+    runtime_status = service.status() if hasattr(service, "status") else {}
+    canonical = runtime_status.get("canonical_5m") or {}
+    compute_result = runtime_status.get("realtime_compute") or {}
+    return jsonify(
+        {
+            "ok": True,
+            "environment": _ibkr_service_environment(service),
+            "symbols": symbols,
+            "due_bucket_ms": int(canonical.get("last_due_bucket_ms", 0) or 0),
+            "written_symbols": canonical.get("written_symbols") or [],
+            "pending_symbols": canonical.get("pending_symbols") or [],
+            "written_bars": int(canonical.get("last_written_bars", 0) or 0),
+            "compute_triggered": int(canonical.get("last_written_bars", 0) or 0) > 0,
+            "compute_result": compute_result.get("last_result") or {},
+            "canonical_5m": canonical,
+        }
+    )
 
 
 @app.route("/contracts/search", methods=["GET"])
@@ -4123,19 +4210,29 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
     warmup = runtime_status.get("warmup") or {}
     market_universe = runtime_status.get("market_universe") or {}
     bar_aggregator = runtime_status.get("bar_aggregator") or {}
+    realtime_quotes = runtime_status.get("realtime_quotes") or {}
     active_bars = bar_aggregator.get("active_bars") or {}
+    quote_map = realtime_quotes.get("quotes") or {}
     if not isinstance(active_bars, dict):
         active_bars = {}
+    if not isinstance(quote_map, dict):
+        quote_map = {}
 
     subscription_map = _copy_active_subscription_map(service)
     trade_symbols = set(_normalize_symbol_list(market_universe.get("active_trade_symbols") or []))
     monitor_symbols = set(_normalize_symbol_list(warmup.get("monitor_symbols") or []))
-    visible_symbols = set(_normalize_symbol_list(active_bars.keys()))
+    visible_symbols = set(_normalize_symbol_list(quote_map.keys()))
 
     active_subscriptions = []
     for symbol in sorted(subscription_map.keys()):
         conid = subscription_map.get(symbol)
         bar_info = active_bars.get(symbol) or active_bars.get(symbol.upper()) or {}
+        quote_info = quote_map.get(symbol) or quote_map.get(symbol.upper()) or {}
+        quote_age_s = (
+            round(float(quote_info.get("quote_age_s")), 1)
+            if isinstance(quote_info, dict) and quote_info.get("quote_age_s") is not None
+            else None
+        )
         role = (
             WATCHLIST_SYMBOL_ROLE_TRADE
             if symbol in trade_symbols
@@ -4147,11 +4244,14 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
             "role": role,
             "visible": symbol in visible_symbols,
             "stale": symbol not in visible_symbols,
+            "quote_age_s": quote_age_s,
             "last_update_age_s": (
                 round(float(bar_info.get("last_update_age_s")), 1)
                 if isinstance(bar_info, dict) and bar_info.get("last_update_age_s") is not None
                 else None
             ),
+            "last_price": _coerce_float(quote_info.get("last_price")),
+            "day_change_pct": _coerce_float(quote_info.get("day_change_pct")),
             "tick_count": int(bar_info.get("tick_count", 0) or 0) if isinstance(bar_info, dict) else 0,
             "volume_updates": int(bar_info.get("volume_updates", 0) or 0) if isinstance(bar_info, dict) else 0,
         })

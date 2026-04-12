@@ -3037,6 +3037,109 @@ routerAdd("POST", "/api/custom/ibkr/proxy", (c) => {
     }
 })
 
+routerAdd("GET", "/api/custom/ibkr/quotes", (c) => {
+    const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const reqInfo = c.requestInfo()
+    const q = reqInfo.query || {}
+    const symbols = String(q.symbols || "").trim()
+    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/quotes${symbols ? `?symbols=${encodeURIComponent(symbols)}` : ""}`
+    try {
+        const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/quotes"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/quotes",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
+routerAdd("GET", "/api/custom/ibkr/quotes/forming_bar", (c) => {
+    const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const reqInfo = c.requestInfo()
+    const q = reqInfo.query || {}
+    const symbol = String(q.symbol || "").trim().toUpperCase()
+    const params = []
+    if (symbol) params.push(`symbol=${encodeURIComponent(symbol)}`)
+    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/quotes/forming_bar${params.length ? `?${params.join("&")}` : ""}`
+    try {
+        const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/quotes/forming_bar"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/quotes/forming_bar",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/ingest/close", (c) => {
+    const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/ingest/close`
+    try {
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 60,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/ingest/close"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/ingest/close",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
 // ══════════════════════════════════════
 // IBKR Compute 状态查询 (PB页面用)
 // ══════════════════════════════════════
@@ -3113,6 +3216,8 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const gateway = cloneObject(payload.gateway)
             const session = cloneObject(payload.session)
             const websocket = cloneObject(payload.websocket)
+            const realtimeQuotes = cloneObject(payload.realtime_quotes)
+            const canonical5m = cloneObject(payload.canonical_5m)
             const dataBackfill = cloneObject(payload.data_backfill)
             const orderTracker = cloneObject(payload.order_tracker)
             const warmup = cloneObject(payload.warmup)
@@ -3202,6 +3307,28 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     message_count: Number(websocket.message_count || 0) || 0,
                     subscribed_count: Array.isArray(websocket.subscribed_conids) ? websocket.subscribed_conids.length : (Number(websocket.subscribed_count || 0) || 0),
                     pending_count: Array.isArray(websocket.pending_conids) ? websocket.pending_conids.length : (Number(websocket.pending_count || 0) || 0),
+                },
+                realtime_quotes: {
+                    total_quotes: Number(realtimeQuotes.total_quotes || 0) || 0,
+                    stale_quotes: Number(realtimeQuotes.stale_quotes || 0) || 0,
+                    tick_count: Number(realtimeQuotes.tick_count || 0) || 0,
+                    update_count: Number(realtimeQuotes.update_count || 0) || 0,
+                },
+                canonical_5m: {
+                    enabled: Boolean(canonical5m.enabled !== false),
+                    driver: String(canonical5m.driver || ""),
+                    close_delay_sec: Number(canonical5m.close_delay_sec || 0) || 0,
+                    request_period: String(canonical5m.request_period || ""),
+                    last_run: canonical5m.last_run || "",
+                    last_due_bucket_ms: Number(canonical5m.last_due_bucket_ms || 0) || 0,
+                    last_completed_bucket_ms: Number(canonical5m.last_completed_bucket_ms || 0) || 0,
+                    lag_s: Number(canonical5m.lag_s || 0) || 0,
+                    last_written_bars: Number(canonical5m.last_written_bars || 0) || 0,
+                    written_symbols: trimArray(canonical5m.written_symbols, 24),
+                    written_symbols_total: Array.isArray(canonical5m.written_symbols) ? canonical5m.written_symbols.length : (Number(canonical5m.written_symbols_total || 0) || 0),
+                    pending_symbols: trimArray(canonical5m.pending_symbols, 24),
+                    pending_symbols_total: Array.isArray(canonical5m.pending_symbols) ? canonical5m.pending_symbols.length : (Number(canonical5m.pending_symbols_total || 0) || 0),
+                    last_error: String(canonical5m.last_error || ""),
                 },
                 data_backfill: {
                     total_backfilled: Number(dataBackfill.total_backfilled || 0) || 0,

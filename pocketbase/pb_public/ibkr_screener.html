@@ -1535,6 +1535,17 @@
       return `<div class="reason-wrap">${reasons.slice(0, 4).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
     }
 
+    function mergeScreenerRowWithRealtimeQuote(row) {
+      const quote = getRealtimeQuote(row?.symbol);
+      return {
+        ...row,
+        display_price: quote?.last_price != null ? quote.last_price : row?.price,
+        display_day_change_pct: quote?.day_change_pct != null ? quote.day_change_pct : row?.day_change_pct,
+        display_price_source: quote?.last_price != null ? 'realtime_quote' : (row?.price_source || '--'),
+        realtime_quote_age_s: quote?.quote_age_s != null ? quote.quote_age_s : null,
+      };
+    }
+
     function statusChip(label, className) {
       return `<span class="status-chip ${escapeHtml(className || '')}">${escapeHtml(label || '--')}</span>`;
     }
@@ -1557,15 +1568,15 @@
             </td>
             <td>
               <a class="symbol-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment })}">${escapeHtml(row.symbol)}</a><br>
-              <span class="muted mono">${escapeHtml(row.price_source || '--')}</span>
+              <span class="muted mono">${escapeHtml(row.display_price_source || row.price_source || '--')}</span>
             </td>
             <td>
               ${escapeHtml(row.exchange || '--')}<br>
               <span class="muted">${escapeHtml(row.industry || '--')}</span>
             </td>
             <td>
-              <strong>${escapeHtml(formatPrice(row.price))}</strong><br>
-              <span class="mono">${escapeHtml(formatPct(row.day_change_pct))}</span><br>
+              <strong>${escapeHtml(formatPrice(row.display_price ?? row.price))}</strong><br>
+              <span class="mono">${escapeHtml(formatPct(row.display_day_change_pct ?? row.day_change_pct))}</span><br>
               <span class="muted">7D ${escapeHtml(formatPct(row.change_7d))}</span>
             </td>
             <td>
@@ -1612,10 +1623,10 @@
         if (filters.industry && row.industry !== filters.industry) return false;
         if (filters.target_status && row.target_status !== filters.target_status) return false;
         if (filters.direction && row.direction_bias !== filters.direction) return false;
-        if (!inRange(row.price, filters.price_min, filters.price_max)) {
+        if (!inRange(row.display_price ?? row.price, filters.price_min, filters.price_max)) {
           if (Number.isFinite(filters.price_min) || Number.isFinite(filters.price_max)) return false;
         }
-        if (!inRange(row.day_change_pct, filters.day_change_min, filters.day_change_max)) {
+        if (!inRange(row.display_day_change_pct ?? row.day_change_pct, filters.day_change_min, filters.day_change_max)) {
           if (Number.isFinite(filters.day_change_min) || Number.isFinite(filters.day_change_max)) return false;
         }
         if (Number.isFinite(filters.atr_pct_min) && Number(row.atr_pct || 0) < filters.atr_pct_min) return false;
@@ -1726,7 +1737,18 @@
           environment: currentEnvironment,
           market_date: marketDate
         })}`);
-        screenerPayload = payload || { items: [], summary: {}, filters: {} };
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        if (items.length) {
+          try {
+            await fetchRealtimeQuotes(items.map((row) => row?.symbol).filter(Boolean), { reset: false });
+          } catch (error) {
+            console.warn('加载 screener 实时报价失败:', error);
+          }
+        }
+        screenerPayload = {
+          ...(payload || { items: [], summary: {}, filters: {} }),
+          items: items.map((row) => mergeScreenerRowWithRealtimeQuote(row)),
+        };
         populateSelect('exchangeFilter', payload.filters && payload.filters.exchanges);
         populateSelect('industryFilter', payload.filters && payload.filters.industries);
         populateSelect('targetStatusFilter', payload.filters && payload.filters.target_statuses);

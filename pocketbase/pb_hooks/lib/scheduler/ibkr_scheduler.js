@@ -55,22 +55,33 @@ function getRealtimePriorityState(runtimePayload) {
     const session = payload.session && typeof payload.session === "object" ? payload.session : {}
     const websocket = payload.websocket && typeof payload.websocket === "object" ? payload.websocket : {}
     const realtime = payload.realtime_compute && typeof payload.realtime_compute === "object" ? payload.realtime_compute : {}
-    const barAggregator = payload.bar_aggregator && typeof payload.bar_aggregator === "object" ? payload.bar_aggregator : {}
-    const activeSymbols = Number(barAggregator.active_symbols_visible || 0) || 0
+    const canonical5m = payload.canonical_5m && typeof payload.canonical_5m === "object" ? payload.canonical_5m : {}
+    const marketUniverse = payload.market_universe && typeof payload.market_universe === "object" ? payload.market_universe : {}
+    const activeSymbols = Number(marketUniverse.active_target_count || 0) || 0
     const queueSize = Number(realtime.queue_size || 0) || 0
     const lastRunText = String(realtime.last_run || "").trim()
     const lastRunMs = lastRunText ? Date.parse(lastRunText) : NaN
     const recentRealtimeRun = Number.isFinite(lastRunMs) && (Date.now() - lastRunMs) <= CRON_REALTIME_SKIP_MS
+    const canonicalEnabled = canonical5m.enabled !== false
+    const pendingSymbols = Number(canonical5m.pending_symbols_total || 0) || 0
+    const lastCanonicalRunText = String(canonical5m.last_run || "").trim()
+    const lastCanonicalRunMs = lastCanonicalRunText ? Date.parse(lastCanonicalRunText) : NaN
+    const recentCanonicalRun = Number.isFinite(lastCanonicalRunMs) && (Date.now() - lastCanonicalRunMs) <= CRON_REALTIME_SKIP_MS
     const runtimeStreamingActive = Boolean(session.authenticated && websocket.connected && activeSymbols > 0)
+    const canonicalHealthy = canonicalEnabled && pendingSymbols === 0 && recentCanonicalRun
     return {
-        skip: runtimeStreamingActive && (queueSize > 0 || recentRealtimeRun || activeSymbols > 0),
+        skip: runtimeStreamingActive && (queueSize > 0 || recentRealtimeRun || canonicalHealthy),
         reason: runtimeStreamingActive ? "realtime_priority_active" : "",
         queue_size: queueSize,
         active_symbols_visible: activeSymbols,
         recent_realtime_run: recentRealtimeRun,
+        recent_canonical_run: recentCanonicalRun,
+        canonical_enabled: canonicalEnabled,
+        canonical_pending_symbols: pendingSymbols,
         websocket_connected: Boolean(websocket.connected),
         authenticated: Boolean(session.authenticated),
         last_run: lastRunText || "",
+        last_canonical_run: lastCanonicalRunText || "",
     }
 }
 

@@ -717,6 +717,11 @@
                     container.innerHTML = '<div class="empty-state">当前未配置市场监控标的。</div>';
                     return;
                 }
+                try {
+                    await fetchRealtimeQuotes(symbols, { reset: false });
+                } catch (error) {
+                    console.warn('加载市场监控实时报价失败:', error);
+                }
 
                 const promises = symbols.map(async (symbol) => {
                     try {
@@ -762,9 +767,11 @@
                     if (data) {
                         hasData = true;
                         const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? dailyBars[0]?.close ?? 0);
+                        const quote = getRealtimeQuote(symbol);
+                        const displayPrice = Number(quote?.last_price ?? price ?? 0);
                         const marketDate = getMarketDateFromRecord(bar || indicator || dailyBars[0] || null);
                         const barFallbackMetrics = buildBarFallbackMetrics(price, dailyBars, marketDate);
-                        const changePct = getMetricValue(indicator, 'day_change_pct') ?? barFallbackMetrics?.day_change_pct ?? null;
+                        const changePct = quote?.day_change_pct ?? getMetricValue(indicator, 'day_change_pct') ?? barFallbackMetrics?.day_change_pct ?? null;
                         const change7d = getMetricValue(indicator, 'change_7d') ?? barFallbackMetrics?.change_7d ?? null;
                         const yesterdayChangePct = getMetricValue(indicator, 'prev_close_change_pct') ?? barFallbackMetrics?.prev_close_change_pct ?? null;
                         const lastBarMs = Number(data.bar_time_ms || 0) || 0;
@@ -775,18 +782,14 @@
                         const yesterdayText = formatSignedPercent(yesterdayChangePct);
                         const change7dText = formatSignedPercent(change7d);
                         const change7dClass = change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral');
-                        const dataSourceText = indicator
-                            ? 'IND 5m'
-                            : (bar && barFallbackMetrics ? 'BAR 5m + 1D' : (bar ? 'BAR 5m' : 'BAR 1D'));
-
                         // VIX 恐慌指数特殊处理
                         let vixBadge = '';
                         let vixClass = '';
                         if (symbol === 'VIX') {
-                            if (price >= 30) {
+                            if (displayPrice >= 30) {
                                 vixBadge = '🔴 恐慌';
                                 vixClass = 'vix-panic';
-                            } else if (price >= 20) {
+                            } else if (displayPrice >= 20) {
                                 vixBadge = '🟡 紧张';
                                 vixClass = 'vix-tension';
                             } else {
@@ -795,10 +798,16 @@
                             }
                         }
 
+                        const dataSourceText = quote?.last_price != null
+                            ? `RT ${quote.quote_age_s != null ? `${quote.quote_age_s}s` : ''}`.trim()
+                            : indicator
+                            ? 'IND 5m'
+                            : (bar && barFallbackMetrics ? 'BAR 5m + 1D' : (bar ? 'BAR 5m' : 'BAR 1D'));
+
                         html += `
                             <div class="market-index-card ${vixClass}">
                                 <div class="market-index-symbol">${symbol}${vixBadge ? ' ' + vixBadge : ''}</div>
-                                <div class="market-index-price">$${price.toFixed(2)}</div>
+                                <div class="market-index-price">$${displayPrice.toFixed(2)}</div>
                                 <div class="market-index-change ${changeClass}">
                                     <div>1D: ${changeText}</div>
                                     <div>1D-: ${yesterdayText}</div>

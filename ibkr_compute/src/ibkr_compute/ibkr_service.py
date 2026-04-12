@@ -24,6 +24,7 @@ from ibkr_compute.gateway.cookie_store import clear_cookies
 from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.ws_client import IBKRWebSocketClient
 from ibkr_compute.market.bar_aggregator import BarAggregator
+from ibkr_compute.market.realtime_quote_book import RealtimeQuoteBook
 from ibkr_compute.market.data_writer import DataWriter
 from ibkr_compute.market.data_backfill import DataBackfill, _regular_session_gap_summary
 from ibkr_compute.market.data_retention import DataRetention
@@ -60,6 +61,8 @@ DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
 STARTUP_BACKGROUND_PRIME_INTERVALS = ("15m", "30m", "1h")
 STARTUP_BACKGROUND_PRIME_CHUNK_SIZE = 8
 STARTUP_HISTORY_REPAIR_SHORT_PERIOD = "1d"
+DEFAULT_OFFICIAL_5M_CLOSE_DELAY_SECONDS = max(1, int(os.environ.get("IBKR_OFFICIAL_5M_CLOSE_DELAY_SEC", "8")))
+DEFAULT_OFFICIAL_5M_REQUEST_PERIOD = os.environ.get("IBKR_OFFICIAL_5M_REQUEST_PERIOD", "1d").strip() or "1d"
 BAR_INTEGRITY_STATE_KEY = "ibkr_bar_integrity_cursor"
 BAR_INTEGRITY_STATE_DATE = "global"
 DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE = 8
@@ -133,10 +136,13 @@ class IBKRTradingService:
         )
         self.timeframe_builder = TimeframeBarBuilder()
 
-        self.bar_aggregator = BarAggregator(on_bar_close=self._on_bar_close)
+        self.bar_aggregator = BarAggregator()
+        self.realtime_quote_book = RealtimeQuoteBook(
+            prev_close_provider=self._get_prev_close_for_quote,
+        )
         self.ws_client = IBKRWebSocketClient(
             gateway_url=GATEWAY_URL,
-            on_tick=self.bar_aggregator.on_tick,
+            on_tick=self._on_ws_market_tick,
             config=self.config,
             environment=ENVIRONMENT,
         )
@@ -185,6 +191,7 @@ class IBKRTradingService:
         self._active_repair_thread = None
         self._watchlist_backfill_thread = None
         self._compute_thread = None
+        self._official_close_thread = None
         self._bar_close_thread = None
         self._warmup_thread = None
         self._auth_required_reason = ""
@@ -225,8 +232,13 @@ class IBKRTradingService:
         self._current_market_date = ""
         self._last_daily_reset_at = 0.0
         self._last_session_authenticated = False
+        self._quote_prev_close_cache = {}
+        self._quote_prev_close_cache_date = ""
         self._warmup_signature = ()
         self._warmup_state = self._initial_warmup_state()
+        self._official_5m_lock = threading.RLock()
+        self._official_5m_state = self._initial_official_5m_state()
+        self._official_5m_last_cycle_at = 0.0
         self._last_session_issue_kind = ""
         self._last_session_issue_title = ""
         self._last_session_issue_at = 0.0
@@ -258,6 +270,140 @@ class IBKRTradingService:
 
     def _refresh_runtime_settings(self):
         self.ws_client.set_order_updates_enabled(self.order_tracker.uses_websocket_updates())
+
+    def _official_5m_enabled(self) -> bool:
+        return self.config.get_bool_for_environment("ibkr_official_5m_enabled", ENVIRONMENT, True)
+
+    def _official_5m_close_delay_sec(self) -> int:
+        return max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_official_5m_close_delay_sec",
+                ENVIRONMENT,
+                DEFAULT_OFFICIAL_5M_CLOSE_DELAY_SECONDS,
+            ),
+        )
+
+    def _official_5m_request_period(self) -> str:
+        return str(
+            self.config.get_for_environment(
+                "ibkr_official_5m_request_period",
+                ENVIRONMENT,
+                DEFAULT_OFFICIAL_5M_REQUEST_PERIOD,
+            )
+            or DEFAULT_OFFICIAL_5M_REQUEST_PERIOD
+        ).strip() or DEFAULT_OFFICIAL_5M_REQUEST_PERIOD
+
+    def _initial_official_5m_state(self) -> dict:
+        return {
+            "enabled": True,
+            "driver": "ibkr_history_close",
+            "close_delay_sec": DEFAULT_OFFICIAL_5M_CLOSE_DELAY_SECONDS,
+            "request_period": DEFAULT_OFFICIAL_5M_REQUEST_PERIOD,
+            "last_run": "",
+            "last_due_bucket_ms": 0,
+            "last_due_bucket_us": "",
+            "last_completed_bucket_ms": 0,
+            "last_completed_bucket_us": "",
+            "last_written_bars": 0,
+            "written_symbols": [],
+            "written_symbols_total": 0,
+            "pending_symbols": [],
+            "pending_symbols_total": 0,
+            "last_error": "",
+        }
+
+    def _copy_official_5m_state(self, source: dict | None = None) -> dict:
+        payload = source if source is not None else self._official_5m_state
+        copied = {}
+        for key, value in payload.items():
+            if isinstance(value, dict):
+                copied[key] = dict(value)
+            elif isinstance(value, list):
+                copied[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+            else:
+                copied[key] = value
+        return copied
+
+    def _set_official_5m_state(self, **updates) -> dict:
+        with self._official_5m_lock:
+            next_state = self._copy_official_5m_state()
+            for key, value in updates.items():
+                if isinstance(value, dict):
+                    next_state[key] = dict(value)
+                elif isinstance(value, list):
+                    next_state[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+                else:
+                    next_state[key] = value
+            self._official_5m_state = next_state
+            return self._copy_official_5m_state(next_state)
+
+    def _get_prev_close_for_quote(self, symbol: str) -> float | None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return None
+        current_date = self._current_market_date or self._market_date()
+        if self._quote_prev_close_cache_date != current_date:
+            self._quote_prev_close_cache = {}
+            self._quote_prev_close_cache_date = current_date
+        if normalized_symbol in self._quote_prev_close_cache:
+            return self._quote_prev_close_cache.get(normalized_symbol)
+
+        safe_symbol = normalized_symbol.replace('"', '\\"')
+        safe_environment = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        environment_filter = f'(environment = "{safe_environment}"'
+        if safe_environment == "live":
+            environment_filter += ' || environment = "")'
+        else:
+            environment_filter += ")"
+
+        prev_close = None
+        current_date_ms = int(
+            datetime.strptime(current_date, "%Y-%m-%d").replace(tzinfo=ET).timestamp() * 1000
+        )
+        try:
+            row = self.pb.get_first_record(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{safe_symbol}" && '
+                    'interval = "1d" && '
+                    f"{environment_filter} && "
+                    f"bar_time_ms < {current_date_ms}"
+                ),
+                sort="-bar_time_ms",
+            )
+            close_value = float((row or {}).get("close", 0) or 0)
+            if close_value > 0:
+                prev_close = close_value
+        except Exception as exc:
+            logger.debug("Prev close daily lookup failed for %s: %s", normalized_symbol, exc)
+
+        if prev_close is None:
+            previous_date_start_ms = max(0, current_date_ms - interval_to_ms("1d"))
+            try:
+                row = self.pb.get_first_record(
+                    "ibkr_bars",
+                    filter=(
+                        f'symbol = "{safe_symbol}" && '
+                        'interval = "5m" && '
+                        f"{environment_filter} && "
+                        f"bar_time_ms >= {previous_date_start_ms} && "
+                        f"bar_time_ms < {current_date_ms}"
+                    ),
+                    sort="-bar_time_ms",
+                )
+                close_value = float((row or {}).get("close", 0) or 0)
+                if close_value > 0:
+                    prev_close = close_value
+            except Exception as exc:
+                logger.debug("Prev close fallback lookup failed for %s: %s", normalized_symbol, exc)
+
+        self._quote_prev_close_cache[normalized_symbol] = prev_close
+        return prev_close
+
+    def _on_ws_market_tick(self, tick_data: dict):
+        self.realtime_quote_book.on_tick(tick_data)
+        self.bar_aggregator.on_tick(tick_data)
 
     def _build_2fa_detail(self, reason: str) -> dict:
         return {
@@ -2146,6 +2292,12 @@ class IBKRTradingService:
                 name="close-compute",
             )
             self._compute_thread.start()
+            self._official_close_thread = threading.Thread(
+                target=self._official_5m_close_loop,
+                daemon=True,
+                name="official-5m-close",
+            )
+            self._official_close_thread.start()
             self._bar_close_thread = threading.Thread(
                 target=self._bar_close_loop,
                 daemon=True,
@@ -2305,6 +2457,9 @@ class IBKRTradingService:
         self.order_lifecycle.daily_reset()
         self.timeframe_builder.reset()
         self.bar_aggregator.reset()
+        self.realtime_quote_book.reset()
+        self._quote_prev_close_cache = {}
+        self._quote_prev_close_cache_date = current_date
         self._signal_wakeup.clear()
         drained = self._drain_compute_queue()
         if drained > 0:
@@ -2336,6 +2491,7 @@ class IBKRTradingService:
         self._last_watchlist_integrity_at = 0.0
         self._last_watchlist_integrity_symbols = []
         self._last_watchlist_integrity_repair_symbols = []
+        self._official_5m_state = self._initial_official_5m_state()
         if previous_date and previous_date != current_date:
             self._persist_watchlist_integrity_cursor()
         return True
@@ -2525,11 +2681,13 @@ class IBKRTradingService:
 
             if removed_conids:
                 self.bar_aggregator.remove_conids(removed_conids)
+                self.realtime_quote_book.remove_conids(removed_conids)
                 for conid in sorted(removed_conids):
                     self.ws_client.unsubscribe(conid)
 
             reverse_map = {cid: sym for sym, cid in conid_map.items()}
             self.bar_aggregator.set_symbol_map(reverse_map)
+            self.realtime_quote_book.set_symbol_map(reverse_map)
 
             for symbol in added_symbols:
                 conid = conid_map.get(symbol)
@@ -3370,14 +3528,20 @@ class IBKRTradingService:
             logger.warning("Pipeline repair failed (%s): %s", source, exc)
             return {"ok": False, "symbols": normalized_symbols, "error": str(exc)}
 
-    def _trigger_realtime_compute(self, source: str = "bar_close") -> dict:
+    def _trigger_realtime_compute(self, source: str = "bar_close", symbols: list[str] | None = None) -> dict:
         try:
             from ibkr_compute.api import server as compute_server
 
+            payload = {"source": source, "environments": [ENVIRONMENT]}
+            normalized_symbols = sorted(
+                {str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()}
+            )
+            if normalized_symbols:
+                payload["symbols"] = normalized_symbols
             with compute_server.app.test_request_context(
                 "/compute",
                 method="POST",
-                json={"source": source, "environments": [ENVIRONMENT]},
+                json=payload,
             ):
                 response = compute_server.compute()
             if hasattr(response, "get_json"):
@@ -3386,6 +3550,219 @@ class IBKRTradingService:
             logger.error("Realtime compute trigger failed: %s", exc)
             return {"ok": False, "error": str(exc)}
         return {"ok": False, "error": "empty_response"}
+
+    def _normalize_compute_event(self, item) -> dict | None:
+        if item is None:
+            return None
+        if isinstance(item, dict):
+            symbols = sorted(
+                {
+                    str(symbol or "").strip().upper()
+                    for symbol in (item.get("symbols") or [])
+                    if str(symbol or "").strip()
+                }
+            )
+            return {
+                "source": str(item.get("source") or "bar_close").strip().lower() or "bar_close",
+                "bar_count": max(0, int(item.get("bar_count", 0) or 0)),
+                "symbols": symbols,
+            }
+        return {
+            "source": "bar_close",
+            "bar_count": max(0, int(item or 0)),
+            "symbols": [],
+        }
+
+    def _queue_compute_event(self, source: str, bar_count: int = 0, symbols: list[str] | None = None):
+        if not self._running:
+            return
+        self._compute_queue.put(
+            {
+                "source": str(source or "bar_close").strip().lower() or "bar_close",
+                "bar_count": max(0, int(bar_count or 0)),
+                "symbols": sorted(
+                    {str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()}
+                ),
+            }
+        )
+
+    def _latest_safe_closed_5m_ms(self, now_ts: float | None = None) -> int:
+        delay_ms = int(self._official_5m_close_delay_sec() * 1000)
+        effective_ms = int((now_ts or time.time()) * 1000) - delay_ms
+        if effective_ms <= interval_to_ms("5m"):
+            return 0
+        return bucket_start_ms(effective_ms - interval_to_ms("5m"), "5m")
+
+    def _run_official_5m_close_cycle(self, symbols_override: list[str] | None = None):
+        state = self._copy_official_5m_state()
+        due_bucket_ms = self._latest_safe_closed_5m_ms()
+        if due_bucket_ms <= 0:
+            return
+
+        last_completed_bucket_ms = int(state.get("last_completed_bucket_ms", 0) or 0)
+        pending_symbols = sorted(
+            {str(symbol or "").strip().upper() for symbol in (state.get("pending_symbols") or []) if str(symbol or "").strip()}
+        )
+        if due_bucket_ms <= last_completed_bucket_ms and not pending_symbols:
+            return
+        if (
+            due_bucket_ms == int(state.get("last_due_bucket_ms", 0) or 0)
+            and pending_symbols
+            and (time.time() - float(self._official_5m_last_cycle_at or 0.0)) < 5.0
+        ):
+            return
+
+        if self._starting:
+            self._set_official_5m_state(
+                enabled=self._official_5m_enabled(),
+                close_delay_sec=self._official_5m_close_delay_sec(),
+                request_period=self._official_5m_request_period(),
+                last_due_bucket_ms=due_bucket_ms,
+                last_due_bucket_us=format_us_time(due_bucket_ms) if due_bucket_ms > 0 else "",
+            )
+            return
+
+        snapshot = self._warmup_snapshot_from_subscriptions()
+        override_set = {
+            str(symbol or "").strip().upper()
+            for symbol in (symbols_override or [])
+            if str(symbol or "").strip()
+        }
+        symbols = [
+            symbol for symbol in list(snapshot.get("symbols") or [])
+            if not override_set or symbol in override_set
+        ]
+        conid_map = dict(snapshot.get("conid_map") or {})
+        symbol_meta = dict(snapshot.get("symbol_meta") or {})
+        if not symbols:
+            self._set_official_5m_state(
+                enabled=self._official_5m_enabled(),
+                close_delay_sec=self._official_5m_close_delay_sec(),
+                request_period=self._official_5m_request_period(),
+                last_run=self._now_iso(),
+                last_due_bucket_ms=due_bucket_ms,
+                last_due_bucket_us=format_us_time(due_bucket_ms),
+                pending_symbols=[],
+                pending_symbols_total=0,
+                written_symbols=[],
+                written_symbols_total=0,
+                last_written_bars=0,
+                last_error="",
+            )
+            return
+
+        request_period = self._official_5m_request_period()
+        written_symbols = []
+        next_pending_symbols = []
+        written_bars = 0
+        cycle_errors = []
+
+        for symbol in symbols:
+            conid = int(conid_map.get(symbol) or 0)
+            if conid <= 0:
+                next_pending_symbols.append(symbol)
+                continue
+
+            exchange = str((symbol_meta.get(symbol) or {}).get("exchange") or "").upper()
+            latest_stored_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+            if latest_stored_ms >= due_bucket_ms:
+                continue
+
+            try:
+                fetched_rows = self.data_backfill.fetch_history(
+                    conid,
+                    symbol,
+                    interval="5m",
+                    exchange=exchange,
+                    repair=False,
+                    request_period=request_period,
+                )
+            except Exception as exc:
+                fetched_rows = []
+                cycle_errors.append(f"{symbol}:{exc}")
+
+            candidate_rows = [
+                dict(row)
+                for row in (fetched_rows or [])
+                if latest_stored_ms < int(row.get("bar_time_ms", 0) or 0) <= due_bucket_ms
+            ]
+            candidate_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+
+            max_written_ms = latest_stored_ms
+            wrote_symbol = False
+            for row in candidate_rows:
+                payload = dict(row)
+                payload["environment"] = ENVIRONMENT
+                payload["exchange"] = exchange
+                payload["source"] = "ibkr_history_close"
+                extra = dict(payload.get("extra") or {})
+                extra.update(
+                    {
+                        "source": "ibkr_history_close",
+                        "canonical": True,
+                        "request_period": request_period,
+                    }
+                )
+                payload["extra"] = extra
+                if self.data_writer.write_bar(payload):
+                    wrote_symbol = True
+                    written_bars += 1
+                    max_written_ms = max(max_written_ms, int(payload.get("bar_time_ms", 0) or 0))
+
+            if wrote_symbol:
+                written_symbols.append(symbol)
+            if max_written_ms < due_bucket_ms:
+                next_pending_symbols.append(symbol)
+
+        if written_bars > 0:
+            self._last_bar_close_at = time.time()
+            self.data_writer.flush()
+            self._queue_compute_event("canonical_close", bar_count=written_bars, symbols=written_symbols)
+
+        next_last_completed_bucket_ms = last_completed_bucket_ms
+        if not next_pending_symbols:
+            next_last_completed_bucket_ms = max(last_completed_bucket_ms, due_bucket_ms)
+
+        self._set_official_5m_state(
+            enabled=self._official_5m_enabled(),
+            close_delay_sec=self._official_5m_close_delay_sec(),
+            request_period=request_period,
+            last_run=self._now_iso(),
+            last_due_bucket_ms=due_bucket_ms,
+            last_due_bucket_us=format_us_time(due_bucket_ms),
+            last_completed_bucket_ms=next_last_completed_bucket_ms,
+            last_completed_bucket_us=format_us_time(next_last_completed_bucket_ms) if next_last_completed_bucket_ms > 0 else "",
+            last_written_bars=written_bars,
+            written_symbols=written_symbols,
+            written_symbols_total=len(written_symbols),
+            pending_symbols=next_pending_symbols,
+            pending_symbols_total=len(next_pending_symbols),
+            last_error="; ".join(cycle_errors),
+        )
+        self._official_5m_last_cycle_at = time.time()
+
+    def _official_5m_close_loop(self):
+        logger.info("Official 5m close loop started")
+        while self._running:
+            try:
+                enabled = self._official_5m_enabled()
+                self._set_official_5m_state(
+                    enabled=enabled,
+                    close_delay_sec=self._official_5m_close_delay_sec(),
+                    request_period=self._official_5m_request_period(),
+                )
+                if enabled:
+                    self._run_official_5m_close_cycle()
+            except Exception as exc:
+                logger.error("Official 5m close loop error: %s", exc)
+                self._set_official_5m_state(
+                    enabled=self._official_5m_enabled(),
+                    close_delay_sec=self._official_5m_close_delay_sec(),
+                    request_period=self._official_5m_request_period(),
+                    last_run=self._now_iso(),
+                    last_error=str(exc),
+                )
+            time.sleep(1)
 
     def _compute_loop(self):
         logger.info("Realtime close-driven compute loop started")
@@ -3413,7 +3790,11 @@ class IBKRTradingService:
                 continue
 
             close_events = 1
-            bar_count = int(first_item or 0)
+            merged_event = self._normalize_compute_event(first_item) or {
+                "source": "bar_close",
+                "bar_count": 0,
+                "symbols": [],
+            }
             drain_until = time.time() + 0.25
             while time.time() < drain_until:
                 try:
@@ -3423,19 +3804,32 @@ class IBKRTradingService:
                 if next_item is None:
                     continue
                 close_events += 1
-                bar_count += int(next_item or 0)
+                next_event = self._normalize_compute_event(next_item)
+                if not next_event:
+                    continue
+                merged_event["bar_count"] += int(next_event.get("bar_count", 0) or 0)
+                merged_event["symbols"] = sorted(
+                    set(merged_event.get("symbols") or []).union(next_event.get("symbols") or [])
+                )
+                if str(next_event.get("source") or "") == "canonical_close":
+                    merged_event["source"] = "canonical_close"
 
             try:
                 self._last_realtime_compute_started_at = time.time()
                 self.data_writer.flush()
-                result = self._trigger_realtime_compute()
+                result = self._trigger_realtime_compute(
+                    source=str(merged_event.get("source") or "bar_close"),
+                    symbols=list(merged_event.get("symbols") or []),
+                )
                 self._realtime_compute_runs += 1
                 self._last_realtime_compute_at = time.time()
                 self._last_realtime_compute_result = result or {}
                 logger.info(
-                    "Realtime compute finished: events=%d bars=%d processed=%s signals=%s errors=%s elapsed_s=%s",
+                    "Realtime compute finished: source=%s events=%d bars=%d symbols=%d processed=%s signals=%s errors=%s elapsed_s=%s",
+                    merged_event.get("source"),
                     close_events,
-                    bar_count,
+                    merged_event.get("bar_count", 0),
+                    len(merged_event.get("symbols") or []),
                     result.get("processed", 0),
                     result.get("signals", 0),
                     result.get("errors", 0),
@@ -3458,27 +3852,9 @@ class IBKRTradingService:
             time.sleep(1)
 
     def _on_bar_close(self, bar_data: dict):
+        # Legacy hook retained for compatibility. Official 5m bars are ingested by
+        # the history-close loop, not websocket partial-bar aggregation.
         self._last_bar_close_at = time.time()
-        symbol = str(bar_data.get("symbol", "")).upper()
-        meta = self._symbol_meta.get(symbol, {})
-        payload = {
-            **bar_data,
-            "environment": ENVIRONMENT,
-            "exchange": str(meta.get("exchange") or bar_data.get("exchange") or "").upper(),
-        }
-
-        if not self.data_writer.write_bar(payload):
-            return
-
-        queued_bars = 1
-        for derived_bar in self.timeframe_builder.consume(payload):
-            derived_bar["environment"] = ENVIRONMENT
-            derived_bar["exchange"] = str(meta.get("exchange") or derived_bar.get("exchange") or "").upper()
-            self.data_writer.write_bar(derived_bar)
-            queued_bars += 1
-
-        if self._running:
-            self._compute_queue.put(queued_bars)
 
     def _should_defer_background_repairs(self) -> tuple[bool, dict]:
         queue_size = int(self._compute_queue.qsize())
@@ -3867,6 +4243,7 @@ class IBKRTradingService:
         self.auth_handler.cancel()
         self.bar_aggregator.force_close_all()
         self.timeframe_builder.reset()
+        self.realtime_quote_book.reset()
         self.ws_client.stop()
         self.session_keeper.stop()
         self.order_tracker.stop()
@@ -3886,6 +4263,8 @@ class IBKRTradingService:
             self._watchlist_backfill_thread.join(timeout=10)
         if self._compute_thread:
             self._compute_thread.join(timeout=10)
+        if self._official_close_thread:
+            self._official_close_thread.join(timeout=10)
         if self._bar_close_thread:
             self._bar_close_thread.join(timeout=10)
         if self._warmup_thread:
@@ -3938,6 +4317,11 @@ class IBKRTradingService:
             elif lag_since_last_run_s >= 600:
                 stalled = True
                 stall_reason = "lagging"
+        official_5m = self._copy_official_5m_state()
+        due_bucket_ms = int(official_5m.get("last_due_bucket_ms", 0) or 0)
+        completed_bucket_ms = int(official_5m.get("last_completed_bucket_ms", 0) or 0)
+        official_5m["lag_s"] = round(max(0.0, (due_bucket_ms - completed_bucket_ms) / 1000.0), 1) if due_bucket_ms > completed_bucket_ms else 0.0
+        realtime_quotes = self.realtime_quote_book.status()
         return {
             "starting": self._starting,
             "startup_complete": bool(self._running and not self._starting),
@@ -3948,6 +4332,8 @@ class IBKRTradingService:
             "session": self.session_keeper.status(),
             "websocket": self.ws_client.status(),
             "bar_aggregator": self.bar_aggregator.status(),
+            "realtime_quotes": realtime_quotes,
+            "canonical_5m": official_5m,
             "data_writer": self.data_writer.status(),
             "data_backfill": self.data_backfill.status(),
             "data_retention": self.data_retention.status(),

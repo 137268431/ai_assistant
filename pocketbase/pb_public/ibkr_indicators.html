@@ -867,6 +867,9 @@
                 if (!data) return;
 
                 allIndicators = (data.items || []).map((item) => normalizeIndicatorRecord(item)).filter(Boolean);
+                await fetchRealtimeQuotes(allIndicators.map((item) => item.symbol), { reset: true }).catch((error) => {
+                    console.warn('加载实时行情失败:', error);
+                });
                 totalItems = data.totalItems || allIndicators.length;
                 hasMore = allIndicators.length < totalItems;
 
@@ -902,6 +905,9 @@
                 currentPage = nextPage;
                 const appended = (data.items || []).map((item) => normalizeIndicatorRecord(item)).filter(Boolean);
                 allIndicators = [...allIndicators, ...appended];
+                await fetchRealtimeQuotes(allIndicators.map((item) => item.symbol), { reset: true }).catch((error) => {
+                    console.warn('加载实时行情失败:', error);
+                });
                 totalItems = data.totalItems || totalItems;
                 hasMore = allIndicators.length < totalItems;
 
@@ -933,11 +939,11 @@
             }
 
             container.innerHTML = allIndicators.map((indicator) => {
-                const badgesHtml = buildIndicatorBadges(null, indicator);
-                const dayChange = Number(indicator.day_change_pct);
-                const prevCloseChange = Number(indicator.prev_close_change_pct);
-                const vwapDist = Number(indicator.vwap_dist);
-                const createdText = indicator.created ? formatBeijingTime(indicator.created, 'short') : '-';
+                const indicatorView = mergeIndicatorWithRealtimeQuote(indicator) || indicator;
+                const badgesHtml = buildIndicatorBadges(null, indicatorView);
+                const dayChange = Number(indicatorView.display_day_change_pct);
+                const prevCloseChange = Number(indicatorView.display_prev_close_change_pct);
+                const vwapDist = Number(indicatorView.vwap_dist);
 
                 return `
                     <div class="indicator-card" onclick="showIndicatorDetails('${escapeHtml(indicator.id)}')" style="cursor:pointer;">
@@ -959,7 +965,7 @@
                         <div class="indicator-grid">
                             <div class="indicator-section">
                                 <div class="section-title">价格波动</div>
-                                <div class="indicator-row"><span class="indicator-label">收盘 / 开盘</span><span class="indicator-value">${formatPrice(indicator.close)} / ${formatPrice(indicator.open)}</span></div>
+                                <div class="indicator-row"><span class="indicator-label">现价 / 开盘</span><span class="indicator-value">${formatPrice(indicatorView.display_close)} / ${formatPrice(indicator.open)}</span></div>
                                 <div class="indicator-row"><span class="indicator-label">最高 / 最低</span><span class="indicator-value">${formatPrice(indicator.high)} / ${formatPrice(indicator.low)}</span></div>
                                 <div class="indicator-row"><span class="indicator-label">日内 / 较昨</span><span class="indicator-value" style="color:${getSignedColor(dayChange)}">${formatSignedPercent(dayChange)} / <span style="color:${getSignedColor(prevCloseChange)}">${formatSignedPercent(prevCloseChange)}</span></span></div>
                                 <div class="indicator-row"><span class="indicator-label">ATR / 波动率</span><span class="indicator-value">${formatPrice(indicator.atr)} / ${getAtrSummary(indicator.atr_pct)}</span></div>
