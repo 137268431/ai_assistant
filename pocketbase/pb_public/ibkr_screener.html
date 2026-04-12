@@ -221,6 +221,64 @@
       display: block;
     }
 
+    .subview-tabs {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    .subview-tab {
+      flex: 1 1 220px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 16px;
+      padding: 13px 14px;
+      background: rgba(8, 14, 24, 0.46);
+      color: var(--screen-text);
+      text-align: left;
+      cursor: pointer;
+      transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    }
+
+    .subview-tab:hover {
+      transform: translateY(-1px);
+      border-color: rgba(246, 173, 85, 0.38);
+    }
+
+    .subview-tab.active {
+      border-color: rgba(246, 173, 85, 0.52);
+      background: linear-gradient(180deg, rgba(32, 54, 68, 0.98), rgba(12, 23, 31, 0.98));
+      box-shadow: inset 0 0 0 1px rgba(246, 173, 85, 0.16);
+    }
+
+    .subview-tab-kicker {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--screen-accent-2);
+    }
+
+    .subview-tab-label {
+      margin-top: 8px;
+      font-size: 17px;
+      font-weight: 800;
+    }
+
+    .subview-tab-copy {
+      margin-top: 6px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--screen-muted);
+    }
+
+    .subview-panel {
+      display: none;
+    }
+
+    .subview-panel.active {
+      display: block;
+    }
+
     .panel-stack {
       margin-top: 0;
     }
@@ -487,16 +545,36 @@
       color: var(--screen-good);
     }
 
+    .status-chip.ready,
+    .status-chip.executed {
+      background: rgba(104, 211, 145, 0.16);
+      color: var(--screen-good);
+    }
+
+    .status-chip.awaiting_confirm,
+    .status-chip.pending,
+    .status-chip.ready_no_signal {
+      background: rgba(246, 173, 85, 0.16);
+      color: var(--screen-accent);
+    }
+
     .status-chip.short {
       background: rgba(252, 129, 129, 0.12);
       color: var(--screen-bad);
     }
 
-    .status-chip.removed {
+    .status-chip.removed,
+    .status-chip.closed,
+    .status-chip.expired,
+    .status-chip.rejected,
+    .status-chip.stale {
       background: rgba(252, 129, 129, 0.12);
       color: var(--screen-bad);
     }
 
+    .status-chip.watch,
+    .status-chip.signaled,
+    .status-chip.no_signal,
     .status-chip.neutral {
       background: rgba(148, 163, 184, 0.14);
       color: var(--screen-muted);
@@ -513,6 +591,85 @@
     .result-grid {
       margin-top: 16px;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+
+    .leaderboard-meta {
+      color: var(--screen-muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .leaderboard-note {
+      margin-top: 10px;
+      color: var(--screen-muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .today-target-grid {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+
+    .today-target-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(8, 12, 20, 0.72);
+      display: grid;
+      gap: 12px;
+    }
+
+    .today-target-head,
+    .today-target-foot {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .today-target-symbol {
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .today-target-main-reason {
+      color: var(--screen-text);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .today-target-foot {
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .today-target-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .reason-block {
+      display: grid;
+      gap: 6px;
+    }
+
+    .reason-label {
+      color: var(--screen-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .reason-copy {
+      color: var(--screen-text);
+      font-size: 13px;
+      line-height: 1.55;
     }
 
     .result-card {
@@ -657,6 +814,127 @@
     <section id="screenerTab" class="tab-panel">
       <div class="panel-stack">
         <section class="panel">
+          <div class="panel-title">当前操作视图</div>
+          <div class="panel-copy">默认先看“当前标的榜”，盘中决定今天该盯谁、谁已经出信号；需要扩展到全标池时，再切到全量筛选。</div>
+          <div class="subview-tabs" id="screenerViewTabs">
+            <button class="subview-tab active" type="button" data-view="current">
+              <div class="subview-tab-kicker">Current</div>
+              <div class="subview-tab-label">当前标的榜</div>
+              <div class="subview-tab-copy">candidate / active 的技术状态、今日信号状态与轻操作入口。</div>
+            </button>
+            <button class="subview-tab" type="button" data-view="universe">
+              <div class="subview-tab-kicker">Universe</div>
+              <div class="subview-tab-label">全量筛选</div>
+              <div class="subview-tab-copy">看 watchlist + 今日 targets 的聚合大盘，再批量写回今日目标池。</div>
+            </button>
+          </div>
+        </section>
+
+        <div id="currentViewPanel" class="subview-panel active">
+          <section class="panel">
+            <div class="panel-title">当前标的榜</div>
+            <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。把技术满足、今日已出信号、以及需要继续盯的标的放在同一张榜里。</div>
+
+            <div class="control-grid">
+              <div class="field span-2">
+                <label for="currentTargetSearch">Symbol / Reason Search</label>
+                <input id="currentTargetSearch" type="text" placeholder="AAPL / NVDA / waiting / EMA多头" />
+              </div>
+              <div class="field">
+                <label for="currentTechnicalStateFilter">Technical State</label>
+                <select id="currentTechnicalStateFilter">
+                  <option value="">全部</option>
+                  <option value="ready">ready</option>
+                  <option value="watch">watch</option>
+                  <option value="stale">stale</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="currentSignalStateFilter">Signal State</label>
+                <select id="currentSignalStateFilter">
+                  <option value="">全部</option>
+                  <option value="needs_action">needs action</option>
+                  <option value="signaled">signaled</option>
+                  <option value="no_signal">no signal</option>
+                  <option value="awaiting_confirm">awaiting confirm</option>
+                  <option value="pending">pending</option>
+                  <option value="executed">executed</option>
+                  <option value="closed">closed</option>
+                  <option value="expired">expired</option>
+                  <option value="rejected">rejected</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="currentTargetStatusFilter">Target Status</label>
+                <select id="currentTargetStatusFilter">
+                  <option value="">全部</option>
+                  <option value="active">active</option>
+                  <option value="candidate">candidate</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="currentDirectionBiasFilter">Direction Bias</label>
+                <select id="currentDirectionBiasFilter">
+                  <option value="">全部</option>
+                  <option value="long">long</option>
+                  <option value="short">short</option>
+                  <option value="neutral">neutral</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="currentTargetSortBy">Sort</label>
+                <select id="currentTargetSortBy">
+                  <option value="attention_asc">按关注优先级</option>
+                  <option value="signal_desc">按最新信号时间</option>
+                  <option value="tradability_desc">按可操作分</option>
+                  <option value="target_desc">按目标池分数</option>
+                  <option value="symbol_asc">按Symbol</option>
+                </select>
+              </div>
+              <div class="field">
+                <div class="checkbox-row">
+                  <input id="currentReadyOnly" type="checkbox" />
+                  <label for="currentReadyOnly">仅技术 ready</label>
+                </div>
+              </div>
+              <div class="field">
+                <div class="checkbox-row">
+                  <input id="currentSignaledOnly" type="checkbox" />
+                  <label for="currentSignaledOnly">仅今日已出信号</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="table-header">
+              <div class="leaderboard-meta" id="currentTargetsMeta">等待加载...</div>
+              <div class="row-actions">
+                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=targets">打开今日 Targets</a>
+                <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
+              </div>
+            </div>
+            <div class="leaderboard-note" id="currentTargetsMetaSecondary">技术 ready 基于现有 `is_operable + 指标 flags`，今日信号状态来自同交易日 `ibkr_signals` 聚合。</div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>价格 / Freshness</th>
+                    <th>Targets</th>
+                    <th>Technical</th>
+                    <th>Signal</th>
+                    <th>理由 / 操作</th>
+                  </tr>
+                </thead>
+                <tbody id="currentTargetsTable">
+                  <tr><td colspan="6" class="loading">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div id="universeViewPanel" class="subview-panel">
+        <section class="panel">
           <div class="panel-title">筛选条件</div>
           <div class="panel-copy">支持按 symbol、交易所、行业、价格、波动、量能、freshness、方向和目标池状态过滤。筛完后可以直接复制可见代码，或把选中的结果写回当天 targets。</div>
 
@@ -759,7 +1037,7 @@
             </button>
             <button class="action-btn" onclick="pushSelectedTargets()">
               <strong>写入今日 Targets</strong>
-              <span>把选中的 rows 作为今日盘前筛选结果写回 <code>ibkr_targets</code>，并保留快照。</span>
+              <span>把选中的 rows 作为今日盘前筛选结果写回 <code>ibkr_targets</code>，并保留快照。飞书摘要只在自动盘前 scan 结束后发送。</span>
             </button>
           </div>
         </section>
@@ -783,7 +1061,7 @@
                   <th>Freshness</th>
                   <th>Targets</th>
                   <th>可操作分</th>
-                  <th>备注 / 操作</th>
+                  <th>理由 / 操作</th>
                 </tr>
               </thead>
               <tbody id="screenerTable">
@@ -792,6 +1070,7 @@
             </table>
           </div>
         </section>
+        </div>
       </div>
     </section>
 
@@ -1004,8 +1283,11 @@
   <script>
     let currentEnvironment = getCurrentRuntimeEnvironment();
     let activeTab = 'screener';
+    let activeScreenerView = 'current';
     let screenerPayload = { items: [], summary: {}, filters: {} };
+    let todayTargetsPayload = { items: [], summary: {}, market_date: '' };
     let filteredRows = [];
+    let filteredCurrentTargetRows = [];
     const selectedSymbols = new Set();
     const dailyTargetsState = {
       selectedDate: '',
@@ -1167,6 +1449,11 @@
       return 'screener';
     }
 
+    function getRequestedScreenerView() {
+      const value = String(new URLSearchParams(window.location.search).get('view') || '').trim().toLowerCase();
+      return value === 'universe' ? 'universe' : 'current';
+    }
+
     function isWatchlistRoleTab(tab = activeTab) {
       return tab === 'watchlist' || tab === 'monitor';
     }
@@ -1244,6 +1531,18 @@
         { label: 'CANDIDATES', value: summary.candidate_targets || 0, copy: '今日 candidate targets 数量', className: 'accent' },
         { label: 'ACTIVE', value: summary.active_targets || 0, copy: '今日 active targets 数量', className: 'good' },
         { label: 'AVG PRE', value: formatVolume(summary.avg_premarket_volume || 0), copy: '全表平均盘前量能', className: 'accent' }
+      ]);
+    }
+
+    function renderCurrentTargetsSummary() {
+      const summary = todayTargetsPayload.summary || {};
+      renderSummaryCards([
+        { label: 'TOTAL', value: summary.total || 0, copy: '当前交易日 candidate + active 标的数' },
+        { label: 'READY', value: summary.technical_ready_count || 0, copy: '技术状态为 ready 的标的', className: 'good' },
+        { label: 'SIGNALLED', value: summary.signaled_count || 0, copy: '今天已经进入 ibkr_signals 的标的', className: 'teal' },
+        { label: 'NEEDS ACTION', value: (summary.awaiting_confirm_count || 0) + (summary.pending_count || 0), copy: 'awaiting_confirm + pending 的标的', className: 'accent' },
+        { label: 'EXECUTED', value: summary.executed_count || 0, copy: '最新信号状态为 executed 的标的', className: 'good' },
+        { label: 'STALE', value: summary.stale_count || 0, copy: '无当日 bar 或 freshness 超阈值', className: 'accent' }
       ]);
     }
 
@@ -1397,6 +1696,22 @@
         return;
       }
 
+      if (activeScreenerView === 'current') {
+        const summary = todayTargetsPayload.summary || {};
+        const visible = Array.isArray(filteredCurrentTargetRows) ? filteredCurrentTargetRows.length : 0;
+        const visibleReady = (filteredCurrentTargetRows || []).filter((row) => row.technical_state === 'ready').length;
+        const visibleActionable = (filteredCurrentTargetRows || []).filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
+        document.getElementById('heroTitle').textContent = '先看当前标的，再决定今天的盘中动作。';
+        document.getElementById('heroCopy').textContent = '当前标的榜把 today targets、技术状态和今天已出信号放到一张表里，优先定位需要确认、等待执行和 ready 但尚未触发的标的。';
+        document.getElementById('marketDateMeta').textContent = `Market Date ${todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate').value || '--'}`;
+        document.getElementById('refreshInfo').textContent = todayTargetsPayload.computed_at_us
+          ? `更新: ${todayTargetsPayload.computed_at_us}`
+          : '数据未刷新';
+        document.getElementById('selectionInfo').textContent = `可见 ${visible} 条 · ready ${visibleReady} 条 · needs action ${visibleActionable} 条 · 总 targets ${summary.total || 0}`;
+        renderCurrentTargetsSummary();
+        return;
+      }
+
       const selectedRows = (screenerPayload.items || []).filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase()));
       const operableCount = selectedRows.filter((row) => row.is_operable).length;
       document.getElementById('heroTitle').textContent = '把筛选和标池放进同一工作流，先筛再管。';
@@ -1411,6 +1726,23 @@
       renderScreenerSummary();
     }
 
+    function activateScreenerView(view, { syncHistory = true } = {}) {
+      activeScreenerView = view === 'universe' ? 'universe' : 'current';
+      document.querySelectorAll('#screenerViewTabs .subview-tab').forEach((button) => {
+        button.classList.toggle('active', button.dataset.view === activeScreenerView);
+      });
+      document.getElementById('currentViewPanel')?.classList.toggle('active', activeScreenerView === 'current');
+      document.getElementById('universeViewPanel')?.classList.toggle('active', activeScreenerView === 'universe');
+      if (syncHistory && activeTab === 'screener') syncUrl();
+      if (activeTab === 'screener') updateHero();
+    }
+
+    function bindScreenerViewEvents() {
+      document.querySelectorAll('#screenerViewTabs .subview-tab').forEach((button) => {
+        button.addEventListener('click', () => activateScreenerView(button.dataset.view || 'current'));
+      });
+    }
+
     function syncUrl() {
       const screenerDate = document.getElementById('marketDate').value || getDailyTargetDate() || '';
       const params = { market_date: screenerDate };
@@ -1420,6 +1752,9 @@
         params.tab = 'targets';
         params.date = getDailyTargetDate();
         params.market_date = getDailyTargetDate();
+      }
+      if (activeTab === 'screener') {
+        params.view = activeScreenerView;
       }
       const nextUrl = buildPageUrl('/ibkr_screener.html', params, { environment: currentEnvironment });
       if (`${location.pathname}${location.search}` !== nextUrl) {
@@ -1440,6 +1775,10 @@
       }
       if (isWatchlistRoleTab() && (!watchlistState.loaded || watchlistState.loadedRole !== getWatchlistRoleForTab())) {
         await loadWatchlist(false);
+      }
+      if (activeTab === 'screener') {
+        await loadTodayTargets(false);
+        activateScreenerView(activeScreenerView, { syncHistory: false });
       }
       updateHero();
     }
@@ -1535,6 +1874,249 @@
       return `<div class="reason-wrap">${reasons.slice(0, 4).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
     }
 
+    function mergeTodayTargetRowWithRealtimeQuote(row) {
+      const quote = getRealtimeQuote(row?.symbol);
+      return {
+        ...row,
+        display_price: quote?.last_price != null ? quote.last_price : row?.price,
+        display_day_change_pct: quote?.day_change_pct != null ? quote.day_change_pct : row?.day_change_pct,
+      };
+    }
+
+    function getCurrentTargetFilters() {
+      return {
+        search: String(document.getElementById('currentTargetSearch')?.value || '').trim().toUpperCase(),
+        technical_state: document.getElementById('currentTechnicalStateFilter')?.value || '',
+        signal_state: document.getElementById('currentSignalStateFilter')?.value || '',
+        target_status: document.getElementById('currentTargetStatusFilter')?.value || '',
+        direction_bias: document.getElementById('currentDirectionBiasFilter')?.value || '',
+        ready_only: Boolean(document.getElementById('currentReadyOnly')?.checked),
+        signaled_only: Boolean(document.getElementById('currentSignaledOnly')?.checked),
+        sort_by: document.getElementById('currentTargetSortBy')?.value || 'attention_asc',
+      };
+    }
+
+    function matchesCurrentTargetSignalState(row, signalState) {
+      const value = String(signalState || '').trim().toLowerCase();
+      if (!value) return true;
+      const latestStatus = String(row.latest_signal_status || '').trim().toLowerCase();
+      if (value === 'needs_action') {
+        return latestStatus === 'awaiting_confirm' || latestStatus === 'pending';
+      }
+      if (value === 'signaled') return Boolean(row.has_signal_today);
+      if (value === 'no_signal') return !row.has_signal_today;
+      return latestStatus === value;
+    }
+
+    function sortCurrentTargetRows(rows, sortBy) {
+      const items = [...rows];
+      items.sort((left, right) => {
+        if (sortBy === 'symbol_asc') {
+          return String(left.symbol || '').localeCompare(String(right.symbol || ''));
+        }
+        if (sortBy === 'signal_desc') {
+          return (Number(right.latest_signal_time_ms) || 0) - (Number(left.latest_signal_time_ms) || 0)
+            || (Number(left.attention_rank) || 99) - (Number(right.attention_rank) || 99);
+        }
+        if (sortBy === 'tradability_desc') {
+          return (Number(right.tradability_score) || 0) - (Number(left.tradability_score) || 0)
+            || (Number(right.target_score) || 0) - (Number(left.target_score) || 0);
+        }
+        if (sortBy === 'target_desc') {
+          return (Number(right.target_score) || 0) - (Number(left.target_score) || 0)
+            || (Number(right.tradability_score) || 0) - (Number(left.tradability_score) || 0);
+        }
+        return (Number(left.attention_rank) || 99) - (Number(right.attention_rank) || 99)
+          || (Number(right.latest_signal_time_ms) || 0) - (Number(left.latest_signal_time_ms) || 0)
+          || (Number(right.tradability_score) || 0) - (Number(left.tradability_score) || 0)
+          || (Number(right.target_score) || 0) - (Number(left.target_score) || 0)
+          || String(left.symbol || '').localeCompare(String(right.symbol || ''));
+      });
+      return items;
+    }
+
+    function formatCurrentSignalState(row) {
+      const latestStatus = String(row.latest_signal_status || '').trim().toLowerCase();
+      if (!row.has_signal_today) return 'no_signal';
+      return latestStatus || 'signaled';
+    }
+
+    function formatCurrentStateLabel(value) {
+      const key = String(value || '').trim().toLowerCase();
+      const labels = {
+        ready: 'ready',
+        watch: 'watch',
+        stale: 'stale',
+        signaled: 'signaled',
+        no_signal: 'no signal',
+        awaiting_confirm: 'awaiting confirm',
+        pending: 'pending',
+        executed: 'executed',
+        closed: 'closed',
+        expired: 'expired',
+        rejected: 'rejected',
+        ready_no_signal: 'ready no signal',
+      };
+      return labels[key] || (key ? key.replace(/_/g, ' ') : '--');
+    }
+
+    function buildFlagPills(items, emptyText = '--') {
+      const list = Array.isArray(items) ? items.filter(Boolean) : [];
+      if (!list.length) return `<span class="muted">${escapeHtml(emptyText)}</span>`;
+      return `<div class="reason-wrap">${list.slice(0, 5).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
+    }
+
+    function renderCurrentTargetTable() {
+      const tbody = document.getElementById('currentTargetsTable');
+      const meta = document.getElementById('currentTargetsMeta');
+      const metaSecondary = document.getElementById('currentTargetsMetaSecondary');
+      const jumpLink = document.getElementById('todayTargetsJumpLink');
+      const marketDate = todayTargetsPayload.market_date || document.getElementById('marketDate').value || getUsDate();
+      jumpLink.href = buildPageUrl('/ibkr_screener.html', {
+        tab: 'targets',
+        date: marketDate,
+        market_date: marketDate,
+      }, { environment: currentEnvironment });
+
+      const rows = Array.isArray(filteredCurrentTargetRows) ? filteredCurrentTargetRows : [];
+      const summary = todayTargetsPayload.summary || {};
+      const readyCount = rows.filter((row) => row.technical_state === 'ready').length;
+      const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
+      const signaledCount = rows.filter((row) => row.has_signal_today).length;
+      meta.textContent = `交易日 ${marketDate} · 可见 ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · needs action ${needsActionCount} · 全量 ${summary.total || 0}`;
+      metaSecondary.textContent = `当前榜单按 attention_rank 排序：先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
+
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前条件下没有符合的标的。</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = rows.map((row) => {
+        const marketDateToken = todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate').value || getUsDate();
+        const signalUrl = buildPageUrl('/ibkr_signals.html', {
+          date: marketDateToken,
+          search: row.symbol || '',
+        }, { environment: currentEnvironment });
+        const indicatorUrl = buildPageUrl('/ibkr_indicators.html', {
+          date: marketDateToken,
+          search: row.symbol || '',
+        }, { environment: currentEnvironment });
+        const chartUrl = buildPageUrl('/ibkr_chart.html', {
+          symbol: row.symbol || '',
+          interval: '5m',
+        }, { environment: currentEnvironment });
+        return `
+          <tr>
+            <td>
+              <a class="symbol-link" href="${chartUrl}">${escapeHtml(row.symbol || '--')}</a><br>
+              <span class="muted mono">${escapeHtml(row.latest_us_time || '--')}</span><br>
+              <span class="muted">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</span>
+            </td>
+            <td>
+              <strong>${escapeHtml(formatPrice(row.display_price ?? row.price))}</strong><br>
+              <span class="mono">${escapeHtml(formatPct(row.display_day_change_pct ?? row.day_change_pct))}</span><br>
+              ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
+            </td>
+            <td>
+              ${statusChip(row.target_status || '--', row.target_status || '')}<br>
+              ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}<br>
+              <span class="muted">target ${escapeHtml(formatNumber(row.target_score || 0, 1))} · tradability ${escapeHtml(formatNumber(row.tradability_score || 0, 0))}</span>
+            </td>
+            <td>
+              ${statusChip(formatCurrentStateLabel(row.technical_state), row.technical_state || 'watch')}<br>
+              <div style="margin-top:8px;">${buildFlagPills(row.technical_flags, '暂无技术标签')}</div>
+            </td>
+            <td>
+              ${statusChip(formatCurrentStateLabel(formatCurrentSignalState(row)), formatCurrentSignalState(row))}<br>
+              <span class="muted">${escapeHtml(row.latest_signal_time || (row.has_signal_today ? '--' : '今日未出信号'))}</span><br>
+              <span class="muted">count ${escapeHtml(String(row.signal_count_today || 0))}${row.latest_signal_direction ? ` · ${escapeHtml(String(row.latest_signal_direction || '').toUpperCase())}` : ''}</span>
+              ${row.latest_signal_id ? `<br><span class="muted mono">${escapeHtml(row.latest_signal_id)}</span>` : ''}
+            </td>
+            <td>
+              <div class="reason-block">
+                <div class="reason-label">筛选理由</div>
+                <div class="reason-copy">${escapeHtml(row.scan_reason || row.note || '--')}</div>
+              </div>
+              <div class="reason-block" style="margin-top:10px;">
+                <div class="reason-label">可操作依据</div>
+                ${buildReasonPills(row)}
+              </div>
+              <div class="row-actions" style="margin-top:12px;">
+                <a class="mini-link" href="${chartUrl}">Chart</a>
+                <a class="mini-link" href="${indicatorUrl}">指标</a>
+                <a class="mini-link" href="${signalUrl}">信号</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function applyCurrentTargetFilters() {
+      const filters = getCurrentTargetFilters();
+      const rows = (todayTargetsPayload.items || []).filter((row) => {
+        if (filters.search) {
+          const haystack = [
+            row.symbol,
+            row.exchange,
+            row.industry,
+            row.scan_reason,
+            row.note,
+            row.latest_signal_id,
+            row.latest_signal_status,
+            ...(Array.isArray(row.technical_flags) ? row.technical_flags : []),
+            ...(Array.isArray(row.operable_reasons) ? row.operable_reasons : []),
+          ].join(' ').toUpperCase();
+          if (!haystack.includes(filters.search)) return false;
+        }
+        if (filters.technical_state && String(row.technical_state || '') !== filters.technical_state) return false;
+        if (filters.target_status && String(row.target_status || '') !== filters.target_status) return false;
+        if (filters.direction_bias && String(row.direction_bias || '') !== filters.direction_bias) return false;
+        if (!matchesCurrentTargetSignalState(row, filters.signal_state)) return false;
+        if (filters.ready_only && String(row.technical_state || '') !== 'ready') return false;
+        if (filters.signaled_only && !row.has_signal_today) return false;
+        return true;
+      });
+      filteredCurrentTargetRows = sortCurrentTargetRows(rows, filters.sort_by);
+      renderCurrentTargetTable();
+      if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
+    }
+
+    async function loadTodayTargets(showToastOnSuccess = false) {
+      const marketDate = document.getElementById('marketDate').value || getDailyTargetDate() || getUsDate();
+      document.getElementById('currentTargetsMeta').textContent = `交易日 ${marketDate} · 正在加载...`;
+      document.getElementById('currentTargetsMetaSecondary').textContent = '正在计算技术状态与今日信号聚合...';
+      document.getElementById('currentTargetsTable').innerHTML = '<tr><td colspan="6" class="empty-state">加载中...</td></tr>';
+
+      try {
+        const payload = await requestJson(`/api/custom/ibkr/today-targets${buildQuery({
+          environment: currentEnvironment,
+          market_date: marketDate
+        })}`);
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        if (items.length) {
+          try {
+            await fetchRealtimeQuotes(items.map((row) => row?.symbol).filter(Boolean), { reset: false });
+          } catch (error) {
+            console.warn('加载今日标的实时报价失败:', error);
+          }
+        }
+        todayTargetsPayload = {
+          ...(payload || { items: [], summary: {}, market_date: marketDate }),
+          items: items.map((row) => mergeTodayTargetRowWithRealtimeQuote(row)),
+        };
+        applyCurrentTargetFilters();
+        if (showToastOnSuccess) showToast('今日交易标的已刷新');
+      } catch (error) {
+        todayTargetsPayload = { items: [], summary: {}, market_date: marketDate };
+        filteredCurrentTargetRows = [];
+        document.getElementById('currentTargetsMeta').textContent = `加载失败: ${error.message || error}`;
+        document.getElementById('currentTargetsMetaSecondary').textContent = '当前标的榜加载失败。';
+        document.getElementById('currentTargetsTable').innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
+      }
+    }
+
     function mergeScreenerRowWithRealtimeQuote(row) {
       const quote = getRealtimeQuote(row?.symbol);
       return {
@@ -1598,11 +2180,17 @@
               <span class="muted">${row.is_operable ? '可操作' : '人工复核'}</span>
             </td>
             <td>
-              ${buildReasonPills(row)}
+              <div class="reason-block">
+                <div class="reason-label">筛选理由</div>
+                <div class="reason-copy">${escapeHtml(row.scan_reason || row.note || '--')}</div>
+              </div>
+              <div class="reason-block" style="margin-top:10px;">
+                <div class="reason-label">可操作依据</div>
+                ${buildReasonPills(row)}
+              </div>
               <div style="margin-top:10px;">
                 <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
               </div>
-              <div class="muted" style="margin-top:8px; line-height:1.5;">${escapeHtml(row.scan_reason || row.note || '--')}</div>
             </td>
           </tr>
         `;
@@ -1716,7 +2304,9 @@
       if (!initAuth()) return;
       const marketDate = document.getElementById('marketDate').value || '';
       const nextParams = { market_date: marketDate };
-      if (activeTab === 'watchlist') {
+      if (activeTab === 'screener') {
+        nextParams.view = activeScreenerView;
+      } else if (activeTab === 'watchlist') {
         nextParams.tab = 'watchlist';
       } else if (activeTab === 'monitor') {
         nextParams.tab = 'monitor';
@@ -1754,6 +2344,7 @@
         populateSelect('targetStatusFilter', payload.filters && payload.filters.target_statuses);
         populateSelect('directionFilter', payload.filters && payload.filters.direction_biases);
         applyFilters();
+        await loadTodayTargets(false);
         if (activeTab === 'screener') updateHero();
         if (showToastOnSuccess) showToast('筛选器已刷新');
       } catch (error) {
@@ -1802,6 +2393,26 @@
           loadDailyTargets(false);
         }
       });
+    }
+
+    function bindCurrentTargetFilterEvents() {
+      const ids = [
+        'currentTargetSearch',
+        'currentTechnicalStateFilter',
+        'currentSignalStateFilter',
+        'currentTargetStatusFilter',
+        'currentDirectionBiasFilter',
+        'currentTargetSortBy',
+        'currentReadyOnly',
+        'currentSignaledOnly',
+      ];
+      ids.forEach((id) => {
+        const element = document.getElementById(id);
+        if (!element) return;
+        const eventName = element.tagName === 'INPUT' && element.type === 'text' ? 'input' : 'change';
+        element.addEventListener(eventName, applyCurrentTargetFilters);
+      });
+      document.getElementById('openUniverseViewBtn')?.addEventListener('click', () => activateScreenerView('universe'));
     }
 
     function parseSymbolList(rawValue) {
@@ -2041,6 +2652,7 @@
         dailyTargetsState.lastRefresh = `更新: ${new Date().toLocaleTimeString()}`;
         document.getElementById('dailyTargetListMeta').textContent = `环境 ${getEnvironmentLabel(currentEnvironment)} / 日期 ${dailyTargetsState.selectedDate} / 原始记录 ${dailyTargetsState.items.length}`;
         renderDailyTargetRows();
+        await loadTodayTargets(false);
         syncUrl();
         if (showToastOnSuccess) showToast('ibkr_targets 已刷新');
       } catch (error) {
@@ -2557,6 +3169,9 @@
     window.onEnvironmentChange = function(environment) {
       currentEnvironment = environment;
       const params = { market_date: document.getElementById('marketDate').value || '' };
+      if (activeTab === 'screener') {
+        params.view = activeScreenerView;
+      }
       if (activeTab === 'watchlist') params.tab = 'watchlist';
       if (activeTab === 'monitor') params.tab = 'monitor';
       if (activeTab === 'targets') {
@@ -2569,11 +3184,17 @@
 
     document.addEventListener('DOMContentLoaded', async () => {
       if (!initAuth()) return;
+      const query = new URLSearchParams(window.location.search);
       activeTab = getRequestedTab();
+      activeScreenerView = getRequestedScreenerView();
       setMarketDateFromUrl();
-      dailyTargetsState.selectedDate = new URLSearchParams(window.location.search).get('date')
+      dailyTargetsState.selectedDate = query.get('date')
         || document.getElementById('marketDate').value
         || getUsDate();
+      const currentFocus = String(query.get('focus') || '').trim().toUpperCase();
+      if (currentFocus) {
+        document.getElementById('currentTargetSearch').value = currentFocus;
+      }
       document.getElementById('dailyTargetDate').value = dailyTargetsState.selectedDate;
       document.getElementById('nav').innerHTML = renderNav('/ibkr_screener.html');
       document.getElementById('contextBar').innerHTML = renderPageContextBar('🔎 IBKR 筛选与标池', {
@@ -2581,7 +3202,9 @@
       });
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
+      bindScreenerViewEvents();
       bindFilterEvents();
+      bindCurrentTargetFilterEvents();
       attachDailyTargetEvents();
       syncWatchlistScopeOptions();
       attachWatchlistEvents();
@@ -2589,6 +3212,7 @@
       renderSearchResults();
       renderDailyTargetRows();
       renderWatchlistRows();
+      activateScreenerView(activeScreenerView, { syncHistory: false });
       updateHero();
       await loadScreener(false);
       await activateTab(activeTab, { syncHistory: false });

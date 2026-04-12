@@ -1697,6 +1697,26 @@ routerAdd("POST", "/api/custom/ibkr/scan", (c) => {
     }
 })
 
+routerAdd("GET", "/api/custom/ibkr/today-targets", (c) => {
+    try {
+        const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+        const { buildTodayTargetPayload } = require(`${__hooks}/lib/ibkr_today_targets.js`)
+        const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+        const query = c.request.url.query()
+        const times = getTimeStrings()
+        const marketDate = String(query.get("market_date") || query.get("date") || "").trim() || times.date
+
+        return c.json(200, buildTodayTargetPayload({
+            environment: environment,
+            marketDate: marketDate,
+        }))
+    } catch (err) {
+        console.error(`[IBKRActions] today-targets error: ${err.message}`)
+        return c.json(500, { ok: false, error: err.message || String(err) })
+    }
+})
+
 routerAdd("GET", "/api/custom/ibkr/contracts/search", (c) => {
     try {
         const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)

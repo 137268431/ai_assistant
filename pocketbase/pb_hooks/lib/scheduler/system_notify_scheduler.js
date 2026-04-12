@@ -10,6 +10,10 @@ const BAR_STALE_WARN_MIN = 10
 const INDICATOR_STALE_WARN_MIN = 10
 const COMPUTE_STARTUP_GRACE_MS = 3 * 60 * 1000
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
+const SCAN_SUMMARY_STATE_KEY = "system_notify_scan_summary"
+const SCAN_SUMMARY_HOUR = 5
+const SCAN_SUMMARY_MINUTE = 55
+const PB_HOST = "https://pb.lzw-glory.top"
 const MARKET_OPEN_REMINDER_HOUR = 9
 const MARKET_OPEN_REMINDER_MINUTE = 20
 const MARKET_CLOSE_REMINDER_HOUR = 16
@@ -927,6 +931,163 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
     }
 }
 
+function buildScanSummaryUrl(environment, marketDate) {
+    const runtimeEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    const dateToken = String(marketDate || "").trim()
+    return `${PB_HOST}/ibkr_screener.html?environment=${encodeURIComponent(runtimeEnvironment)}&tab=targets&date=${encodeURIComponent(dateToken)}&market_date=${encodeURIComponent(dateToken)}`
+}
+
+function buildScanSummaryLines(payload) {
+    const items = Array.isArray(payload && payload.items) ? payload.items.slice(0, 5) : []
+    if (!items.length) {
+        return "今日未筛出 candidate / active 标的。"
+    }
+    return items.map((row, index) => {
+        const support = Array.isArray(row && row.operable_reasons) && row.operable_reasons.length
+            ? row.operable_reasons.slice(0, 2).join(" / ")
+            : "等待补充依据"
+        return `${index + 1}. ${row.symbol} | ${row.status}/${toNumber(row.score, 0).toFixed(1)} | ${row.scan_reason || "--"} | ${support}`
+    }).join("\n")
+}
+
+function buildScanSummaryCard(payload, environment) {
+    const summary = payload && payload.summary ? payload.summary : {}
+    const total = toNumber(summary.total, 0)
+    const marketDate = String(payload && payload.market_date || "").trim()
+    const title = total > 0 ? "IBKR 今日筛选结果" : "IBKR 今日筛选结果（未筛出标的）"
+    const jumpUrl = buildScanSummaryUrl(environment, marketDate)
+    return {
+        config: { wide_screen_mode: true },
+        header: {
+            title: { tag: "plain_text", content: title },
+            template: total > 0 ? "green" : "grey",
+        },
+        elements: [
+            {
+                tag: "markdown",
+                content: `**交易日**: ${marketDate}\n**结果**: ${total} 条 · active ${toNumber(summary.active_count, 0)} · candidate ${toNumber(summary.candidate_count, 0)} · operable ${toNumber(summary.operable_count, 0)}`
+            },
+            {
+                tag: "markdown",
+                content: buildScanSummaryLines(payload)
+            },
+            {
+                tag: "markdown",
+                content: `🕐 美东 ${String(payload && payload.computed_at_us || "").trim() || "n/a"}`
+            },
+            {
+                tag: "action",
+                actions: [{
+                    tag: "button",
+                    text: { tag: "plain_text", content: "查看今日 Targets" },
+                    type: "default",
+                    multi_url: {
+                        url: jumpUrl,
+                        pc_url: jumpUrl,
+                        ios_url: jumpUrl,
+                        android_url: jumpUrl,
+                    }
+                }]
+            }
+        ]
+    }
+}
+
+function buildScanSummaryEventDetail(payload) {
+    const summary = payload && payload.summary ? payload.summary : {}
+    const items = Array.isArray(payload && payload.items) ? payload.items.slice(0, 5) : []
+    return {
+        "交易日": String(payload && payload.market_date || ""),
+        "总标的": String(toNumber(summary.total, 0)),
+        "Active": String(toNumber(summary.active_count, 0)),
+        "Candidate": String(toNumber(summary.candidate_count, 0)),
+        "Operable": String(toNumber(summary.operable_count, 0)),
+        "标的样例": items.length
+            ? items.map((row) => `${row.symbol}(${row.status}/${toNumber(row.score, 0).toFixed(1)})`).join(", ")
+            : "none",
+    }
+}
+
+function runDailyScanSummaryTick(logPrefix, cronId) {
+    const prefix = logPrefix || "[IBKRScanSummary]"
+    const feishuApp = require(`${__hooks}/lib/feishu_app.js`)
+    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+    const envUtils = require(`${__hooks}/lib/environment.js`)
+    const runtimeModes = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
+    const { buildTodayTargetPayload } = require(`${__hooks}/lib/ibkr_today_targets.js`)
+    const times = getTimeStrings()
+    const clock = getUsClock()
+
+    if (clock.hour !== SCAN_SUMMARY_HOUR || clock.minute !== SCAN_SUMMARY_MINUTE) {
+        return
+    }
+
+    const environments = listNotifyEnvironments(cronId).filter((environment) => environment === envUtils.LIVE_ENVIRONMENT)
+    console.log(`${prefix} tick: time=${clock.time}, environments=${environments.join(",") || "-"}`)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        try {
+            const state = getStateData(SCAN_SUMMARY_STATE_KEY, environment, times.date).data || {}
+            if (String(state.sent_at || "").trim()) {
+                continue
+            }
+
+            const notifyEnabled = runtimeModes.isEnabledConfigValue(
+                envUtils.getConfigValue("status_notify_enabled", "TRUE", environment)
+            )
+            if (!notifyEnabled) {
+                saveStateData(SCAN_SUMMARY_STATE_KEY, environment, times.date, {
+                    skipped_at: times.us,
+                    skipped_reason: "status_notify_disabled",
+                })
+                continue
+            }
+
+            const payload = buildTodayTargetPayload({
+                environment: environment,
+                marketDate: times.date,
+            })
+            const title = toNumber(payload && payload.summary && payload.summary.total, 0) > 0
+                ? "IBKR 今日筛选结果"
+                : "IBKR 今日筛选结果（未筛出标的）"
+            const card = buildScanSummaryCard(payload, environment)
+            const result = feishuApp.sendMessageDetailed(
+                "interactive",
+                card,
+                feishuSystem.getSystemChatId(environment),
+                "chat_id",
+                environment
+            )
+            const notified = !!(result && result.success && !result.suppressed)
+            writeSystemEvent("scan_summary", "info", "pb", title, buildScanSummaryEventDetail(payload), environment, notified)
+
+            if (notified) {
+                saveStateData(SCAN_SUMMARY_STATE_KEY, environment, times.date, {
+                    sent_at: times.us,
+                    message_id: String(result.message_id || ""),
+                    market_date: String(payload.market_date || times.date),
+                    total: toNumber(payload.summary && payload.summary.total, 0),
+                    active_count: toNumber(payload.summary && payload.summary.active_count, 0),
+                    candidate_count: toNumber(payload.summary && payload.summary.candidate_count, 0),
+                    operable_count: toNumber(payload.summary && payload.summary.operable_count, 0),
+                })
+            } else {
+                saveStateData(SCAN_SUMMARY_STATE_KEY, environment, times.date, {
+                    error_at: times.us,
+                    error: String(result && result.error || "send_failed"),
+                })
+            }
+
+            console.log(`${prefix} ${environment}: notified=${notified}, total=${toNumber(payload.summary && payload.summary.total, 0)}`)
+        } catch (err) {
+            console.log(`${prefix} ${environment} error: ${err.message || err}`)
+        }
+    }
+}
+
 function runDailyOpenReminderTick(logPrefix, cronId) {
     const prefix = logPrefix || "[IBKRSystemNotify]"
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
@@ -1033,6 +1194,7 @@ function runDailyCloseSummaryTick(logPrefix, cronId) {
 module.exports = {
     runSystemHeartbeatTick,
     runSystemStatusReminderTick,
+    runDailyScanSummaryTick,
     runDailyOpenReminderTick,
     runDailyCloseSummaryTick,
 }

@@ -701,6 +701,11 @@
             }).format(new Date());
         }
 
+        function normalizeDateParam(value, fallback = '') {
+            const text = String(value || '').trim();
+            return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
+        }
+
         function escapeHtml(value) {
             return String(value ?? '')
                 .replace(/&/g, '&amp;')
@@ -1873,6 +1878,11 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlDate = normalizeDateParam(urlParams.get('date'), '');
+            const urlSearch = String(urlParams.get('search') || '').trim();
+            if (urlDate) currentDate = urlDate;
+            if (urlSearch) currentSearch = urlSearch;
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 指标', { description: '技术快照 / 快览 / 进入图表' });
             document.getElementById('pageBridge').innerHTML = renderPageBridge([
@@ -1899,6 +1909,7 @@
             document.getElementById('navContainer').innerHTML = renderNav('/ibkr_indicators.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             syncDatePickerUI(currentDate);
+            document.getElementById('searchBox').value = currentSearch;
             renderFilterNote();
             loadIndicators();
             changeRefreshInterval(30);
@@ -1926,7 +1937,7 @@
 
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
-            location.href = buildPageUrl('/ibkr_indicators.html', { date: currentDate });
+            location.href = buildPageUrl('/ibkr_indicators.html', { date: currentDate, search: currentSearch });
         };
     </script>
 </body>

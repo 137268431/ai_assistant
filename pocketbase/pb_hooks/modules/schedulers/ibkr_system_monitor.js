@@ -1311,6 +1311,11 @@ cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {
 cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
     const { runIbkrScheduledAction } = require(`${__hooks}/lib/ibkr_scheduler.js`)
     runIbkrScheduledAction("scan", 60, "[IBKRComputeCron]", "ibkr_scan_runtime")
+    try {
+        require(`${__hooks}/lib/system_notify_scheduler.js`).runDailyScanSummaryTick("[IBKRScanSummary]", "ibkr_scan_runtime")
+    } catch (err) {
+        console.log(`[IBKRScanSummary] fatal error: ${err.message || err}`)
+    }
 })
 
 cronAdd("ibkr_history_retention", "10 * * * *", () => {
