@@ -97,6 +97,9 @@ VALID_WATCHLIST_SYMBOL_ROLES = {
     WATCHLIST_SYMBOL_ROLE_TRADE,
     WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR,
 }
+DEFAULT_MARKET_WS_SYMBOLS = ("SPY", "QQQ", "VIX")
+DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
+DAILY_SCAN_STATE_DATE = "global"
 
 
 def normalize_watchlist_symbol_role(value, default: str = WATCHLIST_SYMBOL_ROLE_TRADE) -> str:
@@ -197,6 +200,7 @@ class IBKRTradingService:
         self._auth_required_reason = ""
         self._symbol_meta = {}
         self._watchlist_monitor_symbols = []
+        self._watchlist_trade_symbols = []
         self._watchlist_symbols = []
         self._watchlist_records = {}
         self._active_subscription_symbols = []
@@ -221,6 +225,7 @@ class IBKRTradingService:
         self._last_watchlist_integrity_repair_symbols = []
         self._subscription_lock = threading.Lock()
         self._warmup_lock = threading.Lock()
+        self._scan_state_lock = threading.Lock()
         self._compute_queue = queue.Queue()
         self._signal_wakeup = threading.Event()
         self._warmup_wakeup = threading.Event()
@@ -236,6 +241,7 @@ class IBKRTradingService:
         self._quote_prev_close_cache_date = ""
         self._warmup_signature = ()
         self._warmup_state = self._initial_warmup_state()
+        self._daily_scan_state = self._load_daily_scan_state(self._market_date())
         self._official_5m_lock = threading.RLock()
         self._official_5m_state = self._initial_official_5m_state()
         self._official_5m_last_cycle_at = 0.0
@@ -1338,12 +1344,18 @@ class IBKRTradingService:
             "trading_gate_reason": "warmup_idle",
             "target_date": "",
             "symbols_total": 0,
+            "scan_symbols_total": 0,
+            "subscription_symbols_total": 0,
             "trade_symbols_total": 0,
             "monitor_symbols_total": 0,
             "ready_symbols": 0,
+            "ready_scan_symbols": 0,
+            "ready_subscription_symbols": 0,
             "ready_trade_symbols": 0,
             "ready_monitor_symbols": 0,
             "symbols": [],
+            "scan_symbols": [],
+            "subscription_symbols": [],
             "trade_symbols": [],
             "monitor_symbols": [],
             "ready_symbols_list": [],
@@ -1371,6 +1383,56 @@ class IBKRTradingService:
                 copied[key] = value
         return copied
 
+    def _normalize_symbol_list(self, values) -> list[str]:
+        normalized = []
+        seen = set()
+        for raw in list(values or []):
+            symbol = str(raw or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            normalized.append(symbol)
+        return normalized
+
+    def _configured_market_ws_symbols(self) -> list[str]:
+        if not self.config.get_bool_for_environment("ibkr_market_ws_enabled", ENVIRONMENT, True):
+            return []
+        raw_value = self.config.get_for_environment(
+            "ibkr_market_ws_symbols",
+            ENVIRONMENT,
+            ",".join(DEFAULT_MARKET_WS_SYMBOLS),
+        )
+        return self._normalize_symbol_list(str(raw_value or "").replace("\n", ",").split(","))
+
+    def _market_ws_symbols(self) -> list[str]:
+        return self._normalize_symbol_list(
+            list(self._watchlist_monitor_symbols) + list(self._configured_market_ws_symbols())
+        )
+
+    def _live_warmup_days(self) -> int:
+        return max(1, self.config.get_int_for_environment("ibkr_live_warmup_days", ENVIRONMENT, 14))
+
+    def _restart_overlap_days(self) -> int:
+        return max(1, self.config.get_int_for_environment("ibkr_restart_overlap_days", ENVIRONMENT, 1))
+
+    def _data_universe_symbols(self) -> list[str]:
+        return self._normalize_symbol_list(list(self._watchlist_symbols) + list(self._market_ws_symbols()))
+
+    def _warmup_scope_fields(self, snapshot: dict) -> dict:
+        return {
+            "target_date": snapshot.get("target_date", ""),
+            "symbols_total": int(snapshot.get("symbols_total", 0) or 0),
+            "scan_symbols_total": int(snapshot.get("scan_symbols_total", 0) or 0),
+            "subscription_symbols_total": int(snapshot.get("subscription_symbols_total", 0) or 0),
+            "trade_symbols_total": int(snapshot.get("trade_symbols_total", 0) or 0),
+            "monitor_symbols_total": int(snapshot.get("monitor_symbols_total", 0) or 0),
+            "symbols": list(snapshot.get("symbols") or []),
+            "scan_symbols": list(snapshot.get("scan_symbols") or []),
+            "subscription_symbols": list(snapshot.get("subscription_symbols") or []),
+            "trade_symbols": list(snapshot.get("trade_symbols") or []),
+            "monitor_symbols": list(snapshot.get("monitor_symbols") or []),
+        }
+
     def _set_warmup_state(self, **updates) -> dict:
         with self._warmup_lock:
             next_state = self._copy_warmup_state()
@@ -1381,6 +1443,31 @@ class IBKRTradingService:
                     next_state[key] = [dict(item) if isinstance(item, dict) else item for item in value]
                 else:
                     next_state[key] = value
+            symbols = self._normalize_symbol_list(next_state.get("symbols") or [])
+            scan_symbols = self._normalize_symbol_list(next_state.get("scan_symbols") or [])
+            trade_symbols = self._normalize_symbol_list(next_state.get("trade_symbols") or [])
+            monitor_symbols = self._normalize_symbol_list(next_state.get("monitor_symbols") or [])
+            subscription_symbols = self._normalize_symbol_list(
+                next_state.get("subscription_symbols") or (trade_symbols + monitor_symbols)
+            )
+            ready_symbols_list = self._normalize_symbol_list(next_state.get("ready_symbols_list") or [])
+            ready_set = set(ready_symbols_list)
+            next_state["symbols"] = symbols
+            next_state["scan_symbols"] = scan_symbols
+            next_state["subscription_symbols"] = subscription_symbols
+            next_state["trade_symbols"] = trade_symbols
+            next_state["monitor_symbols"] = monitor_symbols
+            next_state["symbols_total"] = len(symbols)
+            next_state["scan_symbols_total"] = len(scan_symbols)
+            next_state["subscription_symbols_total"] = len(subscription_symbols)
+            next_state["trade_symbols_total"] = len(trade_symbols)
+            next_state["monitor_symbols_total"] = len(monitor_symbols)
+            next_state["ready_symbols_list"] = ready_symbols_list
+            next_state["ready_symbols"] = len(ready_symbols_list)
+            next_state["ready_scan_symbols"] = len([symbol for symbol in scan_symbols if symbol in ready_set])
+            next_state["ready_subscription_symbols"] = len([symbol for symbol in subscription_symbols if symbol in ready_set])
+            next_state["ready_trade_symbols"] = len([symbol for symbol in trade_symbols if symbol in ready_set])
+            next_state["ready_monitor_symbols"] = len([symbol for symbol in monitor_symbols if symbol in ready_set])
             self._warmup_state = next_state
             return self._copy_warmup_state(next_state)
 
@@ -1392,29 +1479,127 @@ class IBKRTradingService:
                 self._warmup_state["reason"] = reason
                 self._warmup_state["trading_gate_reason"] = "warmup_reset"
 
+    def _initial_daily_scan_state(self, market_date: str = "") -> dict:
+        return {
+            "market_date": str(market_date or self._market_date()),
+            "status": "idle",
+            "reason": "",
+            "started_at": "",
+            "finished_at": "",
+            "last_error": "",
+            "result": {},
+        }
+
+    def _load_daily_scan_state(self, market_date: str) -> dict:
+        target_date = str(market_date or self._market_date())
+        try:
+            state = self.pb.get_state(
+                DAILY_SCAN_STATE_KEY,
+                ENVIRONMENT,
+                date=DAILY_SCAN_STATE_DATE,
+            )
+        except Exception:
+            state = None
+        payload = state.get("data") if isinstance(state, dict) else {}
+        if not isinstance(payload, dict):
+            return self._initial_daily_scan_state(target_date)
+        loaded = {
+            **self._initial_daily_scan_state(target_date),
+            **payload,
+        }
+        if str(loaded.get("market_date") or "") != target_date:
+            return self._initial_daily_scan_state(target_date)
+        return loaded
+
+    def _copy_daily_scan_state(self) -> dict:
+        with self._scan_state_lock:
+            return dict(self._daily_scan_state or {})
+
+    def _set_daily_scan_state(self, **updates) -> dict:
+        with self._scan_state_lock:
+            next_state = dict(self._daily_scan_state or self._initial_daily_scan_state())
+            next_state.update(updates)
+            next_state["market_date"] = str(next_state.get("market_date") or self._market_date())
+            self._daily_scan_state = next_state
+            try:
+                self.pb.upsert_state(
+                    DAILY_SCAN_STATE_KEY,
+                    ENVIRONMENT,
+                    next_state,
+                    date=DAILY_SCAN_STATE_DATE,
+                )
+            except Exception:
+                logger.warning("Persist daily scan state failed", exc_info=True)
+            return dict(next_state)
+
     def _warmup_snapshot_from_subscriptions(self) -> dict:
         with self._subscription_lock:
-            symbols = sorted(self._active_subscription_symbols)
+            target_date = self._active_target_date or self._current_market_date or self._market_date()
             trade_symbols = sorted(self._active_trade_symbols)
-            target_date = self._active_target_date
-            conid_map = dict(self._active_subscription_map)
-            symbol_meta = {
+            active_conid_map = dict(self._active_subscription_map)
+            symbol_meta_seed = {
                 symbol: dict(self._symbol_meta.get(symbol) or {})
-                for symbol in symbols
+                for symbol in self._symbol_meta.keys()
             }
-        monitor_symbol_set = set(self._watchlist_monitor_symbols)
-        monitor_symbols = [symbol for symbol in symbols if symbol in monitor_symbol_set]
+        symbols = self._data_universe_symbols()
+        scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
+        monitor_symbols = self._market_ws_symbols()
+        subscription_symbols = self._normalize_symbol_list(monitor_symbols + trade_symbols)
+        conid_map = {
+            symbol: int(active_conid_map.get(symbol) or 0)
+            for symbol in symbols
+            if int(active_conid_map.get(symbol) or 0) > 0
+        }
+        unresolved = [symbol for symbol in symbols if symbol not in conid_map]
+        if unresolved:
+            try:
+                resolved = self.conid_resolver.resolve_bulk(unresolved)
+            except Exception:
+                resolved = {}
+            for symbol, conid in (resolved or {}).items():
+                if int(conid or 0) > 0:
+                    conid_map[str(symbol or "").strip().upper()] = int(conid)
+        symbol_meta = {}
+        scan_symbol_set = set(scan_symbols)
+        monitor_symbol_set = set(monitor_symbols)
+        for symbol in symbols:
+            base_meta = dict(symbol_meta_seed.get(symbol) or {})
+            role = base_meta.get("symbol_role")
+            if not role:
+                if symbol in monitor_symbol_set:
+                    role = WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR
+                elif symbol in scan_symbol_set:
+                    role = WATCHLIST_SYMBOL_ROLE_TRADE
+                else:
+                    role = "data"
+            symbol_meta[symbol] = {
+                **base_meta,
+                "exchange": str(base_meta.get("exchange") or "").upper(),
+                "industry": str(base_meta.get("industry") or ""),
+                "symbol_role": str(role or "data"),
+            }
         return {
             "target_date": target_date,
             "symbols": symbols,
+            "scan_symbols": scan_symbols,
+            "subscription_symbols": subscription_symbols,
             "trade_symbols": trade_symbols,
             "monitor_symbols": monitor_symbols,
             "symbols_total": len(symbols),
+            "scan_symbols_total": len(scan_symbols),
+            "subscription_symbols_total": len(subscription_symbols),
             "trade_symbols_total": len(trade_symbols),
             "monitor_symbols_total": len(monitor_symbols),
             "conid_map": conid_map,
             "symbol_meta": symbol_meta,
-            "signature": (target_date, tuple(symbols), tuple(trade_symbols)),
+            "signature": (
+                target_date,
+                tuple(symbols),
+                tuple(scan_symbols),
+                tuple(subscription_symbols),
+                tuple(trade_symbols),
+                tuple(monitor_symbols),
+            ),
         }
 
     def _trade_readiness_snapshot(self) -> dict:
@@ -1443,13 +1628,7 @@ class IBKRTradingService:
             reason=reason,
             trading_gate_open=False,
             trading_gate_reason=reason,
-            target_date=snapshot["target_date"],
-            symbols_total=snapshot["symbols_total"],
-            trade_symbols_total=snapshot["trade_symbols_total"],
-            monitor_symbols_total=snapshot["monitor_symbols_total"],
-            symbols=snapshot["symbols"],
-            trade_symbols=snapshot["trade_symbols"],
-            monitor_symbols=snapshot["monitor_symbols"],
+            **self._warmup_scope_fields(snapshot),
             integrity_pending_symbols=[],
             integrity_repair_reasons={},
             preflight_repair={},
@@ -1469,16 +1648,8 @@ class IBKRTradingService:
                 last_error="",
                 trading_gate_open=False,
                 trading_gate_reason="no_active_symbols",
-                target_date=snapshot["target_date"],
-                symbols_total=0,
-                trade_symbols_total=0,
-                monitor_symbols_total=0,
+                **self._warmup_scope_fields(snapshot),
                 ready_symbols=0,
-                ready_trade_symbols=0,
-                ready_monitor_symbols=0,
-                symbols=[],
-                trade_symbols=[],
-                monitor_symbols=[],
                 ready_symbols_list=[],
                 pending_symbols=[],
                 symbol_status=[],
@@ -1517,16 +1688,7 @@ class IBKRTradingService:
             last_error="",
             trading_gate_open=False,
             trading_gate_reason="warmup_pending",
-            target_date=snapshot["target_date"],
-            symbols_total=snapshot["symbols_total"],
-            trade_symbols_total=snapshot["trade_symbols_total"],
-            monitor_symbols_total=snapshot["monitor_symbols_total"],
-            ready_symbols=0,
-            ready_trade_symbols=0,
-            ready_monitor_symbols=0,
-            symbols=snapshot["symbols"],
-            trade_symbols=snapshot["trade_symbols"],
-            monitor_symbols=snapshot["monitor_symbols"],
+            **self._warmup_scope_fields(snapshot),
             ready_symbols_list=[],
             pending_symbols=snapshot["symbols"],
             symbol_status=[],
@@ -1580,6 +1742,8 @@ class IBKRTradingService:
         pending_symbols = []
         symbol_status = []
         ready_set = set()
+        scan_symbol_set = set(snapshot.get("scan_symbols") or [])
+        subscription_symbol_set = set(snapshot.get("subscription_symbols") or [])
         trade_symbol_set = set(snapshot["trade_symbols"])
         monitor_symbol_set = set(snapshot["monitor_symbols"])
 
@@ -1588,7 +1752,16 @@ class IBKRTradingService:
             is_ready = bool(engine and engine.is_ready())
             bar_count = int(getattr(engine, "bar_count", 0) or 0) if engine else 0
             last_bar_time_ms = int(getattr(engine, "last_bar_time_ms", 0) or 0) if engine else 0
-            role = "trade" if symbol in trade_symbol_set else "monitor" if symbol in monitor_symbol_set else "active"
+            if symbol in trade_symbol_set:
+                role = "trade"
+            elif symbol in monitor_symbol_set:
+                role = "monitor"
+            elif symbol in scan_symbol_set:
+                role = "scan"
+            elif symbol in subscription_symbol_set:
+                role = "subscription"
+            else:
+                role = "data"
             symbol_status.append({
                 "symbol": symbol,
                 "role": role,
@@ -1602,6 +1775,8 @@ class IBKRTradingService:
             else:
                 pending_symbols.append(symbol)
 
+        ready_scan_symbols = len([symbol for symbol in snapshot.get("scan_symbols") or [] if symbol in ready_set])
+        ready_subscription_symbols = len([symbol for symbol in snapshot.get("subscription_symbols") or [] if symbol in ready_set])
         ready_trade_symbols = len([symbol for symbol in snapshot["trade_symbols"] if symbol in ready_set])
         ready_monitor_symbols = len([symbol for symbol in snapshot["monitor_symbols"] if symbol in ready_set])
         trading_gate_open = bool(snapshot["trade_symbols"]) and ready_trade_symbols == snapshot["trade_symbols_total"]
@@ -1609,6 +1784,8 @@ class IBKRTradingService:
             "phase": "ready" if not pending_symbols else "degraded",
             "required_interval": DEFAULT_WARMUP_REQUIRED_INTERVAL,
             "ready_symbols": len(ready_symbols),
+            "ready_scan_symbols": ready_scan_symbols,
+            "ready_subscription_symbols": ready_subscription_symbols,
             "ready_trade_symbols": ready_trade_symbols,
             "ready_monitor_symbols": ready_monitor_symbols,
             "ready_symbols_list": ready_symbols,
@@ -1636,6 +1813,8 @@ class IBKRTradingService:
         }
         ready_set = set(readiness.get("ready_symbols_list") or []) - set(blocking_symbols)
         pending_set = set(readiness.get("pending_symbols") or []) | set(blocking_symbols)
+        scan_symbol_set = set(snapshot.get("scan_symbols") or [])
+        subscription_symbol_set = set(snapshot.get("subscription_symbols") or [])
         trade_symbol_set = set(snapshot.get("trade_symbols") or [])
         monitor_symbol_set = set(snapshot.get("monitor_symbols") or [])
 
@@ -1646,7 +1825,16 @@ class IBKRTradingService:
         }
         merged_status = []
         for symbol in snapshot.get("symbols") or []:
-            role = "trade" if symbol in trade_symbol_set else "monitor" if symbol in monitor_symbol_set else "active"
+            if symbol in trade_symbol_set:
+                role = "trade"
+            elif symbol in monitor_symbol_set:
+                role = "monitor"
+            elif symbol in scan_symbol_set:
+                role = "scan"
+            elif symbol in subscription_symbol_set:
+                role = "subscription"
+            else:
+                role = "data"
             row = dict(status_map.get(symbol) or {})
             row["symbol"] = symbol
             row["role"] = row.get("role") or role
@@ -1667,6 +1855,8 @@ class IBKRTradingService:
 
         readiness["phase"] = "ready" if not pending_set else "degraded"
         readiness["ready_symbols"] = len(ready_set)
+        readiness["ready_scan_symbols"] = len([symbol for symbol in snapshot.get("scan_symbols") or [] if symbol in ready_set])
+        readiness["ready_subscription_symbols"] = len([symbol for symbol in snapshot.get("subscription_symbols") or [] if symbol in ready_set])
         readiness["ready_trade_symbols"] = ready_trade_symbols
         readiness["ready_monitor_symbols"] = ready_monitor_symbols
         readiness["ready_symbols_list"] = sorted(ready_set)
@@ -2076,7 +2266,13 @@ class IBKRTradingService:
             compute_result.get("processed", 0) if isinstance(compute_result, dict) else 0,
             warmup_timings["total_elapsed_s"],
         )
-        if readiness["trading_gate_open"]:
+        startup_ready = bool(readiness["trading_gate_open"])
+        if snapshot["trade_symbols_total"] <= 0:
+            # Monitor-only startup must still leave the runtime state, otherwise
+            # canonical 5m close polling and compute stay blocked forever.
+            startup_ready = True
+
+        if startup_ready:
             startup_title = "IBKR Runtime 启动完成"
             startup_detail = {
                 "Warmup结果": f"{readiness['ready_symbols']}/{snapshot['symbols_total']} ready",
@@ -2087,11 +2283,17 @@ class IBKRTradingService:
                 "预热开始": started_at,
                 "预热完成": finished_at,
                 "预热耗时": f"{warmup_timings['total_elapsed_s']:.3f}s",
-                "交易门": "open",
+                "交易门": "open" if readiness["trading_gate_open"] else "closed",
             }
+            if snapshot["trade_symbols_total"] <= 0:
+                startup_title = "IBKR Runtime 启动完成（监控模式）"
+                startup_detail["后续动作"] = "当前无 trade symbols，runtime 将继续执行 canonical 5m close、指标和 scan 链路。"
             if phase != "ready":
                 startup_title = "IBKR Runtime 启动完成（后台继续预热）"
-                startup_detail["后续动作"] = "交易链路已开放，剩余 monitor/integrity repair 在后台继续。"
+                if snapshot["trade_symbols_total"] <= 0:
+                    startup_detail["后续动作"] = "当前无 trade symbols，runtime 将在后台继续 monitor/integrity repair，并保持 canonical 5m close 链路运行。"
+                else:
+                    startup_detail["后续动作"] = "交易链路已开放，剩余 monitor/integrity repair 在后台继续。"
                 startup_detail["待完成标的"] = self._format_symbol_list(readiness.get("pending_symbols") or [])
                 startup_detail["完整性阻塞"] = self._format_symbol_list(readiness.get("integrity_pending_symbols") or [])
             if self._complete_startup_success(startup_title, startup_detail):
@@ -2476,6 +2678,11 @@ class IBKRTradingService:
             logger.warning("Compute daily reset failed: %s", exc)
 
         self._reset_warmup_state(reason="market_day_reset")
+        if previous_date and previous_date != current_date:
+            self._set_daily_scan_state(**self._initial_daily_scan_state(current_date))
+        else:
+            with self._scan_state_lock:
+                self._daily_scan_state = self._load_daily_scan_state(current_date)
         self._remove_stale_target_rows(current_date)
         self._apply_live_subscriptions(current_date, {}, reason="market_day_reset")
         self._active_target_date = ""
@@ -2541,6 +2748,7 @@ class IBKRTradingService:
             return
 
         symbol_meta = {}
+        trade_symbols = []
         monitor_symbols = []
         for symbol, row in merged.items():
             symbol_role = self._watchlist_record_role(row)
@@ -2551,16 +2759,19 @@ class IBKRTradingService:
             }
             if symbol_role == WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR:
                 monitor_symbols.append(symbol)
+            else:
+                trade_symbols.append(symbol)
 
         self._watchlist_records = merged
         self._watchlist_symbols = sorted(merged.keys())
+        self._watchlist_trade_symbols = sorted(trade_symbols)
         self._watchlist_monitor_symbols = sorted(monitor_symbols)
         self._symbol_meta = symbol_meta
         self._last_watchlist_refresh_at = now
         logger.info(
             "Watchlist pool refreshed: %d symbols (%d trade / %d monitor)",
             len(self._watchlist_symbols),
-            max(0, len(self._watchlist_symbols) - len(self._watchlist_monitor_symbols)),
+            len(self._watchlist_trade_symbols),
             len(self._watchlist_monitor_symbols),
         )
 
@@ -2616,7 +2827,7 @@ class IBKRTradingService:
             }
             seen.add(symbol)
 
-        for symbol in self._watchlist_monitor_symbols:
+        for symbol in self._market_ws_symbols():
             if symbol in seen:
                 continue
             selected_symbols.append(symbol)
@@ -2663,6 +2874,104 @@ class IBKRTradingService:
                 self.pb.update_record("ibkr_targets", record_id, {"status": desired})
             except Exception as exc:
                 logger.warning("Failed to update target status %s -> %s: %s", record_id, desired, exc)
+
+    def _scan_schedule_start(self) -> tuple[int, int]:
+        raw_schedule = str(
+            self.config.get_for_environment("ibkr_scan_schedule", ENVIRONMENT, "7:00-10:00") or ""
+        ).strip()
+        start_text = raw_schedule.split("-", 1)[0].strip() or "07:00"
+        try:
+            hour_text, minute_text = start_text.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            pass
+        return 7, 0
+
+    def _scan_window_open(self) -> bool:
+        hour, minute = self._scan_schedule_start()
+        now_et = datetime.now(ET)
+        return (now_et.hour, now_et.minute) >= (hour, minute)
+
+    def _run_daily_scan_if_due(self, reason: str = "poll") -> dict:
+        self._refresh_watchlist_pool()
+        market_date = self._current_market_date or self._market_date()
+        state = self._copy_daily_scan_state()
+        if str(state.get("market_date") or "") != market_date:
+            state = self._set_daily_scan_state(**self._initial_daily_scan_state(market_date))
+
+        if not self._scan_window_open():
+            return {"ok": True, "skipped": True, "reason": "scan_window_not_open", "state": state}
+        if str(state.get("status") or "").strip().lower() == "running":
+            return {"ok": True, "skipped": True, "reason": "scan_running", "state": state}
+        if str(state.get("status") or "").strip().lower() == "completed":
+            return {"ok": True, "skipped": True, "reason": "scan_already_completed", "state": state}
+
+        warmup_state = self._copy_warmup_state()
+        symbols_total = int(warmup_state.get("symbols_total", 0) or 0)
+        ready_symbols = int(warmup_state.get("ready_symbols", 0) or 0)
+        if symbols_total <= 0:
+            return {"ok": True, "skipped": True, "reason": "no_data_symbols", "state": state}
+        if ready_symbols < symbols_total:
+            return {"ok": True, "skipped": True, "reason": "data_warmup_incomplete", "state": state}
+
+        if not self._watchlist_trade_symbols:
+            completed_state = self._set_daily_scan_state(
+                market_date=market_date,
+                status="completed",
+                reason=reason,
+                started_at=self._now_iso(),
+                finished_at=self._now_iso(),
+                last_error="",
+                result={
+                    "ok": True,
+                    "date": market_date,
+                    "scanned": 0,
+                    "candidates": 0,
+                    "errors": 0,
+                    "environments": [ENVIRONMENT],
+                },
+            )
+            self._last_target_refresh_at = 0.0
+            return {"ok": True, "ran": True, "state": completed_state}
+
+        self._set_daily_scan_state(
+            market_date=market_date,
+            status="running",
+            reason=reason,
+            started_at=self._now_iso(),
+            finished_at="",
+            last_error="",
+            result={},
+        )
+        try:
+            from ibkr_compute.api import server as compute_server
+
+            result = compute_server._run_internal_scan({"environment": ENVIRONMENT}) or {}
+            completed_state = self._set_daily_scan_state(
+                market_date=market_date,
+                status="completed" if bool(result.get("ok", True)) else "failed",
+                reason=reason,
+                finished_at=self._now_iso(),
+                last_error="" if bool(result.get("ok", True)) else str(result.get("error") or "daily_scan_failed"),
+                result=result,
+            )
+            if bool(result.get("ok", True)):
+                self._last_target_refresh_at = 0.0
+            return {"ok": bool(result.get("ok", True)), "ran": True, "state": completed_state, "result": result}
+        except Exception as exc:
+            failed_state = self._set_daily_scan_state(
+                market_date=market_date,
+                status="failed",
+                reason=reason,
+                finished_at=self._now_iso(),
+                last_error=str(exc),
+                result={},
+            )
+            logger.error("Daily scan execution failed: %s", exc)
+            return {"ok": False, "ran": True, "state": failed_state, "error": str(exc)}
 
     def _apply_live_subscriptions(self, target_date: str, conid_map: dict, reason: str = "", trade_symbols: list[str] | None = None):
         with self._subscription_lock:
@@ -2783,6 +3092,7 @@ class IBKRTradingService:
                 self._sync_session_transition()
                 self._reset_for_new_market_day(force=False)
                 if self.session_keeper.is_authenticated:
+                    self._run_daily_scan_if_due(reason="poll")
                     self._refresh_target_subscriptions(reason="poll")
                 else:
                     logger.info("Skip target refresh while session is unauthenticated")
@@ -3416,14 +3726,18 @@ class IBKRTradingService:
         ]
         if not reasons:
             return ""
+        warmup_period = f"{self._live_warmup_days()}d"
+        overlap_period = f"{self._restart_overlap_days()}d"
         if any(
             reason.startswith("bars<") or reason.startswith("startup_snapshot_error:")
             for reason in reasons
         ):
-            return ""
+            return warmup_period
         if all(reason.startswith("today_regular_") for reason in reasons):
-            return STARTUP_HISTORY_REPAIR_SHORT_PERIOD
-        return ""
+            return overlap_period or STARTUP_HISTORY_REPAIR_SHORT_PERIOD
+        if any(reason.startswith("gaps=") for reason in reasons):
+            return overlap_period
+        return warmup_period
 
     def _build_startup_history_period_overrides(self, repair_plan: dict[str, dict]) -> dict[str, dict]:
         overrides = {}
@@ -4324,6 +4638,38 @@ class IBKRTradingService:
         completed_bucket_ms = int(official_5m.get("last_completed_bucket_ms", 0) or 0)
         official_5m["lag_s"] = round(max(0.0, (due_bucket_ms - completed_bucket_ms) / 1000.0), 1) if due_bucket_ms > completed_bucket_ms else 0.0
         realtime_quotes = self.realtime_quote_book.status()
+        warmup_state = self._copy_warmup_state()
+        daily_scan_state = self._copy_daily_scan_state()
+        data_symbols = self._data_universe_symbols()
+        scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
+        market_ws_symbols = self._market_ws_symbols()
+        if str(daily_scan_state.get("status") or "").strip().lower() == "running":
+            pipeline_stage = "run_daily_scan"
+            pipeline_status = "running"
+        elif str(warmup_state.get("phase") or "").strip().lower() in {"pending", "running"}:
+            pipeline_stage = "materialize_indicators"
+            pipeline_status = "running"
+        elif str(daily_scan_state.get("status") or "").strip().lower() == "completed":
+            pipeline_stage = "run_target_realtime"
+            pipeline_status = "ready"
+        elif str(warmup_state.get("phase") or "").strip().lower() in {"ready", "degraded"}:
+            pipeline_stage = "activate_targets"
+            pipeline_status = str(warmup_state.get("phase") or "ready")
+        else:
+            pipeline_stage = "resolve_universe"
+            pipeline_status = str(warmup_state.get("phase") or "idle")
+        bar_freshness_status = (
+            "fresh"
+            if completed_bucket_ms > 0
+            and float(official_5m.get("lag_s", 0) or 0) <= 90
+            and not int(official_5m.get("pending_symbols_total", 0) or 0)
+            else "stale"
+        )
+        indicator_freshness_status = (
+            "fresh"
+            if last_run_at > 0 and lag_since_last_run_s <= 90 and not stalled
+            else "stale"
+        )
         return {
             "starting": self._starting,
             "startup_complete": bool(self._running and not self._starting),
@@ -4344,7 +4690,8 @@ class IBKRTradingService:
             "order_lifecycle": self.order_lifecycle.status(),
             "signal_router": self.signal_router.status(),
             "signal_processor": self.signal_processor.status(),
-            "warmup": self._copy_warmup_state(),
+            "warmup": warmup_state,
+            "daily_scan": daily_scan_state,
             "realtime_compute": {
                 "runs": self._realtime_compute_runs,
                 "queue_size": queue_size,
@@ -4371,17 +4718,52 @@ class IBKRTradingService:
             "interval_prime": self._copy_interval_prime_state(),
             "market_universe": {
                 "market_date": self._current_market_date,
+                "pipeline_stage": pipeline_stage,
+                "pipeline_status": pipeline_status,
                 "last_daily_reset": (
                     datetime.fromtimestamp(self._last_daily_reset_at, ET).isoformat()
                     if self._last_daily_reset_at else None
                 ),
                 "watchlist_pool_count": len(self._watchlist_symbols),
+                "watchlist_trade_count": len(self._watchlist_trade_symbols),
+                "data_symbols_total": len(data_symbols),
+                "scan_symbols_total": len(scan_symbols),
+                "market_ws_symbols_total": len(market_ws_symbols),
+                "data_symbols": list(data_symbols),
+                "scan_symbols": list(scan_symbols),
+                "market_ws_symbols": list(market_ws_symbols),
                 "active_target_date": self._active_target_date,
                 "active_target_count": len(self._active_trade_symbols),
                 "active_subscription_count": len(self._active_subscription_symbols),
                 "active_target_symbols": list(self._active_trade_symbols),
                 "active_subscription_symbols": list(self._active_subscription_symbols),
                 "active_trade_symbols": list(self._active_trade_symbols),
+                "last_successful_scan_market_date": (
+                    str(daily_scan_state.get("market_date") or "")
+                    if str(daily_scan_state.get("status") or "").strip().lower() == "completed"
+                    else ""
+                ),
+                "last_successful_scan_at": (
+                    str(daily_scan_state.get("finished_at") or "")
+                    if str(daily_scan_state.get("status") or "").strip().lower() == "completed"
+                    else ""
+                ),
+                "bar_freshness": {
+                    "status": bar_freshness_status,
+                    "lag_s": float(official_5m.get("lag_s", 0) or 0),
+                    "last_completed_bucket_us": str(official_5m.get("last_completed_bucket_us") or ""),
+                    "pending_symbols_total": int(official_5m.get("pending_symbols_total", 0) or 0),
+                },
+                "indicator_freshness": {
+                    "status": indicator_freshness_status,
+                    "lag_since_last_run_s": lag_since_last_run_s,
+                    "last_run": (
+                        datetime.fromtimestamp(last_run_at, ET).isoformat()
+                        if last_run_at else None
+                    ),
+                    "stalled": stalled,
+                    "stall_reason": stall_reason,
+                },
                 "last_watchlist_refresh": (
                     datetime.fromtimestamp(self._last_watchlist_refresh_at, ET).isoformat()
                     if self._last_watchlist_refresh_at else None

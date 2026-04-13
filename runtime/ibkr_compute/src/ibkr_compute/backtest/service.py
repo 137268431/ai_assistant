@@ -2200,6 +2200,22 @@ class BacktestService:
                 written += int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
         return written
 
+    def _count_internal_5m_gaps(self, rows: list[dict]) -> int:
+        gap_count = 0
+        previous_ms = 0
+        previous_day = ""
+        for row in rows or []:
+            bar_ms = int((row or {}).get("bar_time_ms", 0) or 0)
+            if bar_ms <= 0:
+                continue
+            current_day = str((row or {}).get("us_time", "") or "")[:10] or ms_to_et(bar_ms).strftime("%Y-%m-%d")
+            if previous_ms > 0 and previous_day == current_day:
+                if bar_ms - previous_ms > interval_to_ms("5m") * 3:
+                    gap_count += 1
+            previous_ms = bar_ms
+            previous_day = current_day
+        return gap_count
+
     def _rollup_symbol_history(self, symbol: str, source_environment: str) -> int:
         try:
             with open_pb_sqlite(readonly=False, timeout=30.0) as conn:
@@ -2267,6 +2283,7 @@ class BacktestService:
             not rows
             or int(rows[0].get("bar_time_ms", 0) or 0) > coverage_start_ms
             or int(rows[-1].get("bar_time_ms", 0) or 0) < max(0, cutoff_ms - interval_to_ms("5m"))
+            or self._count_internal_5m_gaps(rows) > 0
         )
         if not need_backfill:
             return {"ok": True, "needed": False, "persisted_rows": 0, "rolled_rows": 0}
@@ -2394,6 +2411,19 @@ class BacktestService:
             first_bar_ms = 0
             last_bar_ms = 0
         if not rows or first_bar_ms > start_ms or last_bar_ms < end_ms - interval_to_ms("5m"):
+            warmup_lookback_ms = interval_to_ms("5m") * (BACKTEST_WARMUP_BARS + 20)
+            repair = self._backfill_symbol_history(
+                symbol,
+                source_environment,
+                max(0, start_ms - warmup_lookback_ms),
+                end_ms,
+                interval="5m",
+            )
+            repair_rows = list((repair or {}).get("rows") or [])
+            if repair_rows:
+                self._persist_backfill_rows(repair_rows)
+            rows = self._merge_backfill_rows(rows, repair_rows)
+        if rows and self._count_internal_5m_gaps(rows) > 0:
             warmup_lookback_ms = interval_to_ms("5m") * (BACKTEST_WARMUP_BARS + 20)
             repair = self._backfill_symbol_history(
                 symbol,
@@ -2909,6 +2939,20 @@ class BacktestService:
         )
         if warmup_bars:
             previous_day = self._bootstrap_backtest_state(engine, signal_gen, warmup_bars)
+
+        precheck_gap_count = self._count_internal_5m_gaps(bars)
+        if precheck_gap_count > 0:
+            quality = {
+                "symbol": symbol,
+                "bar_count": len(bars),
+                "gap_count": precheck_gap_count,
+                "status": "invalid_gap",
+                "first_bar_us": bars[0].get("us_time", "") if bars else "",
+                "last_bar_us": bars[-1].get("us_time", "") if bars else "",
+                "market_bars": len(bars),
+                "selected_trade_day_count": len(allowed_trade_days or []),
+            }
+            return [], quality, symbol_tv_parity, [], [], []
 
         for index, bar in enumerate(bars):
             if self._cancel_event.is_set():

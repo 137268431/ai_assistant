@@ -250,6 +250,21 @@ def normalize_symbols(symbols) -> list[str]:
     return normalized
 
 
+def normalize_symbol_csv(value) -> list[str]:
+    if isinstance(value, str):
+        items = value.replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = []
+        for raw in value:
+            if isinstance(raw, str):
+                items.extend(raw.replace("\n", ",").split(","))
+            else:
+                items.append(raw)
+    else:
+        items = []
+    return normalize_symbols(items)
+
+
 def build_symbol_filter(symbols) -> str:
     normalized = normalize_symbols(symbols)
     if not normalized:
@@ -265,23 +280,62 @@ def normalize_bar_environment(bar: dict, environment: str) -> dict:
 
 def get_market_monitor_symbols(environment: str) -> set[str]:
     watchlist_map = load_effective_watchlist(environment)
-    return {
+    watchlist_symbols = {
         symbol
         for symbol, row in watchlist_map.items()
         if normalize_watchlist_symbol_role((row or {}).get("symbol_role")) == WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR
+    }
+    if not cfg.get_bool_for_environment("ibkr_market_ws_enabled", environment, True):
+        return watchlist_symbols
+    configured_symbols = set(
+        normalize_symbol_csv(
+            cfg.get_for_environment("ibkr_market_ws_symbols", environment, "SPY,QQQ,VIX")
+        )
+    )
+    return watchlist_symbols.union(configured_symbols)
+
+
+def get_active_trade_symbols(environment: str, market_date: str | None = None) -> set[str]:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    target_date = str(market_date or current_market_date()).strip() or current_market_date()
+    try:
+        rows = pb.get_all_records(
+            "ibkr_targets",
+            filter=(
+                f'date = "{target_date}" && '
+                f'environment = "{runtime_environment}" && '
+                'status = "active"'
+            ),
+            sort="-score,-updated",
+            max_pages=10,
+        )
+    except Exception:
+        traceback.print_exc()
+        return set()
+    return {
+        str(row.get("symbol", "")).strip().upper()
+        for row in rows
+        if str(row.get("symbol", "")).strip()
     }
 
 
 def get_signal_generator_params(environment: str) -> dict:
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
+    signal_enabled_symbols = sorted(get_active_trade_symbols(environment))
     return {
         "market_monitor_symbols": ",".join(market_monitor_symbols),
+        "signal_enabled_symbols": ",".join(signal_enabled_symbols),
     }
 
 
-def get_or_create_engine(environment: str, symbol: str, interval: str) -> IndicatorEngine:
+def get_or_create_engine(
+    environment: str,
+    symbol: str,
+    interval: str,
+    signal_params: dict | None = None,
+) -> IndicatorEngine:
     key = (environment, symbol, interval)
-    signal_params = get_signal_generator_params(environment)
+    signal_params = signal_params or get_signal_generator_params(environment)
     with compute_lock:
         if key not in engines:
             engines[key] = IndicatorEngine(symbol, interval)
@@ -2453,7 +2507,11 @@ def compute():
                     reset_compute_state_for_symbols(environment, requested_symbols, intervals=INTERVALS)
                 if not skip_persisted_cursor:
                     load_persisted_compute_cursors(environment)
-                market_monitor_symbols = get_market_monitor_symbols(environment)
+                signal_params = get_signal_generator_params(environment)
+                signal_enabled_symbols = {
+                    str(symbol or "").strip().upper()
+                    for symbol in normalize_symbol_csv(signal_params.get("signal_enabled_symbols") or "")
+                }
                 for interval in INTERVALS:
                     interval_bars = fetch_interval_bars(
                         environment,
@@ -2472,7 +2530,7 @@ def compute():
 
                     for symbol, bars in by_symbol.items():
                         bars.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
-                        engine = get_or_create_engine(environment, symbol, interval)
+                        engine = get_or_create_engine(environment, symbol, interval, signal_params=signal_params)
                         signal_generator = signal_gens.get((environment, symbol, interval))
                         key = (environment, symbol, interval)
                         last_ms = int(last_processed_ms.get(key, 0) or 0)
@@ -2524,7 +2582,7 @@ def compute():
                                 not persist_signals
                                 or interval != "5m"
                                 or not signal_generator
-                                or symbol in market_monitor_symbols
+                                or symbol not in signal_enabled_symbols
                             ):
                                 continue
 
@@ -4469,6 +4527,15 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "last_poll": "",
             "running": False,
         },
+        "daily_scan": {
+            "market_date": "",
+            "status": "idle",
+            "reason": detail,
+            "started_at": "",
+            "finished_at": "",
+            "last_error": detail,
+            "result": {},
+        },
         "realtime_compute": {
             "last_bar_close": "",
             "last_elapsed_s": 0,
@@ -4480,11 +4547,34 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "runs": 0,
         },
         "market_universe": {
+            "pipeline_stage": "resolve_universe",
+            "pipeline_status": "idle",
             "active_repair_interval_min": 0,
             "active_subscription_count": 0,
             "active_target_count": 0,
             "active_target_date": "",
             "active_trade_symbols": [],
+            "data_symbols_total": 0,
+            "scan_symbols_total": 0,
+            "market_ws_symbols_total": 0,
+            "data_symbols": [],
+            "scan_symbols": [],
+            "market_ws_symbols": [],
+            "last_successful_scan_market_date": "",
+            "last_successful_scan_at": "",
+            "bar_freshness": {
+                "status": "stale",
+                "lag_s": 0,
+                "last_completed_bucket_us": "",
+                "pending_symbols_total": 0,
+            },
+            "indicator_freshness": {
+                "status": "stale",
+                "lag_since_last_run_s": 0,
+                "last_run": "",
+                "stalled": False,
+                "stall_reason": "",
+            },
             "last_active_repair": "",
             "last_active_repair_reasons": {},
             "last_active_repair_symbols": [],
@@ -4509,6 +4599,8 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "pending_symbols_total": 0,
             "phase": "idle",
             "preflight_repair": {},
+            "ready_scan_symbols": 0,
+            "ready_subscription_symbols": 0,
             "ready_monitor_symbols": 0,
             "ready_symbols": 0,
             "ready_symbols_list": [],
@@ -4516,7 +4608,11 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "reason": detail,
             "requested_at": "",
             "required_interval": "",
+            "scan_symbols": [],
+            "scan_symbols_total": 0,
             "started_at": "",
+            "subscription_symbols": [],
+            "subscription_symbols_total": 0,
             "symbol_status": [],
             "symbols": [],
             "symbols_total": 0,

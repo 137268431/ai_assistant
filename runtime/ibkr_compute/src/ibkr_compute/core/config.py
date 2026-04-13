@@ -9,9 +9,13 @@ class Config:
     DEFAULTS = {
         "ibkr_compute_enabled": "true",
         "ibkr_bar_publish_enabled": "true",
+        "ibkr_market_ws_enabled": "true",
+        "ibkr_market_ws_symbols": "SPY,QQQ,VIX",
         "ibkr_target_filter_on": "false",
         "ibkr_target_subscription_limit": "60",
         "ibkr_target_refresh_sec": "60",
+        "ibkr_live_warmup_days": "14",
+        "ibkr_restart_overlap_days": "1",
         "ibkr_active_repair_interval_min": "5",
         "ibkr_watchlist_backfill_interval_min": "30",
         "ibkr_watchlist_backfill_batch_size": "12",

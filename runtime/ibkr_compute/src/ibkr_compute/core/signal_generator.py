@@ -24,6 +24,7 @@ class SignalGenerator:
         self.interval = interval
         self.params = {}
         self.market_monitor_symbols = set()
+        self.signal_enabled_symbols = set()
         self.symbol_is_market_monitor = False
         self.set_params(params)
 
@@ -76,7 +77,17 @@ class SignalGenerator:
             for item in str(raw_market_monitor_symbols or DEFAULT_MARKET_MONITOR_SYMBOLS).split(",")
             if str(item or "").strip()
         }
-        self.symbol_is_market_monitor = str(self.symbol or "").strip().upper() in self.market_monitor_symbols
+        raw_signal_enabled_symbols = self.params.get("signal_enabled_symbols") or ""
+        self.signal_enabled_symbols = {
+            str(item or "").strip().upper()
+            for item in str(raw_signal_enabled_symbols).split(",")
+            if str(item or "").strip()
+        }
+        symbol_text = str(self.symbol or "").strip().upper()
+        self.symbol_is_market_monitor = (
+            symbol_text in self.market_monitor_symbols
+            and symbol_text not in self.signal_enabled_symbols
+        )
 
     def update(self, snapshot: dict) -> dict:
         """根据最新指标快照更新 MR 窗口状态, 检测信号。

@@ -78,6 +78,41 @@ async function login(page, targetUrl) {
 async function waitForDashboardReady(page, url) {
   const timeout = Math.max(NAV_TIMEOUT_MS, SETTLE_MS * 4);
 
+  if (url.includes('/index.html')) {
+    try {
+      await page.waitForFunction(() => {
+        const readyStates = {
+          overview: document.getElementById('homeOverview')?.dataset.ready || '',
+          targets: document.getElementById('homeTargets')?.dataset.ready || '',
+          market: document.getElementById('homeMarket')?.dataset.ready || '',
+          activity: document.getElementById('homeActivity')?.dataset.ready || '',
+        };
+        const overviewCards = document.querySelectorAll('#homeOverview .home-stat-card').length;
+        const quickLinks = document.querySelectorAll('#homeQuickLinks .home-quick-link').length;
+        const secondaryPanels = document.querySelectorAll('#homeSecondary > section').length;
+        const layout = document.body?.dataset?.homeLayout || '';
+        const isMobile = window.innerWidth <= 920;
+        const quickTop = document.getElementById('homeQuickLinks')?.getBoundingClientRect().top ?? 0;
+        const targetsTop = document.getElementById('homeTargets')?.getBoundingClientRect().top ?? 0;
+
+        return (
+          readyStates.overview === 'ready' &&
+          ['ready', 'empty'].includes(readyStates.targets) &&
+          ['ready', 'empty'].includes(readyStates.market) &&
+          ['ready', 'empty'].includes(readyStates.activity) &&
+          overviewCards >= 6 &&
+          quickLinks >= 6 &&
+          secondaryPanels >= 2 &&
+          Boolean(layout) &&
+          (!isMobile || quickTop <= targetsTop)
+        );
+      }, { timeout });
+      return;
+    } catch (_) {
+      // Fall back to the generic settle wait below.
+    }
+  }
+
   if (url.includes('/ibkr_runtime.html')) {
     try {
       await page.waitForFunction(() => {
@@ -209,6 +244,29 @@ async function inspectPage(browser, url, mobile) {
   const cronCards = await page.locator('#configArea .cron-card, #configDetail .cron-card').count().catch(() => 0);
   const refreshInfo = await page.locator('#refreshInfo').innerText().catch(() => '');
   const summaryInfo = await page.locator('#summaryInfo').innerText().catch(() => '');
+  const homeLayout = await page.locator('body').getAttribute('data-home-layout').catch(() => '');
+  const homeOverviewReady = await page.locator('#homeOverview').getAttribute('data-ready').catch(() => '');
+  const homeTargetsReady = await page.locator('#homeTargets').getAttribute('data-ready').catch(() => '');
+  const homeMarketReady = await page.locator('#homeMarket').getAttribute('data-ready').catch(() => '');
+  const homeActivityReady = await page.locator('#homeActivity').getAttribute('data-ready').catch(() => '');
+  const homeOverviewCards = await page.locator('#homeOverview .home-stat-card').count().catch(() => 0);
+  const homeQuickLinks = await page.locator('#homeQuickLinks .home-quick-link').count().catch(() => 0);
+  const homeTargetCards = await page.locator('#todayTargetsList .home-target-card').count().catch(() => 0);
+  const homeMarketCards = await page.locator('#homeMarket .home-market-card').count().catch(() => 0);
+  const homeActivityItems = await page.locator('#homeActivity .home-activity-item').count().catch(() => 0);
+  const homePanelOrder = await page.evaluate(() => {
+    const ids = ['homeOverview', 'homeQuickLinks', 'homeTargets', 'homeSecondary'];
+    return ids
+      .map((id) => {
+        const el = document.getElementById(id);
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        return { id, top: rect.top, left: rect.left };
+      })
+      .filter(Boolean)
+      .sort((a, b) => (a.top - b.top) || (a.left - b.left))
+      .map((item) => item.id);
+  }).catch(() => []);
 
   await context.close();
   return {
@@ -231,6 +289,17 @@ async function inspectPage(browser, url, mobile) {
     summary_info: summaryInfo,
     has_gateway_running: /Gateway\s+ACTIVE|Gateway\s+RUNNING|IBKR 服务/.test(bodyText),
     has_challenge_hint: bodyText.includes('Challenge/Response') || bodyText.includes('Response Code'),
+    home_layout: homeLayout,
+    home_overview_ready: homeOverviewReady,
+    home_targets_ready: homeTargetsReady,
+    home_market_ready: homeMarketReady,
+    home_activity_ready: homeActivityReady,
+    home_overview_cards: homeOverviewCards,
+    home_quick_links: homeQuickLinks,
+    home_target_cards: homeTargetCards,
+    home_market_cards: homeMarketCards,
+    home_activity_items: homeActivityItems,
+    home_panel_order: homePanelOrder,
     errors,
   };
 }

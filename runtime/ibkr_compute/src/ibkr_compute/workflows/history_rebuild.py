@@ -37,7 +37,7 @@ from ibkr_compute.market.conid_resolver import ConidResolver
 
 JOB_STATE_KEY = "ibkr_history_rebuild_job"
 JOB_STATE_DATE = "global"
-DEFAULT_LOOKBACK_DAYS = 30
+DEFAULT_LOOKBACK_DAYS = 14
 MAX_LOOKBACK_DAYS = 365
 DEFAULT_COMPUTE_BATCH_SIZE = 4
 MIN_COMPUTE_BATCH_SIZE = 1
@@ -46,6 +46,7 @@ FETCH_INTERVAL = "5m"
 FETCH_PERIOD = "4d"
 FETCH_BAR_SIZE = "5min"
 WATCHLIST_SYMBOL_ROLES = {"", "trade", "market_monitor"}
+DEFAULT_MARKET_WS_SYMBOLS = ("SPY", "QQQ", "VIX")
 PURGE_TABLES = (
     "ibkr_bars",
     "ibkr_indicators",
@@ -58,6 +59,7 @@ PURGE_STATE_KEYS = (
     "compute_cursors",
     "ibkr_bar_integrity_cursor",
     "ibkr_signals",
+    "ibkr_daily_scan_state",
     JOB_STATE_KEY,
 )
 
@@ -79,6 +81,12 @@ def _normalize_symbols(values: Any) -> list[str]:
         seen.add(symbol)
         normalized.append(symbol)
     return normalized
+
+
+def _normalize_symbol_csv(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return _normalize_symbols(value.replace("\n", ",").split(","))
+    return _normalize_symbols(value)
 
 
 class HistoryRebuildManager:
@@ -142,11 +150,21 @@ class HistoryRebuildManager:
                 "stage": "queued",
                 "progress": 0,
                 "job_id": job_id,
+                "mode": request["mode"],
                 "environment": request["environment"],
                 "lookback_days": request["lookback_days"],
                 "compute_batch_size": request["compute_batch_size"],
                 "scan_after_rebuild": request["scan_after_rebuild"],
                 "requested_symbols": list(request["symbols"]),
+                "pipeline_stages": [
+                    "resolve_universe",
+                    "purge",
+                    "backfill_bars",
+                    "rollup_intervals",
+                    "materialize_indicators",
+                    "run_daily_scan",
+                    "verify",
+                ],
                 "symbol_total": 0,
                 "processed_symbols": 0,
                 "fetched_5m_bars": 0,
@@ -212,8 +230,10 @@ class HistoryRebuildManager:
             "no",
             "off",
         }
+        mode = str(payload.get("mode") or "full_reset_rebuild").strip().lower() or "full_reset_rebuild"
         symbols = _normalize_symbols(payload.get("symbols") or payload.get("symbol"))
         return {
+            "mode": mode,
             "environment": environment,
             "lookback_days": lookback_days,
             "compute_batch_size": compute_batch_size,
@@ -223,7 +243,7 @@ class HistoryRebuildManager:
 
     def _run_job(self, request: dict) -> None:
         with self._lock:
-            self._set_status_locked("running", "precheck", "准备执行全量历史重建", 2)
+            self._set_status_locked("running", "resolve_universe", "准备执行全量历史重建", 2)
 
         conn = None
         try:
@@ -342,6 +362,24 @@ class HistoryRebuildManager:
                 "exchange": str(row.get("exchange", "") or "").strip().upper(),
                 "symbol_role": role or "trade",
             }
+        configured_market_ws_symbols = []
+        if self.config and self.config.get_bool_for_environment("ibkr_market_ws_enabled", environment, True):
+            configured_market_ws_symbols = _normalize_symbol_csv(
+                self.config.get_for_environment(
+                    "ibkr_market_ws_symbols",
+                    environment,
+                    ",".join(DEFAULT_MARKET_WS_SYMBOLS),
+                )
+            )
+        for symbol in configured_market_ws_symbols:
+            merged.setdefault(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "exchange": "",
+                    "symbol_role": "market_monitor",
+                },
+            )
         return list(merged.values())
 
     def _count_chain_rows(self, conn, environment: str) -> dict:
@@ -398,7 +436,7 @@ class HistoryRebuildManager:
                 progress = 12 + int((index - 1) / total_symbols * 46)
                 self._set_status_locked(
                     "running",
-                    "refill_5m",
+                    "backfill_bars",
                     f"回填 5m 权威 bars: {symbol} ({index}/{total_symbols})",
                     progress,
                 )
@@ -534,7 +572,7 @@ class HistoryRebuildManager:
                 progress = 60 + int((index - 1) / total_symbols * 14)
                 self._set_status_locked(
                     "running",
-                    "rollup",
+                    "rollup_intervals",
                     f"重建 15m/30m/1h/4h/1d: {symbol} ({index}/{total_symbols})",
                     progress,
                 )
@@ -617,7 +655,7 @@ class HistoryRebuildManager:
                 progress = 76 + int((index - 1) / max(1, total_batches) * 16)
                 self._set_status_locked(
                     "running",
-                    "compute",
+                    "materialize_indicators",
                     f"重算 indicators/signals: {', '.join(batch[:3])}{' ...' if len(batch) > 3 else ''}",
                     progress,
                 )
@@ -646,7 +684,7 @@ class HistoryRebuildManager:
 
     def _scan_targets(self, environment: str) -> None:
         with self._lock:
-            self._set_status_locked("running", "scan", "回放盘前筛选，重建当日 targets", 94)
+            self._set_status_locked("running", "run_daily_scan", "回放盘前筛选，重建当日 targets", 94)
         result = self.scan_runner({"environment": environment}) or {}
         with self._lock:
             self._status["scan_result"] = result

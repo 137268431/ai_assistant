@@ -320,7 +320,7 @@
                     <div class="hero-kicker">History Rebuild</div>
                     <div class="hero-title">全量清库后重新导入权威 5m 历史链</div>
                     <div class="hero-copy">
-                        这个页面会顺序执行 <span class="mono">purge → 5m refill → higher TF rollup → recompute → scan → verify</span>。
+                        这个页面会顺序执行 <span class="mono">purge → backfill_bars → rollup_intervals → materialize_indicators → run_daily_scan → verify</span>。
                         适合在确认旧 <span class="mono">bar / indicator / signal / targets</span> 不可信后，重建一份干净的 live 历史。
                     </div>
                 </div>
@@ -339,17 +339,18 @@
                 <div>
                     <div class="panel-kicker">Control</div>
                     <div class="panel-title">重建参数</div>
-                    <div class="panel-copy">默认清空当前环境的 live 历史链，然后回拉最近 N 天的 5m bars；最后重建 targets，并把状态持续写到 <span class="mono">ibkr_state.ibkr_history_rebuild_job</span>。</div>
+                    <div class="panel-copy">默认清空当前环境的 live 历史链，然后回拉最近 N 天的 5m bars；最后重建当日 scan / targets，并把状态持续写到 <span class="mono">ibkr_state.ibkr_history_rebuild_job</span>。</div>
                 </div>
                 <div class="panel-tools">
                     <div id="statusPill" class="status-pill status-idle"><span class="status-dot"></span><span>IDLE</span></div>
-                    <button id="startButton" class="btn primary" type="button">开始重建</button>
+                    <button id="todayButton" class="btn" type="button">仅重建今日</button>
+                    <button id="startButton" class="btn primary" type="button">全量清除并重建</button>
                 </div>
             </div>
             <div class="form-grid" style="margin-top:16px;">
                 <div class="field">
                     <label for="lookbackDays">Lookback Days</label>
-                    <input id="lookbackDays" type="number" min="1" max="365" step="1" value="30">
+                    <input id="lookbackDays" type="number" min="1" max="365" step="1" value="14">
                 </div>
                 <div class="field">
                     <label for="computeBatchSize">Compute Batch</label>
@@ -545,7 +546,7 @@
             document.getElementById('metricSymbols').textContent = `${Number(status?.processed_symbols || 0)} / ${Number(status?.symbol_total || 0)}`;
             document.getElementById('metricSymbolsCopy').textContent = status?.requested_symbols?.length
                 ? `manual universe ${status.requested_symbols.length}`
-                : 'watchlist trade + monitor universe';
+                : 'watchlist pool + configured market ws universe';
             document.getElementById('metricBars').textContent = String(Number(status?.fetched_5m_bars || 0));
             document.getElementById('metricBarsCopy').textContent = `canonical 5m ${Number(verification.canonical_5m || 0)} / ${Number(verification.total_5m || 0)}`;
 
@@ -613,6 +614,7 @@
             renderSummary(activeStatus);
             renderLogs(activeStatus);
             document.getElementById('startButton').disabled = Boolean(activeStatus?.running);
+            document.getElementById('todayButton').disabled = Boolean(activeStatus?.running);
         }
 
         async function loadStatus() {
@@ -621,13 +623,15 @@
             return payload;
         }
 
-        async function startRebuild() {
+        async function startRebuild(mode = 'full_reset_rebuild', overrides = {}) {
             setError('');
             const payload = {
                 environment: currentEnvironment,
-                lookback_days: Number(document.getElementById('lookbackDays').value || 30),
+                mode,
+                lookback_days: Number(document.getElementById('lookbackDays').value || 14),
                 compute_batch_size: Number(document.getElementById('computeBatchSize').value || 4),
-                scan_after_rebuild: document.getElementById('scanAfterRebuild').checked
+                scan_after_rebuild: document.getElementById('scanAfterRebuild').checked,
+                ...overrides
             };
             try {
                 const result = await requestJson('/api/custom/ibkr/history/rebuild/start', {
@@ -664,7 +668,8 @@
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_history_rebuild.html');
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_history_rebuild.html');
-            document.getElementById('startButton').addEventListener('click', startRebuild);
+            document.getElementById('startButton').addEventListener('click', () => startRebuild('full_reset_rebuild'));
+            document.getElementById('todayButton').addEventListener('click', () => startRebuild('rebuild_today', { lookback_days: 1 }));
             try {
                 await loadStatus();
             } catch (error) {

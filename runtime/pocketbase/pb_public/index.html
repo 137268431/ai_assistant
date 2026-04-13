@@ -4,899 +4,1024 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Trading Flight - 首页</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <style>
-        .hero {
-            padding: 40px 20px 20px;
-            text-align: center;
-            background: linear-gradient(135deg, rgba(99,179,237,0.1) 0%, rgba(72,187,120,0.1) 100%);
-            border-bottom: 1px solid var(--border);
-            position: relative;
+        body {
+            background:
+                radial-gradient(circle at top left, rgba(99, 179, 237, 0.14), transparent 28%),
+                radial-gradient(circle at top right, rgba(72, 187, 120, 0.12), transparent 24%),
+                var(--bg, #0b1017);
         }
 
-        .hero-actions {
-            position: absolute;
-            top: 8px;
-            right: 14px;
-            display: flex;
-            gap: 8px;
-            align-items: center;
+        .home-shell {
+            min-height: 100vh;
+            padding: 18px 18px 96px;
         }
 
-        .hero-btn {
-            padding: 4px 8px;
-            border-radius: 6px;
+        .home-hero {
+            margin-bottom: 14px;
+            padding: 20px 22px;
             border: 1px solid var(--border);
-            background: var(--surface2);
-            color: var(--muted);
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-            text-decoration: none;
+            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(99, 179, 237, 0.12), rgba(99, 179, 237, 0.04) 46%, rgba(72, 187, 120, 0.1));
+            box-shadow: 0 24px 50px rgba(0, 0, 0, 0.18);
+        }
+
+        .home-hero-grid {
             display: flex;
-            align-items: center;
-            gap: 2px;
-            transition: all 0.2s;
-        }
-
-        .hero-btn:hover {
-            border-color: var(--accent);
-            color: var(--accent);
-        }
-
-        .hero-btn-logout:hover {
-            border-color: var(--short);
-            color: var(--short);
-        }
-
-        .hero-title {
-            font-size: clamp(28px, 8vw, 36px);
-            font-weight: 700;
-            margin-bottom: 12px;
-            background: linear-gradient(135deg, var(--accent), var(--long));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .hero-subtitle {
-            font-size: clamp(14px, 3.5vw, 16px);
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-            letter-spacing: 1px;
-        }
-
-        /* Market Index Cards */
-        .market-index-section {
-            padding: 0 16px 12px;
-        }
-
-        .market-index-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-        }
-
-        .market-index-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 12px 8px;
-            text-align: center;
-            transition: all 0.2s;
-        }
-
-        .market-index-card:active {
-            transform: scale(0.95);
-        }
-
-        /* VIX 恐慌指数样式 */
-        .market-index-card.vix-panic {
-            border-color: #ef4444;
-            background: linear-gradient(135deg, rgba(239,68,68,0.1), rgba(239,68,68,0.05));
-        }
-        .market-index-card.vix-tension {
-            border-color: #eab308;
-            background: linear-gradient(135deg, rgba(234,179,8,0.1), rgba(234,179,8,0.05));
-        }
-        .market-index-card.vix-calm {
-            border-color: #22c55e;
-            background: linear-gradient(135deg, rgba(34,197,94,0.1), rgba(34,197,94,0.05));
-        }
-
-        .market-index-symbol {
-            font-size: 12px;
-            font-weight: 700;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--text);
-            margin-bottom: 4px;
-        }
-
-        .market-index-price {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text);
-            margin-bottom: 4px;
-        }
-
-        .market-index-change {
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: 700;
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            line-height: 1.3;
-        }
-
-        .market-index-change.positive {
-            color: var(--long);
-        }
-
-        .market-index-change.negative {
-            color: var(--short);
-        }
-
-        .market-index-change.neutral {
-            color: var(--muted);
-        }
-
-        .market-index-loading {
-            color: var(--muted);
-            font-size: 11px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .market-index-meta {
-            margin-top: 6px;
-            font-size: 9px;
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-            line-height: 1.4;
-        }
-
-        .quick-stats {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 12px;
-            padding: 12px 16px;
-        }
-
-        .stat-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 14px 12px;
-            text-align: center;
-            transition: all 0.2s;
-            cursor: pointer;
-            text-decoration: none;
-            color: inherit;
-            display: block;
-        }
-
-        .stat-card:active {
-            transform: scale(0.95);
-            background: var(--surface2);
-        }
-
-        .stat-icon {
-            font-size: 22px;
-            margin-bottom: 4px;
-        }
-
-        .stat-number {
-            font-size: clamp(18px, 4vw, 24px);
-            font-weight: 700;
-            color: var(--text);
-            margin-bottom: 2px;
-        }
-
-        .stat-number-row {
-            display: inline-flex;
-            gap: 6px;
-            margin-bottom: 2px;
-        }
-
-        .stat-number-row .stat-number {
-            margin-bottom: 0;
-            font-size: 18px;
-        }
-
-        .stat-number-row .long {
-            color: var(--long);
-        }
-
-        .stat-number-row .short {
-            color: var(--short);
-        }
-
-        .stat-label {
-            font-size: 11px;
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-            letter-spacing: 0.5px;
-        }
-
-        .quick-actions {
-            padding: 20px 16px;
-        }
-
-        .section-title {
-            font-size: 14px;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--muted);
-            letter-spacing: 2px;
-            margin-bottom: 16px;
-            text-transform: uppercase;
-        }
-
-        .action-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-        }
-
-        .action-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            text-decoration: none;
-            color: var(--text);
-            transition: all 0.2s;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .action-card:active {
-            transform: scale(0.95);
-            background: var(--surface2);
-        }
-
-        .action-icon {
-            font-size: 36px;
-        }
-
-        .action-label {
-            font-size: 14px;
-            font-weight: 700;
-            text-align: center;
-        }
-
-        .action-desc {
-            font-size: 11px;
-            color: var(--muted);
-            text-align: center;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .spotlight-shell {
-            padding: 18px 16px 6px;
-        }
-
-        .spotlight-grid {
-            display: grid;
-            grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-            gap: 12px;
-        }
-
-        .spotlight-panel {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 18px;
-        }
-
-        .spotlight-head {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
             align-items: flex-start;
-            margin-bottom: 10px;
+            justify-content: space-between;
+            gap: 20px;
         }
 
-        .spotlight-head > :first-child {
+        .home-brand {
             min-width: 0;
         }
 
-        .spotlight-title {
-            font-size: 18px;
+        .home-brand-kicker {
+            font-size: 11px;
+            letter-spacing: 2.4px;
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .home-brand-title {
+            margin: 0;
+            font-size: clamp(30px, 4vw, 44px);
+            line-height: 1;
             font-weight: 700;
             color: var(--text);
         }
 
-        .spotlight-copy,
-        .spotlight-meta {
+        .home-brand-copy {
+            margin: 12px 0 0;
+            max-width: 640px;
             color: var(--muted);
-            font-size: 12px;
+            font-size: 13px;
             line-height: 1.6;
         }
 
-        .spotlight-meta {
-            margin-bottom: 12px;
+        .home-controls {
+            display: grid;
+            justify-items: end;
+            gap: 10px;
+        }
+
+        .home-action-row {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        .home-ghost-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(15, 23, 42, 0.36);
+            color: var(--text);
+            text-decoration: none;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: border-color 0.2s, transform 0.2s, background 0.2s;
+        }
+
+        .home-ghost-btn:hover,
+        .home-ghost-btn:active {
+            border-color: var(--accent);
+            transform: translateY(-1px);
+        }
+
+        .home-ghost-btn-danger:hover,
+        .home-ghost-btn-danger:active {
+            border-color: var(--short);
+        }
+
+        .home-main {
+            display: grid;
+            gap: 14px;
+        }
+
+        .home-panel {
+            border: 1px solid var(--border);
+            border-radius: 22px;
+            padding: 18px;
+            background: rgba(13, 18, 27, 0.9);
+            box-shadow: 0 18px 36px rgba(0, 0, 0, 0.16);
+        }
+
+        .home-panel-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+
+        .home-panel-copy {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.55;
+        }
+
+        .home-panel-kicker {
+            font-size: 10px;
+            letter-spacing: 1.8px;
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+        }
+
+        .home-panel-title {
+            margin-top: 6px;
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.15;
+        }
+
+        .home-panel-meta {
+            min-width: 150px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+            text-align: right;
             font-family: 'JetBrains Mono', monospace;
         }
 
-        .today-target-list {
+        .home-inline-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(99, 179, 237, 0.08);
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
+        .home-overview-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .home-stat-card {
+            position: relative;
             display: grid;
             gap: 10px;
+            min-height: 132px;
+            padding: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(20, 28, 40, 0.94), rgba(16, 22, 32, 0.92));
+            color: var(--text);
+            text-decoration: none;
+            overflow: hidden;
+            transition: transform 0.2s, border-color 0.2s, background 0.2s;
         }
 
-        .today-target-card {
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 14px;
+        .home-stat-card::before {
+            content: "";
+            position: absolute;
+            inset: 0 0 auto;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), rgba(99, 179, 237, 0.15));
+            opacity: 0.85;
         }
 
-        .today-target-top,
-        .today-target-foot {
+        .home-stat-card[data-tone="long"]::before {
+            background: linear-gradient(90deg, var(--long), rgba(72, 187, 120, 0.18));
+        }
+
+        .home-stat-card[data-tone="short"]::before {
+            background: linear-gradient(90deg, var(--short), rgba(252, 129, 129, 0.18));
+        }
+
+        .home-stat-card[data-tone="candidate"]::before {
+            background: linear-gradient(90deg, #f6ad55, rgba(246, 173, 85, 0.16));
+        }
+
+        .home-stat-card:hover,
+        .home-stat-card:active {
+            transform: translateY(-1px);
+            border-color: rgba(99, 179, 237, 0.28);
+        }
+
+        .home-stat-kicker {
+            font-size: 10px;
+            letter-spacing: 1.4px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+        }
+
+        .home-stat-value {
             display: flex;
-            justify-content: space-between;
+            align-items: flex-end;
             gap: 10px;
-            align-items: flex-start;
-        }
-
-        .today-target-foot {
-            align-items: center;
             flex-wrap: wrap;
-            margin-top: 10px;
+            font-size: clamp(26px, 3vw, 34px);
+            font-weight: 700;
+            line-height: 1;
+            color: var(--text);
         }
 
-        .today-target-symbol {
-            font-size: 18px;
+        .home-stat-value.split {
+            align-items: center;
+        }
+
+        .home-stat-dual {
+            display: inline-flex;
+            gap: 10px;
+            align-items: baseline;
+        }
+
+        .home-stat-value .long {
+            color: var(--long);
+        }
+
+        .home-stat-value .short {
+            color: var(--short);
+        }
+
+        .home-stat-value .candidate {
+            color: #f6ad55;
+        }
+
+        .home-stat-label {
+            font-size: 14px;
             font-weight: 700;
             color: var(--text);
         }
 
-        .today-target-badges {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
+        .home-stat-foot {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.45;
+            font-family: 'JetBrains Mono', monospace;
         }
 
-        .today-target-time {
-            font-size: 11px;
+        .home-primary-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+            gap: 14px;
+            align-items: start;
+        }
+
+        .home-quick-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .home-quick-link {
+            display: grid;
+            gap: 10px;
+            min-height: 112px;
+            padding: 16px;
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            background: linear-gradient(180deg, rgba(18, 26, 38, 0.94), rgba(14, 20, 31, 0.9));
+            color: var(--text);
+            text-decoration: none;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .home-quick-link:hover,
+        .home-quick-link:active {
+            transform: translateY(-1px);
+            border-color: rgba(99, 179, 237, 0.28);
+        }
+
+        .home-quick-link-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .home-quick-icon {
+            font-size: 20px;
+        }
+
+        .home-quick-arrow {
             color: var(--muted);
             font-family: 'JetBrains Mono', monospace;
-            margin-top: 4px;
+            font-size: 12px;
         }
 
-        .today-target-reason {
-            margin-top: 10px;
-            font-size: 13px;
-            line-height: 1.55;
+        .home-quick-title {
+            font-size: 15px;
+            font-weight: 700;
             color: var(--text);
         }
 
-        .today-target-reasons {
-            margin-top: 10px;
+        .home-quick-copy {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .home-tool-strip {
+            margin-top: 12px;
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
         }
 
-        .reason-chip,
-        .status-badge {
+        .home-tool-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 11px;
+            border-radius: 999px;
+            border: 1px dashed rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .home-targets-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .home-target-card {
+            display: grid;
+            gap: 10px;
+            padding: 14px;
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            background: linear-gradient(180deg, rgba(18, 26, 38, 0.96), rgba(14, 20, 31, 0.92));
+        }
+
+        .home-target-top,
+        .home-target-foot {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .home-target-foot {
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .home-target-symbol {
+            font-size: 20px;
+            font-weight: 700;
+            line-height: 1;
+            color: var(--text);
+        }
+
+        .home-target-time {
+            margin-top: 5px;
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .home-target-badges {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 6px;
+        }
+
+        .home-status-badge,
+        .home-reason-chip {
             display: inline-flex;
             align-items: center;
             gap: 6px;
             padding: 4px 10px;
             border-radius: 999px;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 700;
             font-family: 'JetBrains Mono', monospace;
             white-space: nowrap;
         }
 
-        .reason-chip {
-            background: rgba(99,179,237,0.12);
-            color: var(--accent);
-        }
-
-        .status-badge {
-            background: rgba(148,163,184,0.12);
+        .home-status-badge {
+            background: rgba(148, 163, 184, 0.14);
             color: var(--muted);
         }
 
-        .status-badge.active,
-        .status-badge.long {
-            background: rgba(72,187,120,0.16);
+        .home-status-badge.active,
+        .home-status-badge.long {
+            background: rgba(72, 187, 120, 0.14);
             color: var(--long);
         }
 
-        .status-badge.candidate {
-            background: rgba(246,173,85,0.16);
+        .home-status-badge.candidate {
+            background: rgba(246, 173, 85, 0.14);
             color: #f6ad55;
         }
 
-        .status-badge.short {
-            background: rgba(252,129,129,0.16);
+        .home-status-badge.short {
+            background: rgba(252, 129, 129, 0.16);
             color: var(--short);
         }
 
-        .status-badge.neutral {
-            background: rgba(148,163,184,0.12);
+        .home-status-badge.neutral {
+            background: rgba(148, 163, 184, 0.14);
             color: var(--muted);
         }
 
-        .today-target-metrics {
+        .home-target-copy {
+            color: var(--text);
+            font-size: 13px;
+            line-height: 1.55;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
+        }
+
+        .home-target-reasons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .home-reason-chip {
+            background: rgba(99, 179, 237, 0.12);
+            color: var(--accent);
+        }
+
+        .home-target-metrics {
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
-            font-size: 11px;
             color: var(--muted);
+            font-size: 10px;
             font-family: 'JetBrains Mono', monospace;
         }
 
-        .today-target-metrics strong {
+        .home-target-metrics strong {
             color: var(--text);
-            font-size: 12px;
+            font-size: 11px;
         }
 
-        .today-target-empty {
-            padding: 20px 0 4px;
-            color: var(--muted);
-            line-height: 1.6;
-            font-size: 13px;
+        .home-target-action {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(99, 179, 237, 0.22);
+            background: rgba(99, 179, 237, 0.08);
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
         }
 
-        .today-target-more-link {
+        .home-targets-more {
             display: inline-flex;
             align-items: center;
             justify-content: center;
             gap: 6px;
-            padding: 10px 12px;
-            border-radius: 12px;
-            border: 1px dashed var(--border);
-            background: rgba(99,179,237,0.06);
+            width: 100%;
+            min-height: 100%;
+            padding: 14px;
+            border-radius: 18px;
+            border: 1px dashed rgba(99, 179, 237, 0.22);
+            background: rgba(99, 179, 237, 0.05);
             color: var(--accent);
             text-decoration: none;
             font-size: 11px;
-            font-family: 'JetBrains Mono', monospace;
             font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
         }
 
-        .priority-entry-grid {
+        .home-secondary-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-            margin-top: 6px;
+            grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+            gap: 14px;
         }
 
-        .priority-entry {
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 16px;
-            text-decoration: none;
-            color: var(--text);
+        .home-market-grid {
             display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 8px;
-            transition: all 0.2s;
         }
 
-        .priority-entry:active {
-            transform: scale(0.98);
+        .home-market-card {
+            display: grid;
+            gap: 6px;
+            padding: 12px 10px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            background: linear-gradient(180deg, rgba(18, 26, 38, 0.96), rgba(13, 19, 28, 0.9));
+            color: inherit;
+            text-decoration: none;
+            text-align: center;
         }
 
-        .priority-entry-kicker {
-            font-size: 10px;
-            letter-spacing: 1px;
-            color: var(--accent);
-            font-family: 'JetBrains Mono', monospace;
-            text-transform: uppercase;
+        .home-market-card.vix-panic {
+            border-color: rgba(239, 68, 68, 0.36);
+            background: linear-gradient(180deg, rgba(239, 68, 68, 0.18), rgba(22, 24, 31, 0.94));
         }
 
-        .priority-entry-title {
-            font-size: 16px;
-            font-weight: 700;
+        .home-market-card.vix-tension {
+            border-color: rgba(234, 179, 8, 0.36);
+            background: linear-gradient(180deg, rgba(234, 179, 8, 0.16), rgba(22, 24, 31, 0.94));
         }
 
-        .priority-entry-copy {
+        .home-market-card.vix-calm {
+            border-color: rgba(72, 187, 120, 0.26);
+        }
+
+        .home-market-symbol {
+            color: var(--text);
             font-size: 12px;
-            color: var(--muted);
-            line-height: 1.5;
-        }
-
-        .recent-activity {
-            padding: 20px 16px;
-        }
-
-        .activity-item {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .activity-item:active {
-            background: var(--surface2);
-            transform: scale(0.98);
-        }
-
-        .activity-left {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .activity-icon {
-            font-size: 24px;
-        }
-
-        .activity-info {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-
-        .activity-title {
-            font-size: 14px;
             font-weight: 700;
-        }
-
-        .activity-time {
-            font-size: 11px;
-            color: var(--muted);
             font-family: 'JetBrains Mono', monospace;
         }
 
-        .activity-badge {
-            padding: 4px 10px;
-            border-radius: 12px;
+        .home-market-price {
+            color: var(--text);
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .home-market-change {
+            color: var(--muted);
             font-size: 10px;
+            line-height: 1.35;
             font-family: 'JetBrains Mono', monospace;
-            font-weight: 700;
         }
 
-        .badge-long {
-            background: rgba(72,187,120,0.2);
+        .home-market-change .positive {
             color: var(--long);
         }
 
-        .badge-short {
-            background: rgba(252,129,129,0.2);
+        .home-market-change .negative {
             color: var(--short);
         }
 
-        @media (max-width: 900px) {
-            .spotlight-grid {
+        .home-market-meta {
+            color: var(--muted);
+            font-size: 9px;
+            line-height: 1.35;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .home-activity-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .home-activity-item {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            background: linear-gradient(180deg, rgba(18, 26, 38, 0.96), rgba(14, 20, 31, 0.9));
+            color: var(--text);
+            text-decoration: none;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .home-activity-item:hover,
+        .home-activity-item:active {
+            transform: translateY(-1px);
+            border-color: rgba(99, 179, 237, 0.28);
+        }
+
+        .home-activity-icon {
+            font-size: 20px;
+        }
+
+        .home-activity-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .home-activity-time {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .home-activity-badge {
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .home-activity-badge.long {
+            background: rgba(72, 187, 120, 0.14);
+            color: var(--long);
+        }
+
+        .home-activity-badge.short {
+            background: rgba(252, 129, 129, 0.16);
+            color: var(--short);
+        }
+
+        .home-activity-badge.neutral {
+            background: rgba(148, 163, 184, 0.14);
+            color: var(--muted);
+        }
+
+        .home-empty {
+            padding: 18px 0 2px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        @media (max-width: 1180px) {
+            .home-overview-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .home-primary-grid,
+            .home-secondary-grid {
                 grid-template-columns: 1fr;
+            }
+
+            .home-market-grid {
+                grid-template-columns: repeat(4, minmax(0, 1fr));
             }
         }
 
-        @media (max-width: 640px) {
-            .spotlight-shell {
-                padding: 14px 12px 4px;
+        @media (max-width: 920px) {
+            .home-shell {
+                padding: 14px 14px 102px;
             }
 
-            .spotlight-panel {
+            .home-hero {
+                padding: 18px 16px;
+                border-radius: 20px;
+            }
+
+            .home-hero-grid {
+                flex-direction: column;
+            }
+
+            .home-controls {
+                width: 100%;
+                justify-items: start;
+            }
+
+            .home-action-row {
+                justify-content: flex-start;
+            }
+
+            .home-links-panel {
+                order: -1;
+            }
+
+            .home-market-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 720px) {
+            .home-panel {
                 padding: 14px;
-                border-radius: 14px;
+                border-radius: 18px;
             }
 
-            .spotlight-head {
+            .home-panel-head {
                 flex-direction: column;
                 align-items: stretch;
                 gap: 10px;
             }
 
-            .spotlight-head > .hero-btn {
-                align-self: flex-start;
+            .home-panel-meta {
+                text-align: left;
+                min-width: 0;
             }
 
-            .spotlight-title {
-                font-size: 16px;
+            .home-overview-grid,
+            .home-quick-grid,
+            .home-market-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
             }
 
-            .spotlight-copy,
-            .spotlight-meta {
-                font-size: 11px;
-                line-height: 1.45;
-            }
-
-            .today-target-list {
-                gap: 8px;
-            }
-
-            .today-target-card {
-                padding: 12px;
-                border-radius: 12px;
-            }
-
-            .today-target-top {
-                flex-wrap: wrap;
-                gap: 8px;
-            }
-
-            .today-target-symbol {
-                font-size: 16px;
-            }
-
-            .today-target-time {
-                margin-top: 2px;
-                font-size: 10px;
-            }
-
-            .today-target-reason {
-                margin-top: 8px;
-                font-size: 12px;
-                line-height: 1.45;
-                display: -webkit-box;
-                -webkit-box-orient: vertical;
-                -webkit-line-clamp: 2;
-                overflow: hidden;
-            }
-
-            .today-target-reasons {
-                margin-top: 8px;
-                gap: 6px;
-            }
-
-            .today-target-reasons .reason-chip:nth-child(n + 3) {
-                display: none;
-            }
-
-            .reason-chip,
-            .status-badge {
-                gap: 4px;
-                padding: 3px 8px;
-                font-size: 10px;
-            }
-
-            .today-target-foot {
-                margin-top: 8px;
-                gap: 8px;
-            }
-
-            .today-target-metrics {
-                gap: 8px;
-                font-size: 10px;
-            }
-
-            .today-target-metrics strong {
-                font-size: 11px;
-            }
-
-            .today-target-foot .hero-btn {
-                padding: 3px 8px;
-                font-size: 9px;
-            }
-
-            .today-target-more-link {
-                width: 100%;
-                padding: 9px 12px;
-            }
-
-            .priority-entry-grid {
+            .home-targets-grid {
                 grid-template-columns: 1fr;
-                gap: 10px;
             }
 
-            .priority-entry {
+            .home-stat-card,
+            .home-quick-link {
+                min-height: 0;
+            }
+
+            .home-stat-card {
                 padding: 14px;
-                gap: 6px;
             }
 
-            .priority-entry-title {
-                font-size: 15px;
+            .home-stat-value {
+                font-size: 26px;
             }
 
-            .priority-entry-copy {
-                font-size: 11px;
-                line-height: 1.4;
+            .home-target-card {
+                padding: 12px;
+                border-radius: 16px;
+            }
+
+            .home-target-symbol {
+                font-size: 18px;
+            }
+
+            .home-target-badges {
+                justify-content: flex-start;
             }
         }
 
-        @media (max-width: 420px) {
-            .today-target-badges {
-                justify-content: flex-start;
+        @media (max-width: 440px) {
+            .home-shell {
+                padding: 12px 12px 104px;
             }
 
-            .today-target-foot {
+            .home-brand-title {
+                font-size: 30px;
+            }
+
+            .home-brand-copy {
+                font-size: 12px;
+            }
+
+            .home-overview-grid,
+            .home-quick-grid {
+                gap: 8px;
+            }
+
+            .home-stat-card,
+            .home-quick-link,
+            .home-market-card {
+                border-radius: 16px;
+            }
+
+            .home-target-foot {
                 flex-direction: column;
                 align-items: flex-start;
+            }
+
+            .home-market-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .home-activity-item {
+                grid-template-columns: auto minmax(0, 1fr);
+            }
+
+            .home-activity-badge {
+                grid-column: 2;
+                justify-self: start;
             }
         }
     </style>
 </head>
-<body>
-    <div class="hero">
-        <div class="hero-actions">
-            <a id="configLink" href="/ibkr_config.html" class="hero-btn">⚙️ 设置</a>
-            <button class="hero-btn hero-btn-logout" onclick="handleLogout(event)">🚪 退出</button>
-        </div>
-        <div class="hero-title">Trading Flight</div>
-        <div class="hero-subtitle">智能交易管理系统</div>
-        <div id="environmentHeader" style="margin-top:14px;"></div>
-    </div>
-
-    <div class="spotlight-shell">
-        <div class="spotlight-grid">
-            <section class="spotlight-panel">
-                <div class="spotlight-head">
-                    <div>
-                        <div class="section-title" style="margin-bottom:8px;">今日交易标的</div>
-                        <div class="spotlight-title">盘前关注池</div>
+<body data-home-layout="desktop">
+    <div class="home-shell">
+        <header class="home-hero">
+            <div class="home-hero-grid">
+                <div class="home-brand">
+                    <div class="home-brand-kicker">Trading Flight</div>
+                    <h1 class="home-brand-title">交易首页</h1>
+                    <div class="home-brand-copy">交易优先视图，首屏压缩展示目标池、信号、订单、持仓和关键跳转；PC 展示更多并排信息，手机端优先保留最核心入口。</div>
+                </div>
+                <div class="home-controls">
+                    <div id="environmentHeader"></div>
+                    <div class="home-action-row">
+                        <a id="configLink" href="/ibkr_config.html" class="home-ghost-btn">⚙️ 设置</a>
+                        <button class="home-ghost-btn home-ghost-btn-danger" onclick="handleLogout(event)">🚪 退出</button>
                     </div>
-                    <a id="todayTargetsLink" href="/ibkr_screener.html?tab=targets" class="hero-btn">查看目标池</a>
                 </div>
-                <div class="spotlight-copy">基于今日 <code>ibkr_targets</code> 的 <code>candidate + active</code> 标的，直接展示筛选理由和可操作依据。</div>
-                <div class="spotlight-meta" id="todayTargetsMeta">加载中...</div>
-                <div id="todayTargetsList" class="today-target-list">
-                    <div class="today-target-empty">加载中...</div>
+            </div>
+        </header>
+
+        <main class="home-main">
+            <section id="homeOverview" class="home-panel" data-ready="loading">
+                <div class="home-panel-head">
+                    <div>
+                        <div class="home-panel-kicker">Session</div>
+                        <div class="home-panel-title">今日交易总览</div>
+                        <div class="home-panel-copy">不再铺满多层卡片，先看最关键的交易状态，再决定跳哪一页。</div>
+                    </div>
+                    <div class="home-panel-meta" id="overviewMeta">加载中...</div>
+                </div>
+                <div class="home-overview-grid">
+                    <a id="signalsLink" href="/ibkr_signals.html" class="home-stat-card" data-tone="long">
+                        <div class="home-stat-kicker">Signals</div>
+                        <div class="home-stat-value split">
+                            <div class="home-stat-dual">
+                                <span class="long" id="todaySignalsLong">-</span>
+                                <span class="short" id="todaySignalsShort">-</span>
+                            </div>
+                        </div>
+                        <div class="home-stat-label">今日信号</div>
+                        <div class="home-stat-foot">LONG / SHORT</div>
+                    </a>
+
+                    <a id="reverseSignalsLink" href="/ibkr_reverse_signals.html" class="home-stat-card" data-tone="neutral">
+                        <div class="home-stat-kicker">Reverse</div>
+                        <div class="home-stat-value">
+                            <span id="reverseSignalsPending">-</span>
+                        </div>
+                        <div class="home-stat-label">待处理反转</div>
+                        <div class="home-stat-foot">平仓 / 取消 / 调整</div>
+                    </a>
+
+                    <a id="ordersLink" href="/orders.html" class="home-stat-card" data-tone="long">
+                        <div class="home-stat-kicker">Orders</div>
+                        <div class="home-stat-value split">
+                            <div class="home-stat-dual">
+                                <span class="long" id="todayOrdersLong">-</span>
+                                <span class="short" id="todayOrdersShort">-</span>
+                            </div>
+                        </div>
+                        <div class="home-stat-label">今日订单</div>
+                        <div class="home-stat-foot">LONG / SHORT</div>
+                    </a>
+
+                    <a id="positionsLink" href="/ibkr_account.html" class="home-stat-card" data-tone="neutral">
+                        <div class="home-stat-kicker">Positions</div>
+                        <div class="home-stat-value split">
+                            <div class="home-stat-dual">
+                                <span class="long" id="activePositionsLong">-</span>
+                                <span class="short" id="activePositionsShort">-</span>
+                            </div>
+                        </div>
+                        <div class="home-stat-label">当前持仓</div>
+                        <div class="home-stat-foot">已成交 Entry</div>
+                    </a>
+
+                    <a id="pnlCardLink" href="/orders.html" class="home-stat-card" data-tone="neutral">
+                        <div class="home-stat-kicker">PnL</div>
+                        <div class="home-stat-value">
+                            <span id="todayPnL">-</span>
+                        </div>
+                        <div class="home-stat-label">今日盈亏</div>
+                        <div class="home-stat-foot">已成交 TP / SL 估算</div>
+                    </a>
+
+                    <a id="targetsSummaryLink" href="/ibkr_screener.html?tab=targets" class="home-stat-card" data-tone="candidate">
+                        <div class="home-stat-kicker">Targets</div>
+                        <div class="home-stat-value split">
+                            <div class="home-stat-dual">
+                                <span class="long" id="todayTargetsActive">-</span>
+                                <span class="candidate" id="todayTargetsCandidate">-</span>
+                            </div>
+                        </div>
+                        <div class="home-stat-label">今日目标池</div>
+                        <div class="home-stat-foot">ACTIVE / CANDIDATE</div>
+                    </a>
+
                 </div>
             </section>
 
-            <section class="spotlight-panel">
-                <div class="section-title" style="margin-bottom:8px;">重要入口</div>
-                <div class="spotlight-title">先看标的，再进操作页</div>
-                <div class="spotlight-copy" style="margin-top:10px;">把筛选、目标池、信号、订单和账户入口前置到首页，减少来回切页。</div>
-                <div class="priority-entry-grid">
-                    <a id="actionScreenerLink" href="/ibkr_screener.html" class="priority-entry">
-                        <div class="priority-entry-kicker">Screen</div>
-                        <div class="priority-entry-title">今日筛选</div>
-                        <div class="priority-entry-copy">进入 screener 查看当日可操作标的和理由。</div>
-                    </a>
-                    <a id="actionTargetsLink" href="/ibkr_screener.html?tab=targets" class="priority-entry">
-                        <div class="priority-entry-kicker">Targets</div>
-                        <div class="priority-entry-title">今日目标池</div>
-                        <div class="priority-entry-copy">维护当日 candidate / active 标的与备注。</div>
-                    </a>
-                    <a id="actionPrioritySignalsLink" href="/ibkr_signals.html" class="priority-entry">
-                        <div class="priority-entry-kicker">Signals</div>
-                        <div class="priority-entry-title">信号管理</div>
-                        <div class="priority-entry-copy">查看并确认今日交易信号。</div>
-                    </a>
-                    <a id="actionPriorityOrdersLink" href="/orders.html" class="priority-entry">
-                        <div class="priority-entry-kicker">Orders</div>
-                        <div class="priority-entry-title">订单管理</div>
-                        <div class="priority-entry-copy">跟踪入场、止盈和止损执行状态。</div>
-                    </a>
-                    <a id="actionPriorityAccountLink" href="/ibkr_account.html" class="priority-entry">
-                        <div class="priority-entry-kicker">Account</div>
-                        <div class="priority-entry-title">账户概览</div>
-                        <div class="priority-entry-copy">查看持仓、净值和账户摘要。</div>
-                    </a>
-                    <a id="actionPrioritySystemLink" href="/ibkr_system.html" class="priority-entry">
-                        <div class="priority-entry-kicker">System</div>
-                        <div class="priority-entry-title">系统总览</div>
-                        <div class="priority-entry-copy">快速确认 compute、runtime 和链路健康。</div>
-                    </a>
-                </div>
-            </section>
-        </div>
-    </div>
+            <div class="home-primary-grid">
+                <section id="homeTargets" class="home-panel home-targets-panel" data-ready="loading">
+                    <div class="home-panel-head">
+                        <div>
+                            <div class="home-panel-kicker">Targets</div>
+                            <div class="home-panel-title">今日目标池</div>
+                            <div class="home-panel-copy">直接看 candidate / active 标的、核心理由和图表跳转。PC 会显示更多条，手机端按优先级压缩。</div>
+                        </div>
+                        <a id="todayTargetsLink" href="/ibkr_screener.html?tab=targets" class="home-inline-btn">查看目标池</a>
+                    </div>
+                    <div class="home-panel-meta" id="todayTargetsMeta" style="margin-bottom:12px; text-align:left;">加载中...</div>
+                    <div id="todayTargetsList" class="home-targets-grid">
+                        <div class="home-empty">加载中...</div>
+                    </div>
+                </section>
 
-    <div class="market-index-section">
-        <div class="section-title">大盘监控</div>
-        <div class="market-index-grid" id="marketIndexGrid">
-            <div class="market-index-loading">加载中...</div>
-        </div>
-    </div>
+                <section id="homeQuickLinks" class="home-panel home-links-panel">
+                    <div class="home-panel-head">
+                        <div>
+                            <div class="home-panel-kicker">Quick Access</div>
+                            <div class="home-panel-title">重要入口</div>
+                            <div class="home-panel-copy">只保留最常用的主入口，避免同一批链接在首页重复堆叠。</div>
+                        </div>
+                    </div>
+                    <div class="home-quick-grid">
+                        <a id="actionScreenerLink" href="/ibkr_screener.html" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">🔎</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">今日筛选</div>
+                            <div class="home-quick-copy">先看今天可操作标的和筛选理由。</div>
+                        </a>
 
-    <div class="content">
-        <div class="quick-stats">
-            <a id="signalsLink" href="/ibkr_signals.html" class="stat-card">
-                <div class="stat-icon">📡</div>
-                <div class="stat-number-row" id="todaySignalsRow">
-                    <span class="stat-number long" id="todaySignalsLong">-</span>
-                    <span class="stat-number short" id="todaySignalsShort">-</span>
-                </div>
-                <div class="stat-label">今日信号 📈/📉</div>
-            </a>
-            <a id="reverseSignalsLink" href="/ibkr_reverse_signals.html" class="stat-card">
-                <div class="stat-icon">🔄</div>
-                <div class="stat-number-row" id="reverseSignalsRow">
-                    <span class="stat-number" id="reverseSignalsPending">-</span>
-                </div>
-                <div class="stat-label">反转信号</div>
-            </a>
-            <a id="ordersLink" href="/orders.html" class="stat-card">
-                <div class="stat-icon">📋</div>
-                <div class="stat-number-row" id="todayOrdersRow">
-                    <span class="stat-number long" id="todayOrdersLong">-</span>
-                    <span class="stat-number short" id="todayOrdersShort">-</span>
-                </div>
-                <div class="stat-label">今日订单 📈/📉</div>
-            </a>
-            <a id="positionsLink" href="/ibkr_account.html" class="stat-card">
-                <div class="stat-icon">📈</div>
-                <div class="stat-number-row" id="activePositionsRow">
-                    <span class="stat-number long" id="activePositionsLong">-</span>
-                    <span class="stat-number short" id="activePositionsShort">-</span>
-                </div>
-                <div class="stat-label">持仓 📈/📉</div>
-            </a>
-            <div class="stat-card" style="cursor: default;">
-                <div class="stat-icon">💰</div>
-                <div class="stat-number" id="todayPnL">-</div>
-                <div class="stat-label">今日盈亏</div>
+                        <a id="actionTargetsLink" href="/ibkr_screener.html?tab=targets" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">🎯</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">目标池</div>
+                            <div class="home-quick-copy">维护 candidate / active 标的和盘中备注。</div>
+                        </a>
+
+                        <a id="actionSignalsLink" href="/ibkr_signals.html" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">📡</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">信号管理</div>
+                            <div class="home-quick-copy">确认今天的信号、指标快照和执行上下文。</div>
+                        </a>
+
+                        <a id="actionOrdersLink" href="/orders.html" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">📋</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">订单管理</div>
+                            <div class="home-quick-copy">跟踪入场、止盈、止损和当前状态。</div>
+                        </a>
+
+                        <a id="actionAccountLink" href="/ibkr_account.html" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">💼</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">账户概览</div>
+                            <div class="home-quick-copy">查看净值、持仓和资金摘要。</div>
+                        </a>
+
+                        <a id="actionSystemLink" href="/ibkr_system.html" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">🖥️</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">系统总览</div>
+                            <div class="home-quick-copy">快速确认 runtime、compute 和链路健康。</div>
+                        </a>
+                    </div>
+
+                    <div class="home-tool-strip">
+                        <a id="actionIndicatorsLink" href="/ibkr_indicators.html" class="home-tool-chip">📈 指标</a>
+                        <a id="actionRuntimeLink" href="/ibkr_runtime.html" class="home-tool-chip">🎛️ 控制台</a>
+                        <a id="actionMonitorLink" href="/ibkr_monitor.html" class="home-tool-chip">🛠️ 运维</a>
+                        <a id="actionBacktestsLink" href="/ibkr_backtests.html" class="home-tool-chip">🧪 回测</a>
+                    </div>
+                </section>
             </div>
-        </div>
 
-        <div class="quick-actions">
-            <div class="section-title">交易快捷入口</div>
-            <div class="action-grid">
-                <a id="actionSignalsLink" href="/ibkr_signals.html" class="action-card">
-                    <div class="action-icon">📡</div>
-                    <div class="action-label">信号管理</div>
-                    <div class="action-desc">查看和确认交易信号</div>
-                </a>
-                <a id="actionReverseSignalsLink" href="/ibkr_reverse_signals.html" class="action-card">
-                    <div class="action-icon">🔄</div>
-                    <div class="action-label">反转信号</div>
-                    <div class="action-desc">处理平仓/取消/调整信号</div>
-                </a>
-                <a id="actionOrdersLink" href="/orders.html" class="action-card">
-                    <div class="action-icon">📋</div>
-                    <div class="action-label">订单管理</div>
-                    <div class="action-desc">管理和平仓订单</div>
-                </a>
-                <a id="actionIndicatorsLink" href="/ibkr_indicators.html" class="action-card">
-                    <div class="action-icon">📈</div>
-                    <div class="action-label">指标监控</div>
-                    <div class="action-desc">查看技术指标</div>
-                </a>
-            </div>
-        </div>
+            <div id="homeSecondary" class="home-secondary-grid">
+                <section id="homeMarket" class="home-panel" data-ready="loading">
+                    <div class="home-panel-head">
+                        <div>
+                            <div class="home-panel-kicker">Market</div>
+                            <div class="home-panel-title">市场脉搏</div>
+                            <div class="home-panel-copy">保留指数和风险情绪摘要，但压缩成次级信息区，不抢交易首屏。</div>
+                        </div>
+                        <a id="marketPanelLink" href="/ibkr_indicators.html" class="home-inline-btn">更多指标</a>
+                    </div>
+                    <div class="home-panel-meta" id="marketSummaryText" style="margin-bottom:12px; text-align:left;">加载中...</div>
+                    <div id="marketIndexGrid" class="home-market-grid">
+                        <div class="home-empty">加载中...</div>
+                    </div>
+                </section>
 
-        <div class="quick-actions">
-            <div class="section-title">系统快捷入口</div>
-            <div class="action-grid">
-                <a id="actionSystemOverviewLink" href="/ibkr_system.html" class="action-card">
-                    <div class="action-icon">🖥️</div>
-                    <div class="action-label">系统总览</div>
-                    <div class="action-desc">查看健康、freshness 和配置概况</div>
-                </a>
-                <a id="actionRuntimeLink" href="/ibkr_runtime.html" class="action-card">
-                    <div class="action-icon">🎛️</div>
-                    <div class="action-label">控制台</div>
-                    <div class="action-desc">处理启动、2FA 和链路控制</div>
-                </a>
+                <section id="homeActivity" class="home-panel" data-ready="loading">
+                    <div class="home-panel-head">
+                        <div>
+                            <div class="home-panel-kicker">Activity</div>
+                            <div class="home-panel-title">最近活动</div>
+                            <div class="home-panel-copy">只保留最新信号和订单动态，作为快速回看入口。</div>
+                        </div>
+                        <a id="activityPanelLink" href="/ibkr_signals.html" class="home-inline-btn">查看全部</a>
+                    </div>
+                    <div class="home-panel-meta" id="activityMeta" style="margin-bottom:12px; text-align:left;">加载中...</div>
+                    <div id="activityList" class="home-activity-list">
+                        <div class="home-empty">加载中...</div>
+                    </div>
+                </section>
             </div>
-        </div>
-
-        <div class="quick-actions">
-            <div class="section-title">运维快捷入口</div>
-            <div class="action-grid">
-                <a id="actionMonitorLink" href="/ibkr_monitor.html" class="action-card">
-                    <div class="action-icon">📊</div>
-                    <div class="action-label">监控大盘</div>
-                    <div class="action-desc">查看请求、订阅和主机健康</div>
-                </a>
-                <a id="actionWarmupLink" href="/ibkr_warmup.html" class="action-card">
-                    <div class="action-icon">🔥</div>
-                    <div class="action-label">Warmup 进度</div>
-                    <div class="action-desc">查看启动预热和修复进度</div>
-                </a>
-                <a id="actionQualityLink" href="/ibkr_data_quality.html" class="action-card">
-                    <div class="action-icon">🧩</div>
-                    <div class="action-label">数据质量</div>
-                    <div class="action-desc">查看 K 线完整性和安全修复</div>
-                </a>
-            </div>
-        </div>
-
-        <div class="recent-activity">
-            <div class="section-title">最近活动</div>
-            <div id="activityList">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
+        </main>
     </div>
 
     <div id="nav"></div>
@@ -905,6 +1030,8 @@
     <script>
         const pb = new PocketBase('https://pb.lzw-glory.top');
         let currentEnvironment = getCurrentRuntimeEnvironment();
+        let latestTodayTargetsPayload = null;
+        let responsiveListenerBound = false;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -930,54 +1057,110 @@
             return `$${formatNumber(num, 2)}`;
         }
 
-        function pickConfigValue(records, fallbackValue) {
-            const priority = { '': 0, global: 1, [currentEnvironment]: 2 };
-            let bestRecord = null;
-            let bestPriority = -1;
-
-            records.forEach((record) => {
-                const recordEnvironment = String(record.environment || '').trim().toLowerCase();
-                const recordPriority = priority[recordEnvironment] ?? -1;
-                if (recordPriority > bestPriority) {
-                    bestPriority = recordPriority;
-                    bestRecord = record;
-                }
-            });
-
-            return bestRecord?.value ?? fallbackValue;
+        function getUsDate() {
+            return new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/New_York',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(new Date());
         }
 
-        async function loadConfigValue(key, fallbackValue) {
-            const result = await pb.collection('config').getFullList({
-                filter: `key = "${key}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
-                sort: '-updated',
-                $autoCancel: false
-            });
-            return pickConfigValue(result, fallbackValue);
+        function getUsDateFromTime(value) {
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return getUsDate();
+            return new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/New_York',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(date);
+        }
+
+        function formatRefreshClock() {
+            return new Intl.DateTimeFormat('zh-CN', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            }).format(new Date());
+        }
+
+        function setSectionState(id, state) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.dataset.ready = state;
+            }
+        }
+
+        function setCardTone(id, tone) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.dataset.tone = tone || 'neutral';
+            }
+        }
+
+        function syncHomeLayoutState() {
+            const width = window.innerWidth || document.documentElement.clientWidth || 0;
+            let layout = 'desktop';
+            if (width <= 720) {
+                layout = 'mobile';
+            } else if (width <= 1100) {
+                layout = 'tablet';
+            }
+            document.body.dataset.homeLayout = layout;
+        }
+
+        function bindResponsiveState() {
+            if (responsiveListenerBound) return;
+            responsiveListenerBound = true;
+            const rerender = () => {
+                syncHomeLayoutState();
+                if (latestTodayTargetsPayload) {
+                    renderTodayTargets(latestTodayTargetsPayload);
+                }
+            };
+            window.addEventListener('resize', rerender, { passive: true });
+            rerender();
+        }
+
+        function getTodayTargetsDisplayLimit() {
+            const width = window.innerWidth || document.documentElement.clientWidth || 0;
+            if (width <= 720) return 4;
+            if (width <= 1280) return 6;
+            return 8;
         }
 
         function bindEnvironmentLinks() {
-            document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', { environment: currentEnvironment }, { allowGlobal: true });
-            document.getElementById('signalsLink').href = buildPageUrl('/ibkr_signals.html');
-            document.getElementById('reverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
-            document.getElementById('ordersLink').href = buildPageUrl('/orders.html');
-            document.getElementById('positionsLink').href = buildPageUrl('/ibkr_account.html');
-            document.getElementById('todayTargetsLink').href = buildPageUrl('/ibkr_screener.html', { tab: 'targets' });
-            document.getElementById('actionScreenerLink').href = buildPageUrl('/ibkr_screener.html');
-            document.getElementById('actionTargetsLink').href = buildPageUrl('/ibkr_screener.html', { tab: 'targets' });
-            document.getElementById('actionPrioritySignalsLink').href = buildPageUrl('/ibkr_signals.html');
-            document.getElementById('actionPriorityOrdersLink').href = buildPageUrl('/orders.html');
-            document.getElementById('actionPriorityAccountLink').href = buildPageUrl('/ibkr_account.html');
-            document.getElementById('actionPrioritySystemLink').href = buildPageUrl('/ibkr_system.html');
-            document.getElementById('actionSignalsLink').href = buildPageUrl('/ibkr_signals.html');
-            document.getElementById('actionReverseSignalsLink').href = buildPageUrl('/ibkr_reverse_signals.html');
-            document.getElementById('actionOrdersLink').href = buildPageUrl('/orders.html');
-            document.getElementById('actionIndicatorsLink').href = buildPageUrl('/ibkr_indicators.html');
-            document.getElementById('actionSystemOverviewLink').href = buildPageUrl('/ibkr_system.html');
-            document.getElementById('actionRuntimeLink').href = buildPageUrl('/ibkr_runtime.html');
-            document.getElementById('actionMonitorLink').href = buildPageUrl('/ibkr_monitor.html');
-            document.getElementById('actionWarmupLink').href = buildPageUrl('/ibkr_warmup.html');
-            document.getElementById('actionQualityLink').href = buildPageUrl('/ibkr_data_quality.html');
+            const links = {
+                configLink: buildPageUrl('/ibkr_config.html', { environment: currentEnvironment }, { allowGlobal: true }),
+                signalsLink: buildPageUrl('/ibkr_signals.html'),
+                reverseSignalsLink: buildPageUrl('/ibkr_reverse_signals.html'),
+                ordersLink: buildPageUrl('/orders.html'),
+                pnlCardLink: buildPageUrl('/orders.html'),
+                positionsLink: buildPageUrl('/ibkr_account.html'),
+                targetsSummaryLink: buildPageUrl('/ibkr_screener.html', { tab: 'targets' }),
+                todayTargetsLink: buildPageUrl('/ibkr_screener.html', { tab: 'targets' }),
+                actionScreenerLink: buildPageUrl('/ibkr_screener.html'),
+                actionTargetsLink: buildPageUrl('/ibkr_screener.html', { tab: 'targets' }),
+                actionSignalsLink: buildPageUrl('/ibkr_signals.html'),
+                actionOrdersLink: buildPageUrl('/orders.html'),
+                actionAccountLink: buildPageUrl('/ibkr_account.html'),
+                actionSystemLink: buildPageUrl('/ibkr_system.html'),
+                actionIndicatorsLink: buildPageUrl('/ibkr_indicators.html'),
+                actionRuntimeLink: buildPageUrl('/ibkr_runtime.html'),
+                actionMonitorLink: buildPageUrl('/ibkr_monitor.html'),
+                actionBacktestsLink: buildPageUrl('/ibkr_backtests.html'),
+                marketPanelLink: buildPageUrl('/ibkr_indicators.html'),
+                activityPanelLink: buildPageUrl('/ibkr_signals.html')
+            };
+
+            Object.entries(links).forEach(([id, href]) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.href = href;
+                }
+            });
         }
 
         async function initAuth() {
@@ -1018,58 +1201,57 @@
             return payload;
         }
 
-        function getUsDate() {
-            return new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'America/New_York',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(new Date());
+        function renderOverviewMeta(marketDate) {
+            document.getElementById('overviewMeta').textContent = `${currentEnvironment.toUpperCase()} · ${marketDate} · 更新 ${formatRefreshClock()}`;
         }
 
-        let latestTodayTargetsPayload = null;
-        let todayTargetsMediaQuery = null;
-
-        function getTodayTargetsDisplayLimit() {
-            return window.matchMedia('(max-width: 640px)').matches ? 3 : 6;
+        function renderTargetSummary(summary = {}, marketDate = getUsDate(), targetUrl = buildPageUrl('/ibkr_screener.html', { tab: 'targets' })) {
+            const activeCount = Number(summary.active_count || 0);
+            const candidateCount = Number(summary.candidate_count || 0);
+            document.getElementById('todayTargetsActive').textContent = formatNumber(activeCount, 0);
+            document.getElementById('todayTargetsCandidate').textContent = formatNumber(candidateCount, 0);
+            document.getElementById('targetsSummaryLink').href = targetUrl;
+            setCardTone('targetsSummaryLink', activeCount > 0 ? 'long' : (candidateCount > 0 ? 'candidate' : 'neutral'));
+            renderOverviewMeta(marketDate);
         }
 
-        function bindTodayTargetsResponsiveRerender() {
-            if (todayTargetsMediaQuery || typeof window.matchMedia !== 'function') return;
-            todayTargetsMediaQuery = window.matchMedia('(max-width: 640px)');
-            const rerender = () => {
-                if (latestTodayTargetsPayload) {
-                    renderTodayTargets(latestTodayTargetsPayload);
-                }
-            };
-            if (typeof todayTargetsMediaQuery.addEventListener === 'function') {
-                todayTargetsMediaQuery.addEventListener('change', rerender);
-            } else if (typeof todayTargetsMediaQuery.addListener === 'function') {
-                todayTargetsMediaQuery.addListener(rerender);
-            }
+        function buildTargetSignalUrl(symbol, marketDate) {
+            return buildPageUrl('/ibkr_signals.html', {
+                search: symbol || '',
+                date: marketDate
+            }, {
+                environment: currentEnvironment
+            });
         }
 
         function renderTodayTargets(payload) {
             latestTodayTargetsPayload = payload || { items: [], summary: {}, market_date: getUsDate() };
+
             const metaEl = document.getElementById('todayTargetsMeta');
             const listEl = document.getElementById('todayTargetsList');
-            const items = Array.isArray(latestTodayTargetsPayload?.items) ? latestTodayTargetsPayload.items : [];
-            const summary = latestTodayTargetsPayload?.summary || {};
-            const marketDate = latestTodayTargetsPayload?.market_date || getUsDate();
+            const items = Array.isArray(latestTodayTargetsPayload.items) ? latestTodayTargetsPayload.items : [];
+            const summary = latestTodayTargetsPayload.summary || {};
+            const marketDate = latestTodayTargetsPayload.market_date || getUsDate();
+            const displayLimit = getTodayTargetsDisplayLimit();
+            const visibleItems = items.slice(0, displayLimit);
+            const hiddenCount = Math.max(items.length - visibleItems.length, 0);
             const todayTargetsUrl = buildPageUrl('/ibkr_screener.html', {
                 tab: 'targets',
                 date: marketDate,
                 market_date: marketDate
+            }, {
+                environment: currentEnvironment
             });
-            const displayLimit = getTodayTargetsDisplayLimit();
-            const visibleItems = items.slice(0, displayLimit);
-            const hiddenCount = Math.max(items.length - visibleItems.length, 0);
+
             document.getElementById('todayTargetsLink').href = todayTargetsUrl;
+            renderTargetSummary(summary, marketDate, todayTargetsUrl);
+
             metaEl.textContent = `交易日 ${marketDate} · 共 ${summary.total || 0} 条 · active ${summary.active_count || 0} · candidate ${summary.candidate_count || 0}`;
 
             if (!items.length) {
+                setSectionState('homeTargets', 'empty');
                 listEl.innerHTML = `
-                    <div class="today-target-empty">
+                    <div class="home-empty">
                         当前交易日还没有 candidate / active 标的。<br>
                         可直接进入筛选页生成或补充今日目标池。
                     </div>
@@ -1077,31 +1259,44 @@
                 return;
             }
 
+            setSectionState('homeTargets', 'ready');
             listEl.innerHTML = visibleItems.map((row) => {
                 const reasons = Array.isArray(row.operable_reasons) ? row.operable_reasons.slice(0, 3) : [];
+                const chartUrl = buildPageUrl('/ibkr_chart.html', {
+                    symbol: row.symbol || '',
+                    interval: '5m'
+                }, {
+                    environment: currentEnvironment
+                });
+                const signalUrl = buildTargetSignalUrl(row.symbol || '', marketDate);
                 return `
-                    <article class="today-target-card">
-                        <div class="today-target-top">
+                    <article class="home-target-card">
+                        <div class="home-target-top">
                             <div>
-                                <div class="today-target-symbol">${escapeHtml(row.symbol || '--')}</div>
-                                <div class="today-target-time">${escapeHtml(row.latest_us_time || '--')}</div>
+                                <div class="home-target-symbol">${escapeHtml(row.symbol || '--')}</div>
+                                <div class="home-target-time">${escapeHtml(row.latest_us_time || '--')}</div>
                             </div>
-                            <div class="today-target-badges">
-                                <span class="status-badge ${escapeHtml(row.status || '')}">${escapeHtml((row.status || '--').toUpperCase())}</span>
-                                <span class="status-badge ${escapeHtml(row.direction_bias || 'neutral')}">${escapeHtml((row.direction_bias || 'neutral').toUpperCase())}</span>
+                            <div class="home-target-badges">
+                                <span class="home-status-badge ${escapeHtml(row.status || 'neutral')}">${escapeHtml((row.status || '--').toUpperCase())}</span>
+                                <span class="home-status-badge ${escapeHtml(row.direction_bias || 'neutral')}">${escapeHtml((row.direction_bias || 'neutral').toUpperCase())}</span>
                             </div>
                         </div>
-                        <div class="today-target-reason">${escapeHtml(row.scan_reason || row.note || '--')}</div>
-                        <div class="today-target-reasons">
-                            ${reasons.length ? reasons.map((reason) => `<span class="reason-chip">${escapeHtml(reason)}</span>`).join('') : '<span class="reason-chip">等待补充可操作依据</span>'}
+                        <div class="home-target-copy">${escapeHtml(row.scan_reason || row.note || '--')}</div>
+                        <div class="home-target-reasons">
+                            ${reasons.length
+                                ? reasons.map((reason) => `<span class="home-reason-chip">${escapeHtml(reason)}</span>`).join('')
+                                : '<span class="home-reason-chip">等待补充可操作依据</span>'}
                         </div>
-                        <div class="today-target-foot">
-                            <div class="today-target-metrics">
+                        <div class="home-target-foot">
+                            <div class="home-target-metrics">
                                 <span>Score <strong>${escapeHtml(formatNumber(row.score || 0, 1))}</strong></span>
                                 <span>Trad <strong>${escapeHtml(formatNumber(row.tradability_score || 0, 0))}</strong></span>
                                 <span>${escapeHtml(formatPrice(row.price))}</span>
                             </div>
-                            <a class="hero-btn" href="${buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <a class="home-target-action" href="${chartUrl}">Chart</a>
+                                <a class="home-target-action" href="${signalUrl}">Signals</a>
+                            </div>
                         </div>
                     </article>
                 `;
@@ -1109,7 +1304,7 @@
 
             if (hiddenCount > 0) {
                 listEl.insertAdjacentHTML('beforeend', `
-                    <a class="today-target-more-link" href="${todayTargetsUrl}">
+                    <a class="home-targets-more" href="${todayTargetsUrl}">
                         查看剩余 ${hiddenCount} 条标的
                     </a>
                 `);
@@ -1118,97 +1313,199 @@
 
         async function loadTodayTargets() {
             try {
+                setSectionState('homeTargets', 'loading');
                 const marketDate = getUsDate();
                 document.getElementById('todayTargetsMeta').textContent = `交易日 ${marketDate} · 正在加载...`;
                 const payload = await requestJson(`/api/custom/ibkr/today-targets?environment=${encodeURIComponent(currentEnvironment)}&market_date=${encodeURIComponent(marketDate)}`);
                 renderTodayTargets(payload || { items: [], summary: {}, market_date: marketDate });
             } catch (error) {
                 console.error('加载今日标的失败:', error);
+                setSectionState('homeTargets', 'error');
                 document.getElementById('todayTargetsMeta').textContent = `加载失败: ${error.message || error}`;
-                document.getElementById('todayTargetsList').innerHTML = `<div class="today-target-empty">${escapeHtml(error.message || error)}</div>`;
+                document.getElementById('todayTargetsList').innerHTML = `<div class="home-empty">${escapeHtml(error.message || error)}</div>`;
+                document.getElementById('todayTargetsActive').textContent = '--';
+                document.getElementById('todayTargetsCandidate').textContent = '--';
+                setCardTone('targetsSummaryLink', 'neutral');
             }
+        }
+
+        function calculatePnL(orders) {
+            const entryOrders = {};
+            let totalPnL = 0;
+
+            orders.forEach((order) => {
+                const uniqueId = order.unique_id || '';
+                const parts = uniqueId.split('_');
+                if (parts.length < 5) return;
+
+                const baseId = parts.slice(0, 4).join('_');
+                const orderType = parts[4];
+
+                if (orderType === 'Entry' && order.status === 'Filled') {
+                    entryOrders[baseId] = order;
+                } else if ((orderType === 'TP' || orderType === 'SL') && order.status === 'Filled') {
+                    const entry = entryOrders[baseId];
+                    if (!entry) return;
+
+                    const direction = order.direction;
+                    const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
+                    const exitPrice = parseFloat(order.fill_price || order.limit_price);
+                    const quantity = parseFloat(order.filled_qty || order.quantity);
+                    if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || !Number.isFinite(quantity)) {
+                        return;
+                    }
+
+                    const pnl = direction === 'long'
+                        ? (exitPrice - entryPrice) * quantity
+                        : (entryPrice - exitPrice) * quantity;
+                    totalPnL += pnl;
+                }
+            });
+
+            return totalPnL;
+        }
+
+        function buildActivityUrl(activity) {
+            const marketDate = getUsDateFromTime(activity.time);
+            const params = {
+                date: marketDate
+            };
+            if (activity.symbol) {
+                params.search = activity.symbol;
+            }
+
+            if (activity.type === 'signal') {
+                return buildPageUrl('/ibkr_signals.html', params, { environment: currentEnvironment });
+            }
+            return buildPageUrl('/orders.html', params, { environment: currentEnvironment });
+        }
+
+        function renderRecentActivity(ibkrSignals, orders) {
+            const container = document.getElementById('activityList');
+            const activities = [
+                ...ibkrSignals.slice(0, 4).map((signal) => ({
+                    type: 'signal',
+                    icon: signal.direction === 'long' ? '📈' : '📉',
+                    title: `${signal.symbol} 信号`,
+                    time: signal.created,
+                    symbol: signal.symbol,
+                    direction: signal.direction || 'neutral'
+                })),
+                ...orders.slice(0, 4).map((order) => ({
+                    type: 'order',
+                    icon: order.order_type === 'Entry' ? '📋' : (order.order_type === 'TakeProfit' ? '✅' : '🛑'),
+                    title: `${order.symbol} ${order.order_type === 'Entry' ? '入场' : (order.order_type === 'TakeProfit' ? '止盈' : '止损')}`,
+                    time: order.created,
+                    symbol: order.symbol,
+                    direction: order.direction || 'neutral'
+                }))
+            ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 6);
+
+            document.getElementById('activityMeta').textContent = `最近 ${activities.length} 条 · 更新 ${formatRefreshClock()}`;
+
+            if (!activities.length) {
+                setSectionState('homeActivity', 'empty');
+                container.innerHTML = `
+                    <div class="home-empty">
+                        当前环境暂时没有新的信号或订单活动。
+                    </div>
+                `;
+                return;
+            }
+
+            setSectionState('homeActivity', 'ready');
+            container.innerHTML = activities.map((activity) => `
+                <a class="home-activity-item" href="${buildActivityUrl(activity)}">
+                    <div class="home-activity-icon">${activity.icon}</div>
+                    <div>
+                        <div class="home-activity-title">${escapeHtml(activity.title)}</div>
+                        <div class="home-activity-time">${escapeHtml(formatRelativeTime(activity.time))}</div>
+                    </div>
+                    <div class="home-activity-badge ${escapeHtml(activity.direction || 'neutral')}">
+                        ${escapeHtml(String(activity.direction || 'neutral').toUpperCase())}
+                    </div>
+                </a>
+            `).join('');
         }
 
         async function loadDashboard() {
             try {
-                showLoading('加载数据中...');
+                setSectionState('homeOverview', 'loading');
+                setSectionState('homeActivity', 'loading');
+
                 const marketDate = getUsDate();
                 const startTimeMs = Date.parse(`${marketDate}T04:00:00.000Z`);
                 const endTimeMs = startTimeMs + (24 * 60 * 60 * 1000);
 
-                // 加载今日信号
-                const ibkr_signals = await pb.collection('ibkr_signals').getFullList({
-                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-created',
-                    $autoCancel: false
-                });
+                const [ibkrSignals, reverseSignals, orders, activePositions] = await Promise.all([
+                    pb.collection('ibkr_signals').getFullList({
+                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-created',
+                        $autoCancel: false
+                    }),
+                    pb.collection('ibkr_reverse_signals').getFullList({
+                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-created',
+                        $autoCancel: false
+                    }),
+                    pb.collection('orders').getFullList({
+                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-created',
+                        $autoCancel: false
+                    }),
+                    pb.collection('orders').getFullList({
+                        filter: `environment = "${currentEnvironment}" && status = "Filled" && order_type = "Entry"`,
+                        sort: '-created',
+                        $autoCancel: false
+                    })
+                ]);
 
-                // 加载今日反向信号
-                const reverseSignals = await pb.collection('ibkr_reverse_signals').getFullList({
-                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-created',
-                    $autoCancel: false
-                });
-
-                // 加载今日订单
-                const orders = await pb.collection('orders').getFullList({
-                    filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                    sort: '-created',
-                    $autoCancel: false
-                });
-
-                // 加载活跃持仓
-                const activePositions = await pb.collection('orders').getFullList({
-                    filter: `environment = "${currentEnvironment}" && status = "Filled" && order_type = "Entry"`,
-                    sort: '-created',
-                    $autoCancel: false
-                });
-
-                // 计算今日盈亏
+                const longSignals = ibkrSignals.filter((item) => item.direction === 'long').length;
+                const shortSignals = ibkrSignals.filter((item) => item.direction === 'short').length;
+                const pendingReverseSignals = reverseSignals.filter((item) => !item.processed).length;
+                const longOrders = orders.filter((item) => item.direction === 'long').length;
+                const shortOrders = orders.filter((item) => item.direction === 'short').length;
+                const longPositions = activePositions.filter((item) => item.direction === 'long').length;
+                const shortPositions = activePositions.filter((item) => item.direction === 'short').length;
                 const pnl = calculatePnL(orders);
 
-                // 统计信号多空
-                const longSignals = ibkr_signals.filter(s => s.direction === 'long').length;
-                const shortSignals = ibkr_signals.filter(s => s.direction === 'short').length;
-
-                // 统计反向信号
-                const pendingReverseSignals = reverseSignals.filter(s => !s.processed).length;
-
-                // 统计订单多空
-                const longOrders = orders.filter(o => o.direction === 'long').length;
-                const shortOrders = orders.filter(o => o.direction === 'short').length;
-
-                // 统计持仓多空
-                const longPositions = activePositions.filter(p => p.direction === 'long').length;
-                const shortPositions = activePositions.filter(p => p.direction === 'short').length;
-
-                // 更新统计数据
-                document.getElementById('todaySignalsLong').textContent = longSignals;
-                document.getElementById('todaySignalsShort').textContent = shortSignals;
-                document.getElementById('reverseSignalsPending').textContent = pendingReverseSignals;
-                if (pendingReverseSignals > 0) {
-                    document.getElementById('reverseSignalsPending').style.color = 'var(--short)';
-                }
-                document.getElementById('todayOrdersLong').textContent = longOrders;
-                document.getElementById('todayOrdersShort').textContent = shortOrders;
-                document.getElementById('activePositionsLong').textContent = longPositions;
-                document.getElementById('activePositionsShort').textContent = shortPositions;
+                document.getElementById('todaySignalsLong').textContent = formatNumber(longSignals, 0);
+                document.getElementById('todaySignalsShort').textContent = formatNumber(shortSignals, 0);
+                document.getElementById('reverseSignalsPending').textContent = formatNumber(pendingReverseSignals, 0);
+                document.getElementById('todayOrdersLong').textContent = formatNumber(longOrders, 0);
+                document.getElementById('todayOrdersShort').textContent = formatNumber(shortOrders, 0);
+                document.getElementById('activePositionsLong').textContent = formatNumber(longPositions, 0);
+                document.getElementById('activePositionsShort').textContent = formatNumber(shortPositions, 0);
 
                 const pnlEl = document.getElementById('todayPnL');
                 if (pnl !== 0) {
-                    pnlEl.textContent = (pnl > 0 ? '+' : '') + pnl.toFixed(0);
-                    pnlEl.style.color = pnl > 0 ? 'var(--long)' : 'var(--short)';
+                    pnlEl.textContent = `${pnl > 0 ? '+' : ''}${formatNumber(pnl, 0)}`;
                 } else {
                     pnlEl.textContent = '-';
                 }
 
-                // 渲染最近活动
-                renderRecentActivity(ibkr_signals, orders);
+                const totalSignals = longSignals + shortSignals;
+                const totalOrders = longOrders + shortOrders;
+                const totalPositions = longPositions + shortPositions;
+
+                setCardTone('signalsLink', totalSignals > 0 ? 'long' : 'neutral');
+                setCardTone('reverseSignalsLink', pendingReverseSignals > 0 ? 'short' : 'neutral');
+                setCardTone('ordersLink', totalOrders > 0 ? 'long' : 'neutral');
+                setCardTone('positionsLink', totalPositions > 0 ? 'long' : 'neutral');
+                setCardTone('pnlCardLink', pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'));
+
+                renderOverviewMeta(marketDate);
+                renderRecentActivity(ibkrSignals, orders);
+
+                setSectionState('homeOverview', 'ready');
             } catch (error) {
-                console.error('加载失败:', error);
-                showToast('加载失败: ' + error.message);
-            } finally {
-                hideLoading();
+                console.error('加载首页总览失败:', error);
+                setSectionState('homeOverview', 'error');
+                setSectionState('homeActivity', 'error');
+                document.getElementById('overviewMeta').textContent = `加载失败: ${error.message || error}`;
+                document.getElementById('activityMeta').textContent = `加载失败: ${error.message || error}`;
+                document.getElementById('activityList').innerHTML = `<div class="home-empty">${escapeHtml(error.message || error)}</div>`;
+                showToast('首页数据加载失败: ' + (error.message || error));
             }
         }
 
@@ -1269,7 +1566,7 @@
             return {
                 day_change_pct: computePctChange(currentClose, history[0]?.close),
                 prev_close_change_pct: computePctChange(history[0]?.close, history[1]?.close),
-                change_7d: computePctChange(currentClose, history[4]?.close),
+                change_7d: computePctChange(currentClose, history[4]?.close)
             };
         }
 
@@ -1279,23 +1576,65 @@
             return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
         }
 
-        // 加载大盘指数数据（优先 ibkr_indicators，缺失时回退到 bars）
+        function updateMarketPulse(metrics = [], symbolCount = 0) {
+            const pulseValueEl = document.getElementById('marketPulseValue');
+            const pulseMetaEl = document.getElementById('marketPulseMeta');
+            if (!pulseValueEl || !pulseMetaEl) return;
+
+            let tone = 'neutral';
+            let label = '混合';
+            let detail = symbolCount ? `监控 ${symbolCount} 个标的` : '等待市场数据';
+
+            const vixMetric = metrics.find((item) => item.symbol === 'VIX' && Number.isFinite(item.displayPrice));
+            const directional = metrics.filter((item) => item.changePct != null && item.symbol !== 'VIX');
+            const advances = directional.filter((item) => item.changePct > 0).length;
+            const declines = directional.filter((item) => item.changePct < 0).length;
+
+            if (vixMetric && vixMetric.displayPrice >= 30) {
+                tone = 'short';
+                label = '高波动';
+                detail = `VIX ${vixMetric.displayPrice.toFixed(2)} · 风险优先`;
+            } else if (vixMetric && vixMetric.displayPrice >= 20) {
+                tone = 'neutral';
+                label = '谨慎';
+                detail = `VIX ${vixMetric.displayPrice.toFixed(2)} · 波动偏高`;
+            } else if (advances > declines) {
+                tone = 'long';
+                label = '偏强';
+                detail = `上涨 ${advances} / 下跌 ${declines}`;
+            } else if (declines > advances) {
+                tone = 'short';
+                label = '偏弱';
+                detail = `上涨 ${advances} / 下跌 ${declines}`;
+            } else if (symbolCount) {
+                detail = `监控 ${symbolCount} 个标的 · 方向混合`;
+            }
+
+            pulseValueEl.textContent = label;
+            pulseMetaEl.textContent = detail;
+            setCardTone('marketPulseLink', tone);
+        }
+
         async function loadMarketIndex() {
             const container = document.getElementById('marketIndexGrid');
             if (!container) return;
 
             try {
+                setSectionState('homeMarket', 'loading');
                 const scopeFilter = currentEnvironment === 'live'
                     ? '(environment = "live" || environment = "global" || environment = "")'
                     : `(environment = "${escapeQueryValue(currentEnvironment)}" || environment = "global")`;
+
                 const watchlistResp = await apiFetch('watchlist', {
                     filter: `${scopeFilter} && symbol_role = "market_monitor"`,
                     sort: '-updated',
                     perPage: 100
                 }).catch(() => ({ items: [] }));
+
                 const roleRows = Array.isArray(watchlistResp.items) ? watchlistResp.items : [];
                 const priority = { '': 0, global: 1 };
                 priority[currentEnvironment] = 2;
+
                 const merged = {};
                 const applied = {};
                 roleRows.forEach((item) => {
@@ -1308,18 +1647,23 @@
                     applied[symbol] = rank;
                     merged[symbol] = item;
                 });
+
                 const symbols = Object.keys(merged).sort();
                 if (!symbols.length) {
-                    container.innerHTML = '<div class="empty-state">当前未配置市场监控标的。</div>';
+                    setSectionState('homeMarket', 'empty');
+                    document.getElementById('marketSummaryText').textContent = '当前未配置市场监控标的。';
+                    container.innerHTML = '<div class="home-empty">当前未配置市场监控标的。</div>';
+                    updateMarketPulse([], 0);
                     return;
                 }
+
                 try {
                     await fetchRealtimeQuotes(symbols, { reset: false });
                 } catch (error) {
                     console.warn('加载市场监控实时报价失败:', error);
                 }
 
-                const promises = symbols.map(async (symbol) => {
+                const bundles = await Promise.all(symbols.map(async (symbol) => {
                     try {
                         const envFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(symbol)}"`;
                         const [indicatorResp, barResp, dailyResp] = await Promise.all([
@@ -1339,202 +1683,129 @@
                                 perPage: 8
                             }).catch(() => ({ items: [] }))
                         ]);
+
                         return {
-                            indicator: Array.isArray(indicatorResp.items) ? (indicatorResp.items[0] || null) : null,
-                            bar: Array.isArray(barResp.items) ? (barResp.items[0] || null) : null,
-                            dailyBars: Array.isArray(dailyResp.items) ? dailyResp.items : [],
+                            symbol,
+                            indicator: Array.isArray(indicatorResp.items) ? indicatorResp.items[0] || null : null,
+                            bar: Array.isArray(barResp.items) ? barResp.items[0] || null : null,
+                            dailyBars: Array.isArray(dailyResp.items) ? dailyResp.items : []
                         };
                     } catch (_) {
-                        return { indicator: null, bar: null, dailyBars: [] };
+                        return { symbol, indicator: null, bar: null, dailyBars: [] };
                     }
-                });
+                }));
 
-                const results = await Promise.all(promises);
-
-                // 渲染大盘指数卡片
                 let html = '';
                 let hasData = false;
-                symbols.forEach((symbol, index) => {
-                    const bundle = results[index] || {};
-                    const indicator = bundle.indicator || null;
-                    const bar = bundle.bar || null;
-                    const dailyBars = Array.isArray(bundle.dailyBars) ? bundle.dailyBars : [];
+                const pulseMetrics = [];
+
+                bundles.forEach((bundle) => {
+                    const symbol = bundle.symbol;
+                    const indicator = bundle.indicator;
+                    const bar = bundle.bar;
+                    const dailyBars = bundle.dailyBars;
                     const data = indicator || bar || dailyBars[0] || null;
-                    if (data) {
-                        hasData = true;
-                        const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? dailyBars[0]?.close ?? 0);
-                        const quote = getRealtimeQuote(symbol);
-                        const displayPrice = Number(quote?.last_price ?? price ?? 0);
-                        const marketDate = getMarketDateFromRecord(bar || indicator || dailyBars[0] || null);
-                        const barFallbackMetrics = buildBarFallbackMetrics(price, dailyBars, marketDate);
-                        const changePct = quote?.day_change_pct ?? getMetricValue(indicator, 'day_change_pct') ?? barFallbackMetrics?.day_change_pct ?? null;
-                        const change7d = getMetricValue(indicator, 'change_7d') ?? barFallbackMetrics?.change_7d ?? null;
-                        const yesterdayChangePct = getMetricValue(indicator, 'prev_close_change_pct') ?? barFallbackMetrics?.prev_close_change_pct ?? null;
-                        const lastBarMs = Number(data.bar_time_ms || 0) || 0;
-                        const ageMin = lastBarMs ? Math.max(0, Math.round((Date.now() - lastBarMs) / 60000)) : null;
-                        const updateText = data.us_time || '--';
-                        const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
-                        const changeText = formatSignedPercent(changePct);
-                        const yesterdayText = formatSignedPercent(yesterdayChangePct);
-                        const change7dText = formatSignedPercent(change7d);
-                        const change7dClass = change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral');
-                        // VIX 恐慌指数特殊处理
-                        let vixBadge = '';
-                        let vixClass = '';
-                        if (symbol === 'VIX') {
-                            if (displayPrice >= 30) {
-                                vixBadge = '🔴 恐慌';
-                                vixClass = 'vix-panic';
-                            } else if (displayPrice >= 20) {
-                                vixBadge = '🟡 紧张';
-                                vixClass = 'vix-tension';
-                            } else {
-                                vixBadge = '🟢 平稳';
-                                vixClass = 'vix-calm';
-                            }
-                        }
 
-                        const dataSourceText = quote?.last_price != null
-                            ? `RT ${quote.quote_age_s != null ? `${quote.quote_age_s}s` : ''}`.trim()
-                            : indicator
-                            ? 'IND 5m'
-                            : (bar && barFallbackMetrics ? 'BAR 5m + 1D' : (bar ? 'BAR 5m' : 'BAR 1D'));
-
+                    if (!data) {
                         html += `
-                            <div class="market-index-card ${vixClass}">
-                                <div class="market-index-symbol">${symbol}${vixBadge ? ' ' + vixBadge : ''}</div>
-                                <div class="market-index-price">$${displayPrice.toFixed(2)}</div>
-                                <div class="market-index-change ${changeClass}">
-                                    <div>1D: ${changeText}</div>
-                                    <div>1D-: ${yesterdayText}</div>
-                                    <div class="${change7dClass}">7D: ${change7dText}</div>
-                                </div>
-                                <div class="market-index-meta">${dataSourceText} · ${updateText}<br>${ageMin == null ? '--' : `${ageMin}m ago`}</div>
+                            <div class="home-market-card">
+                                <div class="home-market-symbol">${escapeHtml(symbol)}</div>
+                                <div class="home-market-price">--</div>
+                                <div class="home-market-change">1D --<br>7D --</div>
+                                <div class="home-market-meta">暂无 5m 数据</div>
                             </div>
                         `;
-                    } else {
-                        html += `
-                            <div class="market-index-card">
-                                <div class="market-index-symbol">${symbol}</div>
-                                <div class="market-index-price">--</div>
-                                <div class="market-index-change neutral">
-                                    <div>1D: --</div>
-                                    <div>1D-: --</div>
-                                    <div>7D: --</div>
-                                </div>
-                                <div class="market-index-meta">暂无 5m 数据</div>
-                            </div>
-                        `;
+                        return;
                     }
+
+                    hasData = true;
+                    const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? dailyBars[0]?.close ?? 0);
+                    const quote = getRealtimeQuote(symbol);
+                    const displayPrice = Number(quote?.last_price ?? price ?? 0);
+                    const marketDate = getMarketDateFromRecord(bar || indicator || dailyBars[0] || null);
+                    const fallbackMetrics = buildBarFallbackMetrics(price, dailyBars, marketDate);
+                    const changePct = quote?.day_change_pct ?? getMetricValue(indicator, 'day_change_pct') ?? fallbackMetrics?.day_change_pct ?? null;
+                    const change7d = getMetricValue(indicator, 'change_7d') ?? fallbackMetrics?.change_7d ?? null;
+                    const lastBarMs = Number(data.bar_time_ms || 0) || 0;
+                    const ageMin = lastBarMs ? Math.max(0, Math.round((Date.now() - lastBarMs) / 60000)) : null;
+                    const updateText = data.us_time || '--';
+                    const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
+                    const changeText = formatSignedPercent(changePct);
+                    const change7dText = formatSignedPercent(change7d);
+
+                    let vixBadge = '';
+                    let vixClass = '';
+                    if (symbol === 'VIX') {
+                        if (displayPrice >= 30) {
+                            vixBadge = '恐慌';
+                            vixClass = 'vix-panic';
+                        } else if (displayPrice >= 20) {
+                            vixBadge = '紧张';
+                            vixClass = 'vix-tension';
+                        } else {
+                            vixBadge = '平稳';
+                            vixClass = 'vix-calm';
+                        }
+                    }
+
+                    pulseMetrics.push({
+                        symbol,
+                        displayPrice,
+                        changePct
+                    });
+
+                    const dataSourceText = quote?.last_price != null
+                        ? `RT ${quote.quote_age_s != null ? `${quote.quote_age_s}s` : ''}`.trim()
+                        : indicator
+                            ? 'IND 5m'
+                            : (bar && fallbackMetrics ? 'BAR 5m + 1D' : (bar ? 'BAR 5m' : 'BAR 1D'));
+
+                    const chartUrl = buildPageUrl('/ibkr_chart.html', {
+                        symbol,
+                        interval: '5m'
+                    }, {
+                        environment: currentEnvironment
+                    });
+
+                    html += `
+                        <a class="home-market-card ${vixClass}" href="${chartUrl}">
+                            <div class="home-market-symbol">${escapeHtml(symbol)}${vixBadge ? ` · ${escapeHtml(vixBadge)}` : ''}</div>
+                            <div class="home-market-price">${escapeHtml(formatPrice(displayPrice))}</div>
+                            <div class="home-market-change">
+                                <span class="${changeClass}">1D ${escapeHtml(changeText)}</span><br>
+                                <span class="${change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral')}">7D ${escapeHtml(change7dText)}</span>
+                            </div>
+                            <div class="home-market-meta">${escapeHtml(dataSourceText)} · ${escapeHtml(updateText)}<br>${ageMin == null ? '--' : `${ageMin}m ago`}</div>
+                        </a>
+                    `;
                 });
 
+                updateMarketPulse(pulseMetrics, symbols.length);
+                document.getElementById('marketSummaryText').textContent = hasData
+                    ? `监控 ${symbols.length} 个标的 · 更新 ${formatRefreshClock()}`
+                    : `监控 ${symbols.length} 个标的 · 暂无有效数据`;
+
                 if (!hasData) {
-                    html = '<div class="market-index-loading">暂无大盘数据</div>';
+                    setSectionState('homeMarket', 'empty');
+                    container.innerHTML = '<div class="home-empty">暂无市场监控数据。</div>';
+                    return;
                 }
 
+                setSectionState('homeMarket', 'ready');
                 container.innerHTML = html;
             } catch (error) {
-                console.error('加载大盘数据失败:', error);
-                container.innerHTML = '<div class="market-index-loading">加载失败</div>';
-            }
-        }
-
-        function calculatePnL(orders) {
-            const entryOrders = {};
-            let totalPnL = 0;
-
-            orders.forEach(order => {
-                const uniqueId = order.unique_id || '';
-                const parts = uniqueId.split('_');
-                if (parts.length < 5) return;
-
-                const baseId = parts.slice(0, 4).join('_');
-                const orderType = parts[4];
-
-                if (orderType === 'Entry' && order.status === 'Filled') {
-                    entryOrders[baseId] = order;
-                } else if ((orderType === 'TP' || orderType === 'SL') && order.status === 'Filled') {
-                    const entry = entryOrders[baseId];
-                    if (entry) {
-                        const direction = order.direction;
-                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
-                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
-                        const quantity = parseFloat(order.filled_qty || order.quantity);
-
-                        let pnl = 0;
-                        if (direction === 'long') {
-                            pnl = (exitPrice - entryPrice) * quantity;
-                        } else {
-                            pnl = (entryPrice - exitPrice) * quantity;
-                        }
-                        totalPnL += pnl;
-                    }
-                }
-            });
-
-            return totalPnL;
-        }
-
-        function renderRecentActivity(ibkr_signals, orders) {
-            const container = document.getElementById('activityList');
-
-            // 合并信号和订单，按时间排序
-            const activities = [
-                ...ibkr_signals.slice(0, 5).map(s => ({
-                    type: 'signal',
-                    id: s.id,
-                    icon: s.direction === 'long' ? '📈' : '📉',
-                    title: `${s.symbol} 信号`,
-                    time: s.created,
-                    direction: s.direction
-                })),
-                ...orders.slice(0, 5).map(o => ({
-                    type: 'order',
-                    id: o.id,
-                    icon: o.order_type === 'Entry' ? '📋' : (o.order_type === 'TakeProfit' ? '✅' : '🛑'),
-                    title: `${o.symbol} ${o.order_type === 'Entry' ? '入场' : (o.order_type === 'TakeProfit' ? '止盈' : '止损')}`,
-                    time: o.created,
-                    direction: o.direction
-                }))
-            ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 8);
-
-            if (activities.length === 0) {
-                container.innerHTML = `
-                    <div class="empty">
-                        <div class="empty-icon">📭</div>
-                        <div class="empty-text">暂无活动</div>
-                    </div>
-                `;
-                return;
-            }
-
-            container.innerHTML = activities.map(activity => `
-                <div class="activity-item" onclick="navigateToActivity('${activity.type}', '${activity.id || ''}')">
-                    <div class="activity-left">
-                        <div class="activity-icon">${activity.icon}</div>
-                        <div class="activity-info">
-                            <div class="activity-title">${activity.title}</div>
-                            <div class="activity-time">${formatRelativeTime(activity.time)}</div>
-                        </div>
-                    </div>
-                    <div class="activity-badge badge-${activity.direction}">
-                        ${activity.direction.toUpperCase()}
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        function navigateToActivity(type, id) {
-            if (type === 'signal') {
-                location.href = buildPageUrl('/ibkr_signals.html');
-            } else if (type === 'order') {
-                location.href = buildPageUrl('/orders.html');
+                console.error('加载市场脉搏失败:', error);
+                setSectionState('homeMarket', 'error');
+                document.getElementById('marketSummaryText').textContent = `加载失败: ${error.message || error}`;
+                container.innerHTML = '<div class="home-empty">市场数据加载失败。</div>';
+                updateMarketPulse([], 0);
             }
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
+            syncHomeLayoutState();
+            bindResponsiveState();
             await initAuth();
-            bindTodayTargetsResponsiveRerender();
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             bindEnvironmentLinks();
             document.getElementById('nav').innerHTML = renderNav('/index.html');

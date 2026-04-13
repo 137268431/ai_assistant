@@ -746,14 +746,18 @@ const CONFIG_META = {
   watchlist_interval_min: meta('标的同步间隔', '标的订阅', 600, '5', '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
   ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '标的订阅', 610, '60', '按 ibkr_targets 刷新当日实时订阅列表'),
   ibkr_target_subscription_limit: meta('目标订阅上限', '标的订阅', 620, '60', '当日 ibkr_targets 进入 websocket 实时订阅的最大标的数'),
+  ibkr_market_ws_enabled: meta('默认市场 WS 开关', '标的订阅', 630, 'TRUE', '启用后会为默认市场体验符号维持实时 WS，不参与默认交易'),
+  ibkr_market_ws_symbols: meta('默认市场 WS 标的', '标的订阅', 640, 'SPY,QQQ,VIX', '用于首页/监控页的默认实时大盘符号，逗号分隔'),
 
   ibkr_bar_publish_enabled: meta('K线发布开关', '行情链路', 700, 'TRUE', '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
   ibkr_active_repair_interval_min: meta('活跃修复间隔', '行情链路', 705, '5', '当前实时订阅标的的缺口 / rollup 异常巡检间隔，按 5m 链路优先修复'),
+  ibkr_live_warmup_days: meta('启动预热天数', '行情链路', 708, '14', '启动或全量重建时默认补齐并预热最近多少天的 5m bars'),
   ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '行情链路', 710, '30', '非目标标的按批次执行 5m 增量回补的间隔'),
   ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '行情链路', 720, '12', '每轮底池回补最多处理多少个非目标标的'),
   ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '行情链路', 730, '20', '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
   ibkr_watchlist_integrity_enabled: meta('底池完整性巡检', '行情链路', 740, 'TRUE', '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
   ibkr_watchlist_integrity_batch_size: meta('底池巡检批次', '行情链路', 750, '8', '每轮底池完整性巡检最多处理多少个非目标标的'),
+  ibkr_restart_overlap_days: meta('重启重叠回补天数', '行情链路', 760, '1', '每次重启时从最近 N 天的 overlap 区间重新拉取 5m history，覆盖修正 recent bars'),
 
   system_status_chat_id: meta('状态群 Chat ID', '通知路由', 600, 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '正常状态提醒与日常运行反馈默认发送到这里'),
   system_2fa_chat_id: meta('2FA 群 Chat ID', '通知路由', 605, 'oc_c48c10447685e80cfea0c003864aa51f', '所有 2FA 卡片、2FA 超时/失败/待确认、Session 失效与运行态未认证提醒统一发送到这里'),
@@ -796,7 +800,8 @@ const BOOLEAN_CONFIG_KEYS = new Set([
   'inspection_notify_enabled',
   'pb_scheduler_enabled',
   'ibkr_compute_enabled',
-  'ibkr_bar_publish_enabled'
+  'ibkr_bar_publish_enabled',
+  'ibkr_market_ws_enabled'
 ])
 
 const NUMERIC_CONFIG_RULES = {
@@ -804,11 +809,13 @@ const NUMERIC_CONFIG_RULES = {
   watchlist_interval_min: { min: '1', max: '60', step: '1' },
   ibkr_target_refresh_sec: { min: '15', max: '300', step: '15' },
   ibkr_target_subscription_limit: { min: '1', max: '200', step: '1' },
+  ibkr_live_warmup_days: { min: '1', max: '90', step: '1' },
   ibkr_active_repair_interval_min: { min: '5', max: '120', step: '5' },
   ibkr_watchlist_backfill_interval_min: { min: '5', max: '240', step: '5' },
   ibkr_watchlist_backfill_batch_size: { min: '1', max: '100', step: '1' },
   ibkr_watchlist_backfill_stale_min: { min: '5', max: '240', step: '5' },
   ibkr_watchlist_integrity_batch_size: { min: '1', max: '100', step: '1' },
+  ibkr_restart_overlap_days: { min: '1', max: '14', step: '1' },
   signal_validity_minutes: { min: '5', max: '120', step: '5' },
   order_validity_minutes: { min: '5', max: '120', step: '5' },
   signal_poll_interval_sec: { min: '15', max: '600', step: '15' },
