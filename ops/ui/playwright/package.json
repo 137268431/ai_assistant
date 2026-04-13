@@ -1,0 +1,12 @@
+{
+  "name": "ai_assistant_playwright",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "smoke": "node pb_smoke.js"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

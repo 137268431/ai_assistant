@@ -1,6 +1,8 @@
 .mcp.json
+.DS_Store
 __pycache__/
 *.pyc
+node_modules/
 
 # 工作区配置文件
 .vscode/
