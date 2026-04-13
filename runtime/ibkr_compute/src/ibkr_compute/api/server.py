@@ -55,6 +55,7 @@ from ibkr_compute.market.timeframe_utils import (
     ms_to_et,
     normalize_interval,
 )
+from ibkr_compute.workflows.history_rebuild import HistoryRebuildManager
 from ibkr_compute.workflows.daily_scanner import DailyScanner
 
 
@@ -78,6 +79,14 @@ PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", PB_BASE_URL)
 pb = PBClient(base_url=PB_BASE_URL)
 cfg = Config(pb_client=pb)
 backtest_service = BacktestService(pb)
+history_rebuild_manager = HistoryRebuildManager(
+    pb,
+    cfg,
+    compute_runner=lambda payload: _run_internal_compute(payload),
+    scan_runner=lambda payload: _run_internal_scan(payload),
+    current_market_date_resolver=lambda: current_market_date(),
+    runtime_status_resolver=lambda environment: _get_runtime_status_snapshot(environment),
+)
 
 engines = {}
 signal_gens = {}
@@ -145,7 +154,7 @@ IBKR_RUNTIME_CONTROL_STATE_DATE = "global"
 DEFAULT_TRADE_WINDOW_START = (9, 35)
 DEFAULT_TRADE_WINDOW_END = (15, 30)
 DEFAULT_ORDER_WINDOW_END = (15, 0)
-SIGNAL_SUPPRESSED_COMPUTE_SOURCES = {"history_repair", "recompute", "targeted_recompute"}
+SIGNAL_SUPPRESSED_COMPUTE_SOURCES = {"history_repair", "history_rebuild", "recompute", "targeted_recompute"}
 
 
 def current_market_date(now: datetime | None = None) -> str:
@@ -2374,9 +2383,19 @@ def compute():
         source = str(payload.get("source") or "").strip().lower()
         persist_signals = should_persist_compute_signals(payload)
         requested_symbols = get_requested_symbols(payload)
-        targeted_rebuild = bool(requested_symbols) and source in {"history_repair", "recompute", "targeted_recompute"}
-        targeted_rollup = bool(requested_symbols) and source in {"history_repair", "recompute", "targeted_recompute", "canonical_close"}
-        skip_persisted_cursor = source in {"recompute", "history_repair", "targeted_recompute"}
+        targeted_rebuild = bool(requested_symbols) and source in {
+            "history_repair",
+            "history_rebuild",
+            "recompute",
+            "targeted_recompute",
+        }
+        targeted_rollup = bool(requested_symbols) and source in {
+            "history_repair",
+            "recompute",
+            "targeted_recompute",
+            "canonical_close",
+        }
+        skip_persisted_cursor = source in {"recompute", "history_repair", "history_rebuild", "targeted_recompute"}
         requested_environments = get_requested_environments()
         enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
         if not enabled_environments:
@@ -2392,7 +2411,12 @@ def compute():
         processed = 0
         signals_found = 0
         errors = 0
-        force_rollup = bool(payload.get("force_rollup")) or source in {"recompute", "history_repair", "targeted_recompute", "canonical_close"}
+        force_rollup = bool(payload.get("force_rollup")) or source in {
+            "recompute",
+            "history_repair",
+            "targeted_recompute",
+            "canonical_close",
+        }
         indicator_batch = []
         signal_batch = []
         dirty_cursor_environments = set()
@@ -2596,6 +2620,49 @@ def recompute():
         "engines_reset": len(engines),
         "compute": compute_payload,
     })
+
+
+def _run_internal_compute(payload: dict) -> dict:
+    with app.test_request_context("/compute", method="POST", json=payload or {}):
+        response = compute()
+        try:
+            return response.get_json() or {}
+        except Exception:
+            return {}
+
+
+def _run_internal_scan(payload: dict) -> dict:
+    with app.test_request_context("/scan", method="POST", json=payload or {}):
+        response = scan()
+        try:
+            return response.get_json() or {}
+        except Exception:
+            return {}
+
+
+def _get_runtime_status_snapshot(environment: str) -> dict:
+    service = get_ibkr_service()
+    if not service or not hasattr(service, "status"):
+        return {"environment": environment}
+    try:
+        return service.status() or {"environment": environment}
+    except Exception:
+        traceback.print_exc()
+        return {"environment": environment}
+
+
+@app.route("/ibkr/history/rebuild/start", methods=["POST"])
+def ibkr_history_rebuild_start():
+    payload = request.get_json(silent=True) or {}
+    result = history_rebuild_manager.start(payload)
+    status_code = 200 if result.get("ok") else 409
+    return jsonify(result), status_code
+
+
+@app.route("/ibkr/history/rebuild/status", methods=["GET"])
+def ibkr_history_rebuild_status():
+    environment = _normalize_runtime_environment_name(request.args.get("environment"), "live")
+    return jsonify(history_rebuild_manager.status(environment))
 
 
 @app.route("/retention/cleanup", methods=["POST"])
@@ -2936,11 +3003,13 @@ def health():
         "last_scan": datetime.fromtimestamp(last_scan_time).isoformat() if last_scan_time else None,
         "uptime_s": round(time.time() - _start_time, 1),
         "backtest": backtest_service.status(),
+        "history_rebuild": history_rebuild_manager.status(request.args.get("environment") or "live"),
     })
 
 
 @app.route("/status", methods=["GET"])
 def status():
+    requested_environment = _normalize_runtime_environment_name(request.args.get("environment"), "live")
     engine_status = {}
     for (environment, symbol, interval), engine in engines.items():
         key = f"{environment}/{symbol}/{interval}"
@@ -2970,6 +3039,7 @@ def status():
         "last_compute": datetime.fromtimestamp(last_compute_time).isoformat() if last_compute_time else None,
         "last_scan": datetime.fromtimestamp(last_scan_time).isoformat() if last_scan_time else None,
         "backtest": backtest_service.status(),
+        "history_rebuild": history_rebuild_manager.status(requested_environment),
     })
 
 

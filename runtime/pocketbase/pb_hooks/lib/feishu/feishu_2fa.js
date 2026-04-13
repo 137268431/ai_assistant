@@ -11,6 +11,7 @@ var DEFAULT_TWO_FA_CHAT_ID = "oc_c48c10447685e80cfea0c003864aa51f"
 var CARD_UPDATE_COOLDOWN_MS = 15000
 var REQUEST_RENOTIFY_COOLDOWN_MS = 900000
 var DELIVERY_LOCK_TTL_MS = 20000
+var CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000
 var ACTIVE_STATUSES = ["requested", "triggered", "waiting_confirm", "waiting_response"]
 var TERMINAL_STATUSES = ["success", "timeout", "failed"]
 var RECOVERY_FIELDS = [
@@ -140,6 +141,18 @@ function toNumber(value, fallback) {
     return Number.isFinite(num) ? num : (fallback || 0)
 }
 
+function parseShiftedTimeMs(value, offsetMinutes) {
+    var text = String(value || "").trim()
+    if (!text) return 0
+    var parsed = Date.parse(text.replace(" ", "T") + "Z")
+    if (!Number.isFinite(parsed)) return 0
+    return parsed - (Number(offsetMinutes || 0) * 60000)
+}
+
+function parseUsTimeMs(value) {
+    return parseShiftedTimeMs(value, -4 * 60)
+}
+
 function isActiveStatus(status) {
     return ACTIVE_STATUSES.indexOf(String(status || "")) !== -1
 }
@@ -153,30 +166,157 @@ function isTerminalStatus(status) {
     return TERMINAL_STATUSES.indexOf(String(status || "")) !== -1
 }
 
+function derive2faActionState(stateData, options) {
+    var nowMs = toNumber(options && options.now_ms, Date.now())
+    var state = { ...(stateData || {}) }
+    var status = String(state.status || "").trim().toLowerCase()
+    var responseStatus = String(state.response_status || "").trim().toLowerCase()
+    var challengeCode = String(state.challenge_code || "").trim()
+    var feedback = String(state.challenge_feedback || "").trim()
+    var recoveryPhase = String(state.recovery_phase || "").trim().toLowerCase()
+    var submittedMs = parseUsTimeMs(state.response_submitted_at)
+    var rejectedMs = parseUsTimeMs(state.response_rejected_at)
+    var submittedAgeMs = submittedMs > 0 ? Math.max(0, nowMs - submittedMs) : 0
+    var rejectedAgeMs = rejectedMs > 0 ? Math.max(0, nowMs - rejectedMs) : 0
+    var operatorAction = "request_approval"
+    var resetRecommended = false
+    var resetReason = ""
+
+    if (recoveryPhase === "panic_resetting") {
+        operatorAction = "panic_resetting"
+    } else if (state.manual_takeover_active) {
+        operatorAction = "manual_takeover"
+    } else if (status === "waiting_response") {
+        if (responseStatus === "received") {
+            operatorAction = "wait_browser_submit"
+        } else if (responseStatus === "submitted") {
+            operatorAction = "wait_auth_restore"
+            if (submittedAgeMs >= CHALLENGE_RESET_RECOMMEND_MS) {
+                operatorAction = "panic_reset"
+                resetRecommended = true
+                resetReason = "submitted_no_recovery"
+            }
+        } else if (responseStatus === "gateway_rejected") {
+            operatorAction = "retry_response_same_challenge"
+            if (rejectedAgeMs >= CHALLENGE_RESET_RECOMMEND_MS) {
+                operatorAction = "panic_reset"
+                resetRecommended = true
+                resetReason = "gateway_rejected_no_recovery"
+            }
+        } else if (responseStatus === "submit_failed") {
+            operatorAction = "retry_response_same_challenge"
+        } else {
+            operatorAction = challengeCode ? "submit_response" : "wait_challenge"
+        }
+    } else if (status === "waiting_confirm") {
+        operatorAction = "confirm_push"
+    } else if (status === "triggered") {
+        operatorAction = "wait_for_mode"
+    } else if (status === "success") {
+        operatorAction = "none"
+    } else if (status === "timeout" || status === "failed") {
+        operatorAction = "request_new_cycle"
+    }
+
+    state.response_status = responseStatus
+    state.challenge_feedback = feedback
+    state.operator_action = operatorAction
+    state.reset_recommended = resetRecommended
+    state.reset_reason = resetReason
+    state.response_submitted_age_sec = submittedAgeMs > 0 ? Math.round(submittedAgeMs / 1000) : 0
+    state.response_rejected_age_sec = rejectedAgeMs > 0 ? Math.round(rejectedAgeMs / 1000) : 0
+    return state
+}
+
+function buildWaitingResponseSummary(stateData) {
+    var state = derive2faActionState(stateData)
+    var feedback = state.challenge_feedback || "Authentication failed"
+    if (state.reset_recommended) {
+        if (state.response_status === "submitted") {
+            return "Response Code 已提交较久但 Gateway 仍未恢复认证。当前旧 2FA / Session 状态很可能已失配，请在 Runtime 页面执行“全量清空并重新验证”。"
+        }
+        if (state.response_status === "gateway_rejected") {
+            return "Gateway 已拒绝当前 Response Code，且旧轮次长时间未恢复。请在 Runtime 页面执行“全量清空并重新验证”。"
+        }
+    }
+    if (state.response_status === "received") {
+        return "已收到 Response Code，等待浏览器提交流程。当前已有 active 轮次，请不要重复触发。"
+    }
+    if (state.response_status === "submitted") {
+        return "Response Code 已提交，等待 Gateway 会话恢复认证。当前已有 active 轮次，请不要重复触发。"
+    }
+    if (state.response_status === "gateway_rejected") {
+        return "Gateway 已拒绝当前 Response Code（" + feedback + "）。请核对当前 Challenge 后重新生成并提交。"
+    }
+    if (state.response_status === "submit_failed") {
+        return "浏览器提交 Response Code 失败。请在 Runtime 页面重试，不要重复触发新一轮。"
+    }
+    return "当前已进入 Challenge/Response。请在 App 输入 Challenge 生成 Response Code，并去 Runtime 页面提交；不要重复触发新一轮。"
+}
+
+function buildWaitingResponsePrompt(stateData) {
+    var state = derive2faActionState(stateData)
+    var feedback = state.challenge_feedback || "Authentication failed"
+    if (state.reset_recommended) {
+        return "**操作提示**: 当前旧 2FA / Session 状态很可能已失配。不要继续围绕旧 Challenge 反复尝试；请打开 Runtime 页面执行“全量清空并重新验证”。"
+    }
+    if (state.response_status === "received") {
+        return "**操作提示**: Runtime 已收到你的 Response Code，正在等待 compute 浏览器提交流程。先不要重复提交，也不要再触发新一轮。"
+    }
+    if (state.response_status === "submitted") {
+        return "**操作提示**: 浏览器已提交 Response Code，正在等待 Gateway 恢复认证。此时不要再提交旧 Response，也不要重复触发新一轮。"
+    }
+    if (state.response_status === "gateway_rejected") {
+        return "**操作提示**: Gateway 已返回失败反馈（" + feedback + "）。请核对当前 Challenge，用 App 重新生成新的 Response Code 后去 Runtime 页面重提。"
+    }
+    if (state.response_status === "submit_failed") {
+        return "**操作提示**: 这一步不是点手机推送；但浏览器提交动作失败了。请打开 Runtime 页面重新提交当前 Challenge 对应的 Response Code。"
+    }
+    return "**操作提示**: 这一步不是点手机推送。请在 IBKR App 的 Two-Factor Authentication 输入当前 Challenge，拿到 Response Code 后打开 Runtime 页面提交。当前已有 active 轮次，请不要重复触发。"
+}
+
+function getActiveCyclePrimaryLabel(stateData) {
+    var state = derive2faActionState(stateData)
+    if (state.status === "waiting_response") {
+        if (state.reset_recommended) return "打开 Runtime 干净重开"
+        if (state.response_status === "gateway_rejected" || state.response_status === "submit_failed") return "打开 Runtime 重新提交响应码"
+        if (state.response_status === "submitted") return "打开 Runtime 查看提交状态"
+        if (state.response_status === "received") return "打开 Runtime 查看提交流程"
+        return "打开 Runtime 提交响应码"
+    }
+    return "打开 Runtime 查看当前轮次"
+}
+
 function buildDeliveryFingerprint(stateData) {
+    var derived = derive2faActionState(stateData)
     return JSON.stringify({
-        status: stateData.status || "",
-        mode: stateData.mode || "",
-        challenge_code: stateData.challenge_code || "",
-        response_status: stateData.response_status || "",
-        recovery_phase: stateData.recovery_phase || "",
-        manual_takeover_active: stateData.manual_takeover_active ? "yes" : "no",
-        probe_result: stateData.probe_result || "",
-        reason: stateData.reason || "",
-        message: stateData.message || "",
-        last_result: stateData.last_result || "",
-        last_error: stateData.last_error || "",
-        requested_at: stateData.requested_at || "",
-        triggered_at: stateData.triggered_at || "",
-        result_at: stateData.result_at || "",
-        restarted_from_active_cycle: stateData.restarted_from_active_cycle ? "yes" : "no",
+        status: derived.status || "",
+        mode: derived.mode || "",
+        challenge_code: derived.challenge_code || "",
+        response_status: derived.response_status || "",
+        response_rejected_at: derived.response_rejected_at || "",
+        challenge_feedback: derived.challenge_feedback || "",
+        operator_action: derived.operator_action || "",
+        reset_recommended: derived.reset_recommended ? "yes" : "no",
+        reset_reason: derived.reset_reason || "",
+        recovery_phase: derived.recovery_phase || "",
+        manual_takeover_active: derived.manual_takeover_active ? "yes" : "no",
+        probe_result: derived.probe_result || "",
+        reason: derived.reason || "",
+        message: derived.message || "",
+        last_result: derived.last_result || "",
+        last_error: derived.last_error || "",
+        requested_at: derived.requested_at || "",
+        triggered_at: derived.triggered_at || "",
+        result_at: derived.result_at || "",
+        restarted_from_active_cycle: derived.restarted_from_active_cycle ? "yes" : "no",
         previous_cycle: {
-            status: stateData.previous_cycle && stateData.previous_cycle.status || "",
-            mode: stateData.previous_cycle && stateData.previous_cycle.mode || "",
-            challenge_code: stateData.previous_cycle && stateData.previous_cycle.challenge_code || "",
-            superseded_at: stateData.previous_cycle && stateData.previous_cycle.superseded_at || "",
+            status: derived.previous_cycle && derived.previous_cycle.status || "",
+            mode: derived.previous_cycle && derived.previous_cycle.mode || "",
+            challenge_code: derived.previous_cycle && derived.previous_cycle.challenge_code || "",
+            superseded_at: derived.previous_cycle && derived.previous_cycle.superseded_at || "",
         },
-        detail: stateData.detail || {},
+        detail: derived.detail || {},
     })
 }
 
@@ -273,6 +413,8 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
         state.response_status = ""
         state.response_received_at = ""
         state.response_submitted_at = ""
+        state.response_rejected_at = ""
+        state.challenge_feedback = ""
         state.page_title = ""
         state.page_url = ""
         state.gateway_trace = ""
@@ -282,7 +424,7 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
         state.recovery_phase = "recovered"
         state.auto_restart_scheduled = false
         state.manual_takeover_active = false
-        return state
+        return derive2faActionState(state)
     }
 
     if (!runtimeAuthenticated || gatewayStatusCode === 401) {
@@ -298,7 +440,7 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
         }
     }
 
-    return state
+    return derive2faActionState(state)
 }
 
 function saveState(environment, patch, options) {
@@ -375,6 +517,8 @@ function ensureRequestedState(environment, options) {
         patch.response_status = ""
         patch.response_received_at = ""
         patch.response_submitted_at = ""
+        patch.response_rejected_at = ""
+        patch.challenge_feedback = ""
         patch.next_retry_at = ""
         patch.recovery_phase = "idle"
         patch.recovery_reason = ""
@@ -440,37 +584,46 @@ function buildOpenButton(label, url, type) {
 }
 
 function build2faCard(stateData, environment) {
-    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || stateData.environment || "", envUtils.LIVE_ENVIRONMENT)
-    var cfg = getStatusConfig(stateData.status)
-    var summary = stateData.message || cfg.summary
-    var detailMarkdown = buildDetailMarkdown(stateData.detail)
-    var previousCycle = stateData.previous_cycle && typeof stateData.previous_cycle === "object" ? stateData.previous_cycle : null
-    var currentCycleActive = isCurrentCycleActiveStatus(stateData.status)
+    var effectiveState = derive2faActionState(stateData)
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || effectiveState.environment || "", envUtils.LIVE_ENVIRONMENT)
+    var cfg = getStatusConfig(effectiveState.status)
+    var summary = effectiveState.status === "waiting_response"
+        ? buildWaitingResponseSummary(effectiveState)
+        : (effectiveState.message || cfg.summary)
+    var detailMarkdown = buildDetailMarkdown(effectiveState.detail)
+    var previousCycle = effectiveState.previous_cycle && typeof effectiveState.previous_cycle === "object" ? effectiveState.previous_cycle : null
+    var currentCycleActive = isCurrentCycleActiveStatus(effectiveState.status)
     var runtimeUrl = PB_HOST + "/ibkr_runtime.html?environment=" + encodeURIComponent(runtimeEnvironment)
     var systemUrl = PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment)
     var metaLines = [
         "**环境**: " + envUtils.getEnvironmentTag(runtimeEnvironment),
-        "**状态**: " + cfg.emoji + " " + (stateData.status || "requested"),
-        "**请求时间**: " + (stateData.requested_at || "-"),
+        "**状态**: " + cfg.emoji + " " + (effectiveState.status || "requested"),
+        "**请求时间**: " + (effectiveState.requested_at || "-"),
     ]
 
-    if (stateData.triggered_at) metaLines.push("**触发时间**: " + stateData.triggered_at)
-    if (stateData.result_at) metaLines.push("**结果时间**: " + stateData.result_at)
-    if (stateData.reason) metaLines.push("**触发原因**: " + stateData.reason)
-    if (stateData.recovery_phase) metaLines.push("**恢复阶段**: " + stateData.recovery_phase)
-    if (stateData.interruption_kind) metaLines.push("**中断类型**: " + stateData.interruption_kind)
-    if (stateData.mode) metaLines.push("**验证模式**: " + getModeLabel(stateData.mode))
-    if (stateData.challenge_code) metaLines.push("**Challenge**: " + stateData.challenge_code)
-    if (stateData.manual_takeover_active) metaLines.push("**人工接管**: yes")
-    if (stateData.manual_takeover_until) metaLines.push("**人工接管到期**: " + stateData.manual_takeover_until)
-    if (stateData.probe_result) metaLines.push("**静默探测**: " + stateData.probe_result)
-    if (stateData.probe_attempts) metaLines.push("**探测次数**: " + stringifyValue(stateData.probe_attempts))
-    if (stateData.last_runtime_authenticated_at) metaLines.push("**最近认证成功**: " + stateData.last_runtime_authenticated_at)
-    if (stateData.response_received_at) metaLines.push("**响应码收到**: " + stateData.response_received_at)
-    if (stateData.response_submitted_at) metaLines.push("**响应码提交**: " + stateData.response_submitted_at)
-    if (stateData.last_result) metaLines.push("**反馈**: " + stateData.last_result)
-    if (stateData.last_error) metaLines.push("**异常**: " + stateData.last_error)
-    if (stateData.restarted_from_active_cycle) metaLines.push("**当前轮次**: 已替换上一轮")
+    if (effectiveState.triggered_at) metaLines.push("**触发时间**: " + effectiveState.triggered_at)
+    if (effectiveState.result_at) metaLines.push("**结果时间**: " + effectiveState.result_at)
+    if (effectiveState.reason) metaLines.push("**触发原因**: " + effectiveState.reason)
+    if (effectiveState.recovery_phase) metaLines.push("**恢复阶段**: " + effectiveState.recovery_phase)
+    if (effectiveState.interruption_kind) metaLines.push("**中断类型**: " + effectiveState.interruption_kind)
+    if (effectiveState.mode) metaLines.push("**验证模式**: " + getModeLabel(effectiveState.mode))
+    if (effectiveState.challenge_code) metaLines.push("**Challenge**: " + effectiveState.challenge_code)
+    if (effectiveState.response_status) metaLines.push("**响应状态**: " + effectiveState.response_status)
+    if (effectiveState.challenge_feedback) metaLines.push("**Gateway反馈**: " + effectiveState.challenge_feedback)
+    if (effectiveState.manual_takeover_active) metaLines.push("**人工接管**: yes")
+    if (effectiveState.manual_takeover_until) metaLines.push("**人工接管到期**: " + effectiveState.manual_takeover_until)
+    if (effectiveState.probe_result) metaLines.push("**静默探测**: " + effectiveState.probe_result)
+    if (effectiveState.probe_attempts) metaLines.push("**探测次数**: " + stringifyValue(effectiveState.probe_attempts))
+    if (effectiveState.last_runtime_authenticated_at) metaLines.push("**最近认证成功**: " + effectiveState.last_runtime_authenticated_at)
+    if (effectiveState.response_received_at) metaLines.push("**响应码收到**: " + effectiveState.response_received_at)
+    if (effectiveState.response_submitted_at) metaLines.push("**响应码提交**: " + effectiveState.response_submitted_at)
+    if (effectiveState.response_rejected_at) metaLines.push("**响应码拒绝**: " + effectiveState.response_rejected_at)
+    if (effectiveState.operator_action) metaLines.push("**建议动作**: " + effectiveState.operator_action)
+    if (effectiveState.reset_recommended) metaLines.push("**建议重开**: yes")
+    if (effectiveState.reset_reason) metaLines.push("**重开原因**: " + effectiveState.reset_reason)
+    if (effectiveState.last_result) metaLines.push("**反馈**: " + effectiveState.last_result)
+    if (effectiveState.last_error) metaLines.push("**异常**: " + effectiveState.last_error)
+    if (effectiveState.restarted_from_active_cycle) metaLines.push("**当前轮次**: 已替换上一轮")
     if (previousCycle && previousCycle.superseded_at) metaLines.push("**上一轮替换时间**: " + previousCycle.superseded_at)
     if (previousCycle && previousCycle.status) metaLines.push("**上一轮状态**: " + previousCycle.status)
     if (previousCycle && previousCycle.mode) metaLines.push("**上一轮模式**: " + getModeLabel(previousCycle.mode))
@@ -508,7 +661,7 @@ function build2faCard(stateData, environment) {
         })
     }
 
-    if (stateData.status === "triggered") {
+    if (effectiveState.status === "triggered") {
         elements.push({ tag: "hr" })
         elements.push({
             tag: "markdown",
@@ -516,7 +669,7 @@ function build2faCard(stateData, environment) {
         })
     }
 
-    if (stateData.status === "waiting_confirm") {
+    if (effectiveState.status === "waiting_confirm") {
         elements.push({ tag: "hr" })
         elements.push({
             tag: "markdown",
@@ -524,23 +677,23 @@ function build2faCard(stateData, environment) {
         })
     }
 
-    if (stateData.status === "waiting_response" && stateData.challenge_code) {
+    if (effectiveState.status === "waiting_response" && effectiveState.challenge_code) {
         elements.push({ tag: "hr" })
         elements.push({
             tag: "markdown",
-            content: "**操作提示**: 这一步不是点手机推送。请在 IBKR App 的 Two-Factor Authentication 输入当前 Challenge，拿到 Response Code 后打开 Runtime 页面提交。当前已有 active 轮次，请不要重复触发。"
+            content: buildWaitingResponsePrompt(effectiveState)
         })
     }
 
     var primaryButton = null
-    if ((stateData.status || "requested") !== "success") {
+    if ((effectiveState.status || "requested") !== "success") {
         primaryButton = currentCycleActive
             ? buildOpenButton(
-                stateData.status === "waiting_response" ? "打开 Runtime 提交响应码" : "打开 Runtime 查看当前轮次",
+                getActiveCyclePrimaryLabel(effectiveState),
                 runtimeUrl,
                 "primary"
             )
-            : buildActionButton(stateData, runtimeEnvironment)
+            : buildActionButton(effectiveState, runtimeEnvironment)
     }
 
     elements.push({ tag: "hr" })
@@ -837,6 +990,8 @@ function trigger2faFlow(options) {
         response_status: "",
         response_received_at: "",
         response_submitted_at: "",
+        response_rejected_at: "",
+        challenge_feedback: "",
         next_retry_at: "",
         recovery_phase: "triggered",
         recovery_reason: opts.reason || currentData.reason || "manual_reauth",
@@ -977,6 +1132,8 @@ function report2faResult(options) {
         patch.response_status = ""
         patch.response_received_at = ""
         patch.response_submitted_at = ""
+        patch.response_rejected_at = ""
+        patch.challenge_feedback = ""
         patch.page_title = ""
         patch.page_url = ""
         patch.gateway_trace = ""
@@ -1077,8 +1234,12 @@ function submit2faResponse(options) {
         response_code: responseCode,
         response_status: "received",
         response_received_at: timeUtils.getTimeStrings().us,
+        response_submitted_at: "",
+        response_rejected_at: "",
+        challenge_feedback: "",
         source: opts.source || currentData.source || "runtime_page",
         last_result: "已收到 Response Code，等待浏览器提交流程。",
+        last_error: "",
     })
     var delivered = deliverCard(saved, { bypassThrottle: true })
 
@@ -1114,17 +1275,32 @@ function handle2faCardCallback(c, options) {
         }, updateToken)
     }
 
-    var currentStatus = String(currentData.status || "").trim().toLowerCase()
+    var effectiveState = derive2faActionState(currentData)
+    var currentStatus = String(effectiveState.status || "").trim().toLowerCase()
     var currentCycleActive = isCurrentCycleActiveStatus(currentStatus)
     var forceRestart = !!opts.forceRestart
 
     if (currentCycleActive && !forceRestart) {
+        var activeToast = "当前已有一轮 2FA 进行中，请继续当前轮次，不要重复触发。"
+        if (currentStatus === "waiting_response") {
+            if (effectiveState.reset_recommended) {
+                activeToast = "当前旧 2FA / Session 状态很可能已失配，请打开 Runtime 页面执行“全量清空并重新验证”，不要重新触发。"
+            } else if (effectiveState.response_status === "gateway_rejected") {
+                activeToast = "Gateway 已拒绝当前 Response Code，请打开 Runtime 页面核对当前 Challenge 后重新提交，不要重新触发。"
+            } else if (effectiveState.response_status === "submit_failed") {
+                activeToast = "浏览器提交 Response Code 失败，请打开 Runtime 页面重新提交当前 Challenge 的响应码，不要重新触发。"
+            } else if (effectiveState.response_status === "submitted") {
+                activeToast = "当前 Response Code 已提交，正在等待 Gateway 恢复认证；不要重新触发。"
+            } else if (effectiveState.response_status === "received") {
+                activeToast = "Runtime 已收到 Response Code，正在等待浏览器提交流程；不要重新触发。"
+            } else {
+                activeToast = "当前已进入 Challenge/Response，请打开 Runtime 页面提交 Response Code，不要重新触发。"
+            }
+        }
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: {
                 type: "warning",
-                content: currentStatus === "waiting_response"
-                    ? "当前已进入 Challenge/Response，请打开 Runtime 页面提交 Response Code，不要重新触发。"
-                    : "当前已有一轮 2FA 进行中，请继续当前轮次，不要重复触发。"
+                content: activeToast
             },
             card: { type: "raw", data: build2faCard(currentData, runtimeEnvironment) }
         }, updateToken)
@@ -1155,6 +1331,7 @@ module.exports = {
     IBKR_2FA_STATE_KEY: IBKR_2FA_STATE_KEY,
     getStatePayload: getStatePayload,
     normalizeStateWithRuntime: normalizeStateWithRuntime,
+    derive2faActionState: derive2faActionState,
     build2faCard: build2faCard,
     request2faApproval: request2faApproval,
     trigger2faFlow: trigger2faFlow,

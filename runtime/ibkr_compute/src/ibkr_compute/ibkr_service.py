@@ -1258,6 +1258,8 @@ class IBKRTradingService:
                     "response_status": "",
                     "response_received_at": "",
                     "response_submitted_at": "",
+                    "response_rejected_at": "",
+                    "challenge_feedback": "",
                     "page_title": "",
                     "page_url": "",
                     "gateway_trace": "",

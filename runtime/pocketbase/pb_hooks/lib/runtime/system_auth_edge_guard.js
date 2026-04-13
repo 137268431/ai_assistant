@@ -142,6 +142,13 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
         mode: String(state.mode || ""),
         challenge_code: String(state.challenge_code || ""),
         response_status: String(state.response_status || ""),
+        response_received_at: String(state.response_received_at || ""),
+        response_submitted_at: String(state.response_submitted_at || ""),
+        response_rejected_at: String(state.response_rejected_at || ""),
+        challenge_feedback: String(state.challenge_feedback || ""),
+        operator_action: String(state.operator_action || ""),
+        reset_recommended: state.reset_recommended === true,
+        reset_reason: String(state.reset_reason || ""),
         last_result: String(state.last_result || ""),
         last_error: String(state.last_error || ""),
         reason: String(state.reason || ""),
@@ -156,6 +163,78 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
 
 function isAuthActiveStatus(status) {
     return ["requested", "triggered", "waiting_confirm", "waiting_response"].indexOf(String(status || "").trim().toLowerCase()) !== -1
+}
+
+function isWaitingResponseIssueKind(kind) {
+    return String(kind || "").trim().toLowerCase().indexOf("waiting_response") === 0
+}
+
+function buildWaitingResponseAdvice(auth) {
+    if (!auth) return "优先打开 Runtime 页面确认当前轮次。"
+    if (auth.reset_recommended) {
+        return "当前旧 2FA / Session 状态很可能已失配。请直接去 Runtime 页面点“全量清空并重新验证”，不要继续围绕旧 Challenge / Response 重试。"
+    }
+    if (auth.response_status === "gateway_rejected") {
+        return "Gateway 已拒绝当前 Response Code。请在 Runtime 页面核对当前 Challenge，用 IBKR App 重新生成 Response Code 后重提。"
+    }
+    if (auth.response_status === "submitted") {
+        return "Response Code 已提交。先不要重新触发或重复提交；继续观察 Runtime 是否恢复认证。"
+    }
+    if (auth.response_status === "received") {
+        return "Runtime 已收到 Response Code。先不要重复输入，优先观察是否自动推进到 submitted。"
+    }
+    if (auth.response_status === "submit_failed") {
+        return "浏览器提交动作失败。请在 Runtime 页面重新提交当前 Challenge 对应的 Response Code，不要重新触发。"
+    }
+    return "不要再点旧确认消息。若接受 Challenge/Response，请按当前 Challenge 提交 Response Code；若不想继续旧轮次，请去 Runtime 页面点“全量清空并重新验证”。"
+}
+
+function buildWaitingResponseIssue(auth) {
+    const feedback = String(auth && auth.challenge_feedback || "").trim()
+    if (auth && auth.reset_recommended) {
+        return {
+            kind: "waiting_response_desynced",
+            title: "IBKR 2FA 会话已失配，建议干净重开",
+            summary: auth.response_status === "gateway_rejected"
+                ? "Gateway 已拒绝当前 Response Code，且旧轮次长时间未恢复。当前旧 2FA / Session 状态很可能已失配，请直接去 Runtime 页面执行“全量清空并重新验证”。"
+                : "Response Code 已提交较久但 Gateway 仍未恢复认证。当前旧 2FA / Session 状态很可能已失配，请直接去 Runtime 页面执行“全量清空并重新验证”。",
+        }
+    }
+    if (auth && auth.response_status === "gateway_rejected") {
+        return {
+            kind: "waiting_response_rejected",
+            title: "IBKR Gateway 已拒绝当前 Response Code",
+            summary: feedback
+                ? `Gateway 已返回失败反馈（${feedback}）。请核对当前 Challenge 后重新生成并提交。`
+                : "Gateway 已明确拒绝当前 Response Code。请核对当前 Challenge 后重新生成并提交。",
+        }
+    }
+    if (auth && auth.response_status === "submitted") {
+        return {
+            kind: "waiting_response_submitted",
+            title: "IBKR Response Code 已提交，等待认证恢复",
+            summary: "Runtime 已经把当前 Response Code 提交给 Gateway。先不要重复提交或重开，继续观察会话是否恢复认证。",
+        }
+    }
+    if (auth && auth.response_status === "received") {
+        return {
+            kind: "waiting_response_received",
+            title: "IBKR Response Code 已收到，等待浏览器提交",
+            summary: "Runtime 已收到 Response Code，但浏览器提交流程尚未完成。先不要重复提交，继续观察当前轮次。",
+        }
+    }
+    if (auth && auth.response_status === "submit_failed") {
+        return {
+            kind: "waiting_response_submit_failed",
+            title: "IBKR Response Code 浏览器提交失败",
+            summary: "Runtime 已收到 Response Code，但浏览器提交动作失败。请打开 Runtime 页面重新提交当前 Challenge 的 Response Code。",
+        }
+    }
+    return {
+        kind: "waiting_response",
+        title: "IBKR 2FA 已切到 Challenge/Response",
+        summary: "本轮 2FA 已不再是手机确认。不要再点旧的确认消息；如不想提交 Response Code，请去 Runtime 页面执行“全量清空并重新验证”。",
+    }
 }
 
 function buildAuthImmediateIssue(auth) {
@@ -173,11 +252,7 @@ function buildAuthImmediateIssue(auth) {
     }
 
     if (hasRequest && status === "waiting_response") {
-        return {
-            kind: "waiting_response",
-            title: "IBKR 2FA 已切到 Challenge/Response",
-            summary: "本轮 2FA 已不再是手机确认。不要再点旧的确认消息；如不想提交 Response Code，请去 Runtime 页面执行“全量清空并重新验证”。",
-        }
+        return buildWaitingResponseIssue(auth)
     }
 
     if (hasRequest && status === "waiting_confirm") {
@@ -217,7 +292,7 @@ function buildAuthImmediateIssue(auth) {
 
 function isOperational2faIssue(issue) {
     const kind = String(issue && issue.kind || "")
-    return kind === "requested" || kind === "waiting_confirm" || kind === "waiting_response"
+    return kind === "requested" || kind === "waiting_confirm" || isWaitingResponseIssueKind(kind)
 }
 
 function buildAuthImmediateFingerprint(auth, issue) {
@@ -232,6 +307,10 @@ function buildAuthImmediateFingerprint(auth, issue) {
         runtime_authenticated: auth && auth.runtime_authenticated ? "yes" : "no",
         challenge_code: auth && auth.challenge_code || "",
         response_status: auth && auth.response_status || "",
+        response_rejected_at: auth && auth.response_rejected_at || "",
+        challenge_feedback: auth && auth.challenge_feedback || "",
+        operator_action: auth && auth.operator_action || "",
+        reset_recommended: auth && auth.reset_recommended ? "yes" : "no",
     })
 }
 
@@ -257,7 +336,7 @@ function shouldNotifyAuthImmediateAlert(previous, auth, issue, fingerprint, nowM
     const currentCycleId = String(auth && auth.cycle_id || "")
 
     if (
-        (issueKind === "waiting_confirm" || issueKind === "waiting_response")
+        (issueKind === "waiting_confirm" || isWaitingResponseIssueKind(issueKind))
         && !!currentCycleId
         && issueKind === prevIssueKind
         && currentCycleId === prevCycleId
@@ -358,8 +437,8 @@ function runIbkrAuthEdgeGuard() {
                 "Session认证": auth.runtime_authenticated ? "yes" : "no",
                 "Runtime已启动": auth.runtime_started ? "yes" : "no",
                 "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
-                "处理建议": issue.kind === "waiting_response"
-                    ? "不要再点旧确认消息。若不接受 Challenge/Response，请去 Runtime 页面点“全量清空并重新验证”；若接受，则按当前 Challenge 提交 Response Code。"
+                "处理建议": isWaitingResponseIssueKind(issue.kind)
+                    ? buildWaitingResponseAdvice(auth)
                     : "优先打开 Runtime 页面确认当前状态；如果仍是 waiting_confirm，只在 IBKR App 点一次确认。",
             }
             if (auth.reason) detail["触发原因"] = auth.reason
@@ -367,6 +446,13 @@ function runIbkrAuthEdgeGuard() {
             if (auth.mode) detail["验证模式"] = auth.mode
             if (auth.challenge_code) detail["Challenge"] = auth.challenge_code
             if (auth.response_status) detail["响应状态"] = auth.response_status
+            if (auth.response_received_at) detail["响应码收到"] = auth.response_received_at
+            if (auth.response_submitted_at) detail["响应码提交"] = auth.response_submitted_at
+            if (auth.response_rejected_at) detail["响应码拒绝"] = auth.response_rejected_at
+            if (auth.challenge_feedback) detail["Gateway反馈"] = auth.challenge_feedback
+            if (auth.operator_action) detail["建议动作"] = auth.operator_action
+            if (auth.reset_recommended) detail["建议重开"] = "yes"
+            if (auth.reset_reason) detail["重开原因"] = auth.reset_reason
             if (auth.requested_at) detail["请求时间"] = auth.requested_at
             if (auth.triggered_at) detail["触发时间"] = auth.triggered_at
             if (auth.page_url) detail["页面"] = auth.page_url
@@ -443,6 +529,10 @@ function runIbkrAuthPendingGuard() {
                 age_bucket: Math.floor((auth.age_min || 0) / 5),
                 challenge: auth.challenge_code ? "yes" : "no",
                 response_status: auth.response_status || "",
+                response_rejected_at: auth.response_rejected_at || "",
+                challenge_feedback: auth.challenge_feedback || "",
+                operator_action: auth.operator_action || "",
+                reset_recommended: auth.reset_recommended ? "yes" : "no",
                 gateway_status_code: auth.gateway_status_code || 0,
                 runtime_started: auth.runtime_started ? "yes" : "no",
                 runtime_authenticated: auth.runtime_authenticated ? "yes" : "no",
@@ -465,7 +555,7 @@ function runIbkrAuthPendingGuard() {
             if (auth.status === "waiting_confirm") {
                 title = "IBKR 2FA 长时间未确认"
             } else if (auth.status === "waiting_response") {
-                title = "IBKR 2FA 已卡在 Challenge/Response"
+                title = buildWaitingResponseIssue(auth).title
             } else if (auth.status === "requested" || auth.status === "triggered") {
                 title = "IBKR 2FA 长时间未完成"
             }
@@ -483,11 +573,18 @@ function runIbkrAuthPendingGuard() {
             if (auth.mode) detail["验证模式"] = auth.mode
             if (auth.challenge_code) detail["Challenge"] = auth.challenge_code
             if (auth.response_status) detail["响应状态"] = auth.response_status
+            if (auth.response_received_at) detail["响应码收到"] = auth.response_received_at
+            if (auth.response_submitted_at) detail["响应码提交"] = auth.response_submitted_at
+            if (auth.response_rejected_at) detail["响应码拒绝"] = auth.response_rejected_at
+            if (auth.challenge_feedback) detail["Gateway反馈"] = auth.challenge_feedback
+            if (auth.operator_action) detail["建议动作"] = auth.operator_action
+            if (auth.reset_recommended) detail["建议重开"] = "yes"
+            if (auth.reset_reason) detail["重开原因"] = auth.reset_reason
             if (auth.triggered_at) detail["触发时间"] = auth.triggered_at
             if (auth.last_result) detail["最近反馈"] = auth.last_result
             if (auth.last_error) detail["最近错误"] = auth.last_error
             detail["处理建议"] = auth.status === "waiting_response"
-                ? "这轮已经不是手机确认。若不接受 Challenge/Response，请直接去 Runtime 页面点“全量清空并重新验证”。"
+                ? buildWaitingResponseAdvice(auth)
                 : "优先去 Runtime 页面确认当前轮次；如果仍是手机确认，只在 IBKR App 点一次确认。"
 
             const notified = feishuSystem.notifyWarning("ibkr_compute", title, detail, environment)

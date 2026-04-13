@@ -18,9 +18,12 @@ from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.data_backfill import DataBackfill
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bars
+from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
     ET,
+    HIGHER_INTERVALS,
     build_runtime_timestamps,
     build_signal_id,
     classify_session,
@@ -478,6 +481,10 @@ class BacktestService:
         benchmark_symbol = str(payload.get("benchmark_symbol") or "SPY").strip().upper() or "SPY"
         date_from = str(payload.get("date_from") or now.strftime("%Y-%m-%d")).strip()
         date_to = str(payload.get("date_to") or date_from).strip()
+        historical_targets_replay = symbol_source == "targets" and (
+            date_from != now.strftime("%Y-%m-%d") or date_to != now.strftime("%Y-%m-%d")
+        )
+        effective_symbol_source = "daily_scan_replay" if historical_targets_replay else symbol_source
         session_mode = str(payload.get("session_mode") or "extended").strip().lower() or "extended"
         if session_mode not in SESSION_MODE_VALUES:
             session_mode = "extended"
@@ -520,7 +527,9 @@ class BacktestService:
         return {
             "name": name,
             "source_environment": source_environment,
-            "symbol_source": symbol_source,
+            "symbol_source": effective_symbol_source,
+            "requested_symbol_source": symbol_source,
+            "historical_targets_replay": historical_targets_replay,
             "symbols": symbols,
             "symbols_text": ",".join(symbols),
             "benchmark_symbol": benchmark_symbol,
@@ -549,6 +558,8 @@ class BacktestService:
                 "scan_warmup_bars": scan_warmup_bars,
                 "premarket_cutoff_time": premarket_cutoff_time,
                 "persist_backtest_indicators": persist_backtest_indicators,
+                "requested_symbol_source": symbol_source,
+                "historical_targets_replay": historical_targets_replay,
             },
             "variants": variants,
             "strategy_tag": strategy_tag,
@@ -683,6 +694,8 @@ class BacktestService:
             "requested_symbols": request["symbols"],
             "max_symbols": request["max_symbols"],
             "strategy_tag": request["strategy_tag"],
+            "requested_symbol_source": request.get("requested_symbol_source") or request["symbol_source"],
+            "historical_targets_replay": bool(request.get("historical_targets_replay")),
             "warmup_bars": request.get("warmup_bars", BACKTEST_WARMUP_BARS),
             "scan_warmup_bars": request.get("scan_warmup_bars", request.get("warmup_bars", BACKTEST_WARMUP_BARS)),
             "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
@@ -750,6 +763,8 @@ class BacktestService:
                 "extra": {
                     "requested_symbols": request["symbols"],
                     "max_symbols": request["max_symbols"],
+                    "requested_symbol_source": request.get("requested_symbol_source") or request["symbol_source"],
+                    "historical_targets_replay": bool(request.get("historical_targets_replay")),
                     "warmup_bars": request.get("warmup_bars", BACKTEST_WARMUP_BARS),
                     "scan_warmup_bars": request.get("scan_warmup_bars", request.get("warmup_bars", BACKTEST_WARMUP_BARS)),
                     "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
@@ -2120,6 +2135,7 @@ class BacktestService:
                     "source": "backfill",
                     "extra": {
                         "source": "ibkr_history_backfill",
+                        "canonical": True,
                         "conid": conid,
                         "interval": normalized_interval,
                         "outside_rth": True,
@@ -2158,6 +2174,122 @@ class BacktestService:
             if bar_ms > 0 and bar_ms not in merged:
                 merged[bar_ms] = row
         return [merged[key] for key in sorted(merged)]
+
+    def _persist_backfill_rows(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        try:
+            with open_pb_sqlite(readonly=False, timeout=30.0) as conn:
+                with conn:
+                    return upsert_bars(conn, rows)
+        except Exception:
+            traceback.print_exc()
+
+        if not self.pb:
+            return 0
+
+        written = 0
+        for index in range(0, len(rows), 80):
+            chunk = rows[index : index + 80]
+            try:
+                result = self.pb.upsert_bars(chunk)
+            except Exception:
+                traceback.print_exc()
+                continue
+            if result.get("ok", False):
+                written += int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
+        return written
+
+    def _rollup_symbol_history(self, symbol: str, source_environment: str) -> int:
+        try:
+            with open_pb_sqlite(readonly=False, timeout=30.0) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT symbol, exchange, open, high, low, close, volume, session_type, us_time, cn_time, bar_time_ms
+                    FROM ibkr_bars
+                    WHERE symbol = ? AND interval = '5m' AND environment = ?
+                    ORDER BY bar_time_ms ASC
+                    """,
+                    (symbol, source_environment),
+                ).fetchall()
+                if not rows:
+                    return 0
+
+                builder = TimeframeBarBuilder(target_intervals=HIGHER_INTERVALS)
+                pending = []
+                written = 0
+                for row in rows:
+                    base_bar = {
+                        "symbol": str(row["symbol"] or "").upper(),
+                        "exchange": str(row["exchange"] or "").upper(),
+                        "environment": source_environment,
+                        "interval": "5m",
+                        "open": float(row["open"] or 0),
+                        "high": float(row["high"] or 0),
+                        "low": float(row["low"] or 0),
+                        "close": float(row["close"] or 0),
+                        "volume": float(row["volume"] or 0),
+                        "session_type": str(row["session_type"] or ""),
+                        "us_time": str(row["us_time"] or ""),
+                        "cn_time": str(row["cn_time"] or ""),
+                        "bar_time_ms": int(row["bar_time_ms"] or 0),
+                    }
+                    for derived in builder.consume(base_bar):
+                        derived_extra = dict(derived.get("extra") or {})
+                        derived_extra["canonical"] = True
+                        derived["extra"] = derived_extra
+                        pending.append(derived)
+                        if len(pending) >= 400:
+                            with conn:
+                                written += upsert_bars(conn, pending)
+                            pending = []
+                if pending:
+                    with conn:
+                        written += upsert_bars(conn, pending)
+                return written
+        except Exception:
+            traceback.print_exc()
+            return 0
+
+    def _ensure_scan_history_available(self, symbol: str, request: dict, cutoff_ms: int) -> dict:
+        environment = request["source_environment"]
+        lookback_limit = int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS)
+        coverage_bars = max(BACKTEST_WARMUP_BARS + 20, lookback_limit + 20)
+        coverage_start_ms = max(0, cutoff_ms - (interval_to_ms("5m") * coverage_bars))
+        rows = self._load_bar_rows_from_sqlite(
+            symbol,
+            environment,
+            start_ms=coverage_start_ms,
+            end_ms=cutoff_ms,
+            descending=False,
+        )
+        need_backfill = (
+            not rows
+            or int(rows[0].get("bar_time_ms", 0) or 0) > coverage_start_ms
+            or int(rows[-1].get("bar_time_ms", 0) or 0) < max(0, cutoff_ms - interval_to_ms("5m"))
+        )
+        if not need_backfill:
+            return {"ok": True, "needed": False, "persisted_rows": 0, "rolled_rows": 0}
+
+        repair = self._backfill_symbol_history(
+            symbol,
+            environment,
+            coverage_start_ms,
+            cutoff_ms,
+            interval="5m",
+        )
+        repair_rows = list((repair or {}).get("rows") or [])
+        if not repair_rows:
+            return {"ok": False, "needed": True, "persisted_rows": 0, "rolled_rows": 0}
+
+        persisted_rows = self._persist_backfill_rows(repair_rows)
+        rolled_rows = self._rollup_symbol_history(symbol, environment) if persisted_rows > 0 else 0
+        return {
+            "ok": persisted_rows > 0,
+            "needed": True,
+            "persisted_rows": persisted_rows,
+            "rolled_rows": rolled_rows,
+        }
 
     def _load_bar_rows_from_sqlite(
         self,
@@ -2270,7 +2402,10 @@ class BacktestService:
                 end_ms,
                 interval="5m",
             )
-            rows = self._merge_backfill_rows(rows, list((repair or {}).get("rows") or []))
+            repair_rows = list((repair or {}).get("rows") or [])
+            if repair_rows:
+                self._persist_backfill_rows(repair_rows)
+            rows = self._merge_backfill_rows(rows, repair_rows)
         normalized = []
         seen = set()
         for row in rows:
@@ -2336,7 +2471,10 @@ class BacktestService:
                 max(0, before_bar_time_ms - interval_to_ms("5m")),
                 interval="5m",
             )
-            rows = self._merge_backfill_rows(rows, list((repair or {}).get("rows") or []))
+            repair_rows = list((repair or {}).get("rows") or [])
+            if repair_rows:
+                self._persist_backfill_rows(repair_rows)
+            rows = self._merge_backfill_rows(rows, repair_rows)
             rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0), reverse=True)
         normalized = []
         seen = set()
@@ -2524,11 +2662,13 @@ class BacktestService:
         environment = request["source_environment"]
         session_mode = request.get("scan_session_mode") or "extended"
         lookback_limit = int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS)
+        repair_summary = self._ensure_scan_history_available(symbol, request, cutoff_ms)
         engines = {}
         details = {
             "ready_timeframes": [],
             "bars_loaded": {},
             "last_bar_time_ms_by_interval": {},
+            "repair_summary": repair_summary,
         }
         for interval in SCAN_INTERVALS:
             bars = self._load_interval_bars_before(

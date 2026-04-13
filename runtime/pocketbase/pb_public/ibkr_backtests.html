@@ -650,7 +650,7 @@
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">新建回测</div>
-                        <div class="panel-copy">支持手动 symbols、当日 <span class="mono">ibkr_targets</span>、watchlist 底池，以及历史盘前选股回放 <span class="mono">daily_scan_replay</span>。策略参数先走 JSON 覆盖，后续可直接扩展为参数扫描。</div>
+                        <div class="panel-copy">支持手动 symbols、当日 <span class="mono">ibkr_targets</span>、watchlist 底池，以及历史盘前选股回放 <span class="mono">daily_scan_replay</span>。如果你选的是历史区间里的 <span class="mono">targets</span>，后端会自动切到 <span class="mono">daily_scan_replay</span>，避免直接误用当前 targets。</div>
                     </div>
                     <div class="panel-tools">
                         <button class="btn primary" id="startButton" type="button" onclick="handleStartBacktest()">启动回测</button>
@@ -1474,7 +1474,7 @@
                 help.textContent = '手动模式下必填；其它模式会忽略这个输入。';
                 symbolsInput.placeholder = 'AAPL,NVDA,MSFT';
             } else if (source === 'targets') {
-                help.textContent = '会读取 ibkr_targets 中当前环境的 active 标的，按 score / 日期截取。';
+                help.textContent = '当日回测会读取当前 active ibkr_targets；历史日期会自动回放 daily_scan_replay。';
                 symbolsInput.placeholder = 'targets 模式会自动解析';
             } else if (source === 'daily_scan_replay') {
                 help.textContent = '可选：填写后会作为历史盘前选股的底池；留空则按 watchlist 快照逐日回放。';

@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>历史重建 - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <style>
+        body {
+            background:
+                radial-gradient(circle at top right, rgba(72, 187, 120, 0.10), transparent 28%),
+                radial-gradient(circle at left bottom, rgba(246, 173, 85, 0.12), transparent 32%),
+                var(--bg);
+        }
+        .page-shell {
+            position: relative;
+            z-index: 1;
+            padding: 0 16px 96px;
+        }
+        .hero, .panel {
+            border-radius: 22px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(160deg, rgba(14, 20, 32, 0.96), rgba(9, 15, 24, 0.98));
+            box-shadow: 0 22px 54px rgba(2, 8, 23, 0.22);
+        }
+        .hero {
+            margin: 12px 0 16px;
+            padding: 22px;
+            background:
+                radial-gradient(circle at top left, rgba(72, 187, 120, 0.18), transparent 36%),
+                radial-gradient(circle at bottom right, rgba(246, 173, 85, 0.16), transparent 42%),
+                linear-gradient(160deg, rgba(14, 20, 32, 0.98), rgba(9, 15, 24, 0.98));
+        }
+        .hero-head, .panel-head {
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }
+        .hero-kicker, .panel-kicker, .field label, .metric-label, .list-label {
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--muted);
+        }
+        .hero-kicker {
+            color: #48BB78;
+            margin-bottom: 8px;
+        }
+        .hero-title {
+            font-size: 28px;
+            line-height: 1.08;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .hero-copy {
+            max-width: 760px;
+            font-size: 13px;
+            color: var(--muted);
+            line-height: 1.7;
+        }
+        .hero-meta {
+            min-width: 220px;
+            display: grid;
+            gap: 8px;
+            text-align: right;
+        }
+        .hero-meta-line {
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .panel {
+            padding: 18px;
+            margin-bottom: 14px;
+        }
+        .panel-title {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .panel-copy {
+            margin-top: 6px;
+            font-size: 12px;
+            line-height: 1.65;
+            color: var(--muted);
+            max-width: 760px;
+        }
+        .panel-tools {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .metric-grid, .dual-grid, .key-grid {
+            display: grid;
+            gap: 12px;
+        }
+        .metric-grid {
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            margin-bottom: 14px;
+        }
+        .dual-grid {
+            grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+            margin-bottom: 14px;
+        }
+        .key-grid {
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+        .metric-card, .key-item, .log-list, .summary-list {
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.03);
+        }
+        .metric-card, .key-item {
+            padding: 14px;
+        }
+        .metric-value {
+            margin-top: 10px;
+            font-size: 24px;
+            font-weight: 700;
+            line-height: 1;
+        }
+        .metric-copy, .key-copy {
+            margin-top: 8px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--muted);
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+        .field {
+            display: grid;
+            gap: 6px;
+        }
+        .field.span-2 {
+            grid-column: span 2;
+        }
+        .field input, .field select {
+            width: 100%;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            color: var(--text);
+            padding: 12px 13px;
+            font-size: 13px;
+            outline: none;
+        }
+        .field input:focus, .field select:focus {
+            border-color: rgba(72, 187, 120, 0.42);
+            box-shadow: 0 0 0 3px rgba(72, 187, 120, 0.12);
+        }
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.03);
+            font-size: 13px;
+        }
+        .btn {
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.10);
+            background: rgba(255,255,255,0.05);
+            color: var(--text);
+            padding: 10px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            border-color: rgba(72, 187, 120, 0.35);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: wait;
+            transform: none;
+        }
+        .btn.primary {
+            border-color: rgba(72, 187, 120, 0.34);
+            background: linear-gradient(180deg, rgba(72, 187, 120, 0.18), rgba(255,255,255,0.04));
+        }
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            box-shadow: 0 0 12px currentColor;
+        }
+        .status-running { color: #F6AD55; }
+        .status-completed { color: #48BB78; }
+        .status-failed { color: #FC8181; }
+        .status-idle { color: #8BA4C4; }
+        .progress-shell {
+            margin-top: 14px;
+        }
+        .progress-track {
+            width: 100%;
+            height: 10px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.06);
+            overflow: hidden;
+        }
+        .progress-fill {
+            display: block;
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #48BB78, #63B3ED);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .progress-meta {
+            margin-top: 10px;
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: var(--muted);
+        }
+        .summary-list, .log-list {
+            padding: 0;
+            overflow: hidden;
+        }
+        .summary-row, .log-row {
+            display: grid;
+            gap: 6px;
+            padding: 12px 14px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        .summary-row:first-child, .log-row:first-child {
+            border-top: 0;
+        }
+        .summary-row {
+            grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+            align-items: center;
+        }
+        .summary-value {
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .log-row {
+            grid-template-columns: 78px minmax(0, 1fr);
+            align-items: start;
+        }
+        .log-time {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .log-message {
+            font-size: 13px;
+            line-height: 1.6;
+            word-break: break-word;
+        }
+        .banner {
+            padding: 12px 14px;
+            border-radius: 14px;
+            margin-bottom: 14px;
+            border: 1px solid rgba(252, 129, 129, 0.24);
+            background: rgba(46, 14, 20, 0.78);
+            color: #FECACA;
+            font-size: 12px;
+            line-height: 1.6;
+            display: none;
+        }
+        .empty {
+            padding: 18px 14px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+        @media (max-width: 900px) {
+            .dual-grid, .form-grid {
+                grid-template-columns: 1fr;
+            }
+            .field.span-2 {
+                grid-column: auto;
+            }
+            .hero-meta {
+                text-align: left;
+            }
+            .summary-row, .log-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="nav"></div>
+    <div class="page-shell">
+        <div id="pageBridge"></div>
+
+        <section class="hero">
+            <div class="hero-head">
+                <div>
+                    <div class="hero-kicker">History Rebuild</div>
+                    <div class="hero-title">全量清库后重新导入权威 5m 历史链</div>
+                    <div class="hero-copy">
+                        这个页面会顺序执行 <span class="mono">purge → 5m refill → higher TF rollup → recompute → scan → verify</span>。
+                        适合在确认旧 <span class="mono">bar / indicator / signal / targets</span> 不可信后，重建一份干净的 live 历史。
+                    </div>
+                </div>
+                <div class="hero-meta">
+                    <div class="hero-meta-line" id="heroEnvironment">环境 --</div>
+                    <div class="hero-meta-line" id="heroUpdatedAt">最近更新 --</div>
+                    <div class="hero-meta-line">来源 /api/custom/ibkr/history/rebuild/status</div>
+                </div>
+            </div>
+        </section>
+
+        <div id="errorBanner" class="banner"></div>
+
+        <section class="panel">
+            <div class="panel-head">
+                <div>
+                    <div class="panel-kicker">Control</div>
+                    <div class="panel-title">重建参数</div>
+                    <div class="panel-copy">默认清空当前环境的 live 历史链，然后回拉最近 N 天的 5m bars；最后重建 targets，并把状态持续写到 <span class="mono">ibkr_state.ibkr_history_rebuild_job</span>。</div>
+                </div>
+                <div class="panel-tools">
+                    <div id="statusPill" class="status-pill status-idle"><span class="status-dot"></span><span>IDLE</span></div>
+                    <button id="startButton" class="btn primary" type="button">开始重建</button>
+                </div>
+            </div>
+            <div class="form-grid" style="margin-top:16px;">
+                <div class="field">
+                    <label for="lookbackDays">Lookback Days</label>
+                    <input id="lookbackDays" type="number" min="1" max="365" step="1" value="30">
+                </div>
+                <div class="field">
+                    <label for="computeBatchSize">Compute Batch</label>
+                    <input id="computeBatchSize" type="number" min="1" max="12" step="1" value="4">
+                </div>
+                <div class="field span-2">
+                    <label>动作</label>
+                    <div class="checkbox-row">
+                        <input id="scanAfterRebuild" type="checkbox" checked>
+                        <span>完成后自动重新执行当日盘前筛选，重建 <span class="mono">ibkr_targets</span></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <div class="metric-grid">
+            <div class="metric-card">
+                <div class="metric-label">Stage</div>
+                <div class="metric-value" id="metricStage">--</div>
+                <div class="metric-copy" id="metricMessage">等待任务启动</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Progress</div>
+                <div class="metric-value" id="metricProgress">0%</div>
+                <div class="metric-copy" id="metricTimeline">job idle</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Universe</div>
+                <div class="metric-value" id="metricSymbols">0</div>
+                <div class="metric-copy" id="metricSymbolsCopy">symbols queued</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">5m Refilled</div>
+                <div class="metric-value" id="metricBars">0</div>
+                <div class="metric-copy" id="metricBarsCopy">authority 5m rows</div>
+            </div>
+        </div>
+
+        <div class="dual-grid">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <div class="panel-kicker">Pipeline</div>
+                        <div class="panel-title">阶段进度</div>
+                        <div class="panel-copy">重导期间这里会显示当前阶段、任务消息、开始/结束时间和 compute batch 进展。</div>
+                    </div>
+                    <div class="panel-tools">
+                        <div class="status-pill status-idle" id="runtimePill"><span class="status-dot"></span><span>Runtime --</span></div>
+                    </div>
+                </div>
+                <div class="progress-shell">
+                    <div class="progress-track"><span id="progressFill" class="progress-fill"></span></div>
+                    <div class="progress-meta">
+                        <div id="progressMetaLeft">stage idle</div>
+                        <div id="progressMetaRight">0%</div>
+                    </div>
+                </div>
+                <div class="key-grid" style="margin-top:14px;">
+                    <div class="key-item">
+                        <div class="list-label">Compute</div>
+                        <div class="metric-value" style="font-size:22px;" id="computeBatchStat">0 / 0</div>
+                        <div class="key-copy" id="computeBatchCopy">processed 0 bars</div>
+                    </div>
+                    <div class="key-item">
+                        <div class="list-label">Rollup</div>
+                        <div class="metric-value" style="font-size:22px;" id="rollupStat">0</div>
+                        <div class="key-copy">higher timeframe bars rebuilt</div>
+                    </div>
+                    <div class="key-item">
+                        <div class="list-label">Targets</div>
+                        <div class="metric-value" style="font-size:22px;" id="targetsStat">--</div>
+                        <div class="key-copy" id="targetsCopy">scan pending</div>
+                    </div>
+                    <div class="key-item">
+                        <div class="list-label">Range</div>
+                        <div class="metric-value" style="font-size:18px;" id="rangeStat">--</div>
+                        <div class="key-copy">refill 5m import window</div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <div class="panel-kicker">Verification</div>
+                        <div class="panel-title">结果摘要</div>
+                        <div class="panel-copy">展示清理前后计数、5m canonical 校验和各 interval 当前落库规模。</div>
+                    </div>
+                </div>
+                <div id="summaryList" class="summary-list">
+                    <div class="empty">等待任务状态...</div>
+                </div>
+            </section>
+        </div>
+
+        <section class="panel">
+            <div class="panel-head">
+                <div>
+                    <div class="panel-kicker">Logs</div>
+                    <div class="panel-title">重建日志</div>
+                    <div class="panel-copy">最近 40 条作业日志，适合观察当前卡在哪个 symbol、哪个阶段以及是否失败。</div>
+                </div>
+            </div>
+            <div id="logList" class="log-list">
+                <div class="empty">当前还没有日志。</div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        requireAuth('/ibkr_history_rebuild.html');
+
+        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let pollTimer = null;
+        let activeStatus = null;
+
+        function authHeaders() {
+            const token = getToken();
+            return token ? { Authorization: token } : {};
+        }
+
+        async function requestJson(path, options = {}) {
+            const response = await fetch(path, {
+                method: options.method || 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...authHeaders(),
+                    ...(options.headers || {})
+                },
+                body: options.body ? JSON.stringify(options.body) : undefined
+            });
+            let payload = {};
+            try {
+                payload = await response.json();
+            } catch (_) {
+                payload = {};
+            }
+            if (!response.ok && payload.ok !== true) {
+                const error = new Error(payload.error || `HTTP ${response.status}`);
+                error.status = response.status;
+                error.payload = payload;
+                throw error;
+            }
+            return payload;
+        }
+
+        function setError(message) {
+            const banner = document.getElementById('errorBanner');
+            const text = String(message || '').trim();
+            banner.style.display = text ? 'block' : 'none';
+            banner.textContent = text;
+        }
+
+        function formatTimeLabel(value) {
+            if (!value) return '--';
+            try {
+                return formatTime(value, 'Asia/Shanghai', 'full');
+            } catch (_) {
+                return String(value);
+            }
+        }
+
+        function renderStatusPill(status) {
+            const normalized = String(status?.status || 'idle').toLowerCase();
+            const pill = document.getElementById('statusPill');
+            let cls = 'status-idle';
+            let label = normalized.toUpperCase();
+            if (normalized === 'running' || normalized === 'queued') cls = 'status-running';
+            if (normalized === 'completed') cls = 'status-completed';
+            if (normalized === 'failed') cls = 'status-failed';
+            pill.className = `status-pill ${cls}`;
+            pill.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(label)}</span>`;
+        }
+
+        function renderRuntimePill(runtimeCheck) {
+            const pill = document.getElementById('runtimePill');
+            if (!runtimeCheck || Object.keys(runtimeCheck).length === 0) {
+                pill.className = 'status-pill status-idle';
+                pill.innerHTML = '<span class="status-dot"></span><span>Runtime --</span>';
+                return;
+            }
+            const busy = Boolean(runtimeCheck.busy);
+            pill.className = `status-pill ${busy ? 'status-failed' : 'status-completed'}`;
+            pill.innerHTML = `<span class="status-dot"></span><span>${busy ? 'Runtime Busy' : 'Runtime Stopped'}</span>`;
+        }
+
+        function renderMetrics(status) {
+            const verification = status?.verification || {};
+            document.getElementById('metricStage').textContent = String(status?.stage || '--').toUpperCase();
+            document.getElementById('metricMessage').textContent = status?.message || '等待任务启动';
+            document.getElementById('metricProgress').textContent = `${Number(status?.progress || 0)}%`;
+            document.getElementById('metricTimeline').textContent = `job ${status?.job_id || '--'} · ${formatTimeLabel(status?.updated_at_ms ? new Date(Number(status.updated_at_ms)).toISOString() : '')}`;
+            document.getElementById('metricSymbols').textContent = `${Number(status?.processed_symbols || 0)} / ${Number(status?.symbol_total || 0)}`;
+            document.getElementById('metricSymbolsCopy').textContent = status?.requested_symbols?.length
+                ? `manual universe ${status.requested_symbols.length}`
+                : 'watchlist trade + monitor universe';
+            document.getElementById('metricBars').textContent = String(Number(status?.fetched_5m_bars || 0));
+            document.getElementById('metricBarsCopy').textContent = `canonical 5m ${Number(verification.canonical_5m || 0)} / ${Number(verification.total_5m || 0)}`;
+
+            document.getElementById('progressFill').style.width = `${Math.max(0, Math.min(100, Number(status?.progress || 0)))}%`;
+            document.getElementById('progressMetaLeft').textContent = `${status?.stage || 'idle'} · ${status?.message || '等待任务启动'}`;
+            document.getElementById('progressMetaRight').textContent = `${Number(status?.progress || 0)}%`;
+            document.getElementById('computeBatchStat').textContent = `${Number(status?.compute_batches_completed || 0)} / ${Number(status?.compute_batches_total || 0)}`;
+            document.getElementById('computeBatchCopy').textContent = `processed ${Number(status?.compute_processed || 0)} bars`;
+            document.getElementById('rollupStat').textContent = String(Number(status?.rolled_bars || 0));
+            document.getElementById('targetsStat').textContent = status?.scan_result
+                ? String(Number(status.scan_result.candidates || 0))
+                : '--';
+            document.getElementById('targetsCopy').textContent = status?.scan_result
+                ? `scanned ${Number(status.scan_result.scanned || 0)} symbols`
+                : 'scan pending';
+            document.getElementById('rangeStat').textContent = status?.start_us_time && status?.end_us_time
+                ? `${status.start_us_time} -> ${status.end_us_time}`
+                : '--';
+        }
+
+        function renderSummary(status) {
+            const before = status?.counts_before || {};
+            const after = status?.counts_after || {};
+            const verification = status?.verification || {};
+            const intervalCounts = verification.interval_counts || {};
+            const rows = [
+                ['Before', Object.entries(before).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
+                ['Purged', Object.entries(status?.purged || {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
+                ['After', Object.entries(after).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
+                ['5m Canonical', verification.total_5m != null ? `${verification.canonical_5m || 0} / ${verification.total_5m || 0} · noncanonical ${verification.noncanonical_5m || 0}` : '--'],
+                ['Intervals', Object.entries(intervalCounts).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
+                ['Finished', status?.finished_at ? formatTimeLabel(status.finished_at) : '--']
+            ];
+            const summary = document.getElementById('summaryList');
+            summary.innerHTML = rows.map(([label, value]) => `
+                <div class="summary-row">
+                    <div class="list-label">${escapeHtml(label)}</div>
+                    <div class="summary-value">${escapeHtml(String(value || '--'))}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderLogs(status) {
+            const rows = Array.isArray(status?.logs) ? status.logs : [];
+            const list = document.getElementById('logList');
+            if (!rows.length) {
+                list.innerHTML = '<div class="empty">当前还没有日志。</div>';
+                return;
+            }
+            list.innerHTML = rows.slice().reverse().map((row) => `
+                <div class="log-row">
+                    <div class="log-time">${escapeHtml(String(row.time || '--'))}</div>
+                    <div class="log-message">${escapeHtml(String(row.message || ''))}</div>
+                </div>
+            `).join('');
+        }
+
+        function applyStatus(status) {
+            activeStatus = status || {};
+            document.getElementById('heroEnvironment').textContent = `环境 ${getEnvironmentLabel(currentEnvironment)}`;
+            document.getElementById('heroUpdatedAt').textContent = `最近更新 ${formatTimeLabel(activeStatus?.updated_at_ms ? new Date(Number(activeStatus.updated_at_ms)).toISOString() : '')}`;
+            renderStatusPill(activeStatus);
+            renderRuntimePill(activeStatus?.runtime_check || {});
+            renderMetrics(activeStatus);
+            renderSummary(activeStatus);
+            renderLogs(activeStatus);
+            document.getElementById('startButton').disabled = Boolean(activeStatus?.running);
+        }
+
+        async function loadStatus() {
+            const payload = await requestJson(`/api/custom/ibkr/history/rebuild/status?environment=${encodeURIComponent(currentEnvironment)}`);
+            applyStatus(payload);
+            return payload;
+        }
+
+        async function startRebuild() {
+            setError('');
+            const payload = {
+                environment: currentEnvironment,
+                lookback_days: Number(document.getElementById('lookbackDays').value || 30),
+                compute_batch_size: Number(document.getElementById('computeBatchSize').value || 4),
+                scan_after_rebuild: document.getElementById('scanAfterRebuild').checked
+            };
+            try {
+                const result = await requestJson('/api/custom/ibkr/history/rebuild/start', {
+                    method: 'POST',
+                    body: payload
+                });
+                showToast('历史重建已启动');
+                applyStatus(result);
+            } catch (error) {
+                const message = error?.payload?.message || error?.payload?.error || error.message || '启动失败';
+                setError(message);
+                if (error?.payload) {
+                    applyStatus(error.payload);
+                }
+            }
+        }
+
+        function startPolling() {
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(async () => {
+                try {
+                    await loadStatus();
+                } catch (error) {
+                    setError(error.message || '状态拉取失败');
+                }
+            }, 2000);
+        }
+
+        window.onEnvironmentChange = function(nextEnvironment) {
+            currentEnvironment = normalizeRuntimeEnvironment(nextEnvironment, 'live');
+            window.location.href = buildPageUrl('/ibkr_history_rebuild.html', {}, { environment: currentEnvironment });
+        };
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            document.getElementById('nav').innerHTML = renderNav('/ibkr_history_rebuild.html');
+            document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_history_rebuild.html');
+            document.getElementById('startButton').addEventListener('click', startRebuild);
+            try {
+                await loadStatus();
+            } catch (error) {
+                setError(error.message || '状态初始化失败');
+            }
+            startPolling();
+        });
+    </script>
+</body>
+</html>

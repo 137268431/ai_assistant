@@ -312,6 +312,10 @@
             cursor: pointer;
             white-space: nowrap;
         }
+        .response-btn.response-danger {
+            border-color: rgba(252, 129, 129, 0.28);
+            background: linear-gradient(180deg, rgba(252, 129, 129, 0.18), rgba(255,255,255,0.04));
+        }
         .response-btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
@@ -1068,6 +1072,7 @@
         let latestTwoFactorState = {};
         let latestRuntimeLoadId = 0;
         let hasLoadedRuntimeData = false;
+        const CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000;
 
         function setRuntimeLoading(active, title, copy) {
             const overlay = document.getElementById('pageLoading');
@@ -1157,24 +1162,24 @@
         function statusClass(value) {
             const text = String(value || '').trim().toLowerCase();
             if (!text) return 'pill-neutral';
-            if (['ready', 'open', 'success'].includes(text)) return text === 'success' ? 'pill-success' : 'pill-ok';
-            if (['warming', 'blocked', 'degraded', 'closed'].includes(text)) return 'pill-warning';
+            if (['ready', 'open', 'success', 'recovered', 'authenticated'].includes(text)) return text === 'success' ? 'pill-success' : 'pill-ok';
+            if (['warming', 'blocked', 'degraded', 'closed', 'panic_resetting', 'manual_takeover', 'received'].includes(text)) return 'pill-warning';
             if (['stopped'].includes(text)) return 'pill-error';
             if (['running', 'ok', 'online', 'filled', 'long', 'buy', 'active', 'executed'].includes(text)) return `pill-${text}`;
             if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_confirm', 'waiting_response', 'submitted', 'timeout'].includes(text)) return `pill-${text}`;
-            if (['error', 'offline', 'cancelled', 'rejected', 'short', 'sell', 'failed'].includes(text)) return `pill-${text}`;
+            if (['error', 'offline', 'cancelled', 'rejected', 'gateway_rejected', 'submit_failed', 'short', 'sell', 'failed'].includes(text)) return `pill-${text}`;
             if (['expired', 'init', 'candidate'].includes(text)) return 'pill-neutral';
             return 'pill-neutral';
         }
 
         function chipTone(value) {
             const text = String(value || '').trim().toLowerCase();
-            if (['ready', 'open'].includes(text)) return 'chip-ok';
-            if (['warming', 'blocked', 'degraded', 'closed'].includes(text)) return 'chip-warn';
+            if (['ready', 'open', 'recovered', 'authenticated'].includes(text)) return 'chip-ok';
+            if (['warming', 'blocked', 'degraded', 'closed', 'panic_resetting', 'manual_takeover', 'received', 'submitted'].includes(text)) return 'chip-warn';
             if (['stopped'].includes(text)) return 'chip-error';
             if (['running', 'ok', 'online', 'success'].includes(text)) return 'chip-ok';
             if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_confirm', 'waiting_response', 'timeout'].includes(text)) return 'chip-warn';
-            if (['error', 'offline', 'failed', 'rejected'].includes(text)) return 'chip-error';
+            if (['error', 'offline', 'failed', 'rejected', 'gateway_rejected', 'submit_failed'].includes(text)) return 'chip-error';
             return 'chip-muted';
         }
 
@@ -1384,20 +1389,155 @@
             return ['triggered', 'waiting_confirm', 'waiting_response'].includes(getTwoFactorStatusKey(twoFactorState));
         }
 
+        function parseShiftedTimeMs(value, offsetMinutes) {
+            const text = String(value || '').trim();
+            if (!text) return 0;
+            const parsed = Date.parse(text.replace(' ', 'T') + 'Z');
+            if (!Number.isFinite(parsed)) return 0;
+            return parsed - (Number(offsetMinutes || 0) * 60000);
+        }
+
+        function parseUsTimeMs(value) {
+            return parseShiftedTimeMs(value, -4 * 60);
+        }
+
+        function deriveTwoFactorUiState(twoFactorState = latestTwoFactorState, options = {}) {
+            const nowMs = Number(options.now_ms || Date.now()) || Date.now();
+            const state = { ...(twoFactorState || {}) };
+            const status = String(state.status || '').trim().toLowerCase();
+            const responseStatus = String(state.response_status || '').trim().toLowerCase();
+            const challengeCode = String(state.challenge_code || '').trim();
+            const feedback = String(state.challenge_feedback || '').trim();
+            const recoveryPhase = String(state.recovery_phase || '').trim().toLowerCase();
+            const submittedMs = parseUsTimeMs(state.response_submitted_at);
+            const rejectedMs = parseUsTimeMs(state.response_rejected_at);
+            const submittedAgeMs = submittedMs > 0 ? Math.max(0, nowMs - submittedMs) : 0;
+            const rejectedAgeMs = rejectedMs > 0 ? Math.max(0, nowMs - rejectedMs) : 0;
+            let operatorAction = 'request_approval';
+            let resetRecommended = state.reset_recommended === true;
+            let resetReason = String(state.reset_reason || '').trim();
+
+            if (recoveryPhase === 'panic_resetting') {
+                operatorAction = 'panic_resetting';
+            } else if (state.manual_takeover_active) {
+                operatorAction = 'manual_takeover';
+            } else if (status === 'waiting_response') {
+                if (responseStatus === 'received') {
+                    operatorAction = 'wait_browser_submit';
+                } else if (responseStatus === 'submitted') {
+                    operatorAction = 'wait_auth_restore';
+                    if (!resetRecommended && submittedAgeMs >= CHALLENGE_RESET_RECOMMEND_MS) {
+                        operatorAction = 'panic_reset';
+                        resetRecommended = true;
+                        resetReason = resetReason || 'submitted_no_recovery';
+                    }
+                } else if (responseStatus === 'gateway_rejected') {
+                    operatorAction = 'retry_response_same_challenge';
+                    if (!resetRecommended && rejectedAgeMs >= CHALLENGE_RESET_RECOMMEND_MS) {
+                        operatorAction = 'panic_reset';
+                        resetRecommended = true;
+                        resetReason = resetReason || 'gateway_rejected_no_recovery';
+                    }
+                } else if (responseStatus === 'submit_failed') {
+                    operatorAction = 'retry_response_same_challenge';
+                } else {
+                    operatorAction = challengeCode ? 'submit_response' : 'wait_challenge';
+                }
+            } else if (status === 'waiting_confirm') {
+                operatorAction = 'confirm_push';
+            } else if (status === 'triggered') {
+                operatorAction = 'wait_for_mode';
+            } else if (status === 'success') {
+                operatorAction = 'none';
+            } else if (status === 'timeout' || status === 'failed') {
+                operatorAction = 'request_new_cycle';
+            }
+
+            state.response_status = responseStatus;
+            state.challenge_feedback = feedback;
+            state.operator_action = operatorAction;
+            state.reset_recommended = resetRecommended;
+            state.reset_reason = resetReason;
+            state.response_submitted_age_sec = submittedAgeMs > 0 ? Math.round(submittedAgeMs / 1000) : 0;
+            state.response_rejected_age_sec = rejectedAgeMs > 0 ? Math.round(rejectedAgeMs / 1000) : 0;
+            return state;
+        }
+
+        function buildWaitingResponseHelper(twoFactorState = latestTwoFactorState) {
+            const state = deriveTwoFactorUiState(twoFactorState);
+            const feedback = state.challenge_feedback || 'Authentication failed';
+            if (state.reset_recommended) {
+                if (state.response_status === 'gateway_rejected') {
+                    return 'Gateway 已拒绝当前 Response Code，且旧轮次长时间未恢复。当前旧 2FA / Session 状态很可能已失配，请直接执行“放弃当前轮次并干净重开”。';
+                }
+                return 'Response Code 已提交较久但 Gateway 仍未恢复认证。当前旧 2FA / Session 状态很可能已失配，请直接执行“放弃当前轮次并干净重开”。';
+            }
+            if (state.response_status === 'received') {
+                return 'Runtime 已收到 Response Code，正在等待 compute 浏览器提交流程。此时不要重复输入，也不要触发新一轮。';
+            }
+            if (state.response_status === 'submitted') {
+                return '浏览器已提交 Response Code，正在等待 Gateway 恢复认证。此时不要重复提交旧 Response，也不要触发新一轮。';
+            }
+            if (state.response_status === 'gateway_rejected') {
+                return `Gateway 已拒绝当前 Response Code（${feedback}）。请核对当前 Challenge，用 IBKR App 重新生成后在这里重提。`;
+            }
+            if (state.response_status === 'submit_failed') {
+                return '浏览器提交动作失败。请在这里重新提交当前 Challenge 的 Response Code，不要重新触发。';
+            }
+            return '当前已切到 Challenge/Response。仅在手机上点确认不会完成验证；请在 IBKR App 的 Two-Factor Authentication 中输入当前 Challenge，拿到 Response Code 后回到这里提交。不要重复触发新一轮。';
+        }
+
+        function canSubmitTwoFactorResponse(twoFactorState = latestTwoFactorState) {
+            const state = deriveTwoFactorUiState(twoFactorState);
+            return (
+                state.status === 'waiting_response'
+                && !!String(state.challenge_code || '').trim()
+                && !state.reset_recommended
+                && ['', 'gateway_rejected', 'submit_failed'].includes(state.response_status)
+            );
+        }
+
+        function shouldShowTwoFactorResetCta(twoFactorState = latestTwoFactorState) {
+            const state = deriveTwoFactorUiState(twoFactorState);
+            return state.status === 'waiting_response' && state.reset_recommended;
+        }
+
         function getTwoFactorActionLockReason(action, twoFactorState = latestTwoFactorState) {
             const guarded = new Set(['start', 'reauth', 'reauth_force_new', 'probe']);
             if (!guarded.has(action)) return '';
 
-            const status = getTwoFactorStatusKey(twoFactorState);
-            if (!isTwoFactorCycleActive(twoFactorState)) return '';
+            const state = deriveTwoFactorUiState(twoFactorState);
+            const status = getTwoFactorStatusKey(state);
+            if (!isTwoFactorCycleActive(state)) return '';
 
             if (action === 'probe') {
+                if (state.reset_recommended) {
+                    return '当前旧 2FA / Session 状态很可能已失配，先执行“放弃当前轮次并干净重开”；此时再做静默探测只会增加判断噪音。';
+                }
                 return '当前已有一轮 2FA 正在进行，先等这一轮收口；此时再做静默探测只会增加判断噪音。';
             }
             if (action === 'reauth_force_new') {
+                if (state.reset_recommended) {
+                    return '当前旧 2FA / Session 状态很可能已失配。如要放弃当前轮次，请只使用“放弃当前轮次并干净重开”。';
+                }
                 return '当前已有一轮 2FA 正在进行。如要放弃当前轮次，请只使用“放弃当前轮次并干净重开”。';
             }
             if (status === 'waiting_response') {
+                if (state.reset_recommended) {
+                    return '当前旧 2FA / Session 状态很可能已失配，请直接执行“放弃当前轮次并干净重开”，不要重新触发。';
+                }
+                if (state.response_status === 'submitted') {
+                    return '当前 Response Code 已提交，正在等待 Gateway 恢复认证；不要重新触发。';
+                }
+                if (state.response_status === 'gateway_rejected') {
+                    return 'Gateway 已拒绝当前 Response Code，请先在本页按当前 Challenge 重试，不要重新触发。';
+                }
+                if (state.response_status === 'submit_failed') {
+                    return '浏览器提交 Response Code 失败，请先在本页重试，不要重新触发。';
+                }
+                if (state.response_status === 'received') {
+                    return 'Runtime 已收到 Response Code，正在等待浏览器提交流程；不要重新触发。';
+                }
                 return '当前已进入 Challenge/Response，请继续当前轮次并提交 Response Code，不要重复触发。';
             }
             if (status === 'waiting_confirm') {
@@ -1423,12 +1563,27 @@
             }
             if (action === 'reauth' || action === 'reauth_force_new') {
                 if (payload.message) return payload.message;
-                const actionState = payload?.state || latestTwoFactorState;
+                const actionState = deriveTwoFactorUiState(payload?.state || latestTwoFactorState);
                 const actionStatus = getTwoFactorStatusKey(actionState);
                 if (payload?.state?.runtime_authenticated && payload?.state?.gateway_reachable && Number(payload?.state?.gateway_status_code || 0) !== 401) {
                     return '当前 Gateway 会话已认证，无需再次确认。';
                 }
                 if (actionStatus === 'waiting_response') {
+                    if (actionState.reset_recommended) {
+                        return '当前旧 2FA / Session 状态很可能已失配，请打开 Runtime 页面执行“放弃当前轮次并干净重开”，不要重复触发。';
+                    }
+                    if (actionState.response_status === 'submitted') {
+                        return '当前 Response Code 已提交，正在等待 Gateway 恢复认证；请继续当前轮次，不要重复触发。';
+                    }
+                    if (actionState.response_status === 'gateway_rejected') {
+                        return 'Gateway 已拒绝当前 Response Code，请打开 Runtime 页面核对当前 Challenge 后重新提交，不要重复触发。';
+                    }
+                    if (actionState.response_status === 'submit_failed') {
+                        return '浏览器提交 Response Code 失败，请打开 Runtime 页面重试当前 Challenge，不要重复触发。';
+                    }
+                    if (actionState.response_status === 'received') {
+                        return 'Runtime 已收到 Response Code，正在等待浏览器提交流程；请继续当前轮次，不要重复触发。';
+                    }
                     return '当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。';
                 }
                 if (isTwoFactorCycleActive(actionState)) {
@@ -1546,6 +1701,7 @@
             const latestBarExtra = getExtraObject(latestBar);
             const latestIndicatorExtra = getExtraObject(latestIndicator);
             const latestSignalExtra = getExtraObject(latestSignal);
+            const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const gatewayActive = Boolean(status?.gateway?.running || status?.gateway?.reachable);
             const runtimeStarted = Boolean(
                 status?.starting
@@ -1556,10 +1712,10 @@
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
             const readyEngines = Number(status?.ready_engines || 0) || 0;
             const totalEngines = Number(status?.total_engines || 0) || 0;
-            const twoFactorStatus = String(twoFactorState?.status || '').trim().toLowerCase();
-            const challengeCode = String(twoFactorState?.challenge_code || '').trim();
-            const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
-            const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
+            const twoFactorStatus = String(twoFactor?.status || '').trim().toLowerCase();
+            const challengeCode = String(twoFactor?.challenge_code || '').trim();
+            const recoveryPhase = String(twoFactor?.recovery_phase || '').trim().toLowerCase();
+            const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactor);
 
             const blocker = { tone: 'info', kicker: 'Primary Blocker', title: '运行链路可控', copy: '当前没有硬阻塞，继续观察 bars → indicators → signals 是否连续刷新。' };
             if (runtimeMismatch) {
@@ -1583,9 +1739,31 @@
                 blocker.title = 'Runtime 当前未启动';
                 blocker.copy = '这次更像是 runtime service 没有拉起，不是单纯 session pending；重启 compute 后如果没有自动恢复，需要重新触发一次 IBKR start / 2FA。';
             } else if (twoFactorStatus === 'waiting_response') {
-                blocker.tone = 'warn';
-                blocker.title = `等待 Response Code${challengeCode ? ` · ${challengeCode}` : ''}`;
-                blocker.copy = '这一步不是点手机推送；请在 IBKR App 输入 Challenge，拿到 Response Code 后回到本页提交。不要再点请求 2FA / 开始新一轮。';
+                if (twoFactor.reset_recommended) {
+                    blocker.tone = 'error';
+                    blocker.title = '旧 2FA / Session 状态已失配';
+                    blocker.copy = '当前旧 Challenge / Response 状态已经不可信。不要继续围绕旧轮次重试，请直接执行“放弃当前轮次并干净重开”。';
+                } else if (twoFactor.response_status === 'gateway_rejected') {
+                    blocker.tone = 'error';
+                    blocker.title = `Gateway 已拒绝当前 Response${challengeCode ? ` · ${challengeCode}` : ''}`;
+                    blocker.copy = buildWaitingResponseHelper(twoFactor);
+                } else if (twoFactor.response_status === 'submit_failed') {
+                    blocker.tone = 'error';
+                    blocker.title = `Response Code 浏览器提交失败${challengeCode ? ` · ${challengeCode}` : ''}`;
+                    blocker.copy = buildWaitingResponseHelper(twoFactor);
+                } else if (twoFactor.response_status === 'submitted') {
+                    blocker.tone = 'warn';
+                    blocker.title = `Response Code 已提交${challengeCode ? ` · ${challengeCode}` : ''}`;
+                    blocker.copy = buildWaitingResponseHelper(twoFactor);
+                } else if (twoFactor.response_status === 'received') {
+                    blocker.tone = 'warn';
+                    blocker.title = `Response Code 已收到${challengeCode ? ` · ${challengeCode}` : ''}`;
+                    blocker.copy = buildWaitingResponseHelper(twoFactor);
+                } else {
+                    blocker.tone = 'warn';
+                    blocker.title = `等待 Response Code${challengeCode ? ` · ${challengeCode}` : ''}`;
+                    blocker.copy = buildWaitingResponseHelper(twoFactor);
+                }
             } else if (!sessionAuthenticated) {
                 blocker.tone = twoFactorStatus === 'waiting_confirm' ? 'warn' : 'error';
                 blocker.title = twoFactorStatus === 'waiting_confirm' ? '等待手机确认 2FA' : 'Session 仍未认证';
@@ -1725,6 +1903,7 @@
             const dataHealth = deriveDataHealth(latestBar);
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
+            const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
             const latestBarWrite = latestBar ? String(getComputedTimeLabel(latestBar)).slice(0, 19) : '--';
             const latestIndicatorCalc = latestIndicator ? String(getComputedTimeLabel(latestIndicator)).slice(0, 19) : '--';
@@ -1734,21 +1913,27 @@
                 ['Gateway Reachable', status?.gateway?.reachable ? 'YES' : 'NO'],
                 ['Gateway Manager', String(status?.gateway?.managed_by || '--').toUpperCase()],
                 ['Session', sessionAuthenticated ? 'AUTHENTICATED' : 'WAITING_FOR_2FA'],
-                ['2FA Status', String(twoFactorState?.status || '--').toUpperCase()],
-                ['Recovery Phase', String(twoFactorState?.recovery_phase || '--').toUpperCase()],
-                ['Interruption Kind', String(twoFactorState?.interruption_kind || '--')],
-                ['Manual Takeover', twoFactorState?.manual_takeover_active ? 'YES' : 'NO'],
-                ['Manual Takeover Until', formatTimeLabel(twoFactorState?.manual_takeover_until)],
-                ['Probe Result', String(twoFactorState?.probe_result || '--')],
-                ['Probe Attempts', String(twoFactorState?.probe_attempts || 0)],
-                ['Probe Last Checked', formatTimeLabel(twoFactorState?.probe_last_checked_at)],
-                ['Last Runtime Auth', formatTimeLabel(twoFactorState?.last_runtime_authenticated_at)],
-                ['2FA Mode', String(twoFactorState?.mode || '--').toUpperCase()],
-                ['Challenge', String(twoFactorState?.challenge_code || '--')],
-                ['2FA Request', formatTimeLabel(twoFactorState?.last_request_at)],
-                ['2FA Result', formatTimeLabel(twoFactorState?.result_at)],
-                ['Response Received', formatTimeLabel(twoFactorState?.response_received_at)],
-                ['Response Submitted', formatTimeLabel(twoFactorState?.response_submitted_at)],
+                ['2FA Status', String(twoFactor?.status || '--').toUpperCase()],
+                ['Recovery Phase', String(twoFactor?.recovery_phase || '--').toUpperCase()],
+                ['Interruption Kind', String(twoFactor?.interruption_kind || '--')],
+                ['Manual Takeover', twoFactor?.manual_takeover_active ? 'YES' : 'NO'],
+                ['Manual Takeover Until', formatTimeLabel(twoFactor?.manual_takeover_until)],
+                ['Probe Result', String(twoFactor?.probe_result || '--')],
+                ['Probe Attempts', String(twoFactor?.probe_attempts || 0)],
+                ['Probe Last Checked', formatTimeLabel(twoFactor?.probe_last_checked_at)],
+                ['Last Runtime Auth', formatTimeLabel(twoFactor?.last_runtime_authenticated_at)],
+                ['2FA Mode', String(twoFactor?.mode || '--').toUpperCase()],
+                ['Challenge', String(twoFactor?.challenge_code || '--')],
+                ['Response Status', String(twoFactor?.response_status || '--').toUpperCase()],
+                ['Gateway Feedback', String(twoFactor?.challenge_feedback || '--')],
+                ['Response Received', formatTimeLabel(twoFactor?.response_received_at)],
+                ['Response Submitted', formatTimeLabel(twoFactor?.response_submitted_at)],
+                ['Response Rejected', formatTimeLabel(twoFactor?.response_rejected_at)],
+                ['Reset Recommended', twoFactor?.reset_recommended ? 'YES' : 'NO'],
+                ['Reset Reason', String(twoFactor?.reset_reason || '--')],
+                ['Operator Action', String(twoFactor?.operator_action || '--')],
+                ['2FA Request', formatTimeLabel(twoFactor?.last_request_at)],
+                ['2FA Result', formatTimeLabel(twoFactor?.result_at)],
                 ['Last Compute', formatTimeLabel(computeHealth.last_compute)],
                 ['Last Scan', formatTimeLabel(computeHealth.last_scan)],
                 ['Compute Count', String(status?.compute_count || 0)],
@@ -1800,31 +1985,34 @@
         }
 
         function renderTwoFactorPanel(twoFactorState) {
-            latestTwoFactorState = twoFactorState || {};
-            const status = getTwoFactorStatusKey(twoFactorState) || 'requested';
-            const mode = String(twoFactorState?.mode || '').trim();
-            const challengeCode = String(twoFactorState?.challenge_code || '').trim();
-            const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
-            const previousCycle = twoFactorState?.previous_cycle && typeof twoFactorState.previous_cycle === 'object'
-                ? twoFactorState.previous_cycle
+            latestTwoFactorState = deriveTwoFactorUiState(twoFactorState || {});
+            const state = latestTwoFactorState;
+            const status = getTwoFactorStatusKey(state) || 'requested';
+            const mode = String(state?.mode || '').trim();
+            const challengeCode = String(state?.challenge_code || '').trim();
+            const recoveryPhase = String(state?.recovery_phase || '').trim().toLowerCase();
+            const responseStatus = String(state?.response_status || '').trim().toLowerCase();
+            const previousCycle = state?.previous_cycle && typeof state.previous_cycle === 'object'
+                ? state.previous_cycle
                 : null;
-            const canSubmit = status === 'waiting_response' && !!challengeCode;
-            const runtimeMismatch = getRuntimeEnvironmentMismatch(latestRuntimeStatus, twoFactorState);
-            let helper = twoFactorState?.last_result || '当前没有等待中的 Challenge。';
+            const canSubmit = canSubmitTwoFactorResponse(state);
+            const showResetCta = shouldShowTwoFactorResetCta(state);
+            const runtimeMismatch = getRuntimeEnvironmentMismatch(latestRuntimeStatus, state);
+            let helper = state?.last_result || '当前没有等待中的 Challenge。';
             if (runtimeMismatch) {
                 helper = runtimeMismatch.message;
             } else if (recoveryPhase === 'panic_resetting') {
                 helper = '系统正在全量清空旧 2FA / Session 状态，并准备拉起一轮新的干净验证。当前旧 Challenge / Response 不应再继续使用。';
-            } else if (twoFactorState?.manual_takeover_active) {
+            } else if (state?.manual_takeover_active) {
                 helper = '当前处于人工接管中。你可以继续去真实账户里确认挂单；系统不会直接把当前轮次判死，但后台仍会持续静默探测会话是否已恢复。';
             } else if (status === 'success') {
-                helper = twoFactorState?.message || '当前 Gateway 会话已认证，无需提交 Response Code。';
+                helper = state?.message || '当前 Gateway 会话已认证，无需提交 Response Code。';
             } else if (status === 'requested') {
                 helper = '这一步只是把 2FA 卡片发到或刷新到飞书，还没有真正开始验证。需要去飞书点击“开始 2FA 验证”。';
             } else if (status === 'triggered') {
-                helper = twoFactorState?.last_result || '登录流程已经触发，等待 IBKR 返回手机确认或 Challenge/Response。当前已有 active 轮次，请不要重复触发。';
-            } else if (canSubmit) {
-                helper = '当前已切到 Challenge/Response。仅在手机上点确认不会完成验证；请在 IBKR App 的 Two-Factor Authentication 中输入上方 Challenge，拿到 Response Code 后回到这里提交。不要重复触发新一轮。';
+                helper = state?.last_result || '登录流程已经触发，等待 IBKR 返回手机确认或 Challenge/Response。当前已有 active 轮次，请不要重复触发。';
+            } else if (status === 'waiting_response') {
+                helper = buildWaitingResponseHelper(state);
             } else if (status === 'waiting_confirm') {
                 helper = '当前是手机推送模式，只需要点手机通知确认；如果页面后续切成 Challenge/Response，手机确认将不再够用，这里会出现 Challenge 与响应码输入框。当前已有 active 轮次，请不要重复触发。';
             }
@@ -1834,16 +2022,24 @@
                 helper = `上一轮 ${previousStatus} 已在 ${formatTimeLabelWithFallback(previousCycle.superseded_at)} 被替换。后续请只跟当前这一轮。 ${helper}`;
             }
 
+            const panelMeta = [];
+            if (responseStatus) panelMeta.push(`响应状态 ${responseStatus}`);
+            if (state?.challenge_feedback) panelMeta.push(`Gateway反馈 ${state.challenge_feedback}`);
+            if (state?.operator_action) panelMeta.push(`建议动作 ${state.operator_action}`);
+            if (state?.reset_recommended) panelMeta.push('建议干净重开');
+
             document.getElementById('twoFactorPanel').innerHTML = `
                 <div class="challenge-shell">
                     <div class="challenge-head">
-                        <span class="mini-tag"><span class="mini-label">STATUS</span><span class="pill ${statusClass(status)}">${escapeHtml(String(twoFactorState?.status || '--').toUpperCase())}</span></span>
+                        <span class="mini-tag"><span class="mini-label">STATUS</span><span class="pill ${statusClass(status)}">${escapeHtml(String(state?.status || '--').toUpperCase())}</span></span>
                         <span class="mini-tag"><span class="mini-label">MODE</span>${escapeHtml(mode || '--')}</span>
-                        <span class="mini-tag"><span class="mini-label">RECOVERY</span>${escapeHtml(String(twoFactorState?.recovery_phase || '--'))}</span>
-                        <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(String(twoFactorState?.source || '--'))}</span>
+                        <span class="mini-tag"><span class="mini-label">RECOVERY</span>${escapeHtml(String(state?.recovery_phase || '--'))}</span>
+                        <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(String(state?.source || '--'))}</span>
+                        <span class="mini-tag"><span class="mini-label">RESPONSE</span>${escapeHtml(responseStatus || '--')}</span>
                     </div>
                     <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || (runtimeMismatch ? `当前实际 runtime: ${String(runtimeMismatch.actual || '--').toUpperCase()}` : (status === 'success' ? '当前无需 Challenge' : '当前未检测到 Challenge')))}</div>
                     <div class="challenge-copy">${escapeHtml(helper)}</div>
+                    ${panelMeta.length ? `<div class="challenge-copy">${escapeHtml(panelMeta.join(' · '))}</div>` : ''}
                     ${canSubmit ? `
                         <label class="response-label" for="challengeResponseInput">Response Code</label>
                         <div class="response-row">
@@ -1854,9 +2050,14 @@
                                 inputmode="numeric"
                                 autocomplete="off"
                                 spellcheck="false"
-                                placeholder="输入 Response Code"
+                                placeholder="${responseStatus === 'gateway_rejected' ? '重新输入 Response Code' : '输入 Response Code'}"
                             />
                             <button id="challengeResponseSubmit" class="response-btn" onclick="submitTwoFactorResponse()">提交响应码</button>
+                        </div>
+                    ` : showResetCta ? `
+                        <label class="response-label">Reset Recommended</label>
+                        <div class="response-row">
+                            <button class="response-btn response-danger" onclick="handleRuntimeAction('panic_reset_2fa')">放弃当前轮次并干净重开</button>
                         </div>
                     ` : ''}
                 </div>
@@ -2401,13 +2602,26 @@
                 showToast(runtimeMismatch.message);
                 return;
             }
+            const twoFactorState = deriveTwoFactorUiState(latestTwoFactorState);
             const input = document.getElementById('challengeResponseInput');
             const button = document.getElementById('challengeResponseSubmit');
             const responseCode = normalizeCode(input?.value || '');
-            const challengeCode = String(latestTwoFactorState?.challenge_code || '').trim();
+            const challengeCode = String(twoFactorState?.challenge_code || '').trim();
 
             if (!challengeCode) {
                 showToast('当前没有可提交的 Challenge');
+                return;
+            }
+            if (twoFactorState.reset_recommended) {
+                const message = '当前旧 2FA / Session 状态很可能已失配，请执行“放弃当前轮次并干净重开”。';
+                document.getElementById('lastAction').textContent = message;
+                showToast(message);
+                return;
+            }
+            if (!canSubmitTwoFactorResponse(twoFactorState)) {
+                const message = buildWaitingResponseHelper(twoFactorState);
+                document.getElementById('lastAction').textContent = message;
+                showToast(message);
                 return;
             }
             if (!responseCode) {
@@ -2429,7 +2643,7 @@
                 });
                 if (input) input.value = '';
                 document.getElementById('lastAction').textContent = `最近动作：已提交 Challenge Response (${payload.status || 'ok'})`;
-                showToast('Response Code 已提交，等待网关认证');
+                showToast('Response Code 已收到，等待浏览器提交流程');
                 await loadRuntimeData(false);
             } catch (error) {
                 const message = `提交 Response 失败：${error.message || error}`;

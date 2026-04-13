@@ -3160,6 +3160,34 @@ routerAdd("POST", "/api/custom/ibkr/ingest/close", (c) => {
     }
 })
 
+routerAdd("POST", "/api/custom/ibkr/history/rebuild/start", (c) => {
+    const route = "/api/custom/ibkr/history/rebuild/start"
+    const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const reqInfo = c.requestInfo()
+    const data = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/history/rebuild/start`
+    return globalThis.ibkrActionsProxyRequest(
+        c,
+        route,
+        upstream,
+        "POST",
+        {
+            ...data,
+            environment: environment,
+        },
+        120
+    )
+})
+
+routerAdd("GET", "/api/custom/ibkr/history/rebuild/status", (c) => {
+    const route = "/api/custom/ibkr/history/rebuild/status"
+    const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/history/rebuild/status?environment=${encodeURIComponent(environment)}`
+    return globalThis.ibkrActionsProxyRequest(c, route, upstream, "GET", null, 20)
+})
+
 // ══════════════════════════════════════
 // IBKR Compute 状态查询 (PB页面用)
 // ══════════════════════════════════════
@@ -4525,7 +4553,19 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
             message = "当前 Gateway 会话已认证，无需再次确认。"
         } else if (currentCycleActive || result.already_active) {
             if (activeStatus === "waiting_response") {
-                message = "当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。"
+                if (state.reset_recommended) {
+                    message = "当前旧 2FA / Session 状态很可能已失配，请打开 Runtime 页面执行“全量清空并重新验证”，不要重复触发。"
+                } else if (state.response_status === "submitted") {
+                    message = "当前 Response Code 已提交，正在等待 Gateway 恢复认证；请继续当前轮次，不要重复触发。"
+                } else if (state.response_status === "gateway_rejected") {
+                    message = "Gateway 已拒绝当前 Response Code，请打开 Runtime 页面核对当前 Challenge 后重新提交，不要重复触发。"
+                } else if (state.response_status === "submit_failed") {
+                    message = "浏览器提交 Response Code 失败，请打开 Runtime 页面重试当前 Challenge，不要重复触发。"
+                } else if (state.response_status === "received") {
+                    message = "Runtime 已收到 Response Code，正在等待浏览器提交流程；请继续当前轮次，不要重复触发。"
+                } else {
+                    message = "当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。"
+                }
             } else {
                 message = "当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。"
             }

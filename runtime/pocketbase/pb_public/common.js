@@ -471,7 +471,7 @@ function renderNav(activePage) {
     { path: '/ibkr_account.html', icon: '💼', label: '账户' },
     { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html', '/ibkr_stats.html'], icon: '📈', label: '指标' },
     { path: '/ibkr_screener.html', aliases: ['/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '筛选' },
-    { path: '/ibkr_monitor.html', aliases: ['/ibkr_warmup.html', '/ibkr_data_quality.html'], icon: '🛠️', label: '运维' },
+    { path: '/ibkr_monitor.html', aliases: ['/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html'], icon: '🛠️', label: '运维' },
     { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html'], icon: '🖥️', label: '系统' },
     { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' }
   ];
@@ -1157,6 +1157,13 @@ function renderOpsBridge(activePage) {
       label: '数据质量',
       copy: 'bars 缺口 / 重复 / 安全修复',
       active: activePage === '/ibkr_data_quality.html'
+    },
+    {
+      path: '/ibkr_history_rebuild.html',
+      kicker: 'Rebuild',
+      label: '历史重建',
+      copy: '清库 / 重导 / rollup / recompute',
+      active: activePage === '/ibkr_history_rebuild.html'
     }
   ]);
 }
