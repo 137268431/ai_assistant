@@ -74,6 +74,28 @@ class GatewayManager:
         result = self._run_command(["systemctl", "is-active", GATEWAY_SYSTEMD_SERVICE], timeout=5)
         return bool(result and result.returncode == 0 and result.stdout.strip() == "active")
 
+    def recent_logs(self, lines: int = 30, since_minutes: int = 5) -> list[str]:
+        if not GATEWAY_SYSTEMD_SERVICE:
+            return []
+        tail_lines = max(1, int(lines or 0))
+        minutes = max(1, int(since_minutes or 0))
+        result = self._run_command(
+            [
+                "journalctl",
+                "-u",
+                GATEWAY_SYSTEMD_SERVICE,
+                "--since",
+                f"{minutes} min ago",
+                "--no-pager",
+                "-n",
+                str(tail_lines),
+            ],
+            timeout=10,
+        )
+        if not result or result.returncode != 0:
+            return []
+        return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()][-tail_lines:]
+
     def _probe_gateway(self) -> tuple[bool, Optional[int]]:
         try:
             load_cookies(self._session)

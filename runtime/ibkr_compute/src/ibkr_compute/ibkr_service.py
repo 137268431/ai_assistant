@@ -100,6 +100,10 @@ VALID_WATCHLIST_SYMBOL_ROLES = {
 DEFAULT_MARKET_WS_SYMBOLS = ("SPY", "QQQ", "VIX")
 DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
 DAILY_SCAN_STATE_DATE = "global"
+FORCE_FRESH_MANUAL_AUTH_CYCLE = str(
+    os.environ.get("IBKR_FORCE_FRESH_MANUAL_AUTH_CYCLE", "true")
+).strip().lower() not in {"0", "false", "no", "off"}
+FRESH_MANUAL_AUTH_SOURCES = {"feishu_callback", "runtime_page", "feishu_2fa", "codex_validation"}
 
 
 def normalize_watchlist_symbol_role(value, default: str = WATCHLIST_SYMBOL_ROLE_TRADE) -> str:
@@ -116,7 +120,11 @@ class IBKRTradingService:
         self.config.refresh()
 
         self.gateway_manager = GatewayManager()
-        self.auth_handler = AuthHandler(gateway_url=GATEWAY_URL, pb_client=self.pb)
+        self.auth_handler = AuthHandler(
+            gateway_url=GATEWAY_URL,
+            pb_client=self.pb,
+            gateway_manager=self.gateway_manager,
+        )
         self.session_keeper = SessionKeeper(
             gateway_url=GATEWAY_URL,
             pb_client=self.pb,
@@ -426,12 +434,62 @@ class IBKRTradingService:
             source="ibkr_service",
             detail=self._build_2fa_detail(reason),
             message=message,
+            force_reset=True,
         )
         if requested:
             logger.info("Manual 2FA request sent: %s", reason)
         else:
             logger.warning("Manual 2FA request failed to send: %s", reason)
         return requested
+
+    def _should_force_fresh_manual_auth_cycle(self, trigger_login: bool, source: str) -> bool:
+        if not FORCE_FRESH_MANUAL_AUTH_CYCLE or not trigger_login:
+            return False
+        return str(source or "").strip().lower() in FRESH_MANUAL_AUTH_SOURCES
+
+    def _prepare_fresh_manual_auth_cycle(self, reason: str, source: str) -> tuple[bool, dict]:
+        source_key = str(source or "").strip().lower()
+        detail = {
+            "检查时间": self._now_et(),
+            "启动来源": source_key or "unknown",
+            "启动原因": reason or "manual_start",
+        }
+        if not self._should_force_fresh_manual_auth_cycle(True, source_key):
+            detail["执行结果"] = "skipped"
+            return True, detail
+
+        logger.info(
+            "Preparing fresh manual auth cycle: clearing cookies + restarting Gateway (source=%s reason=%s)",
+            source_key or "-",
+            reason or "-",
+        )
+        self.auth_handler.cancel()
+        self.auth_handler.reset_cancel()
+
+        cookie_result = clear_cookies()
+        detail["Cookie已清空"] = "yes" if cookie_result.get("removed") or not cookie_result.get("existed") else "no"
+        if cookie_result.get("error"):
+            detail["Cookie清理错误"] = str(cookie_result.get("error"))[:180]
+
+        gateway_restarted = bool(self.gateway_manager.restart())
+        detail["Gateway已重启"] = "yes" if gateway_restarted else "no"
+        detail["GatewayPID"] = str(self.gateway_manager.pid or "")
+
+        if not gateway_restarted:
+            logger.error("Failed to restart Gateway for fresh manual auth cycle")
+            detail["执行结果"] = "gateway_restart_failed"
+            return False, detail
+
+        time.sleep(1)
+        self.session_keeper.check_auth_status()
+        time.sleep(1)
+        detail["执行结果"] = "ok"
+        logger.info(
+            "Fresh manual auth cycle ready: gateway_pid=%s authenticated=%s",
+            self.gateway_manager.pid or "-",
+            self.session_keeper.is_authenticated,
+        )
+        return True, detail
 
     def _now_iso(self) -> str:
         return datetime.now(ET).isoformat()
@@ -539,10 +597,11 @@ class IBKRTradingService:
         event_detail: dict | None = None,
         level: str = "info",
         create_if_missing: bool = False,
+        allow_when_disabled: bool = False,
     ) -> dict:
         if not self.pb:
             return {}
-        if not self._startup_progress_enabled:
+        if not self._startup_progress_enabled and not allow_when_disabled:
             return {}
         try:
             result = self.pb.sync_startup_progress(
@@ -743,6 +802,7 @@ class IBKRTradingService:
             event_detail=fields,
             level=level,
             create_if_missing=False,
+            allow_when_disabled=True,
         )
         return True
 
@@ -923,6 +983,7 @@ class IBKRTradingService:
             event_detail=payload,
             level="info",
             create_if_missing=False,
+            allow_when_disabled=True,
         )
         return True
 
@@ -2258,6 +2319,7 @@ class IBKRTradingService:
         backfill_written = 0
         compute_result = {}
         last_error = ""
+        startup_gate_open_once = False
         from ibkr_compute.api import server as compute_server
 
         try:
@@ -2430,6 +2492,7 @@ class IBKRTradingService:
                 self._signal_wakeup.set()
                 return
             if readiness["trading_gate_open"] and readiness["pending_symbols"]:
+                startup_gate_open_once = True
                 self._set_warmup_state(
                     phase="running",
                     required_interval=readiness["required_interval"],
@@ -2522,6 +2585,13 @@ class IBKRTradingService:
             for symbol in (final_preflight.get("remaining_repair_symbols") or [])
         }
         readiness = self._apply_integrity_readiness(readiness, snapshot, final_blockers)
+        if startup_gate_open_once and not readiness["trading_gate_open"]:
+            # Once the full trade set has already opened the gate in this cycle,
+            # late storage-driven repair blockers should be treated as background work
+            # instead of regressing startup back to "not ready".
+            readiness["trading_gate_open"] = True
+            if str(readiness.get("trading_gate_reason") or "").strip() != "ready":
+                readiness["trading_gate_reason"] = "background_repair"
         finished_at = self._now_iso()
         phase = "failed" if last_error and readiness["ready_symbols"] == 0 else readiness["phase"]
         warmup_timings["total_elapsed_s"] = round(time.perf_counter() - warmup_started_perf, 3)
@@ -2782,6 +2852,60 @@ class IBKRTradingService:
                         level="warning",
                     )
                     return
+                if self._should_force_fresh_manual_auth_cycle(trigger_login, source):
+                    self._sync_startup_progress(
+                        action="update",
+                        title="IBKR Runtime 启动中",
+                        summary="正在清空旧 Session 并重启 Gateway，确保本轮 2FA 使用全新会话。",
+                        current_step="auth",
+                        current_blocker="等待旧 Session 清理完成并生成新的 2FA 会话",
+                        operator_action="等待系统完成 Gateway 重置后自动进入当前轮次",
+                        steps={
+                            "auth": {
+                                "status": "running",
+                                "detail": "当前轮次会先重置旧 Session，再发起新的 2FA。",
+                            },
+                        },
+                        fields=self._build_startup_progress_fields(reason, source, True),
+                        reason=reason,
+                        source=source,
+                        trigger_login=True,
+                    )
+                    prepared, fresh_detail = self._prepare_fresh_manual_auth_cycle(reason, source)
+                    if not prepared:
+                        logger.error("Fresh manual auth preparation failed, exiting")
+                        self._set_auth_recovery_state(
+                            recovery_phase="failed",
+                            recovery_reason=reason,
+                            probe_result="fresh_auth_prepare_failed",
+                            last_recovery_source=source,
+                            lock_owner="",
+                            lock_expires_at="",
+                        )
+                        self._sync_startup_progress(
+                            action="update",
+                            title="IBKR Runtime 启动中",
+                            summary="旧 Session 清理失败，当前轮次未启动。",
+                            current_step="auth",
+                            current_blocker="Gateway 重置失败",
+                            operator_action="稍后重新点击“开始 2FA 验证”",
+                            steps={
+                                "auth": {
+                                    "status": "failed",
+                                    "detail": "本轮在清理旧 Session / 重启 Gateway 时失败。",
+                                },
+                            },
+                            fields=self._build_startup_progress_fields(reason, source, True, fresh_detail),
+                            reason=reason,
+                            source=source,
+                            trigger_login=True,
+                            record_event=True,
+                            event_type="status_change",
+                            event_title="IBKR Runtime 重置旧 Session 失败",
+                            event_detail=fresh_detail,
+                            level="error",
+                        )
+                        return
                 logger.info("Not authenticated, attempting login (session_keeper paused)...")
                 self._sync_startup_progress(
                     action="update",

@@ -8,7 +8,11 @@ IBKR Gateway 自动登录 + 2FA
 import os
 import re
 import time
+import json
+import base64
+import hashlib
 import logging
+from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 
 from ibkr_compute.gateway.cookie_store import save_browser_cookies, save_cookies
@@ -29,6 +33,47 @@ PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", "").rstrip("/")
 WAIT_POLL_SECONDS = 3
 BROWSER_PROBE_SECONDS = 12
 BACKEND_PROMOTE_SECONDS = 12
+BACKEND_PROMOTE_ATTEMPTS = max(1, int(os.environ.get("IBKR_2FA_PROMOTE_ATTEMPTS", "5")))
+BACKEND_PROMOTE_INTERVAL_SECONDS = max(1, int(os.environ.get("IBKR_2FA_PROMOTE_INTERVAL_SECONDS", "2")))
+BACKEND_REAUTH_GRACE_SECONDS = max(1, int(os.environ.get("IBKR_2FA_REAUTH_GRACE_SECONDS", "3")))
+GATEWAY_LOG_TAIL_LINES = max(5, int(os.environ.get("IBKR_GATEWAY_LOG_TAIL_LINES", "20")))
+GATEWAY_LOG_TAIL_MINUTES = max(1, int(os.environ.get("IBKR_GATEWAY_LOG_TAIL_MINUTES", "5")))
+PUSH_BODY_TEXT_SAMPLE_SECONDS = max(15, int(os.environ.get("IBKR_2FA_PUSH_BODY_TEXT_SAMPLE_SECONDS", "30")))
+PUSH_BODY_TEXT_INITIAL_DELAY_SECONDS = max(
+    30,
+    int(os.environ.get("IBKR_2FA_PUSH_BODY_TEXT_INITIAL_DELAY_SECONDS", "90")),
+)
+PUSH_BODY_TEXT_FINAL_WINDOW_SECONDS = max(
+    10,
+    int(os.environ.get("IBKR_2FA_PUSH_BODY_TEXT_FINAL_WINDOW_SECONDS", "25")),
+)
+CHALLENGE_BODY_TEXT_SAMPLE_SECONDS = max(
+    3,
+    int(os.environ.get("IBKR_2FA_CHALLENGE_BODY_TEXT_SAMPLE_SECONDS", "5")),
+)
+WAIT_STATUS_LOG_SECONDS = max(10, int(os.environ.get("IBKR_2FA_WAIT_STATUS_LOG_SECONDS", "15")))
+CURRENT_URL_SLOW_READ_MS = max(25, int(os.environ.get("IBKR_2FA_CURRENT_URL_SLOW_MS", "80")))
+BODY_TEXT_SLOW_READ_MS = max(50, int(os.environ.get("IBKR_2FA_BODY_TEXT_SLOW_MS", "200")))
+CAPTURE_PAGE_STATE_SLOW_MS = max(50, int(os.environ.get("IBKR_CAPTURE_PAGE_STATE_SLOW_MS", "200")))
+PASSIVE_NETWORK_TRACE_ENABLED = str(
+    os.environ.get("IBKR_2FA_PASSIVE_NETWORK_TRACE_ENABLED", "true")
+).strip().lower() not in {"0", "false", "no", "off"}
+PASSIVE_NETWORK_TRACE_POLL_SECONDS = max(
+    10,
+    int(os.environ.get("IBKR_2FA_PASSIVE_NETWORK_TRACE_POLL_SECONDS", "15")),
+)
+PASSIVE_NETWORK_TRACE_BODY_LIMIT = max(
+    120,
+    int(os.environ.get("IBKR_2FA_PASSIVE_NETWORK_TRACE_BODY_LIMIT", "260")),
+)
+PASSIVE_NETWORK_TRACE_HISTORY_LIMIT = max(
+    4,
+    int(os.environ.get("IBKR_2FA_PASSIVE_NETWORK_TRACE_HISTORY_LIMIT", "12")),
+)
+PASSIVE_NETWORK_TRACE_URL_MARKERS = (
+    "/sso/Authenticator",
+    "/sso/Dispatcher",
+)
 CHALLENGE_REJECTION_TEXT_PATTERNS = (
     (re.compile(r"authentication failed", re.IGNORECASE), "Authentication failed"),
     (re.compile(r"incorrect security code", re.IGNORECASE), "Incorrect security code"),
@@ -39,15 +84,20 @@ CHALLENGE_REJECTION_TEXT_PATTERNS = (
 
 
 class AuthHandler:
-    def __init__(self, gateway_url: str = None, pb_client=None):
+    def __init__(self, gateway_url: str = None, pb_client=None, gateway_manager=None):
         self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
         self.pb_client = pb_client
+        self.gateway_manager = gateway_manager
         self._username = os.environ.get("IBKR_USERNAME", "")
         self._password = os.environ.get("IBKR_PASSWORD", "")
         self._driver = None
         self._last_login_time: Optional[float] = None
         self._last_wait_context: Dict[str, Any] = {}
         self._cancel_requested = False
+        self._last_cookie_summary_fingerprint = ""
+        self._network_trace_requests: Dict[str, Dict[str, Any]] = {}
+        self._network_trace_history: list[Dict[str, Any]] = []
+        self._cookie_bridge_history: list[Dict[str, Any]] = []
 
     def _ensure_driver(self):
         if self._driver is not None:
@@ -65,6 +115,8 @@ class AuthHandler:
         options.add_argument("--ignore-certificate-errors")
         options.add_argument("--window-size=1280,720")
         options.add_argument("--remote-debugging-port=9222")
+        if PASSIVE_NETWORK_TRACE_ENABLED:
+            options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
         snap_chrome = "/snap/chromium/current/usr/lib/chromium-browser/chrome"
         if os.path.isfile(snap_chrome):
@@ -73,6 +125,8 @@ class AuthHandler:
         service = Service(executable_path="/usr/local/bin/chromedriver")
         self._driver = webdriver.Chrome(service=service, options=options)
         self._driver.set_page_load_timeout(LOGIN_TIMEOUT)
+        self._reset_passive_network_trace()
+        self._enable_passive_network_trace()
 
     def _close_driver(self):
         if self._driver:
@@ -81,6 +135,7 @@ class AuthHandler:
             except Exception:
                 pass
             self._driver = None
+        self._reset_passive_network_trace()
 
     def reset_cancel(self):
         self._cancel_requested = False
@@ -117,6 +172,7 @@ class AuthHandler:
         return re.sub(r"[^0-9A-Za-z]", "", str(value or "")).upper()
 
     def _capture_page_state(self) -> Dict[str, Any]:
+        started_perf = time.perf_counter()
         state: Dict[str, Any] = {
             "mode": "unknown",
             "title": "",
@@ -204,6 +260,14 @@ class AuthHandler:
             compact = " | ".join(part.strip() for part in state["body"].splitlines() if part.strip())
             state["body_excerpt"] = compact[:240]
 
+        elapsed_ms = round((time.perf_counter() - started_perf) * 1000, 1)
+        if elapsed_ms >= CAPTURE_PAGE_STATE_SLOW_MS:
+            logger.warning(
+                "_capture_page_state slow_ms=%s mode=%s url=%s",
+                elapsed_ms,
+                state.get("mode") or "unknown",
+                state.get("url") or "-",
+            )
         return state
 
     def _install_trace_hooks(self):
@@ -537,6 +601,26 @@ class AuthHandler:
         if mode_changed_at:
             wait_detail["最近模式切换"] = mode_changed_at
 
+        body_sample_reason = str(state.get("body_sample_reason") or "").strip()
+        if body_sample_reason:
+            wait_detail["最近Body采样原因"] = body_sample_reason
+
+        push_body_sample_count = state.get("push_body_sample_count")
+        if isinstance(push_body_sample_count, int) and push_body_sample_count >= 0:
+            wait_detail["Push期Body采样次数"] = push_body_sample_count
+
+        passive_network_summary = str(state.get("passive_network_summary") or "").strip()
+        if passive_network_summary:
+            wait_detail["最近Authenticator回包"] = passive_network_summary
+
+        passive_network_history = str(state.get("passive_network_history") or "").strip()
+        if passive_network_history:
+            wait_detail["Authenticator轨迹"] = passive_network_history
+
+        cookie_bridge_timeline = str(state.get("cookie_bridge_timeline") or "").strip()
+        if cookie_bridge_timeline:
+            wait_detail["x-sess轨迹"] = cookie_bridge_timeline
+
         return wait_detail
 
     def _build_state_patch(self, page_state: Optional[Dict[str, Any]], extra_patch: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -596,6 +680,26 @@ class AuthHandler:
         if mode_changed_at:
             patch["mode_changed_at"] = mode_changed_at
 
+        body_sample_reason = str(state.get("body_sample_reason") or "").strip()
+        if body_sample_reason:
+            patch["body_sample_reason"] = body_sample_reason
+
+        push_body_sample_count = state.get("push_body_sample_count")
+        if isinstance(push_body_sample_count, int) and push_body_sample_count >= 0:
+            patch["push_body_sample_count"] = push_body_sample_count
+
+        passive_network_summary = str(state.get("passive_network_summary") or "").strip()
+        if passive_network_summary:
+            patch["passive_network_summary"] = passive_network_summary[:320]
+
+        passive_network_history = str(state.get("passive_network_history") or "").strip()
+        if passive_network_history:
+            patch["passive_network_history"] = passive_network_history[:1200]
+
+        cookie_bridge_timeline = str(state.get("cookie_bridge_timeline") or "").strip()
+        if cookie_bridge_timeline:
+            patch["cookie_bridge_timeline"] = cookie_bridge_timeline[:600]
+
         if extra_patch:
             patch.update(extra_patch)
         return patch
@@ -641,6 +745,363 @@ class AuthHandler:
             time.sleep(min(1.0, max(0.1, deadline - time.time())))
         return not self._cancel_requested
 
+    def _reset_passive_network_trace(self) -> None:
+        self._network_trace_requests = {}
+        self._network_trace_history = []
+        self._cookie_bridge_history = []
+        self._last_cookie_summary_fingerprint = ""
+
+    def _enable_passive_network_trace(self) -> None:
+        if not PASSIVE_NETWORK_TRACE_ENABLED or not self._driver:
+            return
+        try:
+            self._driver.execute_cdp_cmd(
+                "Network.enable",
+                {
+                    "maxTotalBufferSize": 1_000_000,
+                    "maxResourceBufferSize": 250_000,
+                },
+            )
+        except Exception as exc:
+            logger.debug("Failed to enable passive network trace: %s", exc)
+
+    @staticmethod
+    def _flatten_text(value: Any, limit: int = 160) -> str:
+        text = " ".join(str(value or "").split())
+        return text[:limit]
+
+    @staticmethod
+    def _secret_fingerprint(value: Any, length: int = 10) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:length]
+
+    @staticmethod
+    def _format_mode_timeline(entries: list[str], limit: int = 8) -> str:
+        cleaned = [str(entry or "").strip() for entry in entries if str(entry or "").strip()]
+        if not cleaned:
+            return ""
+        return " -> ".join(cleaned[-limit:])
+
+    @staticmethod
+    def _body_sample_reason(
+        *,
+        elapsed: int,
+        base_deadline: float,
+        now: float,
+        seconds_since_last_sample: float,
+        last_observed_mode: str,
+    ) -> str:
+        if last_observed_mode == "challenge_response":
+            return (
+                "challenge_interval"
+                if seconds_since_last_sample >= CHALLENGE_BODY_TEXT_SAMPLE_SECONDS
+                else ""
+            )
+
+        if elapsed < PUSH_BODY_TEXT_INITIAL_DELAY_SECONDS:
+            return ""
+
+        seconds_until_push_deadline = max(0.0, base_deadline - now)
+        if (
+            seconds_until_push_deadline <= PUSH_BODY_TEXT_FINAL_WINDOW_SECONDS
+            and seconds_since_last_sample >= max(5.0, min(PUSH_BODY_TEXT_SAMPLE_SECONDS, 10.0))
+        ):
+            return "push_deadline_window"
+
+        if seconds_since_last_sample >= PUSH_BODY_TEXT_SAMPLE_SECONDS:
+            return "push_interval"
+
+        return ""
+
+    @staticmethod
+    def _is_passive_trace_url(url: str) -> bool:
+        target = str(url or "")
+        return any(marker in target for marker in PASSIVE_NETWORK_TRACE_URL_MARKERS)
+
+    @staticmethod
+    def _format_network_body_summary(body_text: str) -> str:
+        raw = str(body_text or "").strip()
+        if not raw:
+            return ""
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return AuthHandler._flatten_text(raw, PASSIVE_NETWORK_TRACE_BODY_LIMIT)
+
+        if isinstance(payload, dict):
+            preferred_keys = (
+                "status",
+                "message",
+                "error",
+                "reason",
+                "auth_res",
+                "authenticated",
+                "connected",
+                "established",
+                "competing",
+                "reached_max_login",
+                "challenge",
+                "challengeCode",
+                "mode",
+                "result",
+            )
+            parts = []
+            for key in preferred_keys:
+                value = payload.get(key)
+                if isinstance(value, (str, int, float, bool)) and value not in ("", None):
+                    parts.append(f"{key}={value}")
+            if parts:
+                return AuthHandler._flatten_text(" ".join(parts), PASSIVE_NETWORK_TRACE_BODY_LIMIT)
+        return AuthHandler._flatten_text(json.dumps(payload, ensure_ascii=True), PASSIVE_NETWORK_TRACE_BODY_LIMIT)
+
+    @staticmethod
+    def _format_passive_trace_history(entries: list[Dict[str, Any]], started_at: Optional[float] = None, limit: int = 5) -> str:
+        cleaned = [entry for entry in (entries or []) if isinstance(entry, dict)]
+        if not cleaned:
+            return ""
+        segments: list[str] = []
+        for entry in cleaned[-limit:]:
+            captured_at = entry.get("captured_at")
+            if isinstance(captured_at, (int, float)) and isinstance(started_at, (int, float)):
+                prefix = f"+{max(int(captured_at - started_at), 0)}s"
+            else:
+                prefix = "t"
+            url = str(entry.get("url") or "")
+            path = urlparse(url).path or url or "-"
+            status = entry.get("status")
+            body_summary = str(entry.get("body_summary") or entry.get("body_error") or "").strip()
+            status_text = f" status={status}" if status not in (None, "") else ""
+            body_text = f" {body_summary}" if body_summary else ""
+            segments.append(
+                AuthHandler._flatten_text(f"{prefix}:{path}{status_text}{body_text}", PASSIVE_NETWORK_TRACE_BODY_LIMIT + 40)
+            )
+        return " | ".join(segment for segment in segments if segment)
+
+    @staticmethod
+    def _extract_browser_cookie_value(browser_cookies: Any, name: str) -> str:
+        target = str(name or "").strip()
+        for cookie in list(browser_cookies or []):
+            if str(cookie.get("name") or "").strip() == target:
+                return str(cookie.get("value") or "").strip()
+        return ""
+
+    @staticmethod
+    def _extract_session_cookie_value(session, name: str) -> str:
+        target = str(name or "").strip()
+        for cookie in session.cookies:
+            if str(cookie.name or "").strip() == target:
+                return str(cookie.value or "").strip()
+        return ""
+
+    @staticmethod
+    def _format_cookie_bridge_timeline(entries: list[Dict[str, Any]], started_at: Optional[float] = None, limit: int = 6) -> str:
+        cleaned = [entry for entry in (entries or []) if isinstance(entry, dict)]
+        if not cleaned:
+            return ""
+        segments: list[str] = []
+        for entry in cleaned[-limit:]:
+            captured_at = entry.get("captured_at")
+            if isinstance(captured_at, (int, float)) and isinstance(started_at, (int, float)):
+                prefix = f"+{max(int(captured_at - started_at), 0)}s"
+            else:
+                prefix = "t"
+            browser_fp = str(entry.get("browser_x_sess_uuid_fp") or "").strip() or "-"
+            session_fp = str(entry.get("session_x_sess_uuid_fp") or "").strip() or "-"
+            match_text = "yes" if entry.get("x_sess_uuid_match") else "no"
+            segments.append(f"{prefix}:b={browser_fp} s={session_fp} match={match_text}")
+        return " | ".join(segments)
+
+    def _fetch_passive_network_body(self, request_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        entry = dict(meta or {})
+        entry["body_fetched"] = True
+        entry["captured_at"] = time.time()
+        try:
+            payload = self._driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id}) or {}
+            body = payload.get("body")
+            if payload.get("base64Encoded") and isinstance(body, str):
+                try:
+                    body = base64.b64decode(body).decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+            entry["body_summary"] = self._format_network_body_summary(str(body or ""))
+        except Exception as exc:
+            entry["body_error"] = str(exc)
+            entry["body_summary"] = ""
+        return entry
+
+    def _build_passive_trace_snapshot(self) -> Dict[str, Any]:
+        entries = self._network_trace_history[-PASSIVE_NETWORK_TRACE_HISTORY_LIMIT:]
+        latest = entries[-1] if entries else {}
+        summary = ""
+        if latest:
+            url = str(latest.get("url") or "")
+            path = urlparse(url).path or url or "-"
+            status = latest.get("status") or 0
+            body_summary = str(latest.get("body_summary") or latest.get("body_error") or "").strip()
+            body_text = f" body={body_summary}" if body_summary else ""
+            summary = self._flatten_text(f"{path} status={status}{body_text}", PASSIVE_NETWORK_TRACE_BODY_LIMIT + 60)
+        return {
+            "entries": entries,
+            "entry_count": len(entries),
+            "last_summary": summary,
+            "last_url": str(latest.get("url") or ""),
+            "last_status": int(latest.get("status") or 0) if latest else 0,
+            "last_body_summary": str(latest.get("body_summary") or ""),
+            "last_body_error": str(latest.get("body_error") or ""),
+        }
+
+    def _drain_passive_network_trace(self, force_body: bool = False) -> Dict[str, Any]:
+        if not PASSIVE_NETWORK_TRACE_ENABLED or not self._driver:
+            return self._build_passive_trace_snapshot()
+
+        try:
+            raw_entries = self._driver.get_log("performance") or []
+        except Exception as exc:
+            logger.debug("Passive network trace drain failed: %s", exc)
+            return self._build_passive_trace_snapshot()
+
+        for raw_entry in raw_entries:
+            try:
+                message = json.loads(raw_entry.get("message") or "{}").get("message") or {}
+            except Exception:
+                continue
+            method = str(message.get("method") or "")
+            params = message.get("params") or {}
+
+            if method == "Network.responseReceived":
+                response = params.get("response") or {}
+                url = str(response.get("url") or "")
+                request_id = str(params.get("requestId") or "")
+                if not request_id or not self._is_passive_trace_url(url):
+                    continue
+                self._network_trace_requests[request_id] = {
+                    "request_id": request_id,
+                    "url": url,
+                    "status": int(response.get("status") or 0),
+                    "mime_type": str(response.get("mimeType") or ""),
+                    "received_monotonic": params.get("timestamp") or 0,
+                    "body_fetched": False,
+                }
+            elif method == "Network.loadingFinished":
+                request_id = str(params.get("requestId") or "")
+                meta = self._network_trace_requests.get(request_id)
+                if not meta or meta.get("body_fetched"):
+                    continue
+                entry = self._fetch_passive_network_body(request_id, meta)
+                self._network_trace_requests[request_id] = entry
+                self._network_trace_history.append(entry)
+                self._network_trace_history = self._network_trace_history[-PASSIVE_NETWORK_TRACE_HISTORY_LIMIT:]
+
+        if force_body:
+            for request_id, meta in list(self._network_trace_requests.items()):
+                if meta.get("body_fetched"):
+                    continue
+                entry = self._fetch_passive_network_body(request_id, meta)
+                self._network_trace_requests[request_id] = entry
+                self._network_trace_history.append(entry)
+            self._network_trace_history = self._network_trace_history[-PASSIVE_NETWORK_TRACE_HISTORY_LIMIT:]
+
+        return self._build_passive_trace_snapshot()
+
+    def _infer_wait_mode(self, page_url: str, page_text: str, fallback_mode: str = "") -> str:
+        url = str(page_url or "")
+        lower = str(page_text or "").lower()
+        if "/sso/Dispatcher" in url or "client login succeeds" in lower or "login complete" in lower:
+            return "success"
+        if "enter the challenge code below" in lower or "response code" in lower:
+            return "challenge_response"
+        if "open the ibkr notification on your phone" in lower or "tap the notification" in lower:
+            return "push_notification"
+        if "username" in lower and "password" in lower:
+            return "login_form"
+        fallback = str(fallback_mode or "").strip()
+        if fallback in {"push_notification", "challenge_response"} and "/sso/Login" in url:
+            return fallback
+        return fallback or "unknown"
+
+    def _read_current_url(self) -> tuple[str, float]:
+        started_perf = time.perf_counter()
+        url = ""
+        if self._driver:
+            try:
+                url = self._driver.current_url or ""
+            except Exception:
+                url = ""
+        elapsed_ms = round((time.perf_counter() - started_perf) * 1000, 1)
+        return url, elapsed_ms
+
+    def _read_body_text(self, limit: int = 300) -> tuple[str, float]:
+        started_perf = time.perf_counter()
+        text = ""
+        if self._driver:
+            try:
+                from selenium.webdriver.common.by import By
+
+                text = self._driver.find_element(By.TAG_NAME, "body").text or ""
+            except Exception:
+                text = ""
+        elapsed_ms = round((time.perf_counter() - started_perf) * 1000, 1)
+        return text[:limit], elapsed_ms
+
+    def _summarize_cookie_bridge(self, browser_cookies, session) -> Dict[str, Any]:
+        browser_names = sorted({str(cookie.get("name") or "").strip() for cookie in (browser_cookies or []) if str(cookie.get("name") or "").strip()})
+        browser_domains = sorted({str(cookie.get("domain") or "").strip() or "(host-only)" for cookie in (browser_cookies or [])})
+        session_names = sorted({str(cookie.name or "").strip() for cookie in session.cookies if str(cookie.name or "").strip()})
+        raw_session_domains = [str(cookie.domain or "").strip() for cookie in session.cookies]
+        session_domains = sorted({domain or "(host-only)" for domain in raw_session_domains})
+        gateway_host = str(urlparse(self.gateway_url).hostname or "").strip().lower()
+        browser_x_sess_uuid = self._extract_browser_cookie_value(browser_cookies, "x-sess-uuid")
+        session_x_sess_uuid = self._extract_session_cookie_value(session, "x-sess-uuid")
+
+        def _matches_gateway(domain: str) -> bool:
+            normalized = str(domain or "").strip().lower().lstrip(".")
+            if not normalized:
+                return True
+            return gateway_host == normalized or gateway_host.endswith("." + normalized) or normalized.endswith("." + gateway_host)
+
+        gateway_domain_match = any(_matches_gateway(domain) for domain in raw_session_domains)
+        return {
+            "browser_count": len(list(browser_cookies or [])),
+            "browser_names": browser_names,
+            "browser_domains": browser_domains,
+            "session_count": len(list(session.cookies)),
+            "session_names": session_names,
+            "session_domains": session_domains,
+            "gateway_host": gateway_host or "-",
+            "gateway_domain_match": gateway_domain_match,
+            "browser_x_sess_uuid_fp": self._secret_fingerprint(browser_x_sess_uuid),
+            "session_x_sess_uuid_fp": self._secret_fingerprint(session_x_sess_uuid),
+            "x_sess_uuid_match": bool(browser_x_sess_uuid and session_x_sess_uuid and browser_x_sess_uuid == session_x_sess_uuid),
+        }
+
+    def _format_backend_auth_summary(self, result: Dict[str, Any]) -> str:
+        payload = result.get("payload") or {}
+        return (
+            f"ok={result.get('ok', False)} "
+            f"status={result.get('status_code', 0)} "
+            f"auth={result.get('authenticated', False)} "
+            f"connected={payload.get('connected', False)} "
+            f"competing={payload.get('competing', False)} "
+            f"message={self._flatten_text(payload.get('message') or result.get('error') or '-', 120)}"
+        )
+
+    def _log_gateway_recent_lines(self, reason: str, since_minutes: int = GATEWAY_LOG_TAIL_MINUTES, max_lines: int = GATEWAY_LOG_TAIL_LINES) -> None:
+        if not self.gateway_manager or not hasattr(self.gateway_manager, "recent_logs"):
+            return
+        try:
+            lines = list(self.gateway_manager.recent_logs(lines=max_lines, since_minutes=since_minutes) or [])
+        except Exception as exc:
+            logger.debug("Gateway log tail failed (%s): %s", reason, exc)
+            return
+        if not lines:
+            logger.info("[GatewayLog][%s] no recent gateway lines", reason)
+            return
+        logger.info("[GatewayLog][%s] recent gateway lines=%d", reason, len(lines))
+        for line in lines[-max_lines:]:
+            logger.info("[GatewayLog][%s] %s", reason, line)
+
     def _check_backend_auth(self, session) -> Dict[str, Any]:
         try:
             resp = session.post(
@@ -671,7 +1132,19 @@ class AuthHandler:
                 if step == "tickle":
                     session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
                 else:
-                    session.post(f"{self.gateway_url}/v1/api/iserver/reauthenticate", timeout=15)
+                    resp = session.post(f"{self.gateway_url}/v1/api/iserver/reauthenticate", timeout=15)
+                    payload = {}
+                    try:
+                        payload = resp.json() if resp.status_code == 200 else {}
+                    except Exception:
+                        payload = {}
+                    message = self._flatten_text(payload.get("message") or "", 80).lower()
+                    if resp.status_code == 200 and message == "triggered":
+                        logger.info(
+                            "Gateway reauthenticate triggered; waiting %ss before auth check",
+                            BACKEND_REAUTH_GRACE_SECONDS,
+                        )
+                        time.sleep(BACKEND_REAUTH_GRACE_SECONDS)
             except Exception as exc:
                 logger.debug("Gateway %s bridge failed: %s", step, exc)
 
@@ -920,12 +1393,21 @@ class AuthHandler:
                     # SSO page itself uses to poll for 2FA confirmation. Hijacking
                     # that endpoint can break the SSO confirmation callback.
 
-                    page_state = self._capture_page_state()
-                    logger.info("Credentials submitted, current 2FA mode=%s", page_state.get("mode") or "unknown")
+                    submit_url, submit_url_ms = self._read_current_url()
+                    logger.info(
+                        "Credentials submitted, entering 2FA wait url=%s current_url_ms=%s",
+                        submit_url or "-",
+                        submit_url_ms,
+                    )
+                    page_state = {
+                        "mode": "unknown",
+                        "url": submit_url,
+                        "body_excerpt": "",
+                    }
                     self._log_to_pb(
                         "2fa_waiting",
                         "info",
-                        page_state.get("body_excerpt") or "Waiting for 2FA confirmation",
+                        "Waiting for 2FA confirmation",
                     )
                     self._report_wait_state(
                         reason=reason,
@@ -1194,7 +1676,27 @@ class AuthHandler:
                 )
             save_browser_cookies(browser_cookies)
             save_cookies(session)
-            logger.debug("Synced %d browser cookies to requests session", len(self._driver.get_cookies()))
+            summary = self._summarize_cookie_bridge(browser_cookies, session)
+            fingerprint = json.dumps(summary, sort_keys=True, ensure_ascii=True)
+            if fingerprint != self._last_cookie_summary_fingerprint:
+                self._last_cookie_summary_fingerprint = fingerprint
+                summary["captured_at"] = time.time()
+                self._cookie_bridge_history.append(summary)
+                self._cookie_bridge_history = self._cookie_bridge_history[-8:]
+                logger.info(
+                    "COOKIE_BRIDGE browser_count=%s session_count=%s gateway_host=%s gateway_domain_match=%s browser_domains=%s session_domains=%s browser_names=%s session_names=%s browser_x_sess_uuid=%s session_x_sess_uuid=%s x_sess_uuid_match=%s",
+                    summary["browser_count"],
+                    summary["session_count"],
+                    summary["gateway_host"],
+                    summary["gateway_domain_match"],
+                    ",".join(summary["browser_domains"]) or "-",
+                    ",".join(summary["session_domains"]) or "-",
+                    ",".join(summary["browser_names"]) or "-",
+                    ",".join(summary["session_names"]) or "-",
+                    summary["browser_x_sess_uuid_fp"] or "-",
+                    summary["session_x_sess_uuid_fp"] or "-",
+                    summary["x_sess_uuid_match"],
+                )
         except Exception as exc:
             logger.debug("Failed to sync browser cookies: %s", exc)
 
@@ -1221,8 +1723,21 @@ class AuthHandler:
         response_deadline = 0.0
         last_report_key = None
         last_cookie_sync_at = time.time()
+        last_body_text_sample_at = time.time()
+        last_network_trace_poll_at = time.time()
         submitted_response = ""
         active_challenge_code = ""
+        last_observed_mode = ""
+        last_observed_url = ""
+        last_observed_excerpt = ""
+        last_challenge_feedback = ""
+        last_response_state_key = ""
+        last_network_trace_summary = ""
+        last_network_trace_history = ""
+        push_body_sample_count = 0
+        last_body_sample_reason = ""
+        mode_timeline_entries: list[str] = []
+        mode_changed_at = ""
 
         COOKIE_SYNC_INTERVAL = 10
 
@@ -1246,14 +1761,11 @@ class AuthHandler:
         # - On success URL, promote via tickle + auth check
         # ================================================================
         # ================================================================
-        # This loop mirrors the proven-working legacy ibkr_login.py:
-        # 1. Read current_url + body.text every cycle
-        # 2. Check for Dispatcher URL or success text
-        # 3. Sync cookies every 10s
-        # 4. Check backend auth via Python requests
-        # 5. Sleep 5s between cycles (matching legacy)
+        # During the push-notification window, minimize DOM reads and rely on
+        # current_url + backend auth as the primary signals. body.text is sampled
+        # at a lower cadence so we can still detect Challenge/Response transitions
+        # without continuously competing with the SSO page's own polling loop.
         # ================================================================
-        from selenium.webdriver.common.by import By
 
         POLL_INTERVAL = 5
 
@@ -1277,30 +1789,142 @@ class AuthHandler:
                 # Read browser state — matches legacy ibkr_login.py pattern.
                 page_url = ""
                 page_text = ""
-                try:
-                    page_url = self._driver.current_url or "" if self._driver else ""
-                    page_text = (self._driver.find_element(By.TAG_NAME, "body").text or "")[:300] if self._driver else ""
-                except Exception:
-                    pass
+                page_url, page_url_ms = self._read_current_url()
+                if page_url_ms >= CURRENT_URL_SLOW_READ_MS:
+                    logger.warning("[2FA %ds] current_url read slow_ms=%s", elapsed, page_url_ms)
+
+                passive_trace_snapshot = self._build_passive_trace_snapshot()
+                if PASSIVE_NETWORK_TRACE_ENABLED and (now - last_network_trace_poll_at) >= PASSIVE_NETWORK_TRACE_POLL_SECONDS:
+                    passive_trace_snapshot = self._drain_passive_network_trace()
+                    last_network_trace_poll_at = now
+                    trace_summary = str(passive_trace_snapshot.get("last_summary") or "").strip()
+                    trace_history = self._format_passive_trace_history(passive_trace_snapshot.get("entries") or [], start)
+                    trace_changed = bool(
+                        (trace_summary and trace_summary != last_network_trace_summary)
+                        or (trace_history and trace_history != last_network_trace_history)
+                    )
+                    if trace_changed and trace_summary:
+                        logger.info(
+                            "[2FA %ds] passive_network count=%s latest=%s history=%s",
+                            elapsed,
+                            passive_trace_snapshot.get("entry_count") or 0,
+                            trace_summary,
+                            trace_history or "-",
+                        )
+                    if trace_summary:
+                        last_network_trace_summary = trace_summary
+                    if trace_history:
+                        last_network_trace_history = trace_history
+
+                body_sample_reason = self._body_sample_reason(
+                    elapsed=elapsed,
+                    base_deadline=base_deadline,
+                    now=now,
+                    seconds_since_last_sample=(now - last_body_text_sample_at),
+                    last_observed_mode=last_observed_mode,
+                )
+                should_sample_body_text = bool(body_sample_reason)
+
+                body_text_ms = 0.0
+                if should_sample_body_text:
+                    page_text, body_text_ms = self._read_body_text()
+                    last_body_text_sample_at = now
+                    last_body_sample_reason = body_sample_reason
+                    if body_sample_reason.startswith("push_"):
+                        push_body_sample_count += 1
+                    logger.info(
+                        "[2FA %ds] body_text sample_ms=%s reason=%s push_samples=%s mode_hint=%s url=%s",
+                        elapsed,
+                        body_text_ms,
+                        body_sample_reason,
+                        push_body_sample_count,
+                        last_observed_mode or "unknown",
+                        page_url or "-",
+                    )
+                    if body_text_ms >= BODY_TEXT_SLOW_READ_MS:
+                        logger.warning(
+                            "[2FA %ds] body_text read slow_ms=%s reason=%s push_samples=%s mode_hint=%s url=%s",
+                            elapsed,
+                            body_text_ms,
+                            body_sample_reason,
+                            push_body_sample_count,
+                            last_observed_mode or "unknown",
+                            page_url or "-",
+                        )
+
+                observed_mode = self._infer_wait_mode(page_url, page_text, last_observed_mode)
+                page_excerpt = self._flatten_text(page_text, 180)
+                if observed_mode != last_observed_mode:
+                    mode_changed_at = self._now_et()
+                    transition = f"{elapsed}s:{observed_mode or 'unknown'}"
+                    if not mode_timeline_entries or mode_timeline_entries[-1] != transition:
+                        mode_timeline_entries.append(transition)
+                mode_timeline = self._format_mode_timeline(mode_timeline_entries)
+                if observed_mode != last_observed_mode or page_url != last_observed_url:
+                    logger.info(
+                        "[2FA %ds] page mode=%s url=%s text=%s current_url_ms=%s body_text_ms=%s sampled_body=%s sample_reason=%s timeline=%s",
+                        elapsed,
+                        observed_mode,
+                        page_url or "-",
+                        page_excerpt or "-",
+                        page_url_ms,
+                        body_text_ms,
+                        should_sample_body_text,
+                        body_sample_reason or "-",
+                        mode_timeline or "-",
+                    )
+                    last_observed_mode = observed_mode
+                    last_observed_url = page_url
+                    last_observed_excerpt = page_excerpt
 
                 # Check for success (URL redirect or page text).
                 if "/sso/Dispatcher" in page_url or "Client login succeeds" in page_text:
                     logger.info("[2FA %ds] SUCCESS PAGE DETECTED: %s", elapsed, page_url)
                     self._sync_browser_cookies(session)
-                    for promote_round in range(5):
-                        time.sleep(2)
+                    passive_trace_snapshot = self._drain_passive_network_trace(force_body=True)
+                    trace_summary = str(passive_trace_snapshot.get("last_summary") or "").strip()
+                    trace_history = self._format_passive_trace_history(passive_trace_snapshot.get("entries") or [], start)
+                    if trace_summary:
+                        last_network_trace_summary = trace_summary
+                    if trace_history:
+                        last_network_trace_history = trace_history
+                    if trace_summary:
+                        logger.info(
+                            "[2FA %ds] passive_network count=%s latest=%s history=%s",
+                            elapsed,
+                            passive_trace_snapshot.get("entry_count") or 0,
+                            trace_summary,
+                            trace_history or "-",
+                        )
+                    for promote_round in range(BACKEND_PROMOTE_ATTEMPTS):
+                        time.sleep(BACKEND_PROMOTE_INTERVAL_SECONDS)
                         self._sync_browser_cookies(session)
-                        try:
-                            session.post(f"{self.gateway_url}/v1/api/tickle", timeout=10)
-                        except Exception:
-                            pass
-                        backend_result = self._check_backend_auth(session)
+                        backend_result = self._promote_backend_auth(session)
+                        logger.info(
+                            "[2FA %ds] Promote round %d/%d %s",
+                            elapsed,
+                            promote_round + 1,
+                            BACKEND_PROMOTE_ATTEMPTS,
+                            self._format_backend_auth_summary(backend_result),
+                        )
                         if backend_result.get("authenticated"):
                             logger.info("[2FA %ds] Backend auth confirmed (round %d)", elapsed, promote_round + 1)
-                            self._last_wait_context = {"mode": "success", "url": page_url, "backend_authenticated": True}
+                            self._last_wait_context = {
+                                "mode": "success",
+                                "url": page_url,
+                                "body_excerpt": page_excerpt,
+                                "backend_authenticated": True,
+                                "mode_timeline": mode_timeline,
+                                "mode_changed_at": mode_changed_at,
+                                "body_sample_reason": last_body_sample_reason,
+                                "push_body_sample_count": push_body_sample_count,
+                                "passive_network_summary": trace_summary,
+                                "passive_network_history": trace_history,
+                                "cookie_bridge_timeline": self._format_cookie_bridge_timeline(self._cookie_bridge_history, start),
+                            }
                             return True
-                        logger.info("[2FA %ds] Promote attempt %d...", elapsed, promote_round + 1)
                     logger.warning("[2FA %ds] Success page but backend auth not confirmed", elapsed)
+                    self._log_gateway_recent_lines("success_page_backend_not_confirmed")
 
                 # Detect challenge/response mode.
                 page_text_lower = page_text.lower()
@@ -1318,12 +1942,61 @@ class AuthHandler:
                     if challenge_deadline <= 0 or challenge_changed:
                         challenge_deadline = now + CHALLENGE_RESPONSE_WAIT
                     challenge_feedback = self._extract_challenge_feedback(page_text)
+                    passive_trace_snapshot = self._drain_passive_network_trace(force_body=True)
+                    trace_summary = str(passive_trace_snapshot.get("last_summary") or "").strip()
+                    trace_history = self._format_passive_trace_history(passive_trace_snapshot.get("entries") or [], start)
+                    if trace_summary:
+                        last_network_trace_summary = trace_summary
+                    if trace_history:
+                        last_network_trace_history = trace_history
+                    if trace_summary:
+                        logger.info(
+                            "[2FA %ds] passive_network count=%s latest=%s history=%s",
+                            elapsed,
+                            passive_trace_snapshot.get("entry_count") or 0,
+                            trace_summary,
+                            trace_history or "-",
+                        )
+                    if challenge_changed:
+                        logger.warning(
+                            "[2FA %ds] challenge detected challenge=%s url=%s text=%s deadline_in=%ss",
+                            elapsed,
+                            active_challenge_code or "-",
+                            page_url or "-",
+                            page_excerpt or "-",
+                            int(max(0, challenge_deadline - now)),
+                        )
+                    if challenge_feedback and challenge_feedback != last_challenge_feedback:
+                        logger.warning(
+                            "[2FA %ds] challenge feedback=%s url=%s text=%s",
+                            elapsed,
+                            challenge_feedback,
+                            page_url or "-",
+                            page_excerpt or "-",
+                        )
+                        last_challenge_feedback = challenge_feedback
                     response_state = self._get_challenge_response_state(active_challenge_code)
                     current_response_status = str(response_state.get("response_status") or "").strip().lower()
                     pending_response_code = str(response_state.get("pending_response_code") or "").strip()
                     current_response_code = str(response_state.get("response_code") or "").strip()
                     if current_response_status == "submitted" and current_response_code:
                         submitted_response = current_response_code
+                    response_state_key = ":".join([
+                        current_response_status or "",
+                        "pending" if pending_response_code else "",
+                        "submitted" if current_response_code else "",
+                        "mismatch" if response_state.get("challenge_mismatch") else "",
+                    ])
+                    if response_state_key and response_state_key != last_response_state_key:
+                        last_response_state_key = response_state_key
+                        logger.info(
+                            "[2FA %ds] response_state status=%s has_pending=%s has_submitted=%s challenge_match=%s",
+                            elapsed,
+                            current_response_status or "-",
+                            bool(pending_response_code),
+                            bool(current_response_code),
+                            not bool(response_state.get("challenge_mismatch")),
+                        )
 
                     page_state = {
                         "mode": "challenge_response",
@@ -1331,6 +2004,13 @@ class AuthHandler:
                         "body_excerpt": page_text[:240],
                         "challenge_code": active_challenge_code,
                         "challenge_feedback": challenge_feedback,
+                        "mode_timeline": mode_timeline,
+                        "mode_changed_at": mode_changed_at,
+                        "body_sample_reason": last_body_sample_reason,
+                        "push_body_sample_count": push_body_sample_count,
+                        "passive_network_summary": trace_summary,
+                        "passive_network_history": trace_history,
+                        "cookie_bridge_timeline": self._format_cookie_bridge_timeline(self._cookie_bridge_history, start),
                     }
                     self._last_wait_context = page_state
                     state_patch_base = {
@@ -1508,18 +2188,43 @@ class AuthHandler:
                 backend_result = self._check_backend_auth(session)
                 if backend_result.get("authenticated"):
                     logger.info("[2FA %ds] Backend auth confirmed via requests session", elapsed)
-                    self._last_wait_context = {"mode": "success", "url": page_url, "backend_authenticated": True}
+                    self._last_wait_context = {
+                        "mode": observed_mode or "success",
+                        "url": page_url,
+                        "body_excerpt": page_excerpt,
+                        "backend_authenticated": True,
+                        "mode_timeline": mode_timeline,
+                        "mode_changed_at": mode_changed_at,
+                        "body_sample_reason": last_body_sample_reason,
+                        "push_body_sample_count": push_body_sample_count,
+                        "passive_network_summary": last_network_trace_summary,
+                        "passive_network_history": last_network_trace_history,
+                        "cookie_bridge_timeline": self._format_cookie_bridge_timeline(self._cookie_bridge_history, start),
+                    }
                     return True
 
-                if elapsed % 15 == 0:
-                    auth_info = backend_result.get("authenticated", False)
-                    competing = backend_result.get("payload", {}).get("competing", False)
-                    connected = backend_result.get("payload", {}).get("connected", False)
+                if elapsed % WAIT_STATUS_LOG_SECONDS == 0:
                     logger.info(
-                        "[2FA %ds] auth=%s connected=%s competing=%s url=%s",
-                        elapsed, auth_info, connected, competing, page_url,
+                        "[2FA %ds] mode=%s remaining=%ss url=%s text=%s current_url_ms=%s body_text_ms=%s sampled_body=%s sample_reason=%s push_samples=%s body_age_s=%s timeline=%s passive_network=%s backend=%s",
+                        elapsed,
+                        observed_mode,
+                        int(max(0, effective_deadline - now)),
+                        page_url or "-",
+                        page_excerpt or "-",
+                        page_url_ms,
+                        body_text_ms,
+                        should_sample_body_text,
+                        body_sample_reason or "-",
+                        push_body_sample_count,
+                        round(max(0.0, now - last_body_text_sample_at), 1),
+                        mode_timeline or "-",
+                        last_network_trace_summary or "-",
+                        self._format_backend_auth_summary(backend_result),
                     )
-                    if competing:
+                    cookie_bridge_timeline = self._format_cookie_bridge_timeline(self._cookie_bridge_history, start)
+                    if cookie_bridge_timeline:
+                        logger.info("[2FA %ds] cookie_bridge timeline=%s", elapsed, cookie_bridge_timeline)
+                    if backend_result.get("payload", {}).get("competing", False):
                         logger.warning("[2FA] Competing session detected!")
 
             except Exception as e:
@@ -1528,6 +2233,44 @@ class AuthHandler:
 
             time.sleep(POLL_INTERVAL)
 
+        final_elapsed = int(time.time() - start)
+        logger.warning(
+            "[2FA %ds] wait ended without auth final_mode=%s final_url=%s final_text=%s",
+            final_elapsed,
+            last_observed_mode or "unknown",
+            last_observed_url or "-",
+            last_observed_excerpt or "-",
+        )
+        passive_trace_snapshot = self._drain_passive_network_trace(force_body=True)
+        trace_summary = str(passive_trace_snapshot.get("last_summary") or "").strip()
+        trace_history = self._format_passive_trace_history(passive_trace_snapshot.get("entries") or [], start)
+        if trace_summary:
+            logger.info(
+                "[2FA %ds] passive_network count=%s latest=%s history=%s",
+                final_elapsed,
+                passive_trace_snapshot.get("entry_count") or 0,
+                trace_summary,
+                trace_history or "-",
+            )
+            last_network_trace_summary = trace_summary
+        if trace_history:
+            last_network_trace_history = trace_history
+        self._last_wait_context = {
+            "mode": last_observed_mode or "unknown",
+            "url": last_observed_url,
+            "body_excerpt": last_observed_excerpt,
+            "challenge_code": active_challenge_code,
+            "challenge_feedback": last_challenge_feedback,
+            "backend_authenticated": False,
+            "mode_timeline": self._format_mode_timeline(mode_timeline_entries),
+            "mode_changed_at": mode_changed_at,
+            "body_sample_reason": last_body_sample_reason,
+            "push_body_sample_count": push_body_sample_count,
+            "passive_network_summary": last_network_trace_summary,
+            "passive_network_history": last_network_trace_history,
+            "cookie_bridge_timeline": self._format_cookie_bridge_timeline(self._cookie_bridge_history, start),
+        }
+        self._log_gateway_recent_lines("wait_ended_without_auth")
         return False
 
     def status(self) -> dict:

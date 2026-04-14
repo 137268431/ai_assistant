@@ -1,7 +1,7 @@
 [Unit]
 Description=IBKR Compute Service
 After=network.target ibkr-gateway.service
-Requires=ibkr-gateway.service
+Wants=ibkr-gateway.service
 
 [Service]
 Type=simple

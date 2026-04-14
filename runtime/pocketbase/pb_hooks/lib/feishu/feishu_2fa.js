@@ -644,18 +644,20 @@ function ensureRequestedState(environment, options) {
     var times = timeUtils.getTimeStrings()
     var status = currentData.status || ""
     var isActive = isActiveStatus(status)
-    var keepActiveFlow = ["triggered", "waiting_confirm", "waiting_response"].indexOf(status) !== -1
+    var forceReset = !!opts.forceReset
+    var keepActiveFlow = !forceReset && ["triggered", "waiting_confirm", "waiting_response"].indexOf(status) !== -1
     var preserveCurrentDisplay = keepActiveFlow && !!currentData.message_id
-    var nextStatus = (isActive && !opts.forceReset) || keepActiveFlow ? status : "requested"
+    var nextStatus = (isActive && !forceReset) || keepActiveFlow ? status : "requested"
+    var nextDetail = preserveCurrentDisplay
+        ? (currentData.detail || opts.detail || {})
+        : (opts.detail || (forceReset ? {} : (currentData.detail || {})))
 
     var patch = {
         status: nextStatus,
         reason: preserveCurrentDisplay
             ? (currentData.reason || opts.reason || "manual_reauth")
             : (opts.reason || currentData.reason || "manual_reauth"),
-        detail: preserveCurrentDisplay
-            ? (currentData.detail || opts.detail || {})
-            : (opts.detail || currentData.detail || {}),
+        detail: nextDetail,
         source: preserveCurrentDisplay
             ? (currentData.source || opts.source || "ibkr_compute")
             : (opts.source || currentData.source || "ibkr_compute"),
@@ -664,12 +666,14 @@ function ensureRequestedState(environment, options) {
         request_count: toNumber(currentData.request_count, 0) + 1,
     }
 
-    if (!keepActiveFlow && (!isActive || opts.forceReset)) {
+    if (!keepActiveFlow && (!isActive || forceReset)) {
         patch.triggered_at = ""
         patch.result_at = ""
         patch.last_error = ""
         patch.last_result = ""
         patch.mode = ""
+        patch.mode_changed_at = ""
+        patch.mode_timeline = ""
         patch.challenge_code = ""
         patch.challenge_detected_at = ""
         patch.response_code = ""
@@ -678,6 +682,18 @@ function ensureRequestedState(environment, options) {
         patch.response_submitted_at = ""
         patch.response_rejected_at = ""
         patch.challenge_feedback = ""
+        patch.page_title = ""
+        patch.page_url = ""
+        patch.gateway_trace = ""
+        patch.passive_network_summary = ""
+        patch.passive_network_history = ""
+        patch.cookie_bridge_timeline = ""
+        patch.push_body_sample_count = 0
+        patch.browser_authenticated = false
+        patch.backend_authenticated = false
+        patch.gateway_authenticated = false
+        patch.gateway_status_code = 0
+        patch.gateway_sso_expires_ms = 0
         patch.next_retry_at = ""
         patch.recovery_phase = "idle"
         patch.recovery_reason = ""
@@ -693,12 +709,13 @@ function ensureRequestedState(environment, options) {
         patch.last_recovery_source = ""
         patch.lock_owner = ""
         patch.lock_expires_at = ""
+        patch.previous_cycle = null
     }
 
     if (preserveCurrentDisplay && currentData.message) {
         patch.message = currentData.message
     } else if (nextStatus === "requested") {
-        if (opts.message) patch.message = opts.message
+        patch.message = opts.message ? opts.message : (forceReset ? "" : currentData.message)
     } else if (!currentData.message && opts.message) {
         patch.message = opts.message
     }
@@ -1048,13 +1065,15 @@ function request2faApproval(options) {
     var lastRequestPushMs = toNumber(currentData.last_request_push_ms, 0)
     var alreadyActive = isCurrentCycleActiveStatus(currentStatus)
     var activeCardExists = isActiveStatus(currentStatus) && !!currentMessageId
+    var shouldResetExistingCard = !!opts.forceReset && activeCardExists
     var existingRequestedCard = String(currentStatus || "").trim().toLowerCase() === "requested" && activeCardExists
-    var shouldRefreshExistingCard = existingRequestedCard && shouldUpdateExistingRequestedCard(currentData, saved.data || {})
+    var shouldRefreshExistingCard = shouldResetExistingCard || (existingRequestedCard && shouldUpdateExistingRequestedCard(currentData, saved.data || {}))
     var renotifyRemainingMs = activeCardExists && lastRequestPushMs > 0
         ? Math.max(0, REQUEST_RENOTIFY_COOLDOWN_MS - (Date.now() - lastRequestPushMs))
         : 0
     var shouldRenotify = (
         activeCardExists &&
+        !shouldRefreshExistingCard &&
         (Date.now() - lastRequestPushMs) >= REQUEST_RENOTIFY_COOLDOWN_MS
     )
 

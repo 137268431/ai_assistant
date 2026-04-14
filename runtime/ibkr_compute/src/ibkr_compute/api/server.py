@@ -26,10 +26,36 @@ import sys
 import time
 import traceback
 import threading
+import urllib3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
+
+
+NOISY_HTTP_ACCESS_PATTERNS = (
+    '/health HTTP/1.1"',
+    '/status HTTP/1.1"',
+    '/ibkr/status HTTP/1.1"',
+    '/ibkr/monitor HTTP/1.1"',
+    '/ibkr/account HTTP/1.1"',
+    '/compute HTTP/1.1"',
+    '/robots.txt HTTP/1.1"',
+    '"GET / HTTP/1.1"',
+)
+
+
+class QuietEndpointAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        return not any(pattern in message for pattern in NOISY_HTTP_ACCESS_PATTERNS)
+
+
+logging.getLogger("werkzeug").addFilter(QuietEndpointAccessLogFilter())
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import requests
 from flask import Flask, Response, jsonify, redirect, request
