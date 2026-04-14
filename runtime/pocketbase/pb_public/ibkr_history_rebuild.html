@@ -466,6 +466,7 @@
         let currentEnvironment = getCurrentRuntimeEnvironment();
         let pollTimer = null;
         let activeStatus = null;
+        let statusPollFailureCount = 0;
 
         function authHeaders() {
             const token = getToken();
@@ -482,19 +483,41 @@
                 },
                 body: options.body ? JSON.stringify(options.body) : undefined
             });
+            const rawText = await response.text();
             let payload = {};
             try {
-                payload = await response.json();
+                payload = rawText ? JSON.parse(rawText) : {};
             } catch (_) {
-                payload = {};
+                payload = rawText ? { raw: rawText } : {};
             }
             if (!response.ok && payload.ok !== true) {
-                const error = new Error(payload.error || `HTTP ${response.status}`);
+                const error = new Error(payload.message || payload.error || payload.raw || `HTTP ${response.status}`);
                 error.status = response.status;
                 error.payload = payload;
                 throw error;
             }
             return payload;
+        }
+
+        function buildErrorMessage(error, fallback = '请求失败') {
+            const payload = error?.payload || {};
+            return String(
+                payload.message
+                || payload.error
+                || error?.message
+                || fallback
+            ).trim() || fallback;
+        }
+
+        function handleStatusLoadError(error, fallback = '状态拉取失败') {
+            statusPollFailureCount += 1;
+            const shouldPausePolling = statusPollFailureCount >= 3;
+            const message = buildErrorMessage(error, fallback);
+            if (shouldPausePolling && pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            setError(shouldPausePolling ? `${message}（已暂停自动轮询，请刷新后重试）` : message);
         }
 
         function setError(message) {
@@ -619,6 +642,8 @@
 
         async function loadStatus() {
             const payload = await requestJson(`/api/custom/ibkr/history/rebuild/status?environment=${encodeURIComponent(currentEnvironment)}`);
+            statusPollFailureCount = 0;
+            setError('');
             applyStatus(payload);
             return payload;
         }
@@ -638,10 +663,11 @@
                     method: 'POST',
                     body: payload
                 });
+                statusPollFailureCount = 0;
                 showToast('历史重建已启动');
                 applyStatus(result);
             } catch (error) {
-                const message = error?.payload?.message || error?.payload?.error || error.message || '启动失败';
+                const message = buildErrorMessage(error, '启动失败');
                 setError(message);
                 if (error?.payload) {
                     applyStatus(error.payload);
@@ -655,7 +681,7 @@
                 try {
                     await loadStatus();
                 } catch (error) {
-                    setError(error.message || '状态拉取失败');
+                    handleStatusLoadError(error, '状态拉取失败');
                 }
             }, 2000);
         }
@@ -673,7 +699,7 @@
             try {
                 await loadStatus();
             } catch (error) {
-                setError(error.message || '状态初始化失败');
+                handleStatusLoadError(error, '状态初始化失败');
             }
             startPolling();
         });

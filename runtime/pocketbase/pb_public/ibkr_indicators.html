@@ -739,6 +739,25 @@
             return Number.isFinite(num) ? num.toLocaleString() : '-';
         }
 
+        function formatCreatedText(value) {
+            const text = String(value || '').trim();
+            if (!text) return '-';
+            const parsed = new Date(text);
+            if (!Number.isNaN(parsed.getTime())) {
+                return parsed.toLocaleString('zh-CN', {
+                    timeZone: 'Asia/Shanghai',
+                    hour12: false,
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }).replace(/\//g, '-');
+            }
+            return text.replace('T', ' ').replace('Z', '');
+        }
+
         function formatSignedPercent(value) {
             const num = Number(value);
             if (!Number.isFinite(num)) return '-';
@@ -949,6 +968,7 @@
                 const dayChange = Number(indicatorView.display_day_change_pct);
                 const prevCloseChange = Number(indicatorView.display_prev_close_change_pct);
                 const vwapDist = Number(indicatorView.vwap_dist);
+                const createdText = formatCreatedText(indicator.created);
 
                 return `
                     <div class="indicator-card" onclick="showIndicatorDetails('${escapeHtml(indicator.id)}')" style="cursor:pointer;">

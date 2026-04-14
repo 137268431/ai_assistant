@@ -1309,7 +1309,12 @@ class AuthHandler:
                         active_challenge_code = challenge_code
                         submitted_response = ""
 
-                    challenge_deadline = max(challenge_deadline, now + CHALLENGE_RESPONSE_WAIT)
+                    # Start the challenge-response timeout window only when the
+                    # current challenge first appears or actually changes.
+                    # Re-extending it on every polling loop would prevent timeout
+                    # handling and auto-retry from ever firing.
+                    if challenge_deadline <= 0 or challenge_changed:
+                        challenge_deadline = now + CHALLENGE_RESPONSE_WAIT
                     challenge_feedback = self._extract_challenge_feedback(page_text)
                     response_state = self._get_challenge_response_state(active_challenge_code)
                     current_response_status = str(response_state.get("response_status") or "").strip().lower()

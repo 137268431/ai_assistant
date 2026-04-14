@@ -550,6 +550,74 @@ class IBKRTradingService:
     def _trade_window_end(self) -> tuple[int, int]:
         return self._get_time_window("trade_window_end_time", DEFAULT_TRADE_WINDOW_END)
 
+    def _expected_startup_today_regular_ms(self, et_now: datetime | None = None) -> int:
+        current_et = et_now or datetime.now(ET)
+        effective_et = current_et - timedelta(seconds=max(0, int(self._official_5m_close_delay_sec() or 0)))
+        expected_ms = interval_to_ms("5m")
+        start_hour, start_minute = self._trade_window_start()
+        end_hour, end_minute = self._trade_window_end()
+        session_start = current_et.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+        session_end = current_et.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+        first_close_ready_at = session_start + timedelta(milliseconds=expected_ms)
+        if session_end <= session_start or effective_et < first_close_ready_at:
+            return 0
+        capped_et = min(effective_et, session_end)
+        capped_ms = int(capped_et.timestamp() * 1000)
+        if capped_ms <= int(session_start.timestamp() * 1000):
+            return 0
+        return bucket_start_ms(capped_ms - expected_ms, "5m")
+
+    def _pop_startup_state(self) -> dict | None:
+        with self._state_lock:
+            if not self._starting:
+                return None
+            context = {
+                "reason": self._startup_reason,
+                "source": self._startup_source,
+                "trigger_login": self._startup_trigger_login,
+                "message_id": self._startup_status_message_id,
+            }
+            self._starting = False
+            self._startup_reason = ""
+            self._startup_source = ""
+            self._startup_trigger_login = False
+            self._startup_status_message_id = ""
+        return context
+
+    def _release_startup_gate(
+        self,
+        reason: str,
+        title: str,
+        detail: dict | None = None,
+        level: str = "warning",
+    ) -> bool:
+        startup_context = self._pop_startup_state()
+        if not startup_context:
+            return False
+
+        payload = {
+            "状态结论": "IBKR Runtime 已离开启动态，但当前处于降级等待恢复状态。",
+            "检查时间": self._now_et(),
+            "Runtime阶段": self._runtime_phase_label(),
+            "启动原因": startup_context.get("reason") or reason or "startup",
+            "启动来源": startup_context.get("source") or "api_start",
+            "触发登录": "yes" if startup_context.get("trigger_login") else "no",
+            "降级原因": reason or "startup_released",
+        }
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            payload["运行页"] = runtime_url
+        if detail:
+            payload.update(detail)
+        self._emit_system_event(
+            "status_change",
+            level,
+            title or "IBKR Runtime 启动态已解除",
+            payload,
+            message_id=startup_context.get("message_id", ""),
+        )
+        return True
+
     def _collect_startup_history_repair_snapshot(self, symbol: str) -> dict:
         normalized_symbol = str(symbol or "").strip().upper()
         snapshot = {
@@ -559,6 +627,7 @@ class IBKRTradingService:
             "latest_stored_ms": 0,
             "today_regular_count": 0,
             "today_regular_latest_ms": 0,
+            "expected_today_regular_ms": 0,
             "today_gap_count": 0,
             "today_gap_examples": [],
             "needs_history_fetch": False,
@@ -578,9 +647,10 @@ class IBKRTradingService:
         max_pages = max(2, min(8, (bars_needed + 199) // 200))
         et_now = datetime.now(ET)
         market_date = et_now.strftime("%Y-%m-%d")
-        now_ms = int(et_now.timestamp() * 1000)
-        require_today_regular = (et_now.hour, et_now.minute) >= self._trade_window_start()
+        expected_today_regular_ms = self._expected_startup_today_regular_ms(et_now)
+        require_today_regular = expected_today_regular_ms > 0
         freshness_tolerance_ms = max(expected_ms * 3, 15 * 60 * 1000)
+        snapshot["expected_today_regular_ms"] = expected_today_regular_ms
 
         try:
             rows = self.pb.get_all_records(
@@ -650,9 +720,13 @@ class IBKRTradingService:
             latest_today_regular_ms = int(snapshot.get("today_regular_latest_ms", 0) or 0)
             if latest_today_regular_ms <= 0:
                 reasons.append("today_regular_missing")
-            elif (now_ms - latest_today_regular_ms) > freshness_tolerance_ms:
-                stale_minutes = max(0, int((now_ms - latest_today_regular_ms) // 60000))
-                reasons.append(f"today_regular_stale={stale_minutes}m")
+            elif latest_today_regular_ms < expected_today_regular_ms:
+                missing_ms = max(0, expected_today_regular_ms - latest_today_regular_ms)
+                missing_bars = max(1, int((missing_ms + expected_ms - 1) // expected_ms))
+                stale_minutes = max(0, int(missing_ms // 60000))
+                reasons.append(f"today_regular_incomplete={missing_bars}")
+                if stale_minutes > 0 and stale_minutes > int(freshness_tolerance_ms // 60000):
+                    reasons.append(f"today_regular_stale={stale_minutes}m")
         if int(snapshot.get("today_gap_count", 0) or 0) > 0:
             reasons.append(f"today_regular_gaps={int(snapshot.get('today_gap_count', 0) or 0)}")
 
@@ -666,26 +740,17 @@ class IBKRTradingService:
         return snapshot
 
     def _complete_startup_success(self, title: str, detail: dict | None = None) -> bool:
-        with self._state_lock:
-            if not self._starting:
-                return False
-            self._starting = False
-            startup_reason = self._startup_reason
-            startup_source = self._startup_source
-            startup_trigger_login = self._startup_trigger_login
-            startup_message_id = self._startup_status_message_id
-            self._startup_reason = ""
-            self._startup_source = ""
-            self._startup_trigger_login = False
-            self._startup_status_message_id = ""
+        startup_context = self._pop_startup_state()
+        if not startup_context:
+            return False
 
         payload = {
             "状态结论": "IBKR Runtime 已完成启动前回补与预热，当前服务可用。",
             "检查时间": self._now_et(),
             "Runtime阶段": self._runtime_phase_label(),
-            "启动原因": startup_reason or str((self._warmup_state or {}).get("reason") or "startup"),
-            "启动来源": startup_source or "api_start",
-            "触发登录": "yes" if startup_trigger_login else "no",
+            "启动原因": startup_context.get("reason") or str((self._warmup_state or {}).get("reason") or "startup"),
+            "启动来源": startup_context.get("source") or "api_start",
+            "触发登录": "yes" if startup_context.get("trigger_login") else "no",
         }
         runtime_url = self._runtime_page_url()
         if runtime_url:
@@ -703,7 +768,7 @@ class IBKRTradingService:
             "info",
             "IBKR Runtime 启动完成",
             payload,
-            message_id=startup_message_id,
+            message_id=startup_context.get("message_id", ""),
         )
         return True
 
@@ -1515,6 +1580,18 @@ class IBKRTradingService:
         with self._scan_state_lock:
             return dict(self._daily_scan_state or {})
 
+    def _non_monitor_pending_symbols(
+        self,
+        pending_symbols: list[str] | None,
+        monitor_symbols: list[str] | None = None,
+    ) -> list[str]:
+        monitor_set = set(self._normalize_symbol_list(monitor_symbols or []))
+        return [
+            symbol
+            for symbol in self._normalize_symbol_list(pending_symbols or [])
+            if symbol not in monitor_set
+        ]
+
     def _set_daily_scan_state(self, **updates) -> dict:
         with self._scan_state_lock:
             next_state = dict(self._daily_scan_state or self._initial_daily_scan_state())
@@ -1635,6 +1712,19 @@ class IBKRTradingService:
             timings={},
             last_duration_s=0.0,
         )
+        if self._running and reason in {"session_unauthenticated", "gateway_down"}:
+            conclusion = "启动线程已就绪，但当前认证中断，运行态已降级等待恢复。"
+            if reason == "gateway_down":
+                conclusion = "启动线程已就绪，但当前 Gateway 中断，运行态已降级等待恢复。"
+            self._release_startup_gate(
+                reason=reason,
+                title="IBKR Runtime 启动态已解除（等待恢复）",
+                detail={
+                    "状态结论": conclusion,
+                    "Warmup阶段": phase,
+                    "交易门": "closed",
+                },
+            )
 
     def _schedule_warmup(self, reason: str = "subscriptions_changed", force: bool = False) -> bool:
         snapshot = self._warmup_snapshot_from_subscriptions()
@@ -1780,8 +1870,9 @@ class IBKRTradingService:
         ready_trade_symbols = len([symbol for symbol in snapshot["trade_symbols"] if symbol in ready_set])
         ready_monitor_symbols = len([symbol for symbol in snapshot["monitor_symbols"] if symbol in ready_set])
         trading_gate_open = bool(snapshot["trade_symbols"]) and ready_trade_symbols == snapshot["trade_symbols_total"]
+        blocking_pending_symbols = self._non_monitor_pending_symbols(pending_symbols, snapshot["monitor_symbols"])
         return {
-            "phase": "ready" if not pending_symbols else "degraded",
+            "phase": "ready" if not blocking_pending_symbols else "degraded",
             "required_interval": DEFAULT_WARMUP_REQUIRED_INTERVAL,
             "ready_symbols": len(ready_symbols),
             "ready_scan_symbols": ready_scan_symbols,
@@ -1852,8 +1943,9 @@ class IBKRTradingService:
             and ready_trade_symbols == int(snapshot.get("trade_symbols_total", 0) or 0)
             and not trade_blocked
         )
+        blocking_pending_symbols = self._non_monitor_pending_symbols(sorted(pending_set), snapshot.get("monitor_symbols") or [])
 
-        readiness["phase"] = "ready" if not pending_set else "degraded"
+        readiness["phase"] = "ready" if not blocking_pending_symbols else "degraded"
         readiness["ready_symbols"] = len(ready_set)
         readiness["ready_scan_symbols"] = len([symbol for symbol in snapshot.get("scan_symbols") or [] if symbol in ready_set])
         readiness["ready_subscription_symbols"] = len([symbol for symbol in snapshot.get("subscription_symbols") or [] if symbol in ready_set])
@@ -2911,11 +3003,20 @@ class IBKRTradingService:
 
         warmup_state = self._copy_warmup_state()
         symbols_total = int(warmup_state.get("symbols_total", 0) or 0)
-        ready_symbols = int(warmup_state.get("ready_symbols", 0) or 0)
         if symbols_total <= 0:
             return {"ok": True, "skipped": True, "reason": "no_data_symbols", "state": state}
-        if ready_symbols < symbols_total:
-            return {"ok": True, "skipped": True, "reason": "data_warmup_incomplete", "state": state}
+        blocking_pending_symbols = self._non_monitor_pending_symbols(
+            warmup_state.get("pending_symbols") or [],
+            warmup_state.get("monitor_symbols") or [],
+        )
+        if blocking_pending_symbols:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "data_warmup_incomplete",
+                "blocking_symbols": blocking_pending_symbols,
+                "state": state,
+            }
 
         if not self._watchlist_trade_symbols:
             completed_state = self._set_daily_scan_state(
@@ -4030,10 +4131,14 @@ class IBKRTradingService:
             if max_written_ms < due_bucket_ms:
                 next_pending_symbols.append(symbol)
 
-        if written_bars > 0:
+        compute_symbols = [
+            symbol for symbol in symbols
+            if symbol not in next_pending_symbols
+        ]
+        if written_bars > 0 and compute_symbols:
             self._last_bar_close_at = time.time()
             self.data_writer.flush()
-            self._queue_compute_event("canonical_close", bar_count=written_bars, symbols=written_symbols)
+            self._queue_compute_event("canonical_close", bar_count=written_bars, symbols=compute_symbols)
 
         next_last_completed_bucket_ms = last_completed_bucket_ms
         if not next_pending_symbols:
@@ -4643,6 +4748,10 @@ class IBKRTradingService:
         data_symbols = self._data_universe_symbols()
         scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
         market_ws_symbols = self._market_ws_symbols()
+        blocking_canonical_pending_symbols = self._non_monitor_pending_symbols(
+            official_5m.get("pending_symbols") or [],
+            market_ws_symbols,
+        )
         if str(daily_scan_state.get("status") or "").strip().lower() == "running":
             pipeline_stage = "run_daily_scan"
             pipeline_status = "running"
@@ -4662,7 +4771,7 @@ class IBKRTradingService:
             "fresh"
             if completed_bucket_ms > 0
             and float(official_5m.get("lag_s", 0) or 0) <= 90
-            and not int(official_5m.get("pending_symbols_total", 0) or 0)
+            and not blocking_canonical_pending_symbols
             else "stale"
         )
         indicator_freshness_status = (

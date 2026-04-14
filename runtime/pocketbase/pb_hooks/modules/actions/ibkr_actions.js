@@ -882,7 +882,7 @@ function ibkrActionsHttpStatusCode(resp, fallback) {
 }
 
 function ibkrActionsSendJson(c, statusCode, payload) {
-    return c.html(Number(statusCode) || 200, JSON.stringify(payload || {}))
+    return c.json(Number(statusCode) || 200, payload || {})
 }
 globalThis.ibkrActionsSendJson = ibkrActionsSendJson
 
@@ -910,6 +910,7 @@ function ibkrActionsProxyRequest(c, route, upstream, method, body, timeoutSec) {
         const result = globalThis.ibkrActionsFetchProxyPayload(route, upstream, method, body, timeoutSec)
         return ibkrActionsSendJson(c, result.statusCode, result.payload)
     } catch (err) {
+        console.error(`[IBKRActions] proxy error route=${route}: ${err.message || err}`)
         return c.json(
             502,
             globalThis.ibkrActionsBuildProxyMeta(
@@ -3162,30 +3163,77 @@ routerAdd("POST", "/api/custom/ibkr/ingest/close", (c) => {
 
 routerAdd("POST", "/api/custom/ibkr/history/rebuild/start", (c) => {
     const route = "/api/custom/ibkr/history/rebuild/start"
-    const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const reqInfo = c.requestInfo()
-    const data = reqInfo.body || reqInfo.data || {}
-    const environment = getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/history/rebuild/start`
-    return globalThis.ibkrActionsProxyRequest(
-        c,
-        route,
-        upstream,
-        "POST",
-        {
-            ...data,
-            environment: environment,
-        },
-        120
-    )
+    try {
+        const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const reqInfo = c.requestInfo()
+        const data = reqInfo.body || reqInfo.data || {}
+        const environment = getRuntimeEnvironmentFromData(data, LIVE_ENVIRONMENT)
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/history/rebuild/start`
+        const response = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 120,
+            body: JSON.stringify({
+                ...data,
+                environment: environment,
+            }),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(response.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = route
+        payload.proxy_upstream = upstream
+        return c.json((Number(response && response.statusCode) > 0 ? Number(response.statusCode) : 200), payload)
+    } catch (err) {
+        console.error(`[IBKRActions] history rebuild start error: ${err.message || err}`)
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: route,
+        })
+    }
 })
 
 routerAdd("GET", "/api/custom/ibkr/history/rebuild/status", (c) => {
     const route = "/api/custom/ibkr/history/rebuild/status"
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/history/rebuild/status?environment=${encodeURIComponent(environment)}`
-    return globalThis.ibkrActionsProxyRequest(c, route, upstream, "GET", null, 20)
+    try {
+        const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/history/rebuild/status?environment=${encodeURIComponent(environment)}`
+        const response = $http.send({
+            url: upstream,
+            method: "GET",
+            timeout: 20,
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(response.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = route
+        payload.proxy_upstream = upstream
+        return c.json((Number(response && response.statusCode) > 0 ? Number(response.statusCode) : 200), payload)
+    } catch (err) {
+        console.error(`[IBKRActions] history rebuild status error: ${err.message || err}`)
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: route,
+        })
+    }
 })
 
 // ══════════════════════════════════════
