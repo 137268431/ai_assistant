@@ -1,5 +1,6 @@
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
+var feishuStartup = require(`${__hooks}/lib/feishu/feishu_startup.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
 var timeUtils = require(`${__hooks}/lib/time_utils.js`)
 var systemEvents = require(`${__hooks}/lib/system_events.js`)
@@ -14,6 +15,13 @@ var DELIVERY_LOCK_TTL_MS = 20000
 var CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000
 var ACTIVE_STATUSES = ["requested", "triggered", "waiting_confirm", "waiting_response"]
 var TERMINAL_STATUSES = ["success", "timeout", "failed"]
+var MANUAL_AUTH_REASON_LABELS = {
+    weekly_reauth: "每周重登验证",
+    manual_start: "启动验证",
+    startup: "启动验证",
+    manual_reauth: "手动重登验证",
+    panic_reset_2fa: "重开验证",
+}
 var RECOVERY_FIELDS = [
     "cycle_id",
     "recovery_phase",
@@ -125,6 +133,157 @@ function resolve2faChatId(environment) {
         if (configured) return configured
     }
     return DEFAULT_TWO_FA_CHAT_ID
+}
+
+function normalizeManualAuthReason(reason) {
+    var text = String(reason || "").trim().toLowerCase()
+    if (!text) return "manual_reauth"
+    if (text === "startup") return "manual_start"
+    return text
+}
+
+function getManualAuthReasonLabel(reason) {
+    var normalized = normalizeManualAuthReason(reason)
+    return MANUAL_AUTH_REASON_LABELS[normalized] || "手动验证"
+}
+
+function syncStartupAuthProgress(environment, status, stateData) {
+    var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
+    try {
+        var startupState = feishuStartup.getStatePayload(runtimeEnvironment)
+        var current = startupState && startupState.data ? startupState.data : {}
+        if (!current || current.active !== true) {
+            return { ok: true, skipped: true, reason: "no_active_startup_cycle" }
+        }
+
+        var normalizedStatus = String(status || "").trim().toLowerCase() || "requested"
+        var data = stateData && typeof stateData === "object" ? stateData : {}
+        var currentBlocker = ""
+        var operatorAction = ""
+        var summary = ""
+        var steps = {
+            service_boot: {
+                status: "done",
+                detail: "Gateway 已启动并进入当前验证流程。",
+            },
+        }
+        var reasonLabel = getManualAuthReasonLabel(data.reason)
+
+        if (normalizedStatus === "requested") {
+            currentBlocker = "等待手动触发 2FA"
+            operatorAction = "点击当前启动卡片下方“开始 2FA 验证”"
+            summary = reasonLabel + "已准备好，等待你在飞书手动点开始。"
+            steps.card_ready = {
+                status: "done",
+                detail: "已复用或刷新当前 2FA 卡片。",
+            }
+            steps.manual_trigger = {
+                status: "waiting",
+                detail: "点击当前启动卡片下方“开始 2FA 验证”。",
+            }
+        } else if (normalizedStatus === "triggered") {
+            currentBlocker = "等待手机确认 2FA Push"
+            operatorAction = "查看手机通知；如果切到 Challenge/Response，则去 Runtime 页面提交 Response Code"
+            summary = "已手动触发当前轮次，等待手机确认或响应码流程。"
+            steps.card_ready = {
+                status: "done",
+                detail: "当前 2FA 卡片已准备完成。",
+            }
+            steps.manual_trigger = {
+                status: "done",
+                detail: "飞书按钮已点下，不会自动补发新的 Push。",
+            }
+            steps.manual_confirm = {
+                status: "waiting",
+                detail: "等待手机确认或进入响应码模式。",
+            }
+        } else if (normalizedStatus === "waiting_confirm") {
+            currentBlocker = "等待手机确认 2FA Push"
+            operatorAction = "查看手机通知完成确认"
+            summary = "当前 2FA Push 已发出，等待手机确认。"
+            steps.card_ready = {
+                status: "done",
+                detail: "当前 2FA 卡片已准备完成。",
+            }
+            steps.manual_trigger = {
+                status: "done",
+                detail: "飞书触发步骤已完成。",
+            }
+            steps.manual_confirm = {
+                status: "waiting",
+                detail: "现在只需要点手机通知确认，不要重复触发。",
+            }
+        } else if (normalizedStatus === "waiting_response") {
+            currentBlocker = "等待提交 Response Code"
+            operatorAction = "去 Runtime 页面提交当前 Challenge 对应的 Response Code"
+            summary = "2FA 已进入 Challenge/Response。"
+            steps.card_ready = {
+                status: "done",
+                detail: "当前 2FA 卡片已准备完成。",
+            }
+            steps.manual_trigger = {
+                status: "done",
+                detail: "飞书触发步骤已完成。",
+            }
+            steps.manual_confirm = {
+                status: "waiting",
+                detail: data.challenge_code
+                    ? ("等待提交当前 Challenge 的 Response Code: " + String(data.challenge_code))
+                    : "等待提交当前轮次的 Response Code。",
+            }
+        } else if (normalizedStatus === "success") {
+            currentBlocker = "2FA 已完成，等待 Runtime 继续启动"
+            operatorAction = "等待系统继续装载订阅、线程和预热"
+            summary = "Session / 2FA 已恢复认证。"
+            steps.card_ready = {
+                status: "done",
+                detail: "当前 2FA 卡片阶段已完成。",
+            }
+            steps.manual_trigger = {
+                status: "done",
+                detail: "飞书手动触发已完成。",
+            }
+            steps.manual_confirm = {
+                status: "done",
+                detail: "当前 2FA 验证已完成。",
+            }
+            steps.runtime_resume = {
+                status: "running",
+                detail: "认证已恢复，正在继续恢复 Runtime。",
+            }
+        } else {
+            currentBlocker = "2FA 未完成，需手动重新触发"
+            operatorAction = "回到当前启动卡片，重新点击下方“开始 2FA 验证”"
+            summary = "当前 2FA 轮次未成功建立可用 Session。"
+            steps.card_ready = {
+                status: "done",
+                detail: "当前 2FA 卡片仍可复用。",
+            }
+            steps.manual_trigger = {
+                status: "failed",
+                detail: String(data.last_error || data.last_result || data.message || "请重新手动触发当前轮次。"),
+            }
+        }
+
+        return feishuStartup.syncStartupProgress({
+            environment: runtimeEnvironment,
+            action: "update",
+            create_if_missing: false,
+            title: "IBKR Runtime 启动中",
+            summary: summary,
+            current_step: normalizedStatus === "success"
+                ? "runtime_resume"
+                : (normalizedStatus === "triggered" || normalizedStatus === "waiting_confirm" || normalizedStatus === "waiting_response"
+                    ? "manual_confirm"
+                    : "manual_trigger"),
+            current_blocker: currentBlocker,
+            operator_action: operatorAction,
+            steps: steps,
+        })
+    } catch (err) {
+        console.log("[Feishu2FA] 同步启动卡认证步骤失败:", err && err.message ? err.message : err)
+        return { ok: false, error: err && err.message ? err.message : String(err) }
+    }
 }
 
 function getModeLabel(mode) {
@@ -486,7 +645,7 @@ function ensureRequestedState(environment, options) {
     var status = currentData.status || ""
     var isActive = isActiveStatus(status)
     var keepActiveFlow = ["triggered", "waiting_confirm", "waiting_response"].indexOf(status) !== -1
-    var preserveCurrentDisplay = isActive && !!currentData.message_id
+    var preserveCurrentDisplay = keepActiveFlow && !!currentData.message_id
     var nextStatus = (isActive && !opts.forceReset) || keepActiveFlow ? status : "requested"
 
     var patch = {
@@ -547,6 +706,12 @@ function ensureRequestedState(environment, options) {
     return saveState(runtimeEnvironment, patch)
 }
 
+function shouldUpdateExistingRequestedCard(currentData, nextData) {
+    var currentFingerprint = buildDeliveryFingerprint(currentData || {})
+    var nextFingerprint = buildDeliveryFingerprint(nextData || {})
+    return currentFingerprint !== nextFingerprint
+}
+
 function getStatusConfig(status) {
     return STATUS_CONFIG[status] || STATUS_CONFIG.requested
 }
@@ -587,6 +752,7 @@ function build2faCard(stateData, environment) {
     var effectiveState = derive2faActionState(stateData)
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || effectiveState.environment || "", envUtils.LIVE_ENVIRONMENT)
     var cfg = getStatusConfig(effectiveState.status)
+    var reasonLabel = getManualAuthReasonLabel(effectiveState.reason)
     var summary = effectiveState.status === "waiting_response"
         ? buildWaitingResponseSummary(effectiveState)
         : (effectiveState.message || cfg.summary)
@@ -597,6 +763,7 @@ function build2faCard(stateData, environment) {
     var systemUrl = PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment)
     var metaLines = [
         "**环境**: " + envUtils.getEnvironmentTag(runtimeEnvironment),
+        "**当前用途**: " + reasonLabel,
         "**状态**: " + cfg.emoji + " " + (effectiveState.status || "requested"),
         "**请求时间**: " + (effectiveState.requested_at || "-"),
     ]
@@ -731,6 +898,7 @@ function build2faCard(stateData, environment) {
             title: {
                 tag: "plain_text",
                 content: cfg.emoji + " " + envUtils.labelTitleWithEnvironment(cfg.title, runtimeEnvironment)
+                    + " · " + reasonLabel
             },
             template: cfg.template
         },
@@ -780,7 +948,7 @@ function deliverCard(savedState, options) {
         var lastDeliveredMs = toNumber(stateData.last_delivered_ms, 0)
         var lastDeliveredHash = String(stateData.last_delivered_hash || "")
         var lastDeliveredStatus = String(stateData.last_delivered_status || "")
-        var allowReplace = opts.allowReplace === true || opts.forceNew === true
+        var allowReplace = true
         var isSamePayload = lastDeliveredHash === fingerprint && lastDeliveredStatus === String(stateData.status || "")
         var throttled = (
             messageId &&
@@ -817,14 +985,20 @@ function deliverCard(savedState, options) {
         }
 
         if (result && result.success) {
+            var deliveryMode = messageId
+                ? ((result.message_id && result.message_id !== messageId) ? "replace" : "update")
+                : "send"
             var persisted = persistDeliveryState(effectiveState.record, stateData, {
                 message_id: result.message_id || messageId || "",
                 last_delivered_ms: now,
                 last_delivered_at: timeUtils.getTimeStrings().us,
                 last_delivered_hash: fingerprint,
                 last_delivered_status: stateData.status || "",
+                last_delivery_mode: deliveryMode,
+                last_delivery_error: "",
             })
             effectiveState.data = persisted
+            console.log("[Feishu2FA] card delivered:", deliveryMode, effectiveState.environment, persisted.message_id || "-")
             return {
                 ok: true,
                 environment: effectiveState.environment,
@@ -835,6 +1009,14 @@ function deliverCard(savedState, options) {
                 result: result,
             }
         }
+
+        if (effectiveState.record) {
+            persistDeliveryState(effectiveState.record, stateData, {
+                last_delivery_mode: messageId ? "update" : "send",
+                last_delivery_error: String((result && result.error) || "send_failed"),
+            })
+        }
+        console.log("[Feishu2FA] card delivery failed:", effectiveState.environment, String((result && result.error) || "send_failed"))
 
         return {
             ok: false,
@@ -866,6 +1048,8 @@ function request2faApproval(options) {
     var lastRequestPushMs = toNumber(currentData.last_request_push_ms, 0)
     var alreadyActive = isCurrentCycleActiveStatus(currentStatus)
     var activeCardExists = isActiveStatus(currentStatus) && !!currentMessageId
+    var existingRequestedCard = String(currentStatus || "").trim().toLowerCase() === "requested" && activeCardExists
+    var shouldRefreshExistingCard = existingRequestedCard && shouldUpdateExistingRequestedCard(currentData, saved.data || {})
     var renotifyRemainingMs = activeCardExists && lastRequestPushMs > 0
         ? Math.max(0, REQUEST_RENOTIFY_COOLDOWN_MS - (Date.now() - lastRequestPushMs))
         : 0
@@ -874,7 +1058,7 @@ function request2faApproval(options) {
         (Date.now() - lastRequestPushMs) >= REQUEST_RENOTIFY_COOLDOWN_MS
     )
 
-    var delivered = activeCardExists && !opts.forceNew && !shouldRenotify
+    var delivered = activeCardExists && !opts.forceNew && !shouldRenotify && !shouldRefreshExistingCard
         ? {
             ok: true,
             skipped: true,
@@ -886,7 +1070,10 @@ function request2faApproval(options) {
             data: saved.data,
             result: { success: true, skipped: true, reason: "active_card_reused" },
         }
-        : deliverCard(saved, { forceNew: !!opts.forceNew })
+        : deliverCard(saved, {
+            forceNew: !!opts.forceNew,
+            bypassThrottle: shouldRefreshExistingCard,
+        })
 
     if (delivered.ok && !delivered.skipped) {
         var refreshed = persistDeliveryState(saved.record, delivered.data || saved.data, {
@@ -912,6 +1099,8 @@ function request2faApproval(options) {
             delivered.ok
         )
     }
+
+    syncStartupAuthProgress(saved.environment, saved.data.status || "requested", saved.data || {})
 
     return {
         ok: delivered.ok,
@@ -1010,6 +1199,7 @@ function trigger2faFlow(options) {
         restarted_from_active_cycle: restartedFromActiveCycle,
         previous_cycle: restartedFromActiveCycle ? previousCycle : null,
     })
+    syncStartupAuthProgress(runtimeEnvironment, "triggered", triggerSaved.data || {})
 
     var computeBaseUrl = envUtils.getIbkrComputePublicUrl(runtimeEnvironment, "https://qc.lzw-glory.top")
     try {
@@ -1070,6 +1260,7 @@ function trigger2faFlow(options) {
             last_error: err.message || String(err),
             last_result: "触发失败，请稍后重试。",
         })
+        syncStartupAuthProgress(runtimeEnvironment, "failed", failed.data || {})
         if (!callbackDriven) {
             deliverCard(failed, { bypassThrottle: true })
         }
@@ -1153,6 +1344,7 @@ function report2faResult(options) {
     }
 
     var saved = saveState(runtimeEnvironment, patch)
+    syncStartupAuthProgress(runtimeEnvironment, status, saved.data || {})
     var delivered = deliverCard(saved, {
         bypassThrottle: isTerminalStatus(status),
     })

@@ -843,7 +843,9 @@ class AuthHandler:
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
-        total_2fa_rounds = 1 + MAX_2FA_RETRY_ROUNDS
+        # Manual-only 2FA policy: one explicit trigger equals one login round.
+        # Any timeout or failure must be retried by a new manual action.
+        total_2fa_rounds = 1
         last_failure_kind = "failed"
         last_failure_detail = dict(detail or {})
         last_failure_error = ""

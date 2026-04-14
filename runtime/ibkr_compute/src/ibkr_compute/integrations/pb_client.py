@@ -294,6 +294,59 @@ class PBClient:
             payload["message_id"] = message_id
         return self.call_custom_api("system/event", method="POST", data=payload, timeout=5)
 
+    def sync_startup_progress(
+        self,
+        *,
+        action: str = "update",
+        environment: Optional[str] = None,
+        status: str = "",
+        title: str = "",
+        summary: str = "",
+        current_step: str = "",
+        current_blocker: str = "",
+        operator_action: str = "",
+        reason: str = "",
+        source: str = "",
+        runtime_phase: str = "",
+        runtime_url: str = "",
+        trigger_login: Optional[bool] = None,
+        steps: Optional[Dict[str, Any]] = None,
+        fields: Optional[Dict[str, Any]] = None,
+        create_if_missing: bool = False,
+        record_event: bool = False,
+        event_type: str = "",
+        event_title: str = "",
+        event_detail: Optional[Dict[str, Any]] = None,
+        level: str = "",
+        event_source: str = "",
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "action": action,
+            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "status": status,
+            "title": title,
+            "summary": summary,
+            "current_step": current_step,
+            "current_blocker": current_blocker,
+            "operator_action": operator_action,
+            "reason": reason,
+            "source": source,
+            "runtime_phase": runtime_phase,
+            "runtime_url": runtime_url,
+            "steps": steps or {},
+            "fields": fields or {},
+            "create_if_missing": bool(create_if_missing),
+            "record_event": bool(record_event),
+            "event_type": event_type,
+            "event_title": event_title,
+            "event_detail": event_detail or {},
+            "level": level,
+            "event_source": event_source,
+        }
+        if trigger_login is not None:
+            payload["trigger_login"] = bool(trigger_login)
+        return self.call_custom_api("ibkr/startup/progress", method="POST", data=payload, timeout=8)
+
     def request_ibkr_2fa(
         self,
         reason: str = "manual_reauth",

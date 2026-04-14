@@ -3282,7 +3282,7 @@ def _maybe_restore_ibkr_service(service):
 
     _ibkr_restore_attempted = True
     timestamps = build_runtime_timestamps()
-    restore_trigger_login = bool(control.get("last_restore_trigger_login", False))
+    restore_trigger_login = False
     set_ibkr_runtime_control(
         runtime_environment,
         True,
@@ -4900,7 +4900,7 @@ def ibkr_start():
         return jsonify({"ok": False, "error": "IBKR service not initialized"})
     try:
         payload = request.get_json(silent=True) or {}
-        trigger_login = payload.get("trigger_login", True)
+        trigger_login = payload.get("trigger_login", False)
         reason = str(payload.get("reason") or "manual_start")
         source = str(payload.get("source") or "api_start")
         runtime_environment = _ibkr_service_environment(service)
@@ -4912,7 +4912,7 @@ def ibkr_start():
             source=source,
             reason=reason,
             extra={
-                "last_restore_trigger_login": bool(trigger_login),
+                "last_restore_trigger_login": False,
             },
         )
 

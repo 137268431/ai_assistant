@@ -633,7 +633,12 @@ function runIbkr2faHourlyCheck() {
             const statePayload = getStatePayload(environment)
             const state = normalizeStateWithRuntime(statePayload.data || {}, runtimeStatus || {})
             const status = String(state.status || "").trim().toLowerCase()
+            const reason = String(state.reason || "").trim().toLowerCase()
             const lastPushMs = Number(state.last_request_push_ms || 0) || 0
+            const reminderEligible = status === "requested" && ["manual_start", "startup", "weekly_reauth"].indexOf(reason) !== -1
+            if (!reminderEligible) {
+                continue
+            }
             if (lastPushMs > 0 && (nowMs - lastPushMs) < 55 * 60 * 1000) {
                 continue
             }
@@ -642,7 +647,9 @@ function runIbkr2faHourlyCheck() {
                 environment: environment,
                 reason: String(state.reason || "scheduled_2fa_check"),
                 source: "pb_scheduler",
-                message: "检测到 IBKR 2FA 仍未恢复，已按小时发送提醒，请在方便时点击卡片继续验证。",
+                message: reason === "weekly_reauth"
+                    ? "本周重登仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证。"
+                    : "启动验证仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证。",
                 detail: {
                     "当前状态": status || "requested",
                     "Runtime已启动": auth.runtime_started ? "yes" : "no",

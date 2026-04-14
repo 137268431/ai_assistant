@@ -254,6 +254,8 @@ class IBKRTradingService:
         self._auth_probe_stop = threading.Event()
         self._auth_cycle_seq = 0
         self._auth_restart_thread = None
+        self._startup_progress_enabled = False
+        self._startup_cycle_id = ""
         self._startup_reason = ""
         self._startup_source = ""
         self._startup_trigger_login = False
@@ -455,11 +457,12 @@ class IBKRTradingService:
             "状态结论": "IBKR Runtime 正在启动，交易链路暂未开放。",
             "系统简介": "负责 Gateway 会话、实时行情、订单链路、信号处理与启动预热。",
             "启动成功条件": (
-                "1. Gateway 可用并完成 Session/2FA 认证\n"
-                "2. Watchlist/Targets 与订阅装载完成\n"
-                "3. WebSocket、订单链路与后台线程已启动\n"
-                "4. 活动标的完成 5m warmup，交易门可开放\n"
-                "5. 启动前历史回补与完整性预检完成或切入后台继续"
+                "1. Gateway 可用\n"
+                "2. Session / 2FA 认证完成\n"
+                "3. Targets / Subscriptions 装载完成\n"
+                "4. WebSocket、订单链路与后台线程已启动\n"
+                "5. Warmup / 预检修复 / 历史回补达到启动要求\n"
+                "6. Trading Gate 打开或进入监控模式"
             ),
             "检查时间": self._now_et(),
             "Runtime阶段": "starting",
@@ -472,23 +475,125 @@ class IBKRTradingService:
             detail["运行页"] = runtime_url
         return detail
 
-    def _record_startup_status_message_id(self, message_id: str):
-        normalized = str(message_id or "").strip()
-        if not normalized:
+    def _record_startup_progress_context(self, result: dict | None):
+        if not isinstance(result, dict):
             return
+        cycle_id = str(result.get("cycle_id", "") or "").strip()
+        message_id = str(result.get("message_id", "") or "").strip()
         with self._state_lock:
-            if self._starting:
-                self._startup_status_message_id = normalized
+            if not self._starting:
+                return
+            if cycle_id:
+                self._startup_cycle_id = cycle_id
+            if message_id:
+                self._startup_status_message_id = message_id
+
+    def _build_startup_progress_fields(
+        self,
+        reason: str,
+        source: str,
+        trigger_login: bool,
+        extra: dict | None = None,
+    ) -> dict:
+        fields = {
+            "启动原因": reason or "manual_start",
+            "启动来源": source or "api_start",
+            "触发登录": "yes" if trigger_login else "no",
+        }
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            fields["运行页"] = runtime_url
+        if extra:
+            fields.update(extra)
+        return fields
+
+    def _should_publish_startup_progress(self, reason: str, source: str, trigger_login: bool) -> bool:
+        source_key = str(source or "").strip().lower()
+        reason_key = str(reason or "").strip().lower()
+        if bool(trigger_login):
+            return True
+        if source_key in {"api_start", "runtime_page", "feishu_callback", "feishu_2fa", "codex_validation"}:
+            return True
+        if reason_key in {"manual_start", "manual_reauth", "panic_reset_2fa"}:
+            return True
+        return False
+
+    def _sync_startup_progress(
+        self,
+        *,
+        action: str = "update",
+        status: str = "",
+        title: str = "",
+        summary: str = "",
+        current_step: str = "",
+        current_blocker: str = "",
+        operator_action: str = "",
+        steps: dict | None = None,
+        fields: dict | None = None,
+        reason: str = "",
+        source: str = "",
+        trigger_login: bool | None = None,
+        record_event: bool = False,
+        event_type: str = "status_change",
+        event_title: str = "",
+        event_detail: dict | None = None,
+        level: str = "info",
+        create_if_missing: bool = False,
+    ) -> dict:
+        if not self.pb:
+            return {}
+        if not self._startup_progress_enabled:
+            return {}
+        try:
+            result = self.pb.sync_startup_progress(
+                action=action,
+                environment=ENVIRONMENT,
+                status=status,
+                title=title,
+                summary=summary,
+                current_step=current_step,
+                current_blocker=current_blocker,
+                operator_action=operator_action,
+                reason=reason,
+                source=source,
+                runtime_phase=self._runtime_phase_label(),
+                runtime_url=self._runtime_page_url(),
+                trigger_login=trigger_login,
+                steps=steps or {},
+                fields=fields or {},
+                create_if_missing=create_if_missing,
+                record_event=record_event,
+                event_type=event_type,
+                event_title=event_title,
+                event_detail=event_detail or {},
+                level=level,
+                event_source="ibkr_compute",
+            )
+            self._record_startup_progress_context(result)
+            return result if isinstance(result, dict) else {}
+        except Exception as exc:
+            logger.warning("Startup progress sync failed (%s/%s): %s", action, title or current_step or "-", exc)
+            return {}
 
     def _announce_startup_pending(self, reason: str, source: str, trigger_login: bool):
-        result = self._emit_system_event(
-            "status_change",
-            "info",
-            "IBKR Runtime 启动中",
-            self._build_startup_pending_detail(reason, source, trigger_login),
+        detail = self._build_startup_pending_detail(reason, source, trigger_login)
+        self._sync_startup_progress(
+            action="begin",
+            title="IBKR Runtime 启动中",
+            summary="IBKR Runtime 正在启动，交易链路暂未开放。",
+            current_step="gateway",
+            current_blocker="等待 Gateway 可用并完成首轮 Session 检查",
+            operator_action="等待系统依次完成 Gateway、认证、订阅、线程与预热",
+            fields=detail,
+            reason=reason,
+            source=source,
+            trigger_login=trigger_login,
+            record_event=True,
+            event_type="status_change",
+            event_title="IBKR Runtime 启动中",
+            event_detail=detail,
+            level="info",
         )
-        if isinstance(result, dict):
-            self._record_startup_status_message_id(result.get("message_id", ""))
 
     def _format_symbol_list(self, symbols: list[str], limit: int = 12) -> str:
         items = [str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()]
@@ -572,12 +677,16 @@ class IBKRTradingService:
             if not self._starting:
                 return None
             context = {
+                "cycle_id": self._startup_cycle_id,
                 "reason": self._startup_reason,
                 "source": self._startup_source,
+                "progress_enabled": self._startup_progress_enabled,
                 "trigger_login": self._startup_trigger_login,
                 "message_id": self._startup_status_message_id,
             }
             self._starting = False
+            self._startup_progress_enabled = False
+            self._startup_cycle_id = ""
             self._startup_reason = ""
             self._startup_source = ""
             self._startup_trigger_login = False
@@ -595,26 +704,45 @@ class IBKRTradingService:
         if not startup_context:
             return False
 
-        payload = {
-            "状态结论": "IBKR Runtime 已离开启动态，但当前处于降级等待恢复状态。",
-            "检查时间": self._now_et(),
-            "Runtime阶段": self._runtime_phase_label(),
-            "启动原因": startup_context.get("reason") or reason or "startup",
-            "启动来源": startup_context.get("source") or "api_start",
-            "触发登录": "yes" if startup_context.get("trigger_login") else "no",
-            "降级原因": reason or "startup_released",
-        }
-        runtime_url = self._runtime_page_url()
-        if runtime_url:
-            payload["运行页"] = runtime_url
-        if detail:
-            payload.update(detail)
-        self._emit_system_event(
-            "status_change",
-            level,
-            title or "IBKR Runtime 启动态已解除",
-            payload,
-            message_id=startup_context.get("message_id", ""),
+        normalized_reason = str(reason or "startup_released").strip()
+        waiting_on_auth = normalized_reason == "session_unauthenticated"
+        step_key = "auth" if waiting_on_auth else "gateway"
+        step_detail = "等待手动触发 2FA 并恢复认证" if waiting_on_auth else "Gateway 当前不可用，等待恢复"
+        current_blocker = "启动阶段已解除，当前进入恢复等待态。"
+        operator_action = "去 2FA 卡片手动触发当前轮次" if waiting_on_auth else "检查 Gateway 状态并在恢复后重新启动"
+        fields = self._build_startup_progress_fields(
+            startup_context.get("reason") or reason or "startup",
+            startup_context.get("source") or "api_start",
+            bool(startup_context.get("trigger_login")),
+            {
+                "降级原因": normalized_reason,
+                "状态结论": "IBKR Runtime 已离开启动态，但当前处于降级等待恢复状态。",
+                **(detail or {}),
+            },
+        )
+        self._sync_startup_progress(
+            action="update",
+            title="IBKR Runtime 启动中",
+            summary="启动阶段已解除，但当前运行态处于等待恢复状态。",
+            current_step=step_key,
+            current_blocker=current_blocker,
+            operator_action=operator_action,
+            steps={
+                step_key: {
+                    "status": "failed" if not waiting_on_auth else "waiting",
+                    "detail": step_detail,
+                },
+            },
+            fields=fields,
+            reason=startup_context.get("reason") or reason or "startup",
+            source=startup_context.get("source") or "api_start",
+            trigger_login=bool(startup_context.get("trigger_login")),
+            record_event=True,
+            event_type="status_change",
+            event_title=title or "IBKR Runtime 启动态已解除",
+            event_detail=fields,
+            level=level,
+            create_if_missing=False,
         )
         return True
 
@@ -763,12 +891,38 @@ class IBKRTradingService:
         finished_at = str(payload.get("预热完成") or "").strip()
         if started_at and finished_at and "预热耗时" not in payload:
             payload["预热耗时"] = self._format_elapsed_between(started_at, finished_at)
-        self._emit_system_event(
-            "status_change",
-            "info",
-            "IBKR Runtime 启动完成",
-            payload,
-            message_id=startup_context.get("message_id", ""),
+        warmup_detail = "启动前 Warmup、预检修复与历史回补已完成。"
+        if title and "后台继续预热" in title:
+            warmup_detail = "交易门已开放，剩余 monitor / integrity repair 在后台继续。"
+        elif title and "监控模式" in title:
+            warmup_detail = "当前无 trade symbols，runtime 以监控模式继续运行。"
+        self._sync_startup_progress(
+            action="complete",
+            title="IBKR Runtime 启动完成",
+            summary=payload.get("状态结论", "IBKR Runtime 已完成启动前回补与预热，当前服务可用。"),
+            current_step="trading_gate",
+            current_blocker="全部阻塞步骤已完成",
+            operator_action=str(payload.get("后续动作") or "可进入 Runtime 页面观察后续运行状态"),
+            steps={
+                "warmup": {
+                    "status": "done",
+                    "detail": warmup_detail,
+                },
+                "trading_gate": {
+                    "status": "done",
+                    "detail": f"交易门: {payload.get('交易门', 'open')}",
+                },
+            },
+            fields=payload,
+            reason=startup_context.get("reason") or str((self._warmup_state or {}).get("reason") or "startup"),
+            source=startup_context.get("source") or "api_start",
+            trigger_login=bool(startup_context.get("trigger_login")),
+            record_event=True,
+            event_type="status_change",
+            event_title="IBKR Runtime 启动完成",
+            event_detail=payload,
+            level="info",
+            create_if_missing=False,
         )
         return True
 
@@ -1131,22 +1285,21 @@ class IBKRTradingService:
                         if (time.time() - started_perf) >= AUTH_PROBE_WINDOW_SECONDS:
                             self._set_auth_recovery_state(
                                 cycle_id=cycle_id,
-                                recovery_phase="auto_restart_2fa",
+                                recovery_phase="requested",
                                 interruption_kind=interruption_kind,
                                 recovery_reason=recovery_reason,
                                 probe_last_checked_at=self._now_iso(),
                                 probe_attempts=attempts,
                                 probe_result="timeout",
-                                auto_restart_scheduled=True,
+                                auto_restart_scheduled=False,
                                 last_recovery_source=source,
-                                lock_owner="auth_restart",
-                                lock_expires_at=self._future_iso(AUTH_RECOVERY_LOCK_TTL_SECONDS),
+                                lock_owner="",
+                                lock_expires_at="",
                                 manual_takeover_active=False,
                             )
-                            self._schedule_auth_restart(
-                                reason=recovery_reason or "auth_probe_timeout",
-                                source="auth_probe",
-                                trigger_login=True,
+                            self._request_manual_2fa(
+                                recovery_reason or "auth_probe_timeout",
+                                "会话未在探测窗口内自动恢复，请在飞书 2FA 卡片手动触发当前轮次。",
                             )
                             return
                         if self._auth_probe_stop.wait(timeout=AUTH_PROBE_INTERVAL_SECONDS):
@@ -1164,7 +1317,7 @@ class IBKRTradingService:
             self._auth_probe_thread.start()
             return True
 
-    def _schedule_auth_restart(self, reason: str, source: str, trigger_login: bool = True):
+    def _schedule_auth_restart(self, reason: str, source: str, trigger_login: bool = False):
         with self._auth_recovery_lock:
             thread = self._auth_restart_thread
             if thread and thread.is_alive():
@@ -2074,6 +2227,32 @@ class IBKRTradingService:
             snapshot["monitor_symbols_total"],
             snapshot["target_date"] or "n/a",
         )
+        self._sync_startup_progress(
+            action="update",
+            title="IBKR Runtime 启动中",
+            summary="核心线程已启动，Warmup / 预检修复 / 历史回补已开始。",
+            current_step="warmup",
+            current_blocker="等待 warmup 基线统计与首轮预检修复结果",
+            operator_action="等待系统推进预检修复、历史回补与交易门判断",
+            steps={
+                "warmup": {
+                    "status": "running",
+                    "detail": (
+                        f"symbols={snapshot['symbols_total']} "
+                        f"trade={snapshot['trade_symbols_total']} "
+                        f"monitor={snapshot['monitor_symbols_total']}"
+                    ),
+                },
+            },
+            fields=self._build_startup_progress_fields(
+                str(self._warmup_state.get("reason") or "warmup"),
+                self._startup_source or "api_start",
+                bool(self._startup_trigger_login),
+            ),
+            reason=self._startup_reason or "warmup",
+            source=self._startup_source or "api_start",
+            trigger_login=bool(self._startup_trigger_login),
+        )
 
         backfill_result = {}
         backfill_written = 0
@@ -2154,6 +2333,39 @@ class IBKRTradingService:
                 compute_result=compute_result,
                 timings=warmup_timings,
                 last_duration_s=round(time.perf_counter() - warmup_started_perf, 3),
+            )
+            self._sync_startup_progress(
+                action="update",
+                title="IBKR Runtime 启动中",
+                summary="Warmup 已进入预热判断阶段，正在核对 readiness 与完整性阻塞。",
+                current_step="warmup",
+                current_blocker=(
+                    "待完成标的: " + self._format_symbol_list(readiness["pending_symbols"])
+                    if readiness["pending_symbols"]
+                    else "等待交易门判断"
+                ),
+                operator_action="等待预检修复、历史回补与交易门开放",
+                steps={
+                    "warmup": {
+                        "status": "running",
+                        "detail": (
+                            f"ready={readiness['ready_symbols']}/{snapshot['symbols_total']} "
+                            f"trade={readiness['ready_trade_symbols']}/{snapshot['trade_symbols_total']} "
+                            f"integrity={self._format_symbol_list(readiness['integrity_pending_symbols'])}"
+                        ),
+                    },
+                },
+                fields=self._build_startup_progress_fields(
+                    self._startup_reason or "warmup",
+                    self._startup_source or "api_start",
+                    bool(self._startup_trigger_login),
+                    {
+                        "预检修复标的": self._format_symbol_list(preflight_result.get("attempted_repair_symbols") or []),
+                    },
+                ),
+                reason=self._startup_reason or "warmup",
+                source=self._startup_source or "api_start",
+                trigger_login=bool(self._startup_trigger_login),
             )
 
             if readiness["trading_gate_open"] and not readiness["pending_symbols"]:
@@ -2391,6 +2603,41 @@ class IBKRTradingService:
             if self._complete_startup_success(startup_title, startup_detail):
                 self._schedule_interval_prime(snapshot["symbols"], source="startup_ready")
             self._signal_wakeup.set()
+        else:
+            self._sync_startup_progress(
+                action="update",
+                title="IBKR Runtime 启动中",
+                summary="Warmup 尚未满足交易门开放条件，启动流程停在预热阶段。",
+                current_step="warmup",
+                current_blocker="交易门尚未开放，仍有待完成标的或完整性阻塞",
+                operator_action="等待后续行情 / 回补推进，必要时人工检查阻塞标的",
+                steps={
+                    "warmup": {
+                        "status": "failed" if last_error else "waiting",
+                        "detail": (
+                            f"ready={readiness['ready_symbols']}/{snapshot['symbols_total']} "
+                            f"trade={readiness['ready_trade_symbols']}/{snapshot['trade_symbols_total']} "
+                            f"pending={self._format_symbol_list(readiness['pending_symbols'])}"
+                        ),
+                    },
+                    "trading_gate": {
+                        "status": "pending",
+                        "detail": "等待交易门开放。",
+                    },
+                },
+                fields=self._build_startup_progress_fields(
+                    self._startup_reason or "warmup",
+                    self._startup_source or "api_start",
+                    bool(self._startup_trigger_login),
+                    {
+                        "完整性阻塞": self._format_symbol_list(readiness['integrity_pending_symbols']),
+                        "最近异常": last_error or "",
+                    },
+                ),
+                reason=self._startup_reason or "warmup",
+                source=self._startup_source or "api_start",
+                trigger_login=bool(self._startup_trigger_login),
+            )
 
     def _warmup_loop(self):
         logger.info("Runtime warmup loop started")
@@ -2413,7 +2660,7 @@ class IBKRTradingService:
                     trading_gate_reason="warmup_failed",
                 )
 
-    def start(self, trigger_login: bool = True, reason: str = "manual_start", source: str = "api_start"):
+    def start(self, trigger_login: bool = False, reason: str = "manual_start", source: str = "api_start"):
         with self._state_lock:
             if self._running:
                 logger.info("IBKR Trading Service already running")
@@ -2422,6 +2669,8 @@ class IBKRTradingService:
                 logger.info("IBKR Trading Service already starting")
                 return
             self._starting = True
+            self._startup_progress_enabled = self._should_publish_startup_progress(reason, source, trigger_login)
+            self._startup_cycle_id = ""
             self._startup_reason = reason
             self._startup_source = source
             self._startup_trigger_login = bool(trigger_login)
@@ -2429,6 +2678,7 @@ class IBKRTradingService:
 
         startup_ok = False
         startup_exit_notice = None
+        reset_startup_progress = False
 
         try:
             logger.info("=" * 60)
@@ -2450,7 +2700,6 @@ class IBKRTradingService:
             if not self._ensure_gateway():
                 logger.error("Gateway setup failed, exiting")
                 startup_exit_notice = {
-                    "event_type": "alert",
                     "level": "error",
                     "title": "IBKR Runtime 启动失败",
                     "detail": {
@@ -2462,6 +2711,28 @@ class IBKRTradingService:
                     },
                 }
                 return
+            self._sync_startup_progress(
+                action="update",
+                title="IBKR Runtime 启动中",
+                summary="Gateway 已可用，正在检查 Session / 2FA 状态。",
+                current_step="auth",
+                current_blocker="等待确认当前 Gateway Session 是否已认证",
+                operator_action="等待系统完成认证检查；如未认证则转入手动 2FA",
+                steps={
+                    "gateway": {
+                        "status": "done",
+                        "detail": "Gateway 已启动并可访问。",
+                    },
+                    "auth": {
+                        "status": "running",
+                        "detail": "正在检查 Session / 2FA 认证状态。",
+                    },
+                },
+                fields=self._build_startup_progress_fields(reason, source, trigger_login),
+                reason=reason,
+                source=source,
+                trigger_login=trigger_login,
+            )
 
             # Do a one-shot auth check WITHOUT starting the keeper loop.
             # Starting session_keeper here would cause it to periodically
@@ -2482,21 +2753,54 @@ class IBKRTradingService:
                         lock_owner="",
                         lock_expires_at="",
                     )
-                    startup_exit_notice = {
-                        "event_type": "alert",
-                        "level": "warning",
-                        "title": "IBKR Runtime 等待 2FA",
-                        "detail": {
-                            "状态结论": "检测到 Gateway 当前未认证，Runtime 尚未完成启动。",
-                            "检查时间": self._now_et(),
-                            "当前动作": "等待飞书 2FA 审批或人工重新触发启动。",
-                            "启动原因": reason or "manual_start",
-                            "启动来源": source or "api_start",
-                            "触发登录": "no",
-                        },
+                    waiting_detail = {
+                        "状态结论": "检测到 Gateway 当前未认证，Runtime 尚未完成启动。",
+                        "检查时间": self._now_et(),
+                        "当前动作": "等待当前启动卡片下方的人工按钮触发当前轮次。",
                     }
+                    self._sync_startup_progress(
+                        action="update",
+                        title="IBKR Runtime 启动中",
+                        summary="Gateway 尚未认证，启动流程等待人工触发 2FA。",
+                        current_step="auth",
+                        current_blocker="等待手动触发 2FA",
+                        operator_action="点击当前启动卡片下方“开始 2FA 验证”",
+                        steps={
+                            "auth": {
+                                "status": "waiting",
+                                "detail": "当前不会自动发送新的 Push，需人工点击 2FA 卡片触发。",
+                            },
+                        },
+                        fields=self._build_startup_progress_fields(reason, source, False, waiting_detail),
+                        reason=reason,
+                        source=source,
+                        trigger_login=False,
+                        record_event=True,
+                        event_type="status_change",
+                        event_title="IBKR Runtime 等待手动 2FA",
+                        event_detail=waiting_detail,
+                        level="warning",
+                    )
                     return
                 logger.info("Not authenticated, attempting login (session_keeper paused)...")
+                self._sync_startup_progress(
+                    action="update",
+                    title="IBKR Runtime 启动中",
+                    summary="已显式触发 2FA，等待当前轮次完成认证。",
+                    current_step="auth",
+                    current_blocker="等待手机确认 2FA Push",
+                    operator_action="查看手机通知；如切到 Challenge/Response，则去 Runtime 页面提交 Response Code",
+                    steps={
+                        "auth": {
+                            "status": "running",
+                            "detail": "当前轮次已启动，不会自动补发新的 Push。",
+                        },
+                    },
+                    fields=self._build_startup_progress_fields(reason, source, True),
+                    reason=reason,
+                    source=source,
+                    trigger_login=True,
+                )
                 if not self.auth_handler.login(
                     reason=reason,
                     source=source,
@@ -2512,19 +2816,34 @@ class IBKRTradingService:
                         lock_owner="",
                         lock_expires_at="",
                     )
-                    startup_exit_notice = {
-                        "event_type": "alert",
-                        "level": "error",
-                        "title": "IBKR Runtime 启动失败",
-                        "detail": {
-                            "异常结论": "Session/2FA 登录失败，Runtime 未能进入运行态。",
-                            "检查时间": self._now_et(),
-                            "失败阶段": "session_login",
-                            "启动原因": reason or "manual_start",
-                            "启动来源": source or "api_start",
-                            "触发登录": "yes",
-                        },
+                    retry_detail = {
+                        "状态结论": "当前 2FA 轮次未成功建立可用 Session，启动流程暂停。",
+                        "检查时间": self._now_et(),
+                        "当前动作": "请重新点击当前启动卡片下方按钮，手动触发下一轮。",
                     }
+                    self._sync_startup_progress(
+                        action="update",
+                        title="IBKR Runtime 启动中",
+                        summary="当前 2FA 轮次未完成认证，启动流程等待人工重新触发。",
+                        current_step="auth",
+                        current_blocker="2FA 未完成，需手动重新触发",
+                        operator_action="回到当前启动卡片，重新点击下方“开始 2FA 验证”",
+                        steps={
+                            "auth": {
+                                "status": "failed",
+                                "detail": "本轮不会自动重试新的 Push，请人工重新触发。",
+                            },
+                        },
+                        fields=self._build_startup_progress_fields(reason, source, True, retry_detail),
+                        reason=reason,
+                        source=source,
+                        trigger_login=True,
+                        record_event=True,
+                        event_type="status_change",
+                        event_title="IBKR Runtime 等待重新触发 2FA",
+                        event_detail=retry_detail,
+                        level="warning",
+                    )
                     return
 
                 # Login succeeded — re-check auth once with the shared cookie store
@@ -2542,6 +2861,28 @@ class IBKRTradingService:
                         message="Gateway 已处于认证状态，无需再次确认。",
                         last_result="复用现有认证会话。",
                     )
+            self._sync_startup_progress(
+                action="update",
+                title="IBKR Runtime 启动中",
+                summary="Session / 2FA 已认证，正在装载订阅与核心线程。",
+                current_step="subscriptions",
+                current_blocker="等待 Targets / Subscriptions 装载完成",
+                operator_action="等待系统继续装载订阅、线程与预热",
+                steps={
+                    "auth": {
+                        "status": "done",
+                        "detail": "Session / 2FA 已通过认证。",
+                    },
+                    "subscriptions": {
+                        "status": "running",
+                        "detail": "正在装载活动标的与订阅。",
+                    },
+                },
+                fields=self._build_startup_progress_fields(reason, source, trigger_login),
+                reason=reason,
+                source=source,
+                trigger_login=trigger_login,
+            )
 
             self._last_session_authenticated = bool(self.session_keeper.is_authenticated)
             if self._last_session_authenticated:
@@ -2553,6 +2894,28 @@ class IBKRTradingService:
             self.ws_client.start()
             time.sleep(2)
             self._refresh_target_subscriptions(force=True, reason="startup")
+            self._sync_startup_progress(
+                action="update",
+                title="IBKR Runtime 启动中",
+                summary="Targets / Subscriptions 已装载，正在启动 WebSocket、订单与后台线程。",
+                current_step="core_threads",
+                current_blocker="等待 WebSocket、订单链路与后台线程全部启动",
+                operator_action="等待系统拉起核心线程与 warmup 线程",
+                steps={
+                    "subscriptions": {
+                        "status": "done",
+                        "detail": f"活动订阅标的: {len(self._active_subscription_symbols)}",
+                    },
+                    "core_threads": {
+                        "status": "running",
+                        "detail": "正在启动 WebSocket、订单与后台线程。",
+                    },
+                },
+                fields=self._build_startup_progress_fields(reason, source, trigger_login),
+                reason=reason,
+                source=source,
+                trigger_login=trigger_login,
+            )
 
             self.order_tracker.start()
             self.order_lifecycle.start()
@@ -2606,6 +2969,28 @@ class IBKRTradingService:
                 name="runtime-warmup",
             )
             self._warmup_thread.start()
+            self._sync_startup_progress(
+                action="update",
+                title="IBKR Runtime 启动中",
+                summary="核心线程已启动，正在进入 Warmup / 预检修复 / 历史回补。",
+                current_step="warmup",
+                current_blocker="等待 Warmup、预检修复与历史回补完成",
+                operator_action="等待 warmup 线程推进预检修复与交易门开放",
+                steps={
+                    "core_threads": {
+                        "status": "done",
+                        "detail": "WebSocket、订单链路与后台线程已启动。",
+                    },
+                    "warmup": {
+                        "status": "running",
+                        "detail": "正在执行 Warmup、预检修复与历史回补。",
+                    },
+                },
+                fields=self._build_startup_progress_fields(reason, source, trigger_login),
+                reason=reason,
+                source=source,
+                trigger_login=trigger_login,
+            )
 
             self._schedule_retention()
 
@@ -2641,23 +3026,56 @@ class IBKRTradingService:
             exit_notice = None
             with self._state_lock:
                 if not startup_ok and not self._running:
-                    startup_message_id = self._startup_status_message_id
                     self._starting = False
+                    self._startup_cycle_id = ""
                     self._startup_reason = ""
                     self._startup_source = ""
                     self._startup_trigger_login = False
                     self._startup_status_message_id = ""
                     if startup_exit_notice:
                         exit_notice = dict(startup_exit_notice)
-                        exit_notice["message_id"] = startup_message_id
+                    reset_startup_progress = True
             if exit_notice:
-                self._emit_system_event(
-                    exit_notice.get("event_type", "alert"),
-                    exit_notice.get("level", "error"),
-                    exit_notice.get("title", "IBKR Runtime 启动失败"),
-                    exit_notice.get("detail", {}),
-                    message_id=exit_notice.get("message_id", ""),
+                exit_detail = dict(exit_notice.get("detail", {}) or {})
+                failure_stage = str(exit_detail.get("失败阶段") or "").strip().lower()
+                failed_step = "core_threads"
+                if failure_stage == "gateway":
+                    failed_step = "gateway"
+                elif failure_stage == "session_login":
+                    failed_step = "auth"
+                elif failure_stage == "startup_exception":
+                    failed_step = "core_threads"
+                operator_action = "检查失败阶段并在处理后重新启动 Runtime"
+                if failed_step == "gateway":
+                    operator_action = "检查 Gateway 进程与服务状态后重新启动 Runtime"
+                elif failed_step == "auth":
+                    operator_action = "检查 2FA 当前轮次并手动重新触发"
+                self._sync_startup_progress(
+                    action="fail",
+                    title=exit_notice.get("title", "IBKR Runtime 启动失败"),
+                    summary=str(exit_detail.get("异常结论") or "启动流程未能完成。"),
+                    current_step=failed_step,
+                    current_blocker=str(exit_detail.get("异常结论") or "启动流程未能完成。"),
+                    operator_action=operator_action,
+                    steps={
+                        failed_step: {
+                            "status": "failed",
+                            "detail": str(exit_detail.get("异常") or exit_detail.get("失败阶段") or "启动失败"),
+                        },
+                    },
+                    fields=self._build_startup_progress_fields(reason, source, trigger_login, exit_detail),
+                    reason=reason,
+                    source=source,
+                    trigger_login=trigger_login,
+                    record_event=True,
+                    event_type="alert",
+                    event_title=exit_notice.get("title", "IBKR Runtime 启动失败"),
+                    event_detail=exit_detail,
+                    level=exit_notice.get("level", "error"),
                 )
+            if reset_startup_progress:
+                with self._state_lock:
+                    self._startup_progress_enabled = False
 
     def _ensure_gateway(self) -> bool:
         if not self.gateway_manager.is_running:
@@ -4654,9 +5072,12 @@ class IBKRTradingService:
         logger.info("Stopping IBKR Trading Service...")
         with self._state_lock:
             self._starting = False
+            self._startup_progress_enabled = False
+            self._startup_cycle_id = ""
             self._startup_reason = ""
             self._startup_source = ""
             self._startup_trigger_login = False
+            self._startup_status_message_id = ""
         self._running = False
         self._last_session_authenticated = False
         self._auth_probe_stop.set()

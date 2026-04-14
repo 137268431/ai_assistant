@@ -3737,6 +3737,82 @@ routerAdd("POST", "/api/custom/ibkr/start", (c) => {
     }
 })
 
+routerAdd("POST", "/api/custom/ibkr/startup/progress", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const startupProgress = require(`${__hooks}/lib/feishu/feishu_startup.js`)
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+
+    try {
+        const payload = {
+            environment: environment,
+            action: d.action || "update",
+            status: d.status || "",
+            title: d.title || "",
+            summary: d.summary || "",
+            current_step: d.current_step || "",
+            current_blocker: d.current_blocker || "",
+            operator_action: d.operator_action || "",
+            reason: d.reason || "",
+            source: d.source || "",
+            runtime_phase: d.runtime_phase || "",
+            runtime_url: d.runtime_url || "",
+            steps: d.steps && typeof d.steps === "object" ? d.steps : {},
+            fields: d.fields && typeof d.fields === "object" ? d.fields : {},
+            create_if_missing: d.create_if_missing === true,
+            record_event: d.record_event === true,
+            event_type: d.event_type || "",
+            event_title: d.event_title || "",
+            event_detail: d.event_detail && typeof d.event_detail === "object" ? d.event_detail : {},
+            level: d.level || "",
+            event_source: d.event_source || d.source || "ibkr_compute",
+        }
+        if (Object.prototype.hasOwnProperty.call(d, "trigger_login")) {
+            payload.trigger_login = d.trigger_login === true
+        }
+        const result = startupProgress.syncStartupProgress(payload)
+        return c.json(result.ok ? 200 : 500, {
+            ok: !!result.ok,
+            environment: result.environment || environment,
+            date: result.date || "",
+            cycle_id: result.cycle_id || "",
+            message_id: result.message_id || "",
+            state: result.state || {},
+            error: result.result && result.result.success ? "" : String((result.result && result.result.error) || ""),
+        })
+    } catch (err) {
+        return c.json(500, {
+            ok: false,
+            environment: environment,
+            error: err.message || String(err),
+        })
+    }
+})
+
+routerAdd("GET", "/api/custom/ibkr/startup/status", (c) => {
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const startupProgress = require(`${__hooks}/lib/feishu/feishu_startup.js`)
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+
+    try {
+        const payload = startupProgress.getStatePayload(environment)
+        const state = payload && payload.data ? payload.data : {}
+        return c.json(200, {
+            ok: true,
+            environment: payload.environment || environment,
+            date: payload.date || "",
+            state: state,
+        })
+    } catch (err) {
+        return c.json(500, {
+            ok: false,
+            environment: environment,
+            error: err.message || String(err),
+        })
+    }
+})
+
 routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
     const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
