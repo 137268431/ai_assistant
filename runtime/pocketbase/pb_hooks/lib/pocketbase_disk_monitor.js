@@ -236,6 +236,12 @@ function buildPocketBaseDiskSnapshot() {
         topEntrySizeMap[safeString(item && item.name)] = toNumber(item && item.size_bytes, 0)
     }
 
+    const dbBackupEntries = topEntries.filter((item) => /^data\.db\.backup\./.test(safeString(item && item.name)))
+    const dbBackupSizeBytes = dbBackupEntries.reduce(
+        (sum, item) => sum + toNumber(item && item.size_bytes, 0),
+        0,
+    )
+
     const snapshot = {
         source: "pocketbase_hook_disk_monitor",
         collected_at: collectedAt,
@@ -254,6 +260,9 @@ function buildPocketBaseDiskSnapshot() {
         storage_size_bytes: toNumber(topEntrySizeMap.storage, 0),
         backups_path: dataPath ? normalizePath($filepath.join(dataPath, "backups")) : "",
         backups_size_bytes: toNumber(topEntrySizeMap.backups, 0),
+        db_backup_glob: dataPath ? normalizePath($filepath.join(dataPath, "data.db.backup.*")) : "",
+        db_backup_size_bytes: dbBackupSizeBytes,
+        db_backup_file_count: dbBackupEntries.length,
         aux_path: dataPath ? normalizePath($filepath.join(dataPath, "aux")) : "",
         aux_size_bytes: toNumber(topEntrySizeMap.aux, 0),
         filesystem: filesystem,
@@ -315,7 +324,7 @@ function buildPocketBaseDiskFlags(snapshot) {
     }
 
     const mountPath = safeString(filesystem.mount_path || filesystem.path || disk.data_path || "--")
-    const detail = `${mountPath} 已使用 ${usedPct.toFixed(1)}%，剩余 ${formatBytes(filesystem.available_bytes)}，pb_data ${formatBytes(disk.data_size_bytes)}`
+    const detail = `${mountPath} 已使用 ${usedPct.toFixed(1)}%，剩余 ${formatBytes(filesystem.available_bytes)}，pb_data ${formatBytes(disk.data_size_bytes)}，db backups ${toNumber(disk.db_backup_file_count, 0)} 个 / ${formatBytes(disk.db_backup_size_bytes)}`
     if (usedPct >= POCKETBASE_DISK_CRITICAL_USED_PCT) {
         return [{
             severity: "error",

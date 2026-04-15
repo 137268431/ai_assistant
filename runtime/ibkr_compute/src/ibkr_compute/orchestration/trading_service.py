@@ -26,6 +26,7 @@ from ibkr_compute.market.realtime_quote_book import RealtimeQuoteBook
 from ibkr_compute.market.data_writer import DataWriter
 from ibkr_compute.market.data_backfill import DataBackfill, _regular_session_gap_summary
 from ibkr_compute.market.data_retention import DataRetention
+from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
 from ibkr_compute.order.order_placer import OrderPlacer
@@ -61,7 +62,7 @@ logger = logging.getLogger("ibkr_service")
 
 ET = timezone(timedelta(hours=-4))
 
-PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://localhost:8090")
+PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://127.0.0.1:8090")
 PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", "").rstrip("/")
 GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")

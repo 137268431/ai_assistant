@@ -98,6 +98,12 @@
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     }
 
+    .rules-board {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 12px;
+    }
+
     .summary-card {
       padding: 16px;
       border-radius: 18px;
@@ -140,6 +146,115 @@
 
     .panel {
       padding: 20px;
+    }
+
+    .rules-panel {
+      display: grid;
+      gap: 14px;
+      min-height: 100%;
+    }
+
+    .rules-panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .rules-panel-kicker,
+    .rules-section-label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      color: var(--screen-accent-2);
+      text-transform: uppercase;
+    }
+
+    .rules-panel-title {
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .rules-panel-subtitle,
+    .rules-section-copy,
+    .rules-footer,
+    .rules-empty {
+      color: var(--screen-muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .rules-panel-action {
+      border: 1px solid rgba(246, 173, 85, 0.22);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: var(--screen-text);
+      text-decoration: none;
+      background: rgba(246, 173, 85, 0.08);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .rules-chip-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+    }
+
+    .rules-chip {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(8, 12, 20, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    .rules-chip-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: var(--screen-muted);
+      letter-spacing: 0.08em;
+    }
+
+    .rules-chip-value {
+      margin-top: 8px;
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .rules-chip-copy {
+      margin-top: 6px;
+      color: var(--screen-muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .rules-section-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .rules-line {
+      padding-left: 14px;
+      position: relative;
+      color: var(--screen-text);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .rules-line::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 8px;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--screen-accent);
+      box-shadow: 0 0 0 3px rgba(246, 173, 85, 0.12);
     }
 
     .panel-title {

@@ -1287,9 +1287,14 @@
                     copy: `${formatBytes(filesystem?.used_bytes)} / ${formatBytes(filesystem?.total_bytes)} · free ${formatBytes(filesystem?.available_bytes)}`,
                 },
                 {
+                    label: 'DB Auto Backups',
+                    value: formatBytes(disk?.db_backup_size_bytes),
+                    copy: `${formatInteger(disk?.db_backup_file_count || 0)} files · ${disk?.db_backup_glob || 'data.db.backup.*'}`,
+                },
+                {
                     label: 'PB Storage',
                     value: formatBytes(disk?.storage_size_bytes),
-                    copy: `backups ${formatBytes(disk?.backups_size_bytes)} · aux ${formatBytes(disk?.aux_size_bytes)}`,
+                    copy: `backups/ ${formatBytes(disk?.backups_size_bytes)} · aux ${formatBytes(disk?.aux_size_bytes)}`,
                 },
                 {
                     label: 'PB Database',

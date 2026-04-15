@@ -95,6 +95,6 @@ class SignalRouter:
             "signal_source": self.signal_source,
             "environment": self.environment,
             "processed_count": len(self._processed_ids),
-            "last_poll": datetime.fromtimestamp(self._last_poll).isoformat()
+            "last_poll": datetime.fromtimestamp(self._last_poll, timezone.utc).isoformat()
             if self._last_poll else None,
         }

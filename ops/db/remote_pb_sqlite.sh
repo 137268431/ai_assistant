@@ -125,6 +125,7 @@ DB_B64="$(printf '%s' "$DB" | base64 | tr -d '\n')"
 
 ssh "$HOST" "python3 - <<'PY'
 import base64
+import glob
 import os
 import subprocess
 import sys
@@ -135,6 +136,9 @@ sql = base64.b64decode('$SQL_B64').decode()
 mode = base64.b64decode('$MODE_B64').decode()
 fmt = base64.b64decode('$FORMAT_B64').decode()
 backup = base64.b64decode('$BACKUP_B64').decode()
+auto_backup_keep = max(1, int(os.getenv('PB_SQLITE_AUTO_BACKUP_KEEP', '3') or '3'))
+
+AUTO_BACKUP_SIDECARS = ('-journal', '-wal', '-shm')
 
 if not os.path.exists(db):
     print(f'Database not found: {db}', file=sys.stderr)
@@ -154,6 +158,27 @@ def run_sqlite(args, script):
     if proc.returncode != 0:
         sys.exit(proc.returncode)
 
+def prune_auto_backups(db_path, keep_count):
+    pattern = f'{db_path}.backup.*'
+    matches = sorted(glob.glob(pattern))
+    base_backups = [
+        path for path in matches
+        if os.path.isfile(path) and not path.endswith(AUTO_BACKUP_SIDECARS)
+    ]
+    removable = base_backups[:-keep_count] if keep_count > 0 else base_backups
+    removed = []
+    for base_path in removable:
+        candidates = [base_path] + [f'{base_path}{suffix}' for suffix in AUTO_BACKUP_SIDECARS]
+        for candidate in candidates:
+            if not os.path.exists(candidate):
+                continue
+            try:
+                os.remove(candidate)
+                removed.append(candidate)
+            except FileNotFoundError:
+                continue
+    return removed
+
 if mode == 'write':
     if backup:
         if backup == 'auto':
@@ -164,6 +189,13 @@ if mode == 'write':
             os.makedirs(backup_dir, exist_ok=True)
         run_sqlite(['sqlite3', db], f\".timeout 5000\\n.backup {backup}\\n\")
         print(f'backup: {backup}', file=sys.stderr)
+        if backup.startswith(f'{db}.backup.'):
+            removed = prune_auto_backups(db, auto_backup_keep)
+            if removed:
+                print(
+                    f'pruned_auto_backups: keep={auto_backup_keep} removed={len(removed)}',
+                    file=sys.stderr,
+                )
     run_sqlite(['sqlite3', db], f\".timeout 5000\\nBEGIN;\\n{sql}\\nCOMMIT;\\n\")
 else:
     run_sqlite(

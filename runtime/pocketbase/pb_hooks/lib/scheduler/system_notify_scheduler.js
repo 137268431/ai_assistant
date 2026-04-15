@@ -252,6 +252,8 @@ function buildStatusSnapshot(environment, times) {
         : 0
     const websocketConnected = Boolean(runtime.websocket && runtime.websocket.connected === true)
     const websocketReady = Boolean(runtime.websocket && runtime.websocket.ready === true)
+    const warmup = runtime.warmup && typeof runtime.warmup === "object" ? runtime.warmup : {}
+    const warmupPendingSymbols = Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : []
 
     return {
         environment: environment,
@@ -265,6 +267,14 @@ function buildStatusSnapshot(environment, times) {
         runtime: {
             starting: Boolean(runtime.starting === true),
             warmup_phase: String(runtime.warmup && runtime.warmup.phase || ""),
+            warmup_started_at: String(warmup.started_at || ""),
+            warmup_finished_at: String(warmup.finished_at || ""),
+            warmup_last_success_at: String(warmup.last_success_at || warmup.finished_at || ""),
+            warmup_pending_symbols_total: toNumber(warmup.pending_symbols_total, warmupPendingSymbols.length),
+            warmup_ready_symbols: toNumber(warmup.ready_symbols, 0),
+            warmup_symbols_total: toNumber(warmup.symbols_total, 0),
+            warmup_ready_trade_symbols: toNumber(warmup.ready_trade_symbols, 0),
+            warmup_trade_symbols_total: toNumber(warmup.trade_symbols_total, 0),
         },
         session: {
             authenticated: Boolean(runtime.session && runtime.session.authenticated === true),
@@ -400,6 +410,41 @@ function buildDataFreshnessWindow(snapshot, times, clock) {
     }
 }
 
+function formatWarmupPhaseLabel(value) {
+    const normalized = String(value || "").trim().toLowerCase()
+    const labels = {
+        idle: "空闲",
+        pending: "待启动",
+        running: "进行中",
+        ready: "已就绪",
+        blocked: "已阻塞",
+        failed: "失败",
+    }
+    return labels[normalized] || (normalized || "未知")
+}
+
+function buildWarmupProgressLabel(snapshot) {
+    const runtime = snapshot && snapshot.runtime ? snapshot.runtime : {}
+    const tradeReady = toNumber(runtime.warmup_ready_trade_symbols, 0)
+    const tradeTotal = toNumber(runtime.warmup_trade_symbols_total, 0)
+    const pendingTotal = toNumber(runtime.warmup_pending_symbols_total, 0)
+    const parts = [`阶段 ${formatWarmupPhaseLabel(runtime.warmup_phase)}`]
+
+    if (tradeTotal > 0) {
+        parts.push(`交易标的就绪 ${tradeReady}/${tradeTotal}`)
+    }
+    if (pendingTotal > 0 || String(runtime.warmup_phase || "").trim().toLowerCase() === "pending") {
+        parts.push(`待补齐 ${pendingTotal}`)
+    }
+    if (runtime.warmup_last_success_at) {
+        parts.push(`最近完成 ${runtime.warmup_last_success_at}`)
+    } else if (runtime.warmup_started_at) {
+        parts.push(`开始于 ${runtime.warmup_started_at}`)
+    }
+
+    return parts.join(" · ")
+}
+
 function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times, eventCounts) {
     const detail = {
         "日程判断": marketSession.open_summary,
@@ -411,6 +456,7 @@ function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times
         "WebSocket": snapshot.websocket.label,
         "2FA状态": snapshot.auth.label,
         "引擎就绪": `${snapshot.compute.ready_engines || 0}/${snapshot.compute.total_engines || 0}`,
+        "盘前预热": buildWarmupProgressLabel(snapshot),
         "最新5m": snapshot.latest_bar.label,
         "指标状态": snapshot.latest_indicator.label,
         "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
@@ -423,8 +469,6 @@ function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times
     } else {
         detail["实时账户"] = "unavailable"
     }
-    if (snapshot.compute.uptime_s > 0) detail["Compute Uptime"] = `${Math.round(snapshot.compute.uptime_s)}s`
-    if (snapshot.runtime.warmup_phase) detail["Warmup"] = snapshot.runtime.warmup_phase
     if (snapshot.auth.mode) detail["验证模式"] = snapshot.auth.mode
     if (snapshot.auth.last_result) detail["2FA反馈"] = snapshot.auth.last_result
     if (snapshot.auth.last_error) detail["2FA异常"] = snapshot.auth.last_error
@@ -485,34 +529,47 @@ function hasHeartbeatIssue(snapshot, freshnessWindow) {
 
 function isStartupGraceActive(snapshot) {
     if (!snapshot || !snapshot.compute) return false
-    const warmupPhase = String(snapshot.runtime && snapshot.runtime.warmup_phase || "").trim().toLowerCase()
-    if (warmupPhase === "pending" || warmupPhase === "running") {
-        return true
-    }
-    if (snapshot.compute.status === "running" && snapshot.runtime && snapshot.runtime.starting) {
+    const runtime = snapshot.runtime && typeof snapshot.runtime === "object" ? snapshot.runtime : {}
+    const warmupPhase = String(runtime.warmup_phase || "").trim().toLowerCase()
+    const hasWarmupSuccess = Boolean(String(runtime.warmup_last_success_at || "").trim())
+    if (snapshot.compute.status === "running" && runtime.starting) {
         return true
     }
     const uptimeMs = toNumber(snapshot.compute.uptime_s, 0) * 1000
-    return uptimeMs > 0 && uptimeMs < COMPUTE_STARTUP_GRACE_MS
+    if (uptimeMs > 0 && uptimeMs < COMPUTE_STARTUP_GRACE_MS) {
+        return true
+    }
+    return (warmupPhase === "pending" || warmupPhase === "running") && !hasWarmupSuccess
 }
 
 function buildStartupGraceLabel(snapshot) {
     const uptimeS = toNumber(snapshot && snapshot.compute && snapshot.compute.uptime_s, 0)
-    const warmupPhase = String(snapshot && snapshot.runtime && snapshot.runtime.warmup_phase || "").trim()
+    const runtime = snapshot && snapshot.runtime && typeof snapshot.runtime === "object" ? snapshot.runtime : {}
+    const warmupPhase = String(runtime.warmup_phase || "").trim()
+    const tradeReady = toNumber(runtime.warmup_ready_trade_symbols, 0)
+    const tradeTotal = toNumber(runtime.warmup_trade_symbols_total, 0)
+    const pendingTotal = toNumber(runtime.warmup_pending_symbols_total, 0)
     const parts = []
-    if (snapshot && snapshot.runtime && snapshot.runtime.starting) {
-        parts.push("runtime starting")
+    if (runtime.starting) {
+        parts.push("运行态仍在启动")
     }
-    if (uptimeS > 0) {
-        parts.push(`uptime ${Math.round(uptimeS)}s`)
+    if (uptimeS > 0 && uptimeS < Math.round(COMPUTE_STARTUP_GRACE_MS / 1000)) {
+        parts.push(`Compute 运行 ${Math.round(uptimeS)}s`)
     }
-    if (warmupPhase) {
-        parts.push(`warmup ${warmupPhase}`)
+    if (warmupPhase && !String(runtime.warmup_last_success_at || "").trim()) {
+        if (tradeTotal > 0) {
+            parts.push(`启动预热 ${tradeReady}/${tradeTotal}`)
+        } else {
+            parts.push(`启动预热 ${formatWarmupPhaseLabel(warmupPhase)}`)
+        }
+        if (pendingTotal > 0) {
+            parts.push(`剩余 ${pendingTotal} 个标的`)
+        }
     }
     if (!parts.length) {
-        parts.push("startup grace active")
+        parts.push("启动保护生效")
     }
-    return `${parts.join(" / ")} / grace ${Math.round(COMPUTE_STARTUP_GRACE_MS / 1000)}s`
+    return `${parts.join("；")}；保护期 ${Math.round(COMPUTE_STARTUP_GRACE_MS / 1000)}s`
 }
 
 function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
@@ -938,6 +995,7 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
                 "消息数": String(snapshot.websocket.message_count || 0),
                 "Tick数": String(snapshot.total_ticks || 0),
                 "引擎就绪": `${snapshot.compute.ready_engines || 0}/${snapshot.compute.total_engines || 0}`,
+                "盘前预热": buildWarmupProgressLabel(snapshot),
                 "最新5m": snapshot.latest_bar.label,
                 "指标状态": snapshot.latest_indicator.label,
                 "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
@@ -947,8 +1005,6 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
                 "目标池": `${snapshot.today.targets} targets / active ${snapshot.active_target_count || 0}`,
                 "交易开关": snapshot.trading_enabled ? "true" : "false",
             }
-            if (snapshot.compute.uptime_s > 0) detail["Compute Uptime"] = `${Math.round(snapshot.compute.uptime_s)}s`
-            if (snapshot.runtime.warmup_phase) detail["Warmup"] = snapshot.runtime.warmup_phase
             if (snapshot.auth.mode) detail["验证模式"] = snapshot.auth.mode
             if (snapshot.auth.last_result) detail["2FA反馈"] = snapshot.auth.last_result
             if (snapshot.auth.last_error) detail["2FA异常"] = snapshot.auth.last_error
@@ -978,7 +1034,7 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
 function buildScanSummaryUrl(environment, marketDate) {
     const runtimeEnvironment = String(environment || "live").trim().toLowerCase() || "live"
     const dateToken = String(marketDate || "").trim()
-    return `${PB_HOST}/ibkr_screener.html?environment=${encodeURIComponent(runtimeEnvironment)}&tab=targets&date=${encodeURIComponent(dateToken)}&market_date=${encodeURIComponent(dateToken)}`
+    return `${PB_HOST}/ibkr_screener.html?environment=${encodeURIComponent(runtimeEnvironment)}&tab=screener&view=current&date=${encodeURIComponent(dateToken)}&market_date=${encodeURIComponent(dateToken)}`
 }
 
 function buildScanSummaryLines(payload) {
@@ -1023,7 +1079,7 @@ function buildScanSummaryCard(payload, environment) {
                 tag: "action",
                 actions: [{
                     tag: "button",
-                    text: { tag: "plain_text", content: "查看今日 Targets" },
+                    text: { tag: "plain_text", content: "查看当前标的榜" },
                     type: "default",
                     multi_url: {
                         url: jumpUrl,
@@ -1167,11 +1223,17 @@ function runDailyOpenReminderTick(logPrefix, cronId) {
                 times,
                 loadTodayEventCounts(environment, times)
             )
-            const title = marketSession.kind === "trading" && assessment.level === "warning"
-                ? `${marketSession.open_title}（需关注）`
+            if (startupGraceActive) {
+                detail["启动保护"] = buildStartupGraceLabel(snapshot)
+            }
+            const title = marketSession.kind === "trading"
+                ? "IBKR 开盘前状态检查"
                 : marketSession.open_title
             const level = marketSession.kind === "trading" ? assessment.level : "info"
-            const notified = feishuSystem.notifySystemEvent("status_change", level, "pb", title, detail, environment)
+            const notified = feishuSystem.notifySystemEvent("status_change", level, "pb", title, detail, environment, {
+                target_chat: "system",
+                template_level_override: "info",
+            })
             writeSystemEvent("status_change", level, "pb", title, detail, environment, notified)
             saveStateData(DAILY_REMINDER_STATE_KEY, environment, times.date, {
                 open_sent_at: times.us,

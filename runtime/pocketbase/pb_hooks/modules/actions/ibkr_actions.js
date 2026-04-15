@@ -1104,7 +1104,150 @@ function ibkrActionsTrimObjectEntries(value, limit) {
 }
 globalThis.ibkrActionsTrimObjectEntries = ibkrActionsTrimObjectEntries
 
-function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDetails) {
+function ibkrActionsNormalizeSymbolList(values) {
+    const source = Array.isArray(values) ? values : [values]
+    const items = []
+    const seen = {}
+    source.forEach((value) => {
+        if (Array.isArray(value)) {
+            value.forEach((nested) => {
+                const symbol = String(nested || "").trim().toUpperCase()
+                if (!symbol || seen[symbol]) return
+                seen[symbol] = true
+                items.push(symbol)
+            })
+            return
+        }
+        const symbol = String(value || "").trim().toUpperCase()
+        if (!symbol || seen[symbol]) return
+        seen[symbol] = true
+        items.push(symbol)
+    })
+    return items
+}
+globalThis.ibkrActionsNormalizeSymbolList = ibkrActionsNormalizeSymbolList
+
+function ibkrActionsBuildStatuszLiveReadiness(computePayload, runtimePayload) {
+    const compute = ibkrActionsCloneObject(computePayload)
+    const runtime = ibkrActionsCloneObject(runtimePayload)
+    const engineMap = compute.engines && typeof compute.engines === "object" && !Array.isArray(compute.engines)
+        ? compute.engines
+        : {}
+    const warmup = ibkrActionsCloneObject(runtime.warmup)
+    const marketUniverse = ibkrActionsCloneObject(runtime.market_universe)
+    const environment = String(runtime.environment || compute.environment || "live").trim().toLowerCase() || "live"
+    const requiredInterval = String(warmup.required_interval || "5m").trim() || "5m"
+    const tradeSymbols = ibkrActionsNormalizeSymbolList(
+        Array.isArray(warmup.trade_symbols) && warmup.trade_symbols.length
+            ? warmup.trade_symbols
+            : (Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols : [])
+    )
+    const monitorSymbols = ibkrActionsNormalizeSymbolList(
+        Array.isArray(warmup.monitor_symbols) && warmup.monitor_symbols.length
+            ? warmup.monitor_symbols
+            : (Array.isArray(marketUniverse.market_ws_symbols) ? marketUniverse.market_ws_symbols : [])
+    )
+    let symbols = ibkrActionsNormalizeSymbolList(
+        Array.isArray(warmup.symbols) && warmup.symbols.length
+            ? warmup.symbols
+            : (Array.isArray(marketUniverse.data_symbols) ? marketUniverse.data_symbols : tradeSymbols.concat(monitorSymbols))
+    )
+    if (!symbols.length) {
+        symbols = ibkrActionsNormalizeSymbolList(
+            Object.keys(engineMap).map((key) => {
+                const parts = String(key || "").split("/")
+                if (parts.length !== 3) return ""
+                return parts[0] === environment && parts[2] === requiredInterval ? parts[1] : ""
+            })
+        )
+    }
+
+    const symbolSet = {}
+    symbols.concat(tradeSymbols, monitorSymbols).forEach((symbol) => {
+        if (symbol) symbolSet[symbol] = true
+    })
+    const allSymbols = Object.keys(symbolSet).sort()
+    const tradeSet = {}
+    const monitorSet = {}
+    tradeSymbols.forEach((symbol) => {
+        tradeSet[symbol] = true
+    })
+    monitorSymbols.forEach((symbol) => {
+        monitorSet[symbol] = true
+    })
+
+    let readySymbols = 0
+    let readyTradeSymbols = 0
+    let readyMonitorSymbols = 0
+    const readySet = {}
+    allSymbols.forEach((symbol) => {
+        const engine = engineMap[`${environment}/${symbol}/${requiredInterval}`]
+        const isReady = Boolean(engine && engine.is_ready)
+        if (!isReady) return
+        readySet[symbol] = true
+        readySymbols += 1
+        if (tradeSet[symbol]) readyTradeSymbols += 1
+        if (monitorSet[symbol]) readyMonitorSymbols += 1
+    })
+
+    const nonMonitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && !monitorSet[symbol]).length
+    const gateOpen = tradeSymbols.length > 0 && readyTradeSymbols >= tradeSymbols.length
+    let phase = "idle"
+    if (allSymbols.length > 0) {
+        if (readySymbols >= allSymbols.length) {
+            phase = "ready"
+        } else if (nonMonitorPendingTotal === 0) {
+            phase = "degraded"
+        } else {
+            phase = "pending"
+        }
+    }
+
+    const snapshotSymbolsTotal = Number(warmup.symbols_total || 0) || 0
+    const snapshotReadySymbols = Number(warmup.ready_symbols || 0) || 0
+    const snapshotReadyTradeSymbols = Number(warmup.ready_trade_symbols || 0) || 0
+    const snapshotReadyMonitorSymbols = Number(warmup.ready_monitor_symbols || 0) || 0
+    const snapshotPresent = Boolean(
+        snapshotSymbolsTotal
+        || snapshotReadySymbols
+        || snapshotReadyTradeSymbols
+        || snapshotReadyMonitorSymbols
+        || String(warmup.phase || "").trim()
+        || String(warmup.finished_at || "").trim()
+    )
+    const snapshotDiffers = snapshotPresent && (
+        (snapshotSymbolsTotal > 0 && snapshotSymbolsTotal !== allSymbols.length)
+        || snapshotReadySymbols !== readySymbols
+        || snapshotReadyTradeSymbols !== readyTradeSymbols
+        || snapshotReadyMonitorSymbols !== readyMonitorSymbols
+    )
+
+    return {
+        available: allSymbols.length > 0 && Object.keys(engineMap).length > 0,
+        engine_snapshot_available: Object.keys(engineMap).length > 0,
+        source: "compute_engines",
+        environment: environment,
+        required_interval: requiredInterval,
+        computed_at: new Date().toISOString(),
+        phase: phase,
+        gate_open: gateOpen,
+        gate_reason: gateOpen ? "ready" : (tradeSymbols.length ? "live_not_ready" : "no_trade_symbols"),
+        symbols_total: allSymbols.length,
+        trade_symbols_total: tradeSymbols.length,
+        monitor_symbols_total: monitorSymbols.length,
+        ready_symbols: readySymbols,
+        ready_trade_symbols: readyTradeSymbols,
+        ready_monitor_symbols: readyMonitorSymbols,
+        pending_symbols_total: Math.max(0, allSymbols.length - readySymbols),
+        non_monitor_pending_symbols_total: nonMonitorPendingTotal,
+        snapshot_differs: Boolean(snapshotDiffers),
+        snapshot_phase: String(warmup.phase || "").trim().toLowerCase() || "idle",
+        snapshot_finished_at: warmup.finished_at || "",
+    }
+}
+globalThis.ibkrActionsBuildStatuszLiveReadiness = ibkrActionsBuildStatuszLiveReadiness
+
+function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDetails, liveReadiness = {}) {
     const payload = ibkrActionsCloneObject(runtimePayload)
     const gateway = ibkrActionsCloneObject(payload.gateway)
     const session = ibkrActionsCloneObject(payload.session)
@@ -1176,6 +1319,7 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
         runtime_phase: String(payload.runtime_phase || ""),
         environment: String(payload.environment || ""),
         warmup_details_included: Boolean(includeWarmupDetails),
+        live_readiness: ibkrActionsCloneObject(liveReadiness),
         gateway: {
             running: Boolean(gateway.running),
             reachable: Boolean(gateway.reachable),
@@ -1236,13 +1380,20 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
                 integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
                 integrity_repair_reasons: integrityRepairReasons,
                 preflight_repair: preflightRepair,
-            },
-            realtime_compute: {
-                runs: Number(realtimeCompute.runs || 0) || 0,
-                queue_size: Number(realtimeCompute.queue_size || 0) || 0,
-                last_run: realtimeCompute.last_run || "",
+        },
+        realtime_compute: {
+            runs: Number(realtimeCompute.runs || 0) || 0,
+            queue_size: Number(realtimeCompute.queue_size || 0) || 0,
+            thread_alive: Boolean(realtimeCompute.thread_alive),
+            inflight: Boolean(realtimeCompute.inflight),
+            inflight_age_s: Number(realtimeCompute.inflight_age_s || 0) || 0,
+            inflight_timeout_threshold_s: Number(realtimeCompute.inflight_timeout_threshold_s || 0) || 0,
+            stalled: Boolean(realtimeCompute.stalled),
+            stall_reason: String(realtimeCompute.stall_reason || ""),
+            last_started: realtimeCompute.last_started || "",
+            last_run: realtimeCompute.last_run || "",
             last_bar_close: realtimeCompute.last_bar_close || "",
-            last_elapsed_s: Number(realtimeResult.elapsed_s || 0) || 0,
+            last_elapsed_s: Number(realtimeCompute.last_elapsed_s || realtimeResult.elapsed_s || 0) || 0,
             last_processed: Number(realtimeResult.processed || 0) || 0,
             last_signals: Number(realtimeResult.signals || 0) || 0,
             last_errors: Number(realtimeResult.errors || 0) || 0,
@@ -1779,6 +1930,17 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
     }
 
     const times = getTimeStrings()
+    const watchlistRoleTrade = "trade"
+    const watchlistRoleMarketMonitor = "market_monitor"
+    const normalizeWatchlistRole = (value) => {
+        if (typeof globalThis.ibkrActionsNormalizeWatchlistRole === "function") {
+            return globalThis.ibkrActionsNormalizeWatchlistRole(value)
+        }
+        const normalized = String(value || "").trim().toLowerCase()
+        return normalized === watchlistRoleMarketMonitor
+            ? watchlistRoleMarketMonitor
+            : watchlistRoleTrade
+    }
     const note = String(d.note || "").trim()
     const exchange = String(d.exchange || "").trim().toUpperCase()
     const industry = String(
@@ -1803,7 +1965,7 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
             { sym: symbol, env: recordEnvironment }
         )
     } catch (_) {}
-    const symbolRole = globalThis.ibkrActionsNormalizeWatchlistRole(
+    const symbolRole = normalizeWatchlistRole(
         d.symbol_role || d.role || (existing ? existing.get("symbol_role") : "")
     )
 
@@ -2481,6 +2643,17 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         ) || []
         const watchPriority = { "": 0, global: 1 }
         watchPriority[environment] = 2
+        const watchlistRoleTrade = "trade"
+        const watchlistRoleMarketMonitor = "market_monitor"
+        const normalizeWatchlistRole = (value) => {
+            if (typeof globalThis.ibkrActionsNormalizeWatchlistRole === "function") {
+                return globalThis.ibkrActionsNormalizeWatchlistRole(value)
+            }
+            const normalized = String(value || "").trim().toLowerCase()
+            return normalized === watchlistRoleMarketMonitor
+                ? watchlistRoleMarketMonitor
+                : watchlistRoleTrade
+        }
         const watchMeta = {}
         const watchRank = {}
         const watchRole = {}
@@ -2493,7 +2666,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
             if (rank < 0) continue
             if (watchRank[symbol] != null && watchRank[symbol] > rank) continue
             watchRank[symbol] = rank
-            watchRole[symbol] = globalThis.ibkrActionsNormalizeWatchlistRole(record.get("symbol_role"))
+            watchRole[symbol] = normalizeWatchlistRole(record.get("symbol_role"))
             watchMeta[symbol] = {
                 exchange: String(record.get("exchange") || "").trim().toUpperCase(),
                 industry: String(record.get("industry") || "").trim(),
@@ -2503,7 +2676,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         }
         const tradeWatchMeta = {}
         Object.keys(watchMeta).forEach((symbol) => {
-            if ((watchRole[symbol] || IBKR_WATCHLIST_ROLE_TRADE) === IBKR_WATCHLIST_ROLE_TRADE) {
+            if ((watchRole[symbol] || watchlistRoleTrade) === watchlistRoleTrade) {
                 tradeWatchMeta[symbol] = watchMeta[symbol]
             }
         })
@@ -2520,7 +2693,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         for (let i = 0; i < targetRecords.length; i++) {
             const record = targetRecords[i]
             const symbol = String(record.get("symbol") || "").trim().toUpperCase()
-            if ((watchRole[symbol] || IBKR_WATCHLIST_ROLE_TRADE) !== IBKR_WATCHLIST_ROLE_TRADE) {
+            if ((watchRole[symbol] || watchlistRoleTrade) !== watchlistRoleTrade) {
                 continue
             }
             if (symbol && !targetBySymbol[symbol]) {
@@ -3307,7 +3480,146 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
 
             return payload
         }
-        const buildStatuszRuntimePayload = function(runtimePayload, includeWarmupDetails) {
+        const buildStatuszLiveReadiness = function(computePayload, runtimePayload) {
+            const compute = cloneObject(computePayload)
+            const runtime = cloneObject(runtimePayload)
+            const engineMap = compute.engines && typeof compute.engines === "object" && !Array.isArray(compute.engines)
+                ? compute.engines
+                : {}
+            const warmup = cloneObject(runtime.warmup)
+            const marketUniverse = cloneObject(runtime.market_universe)
+            const environment = String(runtime.environment || compute.environment || "live").trim().toLowerCase() || "live"
+            const requiredInterval = String(warmup.required_interval || "5m").trim() || "5m"
+            const normalizeSymbolList = (values) => {
+                const source = Array.isArray(values) ? values : [values]
+                const items = []
+                const seen = {}
+                source.forEach((value) => {
+                    if (Array.isArray(value)) {
+                        value.forEach((nested) => {
+                            const symbol = String(nested || "").trim().toUpperCase()
+                            if (!symbol || seen[symbol]) return
+                            seen[symbol] = true
+                            items.push(symbol)
+                        })
+                        return
+                    }
+                    const symbol = String(value || "").trim().toUpperCase()
+                    if (!symbol || seen[symbol]) return
+                    seen[symbol] = true
+                    items.push(symbol)
+                })
+                return items
+            }
+            const tradeSymbols = normalizeSymbolList(
+                Array.isArray(warmup.trade_symbols) && warmup.trade_symbols.length
+                    ? warmup.trade_symbols
+                    : (Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols : [])
+            )
+            const monitorSymbols = normalizeSymbolList(
+                Array.isArray(warmup.monitor_symbols) && warmup.monitor_symbols.length
+                    ? warmup.monitor_symbols
+                    : (Array.isArray(marketUniverse.market_ws_symbols) ? marketUniverse.market_ws_symbols : [])
+            )
+            let symbols = normalizeSymbolList(
+                Array.isArray(warmup.symbols) && warmup.symbols.length
+                    ? warmup.symbols
+                    : (Array.isArray(marketUniverse.data_symbols) ? marketUniverse.data_symbols : tradeSymbols.concat(monitorSymbols))
+            )
+            if (!symbols.length) {
+                symbols = normalizeSymbolList(
+                    Object.keys(engineMap).map((key) => {
+                        const parts = String(key || "").split("/")
+                        if (parts.length !== 3) return ""
+                        return parts[0] === environment && parts[2] === requiredInterval ? parts[1] : ""
+                    })
+                )
+            }
+
+            const symbolSet = {}
+            symbols.concat(tradeSymbols, monitorSymbols).forEach((symbol) => {
+                if (symbol) symbolSet[symbol] = true
+            })
+            const allSymbols = Object.keys(symbolSet).sort()
+            const tradeSet = {}
+            const monitorSet = {}
+            tradeSymbols.forEach((symbol) => {
+                tradeSet[symbol] = true
+            })
+            monitorSymbols.forEach((symbol) => {
+                monitorSet[symbol] = true
+            })
+
+            let readySymbols = 0
+            let readyTradeSymbols = 0
+            let readyMonitorSymbols = 0
+            const readySet = {}
+            allSymbols.forEach((symbol) => {
+                const engine = engineMap[`${environment}/${symbol}/${requiredInterval}`]
+                const isReady = Boolean(engine && engine.is_ready)
+                if (!isReady) return
+                readySet[symbol] = true
+                readySymbols += 1
+                if (tradeSet[symbol]) readyTradeSymbols += 1
+                if (monitorSet[symbol]) readyMonitorSymbols += 1
+            })
+
+            const nonMonitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && !monitorSet[symbol]).length
+            const gateOpen = tradeSymbols.length > 0 && readyTradeSymbols >= tradeSymbols.length
+            let phase = "idle"
+            if (allSymbols.length > 0) {
+                if (readySymbols >= allSymbols.length) {
+                    phase = "ready"
+                } else if (nonMonitorPendingTotal === 0) {
+                    phase = "degraded"
+                } else {
+                    phase = "pending"
+                }
+            }
+
+            const snapshotSymbolsTotal = Number(warmup.symbols_total || 0) || 0
+            const snapshotReadySymbols = Number(warmup.ready_symbols || 0) || 0
+            const snapshotReadyTradeSymbols = Number(warmup.ready_trade_symbols || 0) || 0
+            const snapshotReadyMonitorSymbols = Number(warmup.ready_monitor_symbols || 0) || 0
+            const snapshotPresent = Boolean(
+                snapshotSymbolsTotal
+                || snapshotReadySymbols
+                || snapshotReadyTradeSymbols
+                || snapshotReadyMonitorSymbols
+                || String(warmup.phase || "").trim()
+                || String(warmup.finished_at || "").trim()
+            )
+            const snapshotDiffers = snapshotPresent && (
+                (snapshotSymbolsTotal > 0 && snapshotSymbolsTotal !== allSymbols.length)
+                || snapshotReadySymbols !== readySymbols
+                || snapshotReadyTradeSymbols !== readyTradeSymbols
+                || snapshotReadyMonitorSymbols !== readyMonitorSymbols
+            )
+
+            return {
+                available: allSymbols.length > 0 && Object.keys(engineMap).length > 0,
+                engine_snapshot_available: Object.keys(engineMap).length > 0,
+                source: "compute_engines",
+                environment: environment,
+                required_interval: requiredInterval,
+                computed_at: new Date().toISOString(),
+                phase: phase,
+                gate_open: gateOpen,
+                gate_reason: gateOpen ? "ready" : (tradeSymbols.length ? "live_not_ready" : "no_trade_symbols"),
+                symbols_total: allSymbols.length,
+                trade_symbols_total: tradeSymbols.length,
+                monitor_symbols_total: monitorSymbols.length,
+                ready_symbols: readySymbols,
+                ready_trade_symbols: readyTradeSymbols,
+                ready_monitor_symbols: readyMonitorSymbols,
+                pending_symbols_total: Math.max(0, allSymbols.length - readySymbols),
+                non_monitor_pending_symbols_total: nonMonitorPendingTotal,
+                snapshot_differs: Boolean(snapshotDiffers),
+                snapshot_phase: String(warmup.phase || "").trim().toLowerCase() || "idle",
+                snapshot_finished_at: warmup.finished_at || "",
+            }
+        }
+        const buildStatuszRuntimePayload = function(runtimePayload, includeWarmupDetails, liveReadiness = {}) {
             const payload = cloneObject(runtimePayload)
             const gateway = cloneObject(payload.gateway)
             const session = cloneObject(payload.session)
@@ -3381,6 +3693,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 runtime_phase: String(payload.runtime_phase || ""),
                 environment: String(payload.environment || ""),
                 warmup_details_included: Boolean(includeWarmupDetails),
+                live_readiness: cloneObject(liveReadiness),
                 gateway: {
                     running: Boolean(gateway.running),
                     reachable: Boolean(gateway.reachable),
@@ -3467,9 +3780,16 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 realtime_compute: {
                     runs: Number(realtimeCompute.runs || 0) || 0,
                     queue_size: Number(realtimeCompute.queue_size || 0) || 0,
+                    thread_alive: Boolean(realtimeCompute.thread_alive),
+                    inflight: Boolean(realtimeCompute.inflight),
+                    inflight_age_s: Number(realtimeCompute.inflight_age_s || 0) || 0,
+                    inflight_timeout_threshold_s: Number(realtimeCompute.inflight_timeout_threshold_s || 0) || 0,
+                    stalled: Boolean(realtimeCompute.stalled),
+                    stall_reason: String(realtimeCompute.stall_reason || ""),
+                    last_started: realtimeCompute.last_started || "",
                     last_run: realtimeCompute.last_run || "",
                     last_bar_close: realtimeCompute.last_bar_close || "",
-                    last_elapsed_s: Number(realtimeResult.elapsed_s || 0) || 0,
+                    last_elapsed_s: Number(realtimeCompute.last_elapsed_s || realtimeResult.elapsed_s || 0) || 0,
                     last_processed: Number(realtimeResult.processed || 0) || 0,
                     last_signals: Number(realtimeResult.signals || 0) || 0,
                     last_errors: Number(realtimeResult.errors || 0) || 0,
@@ -3535,7 +3855,8 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
         }
 
         const computeData = buildStatuszComputePayload(computePayload, includeEngines)
-        const runtimeData = buildStatuszRuntimePayload(runtimePayload, includeWarmupDetails)
+        const liveReadiness = buildStatuszLiveReadiness(computePayload, runtimePayload)
+        const runtimeData = buildStatuszRuntimePayload(runtimePayload, includeWarmupDetails, liveReadiness)
         const actualRuntimeEnvironment = String(runtimeData.environment || computeData.environment || environment).trim().toLowerCase() || environment
         const response = {
             ...computeData,
@@ -3696,6 +4017,46 @@ routerAdd("GET", "/api/custom/ibkr/runtime/config", (c) => {
         return c.json(500, { ok: false, error: err.message || String(err) })
     }
     return c.json(200, { ok: true, environment: environment, scope: scope || "effective", items: items })
+})
+
+routerAdd("GET", "/api/custom/ibkr/rules", (c) => {
+    const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/rules?environment=${encodeURIComponent(environment)}`
+    try {
+        const resp = $http.send({
+            url: upstream,
+            method: "GET",
+            timeout: 20,
+        })
+        const statusCode = Number(resp && resp.statusCode) || 200
+        const raw = typeof resp?.raw === "string" ? resp.raw : String(resp?.raw || "")
+        let parsed = {}
+        if (raw) {
+            try {
+                parsed = JSON.parse(raw)
+            } catch (_) {
+                parsed = { ok: false, raw: raw }
+            }
+        }
+        const payload = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? { ...parsed }
+            : { ok: false, raw: String(parsed || "") }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/rules"
+        payload.proxy_upstream = upstream
+        return c.json(statusCode, payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/rules",
+            proxy_upstream: upstream,
+        })
+    }
 })
 
 routerAdd("POST", "/api/custom/ibkr/start", (c) => {

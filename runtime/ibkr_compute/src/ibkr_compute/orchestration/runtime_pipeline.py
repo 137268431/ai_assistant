@@ -376,8 +376,12 @@ class TradingServiceRuntimePipelineMixin:
             self.data_writer.flush()
             self._queue_compute_event("canonical_close", bar_count=written_bars, symbols=compute_symbols)
 
+        blocking_pending_symbols = self._non_monitor_pending_symbols(
+            next_pending_symbols,
+            snapshot.get("monitor_symbols") or [],
+        )
         next_last_completed_bucket_ms = last_completed_bucket_ms
-        if not next_pending_symbols:
+        if not blocking_pending_symbols:
             next_last_completed_bucket_ms = max(last_completed_bucket_ms, due_bucket_ms)
 
         self._set_official_5m_state(
@@ -393,8 +397,8 @@ class TradingServiceRuntimePipelineMixin:
             last_written_bars=written_bars,
             written_symbols=written_symbols,
             written_symbols_total=len(written_symbols),
-            pending_symbols=next_pending_symbols,
-            pending_symbols_total=len(next_pending_symbols),
+            pending_symbols=blocking_pending_symbols,
+            pending_symbols_total=len(blocking_pending_symbols),
             last_error="; ".join(cycle_errors),
         )
         self._official_5m_last_cycle_at = time.time()

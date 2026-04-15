@@ -8,6 +8,9 @@ const TODAY_TARGET_STATUSES = {
 
 const WATCHLIST_ROLE_TRADE = "trade"
 const DEFAULT_TECHNICAL_STATE = "watch"
+const DAILY_SCAN_SUMMARY_TIME_ET = "05:55"
+const MARKET_OPEN_CHECK_TIME_ET = "09:20"
+const INTRADAY_REFRESH_RULE = "5m close-driven"
 
 function toNumber(value, fallback) {
     const number = Number(value)
@@ -440,11 +443,152 @@ function resolveAttentionState(row) {
     return { state: DEFAULT_TECHNICAL_STATE, rank: 25 }
 }
 
+function buildPrimaryViewUrl(runtimeEnvironment, marketDate) {
+    const params = [
+        `tab=${encodeURIComponent("screener")}`,
+        `view=${encodeURIComponent("current")}`,
+        `date=${encodeURIComponent(String(marketDate || "").trim())}`,
+        `market_date=${encodeURIComponent(String(marketDate || "").trim())}`,
+        `environment=${encodeURIComponent(String(runtimeEnvironment || LIVE_ENVIRONMENT).trim())}`,
+    ]
+    return `/ibkr_screener.html?${params.join("&")}`
+}
+
+function buildWorkflowGuide(runtimeEnvironment, marketDate) {
+    return {
+        scan_summary_time_et: DAILY_SCAN_SUMMARY_TIME_ET,
+        open_check_time_et: MARKET_OPEN_CHECK_TIME_ET,
+        intraday_refresh_rule: INTRADAY_REFRESH_RULE,
+        focus_order_rule: "先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。",
+        primary_view_url: buildPrimaryViewUrl(runtimeEnvironment, marketDate),
+    }
+}
+
+function formatWorkflowDirection(row) {
+    const direction = String(row && row.latest_signal_direction || row && row.direction_bias || "").trim().toUpperCase()
+    return direction || "--"
+}
+
+function buildBaseWorkflowBlockers(row) {
+    const blockers = []
+    const freshnessMin = Number.isFinite(Number(row && row.freshness_min)) ? Number(row.freshness_min) : null
+    const alignedFlags = Array.isArray(row && row.technical_aligned_flags) ? row.technical_aligned_flags : []
+
+    if (!(row && row.has_live_bar)) {
+        pushUniqueText(blockers, "缺少当日 5m bars")
+    } else if (freshnessMin != null && freshnessMin > 90) {
+        pushUniqueText(blockers, `bars 延迟 ${Math.round(freshnessMin)}m`)
+    }
+
+    if (row && row.price <= 0) {
+        pushUniqueText(blockers, "价格未就绪")
+    }
+    if (row && row.avg_10d_volume < 500000) {
+        pushUniqueText(blockers, "10日均量不足 50 万")
+    }
+    if (row && !row.is_operable && row.tradability_score < 60) {
+        pushUniqueText(blockers, "可操作分不足")
+    }
+    if (alignedFlags.length < 2) {
+        pushUniqueText(blockers, "方向一致技术条件未集齐")
+    }
+    return blockers
+}
+
+function buildWorkflowMeta(row) {
+    const signalStatus = normalizeSignalStatus(row && row.latest_signal_status)
+    const blockers = []
+    let stage = "watch"
+    let label = "观察中"
+    let summary = "该标的仍在今日目标池内，但技术或信号条件还没进入优先执行阶段。"
+    let nextAction = "先看技术 flags、量能与 freshness，满足后继续等 5m close 刷新。"
+
+    if (signalStatus === "awaiting_confirm") {
+        stage = "awaiting_confirm"
+        label = "信号待确认"
+        summary = row && row.latest_signal_time
+            ? `${row.latest_signal_time} 已产生 ${formatWorkflowDirection(row)} 信号，当前等待确认完成。`
+            : "今日已产生信号，当前等待确认完成。"
+        pushUniqueText(blockers, "等待信号确认完成")
+        if (row && row.latest_signal_note) {
+            pushUniqueText(blockers, row.latest_signal_note)
+        }
+        nextAction = "优先查看 Signals 页，确认 signal 状态、有效期和后续订单动作。"
+    } else if (signalStatus === "pending") {
+        stage = "pending"
+        label = "信号待执行"
+        summary = row && row.latest_signal_time
+            ? `${row.latest_signal_time} 信号已进入 pending，等待执行链路推进。`
+            : "今日信号已进入 pending，等待执行链路推进。"
+        pushUniqueText(blockers, "等待下单或成交反馈")
+        if (row && row.latest_signal_note) {
+            pushUniqueText(blockers, row.latest_signal_note)
+        }
+        nextAction = "优先查看 Signals / Orders，确认挂单、成交和风控状态。"
+    } else if (!(row && row.has_signal_today) && row && row.technical_state === "ready") {
+        stage = "ready_no_signal"
+        label = "技术已就绪"
+        summary = "技术条件和可操作性已基本满足，但今日还没有触发信号。"
+        pushUniqueText(blockers, "等待下一次 5m close 触发信号")
+        nextAction = "盘中按 5m close 继续观察，重点联动当前榜单和 Signals 页。"
+    } else if (row && row.technical_state === "stale") {
+        stage = "stale"
+        label = "数据待刷新"
+        summary = "该标的缺少足够新鲜的盘中 bars，当前技术判断不可靠。"
+        const baseBlockers = buildBaseWorkflowBlockers(row)
+        for (let i = 0; i < baseBlockers.length; i++) {
+            pushUniqueText(blockers, baseBlockers[i])
+        }
+        nextAction = "先检查 bars / indicators 是否刷新，再决定是否继续跟踪。"
+    } else if (signalStatus === "executed") {
+        stage = "executed"
+        label = "已执行"
+        summary = "今日信号已执行，后续重点转向持仓、退出和保护单管理。"
+        nextAction = "去 Signals / Orders 跟踪持仓、止盈止损和退出状态。"
+    } else if (signalStatus === "closed") {
+        stage = "closed"
+        label = "已闭环"
+        summary = "今日信号已结束闭环，当前不再是优先执行对象。"
+        nextAction = "保留复盘结论；若再次入榜，再重新进入关注。"
+    } else if (signalStatus === "expired") {
+        stage = "expired"
+        label = "信号过期"
+        summary = "今日信号已过期，当前执行窗口已经结束。"
+        nextAction = "等待新的 5m close 或次日重新筛选。"
+    } else if (signalStatus === "rejected") {
+        stage = "rejected"
+        label = "信号已拒绝"
+        summary = "今日信号已被拒绝或取消，不再继续推进执行。"
+        if (row && row.latest_signal_note) {
+            pushUniqueText(blockers, row.latest_signal_note)
+        }
+        nextAction = "查看信号备注与风控原因，确认是否继续观察。"
+    } else {
+        const baseBlockers = buildBaseWorkflowBlockers(row)
+        for (let i = 0; i < baseBlockers.length; i++) {
+            pushUniqueText(blockers, baseBlockers[i])
+        }
+    }
+
+    if (!blockers.length && (stage === "watch" || stage === "ready_no_signal")) {
+        pushUniqueText(blockers, "等待下一次 5m close 刷新")
+    }
+
+    return {
+        stage: stage,
+        label: label,
+        summary: summary,
+        blockers: blockers,
+        next_action: nextAction,
+    }
+}
+
 function buildTodayTargetPayload(options) {
     const runtimeEnvironment = normalizeRuntimeEnvironment(options && options.environment, LIVE_ENVIRONMENT)
     const requestedMarketDate = String(options && (options.marketDate || options.date) || "").trim() || getCurrentMarketDate()
     const marketStartCandidateMs = Date.parse(`${requestedMarketDate}T04:00:00.000Z`)
     const marketDate = Number.isFinite(marketStartCandidateMs) ? requestedMarketDate : getCurrentMarketDate()
+    const workflowGuide = buildWorkflowGuide(runtimeEnvironment, marketDate)
     const targetRecords = $app.findRecordsByFilter(
         "ibkr_targets",
         'environment = {:env} && date = {:date} && (status = "candidate" || status = "active")',
@@ -473,6 +617,7 @@ function buildTodayTargetPayload(options) {
             computed_at_ms: computedAtMs,
             computed_at_us: formatEtDateTime(computedAtMs),
             computed_at_cn: formatCnDateTime(computedAtMs),
+            workflow: workflowGuide,
             summary: {
                 total: 0,
                 active_count: 0,
@@ -699,6 +844,12 @@ function buildTodayTargetPayload(options) {
         const attentionState = resolveAttentionState(row)
         row.attention_state = attentionState.state
         row.attention_rank = attentionState.rank
+        const workflowMeta = buildWorkflowMeta(row)
+        row.workflow_stage = workflowMeta.stage
+        row.workflow_label = workflowMeta.label
+        row.workflow_summary = workflowMeta.summary
+        row.workflow_blockers = workflowMeta.blockers
+        row.workflow_next_action = workflowMeta.next_action
         if (targetStatus === "active") activeCount += 1
         if (targetStatus === "candidate") candidateCount += 1
         if (row.is_operable) operableCount += 1
@@ -732,6 +883,7 @@ function buildTodayTargetPayload(options) {
         computed_at_ms: computedAtMs,
         computed_at_us: formatEtDateTime(computedAtMs),
         computed_at_cn: formatCnDateTime(computedAtMs),
+        workflow: workflowGuide,
         summary: {
             total: items.length,
             active_count: activeCount,

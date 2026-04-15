@@ -55,11 +55,39 @@ bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh
 bash ai_assistant/ops/deploy/deploy_runtime_all.sh
 ```
 
+Deploy modes:
+
+- `scope`: keep the existing directory-level runtime sync behavior.
+- `files`: upload only the specified files and never apply `--delete`.
+- `package`: build a staging tarball locally, upload once, validate remotely, then apply in batch.
+- `auto`: pick `files` or `package` automatically from `--file` or `--diff`.
+
 Optional extension scopes:
 
 ```bash
 bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh --migrations
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --ops-tools --gateway-service
+```
+
+Small change, file-level publish:
+
+```bash
+bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh --mode files --file runtime/pocketbase/pb_hooks/ibkr_actions.pb.js
+bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_compute/src/ibkr_compute/api/app.py
+```
+
+Auto-pick mode from git diff:
+
+```bash
+bash ai_assistant/ops/deploy/deploy_runtime_all.sh --mode auto --diff HEAD~1..HEAD --plan-only
+bash ai_assistant/ops/deploy/deploy_runtime_all.sh --mode auto --diff HEAD~1..HEAD
+```
+
+Large change, package publish:
+
+```bash
+bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode package --diff HEAD~5..HEAD --ops-tools
+bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh --mode package --file runtime/pocketbase/pb_public/index.html --package-name pb-ui-refresh
 ```
 
 Remote cleanup:
@@ -80,3 +108,6 @@ bash ai_assistant/ops/ui/run_pb_playwright_smoke.sh
 - PocketBase runtime is only `pb_public` and `pb_hooks`.
 - IBKR Compute runtime is only `src`, `requirements.txt`, and the compute systemd unit.
 - Gateway binaries are not stored in this repo. Only the service contract is stored here.
+- `--mode auto` requires `--file` or `--diff`.
+- `--mode files` only supports add/modify changes. Delete or rename changes must use `--mode package`.
+- `--plan-only` prints the resolved units, files, checks, and restart actions without touching the remote host.

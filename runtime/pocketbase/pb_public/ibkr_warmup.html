@@ -438,8 +438,8 @@
         <section class="hero">
             <div class="hero-head">
                 <div>
-                    <div class="hero-kicker">Startup Warmup</div>
-                    <div class="hero-title">Warmup 预热进度</div>
+                    <div class="hero-kicker">Startup Warmup Snapshot</div>
+                    <div class="hero-title">Warmup 启动快照</div>
                     <div class="hero-copy" id="heroCopy">加载 warmup 状态中...</div>
                 </div>
                 <div class="hero-meta">
@@ -453,8 +453,8 @@
         <section class="metric-grid" id="metricGrid"></section>
         <section class="section">
             <div class="section-head">
-                <div class="section-title">启动状态</div>
-                <div class="section-copy">runtime / warmup / timeline</div>
+                <div class="section-title">启动状态与 Live Readiness</div>
+                <div class="section-copy">runtime / startup snapshot / live readiness</div>
             </div>
             <div class="section-body">
                 <div class="key-grid" id="startupGrid"></div>
@@ -463,7 +463,7 @@
         <section class="section">
             <div class="section-head">
                 <div class="section-title">预热修复</div>
-                <div class="section-copy">preflight repair / history fetch / remaining</div>
+                <div class="section-copy">startup snapshot · preflight repair / history fetch / remaining</div>
             </div>
             <div class="section-body">
                 <div class="detail-grid" id="repairGrid"></div>
@@ -473,14 +473,14 @@
         <section class="section">
             <div class="section-head">
                 <div class="section-title">完整性阻塞</div>
-                <div class="section-copy">integrity pending / repair reasons</div>
+                <div class="section-copy">startup snapshot · integrity pending / repair reasons</div>
             </div>
             <div class="section-body" id="integrityBody"></div>
         </section>
         <section class="section">
             <div class="section-head">
-                <div class="section-title">Symbol 状态</div>
-                <div class="section-copy">role / ready / integrity / last bar</div>
+                <div class="section-title">Symbol 状态快照</div>
+                <div class="section-copy">startup snapshot · role / ready / integrity / last bar</div>
             </div>
             <div class="section-body">
                 <div class="filters">
@@ -654,23 +654,63 @@
                 }
             };
         }
-        function renderHero(status, warmup) {
+        function normalizeLiveReadiness(status, warmup) {
+            const live = status && typeof status.live_readiness === 'object' && status.live_readiness ? status.live_readiness : {};
+            return {
+                available: Boolean(live.available),
+                engine_snapshot_available: Boolean(live.engine_snapshot_available),
+                phase: String(live.phase || 'idle').trim().toLowerCase() || 'idle',
+                gate_open: Boolean(live.gate_open),
+                gate_reason: String(live.gate_reason || '').trim() || '--',
+                required_interval: String(live.required_interval || warmup.required_interval || '5m').trim() || '5m',
+                symbols_total: Number(live.symbols_total || 0) || 0,
+                trade_symbols_total: Number(live.trade_symbols_total || 0) || 0,
+                monitor_symbols_total: Number(live.monitor_symbols_total || 0) || 0,
+                ready_symbols: Number(live.ready_symbols || 0) || 0,
+                ready_trade_symbols: Number(live.ready_trade_symbols || 0) || 0,
+                ready_monitor_symbols: Number(live.ready_monitor_symbols || 0) || 0,
+                pending_symbols_total: Number(live.pending_symbols_total || 0) || 0,
+                snapshot_differs: Boolean(live.snapshot_differs),
+                snapshot_phase: String(live.snapshot_phase || warmup.phase || 'idle').trim().toLowerCase() || 'idle',
+                snapshot_finished_at: live.snapshot_finished_at || warmup.finished_at || '',
+                computed_at: live.computed_at || ''
+            };
+        }
+        function renderHero(status, warmup, live) {
             const runtimePhase = String(status?.runtime_phase || 'unknown').trim().toLowerCase() || 'unknown';
             const runtimeTone = getRuntimeTone(status);
             const warmupTone = warmup.last_error ? 'error' : getToneByPhase(warmup.phase);
-            const gateTone = warmup.gate_open ? 'ok' : (warmup.phase === 'idle' ? 'muted' : 'warn');
+            const liveTone = live.available ? getToneByPhase(live.phase) : 'muted';
+            const gateOpen = live.available ? live.gate_open : warmup.gate_open;
+            const gateTone = gateOpen ? 'ok' : ((live.available ? live.phase : warmup.phase) === 'idle' ? 'muted' : 'warn');
             document.getElementById('heroChips').innerHTML = [
                 renderChip(`Runtime ${runtimePhase.toUpperCase()}`, runtimeTone),
                 renderChip(`Startup ${status?.startup_complete ? 'COMPLETE' : (status?.starting ? 'RUNNING' : 'WAITING')}`, runtimeTone),
-                renderChip(`Warmup ${String(warmup.phase || 'idle').toUpperCase()}`, warmupTone),
-                renderChip(`Gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'}`, gateTone),
+                renderChip(`Snapshot ${String(warmup.phase || 'idle').toUpperCase()}`, warmupTone),
+                renderChip(
+                    live.available
+                        ? `Live ${live.ready_symbols}/${live.symbols_total}`
+                        : `Live ${live.engine_snapshot_available ? 'WAITING' : 'N/A'}`,
+                    liveTone
+                ),
+                renderChip(`Gate ${gateOpen ? 'OPEN' : 'CLOSED'}`, gateTone),
                 renderChip(`Env ${String(currentEnvironment).toUpperCase()}`, 'muted')
             ].join('');
-            document.getElementById('heroCopy').textContent = warmup.last_error
-                ? `Warmup 最近一次失败原因：${warmup.last_error}`
-                : '展示 startup warmup、预热修复、完整性阻塞和 symbol 就绪情况，自动每 15 秒刷新。';
+            if (live.available && live.snapshot_differs) {
+                document.getElementById('heroCopy').textContent =
+                    `当前 live readiness 为 ${live.ready_symbols}/${live.symbols_total}，与 startup warmup 快照 ${warmup.ready_symbols}/${warmup.symbols_total} 不一致。顶部指标优先展示当前 live 状态，下方 repair 和 symbol 表仍是 startup snapshot。`;
+            } else if (warmup.last_error) {
+                document.getElementById('heroCopy').textContent = `Warmup 最近一次失败原因：${warmup.last_error}`;
+            } else if (live.available) {
+                document.getElementById('heroCopy').textContent =
+                    `同时展示当前 live readiness 和 startup warmup snapshot，避免把启动期快照误判为当前实时状态，自动每 15 秒刷新。`;
+            } else {
+                document.getElementById('heroCopy').textContent =
+                    '展示 startup warmup snapshot、预热修复、完整性阻塞和 symbol 就绪情况；live readiness 暂不可用时会保留启动期快照。';
+            }
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
-            document.getElementById('sourceInfo').textContent = `来源 /api/custom/ibkr/statusz?warmup=1 · ${status?.warmup_details_included ? 'warmup full' : 'warmup lite'}`;
+            document.getElementById('sourceInfo').textContent =
+                `来源 /api/custom/ibkr/statusz?warmup=1 · ${status?.warmup_details_included ? 'warmup full' : 'warmup lite'} · live readiness derived`;
         }
         function renderMetricCard(card) {
             return `
@@ -682,45 +722,102 @@
                 </div>
             `;
         }
-        function renderMetrics(status, warmup) {
-            const cards = [
-                {
-                    label: 'Overall Ready',
+        function renderMetrics(status, warmup, live) {
+            const cards = [];
+            cards.push({
+                label: live.available ? 'Live Overall Ready' : 'Snapshot Overall Ready',
+                value: live.available
+                    ? `${live.ready_symbols} / ${live.symbols_total}`
+                    : `${warmup.ready_symbols} / ${warmup.symbols_total}`,
+                progress: progressPct(
+                    live.available ? live.ready_symbols : warmup.ready_symbols,
+                    live.available ? live.symbols_total : warmup.symbols_total
+                ),
+                copy: live.available
+                    ? `phase ${String(live.phase || 'idle').toUpperCase()} · interval ${live.required_interval}`
+                    : `phase ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
+                tone: live.available
+                    ? getToneByPhase(live.phase)
+                    : (warmup.last_error ? 'error' : (warmup.ready_symbols >= warmup.symbols_total && warmup.symbols_total > 0 ? 'ok' : 'warn'))
+            });
+            cards.push({
+                label: live.available ? 'Live Trade Ready' : 'Snapshot Trade Ready',
+                value: live.available
+                    ? `${live.ready_trade_symbols} / ${live.trade_symbols_total}`
+                    : `${warmup.ready_trade_symbols} / ${warmup.trade_symbols_total}`,
+                progress: progressPct(
+                    live.available ? live.ready_trade_symbols : warmup.ready_trade_symbols,
+                    live.available ? live.trade_symbols_total : warmup.trade_symbols_total
+                ),
+                copy: live.available
+                    ? `gate ${live.gate_open ? 'OPEN' : 'CLOSED'} · ${live.gate_reason}`
+                    : `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`,
+                tone: (live.available ? live.gate_open : warmup.gate_open) ? 'ok' : 'warn'
+            });
+            cards.push({
+                label: live.available ? 'Live Monitor Ready' : 'Snapshot Monitor Ready',
+                value: live.available
+                    ? `${live.ready_monitor_symbols} / ${live.monitor_symbols_total}`
+                    : `${warmup.ready_monitor_symbols} / ${warmup.monitor_symbols_total}`,
+                progress: progressPct(
+                    live.available ? live.ready_monitor_symbols : warmup.ready_monitor_symbols,
+                    live.available ? live.monitor_symbols_total : warmup.monitor_symbols_total
+                ),
+                copy: live.available
+                    ? `pending ${live.pending_symbols_total} · derived from compute engines`
+                    : `interval ${warmup.required_interval} · reason ${warmup.reason}`,
+                tone: (live.available ? live.monitor_symbols_total > 0 && live.ready_monitor_symbols >= live.monitor_symbols_total : warmup.monitor_symbols_total > 0 && warmup.ready_monitor_symbols >= warmup.monitor_symbols_total) ? 'ok' : 'info'
+            });
+            if (live.available) {
+                cards.push({
+                    label: 'Startup Snapshot',
                     value: `${warmup.ready_symbols} / ${warmup.symbols_total}`,
                     progress: progressPct(warmup.ready_symbols, warmup.symbols_total),
-                    copy: `phase ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
-                    tone: warmup.last_error ? 'error' : (warmup.ready_symbols >= warmup.symbols_total && warmup.symbols_total > 0 ? 'ok' : 'warn')
-                },
-                {
-                    label: 'Trade Ready',
-                    value: `${warmup.ready_trade_symbols} / ${warmup.trade_symbols_total}`,
-                    progress: progressPct(warmup.ready_trade_symbols, warmup.trade_symbols_total),
-                    copy: `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`,
-                    tone: warmup.gate_open ? 'ok' : 'warn'
-                },
-                {
-                    label: 'Monitor Ready',
-                    value: `${warmup.ready_monitor_symbols} / ${warmup.monitor_symbols_total}`,
-                    progress: progressPct(warmup.ready_monitor_symbols, warmup.monitor_symbols_total),
-                    copy: `interval ${warmup.required_interval} · reason ${warmup.reason}`,
-                    tone: warmup.monitor_symbols_total > 0 && warmup.ready_monitor_symbols >= warmup.monitor_symbols_total ? 'ok' : 'info'
-                },
-                {
-                    label: 'Runtime',
-                    value: String(status?.runtime_phase || 'unknown').toUpperCase(),
-                    progress: status?.startup_complete ? 100 : (status?.starting ? 55 : 0),
-                    copy: `starting ${status?.starting ? 'YES' : 'NO'} · startup_complete ${status?.startup_complete ? 'YES' : 'NO'}`,
-                    tone: getRuntimeTone(status)
-                }
-            ];
+                    copy: live.snapshot_differs
+                        ? `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · differs from live`
+                        : `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
+                    tone: live.snapshot_differs
+                        ? 'warn'
+                        : (warmup.last_error ? 'error' : getToneByPhase(warmup.phase))
+                });
+            }
+            cards.push({
+                label: 'Runtime',
+                value: String(status?.runtime_phase || 'unknown').toUpperCase(),
+                progress: status?.startup_complete ? 100 : (status?.starting ? 55 : 0),
+                copy: `starting ${status?.starting ? 'YES' : 'NO'} · startup_complete ${status?.startup_complete ? 'YES' : 'NO'}`,
+                tone: getRuntimeTone(status)
+            });
             document.getElementById('metricGrid').innerHTML = cards.map(renderMetricCard).join('');
         }
-        function renderStartupGrid(status, warmup) {
+        function renderStartupGrid(status, warmup, live) {
             const items = [
                 ['Runtime Phase', String(status?.runtime_phase || 'unknown').toUpperCase(), `requested env ${String(currentEnvironment).toUpperCase()}`, getRuntimeTone(status)],
                 ['Starting', status?.starting ? 'YES' : 'NO', 'runtime start flag', status?.starting ? 'warn' : 'info'],
                 ['Startup Complete', status?.startup_complete ? 'YES' : 'NO', status?.startup_complete ? 'service ready' : 'still warming', status?.startup_complete ? 'ok' : 'warn'],
-                ['Warmup Phase', String(warmup.phase || 'idle').toUpperCase(), `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`, warmup.last_error ? 'error' : getToneByPhase(warmup.phase)],
+                ['Warmup Snapshot', String(warmup.phase || 'idle').toUpperCase(), `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`, warmup.last_error ? 'error' : getToneByPhase(warmup.phase)],
+                [
+                    'Current Live',
+                    live.available ? `${live.ready_symbols} / ${live.symbols_total}` : 'UNAVAILABLE',
+                    live.available
+                        ? `phase ${String(live.phase || 'idle').toUpperCase()} · interval ${live.required_interval}`
+                        : (live.engine_snapshot_available ? 'live engine snapshot still warming' : 'compute engine snapshot unavailable'),
+                    live.available ? getToneByPhase(live.phase) : 'muted'
+                ],
+                [
+                    'Live Gate',
+                    live.available ? (live.gate_open ? 'OPEN' : 'CLOSED') : '--',
+                    live.available ? live.gate_reason : 'waiting for live engine readiness',
+                    live.available ? (live.gate_open ? 'ok' : 'warn') : 'muted'
+                ],
+                [
+                    'Snapshot Drift',
+                    live.available ? (live.snapshot_differs ? 'YES' : 'NO') : '--',
+                    live.available
+                        ? (live.snapshot_differs ? `snapshot ${warmup.ready_symbols}/${warmup.symbols_total} differs from live` : 'snapshot matches live counts')
+                        : 'live readiness unavailable',
+                    live.available ? (live.snapshot_differs ? 'warn' : 'ok') : 'muted'
+                ],
                 ['Trigger Reason', warmup.reason, `target date ${warmup.target_date}`, 'info'],
                 ['Required Interval', warmup.required_interval, `${warmup.symbols_total} total symbols`, 'info'],
                 ['Requested At', formatTimeLabel(warmup.requested_at), formatAgoFromIso(warmup.requested_at), 'muted'],
@@ -844,7 +941,7 @@
             const rows = Array.isArray(warmup.symbol_status) ? warmup.symbol_status : [];
             const filtered = getFilteredSymbolStatus(warmup);
             const blockedCount = rows.filter((item) => !item?.ready || !item?.integrity_ready).length;
-            document.getElementById('symbolSummary').textContent = `全部 ${rows.length} · blocked ${blockedCount} · 当前筛选 ${filtered.length}`;
+            document.getElementById('symbolSummary').textContent = `startup snapshot 全部 ${rows.length} · blocked ${blockedCount} · 当前筛选 ${filtered.length}`;
             if (!filtered.length) {
                 document.getElementById('symbolTableBody').innerHTML = '<tr><td colspan="7" class="empty-state">当前筛选下没有 symbol</td></tr>';
                 return;
@@ -882,10 +979,11 @@
         }
         function renderAll(status) {
             const warmup = normalizeWarmup(status);
+            const live = normalizeLiveReadiness(status, warmup);
             lastStatusPayload = status;
-            renderHero(status, warmup);
-            renderMetrics(status, warmup);
-            renderStartupGrid(status, warmup);
+            renderHero(status, warmup, live);
+            renderMetrics(status, warmup, live);
+            renderStartupGrid(status, warmup, live);
             renderRepairSection(warmup);
             renderIntegritySection(warmup);
             renderSymbolTable(warmup);

@@ -536,6 +536,15 @@
             }
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         function renderStatusPill(status) {
             const normalized = String(status?.status || 'idle').toLowerCase();
             const pill = document.getElementById('statusPill');

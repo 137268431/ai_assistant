@@ -5,7 +5,12 @@ from datetime import datetime, timedelta, timezone
 
 from ibkr_compute.api.market.screener.coercion import coerce_float, coerce_int, parse_json_object
 from ibkr_compute.api.market.screener.runtime import get_api_app
-from ibkr_compute.api.market.screener.scoring import build_tradability_assessment
+from ibkr_compute.api.market.screener.scoring import (
+    TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN,
+    TRADABILITY_OPERABLE_MIN_AVG_10D_VOLUME,
+    TRADABILITY_OPERABLE_MIN_SCORE,
+    build_tradability_assessment,
+)
 from ibkr_compute.api.market.screener.watchlist import load_effective_watchlist
 
 
@@ -296,10 +301,10 @@ def build_screener_payload(
         row["is_operable"] = bool(
             row["has_live_bar"]
             and row["price"] > 0
-            and row["avg_10d_volume"] >= 500_000
-            and row["tradability_score"] >= 60
+            and row["avg_10d_volume"] >= TRADABILITY_OPERABLE_MIN_AVG_10D_VOLUME
+            and row["tradability_score"] >= TRADABILITY_OPERABLE_MIN_SCORE
             and isinstance(row["freshness_min"], int)
-            and row["freshness_min"] <= 90
+            and row["freshness_min"] <= TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN
         )
         items.append(row)
 

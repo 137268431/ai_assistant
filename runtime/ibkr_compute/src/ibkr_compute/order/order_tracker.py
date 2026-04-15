@@ -914,8 +914,8 @@ class OrderTracker:
             "idle_poll_interval_s": self._idle_poll_interval(),
             "fast_track_window_s": self._fast_track_window(),
             "live_update_count": self._live_update_count,
-            "last_poll": datetime.fromtimestamp(self._last_poll).isoformat()
+            "last_poll": datetime.fromtimestamp(self._last_poll, timezone.utc).isoformat()
             if self._last_poll else None,
-            "last_live_update": datetime.fromtimestamp(self._last_live_update).isoformat()
+            "last_live_update": datetime.fromtimestamp(self._last_live_update, timezone.utc).isoformat()
             if self._last_live_update else None,
         }

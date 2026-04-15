@@ -252,6 +252,131 @@
             line-height: 1.5;
         }
 
+        .rules-summary {
+            display: grid;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .rules-panel {
+            padding: 12px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: linear-gradient(180deg, rgba(17,24,39,0.92), rgba(9,14,24,0.98));
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+            display: grid;
+            gap: 12px;
+        }
+
+        .rules-panel-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .rules-panel-kicker,
+        .rules-section-label {
+            font-size: 10px;
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+        }
+
+        .rules-panel-title {
+            margin-top: 4px;
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.3;
+        }
+
+        .rules-panel-subtitle,
+        .rules-section-copy,
+        .rules-panel-footer,
+        .rules-empty {
+            font-size: 11px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .rules-panel-link {
+            padding: 8px 11px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background: rgba(99,179,237,0.08);
+            color: var(--text);
+            text-decoration: none;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
+        .rules-chip-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+        }
+
+        .rules-chip {
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.03);
+        }
+
+        .rules-chip-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .rules-chip-value {
+            margin-top: 8px;
+            font-size: 20px;
+            line-height: 1.1;
+            font-weight: 700;
+            color: var(--text);
+            word-break: break-word;
+        }
+
+        .rules-chip-copy {
+            margin-top: 6px;
+            font-size: 11px;
+            line-height: 1.45;
+            color: var(--muted);
+        }
+
+        .rules-section-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .rules-line {
+            position: relative;
+            padding-left: 14px;
+            font-size: 12px;
+            line-height: 1.55;
+            color: var(--text);
+        }
+
+        .rules-line::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 7px;
+            width: 6px;
+            height: 6px;
+            border-radius: 999px;
+            background: #63B3ED;
+            box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+        }
+
         .target-focus-shell {
             display: grid;
             gap: 12px;
@@ -1076,6 +1201,7 @@
         </div>
         <div id="filterNote"></div>
         <div id="latencySummary" class="latency-summary"></div>
+        <div id="rulesSummary" class="rules-summary"></div>
         <div id="currentTargetShell" class="target-focus-shell"></div>
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
@@ -1131,6 +1257,8 @@
         // Signal validity configuration (from config table, default 30 minutes)
         let signalValidityMinutes = 30;
         let realtimeLatencySnapshot = null;
+        let rulesSummarySnapshot = { signals: null, computed_at_us: '' };
+        let rulesSummaryError = '';
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const configValueCache = {};
 
@@ -1254,6 +1382,21 @@
             return String(value || '')
                 .replace(/\\/g, '\\\\')
                 .replace(/"/g, '\\"');
+        }
+
+        function formatNumber(value, digits = 0) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            return num.toLocaleString('en-US', {
+                minimumFractionDigits: digits,
+                maximumFractionDigits: digits,
+            });
+        }
+
+        function formatPrice(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num <= 0) return '--';
+            return `$${formatNumber(num, 2)}`;
         }
 
         function normalizeChartInterval(value, fallback = '5m') {
@@ -1562,7 +1705,7 @@
                         <div>
                             <div class="target-focus-kicker">Focus List</div>
                             <div class="target-focus-title">当前标的关注列表</div>
-                            <div class="target-focus-copy">优先显示 awaiting_confirm / pending，其次显示 ready 但尚未出信号。</div>
+                            <div class="target-focus-copy">优先显示 awaiting_confirm / pending，其次显示 ready 但尚未出信号；盘中按 5m close 刷新阶段。</div>
                         </div>
                         <a class="target-focus-link" href="${screenerUrl}">切到榜单</a>
                     </div>
@@ -1585,7 +1728,8 @@
                                             ${buildCurrentTargetPills(row)}
                                         </div>
                                         <div class="target-focus-meta">target ${escapeHtml(String(row.target_status || '--'))} · tradability ${escapeHtml(String(row.tradability_score || 0))} · count ${escapeHtml(String(row.signal_count_today || 0))}</div>
-                                        <div class="target-focus-meta">${escapeHtml(row.scan_reason || row.note || '--')}</div>
+                                        <div class="target-focus-meta">${escapeHtml(row.workflow_label || '观察中')} · ${escapeHtml(row.workflow_summary || row.scan_reason || row.note || '--')}</div>
+                                        <div class="target-focus-meta">下一步: ${escapeHtml(row.workflow_next_action || '继续观察')}</div>
                                         <div class="target-focus-actions">
                                             <a class="target-focus-link" href="${signalUrl}">信号</a>
                                             <a class="target-focus-link" href="${indicatorUrl}">指标</a>
@@ -1671,6 +1815,86 @@
             `;
         }
 
+        function renderRulesPanelHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
+            const chips = Array.isArray(panel?.chips) ? panel.chips : [];
+            const sections = Array.isArray(panel?.sections) ? panel.sections : [];
+            const footer = rulesSummarySnapshot.computed_at_us ? `更新: ${rulesSummarySnapshot.computed_at_us}` : '';
+            return `
+                <section class="rules-panel">
+                    <div class="rules-panel-head">
+                        <div>
+                            <div class="rules-panel-kicker">Rules Snapshot</div>
+                            <div class="rules-panel-title">${escapeHtml(panel?.title || '当前信号规则')}</div>
+                            <div class="rules-panel-subtitle">${escapeHtml(panel?.subtitle || '页面文案直接来自当前 compute 逻辑与 runtime 配置。')}</div>
+                        </div>
+                        ${actionHref && actionLabel ? `<a class="rules-panel-link" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
+                    </div>
+                    ${chips.length ? `
+                        <div class="rules-chip-grid">
+                            ${chips.map((chip) => `
+                                <article class="rules-chip">
+                                    <div class="rules-chip-label">${escapeHtml(chip.label || '--')}</div>
+                                    <div class="rules-chip-value">${escapeHtml(String(chip.value || '--'))}</div>
+                                    <div class="rules-chip-copy">${escapeHtml(chip.copy || '--')}</div>
+                                </article>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+                    ${sections.map((section) => `
+                        <article class="rules-section">
+                            <div class="rules-section-label">${escapeHtml(section.title || '--')}</div>
+                            ${section.copy ? `<div class="rules-section-copy">${escapeHtml(section.copy)}</div>` : ''}
+                            <div class="rules-section-list">
+                                ${(Array.isArray(section.lines) ? section.lines : []).map((line) => `
+                                    <div class="rules-line">${escapeHtml(line)}</div>
+                                `).join('')}
+                            </div>
+                        </article>
+                    `).join('')}
+                    ${footer ? `<div class="rules-panel-footer">${escapeHtml(footer)}</div>` : ''}
+                </section>
+            `;
+        }
+
+        function renderRulesSummary() {
+            const mount = document.getElementById('rulesSummary');
+            if (!mount) return;
+            const marketDate = currentTargetSnapshot.market_date || currentDate;
+            if (rulesSummarySnapshot?.signals) {
+                mount.innerHTML = renderRulesPanelHtml(rulesSummarySnapshot.signals, {
+                    actionHref: buildPageUrl('/ibkr_screener.html', {
+                        tab: 'screener',
+                        view: 'current',
+                        market_date: marketDate,
+                    }, { environment: currentEnvironment }),
+                    actionLabel: '当前标的榜'
+                });
+                return;
+            }
+            mount.innerHTML = `
+                <section class="rules-panel">
+                    <div class="rules-panel-kicker">Rules Snapshot</div>
+                    <div class="rules-panel-title">规则摘要加载中</div>
+                    <div class="rules-empty">${escapeHtml(rulesSummaryError || '正在读取当前 signal 结构、时间窗口和仓位参数。')}</div>
+                </section>
+            `;
+        }
+
+        async function loadRulesSummarySnapshot() {
+            rulesSummaryError = '';
+            renderRulesSummary();
+            try {
+                rulesSummarySnapshot = await requestCustomJson(
+                    buildPageUrl('/api/custom/ibkr/rules', {}, { environment: currentEnvironment })
+                );
+            } catch (error) {
+                console.error('加载规则摘要失败:', error);
+                rulesSummarySnapshot = { signals: null, computed_at_us: '' };
+                rulesSummaryError = error.message || String(error);
+            }
+            renderRulesSummary();
+        }
+
         async function loadCurrentTargetSnapshot(requestId = 0) {
             const marketDate = currentDate || new Intl.DateTimeFormat('en-CA', {
                 timeZone: 'America/New_York',
@@ -1698,6 +1922,7 @@
                 currentTargetSnapshot = { items: [], summary: {}, market_date: marketDate };
             }
             if (requestId && requestId !== currentSignalsRequestId) return;
+            renderRulesSummary();
             renderCurrentTargetShell();
         }
 
@@ -1792,6 +2017,7 @@
             currentPage = 1;
 
             try {
+                const rulesPromise = loadRulesSummarySnapshot();
                 // Load signal validity configuration from config table
                 try {
                     const configValue = await loadConfigValue('signal_validity_minutes', '30');
@@ -1858,6 +2084,7 @@
 
                 renderFilterNote();
                 renderLatencySummary();
+                await rulesPromise;
                 renderSignals();
                 updateLoadMoreButton();
                 loadCurrentTargetSnapshot(requestId)
@@ -3000,6 +3227,7 @@
                 }
             ]);
             renderCurrentTargetShell();
+            renderRulesSummary();
 
             await loadSignals({ refreshCounts: true, showLoadingState: true });
 

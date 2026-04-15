@@ -6,6 +6,7 @@ from ibkr_compute.api.market.data_views import (
     build_ibkr_ingest_close_response,
     build_ibkr_quotes_response,
 )
+from ibkr_compute.api.market.rules_views import build_rules_response
 from ibkr_compute.api.market.screener_views import build_screener_response
 
 
@@ -29,3 +30,7 @@ def register_market_routes(app):
     @app.route("/screener", methods=["GET"])
     def screener():
         return build_screener_response()
+
+    @app.route("/ibkr/rules", methods=["GET"])
+    def ibkr_rules():
+        return build_rules_response()

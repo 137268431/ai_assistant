@@ -13,6 +13,65 @@ TODO P4: 完整实现评分逻辑
 from ibkr_compute.integrations.pb_client import PBClient
 
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
+DAILY_SCAN_PRIMARY_WEIGHT = 2
+DAILY_SCAN_SECONDARY_WEIGHT = 1
+DAILY_SCAN_READY_TIMEFRAME_BONUS = 1
+
+DAILY_SCAN_LONG_PRIMARY_RULES = (
+    ("trend_dir", 1, "trend_dir=1"),
+    ("dtp_dir", 1, "dtp_dir=1"),
+    ("ema_bullish", True, "ema_bullish=true"),
+)
+DAILY_SCAN_SHORT_PRIMARY_RULES = (
+    ("trend_dir", -1, "trend_dir=-1"),
+    ("dtp_dir", -1, "dtp_dir=-1"),
+    ("ema_bearish", True, "ema_bearish=true"),
+)
+DAILY_SCAN_LONG_SECONDARY_RULES = (
+    ("fractal_bull", True, "fractal_bull=true"),
+    ("crsi_os", True, "crsi_os=true"),
+    ("sd_lower", True, "sd_lower=true"),
+)
+DAILY_SCAN_SHORT_SECONDARY_RULES = (
+    ("fractal_bear", True, "fractal_bear=true"),
+    ("crsi_ob", True, "crsi_ob=true"),
+    ("sd_upper", True, "sd_upper=true"),
+)
+DAILY_SCAN_REASON_RULES = (
+    ("fractal_bull", "fractal_bull"),
+    ("fractal_bear", "fractal_bear"),
+    ("ema_bullish", "ema_bullish"),
+    ("ema_bearish", "ema_bearish"),
+    ("sd_lower", "sd_lower"),
+    ("sd_upper", "sd_upper"),
+)
+
+
+def _daily_scan_rule_matches(snapshot: dict, rule: tuple[str, object, str]) -> bool:
+    key, expected, _ = rule
+    value = snapshot.get(key)
+    if isinstance(expected, bool):
+        return bool(value) is expected
+    return value == expected
+
+
+def _daily_scan_matches_any(snapshot: dict, rules) -> bool:
+    return any(_daily_scan_rule_matches(snapshot, rule) for rule in rules)
+
+
+def build_daily_scan_rule_summary() -> dict:
+    return {
+        "primary_weight": DAILY_SCAN_PRIMARY_WEIGHT,
+        "secondary_weight": DAILY_SCAN_SECONDARY_WEIGHT,
+        "ready_timeframe_bonus": DAILY_SCAN_READY_TIMEFRAME_BONUS,
+        "long_primary": [label for _, _, label in DAILY_SCAN_LONG_PRIMARY_RULES],
+        "short_primary": [label for _, _, label in DAILY_SCAN_SHORT_PRIMARY_RULES],
+        "long_secondary": [label for _, _, label in DAILY_SCAN_LONG_SECONDARY_RULES],
+        "short_secondary": [label for _, _, label in DAILY_SCAN_SHORT_SECONDARY_RULES],
+        "tie_behavior": "long_votes == short_votes => direction_bias=neutral, score=0",
+        "final_bonus": "direction_bias 非 neutral 时额外加上 ready_timeframes_count",
+        "reason_fields": [label for _, label in DAILY_SCAN_REASON_RULES],
+    }
 
 
 class DailyScanner:
@@ -84,43 +143,23 @@ class DailyScanner:
             if not isinstance(snapshot, dict):
                 continue
 
-            trend_dir = snapshot.get("trend_dir")
-            dtp_dir = snapshot.get("dtp_dir")
-            ema_bullish = bool(snapshot.get("ema_bullish"))
-            ema_bearish = bool(snapshot.get("ema_bearish"))
-            fractal_bull = bool(snapshot.get("fractal_bull"))
-            fractal_bear = bool(snapshot.get("fractal_bear"))
-            crsi_os = bool(snapshot.get("crsi_os"))
-            crsi_ob = bool(snapshot.get("crsi_ob"))
-            sd_lower = bool(snapshot.get("sd_lower"))
-            sd_upper = bool(snapshot.get("sd_upper"))
-
-            if trend_dir == 1 or dtp_dir == 1 or ema_bullish:
+            if _daily_scan_matches_any(snapshot, DAILY_SCAN_LONG_PRIMARY_RULES):
                 long_votes += 1
-                score += 2
-            if trend_dir == -1 or dtp_dir == -1 or ema_bearish:
+                score += DAILY_SCAN_PRIMARY_WEIGHT
+            if _daily_scan_matches_any(snapshot, DAILY_SCAN_SHORT_PRIMARY_RULES):
                 short_votes += 1
-                score += 2
+                score += DAILY_SCAN_PRIMARY_WEIGHT
 
-            if fractal_bull or crsi_os or sd_lower:
+            if _daily_scan_matches_any(snapshot, DAILY_SCAN_LONG_SECONDARY_RULES):
                 long_votes += 1
-                score += 1
-            if fractal_bear or crsi_ob or sd_upper:
+                score += DAILY_SCAN_SECONDARY_WEIGHT
+            if _daily_scan_matches_any(snapshot, DAILY_SCAN_SHORT_SECONDARY_RULES):
                 short_votes += 1
-                score += 1
+                score += DAILY_SCAN_SECONDARY_WEIGHT
 
-            if fractal_bull:
-                reasons.append(f"{tf}:fractal_bull")
-            if fractal_bear:
-                reasons.append(f"{tf}:fractal_bear")
-            if ema_bullish:
-                reasons.append(f"{tf}:ema_bullish")
-            if ema_bearish:
-                reasons.append(f"{tf}:ema_bearish")
-            if sd_lower:
-                reasons.append(f"{tf}:sd_lower")
-            if sd_upper:
-                reasons.append(f"{tf}:sd_upper")
+            for rule_key, rule_label in DAILY_SCAN_REASON_RULES:
+                if snapshot.get(rule_key):
+                    reasons.append(f"{tf}:{rule_label}")
 
         if long_votes == short_votes:
             direction_bias = "neutral"
@@ -142,7 +181,7 @@ class DailyScanner:
                 },
             }
 
-        score += len(snapshots)
+        score += len(snapshots) * DAILY_SCAN_READY_TIMEFRAME_BONUS
 
         return {
             "score": score,

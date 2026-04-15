@@ -1,4 +1,5 @@
 import os
+import logging
 
 from flask import Flask
 
@@ -20,6 +21,7 @@ from ibkr_compute.api.app_routes import register_api_routes
 
 
 configure_api_logging()
+logger = logging.getLogger("ibkr_compute.api")
 register_canonical_module_alias(__name__, globals())
 apply_app_exports(globals())
 

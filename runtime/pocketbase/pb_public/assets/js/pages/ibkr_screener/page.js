@@ -3,6 +3,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     let activeScreenerView = 'current';
     let screenerPayload = { items: [], summary: {}, filters: {} };
     let todayTargetsPayload = { items: [], summary: {}, market_date: '' };
+    let rulesPayload = { selection: null, signals: null, computed_at_us: '' };
+    let rulesLoadError = '';
     let filteredRows = [];
     let filteredCurrentTargetRows = [];
     const selectedSymbols = new Set();
@@ -237,6 +239,100 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           <div class="summary-copy">${escapeHtml(item.copy)}</div>
         </div>
       `).join('');
+    }
+
+    function renderRulesCard(panel, { actionHref = '', actionLabel = '' } = {}) {
+      const chips = Array.isArray(panel?.chips) ? panel.chips : [];
+      const sections = Array.isArray(panel?.sections) ? panel.sections : [];
+      const footer = rulesPayload.computed_at_us ? `更新: ${rulesPayload.computed_at_us}` : '';
+      return `
+        <section class="panel rules-panel">
+          <div class="rules-panel-head">
+            <div>
+              <div class="rules-panel-kicker">Rules Snapshot</div>
+              <div class="rules-panel-title">${escapeHtml(panel?.title || '当前规则')}</div>
+              <div class="rules-panel-subtitle">${escapeHtml(panel?.subtitle || '当前页面直接显示运行中的规则摘要。')}</div>
+            </div>
+            ${actionHref && actionLabel ? `<a class="rules-panel-action" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
+          </div>
+          ${chips.length ? `
+            <div class="rules-chip-grid">
+              ${chips.map((chip) => `
+                <article class="rules-chip">
+                  <div class="rules-chip-label">${escapeHtml(chip.label || '--')}</div>
+                  <div class="rules-chip-value">${escapeHtml(String(chip.value || '--'))}</div>
+                  <div class="rules-chip-copy">${escapeHtml(chip.copy || '--')}</div>
+                </article>
+              `).join('')}
+            </div>
+          ` : ''}
+          ${sections.map((section) => `
+            <article class="rules-section">
+              <div class="rules-section-label">${escapeHtml(section.title || '--')}</div>
+              ${section.copy ? `<div class="rules-section-copy">${escapeHtml(section.copy)}</div>` : ''}
+              <div class="rules-section-list">
+                ${(Array.isArray(section.lines) ? section.lines : []).map((line) => `
+                  <div class="rules-line">${escapeHtml(line)}</div>
+                `).join('')}
+              </div>
+            </article>
+          `).join('')}
+          ${footer ? `<div class="rules-footer">${escapeHtml(footer)}</div>` : ''}
+        </section>
+      `;
+    }
+
+    function renderRulesBoard() {
+      const mount = document.getElementById('rulesBoard');
+      if (!mount) return;
+      const marketDate = todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate')?.value || getUsDate();
+      const cards = [];
+      if (rulesPayload?.selection) {
+        cards.push(renderRulesCard(rulesPayload.selection, {
+          actionHref: buildPageUrl('/ibkr_screener.html', {
+            tab: 'screener',
+            view: activeScreenerView,
+            market_date: marketDate,
+          }, { environment: currentEnvironment }),
+          actionLabel: '当前榜单'
+        }));
+      }
+      if (rulesPayload?.signals) {
+        cards.push(renderRulesCard(rulesPayload.signals, {
+          actionHref: buildPageUrl('/ibkr_signals.html', {
+            date: marketDate,
+          }, { environment: currentEnvironment }),
+          actionLabel: '打开信号页'
+        }));
+      }
+
+      if (cards.length) {
+        mount.innerHTML = cards.join('');
+        return;
+      }
+
+      mount.innerHTML = `
+        <section class="panel rules-panel">
+          <div class="rules-panel-kicker">Rules Snapshot</div>
+          <div class="rules-panel-title">规则摘要加载中</div>
+          <div class="rules-empty">${escapeHtml(rulesLoadError || '正在读取当前 compute 逻辑与 runtime 配置。')}</div>
+        </section>
+      `;
+    }
+
+    async function loadRulesSummary() {
+      rulesLoadError = '';
+      renderRulesBoard();
+      try {
+        rulesPayload = await requestJson(`/api/custom/ibkr/rules${buildQuery({
+          environment: currentEnvironment
+        })}`);
+      } catch (error) {
+        console.error('loadRulesSummary failed:', error);
+        rulesPayload = { selection: null, signals: null, computed_at_us: '' };
+        rulesLoadError = error.message || String(error);
+      }
+      renderRulesBoard();
     }
 
     function renderScreenerSummary() {
@@ -689,8 +785,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const metaSecondary = document.getElementById('currentTargetsMetaSecondary');
       const jumpLink = document.getElementById('todayTargetsJumpLink');
       const marketDate = todayTargetsPayload.market_date || document.getElementById('marketDate').value || getUsDate();
-      jumpLink.href = buildPageUrl('/ibkr_screener.html', {
-        tab: 'targets',
+      const workflow = todayTargetsPayload.workflow || {};
+      jumpLink.href = workflow.primary_view_url || buildPageUrl('/ibkr_screener.html', {
+        tab: 'screener',
+        view: 'current',
         date: marketDate,
         market_date: marketDate,
       }, { environment: currentEnvironment });
@@ -701,7 +799,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
       const signaledCount = rows.filter((row) => row.has_signal_today).length;
       meta.textContent = `交易日 ${marketDate} · 可见 ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · needs action ${needsActionCount} · 全量 ${summary.total || 0}`;
-      metaSecondary.textContent = `当前榜单按 attention_rank 排序：先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
+      metaSecondary.textContent = `${workflow.scan_summary_time_et || '05:55'} ET 日筛先产出 candidate / active，${workflow.open_check_time_et || '09:20'} ET 盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新；当前排序先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
 
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前条件下没有符合的标的。</td></tr>';
@@ -755,6 +853,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 <div class="reason-copy">${escapeHtml(row.scan_reason || row.note || '--')}</div>
               </div>
               <div class="reason-block" style="margin-top:10px;">
+                <div class="reason-label">当前阶段</div>
+                <div class="reason-copy"><strong>${escapeHtml(row.workflow_label || formatCurrentStateLabel(row.workflow_stage || row.attention_state || 'watch'))}</strong> · ${escapeHtml(row.workflow_summary || '--')}</div>
+              </div>
+              <div class="reason-block" style="margin-top:10px;">
+                <div class="reason-label">阶段阻塞</div>
+                ${buildFlagPills(row.workflow_blockers, '当前无明显阻塞')}
+              </div>
+              <div class="reason-block" style="margin-top:10px;">
+                <div class="reason-label">下一步</div>
+                <div class="reason-copy">${escapeHtml(row.workflow_next_action || '--')}</div>
+              </div>
+              <div class="reason-block" style="margin-top:10px;">
                 <div class="reason-label">可操作依据</div>
                 ${buildReasonPills(row)}
               </div>
@@ -781,8 +891,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             row.note,
             row.latest_signal_id,
             row.latest_signal_status,
+            row.workflow_label,
+            row.workflow_summary,
+            row.workflow_next_action,
             ...(Array.isArray(row.technical_flags) ? row.technical_flags : []),
             ...(Array.isArray(row.operable_reasons) ? row.operable_reasons : []),
+            ...(Array.isArray(row.workflow_blockers) ? row.workflow_blockers : []),
           ].join(' ').toUpperCase();
           if (!haystack.includes(filters.search)) return false;
         }
@@ -823,6 +937,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           items: items.map((row) => mergeTodayTargetRowWithRealtimeQuote(row)),
         };
         applyCurrentTargetFilters();
+        renderRulesBoard();
         if (showToastOnSuccess) showToast('今日交易标的已刷新');
       } catch (error) {
         todayTargetsPayload = { items: [], summary: {}, market_date: marketDate };
@@ -830,6 +945,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         document.getElementById('currentTargetsMeta').textContent = `加载失败: ${error.message || error}`;
         document.getElementById('currentTargetsMetaSecondary').textContent = '当前标的榜加载失败。';
         document.getElementById('currentTargetsTable').innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        renderRulesBoard();
         if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
       }
     }
@@ -1040,6 +1156,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
       try {
         showLoading('正在聚合筛选器数据...');
+        const rulesPromise = loadRulesSummary();
         const payload = await requestJson(`/api/custom/ibkr/screener${buildQuery({
           environment: currentEnvironment,
           market_date: marketDate
@@ -1061,7 +1178,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         populateSelect('targetStatusFilter', payload.filters && payload.filters.target_statuses);
         populateSelect('directionFilter', payload.filters && payload.filters.direction_biases);
         applyFilters();
+        await rulesPromise;
         await loadTodayTargets(false);
+        renderRulesBoard();
         if (activeTab === 'screener') updateHero();
         if (showToastOnSuccess) showToast('筛选器已刷新');
       } catch (error) {

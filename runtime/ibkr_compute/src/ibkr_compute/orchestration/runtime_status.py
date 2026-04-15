@@ -21,20 +21,43 @@ class TradingServiceRuntimeStatusMixin:
         compute_thread_alive = bool(self._compute_thread and self._compute_thread.is_alive())
         inflight = bool(last_started_at and last_started_at > last_run_at)
         inflight_age_s = round(max(0.0, now_ts - last_started_at), 1) if inflight else None
+        data_symbols = self._data_universe_symbols()
+        last_result = (
+            dict(self._last_realtime_compute_result)
+            if isinstance(self._last_realtime_compute_result, dict)
+            else {}
+        )
+        last_elapsed_s = round(max(0.0, float(last_result.get("elapsed_s", 0) or 0)), 1)
+        symbol_based_timeout_s = 120 + (max(1, len(data_symbols)) * 20)
+        historical_timeout_s = last_elapsed_s * 2 if last_elapsed_s > 0 else 0.0
+        inflight_timeout_threshold_s = int(
+            min(
+                3600,
+                max(
+                    900,
+                    symbol_based_timeout_s,
+                    historical_timeout_s,
+                ),
+            )
+        )
         lag_since_last_run_s = 0.0
         if last_bar_close_at and last_run_at and last_bar_close_at > last_run_at:
             lag_since_last_run_s = round(max(0.0, last_bar_close_at - last_run_at), 1)
 
         stalled = False
         stall_reason = ""
-        if queue_size > 0 and not self._starting:
-            if not compute_thread_alive:
+        if not self._starting:
+            if (queue_size > 0 or inflight) and not compute_thread_alive:
                 stalled = True
                 stall_reason = "thread_dead"
-            elif inflight and inflight_age_s is not None and inflight_age_s >= 300:
+            elif (
+                inflight
+                and inflight_age_s is not None
+                and inflight_age_s >= inflight_timeout_threshold_s
+            ):
                 stalled = True
                 stall_reason = "inflight_timeout"
-            elif lag_since_last_run_s >= 600:
+            elif queue_size > 0 and lag_since_last_run_s >= 600:
                 stalled = True
                 stall_reason = "lagging"
 
@@ -48,7 +71,6 @@ class TradingServiceRuntimeStatusMixin:
         realtime_quotes = self.realtime_quote_book.status()
         warmup_state = self._copy_warmup_state()
         daily_scan_state = self._copy_daily_scan_state()
-        data_symbols = self._data_universe_symbols()
         scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
         market_ws_symbols = self._market_ws_symbols()
         blocking_canonical_pending_symbols = self._non_monitor_pending_symbols(
@@ -116,6 +138,7 @@ class TradingServiceRuntimeStatusMixin:
                 "thread_alive": compute_thread_alive,
                 "inflight": inflight,
                 "inflight_age_s": inflight_age_s,
+                "inflight_timeout_threshold_s": inflight_timeout_threshold_s,
                 "stalled": stalled,
                 "stall_reason": stall_reason,
                 "last_bar_close": (
@@ -131,7 +154,8 @@ class TradingServiceRuntimeStatusMixin:
                     if last_run_at else None
                 ),
                 "lag_since_last_run_s": lag_since_last_run_s,
-                "last_result": self._last_realtime_compute_result,
+                "last_elapsed_s": last_elapsed_s,
+                "last_result": last_result,
             },
             "interval_prime": self._copy_interval_prime_state(),
             "market_universe": {
@@ -181,6 +205,7 @@ class TradingServiceRuntimeStatusMixin:
                     ),
                     "stalled": stalled,
                     "stall_reason": stall_reason,
+                    "inflight_timeout_threshold_s": inflight_timeout_threshold_s,
                 },
                 "last_watchlist_refresh": (
                     datetime.fromtimestamp(self._last_watchlist_refresh_at, service_mod.ET).isoformat()

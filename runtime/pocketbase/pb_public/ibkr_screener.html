@@ -34,6 +34,7 @@
 
     <section id="screenerTab" class="tab-panel">
       <div class="panel-stack">
+        <div id="rulesBoard" class="rules-board"></div>
         <section class="panel">
           <div class="panel-title">当前操作视图</div>
           <div class="panel-copy">默认先看“当前标的榜”，盘中决定今天该盯谁、谁已经出信号；需要扩展到全标池时，再切到全量筛选。</div>
@@ -129,11 +130,11 @@
             <div class="table-header">
               <div class="leaderboard-meta" id="currentTargetsMeta">等待加载...</div>
               <div class="row-actions">
-                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=targets">打开今日 Targets</a>
+                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的榜</a>
                 <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
               </div>
             </div>
-            <div class="leaderboard-note" id="currentTargetsMetaSecondary">技术 ready 基于现有 `is_operable + 指标 flags`，今日信号状态来自同交易日 `ibkr_signals` 聚合。</div>
+            <div class="leaderboard-note" id="currentTargetsMetaSecondary">05:55 ET 日筛生成 candidate / active，09:20 ET 做盘前检查，盘中按 5m close 刷新技术与信号阶段。</div>
             <div class="table-wrap">
               <table>
                 <thead>

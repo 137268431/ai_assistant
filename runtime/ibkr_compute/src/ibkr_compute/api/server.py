@@ -4,6 +4,7 @@ Primary implementation now lives in ibkr_compute.api.app.
 """
 
 from .app import *  # noqa: F401,F403
+from .app import _run_internal_compute, _run_internal_scan  # noqa: F401
 
 
 if __name__ == "__main__":

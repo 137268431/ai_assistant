@@ -27,6 +27,23 @@ var SOURCE_LABELS = {
     manual: "手动"
 }
 
+function getLevelConfig(level) {
+    return LEVEL_CONFIG[String(level || "info").trim().toLowerCase()] || LEVEL_CONFIG.info
+}
+
+function resolveCardLevelConfig(level, options) {
+    var overrideLevel = String(options && options.template_level_override || "").trim().toLowerCase()
+    return getLevelConfig(overrideLevel || level)
+}
+
+function normalizeTargetChat(value) {
+    var normalized = String(value || "").trim().toLowerCase()
+    if (normalized === "system" || normalized === "alert" || normalized === "2fa") {
+        return normalized
+    }
+    return ""
+}
+
 function getTimeStrings() {
     var now = new Date()
     var usOffset = -4 * 60
@@ -39,8 +56,9 @@ function getTimeStrings() {
     }
 }
 
-function buildSystemCard(level, source, title, detailFields, environment) {
-    var cfg = LEVEL_CONFIG[level] || LEVEL_CONFIG.info
+function buildSystemCard(level, source, title, detailFields, environment, options) {
+    var levelCfg = getLevelConfig(level)
+    var cardCfg = resolveCardLevelConfig(level, options)
     var srcLabel = SOURCE_LABELS[source] || source
     var times = getTimeStrings()
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
@@ -49,7 +67,7 @@ function buildSystemCard(level, source, title, detailFields, environment) {
 
     elements.push({
         tag: "markdown",
-        content: "**来源**: " + srcLabel + "  |  **级别**: " + cfg.emoji + " " + level.toUpperCase()
+        content: "**来源**: " + srcLabel + "  |  **级别**: " + levelCfg.emoji + " " + level.toUpperCase()
     })
 
     if (detailFields && detailFields.length > 0) {
@@ -84,12 +102,12 @@ function buildSystemCard(level, source, title, detailFields, environment) {
         data: {
             template_id: "ctp_AA0vSwsFswsr",
             template_variable: {
-                title: cfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment),
+                title: cardCfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment),
                 content: JSON.stringify({
                     config: { wide_screen_mode: true },
                     header: {
-                        title: { tag: "plain_text", content: cfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment) },
-                        template: cfg.template
+                        title: { tag: "plain_text", content: cardCfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment) },
+                        template: cardCfg.template
                     },
                     elements: elements
                 })
@@ -98,8 +116,9 @@ function buildSystemCard(level, source, title, detailFields, environment) {
     }
 }
 
-function buildSimpleCard(level, source, title, detailFields, environment) {
-    var cfg = LEVEL_CONFIG[level] || LEVEL_CONFIG.info
+function buildSimpleCard(level, source, title, detailFields, environment, options) {
+    var levelCfg = getLevelConfig(level)
+    var cardCfg = resolveCardLevelConfig(level, options)
     var srcLabel = SOURCE_LABELS[source] || source
     var times = getTimeStrings()
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
@@ -108,7 +127,7 @@ function buildSimpleCard(level, source, title, detailFields, environment) {
 
     elements.push({
         tag: "markdown",
-        content: "**来源**: " + srcLabel + "  |  **级别**: " + cfg.emoji + " " + level.toUpperCase()
+        content: "**来源**: " + srcLabel + "  |  **级别**: " + levelCfg.emoji + " " + level.toUpperCase()
     })
 
     if (detailFields && detailFields.length > 0) {
@@ -141,8 +160,8 @@ function buildSimpleCard(level, source, title, detailFields, environment) {
     var card = {
         config: { wide_screen_mode: true },
         header: {
-            title: { tag: "plain_text", content: cfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment) },
-            template: cfg.template
+            title: { tag: "plain_text", content: cardCfg.emoji + " " + envUtils.labelTitleWithEnvironment(title, runtimeEnvironment) },
+            template: cardCfg.template
         },
         elements: elements
     }
@@ -237,9 +256,19 @@ function shouldNotifyEvent(eventType, level, source, title, environment) {
     return isEnabledText(getConfigValue("status_notify_enabled", "TRUE", runtimeEnvironment))
 }
 
-function getTargetChatId(eventType, level, environment, source, title, detail) {
+function getTargetChatId(eventType, level, environment, source, title, detail, options) {
     var normalizedEventType = String(eventType || "status_change").trim().toLowerCase()
     var normalizedLevel = String(level || "info").trim().toLowerCase()
+    var targetChat = normalizeTargetChat(options && options.target_chat)
+    if (targetChat === "system") {
+        return getSystemChatId(environment)
+    }
+    if (targetChat === "alert") {
+        return getAlertChatId(environment)
+    }
+    if (targetChat === "2fa") {
+        return get2faChatId(environment)
+    }
     if (isLikely2faAlert(title, detail)) {
         return get2faChatId(environment)
     }
@@ -287,13 +316,13 @@ function notifySystemEventDetailed(eventType, level, source, title, detail, envi
         }
     }
 
-    var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment)
+    var card = buildSimpleCard(level, source, title, detailFields, runtimeEnvironment, options)
     var result = messageId
         ? feishuApp.updateMessageCard(messageId, card, runtimeEnvironment)
         : feishuApp.sendMessageDetailed(
             "interactive",
             card,
-            getTargetChatId(eventType, level, runtimeEnvironment, source, title, detail),
+            getTargetChatId(eventType, level, runtimeEnvironment, source, title, detail, options),
             "chat_id",
             runtimeEnvironment
         )

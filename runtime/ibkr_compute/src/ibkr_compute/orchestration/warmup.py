@@ -323,6 +323,7 @@ class TradingServiceWarmupMixin:
         with self._warmup_lock:
             same_signature = self._warmup_signature == snapshot["signature"]
             current_phase = str(self._warmup_state.get("phase") or "")
+            current_state = self._copy_warmup_state(self._warmup_state)
             pending_symbols = list(self._warmup_state.get("pending_symbols") or [])
             if (
                 not force
@@ -334,6 +335,33 @@ class TradingServiceWarmupMixin:
             ):
                 return False
             self._warmup_signature = snapshot["signature"]
+            queued_refresh = current_phase in {"pending", "running"}
+
+        if queued_refresh:
+            ready_symbols = self._normalize_symbol_list(current_state.get("ready_symbols_list") or [])
+            ready_set = set(ready_symbols)
+            queued_pending_symbols = self._normalize_symbol_list(
+                list(current_state.get("pending_symbols") or [])
+                + [symbol for symbol in snapshot["symbols"] if symbol not in ready_set]
+            )
+            self._set_warmup_state(
+                phase=current_phase,
+                reason=reason,
+                requested_at=self._now_iso(),
+                last_error="",
+                pending_symbols=queued_pending_symbols,
+                **self._warmup_scope_fields(snapshot),
+            )
+            self._warmup_wakeup.set()
+            service_mod.logger.info(
+                "Warmup refresh queued (%s): phase=%s symbols=%d trade=%d monitor=%d",
+                reason,
+                current_phase,
+                snapshot["symbols_total"],
+                snapshot["trade_symbols_total"],
+                snapshot["monitor_symbols_total"],
+            )
+            return True
 
         self._set_warmup_state(
             phase="pending",

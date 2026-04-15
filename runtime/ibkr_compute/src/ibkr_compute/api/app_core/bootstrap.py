@@ -30,7 +30,7 @@ def build_service_bundle(
     current_market_date_resolver,
     runtime_status_resolver,
 ) -> dict:
-    pb_base_url = os.environ.get("PB_BASE_URL", "http://localhost:8090")
+    pb_base_url = os.environ.get("PB_BASE_URL", "http://127.0.0.1:8090")
     pb_public_url = os.environ.get("PB_PUBLIC_URL", pb_base_url)
     pb_client = PBClient(base_url=pb_base_url)
     config = Config(pb_client=pb_client)

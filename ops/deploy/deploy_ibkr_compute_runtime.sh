@@ -3,11 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AI_ASSISTANT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LIB_ROOT="$SCRIPT_DIR/lib"
 REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
 IBKR_REMOTE_ROOT="${IBKR_REMOTE_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
-RUNTIME_ROOT="$AI_ASSISTANT_ROOT/runtime/ibkr_compute"
-OPS_ROOT="$AI_ASSISTANT_ROOT/ops/ibkr_compute"
-GATEWAY_ROOT="$AI_ASSISTANT_ROOT/runtime/ib_gateway"
 SYSTEMD_DIR="/etc/systemd/system"
 VENV_DIR="$IBKR_REMOTE_ROOT/venv"
 OPS_REMOTE_ROOT="$IBKR_REMOTE_ROOT/ops"
@@ -20,6 +18,26 @@ SKIP_REQUIREMENTS=0
 SKIP_SYSTEMD=0
 RESTART_SERVICE=1
 STATUS_ONLY=0
+PLAN_ONLY=0
+REQUESTED_MODE="scope"
+PACKAGE_NAME=""
+DIFF_RANGE=""
+FILE_ARGS=()
+PB_REMOTE_ROOT="${PB_REMOTE_ROOT:-${IBKR_DEPLOY_PB_ROOT:-/opt/pocketbase}}"
+DEPLOY_PUBLIC=1
+DEPLOY_HOOKS=1
+DEPLOY_MIGRATIONS=0
+DEPLOY_IGNORE_UNMANAGED="${DEPLOY_IGNORE_UNMANAGED:-0}"
+
+source "$LIB_ROOT/common.sh"
+source "$LIB_ROOT/cli.sh"
+source "$LIB_ROOT/units.sh"
+source "$LIB_ROOT/verify.sh"
+source "$LIB_ROOT/restart.sh"
+source "$LIB_ROOT/planner.sh"
+source "$LIB_ROOT/modes/scope.sh"
+source "$LIB_ROOT/modes/files.sh"
+source "$LIB_ROOT/modes/package.sh"
 
 usage() {
   cat <<EOF
@@ -27,6 +45,11 @@ Usage: deploy_ibkr_compute_runtime.sh [options]
 
 Options:
   --host <host>         Override SSH target
+  --mode <mode>         scope | files | package | auto
+  --file <path>         Repo-relative file path, repeatable
+  --diff <range>        Git diff range, for example HEAD~1..HEAD
+  --plan-only           Print the resolved deployment plan and exit
+  --package-name <n>    Override generated package name for package mode
   --ops-tools           Deploy ops/ibkr_compute/auth and ops/ibkr_compute/monitor
   --gateway-service     Install runtime/ib_gateway/systemd/ibkr-gateway.service
   --skip-requirements   Skip remote pip install -r requirements.txt
@@ -43,6 +66,27 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
       REMOTE_HOST="${2:?missing host}"
+      shift 2
+      ;;
+    --mode)
+      REQUESTED_MODE="${2:?missing mode}"
+      validate_mode_value "$REQUESTED_MODE"
+      shift 2
+      ;;
+    --file)
+      FILE_ARGS+=("${2:?missing file}")
+      shift 2
+      ;;
+    --diff)
+      DIFF_RANGE="${2:?missing diff range}"
+      shift 2
+      ;;
+    --plan-only)
+      PLAN_ONLY=1
+      shift
+      ;;
+    --package-name)
+      PACKAGE_NAME="${2:?missing package name}"
       shift 2
       ;;
     --ops-tools)
@@ -89,127 +133,34 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ssh_run() {
-  ssh "$REMOTE_HOST" "$@"
-}
-
-rsync_common=(
-  rsync
-  -az
-  --human-readable
-  --exclude
-  .DS_Store
-  --exclude
-  __pycache__/
-  --exclude
-  '*.pyc'
-  --exclude
-  '*.bak.*'
-)
-
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  rsync_common+=(--dry-run --itemize-changes)
-fi
-
-sync_dir() {
-  local local_dir="$1"
-  local remote_dir="$2"
-  [[ -d "$local_dir" ]] || { echo "Missing directory: $local_dir" >&2; exit 1; }
-  ssh_run "mkdir -p '$remote_dir'"
-  "${rsync_common[@]}" --delete "$local_dir"/ "$REMOTE_HOST:$remote_dir/"
-}
-
-sync_file() {
-  local local_file="$1"
-  local remote_file="$2"
-  [[ -f "$local_file" ]] || { echo "Missing file: $local_file" >&2; exit 1; }
-  ssh_run "mkdir -p '$(dirname "$remote_file")'"
-  "${rsync_common[@]}" "$local_file" "$REMOTE_HOST:$remote_file"
-}
-
-ensure_remote_venv() {
-  ssh_run "
-    set -e
-    mkdir -p '$IBKR_REMOTE_ROOT'
-    if [ ! -x '$VENV_DIR/bin/python' ]; then
-      if ! python3 -m venv '$VENV_DIR' >/dev/null 2>&1; then
-        if command -v apt-get >/dev/null 2>&1; then
-          apt-get update >/dev/null
-          apt-get install -y python3-venv >/dev/null
-          python3 -m venv '$VENV_DIR'
-        else
-          echo 'python3 -m venv failed and apt-get is unavailable' >&2
-          exit 1
-        fi
-      fi
-    fi
-    '$VENV_DIR/bin/python' -m ensurepip --upgrade >/dev/null 2>&1 || true
-    '$VENV_DIR/bin/python' -m pip --version >/dev/null
-  "
-}
-
-install_requirements() {
-  ssh_run "cd '$IBKR_REMOTE_ROOT' && '$VENV_DIR/bin/python' -m pip install --disable-pip-version-check -r requirements.txt -q"
-}
-
-check_python_tree() {
-  local remote_dir="$1"
-  [[ "$SKIP_CHECKS" -eq 1 ]] && return 0
-  ssh_run "find '$remote_dir' -type f -name '*.py' -print0 | xargs -0 -r python3 -m py_compile"
-}
-
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
   ssh_run "systemctl is-active ibkr-compute ibkr-gateway"
   exit 0
 fi
 
-sync_dir "$RUNTIME_ROOT/src" "$IBKR_REMOTE_ROOT/src"
-sync_file "$RUNTIME_ROOT/requirements.txt" "$IBKR_REMOTE_ROOT/requirements.txt"
+prepare_target_plan ibkr
 
-if [[ "$DEPLOY_OPS_TOOLS" -eq 1 ]]; then
-  sync_dir "$OPS_ROOT/auth" "$OPS_REMOTE_ROOT/auth"
-  sync_dir "$OPS_ROOT/monitor" "$OPS_REMOTE_ROOT/monitor"
-fi
-
-if [[ "$SKIP_SYSTEMD" -eq 0 ]]; then
-  sync_file "$RUNTIME_ROOT/systemd/ibkr-compute.service" "$SYSTEMD_DIR/ibkr-compute.service"
-  if [[ "$DEPLOY_GATEWAY_SERVICE" -eq 1 ]]; then
-    sync_file "$GATEWAY_ROOT/systemd/ibkr-gateway.service" "$SYSTEMD_DIR/ibkr-gateway.service"
-  fi
-fi
-
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "Dry run complete."
+if [[ "$NO_MANAGED_CHANGES" -eq 1 ]]; then
+  deploy_log "No managed changes for ibkr."
   exit 0
 fi
 
-check_python_tree "$IBKR_REMOTE_ROOT/src"
-if [[ "$DEPLOY_OPS_TOOLS" -eq 1 ]]; then
-  check_python_tree "$OPS_REMOTE_ROOT"
+if [[ "$PLAN_ONLY" -eq 1 ]]; then
+  print_deploy_plan ibkr
+  exit 0
 fi
 
-if [[ "$SKIP_REQUIREMENTS" -eq 0 ]]; then
-  ensure_remote_venv
-  install_requirements
-fi
-
-if [[ "$SKIP_SYSTEMD" -eq 0 ]]; then
-  ssh_run "systemctl daemon-reload"
-  ssh_run "systemctl enable ibkr-compute >/dev/null 2>&1 || true"
-  if [[ "$DEPLOY_GATEWAY_SERVICE" -eq 1 ]]; then
-    ssh_run "systemctl enable ibkr-gateway >/dev/null 2>&1 || true"
-  fi
-fi
-
-if [[ "$RESTART_SERVICE" -eq 1 ]]; then
-  ssh_run "systemctl restart ibkr-compute"
-  if [[ "$DEPLOY_GATEWAY_SERVICE" -eq 1 ]]; then
-    ssh_run "systemctl restart ibkr-gateway"
-  fi
-fi
-
-if [[ "$DEPLOY_GATEWAY_SERVICE" -eq 1 ]]; then
-  ssh_run "systemctl is-active ibkr-compute ibkr-gateway"
-else
-  ssh_run "systemctl is-active ibkr-compute"
-fi
+case "$FINAL_MODE" in
+  scope)
+    scope_deploy_units "${PLAN_UNITS[@]}"
+    ;;
+  files)
+    files_deploy_paths_for_target ibkr "${PLAN_FILES[@]}"
+    ;;
+  package)
+    package_deploy_units "${PLAN_UNITS[@]}"
+    ;;
+  *)
+    deploy_die "Unsupported final mode: $FINAL_MODE"
+    ;;
+esac
