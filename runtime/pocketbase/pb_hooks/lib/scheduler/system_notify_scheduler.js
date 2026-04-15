@@ -86,18 +86,15 @@ function saveStateData(stateKey, environment, dateToken, patch) {
 }
 
 function fetchComputeJson(path, timeoutSeconds, environment) {
-    try {
-        const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
-        const computeBaseUrl = getIbkrComputeInternalUrl(environment || "live", "http://127.0.0.1:5100")
-        const resp = $http.send({ url: `${computeBaseUrl}${path}`, method: "GET", timeout: timeoutSeconds || 5 })
-        if (resp.statusCode === 200) {
-            const raw = typeof resp.raw === "string" ? resp.raw : String(resp.raw || "")
-            return raw ? JSON.parse(raw) : {}
-        }
-        return { ok: false, status: "error", code: resp.statusCode }
-    } catch (err) {
-        return { ok: false, status: "offline", error: err.message || String(err) }
+    const { fetchComputeJsonWithFallback } = require(`${__hooks}/lib/compute_http.js`)
+    const result = fetchComputeJsonWithFallback(path, timeoutSeconds, environment)
+    const payload = result && result.payload && typeof result.payload === "object"
+        ? result.payload
+        : {}
+    if (result && result.upstream && !Array.isArray(payload) && !payload.proxy_upstream) {
+        payload.proxy_upstream = result.upstream
     }
+    return payload
 }
 
 function countCollectionRows(collectionName, filterStr, params) {
@@ -372,6 +369,37 @@ function classifyMarketSession(snapshot, times, clock) {
     }
 }
 
+function buildDataFreshnessWindow(snapshot, times, clock) {
+    const marketSession = classifyMarketSession(snapshot, times, clock)
+    const minuteOfDay = toNumber(clock && clock.hour, 0) * 60 + toNumber(clock && clock.minute, 0)
+    if (marketSession.kind !== "trading") {
+        return {
+            required: false,
+            reason: marketSession.reason || "market_closed",
+            label: marketSession.label || "closed",
+        }
+    }
+    if (minuteOfDay < (9 * 60 + 40)) {
+        return {
+            required: false,
+            reason: "pre_open",
+            label: "盘前宽限期",
+        }
+    }
+    if (minuteOfDay > (16 * 60 + 15)) {
+        return {
+            required: false,
+            reason: "post_close",
+            label: "收盘后宽限期",
+        }
+    }
+    return {
+        required: true,
+        reason: "regular_session",
+        label: "盘中新鲜度检查",
+    }
+}
+
 function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times, eventCounts) {
     const detail = {
         "日程判断": marketSession.open_summary,
@@ -442,11 +470,16 @@ function isStatusSummaryMinute(minute) {
     return minute === 0 || minute === 30
 }
 
-function hasHeartbeatIssue(snapshot) {
+function hasHeartbeatIssue(snapshot, freshnessWindow) {
     return (
         snapshot.compute.status !== "running"
-        || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
-        || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+        || (
+            freshnessWindow && freshnessWindow.required
+            && (
+                snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+            )
+        )
     )
 }
 
@@ -482,9 +515,10 @@ function buildStartupGraceLabel(snapshot) {
     return `${parts.join(" / ")} / grace ${Math.round(COMPUTE_STARTUP_GRACE_MS / 1000)}s`
 }
 
-function buildStatusAssessment(snapshot, startupGraceActive) {
+function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
     const blockingIssues = []
     const watchItems = []
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
 
     if (!snapshot || !snapshot.compute) {
         return {
@@ -516,13 +550,13 @@ function buildStatusAssessment(snapshot, startupGraceActive) {
         watchItems.push("WebSocket 已连接但未 ready")
     }
 
-    if (snapshot.latest_bar.bar_time_ms <= 0) {
+    if (enforceFreshness && snapshot.latest_bar.bar_time_ms <= 0) {
         if (startupGraceActive) {
             watchItems.push("最新 5m bars 尚未建立")
         } else {
             blockingIssues.push("缺少最新 5m bars")
         }
-    } else if (snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
+    } else if (enforceFreshness && snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
         if (startupGraceActive) {
             watchItems.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
         } else {
@@ -530,13 +564,13 @@ function buildStatusAssessment(snapshot, startupGraceActive) {
         }
     }
 
-    if (snapshot.latest_indicator.bar_time_ms <= 0) {
+    if (enforceFreshness && snapshot.latest_indicator.bar_time_ms <= 0) {
         if (startupGraceActive) {
             watchItems.push("指标流尚未建立")
         } else {
             blockingIssues.push("缺少最新指标")
         }
-    } else if (snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
+    } else if (enforceFreshness && snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
         if (startupGraceActive) {
             watchItems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
         } else {
@@ -584,19 +618,20 @@ function buildStatusAssessment(snapshot, startupGraceActive) {
     }
 }
 
-function listDataHealthProblems(snapshot) {
+function listDataHealthProblems(snapshot, freshnessWindow) {
     const problems = []
     if (!snapshot) return problems
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
 
-    if (snapshot.latest_bar.bar_time_ms <= 0) {
+    if (enforceFreshness && snapshot.latest_bar.bar_time_ms <= 0) {
         problems.push("缺少最新 5m bars")
-    } else if (snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
+    } else if (enforceFreshness && snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
         problems.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
     }
 
-    if (snapshot.latest_indicator.bar_time_ms <= 0) {
+    if (enforceFreshness && snapshot.latest_indicator.bar_time_ms <= 0) {
         problems.push("缺少最新指标")
-    } else if (snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
+    } else if (enforceFreshness && snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
         problems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
     }
 
@@ -613,9 +648,10 @@ function listDataHealthProblems(snapshot) {
     return problems
 }
 
-function buildDataHealthRecommendation(snapshot) {
+function buildDataHealthRecommendation(snapshot, freshnessWindow) {
     const actions = []
     if (!snapshot) return "检查 compute / IBKR / PocketBase 链路状态"
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
 
     if (!snapshot.session.authenticated) {
         actions.push("检查 IBKR 会话认证状态")
@@ -624,10 +660,12 @@ function buildDataHealthRecommendation(snapshot) {
         actions.push("检查 WebSocket 连接与 IB Gateway 网关状态")
     }
     if (
+        enforceFreshness && (
         snapshot.latest_bar.bar_time_ms <= 0
         || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
         || snapshot.latest_indicator.bar_time_ms <= 0
         || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+        )
     ) {
         actions.push("检查实时 ticks / bars / indicators 写入链路")
     }
@@ -665,11 +703,11 @@ function buildRecoveryDetail(snapshot, times, state, assessment) {
     }
 }
 
-function shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment) {
+function shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment, freshnessWindow) {
     if (!isStatusSummaryMinute(currentMinute)) {
         return false
     }
-    if (hasHeartbeatIssue(snapshot)) {
+    if (hasHeartbeatIssue(snapshot, freshnessWindow)) {
         return true
     }
     return isStatusSummaryNotifyEnabled(environment)
@@ -686,6 +724,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
     const nowMs = now.getTime()
     const currentHourToken = times.us.slice(0, 13)
     const currentMinute = now.getMinutes()
+    const clock = getUsClock()
 
     console.log(`${prefix} heartbeat tick: minute=${currentMinute}, environments=${environments.join(",") || "-"}`)
 
@@ -697,8 +736,9 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
             const hadOutstandingIssue = String(state.last_issue_hash || "").trim() !== ""
             const startupGraceActive = isStartupGraceActive(snapshot)
             const startupGraceLabel = startupGraceActive ? buildStartupGraceLabel(snapshot) : ""
-            const mergeHeartbeatIntoSummary = shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment)
-            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const freshnessWindow = buildDataFreshnessWindow(snapshot, times, clock)
+            const mergeHeartbeatIntoSummary = shouldMergeHeartbeatIntoSummary(snapshot, currentMinute, environment, freshnessWindow)
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow)
             const isHealthyState = assessment.kind === "healthy" || assessment.kind === "healthy_paused"
             const patch = {
                 last_checked_at: times.us,
@@ -759,11 +799,13 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
             }
 
             if (
+                freshnessWindow.required && (
                 snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
                 || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+                )
             ) {
                 const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}`
-                const problemSummary = listDataHealthProblems(snapshot)
+                const problemSummary = listDataHealthProblems(snapshot, freshnessWindow)
                 const issueSummary = problemSummary.length
                     ? `当前数据链路不正确：${problemSummary.join("；")}。`
                     : "当前数据链路不正确，请检查实时数据与指标链路。"
@@ -807,7 +849,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                             "最新5m": snapshot.latest_bar.label,
                             "指标状态": snapshot.latest_indicator.label,
                             "WebSocket": snapshot.websocket.label,
-                            "建议": buildDataHealthRecommendation(snapshot),
+                            "建议": buildDataHealthRecommendation(snapshot, freshnessWindow),
                         }
                         const notified = feishuSystem.notifySystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment)
                         writeSystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment, notified)
@@ -872,6 +914,7 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
     const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
     const times = getTimeStrings()
+    const clock = getUsClock()
     const environments = listNotifyEnvironments(cronId)
 
     console.log(`${prefix} status reminder tick: environments=${environments.join(",") || "-"}`)
@@ -881,7 +924,8 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
         try {
             const snapshot = buildStatusSnapshot(environment, times)
             const startupGraceActive = isStartupGraceActive(snapshot)
-            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const freshnessWindow = buildDataFreshnessWindow(snapshot, times, clock)
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow)
             const level = assessment.level
 
             const detail = {
@@ -1113,7 +1157,8 @@ function runDailyOpenReminderTick(logPrefix, cronId) {
 
             const snapshot = buildStatusSnapshot(environment, times)
             const startupGraceActive = isStartupGraceActive(snapshot)
-            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const freshnessWindow = buildDataFreshnessWindow(snapshot, times, clock)
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow)
             const marketSession = classifyMarketSession(snapshot, times, clock)
             const detail = buildDailyOpenReminderDetail(
                 snapshot,
@@ -1166,7 +1211,8 @@ function runDailyCloseSummaryTick(logPrefix, cronId) {
 
             const snapshot = buildStatusSnapshot(environment, times)
             const startupGraceActive = isStartupGraceActive(snapshot)
-            const assessment = buildStatusAssessment(snapshot, startupGraceActive)
+            const freshnessWindow = buildDataFreshnessWindow(snapshot, times, clock)
+            const assessment = buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow)
             const marketSession = classifyMarketSession(snapshot, times, clock)
             const detail = buildDailyCloseSummaryDetail(
                 snapshot,

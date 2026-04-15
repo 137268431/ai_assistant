@@ -3677,9 +3677,12 @@ routerAdd("GET", "/api/custom/ibkr/account_snapshot", (c) => {
 routerAdd("GET", "/api/custom/ibkr/runtime/config", (c) => {
     const { getRuntimeEnvironmentFromRequest, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    const scope = String(c.request.url.query().get("scope") || "").trim().toLowerCase()
     const items = []
     try {
-        const records = listEffectiveConfigRecords(environment)
+        const records = scope === "all"
+            ? (($app.findRecordsByFilter("config", "", "key,environment", 1000, 0) || []))
+            : listEffectiveConfigRecords(environment)
 
         for (let i = 0; i < records.length; i++) {
             items.push({
@@ -3692,7 +3695,7 @@ routerAdd("GET", "/api/custom/ibkr/runtime/config", (c) => {
     } catch (err) {
         return c.json(500, { ok: false, error: err.message || String(err) })
     }
-    return c.json(200, { ok: true, environment: environment, items: items })
+    return c.json(200, { ok: true, environment: environment, scope: scope || "effective", items: items })
 })
 
 routerAdd("POST", "/api/custom/ibkr/start", (c) => {

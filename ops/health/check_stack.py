@@ -227,6 +227,57 @@ def latest_targets(conn, environment: str) -> dict:
     }
 
 
+def classify_data_freshness_window(latest_bar_5m: dict | None, targets: dict | None) -> dict:
+    now_et = datetime.now(ET)
+    minute_of_day = now_et.hour * 60 + now_et.minute
+    latest_bar_us = str((latest_bar_5m or {}).get("bar_time_us") or "").strip()
+    latest_bar_date = latest_bar_us[:10] if latest_bar_us else ""
+    target_date = str((targets or {}).get("target_date") or "").strip()
+    has_trading_context = bool(
+        int((targets or {}).get("total_count") or 0) > 0
+        or int((targets or {}).get("active_count") or 0) > 0
+        or latest_bar_date == now_et.strftime("%Y-%m-%d")
+    )
+
+    if now_et.weekday() >= 5:
+        return {
+            "required": False,
+            "reason": "weekend",
+            "label": "weekend_closed",
+        }
+    if minute_of_day < (9 * 60 + 40):
+        return {
+            "required": False,
+            "reason": "pre_open",
+            "label": "pre_open_grace",
+            "target_date": target_date,
+            "latest_bar_date": latest_bar_date,
+        }
+    if minute_of_day > (16 * 60 + 15):
+        return {
+            "required": False,
+            "reason": "post_close",
+            "label": "post_close_grace",
+            "target_date": target_date,
+            "latest_bar_date": latest_bar_date,
+        }
+    if not has_trading_context:
+        return {
+            "required": False,
+            "reason": "no_trading_context",
+            "label": "no_trading_context",
+            "target_date": target_date,
+            "latest_bar_date": latest_bar_date,
+        }
+    return {
+        "required": True,
+        "reason": "regular_session",
+        "label": "regular_session",
+        "target_date": target_date,
+        "latest_bar_date": latest_bar_date,
+    }
+
+
 services = {
     name: systemd_status(name)
     for name in ("ibkr-gateway", "ibkr-compute", "pocketbase")
@@ -256,6 +307,8 @@ for item in (latest_bar_5m, latest_indicator_5m, latest_signal):
         item["age_min"] = age_minutes(item["bar_time_ms"])
         item["bar_time_us"] = format_us(item["bar_time_ms"])
 
+data_freshness_window = classify_data_freshness_window(latest_bar_5m, targets)
+
 failures = []
 warnings = []
 
@@ -276,14 +329,22 @@ for name in (
     if not local_http[name].get("ok"):
         failures.append(f"local_http:{name}")
 
-if latest_bar_5m is None:
+if latest_bar_5m is None and data_freshness_window.get("required"):
     failures.append("db:latest_bar_5m_missing")
-elif latest_bar_5m.get("age_min") is not None and latest_bar_5m["age_min"] > BAR_STALE_MIN:
+elif (
+    data_freshness_window.get("required")
+    and latest_bar_5m.get("age_min") is not None
+    and latest_bar_5m["age_min"] > BAR_STALE_MIN
+):
     failures.append(f"db:latest_bar_5m_stale:{latest_bar_5m['age_min']}")
 
-if latest_indicator_5m is None:
+if latest_indicator_5m is None and data_freshness_window.get("required"):
     failures.append("db:latest_indicator_5m_missing")
-elif latest_indicator_5m.get("age_min") is not None and latest_indicator_5m["age_min"] > INDICATOR_STALE_MIN:
+elif (
+    data_freshness_window.get("required")
+    and latest_indicator_5m.get("age_min") is not None
+    and latest_indicator_5m["age_min"] > INDICATOR_STALE_MIN
+):
     failures.append(f"db:latest_indicator_5m_stale:{latest_indicator_5m['age_min']}")
 
 runtime_payload = local_http.get("compute_ibkr_status", {}).get("json") or {}
@@ -353,6 +414,7 @@ report = {
             "latest_indicator_5m": latest_indicator_5m,
             "latest_signal": latest_signal,
             "targets": targets,
+            "data_freshness_window": data_freshness_window,
             "bars_by_interval": bars_by_interval,
             "indicators_by_interval": indicators_by_interval,
         },

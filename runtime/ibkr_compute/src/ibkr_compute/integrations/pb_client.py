@@ -252,7 +252,11 @@ class PBClient:
         return self.create_record("ibkr_state", payload)
 
     def get_runtime_config(self) -> List[Dict[str, Any]]:
-        payload = self.call_custom_api("ibkr/runtime/config", method="GET")
+        payload = self.call_custom_api(
+            "ibkr/runtime/config",
+            method="GET",
+            params={"scope": "all"},
+        )
         items = payload.get("items", [])
         return items if isinstance(items, list) else []
 

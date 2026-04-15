@@ -178,6 +178,8 @@ function runHistoryRetentionCleanup(logPrefix, cronId) {
     }
 }
 
+const runHistoryRetentionCleanupCron = (logPrefix, cronId) => runHistoryRetentionCleanup(logPrefix, cronId)
+
 function parseShiftedTimeMs(value, offsetMinutes) {
     const text = String(value || "").trim()
     if (!text) return 0
@@ -191,17 +193,15 @@ function parseUsTimeMs(value) {
 }
 
 function fetchComputeJson(path, timeoutSeconds, environment) {
-    try {
-        const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
-        const computeBaseUrl = getIbkrComputeInternalUrl(environment || "live", "http://127.0.0.1:5100")
-        const resp = $http.send({ url: `${computeBaseUrl}${path}`, method: "GET", timeout: timeoutSeconds || 5 })
-        if (resp.statusCode === 200) {
-            return parseHttpJson(resp)
-        }
-        return { ok: false, status: "error", code: resp.statusCode }
-    } catch (err) {
-        return { ok: false, status: "offline", error: err.message }
+    const { fetchComputeJsonWithFallback } = require(`${__hooks}/lib/compute_http.js`)
+    const result = fetchComputeJsonWithFallback(path, timeoutSeconds, environment)
+    const payload = result && result.payload && typeof result.payload === "object"
+        ? result.payload
+        : {}
+    if (result && result.upstream && !Array.isArray(payload) && !payload.proxy_upstream) {
+        payload.proxy_upstream = result.upstream
     }
+    return payload
 }
 
 function loadComputeSnapshot(environment) {
@@ -1176,16 +1176,10 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
 
 routerAdd("GET", "/api/custom/system/monitorz", (c) => {
     try {
-        const { normalizeRuntimeEnvironment, getIbkrComputeInternalUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { normalizeRuntimeEnvironment, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { fetchComputeJsonWithFallback } = require(`${__hooks}/lib/compute_http.js`)
         const pocketbaseDiskMonitor = require(`${__hooks}/lib/pocketbase_disk_monitor.js`)
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
-        const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
-        const upstream = `${computeBaseUrl}/ibkr/monitor`
-        const parseMonitorPayload = (resp) => {
-            if (!resp) return {}
-            const raw = typeof resp.raw === "string" ? resp.raw : String(resp.raw || "")
-            return raw ? JSON.parse(raw) : {}
-        }
         const loadMonitorConfig = () => {
             const selectedKeys = {
                 ibkr_target_subscription_limit: true,
@@ -1224,21 +1218,10 @@ routerAdd("GET", "/api/custom/system/monitorz", (c) => {
             } catch (_) {}
             return items
         }
-        let monitorPayload = {}
-        let upstreamError = ""
-        try {
-            const resp = $http.send({
-                url: upstream,
-                method: "GET",
-                timeout: 10,
-            })
-            monitorPayload = parseMonitorPayload(resp)
-            if (Number(resp && resp.statusCode) >= 400 && (!monitorPayload || Object.keys(monitorPayload).length === 0)) {
-                upstreamError = `upstream_http_${Number(resp && resp.statusCode)}`
-            }
-        } catch (err) {
-            upstreamError = err.message || String(err)
-        }
+        const fetchResult = fetchComputeJsonWithFallback("/ibkr/monitor", 10, environment)
+        const monitorPayload = fetchResult && fetchResult.payload && typeof fetchResult.payload === "object"
+            ? fetchResult.payload
+            : {}
 
         const config = loadMonitorConfig()
 
@@ -1260,17 +1243,13 @@ routerAdd("GET", "/api/custom/system/monitorz", (c) => {
         response.proxy_source = "pocketbase_ibkr_hook"
         response.proxy_hook = "ibkr_system_monitor.pb.js"
         response.proxy_route = "/api/custom/system/monitorz"
-        response.proxy_upstream = upstream
-
-        if (upstreamError) {
-            response.ok = false
-            response.status = "offline"
-            response.error = upstreamError
-            response.flags = Array.isArray(response.flags) ? response.flags : []
-        } else {
-            response.ok = response.ok !== false
-            response.status = String(response.status || "ok").trim().toLowerCase() || "ok"
-        }
+        response.proxy_upstream = String(fetchResult && fetchResult.upstream || "")
+        response.proxy_upstream_attempts = Array.isArray(fetchResult && fetchResult.attempts)
+            ? fetchResult.attempts
+            : []
+        response.ok = response.ok !== false
+        response.status = String(response.status || (response.ok === false ? "offline" : "ok")).trim().toLowerCase() || "ok"
+        response.flags = Array.isArray(response.flags) ? response.flags : []
 
         pocketbaseDiskMonitor.enrichMonitorPayloadWithPocketBaseDisk(response, false)
 
@@ -1320,7 +1299,7 @@ cronAdd("ibkr_scan_runtime", "*/5 7-9 * * 1-5", () => {
 
 cronAdd("ibkr_history_retention", "10 * * * *", () => {
     try {
-        runHistoryRetentionCleanup("[IBKRHistoryRetention]", "ibkr_history_retention")
+        runHistoryRetentionCleanupCron("[IBKRHistoryRetention]", "ibkr_history_retention")
     } catch (err) {
         console.log(`[IBKRHistoryRetention] fatal error: ${err.message || err}`)
     }

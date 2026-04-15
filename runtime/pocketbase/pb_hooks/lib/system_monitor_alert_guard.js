@@ -89,22 +89,15 @@ function parseHttpJson(resp) {
 }
 
 function fetchComputeJson(path, timeoutSeconds, environment) {
-    try {
-        const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
-        const computeBaseUrl = getIbkrComputeInternalUrl(environment || "live", "http://127.0.0.1:5100")
-        const resp = $http.send({ url: `${computeBaseUrl}${path}`, method: "GET", timeout: timeoutSeconds || 5 })
-        if (resp.statusCode === 200) {
-            return parseHttpJson(resp)
-        }
-        return {
-            ok: false,
-            status: "error",
-            code: resp.statusCode,
-            error: resp.raw || "",
-        }
-    } catch (err) {
-        return { ok: false, status: "offline", error: err.message || String(err) }
+    const { fetchComputeJsonWithFallback } = require(`${__hooks}/lib/compute_http.js`)
+    const result = fetchComputeJsonWithFallback(path, timeoutSeconds, environment)
+    const payload = result && result.payload && typeof result.payload === "object"
+        ? result.payload
+        : {}
+    if (result && result.upstream && !Array.isArray(payload) && !payload.proxy_upstream) {
+        payload.proxy_upstream = result.upstream
     }
+    return payload
 }
 
 function selectMonitorAlertFlags(flags) {
