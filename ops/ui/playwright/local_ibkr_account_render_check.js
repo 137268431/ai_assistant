@@ -242,9 +242,10 @@ const mockSnapshot = enrichAccountSnapshot(
 );
 
 const htmlPath = path.join(repoRoot, 'runtime', 'pocketbase', 'pb_public', 'ibkr_account.html');
-const commonPath = path.join(repoRoot, 'runtime', 'pocketbase', 'pb_public', 'common.js');
+const commonBasePath = path.join(repoRoot, 'runtime', 'pocketbase', 'pb_public', 'assets', 'js', 'shared', 'base.js');
+const commonUiPath = path.join(repoRoot, 'runtime', 'pocketbase', 'pb_public', 'assets', 'js', 'shared', 'ui.js');
 let html = fs.readFileSync(htmlPath, 'utf8');
-let common = fs.readFileSync(commonPath, 'utf8');
+let common = `${fs.readFileSync(commonBasePath, 'utf8')}\n${fs.readFileSync(commonUiPath, 'utf8')}`;
 common = common.replace(
   /function getStoredEnvironment\(\) \{[\s\S]*?\n\}/,
   "function getStoredEnvironment() {\n  return window.__mock_environment || '';\n}",

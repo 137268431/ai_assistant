@@ -1,3 +1,3 @@
-from .service import BacktestService
+from .runtime_service import BacktestCancelled, BacktestService
 
-__all__ = ["BacktestService"]
+__all__ = ["BacktestCancelled", "BacktestService"]
