@@ -3740,6 +3740,132 @@ routerAdd("POST", "/api/custom/ibkr/start", (c) => {
     }
 })
 
+routerAdd("POST", "/api/custom/ibkr/gateway/start", (c) => {
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/gateway/start`
+    try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/gateway/start"))
+        }
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/gateway/start"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/gateway/start",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/gateway/stop", (c) => {
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/gateway/stop`
+    try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/gateway/stop"))
+        }
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/gateway/stop"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/gateway/stop",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/gateway/restart", (c) => {
+    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/gateway/restart`
+    try {
+        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
+        if (environmentInfo.runtime_environment_mismatch) {
+            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/gateway/restart"))
+        }
+        const resp = $http.send({
+            url: upstream,
+            method: "POST",
+            timeout: 30,
+            body: JSON.stringify(d),
+            headers: { "Content-Type": "application/json" },
+        })
+        let payload = {}
+        try {
+            payload = JSON.parse(resp.raw || "{}")
+        } catch (_) {
+            payload = {}
+        }
+        payload.proxy_source = "pocketbase_ibkr_hook"
+        payload.proxy_hook = "ibkr_actions.pb.js"
+        payload.proxy_route = "/api/custom/ibkr/gateway/restart"
+        payload.proxy_upstream = upstream
+        return c.json((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), payload)
+    } catch (err) {
+        return c.json(502, {
+            ok: false,
+            error: err.message || String(err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/gateway/restart",
+            proxy_upstream: upstream,
+        })
+    }
+})
+
 routerAdd("POST", "/api/custom/ibkr/startup/progress", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
@@ -3780,6 +3906,7 @@ routerAdd("POST", "/api/custom/ibkr/startup/progress", (c) => {
             environment: result.environment || environment,
             date: result.date || "",
             cycle_id: result.cycle_id || "",
+            startup_label: result.startup_label || "",
             message_id: result.message_id || "",
             state: result.state || {},
             error: result.result && result.result.success ? "" : String((result.result && result.result.error) || ""),
@@ -3805,6 +3932,7 @@ routerAdd("GET", "/api/custom/ibkr/startup/status", (c) => {
             ok: true,
             environment: payload.environment || environment,
             date: payload.date || "",
+            startup_label: String(state.startup_label || ""),
             state: state,
         })
     } catch (err) {

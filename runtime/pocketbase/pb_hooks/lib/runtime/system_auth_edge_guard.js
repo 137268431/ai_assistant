@@ -633,7 +633,7 @@ function runIbkr2faHourlyCheck() {
             const status = String(state.status || "").trim().toLowerCase()
             const reason = String(state.reason || "").trim().toLowerCase()
             const lastPushMs = Number(state.last_request_push_ms || 0) || 0
-            const reminderEligible = status === "requested" && ["manual_start", "startup", "weekly_reauth"].indexOf(reason) !== -1
+            const reminderEligible = status === "requested" && ["manual_start", "startup", "weekly_reauth", "manual_gateway_restart"].indexOf(reason) !== -1
             if (!reminderEligible) {
                 continue
             }
@@ -647,6 +647,8 @@ function runIbkr2faHourlyCheck() {
                 source: "pb_scheduler",
                 message: reason === "weekly_reauth"
                     ? "本周重登仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证。"
+                    : reason === "manual_gateway_restart"
+                        ? "网关重启后的新轮次仍停在待手动触发阶段，请只去当前启动卡片点击开始验证。"
                     : "启动验证仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证。",
                 detail: {
                     "当前状态": status || "requested",

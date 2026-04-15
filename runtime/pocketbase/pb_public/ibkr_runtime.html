@@ -990,7 +990,7 @@
             <div class="action-section" id="actionSection">
                 <button class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction('start')">
                     <span class="action-label">启动 IBKR 服务</span>
-                    <span class="action-copy">启动登录、Session Keeper、行情订阅与后续数据链路。</span>
+                    <span class="action-copy">创建新的启动卡片；手动启动默认会先重启 Gateway，再等待你人工点击 2FA 按钮继续。</span>
                 </button>
                 <button class="action-btn action-danger" data-action="stop" onclick="handleRuntimeAction('stop')">
                     <span class="action-label">停止 IBKR 服务</span>
@@ -1035,6 +1035,29 @@
                 <button class="action-btn" onclick="loadRuntimeData(true)">
                     <span class="action-label">手动刷新</span>
                     <span class="action-copy">重新抓取 healthz / statusz / summaryz 与最近几张表的数据。</span>
+                </button>
+            </div>
+
+            <div class="last-action" style="margin-top:12px" id="startupStrategyInfo">
+                启动策略加载中...
+            </div>
+
+            <div class="last-action" style="margin-top:12px">
+                Gateway 控制：网关按钮只管理 `ibkr_gateway`；其中“重启 Gateway”在运行中或当前已有启动轮次时，会自动进入新的启动卡片和 fresh 2FA 流程。
+            </div>
+
+            <div class="action-section" id="gatewaySection">
+                <button class="action-btn action-accent" data-action="gateway_start" onclick="handleRuntimeAction('gateway_start')">
+                    <span class="action-label">启动 Gateway</span>
+                    <span class="action-copy">只启动 `ibkr_gateway`，不自动恢复 Runtime，也不会自动触发新的 2FA。</span>
+                </button>
+                <button class="action-btn action-danger" data-action="gateway_stop" onclick="handleRuntimeAction('gateway_stop')">
+                    <span class="action-label">停止 Gateway</span>
+                    <span class="action-copy">手动关闭 `ibkr_gateway`；如果当前有运行线程或启动轮次，会同时把当前轮次中断。</span>
+                </button>
+                <button class="action-btn action-accent" data-action="gateway_restart" onclick="handleRuntimeAction('gateway_restart')">
+                    <span class="action-label">重启 Gateway</span>
+                    <span class="action-copy">运行中或当前已有启动轮次时，会创建新的启动卡片并要求 fresh 2FA；这是 Gateway 层的推荐重启动作。</span>
                 </button>
             </div>
 
@@ -1201,6 +1224,7 @@
             manual_start: '启动验证',
             startup: '启动验证',
             manual_reauth: '手动重登验证',
+            manual_gateway_restart: '网关重启验证',
             panic_reset_2fa: '重开验证'
         };
         const STARTUP_STEP_LABELS = {
@@ -1456,6 +1480,42 @@
             };
         }
 
+        function getStartupStrategy(status) {
+            const strategy = status?.startup_strategy || {};
+            return {
+                manual_start_mode: String(strategy.manual_start_mode || 'fresh_cycle').trim().toLowerCase() || 'fresh_cycle',
+                weekly_reauth_mode: String(strategy.weekly_reauth_mode || 'fresh_cycle').trim().toLowerCase() || 'fresh_cycle',
+                manual_gateway_restart_mode: String(strategy.manual_gateway_restart_mode || 'fresh_cycle').trim().toLowerCase() || 'fresh_cycle',
+                server_boot_mode: String(strategy.server_boot_mode || 'resume_only').trim().toLowerCase() || 'resume_only',
+                server_boot_publish_startup_card: strategy.server_boot_publish_startup_card === true,
+                fresh_cycle_requires_manual_2fa: strategy.fresh_cycle_requires_manual_2fa !== false,
+                startup_card_scope: String(strategy.startup_card_scope || '').trim().toLowerCase() || 'fresh_cycles_only',
+                summary: String(strategy.summary || '').trim()
+            };
+        }
+
+        function formatStartupModeLabel(mode) {
+            return String(mode || '').trim().toLowerCase() === 'fresh_cycle' ? 'FRESH CYCLE' : 'RESUME ONLY';
+        }
+
+        function formatStartupStrategySummary(status) {
+            const strategy = getStartupStrategy(status);
+            if (strategy.summary) return strategy.summary;
+            const manualStart = strategy.manual_start_mode === 'fresh_cycle'
+                ? '手动启动=重启 Gateway + 新卡片 + 人工 2FA'
+                : '手动启动=直接恢复 Runtime';
+            const weeklyReauth = strategy.weekly_reauth_mode === 'fresh_cycle'
+                ? '每周重验=fresh cycle'
+                : '每周重验=resume only';
+            const serverBoot = strategy.server_boot_mode === 'fresh_cycle'
+                ? 'server_boot=fresh cycle'
+                : 'server_boot=resume only';
+            const startupCard = strategy.server_boot_publish_startup_card
+                ? 'server_boot 会发启动卡片'
+                : 'server_boot 不新发启动卡片';
+            return `${manualStart}；${weeklyReauth}；${serverBoot}；${startupCard}`;
+        }
+
         function deriveDataHealth(latestBar) {
             const lastBarTimeMs = Number(latestBar?.bar_time_ms || 0) || 0;
             if (!lastBarTimeMs) {
@@ -1544,6 +1604,9 @@
             state.active = state.active === true;
             state.status = String(state.status || '').trim().toLowerCase() || 'idle';
             state.reason = normalizeManualAuthReason(state.reason || '');
+            state.startup_label = String(state.startup_label || '').trim();
+            state.startup_chat_id = String(state.startup_chat_id || '').trim();
+            state.cycle_id = String(state.cycle_id || '').trim();
             state.current_step = mapStartupStepKey(state.current_step || '');
             state.current_blocker = String(state.current_blocker || '').trim();
             state.operator_action = String(state.operator_action || '').trim();
@@ -2036,6 +2099,12 @@
                     ? '已开始新一轮 2FA，请立即查看手机通知或飞书卡片。'
                     : '已请求 2FA 卡片，请在飞书点击按钮触发验证。';
             }
+            if (action === 'gateway_start' || action === 'gateway_stop' || action === 'gateway_restart') {
+                if (payload.message) return payload.message;
+                if (action === 'gateway_start') return 'Gateway 动作已执行。';
+                if (action === 'gateway_stop') return 'Gateway 停止动作已执行。';
+                return 'Gateway 重启动作已执行。';
+            }
             if (action === 'takeover_on' || action === 'takeover_off' || action === 'probe' || action === 'panic_reset_2fa') {
                 if (payload.message) return payload.message;
                 if (action === 'takeover_on') return '已开启人工接管，系统会继续静默探测。';
@@ -2341,8 +2410,14 @@
                 : (runtimeMismatch
                     ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
                     : `${getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactorState, startup))} · 2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${recoveryPhase ? ` · ${recoveryPhase}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}${keepCurrentCycleHint}`);
-            document.getElementById('authInfo').textContent = authSummary;
+            document.getElementById('authInfo').textContent = startup.startup_label
+                ? `${authSummary} · ${startup.startup_label}`
+                : authSummary;
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
+            const startupStrategyEl = document.getElementById('startupStrategyInfo');
+            if (startupStrategyEl) {
+                startupStrategyEl.textContent = `启动策略：${formatStartupStrategySummary(status)}`;
+            }
         }
 
         function renderRuntimeDetail(summary, health, status, twoFactorState, startupState, latestBar, latestIndicator, latestSignal) {
@@ -2352,6 +2427,8 @@
             const warmup = normalizeWarmup(status);
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const startup = normalizeStartupUiState(startupState);
+            const startupStrategy = getStartupStrategy(status);
+            const autoRestoreGuard = status?.auto_restore_guard || {};
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
             const latestBarWrite = latestBar ? String(getComputedTimeLabel(latestBar)).slice(0, 19) : '--';
             const latestIndicatorCalc = latestIndicator ? String(getComputedTimeLabel(latestIndicator)).slice(0, 19) : '--';
@@ -2360,6 +2437,8 @@
                 ['Gateway', status?.gateway?.running || status?.gateway?.reachable ? 'ACTIVE' : 'OFFLINE'],
                 ['Gateway Reachable', status?.gateway?.reachable ? 'YES' : 'NO'],
                 ['Gateway Manager', String(status?.gateway?.managed_by || '--').toUpperCase()],
+                ['Gateway PID', String(status?.gateway?.pid || '--')],
+                ['Gateway Uptime', formatSecondsLabel(status?.gateway?.uptime_s)],
                 ['Session', sessionAuthenticated ? 'AUTHENTICATED' : 'WAITING_FOR_2FA'],
                 ['2FA Status', String(twoFactor?.status || '--').toUpperCase()],
                 ['Recovery Phase', String(twoFactor?.recovery_phase || '--').toUpperCase()],
@@ -2382,10 +2461,22 @@
                 ['Operator Action', String(twoFactor?.operator_action || '--')],
                 ['Manual Auth Reason', getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactor, startup))],
                 ['Startup Flow', startup.active ? 'ACTIVE' : String(startup.status || '--').toUpperCase()],
+                ['Startup Label', String(startup?.startup_label || '--')],
+                ['Startup Cycle', String(startup?.cycle_id || '--')],
                 ['Startup Step', getStartupCurrentStepLabel(startup) || '--'],
                 ['Startup Blocker', String(startup?.current_blocker || '--')],
                 ['Startup Next Action', String(startup?.operator_action || '--')],
+                ['Startup Chat', String(startup?.startup_chat_id || '--')],
                 ['Startup Card Delivery', String(startup?.last_delivery_mode || '--').toUpperCase()],
+                ['Startup Strategy', formatStartupStrategySummary(status)],
+                ['Manual Start Policy', formatStartupModeLabel(startupStrategy.manual_start_mode)],
+                ['Weekly Reauth Policy', formatStartupModeLabel(startupStrategy.weekly_reauth_mode)],
+                ['Gateway Restart Policy', formatStartupModeLabel(startupStrategy.manual_gateway_restart_mode)],
+                ['Server Boot Policy', formatStartupModeLabel(startupStrategy.server_boot_mode)],
+                ['Server Boot Card', startupStrategy.server_boot_publish_startup_card ? 'YES' : 'NO'],
+                ['Fresh Cycle 2FA', startupStrategy.fresh_cycle_requires_manual_2fa ? 'MANUAL' : 'AUTO'],
+                ['Auto-Restore Guard', autoRestoreGuard?.blocked ? 'BLOCKED' : 'ALLOWED'],
+                ['Guard Reason', Array.isArray(autoRestoreGuard?.reasons) && autoRestoreGuard.reasons.length ? autoRestoreGuard.reasons.join(' | ') : '--'],
                 ['2FA Request', formatTimeLabel(twoFactor?.last_request_at)],
                 ['2FA Result', formatTimeLabel(twoFactor?.result_at)],
                 ['Last Compute', formatTimeLabel(computeHealth.last_compute)],
@@ -3123,6 +3214,30 @@
                         source: 'runtime_page'
                     }
                 },
+                gateway_start: {
+                    path: '/api/custom/ibkr/gateway/start',
+                    body: {
+                        environment: currentEnvironment,
+                        reason: 'manual_gateway_start',
+                        source: 'runtime_page'
+                    }
+                },
+                gateway_stop: {
+                    path: '/api/custom/ibkr/gateway/stop',
+                    body: {
+                        environment: currentEnvironment,
+                        reason: 'manual_gateway_stop',
+                        source: 'runtime_page'
+                    }
+                },
+                gateway_restart: {
+                    path: '/api/custom/ibkr/gateway/restart',
+                    body: {
+                        environment: currentEnvironment,
+                        reason: 'manual_gateway_restart',
+                        source: 'runtime_page'
+                    }
+                },
                 stop: { path: '/api/custom/ibkr/stop', body: { environment: currentEnvironment } },
                 reauth: {
                     path: '/api/custom/ibkr/2fa/request',
@@ -3237,7 +3352,7 @@
 
         async function handleRuntimeAction(action, overrideTarget = null) {
             if (actionPending) return;
-            const guardedActions = new Set(['start', 'stop', 'reauth', 'reauth_force_new', 'takeover_on', 'takeover_off', 'probe', 'panic_reset_2fa', 'emergency_runtime', 'emergency_compute', 'emergency_all']);
+            const guardedActions = new Set(['start', 'stop', 'gateway_start', 'gateway_stop', 'gateway_restart', 'reauth', 'reauth_force_new', 'takeover_on', 'takeover_off', 'probe', 'panic_reset_2fa', 'emergency_runtime', 'emergency_compute', 'emergency_all']);
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch && guardedActions.has(action)) {
                 document.getElementById('lastAction').textContent = runtimeMismatch.message;
@@ -3271,6 +3386,20 @@
             }
             if (action === 'emergency_trading' && !window.confirm('确认关闭交易执行？新的自动下单会被阻止。')) {
                 return;
+            }
+            if (action === 'gateway_stop' && !window.confirm('确认停止 Gateway？如果当前有运行线程或启动轮次，会同时中断当前轮次。')) {
+                return;
+            }
+            if (action === 'gateway_restart') {
+                const startup = normalizeStartupUiState(latestStartupState);
+                const runtimeActive = Boolean(latestRuntimeStatus?.starting || latestRuntimeStatus?.startup_complete || latestRuntimeStatus?.runtime_phase === 'running');
+                const requiresFreshCycle = runtimeActive || startup.active;
+                const message = requiresFreshCycle
+                    ? '确认重启 Gateway？这会进入新的启动轮次，并在新的启动卡片上等待你手动触发 2FA。'
+                    : '确认重启 Gateway？当前不会自动恢复 Runtime，也不会自动触发新的 2FA。';
+                if (!window.confirm(message)) {
+                    return;
+                }
             }
             if (action === 'panic_reset_2fa' && !window.confirm('确认执行“放弃当前轮次并干净重开”？这会终止当前 2FA、清空旧 Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起新的验证流程。')) {
                 return;

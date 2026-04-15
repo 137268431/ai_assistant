@@ -20,6 +20,7 @@ var MANUAL_AUTH_REASON_LABELS = {
     manual_start: "启动验证",
     startup: "启动验证",
     manual_reauth: "手动重登验证",
+    manual_gateway_restart: "网关重启验证",
     panic_reset_2fa: "重开验证",
 }
 var RECOVERY_FIELDS = [

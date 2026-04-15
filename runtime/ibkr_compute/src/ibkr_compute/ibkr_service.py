@@ -100,6 +100,8 @@ VALID_WATCHLIST_SYMBOL_ROLES = {
 DEFAULT_MARKET_WS_SYMBOLS = ("SPY", "QQQ", "VIX")
 DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
 DAILY_SCAN_STATE_DATE = "global"
+STARTUP_PROGRESS_STATE_KEY = "ibkr_runtime_startup"
+STARTUP_PROGRESS_STATE_DATE = "global"
 FORCE_FRESH_MANUAL_AUTH_CYCLE = str(
     os.environ.get("IBKR_FORCE_FRESH_MANUAL_AUTH_CYCLE", "true")
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -268,6 +270,10 @@ class IBKRTradingService:
         self._startup_source = ""
         self._startup_trigger_login = False
         self._startup_status_message_id = ""
+        self._manual_start_restart_gateway = True
+        self._weekly_reauth_restart_gateway = True
+        self._server_boot_resume_only = True
+        self._server_boot_publish_startup_card = False
         self._interval_prime_thread = None
         self._interval_prime_lock = threading.Lock()
         self._interval_prime_state = {
@@ -285,6 +291,26 @@ class IBKRTradingService:
         self._refresh_runtime_settings()
 
     def _refresh_runtime_settings(self):
+        self._manual_start_restart_gateway = self.config.get_bool_for_environment(
+            "ibkr_manual_start_restart_gateway",
+            ENVIRONMENT,
+            True,
+        )
+        self._weekly_reauth_restart_gateway = self.config.get_bool_for_environment(
+            "ibkr_weekly_reauth_restart_gateway",
+            ENVIRONMENT,
+            True,
+        )
+        self._server_boot_resume_only = self.config.get_bool_for_environment(
+            "ibkr_server_boot_resume_only",
+            ENVIRONMENT,
+            True,
+        )
+        self._server_boot_publish_startup_card = self.config.get_bool_for_environment(
+            "ibkr_server_boot_publish_startup_card",
+            ENVIRONMENT,
+            False,
+        )
         self.ws_client.set_order_updates_enabled(self.order_tracker.uses_websocket_updates())
 
     def _official_5m_enabled(self) -> bool:
@@ -447,19 +473,29 @@ class IBKRTradingService:
             return False
         return str(source or "").strip().lower() in FRESH_MANUAL_AUTH_SOURCES
 
-    def _prepare_fresh_manual_auth_cycle(self, reason: str, source: str) -> tuple[bool, dict]:
+    def _should_restart_gateway_before_start(self, reason: str, source: str, trigger_login: bool) -> bool:
+        if bool(trigger_login):
+            return False
+        source_key = str(source or "").strip().lower()
+        reason_key = str(reason or "").strip().lower()
+        if reason_key == "manual_start":
+            return bool(self._manual_start_restart_gateway)
+        if reason_key == "weekly_reauth":
+            return bool(self._weekly_reauth_restart_gateway)
+        if reason_key == "auto_restore" or source_key == "server_boot":
+            return not bool(self._server_boot_resume_only)
+        return False
+
+    def _restart_gateway_with_clean_session(self, reason: str, source: str) -> tuple[bool, dict]:
         source_key = str(source or "").strip().lower()
         detail = {
             "检查时间": self._now_et(),
             "启动来源": source_key or "unknown",
             "启动原因": reason or "manual_start",
         }
-        if not self._should_force_fresh_manual_auth_cycle(True, source_key):
-            detail["执行结果"] = "skipped"
-            return True, detail
 
         logger.info(
-            "Preparing fresh manual auth cycle: clearing cookies + restarting Gateway (source=%s reason=%s)",
+            "Restarting Gateway with clean session: source=%s reason=%s",
             source_key or "-",
             reason or "-",
         )
@@ -476,20 +512,68 @@ class IBKRTradingService:
         detail["GatewayPID"] = str(self.gateway_manager.pid or "")
 
         if not gateway_restarted:
-            logger.error("Failed to restart Gateway for fresh manual auth cycle")
+            logger.error("Failed to restart Gateway for clean session restart")
             detail["执行结果"] = "gateway_restart_failed"
             return False, detail
 
         time.sleep(1)
         self.session_keeper.check_auth_status()
         time.sleep(1)
+        detail["Session已认证"] = "yes" if self.session_keeper.is_authenticated else "no"
         detail["执行结果"] = "ok"
+        return True, detail
+
+    def _prepare_fresh_manual_auth_cycle(self, reason: str, source: str) -> tuple[bool, dict]:
+        source_key = str(source or "").strip().lower()
+        detail = {
+            "检查时间": self._now_et(),
+            "启动来源": source_key or "unknown",
+            "启动原因": reason or "manual_start",
+        }
+        if not self._should_force_fresh_manual_auth_cycle(True, source_key):
+            detail["执行结果"] = "skipped"
+            return True, detail
+
+        ok, restart_detail = self._restart_gateway_with_clean_session(reason, source_key)
+        detail.update(restart_detail)
+        if not ok:
+            logger.error("Failed to restart Gateway for fresh manual auth cycle")
+            return False, detail
         logger.info(
             "Fresh manual auth cycle ready: gateway_pid=%s authenticated=%s",
             self.gateway_manager.pid or "-",
             self.session_keeper.is_authenticated,
         )
         return True, detail
+
+    def startup_strategy(self) -> dict:
+        manual_start_mode = "fresh_cycle" if self._manual_start_restart_gateway else "resume_only"
+        weekly_reauth_mode = "fresh_cycle" if self._weekly_reauth_restart_gateway else "resume_only"
+        server_boot_mode = "resume_only" if self._server_boot_resume_only else "fresh_cycle"
+        manual_gateway_restart_mode = "fresh_cycle"
+        server_boot_card = bool(self._server_boot_publish_startup_card)
+        startup_card_scope = "all_startups" if server_boot_card else "fresh_cycles_only"
+        summary = (
+            "手动启动 / 每周重验 / Gateway 重启走 fresh cycle；"
+            "server_boot 默认只做 resume，不主动新开 2FA。"
+        )
+        if server_boot_mode == "fresh_cycle":
+            summary = "手动启动、每周重验、Gateway 重启与 server_boot 都会走 fresh cycle。"
+        elif server_boot_card:
+            summary = (
+                "手动启动 / 每周重验 / Gateway 重启走 fresh cycle；"
+                "server_boot 默认只做 resume，但会同步发送启动卡片。"
+            )
+        return {
+            "manual_start_mode": manual_start_mode,
+            "weekly_reauth_mode": weekly_reauth_mode,
+            "manual_gateway_restart_mode": manual_gateway_restart_mode,
+            "server_boot_mode": server_boot_mode,
+            "server_boot_publish_startup_card": server_boot_card,
+            "fresh_cycle_requires_manual_2fa": True,
+            "startup_card_scope": startup_card_scope,
+            "summary": summary,
+        }
 
     def _now_iso(self) -> str:
         return datetime.now(ET).isoformat()
@@ -509,6 +593,68 @@ class IBKRTradingService:
         if self._running:
             return "running"
         return "stopped"
+
+    def _load_startup_progress_state(self) -> dict:
+        if not self.pb:
+            return {}
+        try:
+            record = self.pb.get_state(STARTUP_PROGRESS_STATE_KEY, ENVIRONMENT, date=STARTUP_PROGRESS_STATE_DATE) or {}
+            data = record.get("data") if isinstance(record, dict) else {}
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except Exception:
+                    data = {}
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.debug("Failed to load startup progress state: %s", exc)
+            return {}
+
+    def startup_progress_snapshot(self) -> dict:
+        data = self._load_startup_progress_state()
+        return {
+            "active": bool(data.get("active")),
+            "status": str(data.get("status") or ""),
+            "cycle_id": str(data.get("cycle_id") or ""),
+            "startup_label": str(data.get("startup_label") or ""),
+            "startup_chat_id": str(data.get("startup_chat_id") or ""),
+            "message_id": str(data.get("message_id") or ""),
+            "reason": str(data.get("reason") or ""),
+            "source": str(data.get("source") or ""),
+            "current_step": str(data.get("current_step") or ""),
+            "current_blocker": str(data.get("current_blocker") or ""),
+            "operator_action": str(data.get("operator_action") or ""),
+        }
+
+    def _has_active_startup_cycle(self) -> bool:
+        return bool(self.startup_progress_snapshot().get("active"))
+
+    def auto_restore_guard(self) -> dict:
+        startup = self.startup_progress_snapshot()
+        auth = self._copy_auth_recovery_state()
+        phase = str(auth.get("recovery_phase") or "").strip().lower()
+        lock_owner = str(auth.get("lock_owner") or "").strip().lower()
+        blocked_reasons = []
+
+        if bool(startup.get("active")):
+            blocked_reasons.append("startup_cycle_active")
+        if phase in {"panic_resetting", "starting_runtime", "silent_probe", "requested", "manual_takeover"}:
+            blocked_reasons.append(f"auth_recovery_phase:{phase}")
+        if lock_owner in {"panic_reset", "runtime_start", "auth_probe", "manual_takeover"}:
+            blocked_reasons.append(f"auth_recovery_lock:{lock_owner}")
+        if self._auth_restart_thread and self._auth_restart_thread.is_alive():
+            blocked_reasons.append("auth_restart_thread_alive")
+
+        return {
+            "allowed": not blocked_reasons,
+            "blocked": bool(blocked_reasons),
+            "reasons": blocked_reasons,
+            "startup_active": bool(startup.get("active")),
+            "startup_status": str(startup.get("status") or ""),
+            "startup_label": str(startup.get("startup_label") or ""),
+            "auth_recovery_phase": phase,
+            "auth_recovery_lock_owner": lock_owner,
+        }
 
     def _build_startup_pending_detail(self, reason: str, source: str, trigger_login: bool) -> dict:
         detail = {
@@ -570,11 +716,20 @@ class IBKRTradingService:
         reason_key = str(reason or "").strip().lower()
         if bool(trigger_login):
             return True
+        if reason_key == "auto_restore" or source_key == "server_boot":
+            return bool(self._server_boot_publish_startup_card or not self._server_boot_resume_only)
         if source_key in {"api_start", "runtime_page", "feishu_callback", "feishu_2fa", "codex_validation"}:
             return True
-        if reason_key in {"manual_start", "manual_reauth", "panic_reset_2fa"}:
+        if reason_key in {"manual_start", "manual_reauth", "weekly_reauth", "panic_reset_2fa", "manual_gateway_restart"}:
             return True
         return False
+
+    def _should_promote_auth_wait_to_startup_cycle(self, reason: str, source: str, trigger_login: bool) -> bool:
+        if bool(trigger_login) or self._startup_progress_enabled:
+            return False
+        source_key = str(source or "").strip().lower()
+        reason_key = str(reason or "").strip().lower()
+        return source_key == "server_boot" or reason_key == "auto_restore"
 
     def _sync_startup_progress(
         self,
@@ -2752,7 +2907,13 @@ class IBKRTradingService:
 
         try:
             logger.info("=" * 60)
-            logger.info("IBKR Trading Service starting (env=%s)", ENVIRONMENT)
+            logger.info(
+                "IBKR Trading Service starting (env=%s reason=%s source=%s trigger_login=%s)",
+                ENVIRONMENT,
+                reason or "-",
+                source or "-",
+                bool(trigger_login),
+            )
             logger.info("=" * 60)
             self._set_auth_recovery_state(
                 recovery_phase="starting_runtime",
@@ -2766,6 +2927,42 @@ class IBKRTradingService:
             self.config.refresh()
             self._refresh_runtime_settings()
             self._announce_startup_pending(reason, source, trigger_login)
+
+            if self._should_restart_gateway_before_start(reason, source, trigger_login):
+                self._sync_startup_progress(
+                    action="update",
+                    title="IBKR Runtime 启动中",
+                    summary="手动启动默认先重启 Gateway，确保本轮启动与 2FA 使用全新会话。",
+                    current_step="gateway",
+                    current_blocker="正在重启 Gateway 并清空旧 Session",
+                    operator_action="等待 Gateway 重启完成后进入当前轮次",
+                    steps={
+                        "gateway": {
+                            "status": "running",
+                            "detail": "手动启动 / 每周重验会先重启 Gateway，再进入人工 2FA。",
+                        },
+                    },
+                    fields=self._build_startup_progress_fields(reason, source, trigger_login),
+                    reason=reason,
+                    source=source,
+                    trigger_login=trigger_login,
+                )
+                prepared, gateway_detail = self._restart_gateway_with_clean_session(reason, source)
+                if not prepared:
+                    logger.error("Gateway preflight restart failed, exiting")
+                    startup_exit_notice = {
+                        "level": "error",
+                        "title": "IBKR Runtime 启动失败",
+                        "detail": {
+                            "异常结论": "Gateway 重启失败，Runtime 未能进入新的启动轮次。",
+                            "检查时间": self._now_et(),
+                            "失败阶段": "gateway",
+                            "启动原因": reason or "manual_start",
+                            "启动来源": source or "api_start",
+                            **gateway_detail,
+                        },
+                    }
+                    return
 
             if not self._ensure_gateway():
                 logger.error("Gateway setup failed, exiting")
@@ -2813,6 +3010,14 @@ class IBKRTradingService:
 
             if not self.session_keeper.is_authenticated:
                 if not trigger_login:
+                    if self._should_promote_auth_wait_to_startup_cycle(reason, source, trigger_login):
+                        logger.info(
+                            "Promoting hidden auth wait into visible startup cycle (reason=%s source=%s)",
+                            reason or "-",
+                            source or "-",
+                        )
+                        self._startup_progress_enabled = True
+                        self._announce_startup_pending(reason, source, False)
                     logger.warning("Not authenticated and trigger_login disabled; requesting manual 2FA")
                     self._request_manual_2fa(reason, "检测到会话未认证，请在准备好时点击按钮触发 2FA。")
                     self._set_auth_recovery_state(
@@ -5325,9 +5530,12 @@ class IBKRTradingService:
             else "stale"
         )
         return {
+            "gateway_control_available": True,
             "starting": self._starting,
             "startup_complete": bool(self._running and not self._starting),
             "runtime_phase": self._runtime_phase_label(),
+            "startup_strategy": self.startup_strategy(),
+            "auto_restore_guard": self.auto_restore_guard(),
             "environment": ENVIRONMENT,
             "gateway": self.gateway_manager.status(),
             "auth_recovery": self._copy_auth_recovery_state(),

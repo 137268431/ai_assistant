@@ -3305,6 +3305,14 @@ def _maybe_restore_ibkr_service(service):
         return
     if getattr(service, "is_busy", False):
         return
+    if hasattr(service, "auto_restore_guard"):
+        try:
+            guard = service.auto_restore_guard() or {}
+        except Exception:
+            traceback.print_exc()
+            guard = {}
+        if guard.get("blocked"):
+            return
 
     _ibkr_restore_attempted = True
     timestamps = build_runtime_timestamps()
@@ -4501,10 +4509,46 @@ def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_s
 
 def _build_uninitialized_runtime_status(runtime_environment: str, error: str | None = None) -> dict:
     detail = str(error or "IBKR service not initialized").strip() or "IBKR service not initialized"
+    manual_start_restart_gateway = cfg.get_bool_for_environment("ibkr_manual_start_restart_gateway", runtime_environment, True)
+    weekly_reauth_restart_gateway = cfg.get_bool_for_environment("ibkr_weekly_reauth_restart_gateway", runtime_environment, True)
+    server_boot_resume_only = cfg.get_bool_for_environment("ibkr_server_boot_resume_only", runtime_environment, True)
+    server_boot_publish_startup_card = cfg.get_bool_for_environment("ibkr_server_boot_publish_startup_card", runtime_environment, False)
+    startup_strategy_summary = (
+        "手动启动 / 每周重验 / Gateway 重启走 fresh cycle；"
+        "server_boot 默认只做 resume，不主动新开 2FA。"
+    )
+    if not server_boot_resume_only:
+        startup_strategy_summary = "手动启动、每周重验、Gateway 重启与 server_boot 都会走 fresh cycle。"
+    elif server_boot_publish_startup_card:
+        startup_strategy_summary = (
+            "手动启动 / 每周重验 / Gateway 重启走 fresh cycle；"
+            "server_boot 默认只做 resume，但会同步发送启动卡片。"
+        )
     return {
         "ok": False,
         "environment": _normalize_runtime_environment_name(runtime_environment, "live"),
         "error": detail,
+        "gateway_control_available": True,
+        "startup_strategy": {
+            "manual_start_mode": "fresh_cycle" if manual_start_restart_gateway else "resume_only",
+            "weekly_reauth_mode": "fresh_cycle" if weekly_reauth_restart_gateway else "resume_only",
+            "manual_gateway_restart_mode": "fresh_cycle",
+            "server_boot_mode": "resume_only" if server_boot_resume_only else "fresh_cycle",
+            "server_boot_publish_startup_card": bool(server_boot_publish_startup_card),
+            "fresh_cycle_requires_manual_2fa": True,
+            "startup_card_scope": "all_startups" if server_boot_publish_startup_card else "fresh_cycles_only",
+            "summary": startup_strategy_summary,
+        },
+        "auto_restore_guard": {
+            "allowed": True,
+            "blocked": False,
+            "reasons": [],
+            "startup_active": False,
+            "startup_status": "",
+            "startup_label": "",
+            "auth_recovery_phase": "",
+            "auth_recovery_lock_owner": "",
+        },
         "starting": False,
         "startup_complete": False,
         "runtime_phase": "stopped",
@@ -4649,6 +4693,35 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "trading_gate_reason": "runtime_unavailable",
         },
     }
+
+
+def _build_gateway_action_payload(
+    service,
+    action: str,
+    *,
+    ok: bool,
+    message: str,
+    reason: str = "",
+    source: str = "",
+    extra: dict | None = None,
+) -> dict:
+    payload = {
+        "ok": bool(ok),
+        "action": str(action or "").strip() or "gateway",
+        "message": str(message or "").strip(),
+        "environment": _ibkr_service_environment(service),
+        "reason": str(reason or "").strip(),
+        "source": str(source or "").strip(),
+        "gateway": service.gateway_manager.status(),
+        "runtime_running": bool(getattr(service, "is_running", False)),
+        "runtime_starting": bool(getattr(service, "is_starting", False)),
+        "startup": service.startup_progress_snapshot() if hasattr(service, "startup_progress_snapshot") else {},
+        "startup_strategy": service.startup_strategy() if hasattr(service, "startup_strategy") else {},
+        "auto_restore_guard": service.auto_restore_guard() if hasattr(service, "auto_restore_guard") else {},
+    }
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 def _append_monitor_flag(flags: list[dict], severity: str, code: str, title: str, detail: str) -> None:
@@ -4989,6 +5062,195 @@ def ibkr_stop():
         },
     )
     return jsonify({"ok": True, "message": "IBKR service stopped"})
+
+
+@app.route("/ibkr/gateway/start", methods=["POST"])
+def ibkr_gateway_start():
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get("reason") or "manual_gateway_start").strip() or "manual_gateway_start"
+    source = str(payload.get("source") or "api_gateway_start").strip() or "api_gateway_start"
+
+    ok = bool(service.gateway_manager.start())
+    try:
+        service.session_keeper.check_auth_status()
+    except Exception:
+        pass
+
+    return jsonify(
+        _build_gateway_action_payload(
+            service,
+            "start",
+            ok=ok,
+            message="Gateway 已启动。" if ok else "Gateway 启动失败。",
+            reason=reason,
+            source=source,
+            extra={
+                "gateway_started": ok,
+                "startup_cycle_planned": False,
+            },
+        )
+    )
+
+
+@app.route("/ibkr/gateway/stop", methods=["POST"])
+def ibkr_gateway_stop():
+    global _ibkr_restore_attempted
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get("reason") or "manual_gateway_stop").strip() or "manual_gateway_stop"
+    source = str(payload.get("source") or "api_gateway_stop").strip() or "api_gateway_stop"
+    runtime_environment = _ibkr_service_environment(service)
+    startup_state = service.startup_progress_snapshot() if hasattr(service, "startup_progress_snapshot") else {}
+    runtime_active = bool(getattr(service, "is_running", False) or getattr(service, "is_starting", False))
+    startup_active = bool(startup_state.get("active"))
+
+    if runtime_active:
+        service.stop()
+    gateway_stopped = bool(service.gateway_manager.stop())
+    _ibkr_restore_attempted = False
+
+    if runtime_active or startup_active:
+        set_ibkr_runtime_control(
+            runtime_environment,
+            False,
+            source=source,
+            reason=reason,
+            extra={
+                "last_restore_trigger_login": False,
+            },
+        )
+
+    if startup_active:
+        event_detail = {
+            "状态结论": "Gateway 已被手动停止，当前启动轮次已终止。",
+            "检查时间": datetime.now(timezone.utc).isoformat(),
+            "执行动作": "manual_gateway_stop",
+        }
+        service._sync_startup_progress(
+            action="abort",
+            title="IBKR Runtime 启动已中断",
+            summary="Gateway 已手动停止，当前启动轮次终止。",
+            current_step="gateway",
+            current_blocker="Gateway 已手动停止",
+            operator_action="需要时重新启动 Runtime，系统会创建新的启动卡片。",
+            steps={
+                "gateway": {
+                    "status": "failed",
+                    "detail": "Gateway 已手动停止，当前启动轮次终止。",
+                },
+            },
+            fields=service._build_startup_progress_fields(
+                str(startup_state.get("reason") or reason or "manual_gateway_stop"),
+                source,
+                False,
+                event_detail,
+            ),
+            reason=str(startup_state.get("reason") or reason or "manual_gateway_stop"),
+            source=source,
+            trigger_login=False,
+            record_event=True,
+            event_type="status_change",
+            event_title="IBKR Runtime 启动已中断",
+            event_detail=event_detail,
+            level="warning",
+            allow_when_disabled=True,
+        )
+
+    return jsonify(
+        _build_gateway_action_payload(
+            service,
+            "stop",
+            ok=gateway_stopped,
+            message="Gateway 已停止。" if gateway_stopped else "Gateway 停止失败。",
+            reason=reason,
+            source=source,
+            extra={
+                "gateway_stopped": gateway_stopped,
+                "runtime_stopped": runtime_active,
+                "startup_cycle_aborted": startup_active,
+            },
+        )
+    )
+
+
+@app.route("/ibkr/gateway/restart", methods=["POST"])
+def ibkr_gateway_restart():
+    global _ibkr_restore_attempted
+    service = get_ibkr_service()
+    if not service:
+        return jsonify({"ok": False, "error": "IBKR service not initialized"}), 503
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get("reason") or "manual_gateway_restart").strip() or "manual_gateway_restart"
+    source = str(payload.get("source") or "api_gateway_restart").strip() or "api_gateway_restart"
+    runtime_environment = _ibkr_service_environment(service)
+    startup_state = service.startup_progress_snapshot() if hasattr(service, "startup_progress_snapshot") else {}
+    requires_fresh_cycle = bool(
+        getattr(service, "is_running", False)
+        or getattr(service, "is_starting", False)
+        or startup_state.get("active")
+    )
+
+    _ibkr_restore_attempted = False
+
+    if requires_fresh_cycle:
+        set_ibkr_runtime_control(
+            runtime_environment,
+            True,
+            source=source,
+            reason=reason,
+            extra={
+                "last_restore_trigger_login": False,
+            },
+        )
+        result = service.panic_reset_auth(
+            restart_gateway=True,
+            restart_runtime=True,
+            trigger_login=False,
+            reason=reason,
+            source=source,
+        )
+        return jsonify(
+            _build_gateway_action_payload(
+                service,
+                "restart",
+                ok=True,
+                message="Gateway 已重启并进入新的启动轮次；下一步请在新的启动卡片点击“开始 2FA 验证”。",
+                reason=reason,
+                source=source,
+                extra={
+                    "gateway_restarted": bool(result.get("gateway_restarted")),
+                    "runtime_restart_requested": bool(result.get("runtime_started")),
+                    "startup_cycle_planned": True,
+                    "panic_reset": result,
+                },
+            )
+        )
+
+    ok = bool(service.gateway_manager.restart())
+    try:
+        service.session_keeper.check_auth_status()
+    except Exception:
+        pass
+
+    return jsonify(
+        _build_gateway_action_payload(
+            service,
+            "restart",
+            ok=ok,
+            message="Gateway 已重启。" if ok else "Gateway 重启失败。",
+            reason=reason,
+            source=source,
+            extra={
+                "gateway_restarted": ok,
+                "startup_cycle_planned": False,
+            },
+        )
+    )
 
 
 @app.route("/ibkr/status", methods=["GET"])

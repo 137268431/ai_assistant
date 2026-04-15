@@ -5,7 +5,7 @@ var systemEvents = require(`${__hooks}/lib/system_events.js`)
 
 var STARTUP_STATE_KEY = "ibkr_runtime_startup"
 var STARTUP_STATE_DATE = "global"
-var SYSTEM_CHAT_ID = "oc_b7b52fc28816d90e27ce50ca7922a9ac"
+var STARTUP_CHAT_ID = "oc_cc5d0a950797b1c2c010953e14bceeff"
 var DEFAULT_PB_PUBLIC_URL = "https://pb.lzw-glory.top"
 
 var STEP_ORDER = [
@@ -43,8 +43,33 @@ var STEP_STATUS = {
     skipped: { icon: "➖", text: "非阻塞" },
 }
 
-function getSystemChatId(environment) {
-    return String(envUtils.getConfigValue("system_status_chat_id", SYSTEM_CHAT_ID, environment) || SYSTEM_CHAT_ID).trim() || SYSTEM_CHAT_ID
+function getStartupChatId(environment) {
+    return String(envUtils.getConfigValue("system_startup_chat_id", STARTUP_CHAT_ID, environment) || STARTUP_CHAT_ID).trim() || STARTUP_CHAT_ID
+}
+
+function padNumber(value, width) {
+    var text = String(Math.max(0, parseInt(value, 10) || 0))
+    while (text.length < width) {
+        text = "0" + text
+    }
+    return text
+}
+
+function formatStartupLabelTimestamp(timestamp) {
+    var text = String(timestamp || "").trim()
+    if (!text) return ""
+    var compact = text.replace(/[^0-9]/g, "")
+    if (compact.length >= 14) return compact.slice(0, 14)
+    return ""
+}
+
+function buildStartupLabel(environment, sequence, startedAt) {
+    var env = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT).toUpperCase()
+    var compactTs = formatStartupLabelTimestamp(startedAt)
+    if (!compactTs) {
+        compactTs = formatStartupLabelTimestamp(timeUtils.getTimeStrings().us) || String(Date.now())
+    }
+    return env + "-" + compactTs.slice(0, 8) + "-" + compactTs.slice(8, 14) + "-" + padNumber(sequence, 3)
 }
 
 function normalizeStepStatus(value) {
@@ -273,6 +298,8 @@ function normalizeState(rawState, environment) {
     var state = rawState && typeof rawState === "object" ? rawState : {}
     return {
         cycle_id: String(state.cycle_id || ""),
+        startup_seq: Math.max(0, parseInt(state.startup_seq, 10) || 0),
+        startup_label: String(state.startup_label || ""),
         active: state.active === true,
         status: String(state.status || "idle").trim().toLowerCase() || "idle",
         title: String(state.title || "IBKR Runtime 启动中"),
@@ -288,6 +315,7 @@ function normalizeState(rawState, environment) {
         trigger_login: state.trigger_login === true,
         runtime_phase: String(state.runtime_phase || ""),
         runtime_url: String(state.runtime_url || ""),
+        startup_chat_id: String(state.startup_chat_id || ""),
         message_id: String(state.message_id || ""),
         last_delivery_mode: String(state.last_delivery_mode || ""),
         last_delivery_at: String(state.last_delivery_at || ""),
@@ -411,6 +439,8 @@ function buildChecklistMarkdown(steps) {
 
 function buildContextMarkdown(state) {
     var lines = [
+        "**启动编号**: " + (state.startup_label || "-"),
+        "**内部轮次**: " + (state.cycle_id || "-"),
         "**环境**: " + envUtils.getEnvironmentTag(state.environment || ""),
         "**最近更新时间**: " + (state.last_update_at || "-"),
     ]
@@ -477,6 +507,7 @@ function buildStartupCard(state, environment) {
         )
 
     var summaryLines = [
+        "**启动编号**: " + (normalized.startup_label || "-"),
         "**当前阶段**: " + currentStepLabel,
         "**当前卡点**: " + (normalized.current_blocker || normalized.summary || "-"),
         "**下一步**: " + (normalized.operator_action || "等待系统继续推进"),
@@ -568,10 +599,10 @@ function deliverCard(savedState) {
         result = feishuApp.updateMessageCard(messageId, card, savedState.environment)
         if (!result || result.success !== true) {
             deliveryMode = "replace"
-            result = feishuApp.sendMessageDetailed("interactive", card, getSystemChatId(savedState.environment), "chat_id", savedState.environment)
+            result = feishuApp.sendMessageDetailed("interactive", card, getStartupChatId(savedState.environment), "chat_id", savedState.environment)
         }
     } else {
-        result = feishuApp.sendMessageDetailed("interactive", card, getSystemChatId(savedState.environment), "chat_id", savedState.environment)
+        result = feishuApp.sendMessageDetailed("interactive", card, getStartupChatId(savedState.environment), "chat_id", savedState.environment)
     }
 
     if (result && result.success) {
@@ -600,9 +631,46 @@ function deliverCard(savedState) {
 }
 
 function shouldCreateCycle(action, state, createIfMissing) {
-    if (state.active) return false
     if (action === "begin") return true
+    if (state.active) return false
     return createIfMissing === true
+}
+
+function updateArchivedCycleMessage(state, environment, replacementLabel) {
+    var previous = normalizeState(state, environment)
+    var messageId = String(previous.message_id || "").trim()
+    if (!messageId) return
+
+    var times = timeUtils.getTimeStrings()
+    previous.active = false
+    previous.status = "aborted"
+    previous.summary = "当前启动轮次已被新的启动编号取代，请改看最新卡片。"
+    previous.current_blocker = replacementLabel
+        ? ("当前轮次已终止，请改看新的启动编号 " + replacementLabel)
+        : "当前轮次已终止，请改看最新启动卡片。"
+    previous.operator_action = replacementLabel
+        ? ("改看新的启动卡片: " + replacementLabel)
+        : "改看最新启动卡片。"
+    previous.finished_at = previous.finished_at || times.us
+    previous.last_update_at = times.us
+
+    if (previous.current_step) {
+        var currentStepKey = mapStepKeyToDisplayKey(previous.current_step)
+        if (currentStepKey && previous.steps && previous.steps[currentStepKey]) {
+            applyStepPatch(previous.steps, currentStepKey, {
+                status: "failed",
+                detail: replacementLabel
+                    ? ("当前轮次已终止，请改看新的启动编号 " + replacementLabel)
+                    : "当前轮次已终止，请改看最新启动卡片。",
+            })
+        }
+    }
+
+    try {
+        feishuApp.updateMessageCard(messageId, buildStartupCard(previous, environment), environment)
+    } catch (err) {
+        console.log("[FeishuStartup] archive previous cycle failed:", environment, messageId, err && err.message ? err.message : String(err))
+    }
 }
 
 function syncStartupProgress(options) {
@@ -615,17 +683,36 @@ function syncStartupProgress(options) {
     var createIfMissing = opts.create_if_missing === true
     var eventSource = String(opts.event_source || opts.source || "ibkr_compute").trim() || "ibkr_compute"
     var next = normalizeState(current, runtimeEnvironment)
+    var nextStartupSeq = current.startup_seq || 0
+    var nextStartupLabel = current.startup_label || ""
+    var startupChatId = getStartupChatId(runtimeEnvironment)
 
     if (shouldCreateCycle(action, current, createIfMissing)) {
+        nextStartupSeq = Math.max(0, parseInt(current.startup_seq, 10) || 0) + 1
+        nextStartupLabel = buildStartupLabel(runtimeEnvironment, nextStartupSeq, times.us)
+        if (current.active && current.message_id) {
+            updateArchivedCycleMessage(current, runtimeEnvironment, nextStartupLabel)
+        }
         next.cycle_id = buildCycleId(runtimeEnvironment)
+        next.startup_seq = nextStartupSeq
+        next.startup_label = nextStartupLabel
         next.active = true
         next.status = "active"
         next.started_at = times.us
         next.finished_at = ""
+        next.startup_chat_id = startupChatId
+        next.message_id = ""
+        next.last_delivery_mode = ""
+        next.last_delivery_at = ""
+        next.last_delivery_error = ""
+        next.fields = {}
         next.steps = defaultSteps()
     } else if (!current.cycle_id) {
         next.cycle_id = buildCycleId(runtimeEnvironment)
+        next.startup_seq = Math.max(1, parseInt(current.startup_seq, 10) || 1)
+        next.startup_label = current.startup_label || buildStartupLabel(runtimeEnvironment, next.startup_seq, current.started_at || times.us)
     }
+    next.startup_chat_id = startupChatId
 
     if (opts.title != null) next.title = String(opts.title || next.title || "IBKR Runtime 启动中")
     if (opts.summary != null) next.summary = String(opts.summary || "")
@@ -710,6 +797,7 @@ function syncStartupProgress(options) {
         environment: runtimeEnvironment,
         date: STARTUP_STATE_DATE,
         cycle_id: next.cycle_id,
+        startup_label: next.startup_label,
         message_id: delivered.message_id || next.message_id || "",
         state: normalizeState(saved.data || next, runtimeEnvironment),
         result: delivered.result || {},
