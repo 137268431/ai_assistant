@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 
 def _service_mod():
@@ -155,9 +156,16 @@ class TradingServiceWarmupCycleMixin:
             readiness["trading_gate_reason"] = "warmup_incomplete"
         return readiness
 
-    def _run_warmup_preflight_repairs(self, snapshot: dict) -> dict:
+    def _run_warmup_preflight_repairs(
+        self,
+        snapshot: dict,
+        integrity_reference_et: datetime | None = None,
+    ) -> dict:
         service_mod = _service_mod()
-        repair_plan = self._build_startup_history_repair_plan(snapshot.get("symbols") or [])
+        repair_plan = self._build_startup_history_repair_plan(
+            snapshot.get("symbols") or [],
+            et_now=integrity_reference_et,
+        )
         period_overrides = self._build_startup_history_period_overrides(repair_plan)
         if not repair_plan:
             return {
@@ -186,7 +194,10 @@ class TradingServiceWarmupCycleMixin:
             run_pipeline_repair=False,
             history_period_overrides=period_overrides,
         )
-        remaining_plan = self._build_startup_history_repair_plan(snapshot.get("symbols") or [])
+        remaining_plan = self._build_startup_history_repair_plan(
+            snapshot.get("symbols") or [],
+            et_now=integrity_reference_et,
+        )
         history_written_total = 0
         for item in (repair_result.get("per_symbol") or {}).values():
             result = (item or {}).get("result") or {}
@@ -226,6 +237,7 @@ class TradingServiceWarmupCycleMixin:
         started_at = self._now_iso()
         warmup_started_perf = time.perf_counter()
         warmup_timings = {}
+        integrity_reference_et = datetime.now(service_mod.ET)
         self._set_warmup_state(
             phase="running",
             reason=str(self._warmup_state.get("reason") or "warmup"),
@@ -301,7 +313,10 @@ class TradingServiceWarmupCycleMixin:
             warmup_timings["cursor_load_s"] = round(time.perf_counter() - step_started, 3)
 
             step_started = time.perf_counter()
-            preflight_result = self._run_warmup_preflight_repairs(snapshot)
+            preflight_result = self._run_warmup_preflight_repairs(
+                snapshot,
+                integrity_reference_et=integrity_reference_et,
+            )
             warmup_timings["preflight_repair_s"] = round(time.perf_counter() - step_started, 3)
             compute_result["preflight_repair"] = preflight_result
             preflight_blockers = {
@@ -565,7 +580,10 @@ class TradingServiceWarmupCycleMixin:
         readiness = self._collect_warmup_readiness(snapshot)
         final_preflight = dict(compute_result.get("preflight_repair") or {})
         if final_preflight.get("initial_repair_symbols") or backfill_result:
-            final_remaining_plan = self._build_startup_history_repair_plan(snapshot["symbols"])
+            final_remaining_plan = self._build_startup_history_repair_plan(
+                snapshot["symbols"],
+                et_now=integrity_reference_et,
+            )
             final_preflight["remaining_repair_symbols"] = sorted(final_remaining_plan.keys())
             final_preflight["repair_reasons"] = {
                 symbol: str((data or {}).get("repair_reason") or "history_repair_pending")

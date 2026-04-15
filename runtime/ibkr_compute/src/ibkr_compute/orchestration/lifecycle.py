@@ -548,7 +548,11 @@ class TradingServiceLifecycleMixin:
         )
         return True
 
-    def _collect_startup_history_repair_snapshot(self, symbol: str) -> dict:
+    def _collect_startup_history_repair_snapshot(
+        self,
+        symbol: str,
+        et_now: datetime | None = None,
+    ) -> dict:
         service_mod = _service_mod()
         normalized_symbol = str(symbol or "").strip().upper()
         snapshot = {
@@ -576,12 +580,14 @@ class TradingServiceLifecycleMixin:
         expected_ms = service_mod.interval_to_ms("5m")
         bars_needed = max(400, min_bars + 20)
         max_pages = max(2, min(8, (bars_needed + 199) // 200))
-        et_now = datetime.now(service_mod.ET)
-        market_date = et_now.strftime("%Y-%m-%d")
-        expected_today_regular_ms = self._expected_startup_today_regular_ms(et_now)
+        current_et = et_now or datetime.now(service_mod.ET)
+        market_date = current_et.strftime("%Y-%m-%d")
+        expected_today_regular_ms = self._expected_startup_today_regular_ms(current_et)
         require_today_regular = expected_today_regular_ms > 0
         freshness_tolerance_ms = max(expected_ms * 3, 15 * 60 * 1000)
         snapshot["expected_today_regular_ms"] = expected_today_regular_ms
+        end_hour, end_minute = self._trade_window_end()
+        session_end = current_et.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
 
         try:
             rows = self.pb.get_all_records(
@@ -653,8 +659,18 @@ class TradingServiceLifecycleMixin:
                 missing_ms = max(0, expected_today_regular_ms - latest_today_regular_ms)
                 missing_bars = max(1, int((missing_ms + expected_ms - 1) // expected_ms))
                 stale_minutes = max(0, int(missing_ms // 60000))
-                reasons.append(f"today_regular_incomplete={missing_bars}")
-                if stale_minutes > 0 and stale_minutes > int(freshness_tolerance_ms // 60000):
+                latest_bar_grace = (
+                    missing_bars == 1
+                    and int(snapshot.get("today_gap_count", 0) or 0) == 0
+                    and current_et < session_end
+                )
+                if not latest_bar_grace:
+                    reasons.append(f"today_regular_incomplete={missing_bars}")
+                if (
+                    not latest_bar_grace
+                    and stale_minutes > 0
+                    and stale_minutes > int(freshness_tolerance_ms // 60000)
+                ):
                     reasons.append(f"today_regular_stale={stale_minutes}m")
         if int(snapshot.get("today_gap_count", 0) or 0) > 0:
             reasons.append(f"today_regular_gaps={int(snapshot.get('today_gap_count', 0) or 0)}")

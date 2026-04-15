@@ -19,6 +19,7 @@ from ibkr_compute.core.config import Config
 from ibkr_compute.gateway.gateway_manager import GatewayManager
 from ibkr_compute.gateway.session_keeper import SessionKeeper
 from ibkr_compute.gateway.auth_handler import AuthHandler
+from ibkr_compute.gateway.cookie_store import clear_cookies
 from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.ws_client import IBKRWebSocketClient
 from ibkr_compute.market.bar_aggregator import BarAggregator

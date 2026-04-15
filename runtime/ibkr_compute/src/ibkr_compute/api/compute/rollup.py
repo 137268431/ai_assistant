@@ -3,11 +3,64 @@ from __future__ import annotations
 import traceback
 
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
-from ibkr_compute.market.timeframe_utils import normalize_interval
+from ibkr_compute.market.timeframe_utils import interval_to_ms, normalize_interval
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.compute.runtime_state.timing import get_fetch_since_ms
 from .materialize import reset_compute_state_for_symbols
+
+
+def _normalize_target_intervals(api_app, intervals=None) -> list[str]:
+    target_intervals = [normalize_interval(interval) for interval in (intervals or api_app.HIGHER_INTERVALS)]
+    return [interval for interval in target_intervals if interval in api_app.HIGHER_INTERVALS]
+
+
+def _build_rollup_filter(api_app, environment: str, normalized_symbols, since_ms: int | None = None) -> str:
+    symbol_filter = api_app.build_symbol_filter(normalized_symbols)
+    filter_parts = [
+        'interval = "5m"',
+        api_app.build_bar_environment_filter(environment, include_legacy_empty=True),
+    ]
+    if symbol_filter:
+        filter_parts.append(symbol_filter)
+    if since_ms is not None and int(since_ms) > 0:
+        filter_parts.append(f"bar_time_ms >= {int(since_ms)}")
+    return " && ".join(filter_parts)
+
+
+def _latest_targeted_5m_bar_ms(environment: str, normalized_symbols) -> int:
+    api_app = _api_app()
+    interval_key = (environment, "5m")
+    cached_ms = int(api_app.last_interval_fetch_ms.get(interval_key, 0) or 0)
+    if cached_ms > 0:
+        return cached_ms
+
+    rows = api_app.pb.get_records(
+        "ibkr_bars",
+        filter=_build_rollup_filter(api_app, environment, normalized_symbols),
+        sort="-bar_time_ms",
+        per_page=1,
+        page=1,
+    )
+    if not rows:
+        return 0
+    return int(rows[0].get("bar_time_ms", 0) or 0)
+
+
+def _recent_rollup_since_ms(environment: str, normalized_symbols, intervals=None) -> int:
+    api_app = _api_app()
+    target_intervals = _normalize_target_intervals(api_app, intervals)
+    if not target_intervals:
+        return 0
+
+    latest_5m_ms = _latest_targeted_5m_bar_ms(environment, normalized_symbols)
+    if latest_5m_ms <= 0:
+        return 0
+
+    max_interval_ms = max(interval_to_ms(interval) for interval in target_intervals)
+    # Rebuild two full windows so the builder can correctly close the previous bucket
+    # before emitting the next higher-timeframe bar.
+    return max(0, latest_5m_ms - (max_interval_ms * 2))
 
 
 def has_interval_bars(environment: str, interval: str, symbols=None) -> bool:
@@ -34,21 +87,13 @@ def has_interval_bars(environment: str, interval: str, symbols=None) -> bool:
         return False
 
 
-def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None) -> dict:
+def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None, since_ms: int | None = None) -> dict:
     api_app = _api_app()
     normalized_symbols = api_app.normalize_symbols(symbols)
-    target_intervals = [normalize_interval(interval) for interval in (intervals or api_app.HIGHER_INTERVALS)]
-    target_intervals = [interval for interval in target_intervals if interval in api_app.HIGHER_INTERVALS]
-    symbol_filter = api_app.build_symbol_filter(normalized_symbols)
-    filter_parts = [
-        'interval = "5m"',
-        api_app.build_bar_environment_filter(environment, include_legacy_empty=True),
-    ]
-    if symbol_filter:
-        filter_parts.append(symbol_filter)
+    target_intervals = _normalize_target_intervals(api_app, intervals)
     base_rows = api_app.pb.get_all_records(
         "ibkr_bars",
-        filter=" && ".join(filter_parts),
+        filter=_build_rollup_filter(api_app, environment, normalized_symbols, since_ms=since_ms),
         sort="bar_time_ms",
         max_pages=1000,
     )
@@ -59,6 +104,7 @@ def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None
             "errors": 0,
             "symbols": normalized_symbols,
             "intervals": target_intervals,
+            "since_ms": int(since_ms or 0),
         }
 
     builder = TimeframeBarBuilder(target_intervals=target_intervals)
@@ -100,21 +146,29 @@ def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None
         "errors": errors,
         "symbols": normalized_symbols,
         "intervals": target_intervals,
+        "since_ms": int(since_ms or 0),
     }
 
 
-def ensure_higher_timeframe_bars(environments, force: bool = False, symbols=None):
+def ensure_higher_timeframe_bars(environments, force: bool = False, symbols=None, incremental: bool = False):
     api_app = _api_app()
     normalized_symbols = api_app.normalize_symbols(symbols)
     results = {}
     for environment in environments:
         if normalized_symbols:
+            since_ms = _recent_rollup_since_ms(
+                environment,
+                normalized_symbols,
+                intervals=api_app.HIGHER_INTERVALS,
+            ) if incremental else None
             rollup_result = rebuild_higher_timeframe_bars(
                 environment,
                 symbols=normalized_symbols,
                 intervals=api_app.HIGHER_INTERVALS,
+                since_ms=since_ms,
             )
             rollup_result["targeted"] = True
+            rollup_result["incremental"] = bool(incremental and since_ms)
             results[environment] = rollup_result
             continue
 

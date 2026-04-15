@@ -117,6 +117,7 @@ def build_compute_execution_plan(payload=None) -> dict:
         "enabled_environments": enabled_environments,
         "targeted_rebuild": targeted_rebuild,
         "targeted_rollup": targeted_rollup,
+        "incremental_rollup": bool(requested_symbols) and source == "canonical_close",
         "skip_persisted_cursor": source in {"recompute", "history_repair", "history_rebuild", "targeted_recompute"},
         "force_rollup": force_rollup,
         "intervals": api_app.INTERVALS,

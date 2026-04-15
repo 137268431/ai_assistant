@@ -479,6 +479,13 @@
         </section>
         <section class="section">
             <div class="section-head">
+                <div class="section-title">Monitor 模块</div>
+                <div class="section-copy">monitor coverage / pending / integrity · 不参与交易预热判定</div>
+            </div>
+            <div class="section-body" id="monitorBody"></div>
+        </section>
+        <section class="section">
+            <div class="section-head">
                 <div class="section-title">Symbol 状态快照</div>
                 <div class="section-copy">startup snapshot · role / ready / integrity / last bar</div>
             </div>
@@ -613,11 +620,53 @@
         function renderChip(label, tone) {
             return `<span class="hero-chip tone-${tone}"><span class="dot"></span>${escapeHtml(label)}</span>`;
         }
+        function normalizeSymbolList(values) {
+            const source = Array.isArray(values) ? values : [values];
+            const seen = new Set();
+            return source.reduce((items, value) => {
+                const entries = Array.isArray(value) ? value : [value];
+                entries.forEach((entry) => {
+                    const symbol = String(entry || '').trim().toUpperCase();
+                    if (!symbol || seen.has(symbol)) return;
+                    seen.add(symbol);
+                    items.push(symbol);
+                });
+                return items;
+            }, []);
+        }
+        function splitSymbolListByMonitor(values, monitorSymbols) {
+            const monitorSet = new Set(normalizeSymbolList(monitorSymbols));
+            return normalizeSymbolList(values).reduce((acc, symbol) => {
+                if (monitorSet.has(symbol)) acc.monitor.push(symbol);
+                else acc.blocking.push(symbol);
+                return acc;
+            }, { blocking: [], monitor: [] });
+        }
+        function splitReasonMapByMonitor(map, monitorSymbols) {
+            const monitorSet = new Set(normalizeSymbolList(monitorSymbols));
+            return Object.entries(map || {}).reduce((acc, [symbol, reason]) => {
+                const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+                if (!normalizedSymbol) return acc;
+                if (monitorSet.has(normalizedSymbol)) acc.monitor[normalizedSymbol] = reason;
+                else acc.blocking[normalizedSymbol] = reason;
+                return acc;
+            }, { blocking: {}, monitor: {} });
+        }
         function normalizeWarmup(status) {
             const warmup = status && typeof status.warmup === 'object' && status.warmup ? status.warmup : {};
             const preflight = warmup.preflight_repair && typeof warmup.preflight_repair === 'object' && warmup.preflight_repair
                 ? warmup.preflight_repair
                 : {};
+            const tradeSymbols = normalizeSymbolList(warmup.trade_symbols);
+            const monitorSymbols = normalizeSymbolList(warmup.monitor_symbols);
+            const pendingSymbols = normalizeSymbolList(warmup.pending_symbols);
+            const integrityPendingSymbols = normalizeSymbolList(warmup.integrity_pending_symbols);
+            const fallbackPendingSplit = splitSymbolListByMonitor(pendingSymbols, monitorSymbols);
+            const fallbackIntegritySplit = splitSymbolListByMonitor(integrityPendingSymbols, monitorSymbols);
+            const integrityRepairReasons = warmup.integrity_repair_reasons && typeof warmup.integrity_repair_reasons === 'object'
+                ? warmup.integrity_repair_reasons
+                : {};
+            const fallbackReasonSplit = splitReasonMapByMonitor(integrityRepairReasons, monitorSymbols);
             return {
                 phase: String(warmup.phase || (warmup.trading_gate_open ? 'ready' : 'idle')).trim().toLowerCase() || 'idle',
                 gate_open: Boolean(warmup.trading_gate_open),
@@ -631,11 +680,33 @@
                 ready_symbols: Number(warmup.ready_symbols || 0) || 0,
                 ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
                 ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-                pending_symbols: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : [],
-                integrity_pending_symbols: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols : [],
-                integrity_repair_reasons: warmup.integrity_repair_reasons && typeof warmup.integrity_repair_reasons === 'object'
-                    ? warmup.integrity_repair_reasons
-                    : {},
+                trade_symbols: tradeSymbols,
+                monitor_symbols: monitorSymbols,
+                pending_symbols: pendingSymbols,
+                blocking_pending_symbols: Array.isArray(warmup.blocking_pending_symbols)
+                    ? normalizeSymbolList(warmup.blocking_pending_symbols)
+                    : fallbackPendingSplit.blocking,
+                blocking_pending_symbols_total: Number(warmup.blocking_pending_symbols_total || fallbackPendingSplit.blocking.length) || 0,
+                monitor_pending_symbols: Array.isArray(warmup.monitor_pending_symbols)
+                    ? normalizeSymbolList(warmup.monitor_pending_symbols)
+                    : fallbackPendingSplit.monitor,
+                monitor_pending_symbols_total: Number(warmup.monitor_pending_symbols_total || fallbackPendingSplit.monitor.length) || 0,
+                integrity_pending_symbols: integrityPendingSymbols,
+                blocking_integrity_pending_symbols: Array.isArray(warmup.blocking_integrity_pending_symbols)
+                    ? normalizeSymbolList(warmup.blocking_integrity_pending_symbols)
+                    : fallbackIntegritySplit.blocking,
+                blocking_integrity_pending_symbols_total: Number(warmup.blocking_integrity_pending_symbols_total || fallbackIntegritySplit.blocking.length) || 0,
+                monitor_integrity_pending_symbols: Array.isArray(warmup.monitor_integrity_pending_symbols)
+                    ? normalizeSymbolList(warmup.monitor_integrity_pending_symbols)
+                    : fallbackIntegritySplit.monitor,
+                monitor_integrity_pending_symbols_total: Number(warmup.monitor_integrity_pending_symbols_total || fallbackIntegritySplit.monitor.length) || 0,
+                integrity_repair_reasons: integrityRepairReasons,
+                blocking_integrity_repair_reasons: warmup.blocking_integrity_repair_reasons && typeof warmup.blocking_integrity_repair_reasons === 'object'
+                    ? warmup.blocking_integrity_repair_reasons
+                    : fallbackReasonSplit.blocking,
+                monitor_integrity_repair_reasons: warmup.monitor_integrity_repair_reasons && typeof warmup.monitor_integrity_repair_reasons === 'object'
+                    ? warmup.monitor_integrity_repair_reasons
+                    : fallbackReasonSplit.monitor,
                 requested_at: warmup.requested_at || '',
                 started_at: warmup.started_at || '',
                 finished_at: warmup.finished_at || '',
@@ -656,6 +727,13 @@
         }
         function normalizeLiveReadiness(status, warmup) {
             const live = status && typeof status.live_readiness === 'object' && status.live_readiness ? status.live_readiness : {};
+            const blockingPendingTotal = Number(
+                live.blocking_pending_symbols_total != null
+                    ? live.blocking_pending_symbols_total
+                    : live.non_monitor_pending_symbols_total
+            ) || Math.max(0, (Number(live.trade_symbols_total || 0) || 0) - (Number(live.ready_trade_symbols || 0) || 0));
+            const monitorPendingTotal = Number(live.monitor_pending_symbols_total || 0)
+                || Math.max(0, (Number(live.monitor_symbols_total || 0) || 0) - (Number(live.ready_monitor_symbols || 0) || 0));
             return {
                 available: Boolean(live.available),
                 engine_snapshot_available: Boolean(live.engine_snapshot_available),
@@ -670,6 +748,8 @@
                 ready_trade_symbols: Number(live.ready_trade_symbols || 0) || 0,
                 ready_monitor_symbols: Number(live.ready_monitor_symbols || 0) || 0,
                 pending_symbols_total: Number(live.pending_symbols_total || 0) || 0,
+                blocking_pending_symbols_total: blockingPendingTotal,
+                monitor_pending_symbols_total: monitorPendingTotal,
                 snapshot_differs: Boolean(live.snapshot_differs),
                 snapshot_phase: String(live.snapshot_phase || warmup.phase || 'idle').trim().toLowerCase() || 'idle',
                 snapshot_finished_at: live.snapshot_finished_at || warmup.finished_at || '',
@@ -683,30 +763,35 @@
             const liveTone = live.available ? getToneByPhase(live.phase) : 'muted';
             const gateOpen = live.available ? live.gate_open : warmup.gate_open;
             const gateTone = gateOpen ? 'ok' : ((live.available ? live.phase : warmup.phase) === 'idle' ? 'muted' : 'warn');
+            const liveTradeLabel = live.available
+                ? `${live.ready_trade_symbols}/${live.trade_symbols_total}`
+                : (live.engine_snapshot_available ? 'WAITING' : 'N/A');
+            const monitorLabel = live.available
+                ? `${live.ready_monitor_symbols}/${live.monitor_symbols_total}`
+                : `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`;
+            const monitorTone = (live.available
+                ? live.monitor_pending_symbols_total <= 0
+                : warmup.monitor_pending_symbols_total <= 0) ? 'ok' : 'info';
             document.getElementById('heroChips').innerHTML = [
                 renderChip(`Runtime ${runtimePhase.toUpperCase()}`, runtimeTone),
                 renderChip(`Startup ${status?.startup_complete ? 'COMPLETE' : (status?.starting ? 'RUNNING' : 'WAITING')}`, runtimeTone),
                 renderChip(`Snapshot ${String(warmup.phase || 'idle').toUpperCase()}`, warmupTone),
-                renderChip(
-                    live.available
-                        ? `Live ${live.ready_symbols}/${live.symbols_total}`
-                        : `Live ${live.engine_snapshot_available ? 'WAITING' : 'N/A'}`,
-                    liveTone
-                ),
+                renderChip(`Trade ${liveTradeLabel}`, liveTone),
+                renderChip(`Monitor ${monitorLabel}`, monitorTone),
                 renderChip(`Gate ${gateOpen ? 'OPEN' : 'CLOSED'}`, gateTone),
                 renderChip(`Env ${String(currentEnvironment).toUpperCase()}`, 'muted')
             ].join('');
             if (live.available && live.snapshot_differs) {
                 document.getElementById('heroCopy').textContent =
-                    `当前 live readiness 为 ${live.ready_symbols}/${live.symbols_total}，与 startup warmup 快照 ${warmup.ready_symbols}/${warmup.symbols_total} 不一致。顶部指标优先展示当前 live 状态，下方 repair 和 symbol 表仍是 startup snapshot。`;
+                    `当前 live 与 startup snapshot 存在差异：trade ${live.ready_trade_symbols}/${live.trade_symbols_total} vs ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}，monitor ${live.ready_monitor_symbols}/${live.monitor_symbols_total} vs ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。Monitor 单独展示，不参与交易门判定。`;
             } else if (warmup.last_error) {
                 document.getElementById('heroCopy').textContent = `Warmup 最近一次失败原因：${warmup.last_error}`;
             } else if (live.available) {
                 document.getElementById('heroCopy').textContent =
-                    `同时展示当前 live readiness 和 startup warmup snapshot，避免把启动期快照误判为当前实时状态，自动每 15 秒刷新。`;
+                    `主视图只按 trade warmup 展示当前 live 与 startup snapshot；monitor coverage 单独展示，避免把监控标的误判成交易预热阻塞。`;
             } else {
                 document.getElementById('heroCopy').textContent =
-                    '展示 startup warmup snapshot、预热修复、完整性阻塞和 symbol 就绪情况；live readiness 暂不可用时会保留启动期快照。';
+                    '展示 startup trade warmup、完整性阻塞和 monitor coverage；live readiness 暂不可用时会保留启动期快照。';
             }
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
             document.getElementById('sourceInfo').textContent =
@@ -725,23 +810,7 @@
         function renderMetrics(status, warmup, live) {
             const cards = [];
             cards.push({
-                label: live.available ? 'Live Overall Ready' : 'Snapshot Overall Ready',
-                value: live.available
-                    ? `${live.ready_symbols} / ${live.symbols_total}`
-                    : `${warmup.ready_symbols} / ${warmup.symbols_total}`,
-                progress: progressPct(
-                    live.available ? live.ready_symbols : warmup.ready_symbols,
-                    live.available ? live.symbols_total : warmup.symbols_total
-                ),
-                copy: live.available
-                    ? `phase ${String(live.phase || 'idle').toUpperCase()} · interval ${live.required_interval}`
-                    : `phase ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
-                tone: live.available
-                    ? getToneByPhase(live.phase)
-                    : (warmup.last_error ? 'error' : (warmup.ready_symbols >= warmup.symbols_total && warmup.symbols_total > 0 ? 'ok' : 'warn'))
-            });
-            cards.push({
-                label: live.available ? 'Live Trade Ready' : 'Snapshot Trade Ready',
+                label: live.available ? 'Live Trade Warmup' : 'Snapshot Trade Warmup',
                 value: live.available
                     ? `${live.ready_trade_symbols} / ${live.trade_symbols_total}`
                     : `${warmup.ready_trade_symbols} / ${warmup.trade_symbols_total}`,
@@ -750,12 +819,23 @@
                     live.available ? live.trade_symbols_total : warmup.trade_symbols_total
                 ),
                 copy: live.available
+                    ? `phase ${String(live.phase || 'idle').toUpperCase()} · blocking ${live.blocking_pending_symbols_total}`
+                    : `phase ${String(warmup.phase || 'idle').toUpperCase()} · blocking ${warmup.blocking_pending_symbols_total}`,
+                tone: live.available
+                    ? getToneByPhase(live.phase)
+                    : (warmup.last_error ? 'error' : getToneByPhase(warmup.phase))
+            });
+            cards.push({
+                label: 'Trading Gate',
+                value: (live.available ? live.gate_open : warmup.gate_open) ? 'OPEN' : 'CLOSED',
+                progress: (live.available ? live.gate_open : warmup.gate_open) ? 100 : 0,
+                copy: live.available
                     ? `gate ${live.gate_open ? 'OPEN' : 'CLOSED'} · ${live.gate_reason}`
                     : `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`,
                 tone: (live.available ? live.gate_open : warmup.gate_open) ? 'ok' : 'warn'
             });
             cards.push({
-                label: live.available ? 'Live Monitor Ready' : 'Snapshot Monitor Ready',
+                label: live.available ? 'Live Monitor Coverage' : 'Snapshot Monitor Coverage',
                 value: live.available
                     ? `${live.ready_monitor_symbols} / ${live.monitor_symbols_total}`
                     : `${warmup.ready_monitor_symbols} / ${warmup.monitor_symbols_total}`,
@@ -764,15 +844,27 @@
                     live.available ? live.monitor_symbols_total : warmup.monitor_symbols_total
                 ),
                 copy: live.available
-                    ? `pending ${live.pending_symbols_total} · derived from compute engines`
-                    : `interval ${warmup.required_interval} · reason ${warmup.reason}`,
+                    ? `pending ${live.monitor_pending_symbols_total} · not gating`
+                    : `pending ${warmup.monitor_pending_symbols_total} · not gating`,
                 tone: (live.available ? live.monitor_symbols_total > 0 && live.ready_monitor_symbols >= live.monitor_symbols_total : warmup.monitor_symbols_total > 0 && warmup.ready_monitor_symbols >= warmup.monitor_symbols_total) ? 'ok' : 'info'
+            });
+            cards.push({
+                label: live.available ? 'Live Monitor Pending' : 'Snapshot Monitor Pending',
+                value: String(live.available ? live.monitor_pending_symbols_total : warmup.monitor_pending_symbols_total),
+                progress: progressPct(
+                    (live.available ? live.monitor_symbols_total : warmup.monitor_symbols_total) - (live.available ? live.monitor_pending_symbols_total : warmup.monitor_pending_symbols_total),
+                    live.available ? live.monitor_symbols_total : warmup.monitor_symbols_total
+                ),
+                copy: live.available
+                    ? `trade blocking ${live.blocking_pending_symbols_total} · derived from compute engines`
+                    : `trade blocking ${warmup.blocking_pending_symbols_total} · startup snapshot`,
+                tone: (live.available ? live.monitor_pending_symbols_total : warmup.monitor_pending_symbols_total) > 0 ? 'info' : 'ok'
             });
             if (live.available) {
                 cards.push({
-                    label: 'Startup Snapshot',
-                    value: `${warmup.ready_symbols} / ${warmup.symbols_total}`,
-                    progress: progressPct(warmup.ready_symbols, warmup.symbols_total),
+                    label: 'Startup Snapshot Trade',
+                    value: `${warmup.ready_trade_symbols} / ${warmup.trade_symbols_total}`,
+                    progress: progressPct(warmup.ready_trade_symbols, warmup.trade_symbols_total),
                     copy: live.snapshot_differs
                         ? `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · differs from live`
                         : `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
@@ -795,12 +887,12 @@
                 ['Runtime Phase', String(status?.runtime_phase || 'unknown').toUpperCase(), `requested env ${String(currentEnvironment).toUpperCase()}`, getRuntimeTone(status)],
                 ['Starting', status?.starting ? 'YES' : 'NO', 'runtime start flag', status?.starting ? 'warn' : 'info'],
                 ['Startup Complete', status?.startup_complete ? 'YES' : 'NO', status?.startup_complete ? 'service ready' : 'still warming', status?.startup_complete ? 'ok' : 'warn'],
-                ['Warmup Snapshot', String(warmup.phase || 'idle').toUpperCase(), `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`, warmup.last_error ? 'error' : getToneByPhase(warmup.phase)],
+                ['Warmup Snapshot', String(warmup.phase || 'idle').toUpperCase(), `trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'}`, warmup.last_error ? 'error' : getToneByPhase(warmup.phase)],
                 [
-                    'Current Live',
-                    live.available ? `${live.ready_symbols} / ${live.symbols_total}` : 'UNAVAILABLE',
+                    'Current Live Trade',
+                    live.available ? `${live.ready_trade_symbols} / ${live.trade_symbols_total}` : 'UNAVAILABLE',
                     live.available
-                        ? `phase ${String(live.phase || 'idle').toUpperCase()} · interval ${live.required_interval}`
+                        ? `phase ${String(live.phase || 'idle').toUpperCase()} · blocking ${live.blocking_pending_symbols_total}`
                         : (live.engine_snapshot_available ? 'live engine snapshot still warming' : 'compute engine snapshot unavailable'),
                     live.available ? getToneByPhase(live.phase) : 'muted'
                 ],
@@ -811,15 +903,25 @@
                     live.available ? (live.gate_open ? 'ok' : 'warn') : 'muted'
                 ],
                 [
+                    'Monitor Coverage',
+                    live.available ? `${live.ready_monitor_symbols} / ${live.monitor_symbols_total}` : `${warmup.ready_monitor_symbols} / ${warmup.monitor_symbols_total}`,
+                    live.available
+                        ? `monitor pending ${live.monitor_pending_symbols_total} · not gating`
+                        : `snapshot monitor pending ${warmup.monitor_pending_symbols_total} · not gating`,
+                    (live.available ? live.monitor_pending_symbols_total : warmup.monitor_pending_symbols_total) > 0 ? 'info' : 'ok'
+                ],
+                [
                     'Snapshot Drift',
                     live.available ? (live.snapshot_differs ? 'YES' : 'NO') : '--',
                     live.available
-                        ? (live.snapshot_differs ? `snapshot ${warmup.ready_symbols}/${warmup.symbols_total} differs from live` : 'snapshot matches live counts')
+                        ? (live.snapshot_differs
+                            ? `trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`
+                            : 'snapshot trade/monitor counts match live')
                         : 'live readiness unavailable',
                     live.available ? (live.snapshot_differs ? 'warn' : 'ok') : 'muted'
                 ],
                 ['Trigger Reason', warmup.reason, `target date ${warmup.target_date}`, 'info'],
-                ['Required Interval', warmup.required_interval, `${warmup.symbols_total} total symbols`, 'info'],
+                ['Required Interval', warmup.required_interval, `trade ${warmup.trade_symbols_total} · monitor ${warmup.monitor_symbols_total}`, 'info'],
                 ['Requested At', formatTimeLabel(warmup.requested_at), formatAgoFromIso(warmup.requested_at), 'muted'],
                 ['Started At', formatTimeLabel(warmup.started_at), formatAgoFromIso(warmup.started_at), 'muted'],
                 ['Finished At', formatTimeLabel(warmup.finished_at), warmup.finished_at ? formatAgoFromIso(warmup.finished_at) : 'not finished', warmup.finished_at ? 'ok' : 'warn'],
@@ -879,36 +981,80 @@
             `).join('');
         }
         function renderIntegritySection(warmup) {
-            const reasonCount = Object.keys(warmup.integrity_repair_reasons || {}).length;
+            const reasonCount = Object.keys(warmup.blocking_integrity_repair_reasons || {}).length;
             document.getElementById('integrityBody').innerHTML = `
                 <div class="detail-grid">
                     <div class="detail-item">
-                        <div class="detail-label">Integrity Pending</div>
-                        <div class="detail-value">${escapeHtml(String((warmup.integrity_pending_symbols || []).length))}</div>
-                        <div class="detail-copy">仍未满足完整性要求的 symbol</div>
+                        <div class="detail-label">Trade Integrity Pending</div>
+                        <div class="detail-value">${escapeHtml(String((warmup.blocking_integrity_pending_symbols || []).length))}</div>
+                        <div class="detail-copy">仍未满足交易预热完整性要求的 symbol</div>
                     </div>
                     <div class="detail-item">
-                        <div class="detail-label">Pending Symbols</div>
-                        <div class="detail-value">${escapeHtml(String((warmup.pending_symbols || []).length))}</div>
-                        <div class="detail-copy">warmup 阶段仍未 ready 的 symbol</div>
+                        <div class="detail-label">Trade Pending</div>
+                        <div class="detail-value">${escapeHtml(String((warmup.blocking_pending_symbols || []).length))}</div>
+                        <div class="detail-copy">仍会阻塞真正交易预热的 symbol</div>
                     </div>
                     <div class="detail-item">
-                        <div class="detail-label">Repair Reasons</div>
+                        <div class="detail-label">Trade Repair Reasons</div>
                         <div class="detail-value">${escapeHtml(String(reasonCount))}</div>
-                        <div class="detail-copy">integrity repair reasons 条数</div>
+                        <div class="detail-copy">交易预热侧 integrity repair reasons 条数</div>
                     </div>
                 </div>
                 <div class="sub-block">
-                    <div class="sub-title">Integrity Pending Symbols</div>
-                    ${renderChipList(warmup.integrity_pending_symbols || [], 'error', '当前没有完整性阻塞')}
+                    <div class="sub-title">Trade Integrity Pending Symbols</div>
+                    ${renderChipList(warmup.blocking_integrity_pending_symbols || [], 'error', '当前没有交易完整性阻塞')}
                 </div>
                 <div class="sub-block">
-                    <div class="sub-title">Pending Symbols</div>
-                    ${renderChipList(warmup.pending_symbols || [], 'warn', '当前没有 pending symbol')}
+                    <div class="sub-title">Trade Pending Symbols</div>
+                    ${renderChipList(warmup.blocking_pending_symbols || [], 'warn', '当前没有交易侧 pending symbol')}
                 </div>
                 <div class="sub-block">
-                    <div class="sub-title">Integrity Repair Reasons</div>
-                    ${renderReasonList(warmup.integrity_repair_reasons || {}, '当前没有 integrity repair reason')}
+                    <div class="sub-title">Trade Integrity Repair Reasons</div>
+                    ${renderReasonList(warmup.blocking_integrity_repair_reasons || {}, '当前没有交易侧 integrity repair reason')}
+                </div>
+            `;
+        }
+        function renderMonitorSection(warmup, live) {
+            const readyMonitorSymbols = live.available ? live.ready_monitor_symbols : warmup.ready_monitor_symbols;
+            const monitorSymbolsTotal = live.available ? live.monitor_symbols_total : warmup.monitor_symbols_total;
+            const monitorPendingTotal = live.available ? live.monitor_pending_symbols_total : warmup.monitor_pending_symbols_total;
+            const snapshotPendingSymbols = warmup.monitor_pending_symbols || [];
+            const snapshotIntegrityPendingSymbols = warmup.monitor_integrity_pending_symbols || [];
+            const reasonCount = Object.keys(warmup.monitor_integrity_repair_reasons || {}).length;
+            document.getElementById('monitorBody').innerHTML = `
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <div class="detail-label">Monitor Coverage</div>
+                        <div class="detail-value">${escapeHtml(`${readyMonitorSymbols} / ${monitorSymbolsTotal}`)}</div>
+                        <div class="detail-copy">monitor 不参与 trading gate，只单独展示覆盖情况</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Monitor Pending</div>
+                        <div class="detail-value">${escapeHtml(String(monitorPendingTotal))}</div>
+                        <div class="detail-copy">当前仍在后台补齐的 monitor symbol</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Monitor Integrity</div>
+                        <div class="detail-value">${escapeHtml(String((warmup.monitor_integrity_pending_symbols || []).length))}</div>
+                        <div class="detail-copy">monitor 侧完整性 pending 数量</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Monitor Reasons</div>
+                        <div class="detail-value">${escapeHtml(String(reasonCount))}</div>
+                        <div class="detail-copy">monitor 侧 repair reason 条数</div>
+                    </div>
+                </div>
+                <div class="sub-block">
+                    <div class="sub-title">Monitor Pending Symbols</div>
+                    ${renderChipList(snapshotPendingSymbols, 'info', '当前没有 monitor pending symbol')}
+                </div>
+                <div class="sub-block">
+                    <div class="sub-title">Monitor Integrity Pending Symbols</div>
+                    ${renderChipList(snapshotIntegrityPendingSymbols, 'info', '当前没有 monitor integrity pending')}
+                </div>
+                <div class="sub-block">
+                    <div class="sub-title">Monitor Integrity Repair Reasons</div>
+                    ${renderReasonList(warmup.monitor_integrity_repair_reasons || {}, '当前没有 monitor repair reason')}
                 </div>
             `;
         }
@@ -940,8 +1086,9 @@
         function renderSymbolTable(warmup) {
             const rows = Array.isArray(warmup.symbol_status) ? warmup.symbol_status : [];
             const filtered = getFilteredSymbolStatus(warmup);
-            const blockedCount = rows.filter((item) => !item?.ready || !item?.integrity_ready).length;
-            document.getElementById('symbolSummary').textContent = `startup snapshot 全部 ${rows.length} · blocked ${blockedCount} · 当前筛选 ${filtered.length}`;
+            const tradeBlockedCount = rows.filter((item) => String(item?.role || '').trim().toLowerCase() === 'trade' && (!item?.ready || !item?.integrity_ready)).length;
+            const monitorBlockedCount = rows.filter((item) => String(item?.role || '').trim().toLowerCase() === 'monitor' && (!item?.ready || !item?.integrity_ready)).length;
+            document.getElementById('symbolSummary').textContent = `trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total} · trade blocked ${tradeBlockedCount} · monitor blocked ${monitorBlockedCount} · 当前筛选 ${filtered.length}`;
             if (!filtered.length) {
                 document.getElementById('symbolTableBody').innerHTML = '<tr><td colspan="7" class="empty-state">当前筛选下没有 symbol</td></tr>';
                 return;
@@ -986,6 +1133,7 @@
             renderStartupGrid(status, warmup, live);
             renderRepairSection(warmup);
             renderIntegritySection(warmup);
+            renderMonitorSection(warmup, live);
             renderSymbolTable(warmup);
         }
         function setError(message) {

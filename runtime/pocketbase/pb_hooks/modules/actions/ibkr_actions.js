@@ -1191,13 +1191,12 @@ function ibkrActionsBuildStatuszLiveReadiness(computePayload, runtimePayload) {
     })
 
     const nonMonitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && !monitorSet[symbol]).length
+    const monitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && monitorSet[symbol]).length
     const gateOpen = tradeSymbols.length > 0 && readyTradeSymbols >= tradeSymbols.length
     let phase = "idle"
     if (allSymbols.length > 0) {
-        if (readySymbols >= allSymbols.length) {
+        if (nonMonitorPendingTotal === 0) {
             phase = "ready"
-        } else if (nonMonitorPendingTotal === 0) {
-            phase = "degraded"
         } else {
             phase = "pending"
         }
@@ -1240,6 +1239,8 @@ function ibkrActionsBuildStatuszLiveReadiness(computePayload, runtimePayload) {
         ready_monitor_symbols: readyMonitorSymbols,
         pending_symbols_total: Math.max(0, allSymbols.length - readySymbols),
         non_monitor_pending_symbols_total: nonMonitorPendingTotal,
+        blocking_pending_symbols_total: nonMonitorPendingTotal,
+        monitor_pending_symbols_total: monitorPendingTotal,
         snapshot_differs: Boolean(snapshotDiffers),
         snapshot_phase: String(warmup.phase || "").trim().toLowerCase() || "idle",
         snapshot_finished_at: warmup.finished_at || "",
@@ -1259,14 +1260,61 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
     const realtimeResult = ibkrActionsCloneObject(realtimeCompute.last_result)
     const marketUniverse = ibkrActionsCloneObject(payload.market_universe)
 
+    const normalizeSymbolList = (values) => {
+        const source = Array.isArray(values) ? values : [values]
+        const items = []
+        const seen = {}
+        source.forEach((value) => {
+            if (Array.isArray(value)) {
+                value.forEach((nested) => {
+                    const symbol = String(nested || "").trim().toUpperCase()
+                    if (!symbol || seen[symbol]) return
+                    seen[symbol] = true
+                    items.push(symbol)
+                })
+                return
+            }
+            const symbol = String(value || "").trim().toUpperCase()
+            if (!symbol || seen[symbol]) return
+            seen[symbol] = true
+            items.push(symbol)
+        })
+        return items
+    }
     const activeTradeSymbols = ibkrActionsTrimArray(
         marketUniverse.active_trade_symbols,
         Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols.length : 0
     )
+    const monitorSymbolSet = {}
+    normalizeSymbolList(warmup.monitor_symbols).forEach((symbol) => {
+        monitorSymbolSet[symbol] = true
+    })
+    const splitByMonitorRole = (values) => {
+        const blocking = []
+        const monitor = []
+        normalizeSymbolList(values).forEach((symbol) => {
+            if (monitorSymbolSet[symbol]) {
+                monitor.push(symbol)
+            } else {
+                blocking.push(symbol)
+            }
+        })
+        return { blocking, monitor }
+    }
+    const pendingSplit = splitByMonitorRole(warmup.pending_symbols)
+    const integrityPendingSplit = splitByMonitorRole(warmup.integrity_pending_symbols)
     const pendingSymbols = ibkrActionsTrimArray(warmup.pending_symbols, 12)
     const fullPendingSymbols = ibkrActionsTrimArray(
         warmup.pending_symbols,
         Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : 0
+    )
+    const blockingPendingSymbols = ibkrActionsTrimArray(
+        pendingSplit.blocking,
+        includeWarmupDetails ? pendingSplit.blocking.length : 12
+    )
+    const monitorPendingSymbols = ibkrActionsTrimArray(
+        pendingSplit.monitor,
+        includeWarmupDetails ? pendingSplit.monitor.length : 12
     )
     const activeRepairSymbols = ibkrActionsTrimArray(marketUniverse.last_active_repair_symbols, 12)
     const fullSymbolStatus = includeWarmupDetails
@@ -1279,6 +1327,18 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
         ? ibkrActionsTrimArray(
             warmup.integrity_pending_symbols,
             Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0
+        )
+        : []
+    const blockingIntegrityPendingSymbols = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            integrityPendingSplit.blocking,
+            integrityPendingSplit.blocking.length
+        )
+        : []
+    const monitorIntegrityPendingSymbols = includeWarmupDetails
+        ? ibkrActionsTrimArray(
+            integrityPendingSplit.monitor,
+            integrityPendingSplit.monitor.length
         )
         : []
     const readySymbolsList = includeWarmupDetails
@@ -1308,6 +1368,17 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
     const integrityRepairReasons = includeWarmupDetails
         ? ibkrActionsCloneObject(warmup.integrity_repair_reasons)
         : {}
+    const blockingIntegrityRepairReasons = {}
+    const monitorIntegrityRepairReasons = {}
+    Object.entries(integrityRepairReasons).forEach(([symbol, reason]) => {
+        const normalizedSymbol = String(symbol || "").trim().toUpperCase()
+        if (!normalizedSymbol) return
+        if (monitorSymbolSet[normalizedSymbol]) {
+            monitorIntegrityRepairReasons[normalizedSymbol] = reason
+        } else {
+            blockingIntegrityRepairReasons[normalizedSymbol] = reason
+        }
+    })
     const preflightRepair = includeWarmupDetails
         ? ibkrActionsCloneObject(warmup.preflight_repair)
         : {}
@@ -1360,26 +1431,36 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
             trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
             monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
             ready_symbols: Number(warmup.ready_symbols || 0) || 0,
-                ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
-                ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-                pending_symbols: includeWarmupDetails ? fullPendingSymbols : pendingSymbols,
-                pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
-                requested_at: warmup.requested_at || "",
-                started_at: warmup.started_at || "",
-                finished_at: warmup.finished_at || "",
-                last_success_at: warmup.last_success_at || "",
-                last_error: String(warmup.last_error || ""),
-                reason: String(warmup.reason || ""),
-                target_date: String(warmup.target_date || ""),
-                symbols: warmupSymbols,
-                trade_symbols: warmupTradeSymbols,
-                monitor_symbols: warmupMonitorSymbols,
-                ready_symbols_list: readySymbolsList,
-                symbol_status: fullSymbolStatus,
-                integrity_pending_symbols: integrityPendingSymbols,
-                integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
-                integrity_repair_reasons: integrityRepairReasons,
-                preflight_repair: preflightRepair,
+            ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
+            ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
+            pending_symbols: includeWarmupDetails ? fullPendingSymbols : pendingSymbols,
+            pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
+            blocking_pending_symbols: blockingPendingSymbols,
+            blocking_pending_symbols_total: pendingSplit.blocking.length,
+            monitor_pending_symbols: monitorPendingSymbols,
+            monitor_pending_symbols_total: pendingSplit.monitor.length,
+            requested_at: warmup.requested_at || "",
+            started_at: warmup.started_at || "",
+            finished_at: warmup.finished_at || "",
+            last_success_at: warmup.last_success_at || "",
+            last_error: String(warmup.last_error || ""),
+            reason: String(warmup.reason || ""),
+            target_date: String(warmup.target_date || ""),
+            symbols: warmupSymbols,
+            trade_symbols: warmupTradeSymbols,
+            monitor_symbols: warmupMonitorSymbols,
+            ready_symbols_list: readySymbolsList,
+            symbol_status: fullSymbolStatus,
+            integrity_pending_symbols: integrityPendingSymbols,
+            integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
+            blocking_integrity_pending_symbols: blockingIntegrityPendingSymbols,
+            blocking_integrity_pending_symbols_total: integrityPendingSplit.blocking.length,
+            monitor_integrity_pending_symbols: monitorIntegrityPendingSymbols,
+            monitor_integrity_pending_symbols_total: integrityPendingSplit.monitor.length,
+            integrity_repair_reasons: integrityRepairReasons,
+            blocking_integrity_repair_reasons: blockingIntegrityRepairReasons,
+            monitor_integrity_repair_reasons: monitorIntegrityRepairReasons,
+            preflight_repair: preflightRepair,
         },
         realtime_compute: {
             runs: Number(realtimeCompute.runs || 0) || 0,
@@ -3565,13 +3646,12 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             })
 
             const nonMonitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && !monitorSet[symbol]).length
+            const monitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && monitorSet[symbol]).length
             const gateOpen = tradeSymbols.length > 0 && readyTradeSymbols >= tradeSymbols.length
             let phase = "idle"
             if (allSymbols.length > 0) {
-                if (readySymbols >= allSymbols.length) {
+                if (nonMonitorPendingTotal === 0) {
                     phase = "ready"
-                } else if (nonMonitorPendingTotal === 0) {
-                    phase = "degraded"
                 } else {
                     phase = "pending"
                 }
@@ -3614,6 +3694,8 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 ready_monitor_symbols: readyMonitorSymbols,
                 pending_symbols_total: Math.max(0, allSymbols.length - readySymbols),
                 non_monitor_pending_symbols_total: nonMonitorPendingTotal,
+                blocking_pending_symbols_total: nonMonitorPendingTotal,
+                monitor_pending_symbols_total: monitorPendingTotal,
                 snapshot_differs: Boolean(snapshotDiffers),
                 snapshot_phase: String(warmup.phase || "").trim().toLowerCase() || "idle",
                 snapshot_finished_at: warmup.finished_at || "",
@@ -3633,14 +3715,61 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const realtimeResult = cloneObject(realtimeCompute.last_result)
             const marketUniverse = cloneObject(payload.market_universe)
 
+            const normalizeSymbolList = (values) => {
+                const source = Array.isArray(values) ? values : [values]
+                const items = []
+                const seen = {}
+                source.forEach((value) => {
+                    if (Array.isArray(value)) {
+                        value.forEach((nested) => {
+                            const symbol = String(nested || "").trim().toUpperCase()
+                            if (!symbol || seen[symbol]) return
+                            seen[symbol] = true
+                            items.push(symbol)
+                        })
+                        return
+                    }
+                    const symbol = String(value || "").trim().toUpperCase()
+                    if (!symbol || seen[symbol]) return
+                    seen[symbol] = true
+                    items.push(symbol)
+                })
+                return items
+            }
             const activeTradeSymbols = trimArray(
                 marketUniverse.active_trade_symbols,
                 Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols.length : 0
             )
+            const monitorSymbolSet = {}
+            normalizeSymbolList(warmup.monitor_symbols).forEach((symbol) => {
+                monitorSymbolSet[symbol] = true
+            })
+            const splitByMonitorRole = (values) => {
+                const blocking = []
+                const monitor = []
+                normalizeSymbolList(values).forEach((symbol) => {
+                    if (monitorSymbolSet[symbol]) {
+                        monitor.push(symbol)
+                    } else {
+                        blocking.push(symbol)
+                    }
+                })
+                return { blocking, monitor }
+            }
+            const pendingSplit = splitByMonitorRole(warmup.pending_symbols)
+            const integrityPendingSplit = splitByMonitorRole(warmup.integrity_pending_symbols)
             const pendingSymbols = trimArray(warmup.pending_symbols, 12)
             const fullPendingSymbols = trimArray(
                 warmup.pending_symbols,
                 Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : 0
+            )
+            const blockingPendingSymbols = trimArray(
+                pendingSplit.blocking,
+                includeWarmupDetails ? pendingSplit.blocking.length : 12
+            )
+            const monitorPendingSymbols = trimArray(
+                pendingSplit.monitor,
+                includeWarmupDetails ? pendingSplit.monitor.length : 12
             )
             const activeRepairSymbols = trimArray(marketUniverse.last_active_repair_symbols, 12)
             const fullSymbolStatus = includeWarmupDetails
@@ -3653,6 +3782,18 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 ? trimArray(
                     warmup.integrity_pending_symbols,
                     Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0
+                )
+                : []
+            const blockingIntegrityPendingSymbols = includeWarmupDetails
+                ? trimArray(
+                    integrityPendingSplit.blocking,
+                    integrityPendingSplit.blocking.length
+                )
+                : []
+            const monitorIntegrityPendingSymbols = includeWarmupDetails
+                ? trimArray(
+                    integrityPendingSplit.monitor,
+                    integrityPendingSplit.monitor.length
                 )
                 : []
             const readySymbolsList = includeWarmupDetails
@@ -3682,6 +3823,17 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const integrityRepairReasons = includeWarmupDetails
                 ? cloneObject(warmup.integrity_repair_reasons)
                 : {}
+            const blockingIntegrityRepairReasons = {}
+            const monitorIntegrityRepairReasons = {}
+            Object.entries(integrityRepairReasons).forEach(([symbol, reason]) => {
+                const normalizedSymbol = String(symbol || "").trim().toUpperCase()
+                if (!normalizedSymbol) return
+                if (monitorSymbolSet[normalizedSymbol]) {
+                    monitorIntegrityRepairReasons[normalizedSymbol] = reason
+                } else {
+                    blockingIntegrityRepairReasons[normalizedSymbol] = reason
+                }
+            })
             const preflightRepair = includeWarmupDetails
                 ? cloneObject(warmup.preflight_repair)
                 : {}
@@ -3756,26 +3908,36 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
                     monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
                     ready_symbols: Number(warmup.ready_symbols || 0) || 0,
-                        ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
-                        ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-                        pending_symbols: includeWarmupDetails ? fullPendingSymbols : pendingSymbols,
-                        pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
-                        requested_at: warmup.requested_at || "",
-                        started_at: warmup.started_at || "",
-                        finished_at: warmup.finished_at || "",
-                        last_success_at: warmup.last_success_at || "",
-                        last_error: String(warmup.last_error || ""),
-                        reason: String(warmup.reason || ""),
-                        target_date: String(warmup.target_date || ""),
-                        symbols: warmupSymbols,
-                        trade_symbols: warmupTradeSymbols,
-                        monitor_symbols: warmupMonitorSymbols,
-                        ready_symbols_list: readySymbolsList,
-                        symbol_status: fullSymbolStatus,
-                        integrity_pending_symbols: integrityPendingSymbols,
-                        integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
-                        integrity_repair_reasons: integrityRepairReasons,
-                        preflight_repair: preflightRepair,
+                    ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
+                    ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
+                    pending_symbols: includeWarmupDetails ? fullPendingSymbols : pendingSymbols,
+                    pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
+                    blocking_pending_symbols: blockingPendingSymbols,
+                    blocking_pending_symbols_total: pendingSplit.blocking.length,
+                    monitor_pending_symbols: monitorPendingSymbols,
+                    monitor_pending_symbols_total: pendingSplit.monitor.length,
+                    requested_at: warmup.requested_at || "",
+                    started_at: warmup.started_at || "",
+                    finished_at: warmup.finished_at || "",
+                    last_success_at: warmup.last_success_at || "",
+                    last_error: String(warmup.last_error || ""),
+                    reason: String(warmup.reason || ""),
+                    target_date: String(warmup.target_date || ""),
+                    symbols: warmupSymbols,
+                    trade_symbols: warmupTradeSymbols,
+                    monitor_symbols: warmupMonitorSymbols,
+                    ready_symbols_list: readySymbolsList,
+                    symbol_status: fullSymbolStatus,
+                    integrity_pending_symbols: integrityPendingSymbols,
+                    integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
+                    blocking_integrity_pending_symbols: blockingIntegrityPendingSymbols,
+                    blocking_integrity_pending_symbols_total: integrityPendingSplit.blocking.length,
+                    monitor_integrity_pending_symbols: monitorIntegrityPendingSymbols,
+                    monitor_integrity_pending_symbols_total: integrityPendingSplit.monitor.length,
+                    integrity_repair_reasons: integrityRepairReasons,
+                    blocking_integrity_repair_reasons: blockingIntegrityRepairReasons,
+                    monitor_integrity_repair_reasons: monitorIntegrityRepairReasons,
+                    preflight_repair: preflightRepair,
                 },
                 realtime_compute: {
                     runs: Number(realtimeCompute.runs || 0) || 0,

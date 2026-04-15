@@ -247,8 +247,28 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             };
         }
 
+        function normalizeSymbolList(values) {
+            const source = Array.isArray(values) ? values : [values];
+            const seen = new Set();
+            return source.reduce((items, value) => {
+                const entries = Array.isArray(value) ? value : [value];
+                entries.forEach((entry) => {
+                    const symbol = String(entry || '').trim().toUpperCase();
+                    if (!symbol || seen.has(symbol)) return;
+                    seen.add(symbol);
+                    items.push(symbol);
+                });
+                return items;
+            }, []);
+        }
+
         function normalizeWarmup(status) {
             const warmup = status?.warmup || {};
+            const monitorSymbols = normalizeSymbolList(warmup.monitor_symbols);
+            const monitorSet = new Set(monitorSymbols);
+            const pendingSymbols = normalizeSymbolList(warmup.pending_symbols);
+            const fallbackBlockingPendingSymbols = pendingSymbols.filter((symbol) => !monitorSet.has(symbol));
+            const fallbackMonitorPendingSymbols = pendingSymbols.filter((symbol) => monitorSet.has(symbol));
             return {
                 phase: String(warmup.phase || 'idle').trim().toLowerCase() || 'idle',
                 gate_open: Boolean(warmup.trading_gate_open),
@@ -260,9 +280,17 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ready_symbols: Number(warmup.ready_symbols || 0) || 0,
                 ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
                 ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-                trade_symbols: Array.isArray(warmup.trade_symbols) ? warmup.trade_symbols : [],
-                monitor_symbols: Array.isArray(warmup.monitor_symbols) ? warmup.monitor_symbols : [],
-                pending_symbols: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : [],
+                trade_symbols: normalizeSymbolList(warmup.trade_symbols),
+                monitor_symbols: monitorSymbols,
+                pending_symbols: pendingSymbols,
+                blocking_pending_symbols: Array.isArray(warmup.blocking_pending_symbols)
+                    ? normalizeSymbolList(warmup.blocking_pending_symbols)
+                    : fallbackBlockingPendingSymbols,
+                blocking_pending_symbols_total: Number(warmup.blocking_pending_symbols_total || fallbackBlockingPendingSymbols.length) || 0,
+                monitor_pending_symbols: Array.isArray(warmup.monitor_pending_symbols)
+                    ? normalizeSymbolList(warmup.monitor_pending_symbols)
+                    : fallbackMonitorPendingSymbols,
+                monitor_pending_symbols_total: Number(warmup.monitor_pending_symbols_total || fallbackMonitorPendingSymbols.length) || 0,
                 started_at: warmup.started_at || null,
                 finished_at: warmup.finished_at || null,
                 last_error: String(warmup.last_error || '').trim(),
@@ -949,7 +977,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 {
                     label: 'Warmup Gate',
                     value: warmup.gate_open ? 'OPEN' : String(warmup.phase || 'idle').toUpperCase(),
-                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total} monitor`
+                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · blocking ${warmup.blocking_pending_symbols_total}`
+                },
+                {
+                    label: 'Monitor Coverage',
+                    value: `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`,
+                    copy: `pending ${warmup.monitor_pending_symbols_total} · not gating`
                 },
                 {
                     label: 'Today Signals',
@@ -1082,12 +1115,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 blocker.copy = warmup.last_error || '启动后的预热链路失败，交易闸门保持关闭，需要检查回填与 compute 日志。';
             } else if (warmup.phase === 'pending' || warmup.phase === 'running') {
                 blocker.tone = 'warn';
-                blocker.title = `Startup Warmup ${warmup.ready_symbols}/${warmup.symbols_total}`;
-                blocker.copy = `正在为 ${warmup.required_interval} 建立启动状态，trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。`;
+                blocker.title = `Startup Warmup ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`;
+                blocker.copy = `正在为 ${warmup.required_interval} 建立交易预热，blocking ${warmup.blocking_pending_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。`;
             } else if (warmup.trade_symbols_total > 0 && !warmup.gate_open) {
                 blocker.tone = 'warn';
                 blocker.title = `Trading Gate Closed · ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`;
-                blocker.copy = `目标池还没有全部预热完成，pending: ${(warmup.pending_symbols || []).slice(0, 4).join(', ') || 'n/a'}。`;
+                blocker.copy = `目标池还没有全部预热完成，pending: ${(warmup.blocking_pending_symbols || []).slice(0, 4).join(', ') || 'n/a'}。`;
             } else if (dataHealth.last_bar_age_min != null && dataHealth.last_bar_age_min > 30) {
                 blocker.tone = 'error';
                 blocker.title = `bars 停在 ${dataHealth.last_bar_label}`;
@@ -1285,7 +1318,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Trading Gate', warmup.gate_open ? 'OPEN' : 'CLOSED'],
                 ['Warmup Reason', String(warmup.gate_reason || '--')],
                 ['Warmup Trade', `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`],
+                ['Warmup Blocking', String(warmup.blocking_pending_symbols_total || 0)],
                 ['Warmup Monitor', `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`],
+                ['Monitor Pending', String(warmup.monitor_pending_symbols_total || 0)],
                 ['Warmup Start', formatTimeLabel(warmup.started_at)],
                 ['Warmup Finish', formatTimeLabel(warmup.finished_at)],
                 ['Market Date', String(status?.market_universe?.market_date || '--')],
@@ -1593,7 +1628,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 {
                     label: 'Warmup Gate',
                     value: warmup.gate_open ? 'OPEN' : String(warmup.phase || 'idle').toUpperCase(),
-                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total} monitor`,
+                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · blocking ${warmup.blocking_pending_symbols_total}`,
+                },
+                {
+                    label: 'Monitor Coverage',
+                    value: `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`,
+                    copy: `pending ${warmup.monitor_pending_symbols_total} · not gating`,
                 }
             ];
 
@@ -1624,11 +1664,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 notes.push({ tone: 'warn', text: 'Gateway 已在线，但 IBKR Session 仍未认证，新的 bars/高周期 bars 不会持续刷新。' });
             }
             if (warmup.phase === 'pending' || warmup.phase === 'running') {
-                notes.push({ tone: 'warn', text: `启动预热进行中：${warmup.ready_symbols}/${warmup.symbols_total} ready，trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}。` });
+                notes.push({ tone: 'warn', text: `启动预热进行中：trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · blocking ${warmup.blocking_pending_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。` });
             } else if (warmup.phase === 'failed') {
                 notes.push({ tone: 'error', text: `warmup 失败：${warmup.last_error || '需要检查回填与 compute 日志。'}` });
             } else if (warmup.trade_symbols_total > 0 && !warmup.gate_open) {
-                notes.push({ tone: 'warn', text: `交易闸门关闭：还有 ${(warmup.pending_symbols || []).join(', ') || '部分目标'} 未完成 ${warmup.required_interval} 预热。` });
+                notes.push({ tone: 'warn', text: `交易闸门关闭：还有 ${(warmup.blocking_pending_symbols || []).join(', ') || '部分目标'} 未完成 ${warmup.required_interval} 预热。` });
             }
             if (latestBar && String(latestBar.environment || '').trim() === '') {
                 notes.push({ tone: 'warn', text: '检测到 legacy 空 environment bars，已需要迁移到 live 才能保证页面与 compute 一致。' });

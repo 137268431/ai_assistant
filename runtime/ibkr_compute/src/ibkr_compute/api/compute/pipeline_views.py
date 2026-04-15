@@ -53,6 +53,7 @@ def build_compute_response(payload=None):
             plan["enabled_environments"],
             force=plan["force_rollup"],
             symbols=plan["requested_symbols"] if plan["targeted_rollup"] else None,
+            incremental=plan["incremental_rollup"],
         )
         errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
         api_app.refresh_daily_close_cache(plan["enabled_environments"])

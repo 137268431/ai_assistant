@@ -443,7 +443,11 @@ class TradingServiceIntegrityMixin:
                 plan[symbol] = snapshot
         return plan
 
-    def _build_startup_history_repair_plan(self, symbols: list[str]) -> dict[str, dict]:
+    def _build_startup_history_repair_plan(
+        self,
+        symbols: list[str],
+        et_now: datetime | None = None,
+    ) -> dict[str, dict]:
         service_mod = _service_mod()
         if not symbols:
             return {}
@@ -452,7 +456,7 @@ class TradingServiceIntegrityMixin:
 
         plan = {}
         for symbol in sorted({str(item or "").upper() for item in symbols if str(item or "").strip()}):
-            snapshot = self._collect_startup_history_repair_snapshot(symbol)
+            snapshot = self._collect_startup_history_repair_snapshot(symbol, et_now=et_now)
             if bool(snapshot.get("needs_pipeline_repair")):
                 plan[symbol] = snapshot
         return plan
