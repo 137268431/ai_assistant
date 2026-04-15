@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-
 
 def _service_mod():
     from . import trading_service as service_mod
@@ -393,203 +391,27 @@ class TradingServiceWarmupMixin:
                 "请立即检查 Gateway 与飞书 2FA 状态，并在需要时重新触发验证。",
             )
 
-    def _collect_warmup_readiness(self, snapshot: dict) -> dict:
+    def _warmup_loop(self):
         service_mod = _service_mod()
-        from ibkr_compute.api import server as compute_server
-
-        ready_symbols = []
-        pending_symbols = []
-        symbol_status = []
-        ready_set = set()
-        scan_symbol_set = set(snapshot.get("scan_symbols") or [])
-        subscription_symbol_set = set(snapshot.get("subscription_symbols") or [])
-        trade_symbol_set = set(snapshot["trade_symbols"])
-        monitor_symbol_set = set(snapshot["monitor_symbols"])
-
-        for symbol in snapshot["symbols"]:
-            engine = compute_server.engines.get((service_mod.ENVIRONMENT, symbol, service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL))
-            is_ready = bool(engine and engine.is_ready())
-            bar_count = int(getattr(engine, "bar_count", 0) or 0) if engine else 0
-            last_bar_time_ms = int(getattr(engine, "last_bar_time_ms", 0) or 0) if engine else 0
-            if symbol in trade_symbol_set:
-                role = "trade"
-            elif symbol in monitor_symbol_set:
-                role = "monitor"
-            elif symbol in scan_symbol_set:
-                role = "scan"
-            elif symbol in subscription_symbol_set:
-                role = "subscription"
-            else:
-                role = "data"
-            symbol_status.append(
-                {
-                    "symbol": symbol,
-                    "role": role,
-                    "ready": is_ready,
-                    "bar_count": bar_count,
-                    "last_bar_time_ms": last_bar_time_ms,
-                }
-            )
-            if is_ready:
-                ready_symbols.append(symbol)
-                ready_set.add(symbol)
-            else:
-                pending_symbols.append(symbol)
-
-        ready_scan_symbols = len([symbol for symbol in snapshot.get("scan_symbols") or [] if symbol in ready_set])
-        ready_subscription_symbols = len([symbol for symbol in snapshot.get("subscription_symbols") or [] if symbol in ready_set])
-        ready_trade_symbols = len([symbol for symbol in snapshot["trade_symbols"] if symbol in ready_set])
-        ready_monitor_symbols = len([symbol for symbol in snapshot["monitor_symbols"] if symbol in ready_set])
-        trading_gate_open = bool(snapshot["trade_symbols"]) and ready_trade_symbols == snapshot["trade_symbols_total"]
-        blocking_pending_symbols = self._non_monitor_pending_symbols(pending_symbols, snapshot["monitor_symbols"])
-        return {
-            "phase": "ready" if not blocking_pending_symbols else "degraded",
-            "required_interval": service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
-            "ready_symbols": len(ready_symbols),
-            "ready_scan_symbols": ready_scan_symbols,
-            "ready_subscription_symbols": ready_subscription_symbols,
-            "ready_trade_symbols": ready_trade_symbols,
-            "ready_monitor_symbols": ready_monitor_symbols,
-            "ready_symbols_list": ready_symbols,
-            "pending_symbols": pending_symbols,
-            "symbol_status": symbol_status,
-            "trading_gate_open": trading_gate_open,
-            "trading_gate_reason": "ready" if trading_gate_open else ("no_trade_symbols" if not snapshot["trade_symbols"] else "warmup_incomplete"),
-        }
-
-    def _apply_integrity_readiness(self, readiness: dict, snapshot: dict, repair_plan: dict[str, dict] | None = None) -> dict:
-        plan = repair_plan or {}
-        if not plan:
-            readiness["integrity_pending_symbols"] = []
-            readiness["integrity_repair_reasons"] = {}
-            for item in readiness.get("symbol_status") or []:
-                if isinstance(item, dict):
-                    item["integrity_ready"] = True
-                    item["integrity_reason"] = ""
-            return readiness
-
-        blocking_symbols = sorted(plan.keys())
-        repair_reasons = {
-            symbol: str((plan.get(symbol) or {}).get("repair_reason") or "history_repair_pending")
-            for symbol in blocking_symbols
-        }
-        ready_set = set(readiness.get("ready_symbols_list") or []) - set(blocking_symbols)
-        pending_set = set(readiness.get("pending_symbols") or []) | set(blocking_symbols)
-        scan_symbol_set = set(snapshot.get("scan_symbols") or [])
-        subscription_symbol_set = set(snapshot.get("subscription_symbols") or [])
-        trade_symbol_set = set(snapshot.get("trade_symbols") or [])
-        monitor_symbol_set = set(snapshot.get("monitor_symbols") or [])
-
-        status_map = {
-            str((item or {}).get("symbol") or "").upper(): dict(item or {})
-            for item in (readiness.get("symbol_status") or [])
-            if str((item or {}).get("symbol") or "").strip()
-        }
-        merged_status = []
-        for symbol in snapshot.get("symbols") or []:
-            if symbol in trade_symbol_set:
-                role = "trade"
-            elif symbol in monitor_symbol_set:
-                role = "monitor"
-            elif symbol in scan_symbol_set:
-                role = "scan"
-            elif symbol in subscription_symbol_set:
-                role = "subscription"
-            else:
-                role = "data"
-            row = dict(status_map.get(symbol) or {})
-            row["symbol"] = symbol
-            row["role"] = row.get("role") or role
-            row["integrity_ready"] = symbol not in repair_reasons
-            row["integrity_reason"] = repair_reasons.get(symbol, "")
-            if symbol in repair_reasons:
-                row["ready"] = False
-            merged_status.append(row)
-
-        ready_trade_symbols = len([symbol for symbol in snapshot.get("trade_symbols") or [] if symbol in ready_set])
-        ready_monitor_symbols = len([symbol for symbol in snapshot.get("monitor_symbols") or [] if symbol in ready_set])
-        trade_blocked = any(symbol in trade_symbol_set for symbol in blocking_symbols)
-        trading_gate_open = (
-            bool(snapshot.get("trade_symbols"))
-            and ready_trade_symbols == int(snapshot.get("trade_symbols_total", 0) or 0)
-            and not trade_blocked
-        )
-        blocking_pending_symbols = self._non_monitor_pending_symbols(sorted(pending_set), snapshot.get("monitor_symbols") or [])
-
-        readiness["phase"] = "ready" if not blocking_pending_symbols else "degraded"
-        readiness["ready_symbols"] = len(ready_set)
-        readiness["ready_scan_symbols"] = len([symbol for symbol in snapshot.get("scan_symbols") or [] if symbol in ready_set])
-        readiness["ready_subscription_symbols"] = len([symbol for symbol in snapshot.get("subscription_symbols") or [] if symbol in ready_set])
-        readiness["ready_trade_symbols"] = ready_trade_symbols
-        readiness["ready_monitor_symbols"] = ready_monitor_symbols
-        readiness["ready_symbols_list"] = sorted(ready_set)
-        readiness["pending_symbols"] = sorted(pending_set)
-        readiness["symbol_status"] = merged_status
-        readiness["integrity_pending_symbols"] = blocking_symbols
-        readiness["integrity_repair_reasons"] = repair_reasons
-        readiness["trading_gate_open"] = trading_gate_open
-        if trading_gate_open:
-            readiness["trading_gate_reason"] = "ready"
-        elif trade_blocked:
-            readiness["trading_gate_reason"] = "history_repair_pending"
-        elif not snapshot.get("trade_symbols"):
-            readiness["trading_gate_reason"] = "no_trade_symbols"
-        else:
-            readiness["trading_gate_reason"] = "warmup_incomplete"
-        return readiness
-
-    def _run_warmup_preflight_repairs(self, snapshot: dict) -> dict:
-        service_mod = _service_mod()
-        repair_plan = self._build_startup_history_repair_plan(snapshot.get("symbols") or [])
-        period_overrides = self._build_startup_history_period_overrides(repair_plan)
-        if not repair_plan:
-            return {
-                "initial_repair_symbols": [],
-                "attempted_repair_symbols": [],
-                "remaining_repair_symbols": [],
-                "repair_reasons": {},
-                "history_fetch_symbols": [],
-                "history_period_overrides": {},
-                "history_written_total": 0,
-                "repair_result": {},
-            }
-
-        service_mod.logger.info(
-            "Warmup preflight history repair started: symbols=%s short_window=%s",
-            ",".join(sorted(repair_plan.keys())),
-            ",".join(
-                f"{symbol}:{(period_overrides.get(symbol) or {}).get('5m')}"
-                for symbol in sorted(period_overrides.keys())
-            ) or "none",
-        )
-        repair_result = self._run_bar_integrity_repairs(
-            repair_plan,
-            source="warmup_preflight",
-            allow_defer=False,
-            run_pipeline_repair=False,
-            history_period_overrides=period_overrides,
-        )
-        remaining_plan = self._build_startup_history_repair_plan(snapshot.get("symbols") or [])
-        history_written_total = 0
-        for item in (repair_result.get("per_symbol") or {}).values():
-            result = (item or {}).get("result") or {}
-            history_written_total += int(result.get("history_written", 0) or 0)
-        return {
-            "initial_repair_symbols": sorted(repair_plan.keys()),
-            "attempted_repair_symbols": sorted(repair_result.get("repair_symbols") or []),
-            "remaining_repair_symbols": sorted(remaining_plan.keys()),
-            "repair_reasons": {
-                symbol: str((data or {}).get("repair_reason") or "history_repair_pending")
-                for symbol, data in remaining_plan.items()
-            },
-            "history_fetch_symbols": sorted(repair_result.get("history_symbols") or []),
-            "history_period_overrides": {
-                symbol: dict((period_overrides.get(symbol) or {}))
-                for symbol in sorted(period_overrides.keys())
-            },
-            "history_written_total": history_written_total,
-            "repair_result": repair_result,
-        }
+        service_mod.logger.info("Runtime warmup loop started")
+        while self._running:
+            triggered = self._warmup_wakeup.wait(timeout=1)
+            if not self._running:
+                break
+            if not triggered:
+                continue
+            self._warmup_wakeup.clear()
+            try:
+                self._run_warmup_cycle()
+            except Exception as exc:
+                service_mod.logger.error("Warmup loop error: %s", exc)
+                self._set_warmup_state(
+                    phase="failed",
+                    finished_at=self._now_iso(),
+                    last_error=str(exc),
+                    trading_gate_open=False,
+                    trading_gate_reason="warmup_failed",
+                )
 
     def _is_warmup_active(self) -> bool:
         phase = str(self._warmup_state.get("phase") or "").strip().lower()

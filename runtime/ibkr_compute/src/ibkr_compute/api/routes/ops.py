@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from ibkr_compute.api.ops.views import (
+    build_backtest_cancel_response,
+    build_backtest_cleanup_response,
+    build_backtest_replay_response,
+    build_backtest_run_response,
+    build_backtest_status_response,
+    build_history_rebuild_start_response,
+    build_history_rebuild_status_response,
+    build_ibkr_data_quality_repair_response,
+    build_ibkr_data_quality_scan_response,
+    build_health_response,
+    build_retention_cleanup_response,
+    build_status_response,
+)
+
+
+def register_ops_routes(app):
+    @app.route("/ibkr/history/rebuild/start", methods=["POST"])
+    def ibkr_history_rebuild_start():
+        return build_history_rebuild_start_response()
+
+    @app.route("/ibkr/history/rebuild/status", methods=["GET"])
+    def ibkr_history_rebuild_status():
+        return build_history_rebuild_status_response()
+
+    @app.route("/retention/cleanup", methods=["POST"])
+    def retention_cleanup():
+        return build_retention_cleanup_response()
+
+    @app.route("/backtest/run", methods=["POST"])
+    def backtest_run():
+        return build_backtest_run_response()
+
+    @app.route("/backtest/status", methods=["GET"])
+    def backtest_status():
+        return build_backtest_status_response()
+
+    @app.route("/backtest/cancel", methods=["POST"])
+    def backtest_cancel():
+        return build_backtest_cancel_response()
+
+    @app.route("/backtest/replay", methods=["GET"])
+    def backtest_replay():
+        return build_backtest_replay_response()
+
+    @app.route("/backtest/cleanup", methods=["POST"])
+    def backtest_cleanup():
+        return build_backtest_cleanup_response()
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        return build_health_response()
+
+    @app.route("/status", methods=["GET"])
+    def status():
+        return build_status_response()
+
+    @app.route("/ibkr/data-quality/scan", methods=["POST"])
+    def ibkr_data_quality_scan():
+        return build_ibkr_data_quality_scan_response()
+
+    @app.route("/ibkr/data-quality/repair", methods=["POST"])
+    def ibkr_data_quality_repair():
+        return build_ibkr_data_quality_repair_response()

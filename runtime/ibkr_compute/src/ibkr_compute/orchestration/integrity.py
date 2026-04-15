@@ -12,6 +12,30 @@ def _service_mod():
 
 
 class TradingServiceIntegrityMixin:
+    def _should_defer_background_repairs(self) -> tuple[bool, dict]:
+        service_mod = _service_mod()
+        queue_size = int(self._compute_queue.qsize())
+        active_subscription_count = len(self._active_subscription_symbols)
+        active_target_count = len(self._active_trade_symbols)
+        websocket_connected = bool(self.ws_client.is_connected)
+        authenticated = bool(self.session_keeper.is_authenticated)
+        runtime_active = bool(
+            self._running
+            and service_mod.ENVIRONMENT in service_mod.REALTIME_PRIORITY_ENVIRONMENTS
+            and authenticated
+            and websocket_connected
+            and active_subscription_count > 0
+        )
+        snapshot = {
+            "reason": "realtime_priority_active" if runtime_active else "",
+            "queue_size": queue_size,
+            "active_target_count": active_target_count,
+            "active_subscription_count": active_subscription_count,
+            "websocket_connected": websocket_connected,
+            "authenticated": authenticated,
+        }
+        return runtime_active, snapshot
+
     def _collect_bar_integrity_snapshot(
         self,
         symbol: str,

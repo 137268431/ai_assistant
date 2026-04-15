@@ -11,6 +11,61 @@ def _service_mod():
 
 
 class TradingServiceMarketUniverseMixin:
+    def _initial_daily_scan_state(self, market_date: str = "") -> dict:
+        return {
+            "market_date": str(market_date or self._market_date()),
+            "status": "idle",
+            "reason": "",
+            "started_at": "",
+            "finished_at": "",
+            "last_error": "",
+            "result": {},
+        }
+
+    def _load_daily_scan_state(self, market_date: str) -> dict:
+        service_mod = _service_mod()
+        target_date = str(market_date or self._market_date())
+        try:
+            state = self.pb.get_state(
+                service_mod.DAILY_SCAN_STATE_KEY,
+                service_mod.ENVIRONMENT,
+                date=service_mod.DAILY_SCAN_STATE_DATE,
+            )
+        except Exception:
+            state = None
+        payload = state.get("data") if isinstance(state, dict) else {}
+        if not isinstance(payload, dict):
+            return self._initial_daily_scan_state(target_date)
+        loaded = {
+            **self._initial_daily_scan_state(target_date),
+            **payload,
+        }
+        if str(loaded.get("market_date") or "") != target_date:
+            return self._initial_daily_scan_state(target_date)
+        return loaded
+
+    def _copy_daily_scan_state(self) -> dict:
+        with self._scan_state_lock:
+            return dict(self._daily_scan_state or {})
+
+    def _set_daily_scan_state(self, **updates) -> dict:
+        service_mod = _service_mod()
+        with self._scan_state_lock:
+            next_state = dict(self._daily_scan_state or self._initial_daily_scan_state())
+            next_state.update(updates)
+            next_state["market_date"] = str(next_state.get("market_date") or self._market_date())
+            self._daily_scan_state = next_state
+            try:
+                self.pb.upsert_state(
+                    service_mod.DAILY_SCAN_STATE_KEY,
+                    service_mod.ENVIRONMENT,
+                    next_state,
+                    date=service_mod.DAILY_SCAN_STATE_DATE,
+                )
+            except Exception:
+                service_mod.logger.warning("Persist daily scan state failed", exc_info=True)
+            return dict(next_state)
+
     def _environment_watchlist_filter(self) -> str:
         service_mod = _service_mod()
         safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
@@ -431,6 +486,130 @@ class TradingServiceMarketUniverseMixin:
                 if not self._running:
                     break
                 time.sleep(1)
+
+    def _remove_stale_target_rows(self, active_date: str) -> int:
+        service_mod = _service_mod()
+        safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        try:
+            rows = self.pb.get_all_records(
+                "ibkr_targets",
+                filter=(
+                    f'environment = "{safe_env}" && '
+                    '(status = "candidate" || status = "active")'
+                ),
+                max_pages=20,
+            )
+        except Exception as exc:
+            service_mod.logger.warning("Failed to load stale target rows: %s", exc)
+            return 0
+
+        removed = 0
+        removed_at = datetime.now(service_mod.ET).isoformat()
+        for row in rows:
+            row_date = str(row.get("date", "") or "").strip()
+            if not row_date or row_date == active_date:
+                continue
+
+            record_id = str(row.get("id") or "")
+            if not record_id:
+                continue
+
+            payload = {"status": "removed"}
+            extra = row.get("extra")
+            if isinstance(extra, dict):
+                next_extra = dict(extra)
+                next_extra["removed_reason"] = "market_day_reset"
+                next_extra["removed_at"] = removed_at
+                next_extra["removed_market_date"] = active_date
+                payload["extra"] = next_extra
+
+            try:
+                self.pb.update_record("ibkr_targets", record_id, payload)
+                removed += 1
+            except Exception as exc:
+                service_mod.logger.warning(
+                    "Failed to remove stale target row %s (%s %s): %s",
+                    record_id,
+                    row_date,
+                    str(row.get("symbol", "")).upper(),
+                    exc,
+                )
+
+        if removed > 0:
+            service_mod.logger.info("Removed %d stale target rows before activating %s", removed, active_date)
+        return removed
+
+    def _reset_for_new_market_day(self, force: bool = False):
+        service_mod = _service_mod()
+        current_date = self._market_date()
+        previous_date = self._current_market_date
+        if not force and previous_date == current_date:
+            return False
+
+        service_mod.logger.info(
+            "Market day reset: previous=%s current=%s force=%s",
+            previous_date or "n/a",
+            current_date,
+            force,
+        )
+        self._current_market_date = current_date
+        self._last_daily_reset_at = time.time()
+
+        self.signal_router.daily_reset()
+        self.signal_processor.daily_reset()
+        self.reverse_handler.daily_reset()
+        self.order_lifecycle.daily_reset()
+        self.timeframe_builder.reset()
+        self.bar_aggregator.reset()
+        self.realtime_quote_book.reset()
+        self._quote_prev_close_cache = {}
+        self._quote_prev_close_cache_date = current_date
+        self._signal_wakeup.clear()
+        drained = self._drain_compute_queue()
+        if drained > 0:
+            service_mod.logger.info(
+                "Cleared %d queued realtime compute tasks during market day reset",
+                drained,
+            )
+
+        try:
+            from ibkr_compute.api import server as compute_server
+
+            reset_result = compute_server.reset_daily_runtime_state(
+                [service_mod.ENVIRONMENT],
+                reason="market_day_reset",
+            )
+            service_mod.logger.info("Compute daily reset result: %s", reset_result)
+        except Exception as exc:
+            service_mod.logger.warning("Compute daily reset failed: %s", exc)
+
+        self._reset_warmup_state(reason="market_day_reset")
+        if previous_date and previous_date != current_date:
+            self._set_daily_scan_state(**self._initial_daily_scan_state(current_date))
+        else:
+            with self._scan_state_lock:
+                self._daily_scan_state = self._load_daily_scan_state(current_date)
+        self._remove_stale_target_rows(current_date)
+        self._apply_live_subscriptions(current_date, {}, reason="market_day_reset")
+        self._active_target_date = ""
+        self._last_target_refresh_at = 0.0
+        self._last_backfill_at = 0.0
+        self._last_backfill_symbols = []
+        self._last_active_repair_at = 0.0
+        self._last_active_repair_symbols = []
+        self._last_active_repair_reasons = {}
+        self._last_history_repair_at = 0.0
+        self._last_history_repair_symbols = []
+        self._last_pipeline_repair_at = 0.0
+        self._last_pipeline_repair_symbols = []
+        self._watchlist_integrity_cursor = 0
+        self._last_watchlist_integrity_at = 0.0
+        self._last_watchlist_integrity_symbols = []
+        self._last_watchlist_integrity_repair_symbols = []
+        self._official_5m_state = self._initial_official_5m_state()
+        if previous_date and previous_date != current_date:
+            self._persist_watchlist_integrity_cursor()
+        return True
 
     def _bar_integrity_market_date(self) -> str:
         return str(self._current_market_date or self._market_date())
