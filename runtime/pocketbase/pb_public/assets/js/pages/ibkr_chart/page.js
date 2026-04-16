@@ -2196,6 +2196,31 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             `;
         }
 
+        function resolveChartTooltipPosition(point, size) {
+            const viewWidth = Number(size?.viewSize?.[0] || 0);
+            const viewHeight = Number(size?.viewSize?.[1] || 0);
+            const contentWidth = Number(size?.contentSize?.[0] || 0);
+            const contentHeight = Number(size?.contentSize?.[1] || 0);
+            const padding = isCompactViewport() ? 12 : 16;
+            if (!Array.isArray(point) || point.length < 2 || !viewWidth || !viewHeight) {
+                return [padding, padding];
+            }
+            if (isCompactViewport()) {
+                return [Math.max(padding, viewWidth - contentWidth - padding), padding];
+            }
+            const anchorX = Number(point[0] || 0);
+            const anchorY = Number(point[1] || 0);
+            let left = anchorX + padding;
+            let top = anchorY + padding;
+            if (left + contentWidth > viewWidth - padding) {
+                left = Math.max(padding, anchorX - contentWidth - padding);
+            }
+            if (top + contentHeight > viewHeight - padding) {
+                top = Math.max(padding, viewHeight - contentHeight - padding);
+            }
+            return [left, top];
+        }
+
         function renderChart(payload) {
             const displayPayload = buildChartDisplayPayload(payload);
             chartDisplayPayload = displayPayload || payload || null;
@@ -2385,10 +2410,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     textStyle: { color: '#E2EAF4' },
                     enterable: true,
                     confine: true,
-                    position(_, __, ___, ____, size) {
-                        const viewWidth = Number(size?.viewSize?.[0] || 0);
-                        const contentWidth = Number(size?.contentSize?.[0] || 0);
-                        return [Math.max(12, viewWidth - contentWidth - 18), 16];
+                    position(point, params, dom, rect, size) {
+                        return resolveChartTooltipPosition(point, size);
                     },
                     formatter(params) {
                         const list = Array.isArray(params) ? params : [params];

@@ -10,7 +10,12 @@ import threading
 import time
 from typing import Dict
 
-from .timeframe_utils import build_runtime_timestamps, classify_session, normalize_interval
+from .timeframe_utils import (
+    build_bar_close_timestamps,
+    build_runtime_timestamps,
+    classify_session,
+    normalize_interval,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,19 +160,22 @@ class DataWriter:
         self.flush()
 
     def _build_payload(self, bar: Dict) -> Dict:
+        normalized_interval = normalize_interval(bar.get("interval", "5m"))
+        bar_time_ms = int(bar["bar_time_ms"])
         base_extra = dict(bar.get("extra") or {})
         base_extra.setdefault("source", bar.get("source", "ibkr_compute"))
         base_extra.setdefault("tick_count", int(bar.get("tick_count", 0) or 0))
         base_extra.setdefault("conid", int(bar.get("conid", 0) or 0))
-        base_extra.setdefault("interval", normalize_interval(bar.get("interval", "5m")))
-        base_extra.setdefault("session_type", classify_session(bar.get("us_time", ""), bar.get("bar_time_ms")))
+        base_extra.setdefault("interval", normalized_interval)
+        base_extra.setdefault("session_type", classify_session(bar.get("us_time", ""), bar_time_ms))
+        base_extra.update(build_bar_close_timestamps(bar_time_ms, normalized_interval))
         base_extra.update(build_runtime_timestamps())
 
         return {
             "symbol": str(bar["symbol"]).upper(),
             "environment": str(bar.get("environment") or DEFAULT_ENVIRONMENT).strip().lower() or DEFAULT_ENVIRONMENT,
             "exchange": str(bar.get("exchange") or "").strip().upper(),
-            "interval": normalize_interval(bar.get("interval", "5m")),
+            "interval": normalized_interval,
             "open": float(bar["open"]),
             "high": float(bar["high"]),
             "low": float(bar["low"]),
@@ -176,7 +184,7 @@ class DataWriter:
             "session_type": str(bar.get("session_type") or base_extra["session_type"]),
             "us_time": str(bar.get("us_time") or ""),
             "cn_time": str(bar.get("cn_time") or ""),
-            "bar_time_ms": int(bar["bar_time_ms"]),
+            "bar_time_ms": bar_time_ms,
             "extra": base_extra,
         }
 

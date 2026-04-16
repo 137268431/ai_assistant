@@ -254,6 +254,7 @@ function buildStatusSnapshot(environment, times) {
     const websocketReady = Boolean(runtime.websocket && runtime.websocket.ready === true)
     const warmup = runtime.warmup && typeof runtime.warmup === "object" ? runtime.warmup : {}
     const warmupPendingSymbols = Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : []
+    const barBucket = buildBarBucketSnapshot(runtime)
 
     return {
         environment: environment,
@@ -301,6 +302,7 @@ function buildStatusSnapshot(environment, times) {
                 ? `${latestIndicator.symbol || "-"} / lag ${indicatorLagMin}m / ${latestIndicator.us_time || "-"}`
                 : "missing",
         },
+        bar_bucket: barBucket,
         today: today,
         account: {
             ok: Boolean(account && account.ok !== false),
@@ -410,6 +412,112 @@ function buildDataFreshnessWindow(snapshot, times, clock) {
     }
 }
 
+function buildBarBucketLabel(bucket) {
+    const parts = []
+    const status = String(bucket && bucket.status || "").trim().toLowerCase()
+    if (status) {
+        parts.push(status)
+    }
+    if (bucket && bucket.last_due_bucket_us) {
+        parts.push(`due ${bucket.last_due_bucket_us}`)
+    }
+    if (bucket && bucket.last_completed_bucket_us) {
+        parts.push(`done ${bucket.last_completed_bucket_us}`)
+    }
+    if (toNumber(bucket && bucket.pending_symbols_total, 0) > 0) {
+        parts.push(`pending ${toNumber(bucket.pending_symbols_total, 0)}`)
+    } else if (toNumber(bucket && bucket.lag_s, 0) > 0) {
+        parts.push(`lag ${Math.round(toNumber(bucket.lag_s, 0))}s`)
+    }
+    return parts.length ? parts.join(" / ") : "unknown"
+}
+
+function normalizeBarBucketLagSeconds(lagValue, dueBucketMs, completedBucketMs) {
+    const dueMs = toNumber(dueBucketMs, 0)
+    const completedMs = toNumber(completedBucketMs, 0)
+    if (dueMs > 0) {
+        const referenceMs = completedMs > 0 && completedMs >= dueMs ? completedMs : Date.now()
+        return Math.max(0, Math.round((referenceMs - dueMs) / 1000))
+    }
+    const rawLag = toNumber(lagValue, 0)
+    if (rawLag > 1000000000000) {
+        return Math.max(0, Math.round((Date.now() - rawLag) / 1000))
+    }
+    if (rawLag > 1000000000) {
+        return Math.max(0, Math.round(Date.now() / 1000 - rawLag))
+    }
+    return rawLag
+}
+
+function buildBarBucketSnapshot(runtimePayload) {
+    const runtime = runtimePayload && typeof runtimePayload === "object" ? runtimePayload : {}
+    const canonical = runtime.canonical_5m && typeof runtime.canonical_5m === "object"
+        ? runtime.canonical_5m
+        : {}
+    const marketUniverse = runtime.market_universe && typeof runtime.market_universe === "object"
+        ? runtime.market_universe
+        : {}
+    const freshness = marketUniverse.bar_freshness && typeof marketUniverse.bar_freshness === "object"
+        ? marketUniverse.bar_freshness
+        : {}
+    const pendingTotal = toNumber(canonical.pending_symbols_total, toNumber(freshness.pending_symbols_total, 0))
+    const dueBucketMs = toNumber(canonical.last_due_bucket_ms, 0)
+    const completedBucketMs = toNumber(canonical.last_completed_bucket_ms, 0)
+    const lagS = normalizeBarBucketLagSeconds(
+        toNumber(canonical.lag_s, toNumber(freshness.lag_s, 0)),
+        dueBucketMs,
+        completedBucketMs
+    )
+    const bucket = {
+        enabled: canonical.enabled !== false,
+        status: String(freshness.status || "").trim().toLowerCase() || (
+            lagS <= 90 && pendingTotal <= 0
+                ? "fresh"
+                : ((lagS > 0 || pendingTotal > 0) ? "stale" : "unknown")
+        ),
+        lag_s: lagS,
+        pending_symbols_total: pendingTotal,
+        last_completed_bucket_ms: completedBucketMs,
+        last_completed_bucket_us: String(canonical.last_completed_bucket_us || freshness.last_completed_bucket_us || ""),
+        last_due_bucket_ms: dueBucketMs,
+        last_due_bucket_us: String(canonical.last_due_bucket_us || ""),
+    }
+    bucket.label = buildBarBucketLabel(bucket)
+    return bucket
+}
+
+function listBarBucketProblems(snapshot, freshnessWindow) {
+    const problems = []
+    if (!snapshot) return problems
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
+    const bucket = snapshot.bar_bucket && typeof snapshot.bar_bucket === "object" ? snapshot.bar_bucket : {}
+    if (!enforceFreshness || bucket.enabled === false) {
+        return problems
+    }
+    const status = String(bucket.status || "").trim().toLowerCase()
+    const pendingTotal = toNumber(bucket.pending_symbols_total, 0)
+    const lagS = toNumber(bucket.lag_s, 0)
+    const dueBucketMs = toNumber(bucket.last_due_bucket_ms, 0)
+    const completedBucketMs = toNumber(bucket.last_completed_bucket_ms, 0)
+    const bucketIncomplete = dueBucketMs > 0 && (completedBucketMs <= 0 || completedBucketMs < dueBucketMs)
+    if (status === "stale" || bucketIncomplete) {
+        let label = "当前 5m bar 桶未完成"
+        if (pendingTotal > 0) {
+            label += `，pending ${pendingTotal}`
+        } else if (lagS > 0) {
+            label += `，lag ${Math.round(lagS)}s`
+        } else if (bucket.last_due_bucket_us || bucket.last_completed_bucket_us) {
+            label += `，due ${bucket.last_due_bucket_us || "--"} / done ${bucket.last_completed_bucket_us || "--"}`
+        }
+        problems.push(label)
+    }
+    return problems
+}
+
+function hasBarBucketIssue(snapshot, freshnessWindow) {
+    return listBarBucketProblems(snapshot, freshnessWindow).length > 0
+}
+
 function formatWarmupPhaseLabel(value) {
     const normalized = String(value || "").trim().toLowerCase()
     const labels = {
@@ -458,6 +566,7 @@ function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times
         "引擎就绪": `${snapshot.compute.ready_engines || 0}/${snapshot.compute.total_engines || 0}`,
         "盘前预热": buildWarmupProgressLabel(snapshot),
         "最新5m": snapshot.latest_bar.label,
+        "当前Bar桶": snapshot.bar_bucket.label,
         "指标状态": snapshot.latest_indicator.label,
         "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
         "目标池": `${snapshot.today.targets} targets / active ${snapshot.active_target_count || 0}`,
@@ -490,6 +599,7 @@ function buildDailyCloseSummaryDetail(snapshot, assessment, marketSession, times
         "错误事件": String(eventCounts.error_events || 0),
         "2FA状态": snapshot.auth.label,
         "最新5m": snapshot.latest_bar.label,
+        "当前Bar桶": snapshot.bar_bucket.label,
         "指标状态": snapshot.latest_indicator.label,
         "交易开关": snapshot.trading_enabled ? "true" : "false",
         "汇总时间": times.us,
@@ -522,6 +632,7 @@ function hasHeartbeatIssue(snapshot, freshnessWindow) {
             && (
                 snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
                 || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+                || hasBarBucketIssue(snapshot, freshnessWindow)
             )
         )
     )
@@ -635,6 +746,15 @@ function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
         }
     }
 
+    const barBucketProblems = listBarBucketProblems(snapshot, freshnessWindow)
+    for (let i = 0; i < barBucketProblems.length; i++) {
+        if (startupGraceActive) {
+            watchItems.push(barBucketProblems[i])
+        } else {
+            blockingIssues.push(barBucketProblems[i])
+        }
+    }
+
     if (!snapshot.account.ok) {
         watchItems.push("账户快照不可用")
     }
@@ -664,14 +784,14 @@ function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
         return {
             level: "info",
             kind: "healthy_paused",
-            summary: "当前系统状态正确，行情与执行链路正常；交易开关关闭，属于只观察模式。",
+            summary: "当前系统状态正确，行情、当前 5m bar 桶与执行链路正常；交易开关关闭，属于只观察模式。",
         }
     }
 
     return {
         level: "info",
         kind: "healthy",
-        summary: "当前系统状态正确，Compute、认证、WebSocket、bars 与指标链路正常。",
+        summary: "当前系统状态正确，Compute、认证、WebSocket、当前 5m bar 桶、bars 与指标链路正常。",
     }
 }
 
@@ -692,6 +812,11 @@ function listDataHealthProblems(snapshot, freshnessWindow) {
         problems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
     }
 
+    const barBucketProblems = listBarBucketProblems(snapshot, freshnessWindow)
+    for (let i = 0; i < barBucketProblems.length; i++) {
+        problems.push(barBucketProblems[i])
+    }
+
     if (!snapshot.session.authenticated) {
         problems.push("IBKR 会话未认证")
     }
@@ -709,6 +834,7 @@ function buildDataHealthRecommendation(snapshot, freshnessWindow) {
     const actions = []
     if (!snapshot) return "检查 compute / IBKR / PocketBase 链路状态"
     const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
+    const bucketIssue = hasBarBucketIssue(snapshot, freshnessWindow)
 
     if (!snapshot.session.authenticated) {
         actions.push("检查 IBKR 会话认证状态")
@@ -716,12 +842,17 @@ function buildDataHealthRecommendation(snapshot, freshnessWindow) {
     if (!snapshot.websocket.connected || !snapshot.websocket.ready) {
         actions.push("检查 WebSocket 连接与 IB Gateway 网关状态")
     }
+    if (bucketIssue) {
+        actions.push("检查 canonical 5m bar 桶完整性与 pending symbols")
+    }
     if (
-        enforceFreshness && (
-        snapshot.latest_bar.bar_time_ms <= 0
-        || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
-        || snapshot.latest_indicator.bar_time_ms <= 0
-        || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+        bucketIssue || (
+            enforceFreshness && (
+                snapshot.latest_bar.bar_time_ms <= 0
+                || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+                || snapshot.latest_indicator.bar_time_ms <= 0
+                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+            )
         )
     ) {
         actions.push("检查实时 ticks / bars / indicators 写入链路")
@@ -755,6 +886,7 @@ function buildRecoveryDetail(snapshot, times, state, assessment) {
         "认证": snapshot.session.authenticated ? "ok" : "pending",
         "WebSocket": snapshot.websocket.label,
         "最新5m": snapshot.latest_bar.label,
+        "当前Bar桶": snapshot.bar_bucket.label,
         "指标状态": snapshot.latest_indicator.label,
         "交易开关": snapshot.trading_enabled ? "true" : "false",
     }
@@ -859,9 +991,10 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                 freshnessWindow.required && (
                 snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
                 || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+                || hasBarBucketIssue(snapshot, freshnessWindow)
                 )
             ) {
-                const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}`
+                const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}:${snapshot.bar_bucket.status || ""}:${snapshot.bar_bucket.last_due_bucket_ms || 0}:${snapshot.bar_bucket.last_completed_bucket_ms || 0}:${snapshot.bar_bucket.pending_symbols_total || 0}`
                 const problemSummary = listDataHealthProblems(snapshot, freshnessWindow)
                 const issueSummary = problemSummary.length
                     ? `当前数据链路不正确：${problemSummary.join("；")}。`
@@ -904,6 +1037,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                             "检查时间": times.us,
                             "认证": snapshot.session.authenticated ? "ok" : "pending",
                             "最新5m": snapshot.latest_bar.label,
+                            "当前Bar桶": snapshot.bar_bucket.label,
                             "指标状态": snapshot.latest_indicator.label,
                             "WebSocket": snapshot.websocket.label,
                             "建议": buildDataHealthRecommendation(snapshot, freshnessWindow),
@@ -951,6 +1085,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                     "trading": snapshot.trading_enabled ? "true" : "false",
                     "WebSocket": snapshot.websocket.label,
                     "最新5m": snapshot.latest_bar.label,
+                    "当前Bar桶": snapshot.bar_bucket.label,
                 }
                 const notified = feishuSystem.notifySystemEvent("heartbeat", "info", "pb", "IBKR 系统心跳（兜底）", detail, environment)
                 writeSystemEvent("heartbeat", "info", "pb", "IBKR 系统心跳（兜底）", detail, environment, notified)
@@ -997,6 +1132,7 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
                 "引擎就绪": `${snapshot.compute.ready_engines || 0}/${snapshot.compute.total_engines || 0}`,
                 "盘前预热": buildWarmupProgressLabel(snapshot),
                 "最新5m": snapshot.latest_bar.label,
+                "当前Bar桶": snapshot.bar_bucket.label,
                 "指标状态": snapshot.latest_indicator.label,
                 "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
                 "实时账户": snapshot.account.ok

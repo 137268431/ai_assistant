@@ -279,13 +279,6 @@ function loadWatchMeta(environment, symbols) {
     return watchMeta
 }
 
-function rankStatus(status) {
-    const normalized = String(status || "").trim().toLowerCase()
-    if (normalized === "active") return 0
-    if (normalized === "candidate") return 1
-    return 9
-}
-
 function pickReasonList(currentReasons, fallbackReasons) {
     const seen = {}
     const merged = []
@@ -317,6 +310,119 @@ function pushUniqueText(list, value) {
 
 function normalizeSignalStatus(value) {
     return String(value || "").trim().toLowerCase()
+}
+
+function parseOptionalBoolean(value, fallback) {
+    if (value === undefined || value === null || value === "") return fallback
+    if (typeof value === "boolean") return value
+    const normalized = String(value || "").trim().toLowerCase()
+    if (["true", "1", "yes", "y"].indexOf(normalized) !== -1) return true
+    if (["false", "0", "no", "n"].indexOf(normalized) !== -1) return false
+    return fallback
+}
+
+function matchesTodayTargetSignalState(row, signalState) {
+    const value = String(signalState || "").trim().toLowerCase()
+    if (!value) return true
+    const latestStatus = normalizeSignalStatus(row && row.latest_signal_status)
+    if (value === "needs_action") {
+        return latestStatus === "awaiting_confirm" || latestStatus === "pending"
+    }
+    if (value === "signaled") return Boolean(row && row.has_signal_today)
+    if (value === "no_signal") return !(row && row.has_signal_today)
+    return latestStatus === value
+}
+
+function normalizeTodayTargetFilters(options) {
+    return {
+        search: String(options && options.search || "").trim().toUpperCase(),
+        technical_state: String(options && (options.technical_state || options.technicalState) || "").trim().toLowerCase(),
+        signal_state: String(options && (options.signal_state || options.signalState) || "").trim().toLowerCase(),
+        target_status: String(options && (options.target_status || options.targetStatus) || "").trim().toLowerCase(),
+        direction_bias: String(options && (options.direction_bias || options.directionBias) || "").trim().toLowerCase(),
+        ready_only: parseOptionalBoolean(options && (options.ready_only != null ? options.ready_only : options.readyOnly), false),
+        signaled_only: parseOptionalBoolean(options && (options.signaled_only != null ? options.signaled_only : options.signaledOnly), false),
+        sort_by: String(options && (options.sort_by || options.sortBy) || "").trim().toLowerCase() || "attention_asc",
+    }
+}
+
+function matchesTodayTargetFilters(row, filters) {
+    const normalized = filters || normalizeTodayTargetFilters({})
+    if (normalized.search) {
+        const haystack = [
+            row && row.symbol,
+            row && row.exchange,
+            row && row.industry,
+            row && row.scan_reason,
+            row && row.note,
+            row && row.latest_signal_id,
+            row && row.latest_signal_status,
+            row && row.workflow_label,
+            row && row.workflow_summary,
+            row && row.workflow_next_action,
+        ]
+            .concat(Array.isArray(row && row.technical_flags) ? row.technical_flags : [])
+            .concat(Array.isArray(row && row.operable_reasons) ? row.operable_reasons : [])
+            .concat(Array.isArray(row && row.workflow_blockers) ? row.workflow_blockers : [])
+            .join(" ")
+            .toUpperCase()
+        if (haystack.indexOf(normalized.search) === -1) return false
+    }
+    if (normalized.technical_state && String(row && row.technical_state || "").trim().toLowerCase() !== normalized.technical_state) return false
+    if (normalized.target_status && String(row && row.target_status || "").trim().toLowerCase() !== normalized.target_status) return false
+    if (normalized.direction_bias && String(row && row.direction_bias || "").trim().toLowerCase() !== normalized.direction_bias) return false
+    if (!matchesTodayTargetSignalState(row, normalized.signal_state)) return false
+    if (normalized.ready_only && String(row && row.technical_state || "").trim().toLowerCase() !== "ready") return false
+    if (normalized.signaled_only && !(row && row.has_signal_today)) return false
+    return true
+}
+
+function sortTodayTargetRows(rows, sortBy) {
+    const items = Array.isArray(rows) ? rows.slice() : []
+    const normalizedSort = String(sortBy || "").trim().toLowerCase() || "attention_asc"
+    items.sort((left, right) => {
+        if (normalizedSort === "symbol_asc") {
+            return String(left && left.symbol || "").localeCompare(String(right && right.symbol || ""))
+        }
+        if (normalizedSort === "signal_desc") {
+            return toInt(right && right.latest_signal_time_ms, 0) - toInt(left && left.latest_signal_time_ms, 0)
+                || toInt(left && left.attention_rank, 99) - toInt(right && right.attention_rank, 99)
+        }
+        if (normalizedSort === "tradability_desc") {
+            return toNumber(right && right.tradability_score, 0) - toNumber(left && left.tradability_score, 0)
+                || toNumber(right && right.target_score, 0) - toNumber(left && left.target_score, 0)
+        }
+        if (normalizedSort === "target_desc") {
+            return toNumber(right && right.target_score, 0) - toNumber(left && left.target_score, 0)
+                || toNumber(right && right.tradability_score, 0) - toNumber(left && left.tradability_score, 0)
+        }
+        return toInt(left && left.attention_rank, 99) - toInt(right && right.attention_rank, 99)
+            || toInt(right && right.latest_signal_time_ms, 0) - toInt(left && left.latest_signal_time_ms, 0)
+            || toNumber(right && right.tradability_score, 0) - toNumber(left && left.tradability_score, 0)
+            || toNumber(right && right.target_score, 0) - toNumber(left && left.target_score, 0)
+            || String(left && left.symbol || "").localeCompare(String(right && right.symbol || ""))
+    })
+    return items
+}
+
+function buildFilteredTodayTargetSummary(rows) {
+    const items = Array.isArray(rows) ? rows : []
+    let readyCount = 0
+    let signaledCount = 0
+    let needsActionCount = 0
+    for (let i = 0; i < items.length; i++) {
+        const row = items[i]
+        if (String(row && row.technical_state || "").trim().toLowerCase() === "ready") readyCount += 1
+        if (row && row.has_signal_today) signaledCount += 1
+        const latestStatus = normalizeSignalStatus(row && row.latest_signal_status)
+        if (latestStatus === "awaiting_confirm" || latestStatus === "pending") needsActionCount += 1
+    }
+    return {
+        total: items.length,
+        ready_count: readyCount,
+        signaled_count: signaledCount,
+        needs_action_count: needsActionCount,
+    }
 }
 
 function normalizeSignalRecord(record) {
@@ -864,19 +970,21 @@ function buildTodayTargetPayload(options) {
         items.push(row)
     }
 
-    items.sort((left, right) => {
-        const attentionDiff = toNumber(left.attention_rank, 99) - toNumber(right.attention_rank, 99)
-        if (attentionDiff !== 0) return attentionDiff
-        const latestSignalDiff = toInt(right.latest_signal_time_ms, 0) - toInt(left.latest_signal_time_ms, 0)
-        if (latestSignalDiff !== 0) return latestSignalDiff
-        const tradabilityDiff = toNumber(right.tradability_score, 0) - toNumber(left.tradability_score, 0)
-        if (tradabilityDiff !== 0) return tradabilityDiff
-        const scoreDiff = toNumber(right.score, 0) - toNumber(left.score, 0)
-        if (scoreDiff !== 0) return scoreDiff
-        const statusDiff = rankStatus(left.status) - rankStatus(right.status)
-        if (statusDiff !== 0) return statusDiff
-        return String(left.symbol || "").localeCompare(String(right.symbol || ""))
-    })
+    const filters = normalizeTodayTargetFilters(options)
+    const filteredItems = sortTodayTargetRows(items, filters.sort_by).filter((row) => matchesTodayTargetFilters(row, filters))
+    const filteredSummary = buildFilteredTodayTargetSummary(filteredItems)
+    const paginationEnabled = Boolean(options && options.paginate)
+    const requestedPerPage = Math.max(1, Math.min(200, toInt(options && (options.per_page || options.perPage), 10)))
+    const totalPages = paginationEnabled
+        ? Math.max(1, Math.ceil(filteredItems.length / requestedPerPage))
+        : 1
+    const page = paginationEnabled
+        ? Math.min(Math.max(1, toInt(options && options.page, 1)), totalPages)
+        : 1
+    const offset = paginationEnabled ? (page - 1) * requestedPerPage : 0
+    const pagedItems = paginationEnabled
+        ? filteredItems.slice(offset, offset + requestedPerPage)
+        : filteredItems
 
     return {
         ok: true,
@@ -899,7 +1007,17 @@ function buildTodayTargetPayload(options) {
             executed_count: executedCount,
             stale_count: staleCount,
         },
-        items: items,
+        filters: filters,
+        filtered_summary: filteredSummary,
+        filtered_total: filteredItems.length,
+        pagination_enabled: paginationEnabled,
+        page: page,
+        per_page: paginationEnabled ? requestedPerPage : filteredItems.length,
+        total_pages: totalPages,
+        has_prev_page: paginationEnabled ? page > 1 : false,
+        has_next_page: paginationEnabled ? page < totalPages : false,
+        returned_count: pagedItems.length,
+        items: pagedItems,
     }
 }
 

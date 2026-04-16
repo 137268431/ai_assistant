@@ -9,6 +9,7 @@ const SETTLE_MS = Number(process.env.PB_SMOKE_SETTLE_MS || 2200);
 const AUTH_TIMEOUT_MS = Number(process.env.PB_SMOKE_AUTH_TIMEOUT_MS || 15000);
 const PAGE_MAX_SPREAD_PX = Number(process.env.PB_SMOKE_PANEL_SPREAD_MAX || 24);
 const BRIDGE_MAX_SPREAD_PX = Number(process.env.PB_SMOKE_BRIDGE_SPREAD_MAX || 12);
+const PANEL_ROW_HEIGHT_MAX_PX = Number(process.env.PB_SMOKE_PANEL_HEIGHT_MAX || 1400);
 const DEFAULT_TARGETS = [
   `${DEFAULT_BASE}/index.html?environment=live`,
   `${DEFAULT_BASE}/ibkr_system.html?environment=live`,
@@ -190,7 +191,7 @@ function sanitizeFileStem(url, device) {
 }
 
 async function collectLayoutMetrics(page) {
-  return page.evaluate(() => {
+  return page.evaluate((panelRowHeightMaxPx) => {
     const groupRowSpread = (selector) => {
       const nodes = Array.from(document.querySelectorAll(selector)).filter((node) => {
         const rect = node.getBoundingClientRect();
@@ -239,6 +240,7 @@ async function collectLayoutMetrics(page) {
       '.workspace > .panel',
       '.workspace > .rail-shell'
     ].join(', '));
+    const tallPanelRows = panelRows.filter((row) => row.count > 1 && row.max > panelRowHeightMaxPx);
 
     return {
       viewport_width: window.innerWidth,
@@ -248,11 +250,12 @@ async function collectLayoutMetrics(page) {
       bridge_count: document.querySelectorAll('.page-bridge-link, .domain-tab').length,
       bridge_rows: bridgeRows,
       panel_rows: panelRows,
+      tall_panel_rows: tallPanelRows,
       bridge_row_spread_max: bridgeRows.reduce((max, row) => Math.max(max, row.spread), 0),
       panel_row_spread_max: panelRows.reduce((max, row) => Math.max(max, row.spread), 0),
       scroll_issues: scrollIssues.slice(0, 12),
     };
-  });
+  }, PANEL_ROW_HEIGHT_MAX_PX);
 }
 
 async function inspectPage(browser, token, url, mobile) {
@@ -301,6 +304,7 @@ async function inspectPage(browser, token, url, mobile) {
     panel_row_spread_max: 999,
     bridge_rows: [],
     panel_rows: [],
+    tall_panel_rows: [],
     scroll_issues: [{ selector: 'layout_eval_failed', index: 0, gap: 0, overflowY: 'error' }],
   }));
 
@@ -312,6 +316,7 @@ async function inspectPage(browser, token, url, mobile) {
   if (layout.horizontal_overflow) layoutIssues.push('horizontal_overflow');
   if (layout.bridge_row_spread_max > BRIDGE_MAX_SPREAD_PX) layoutIssues.push(`bridge_spread:${layout.bridge_row_spread_max}`);
   if (layout.panel_row_spread_max > PAGE_MAX_SPREAD_PX) layoutIssues.push(`panel_spread:${layout.panel_row_spread_max}`);
+  if (layout.tall_panel_rows.length) layoutIssues.push(`tall_panel_rows:${layout.tall_panel_rows.map((row) => row.max).join(',')}`);
   if (layout.scroll_issues.length) layoutIssues.push(`uncontained_scroll:${layout.scroll_issues.length}`);
 
   let screenshot = '';

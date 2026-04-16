@@ -2,7 +2,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     let activeTab = 'screener';
     let activeScreenerView = 'current';
     let screenerPayload = { items: [], summary: {}, filters: {} };
-    let todayTargetsPayload = { items: [], summary: {}, market_date: '' };
+    let todayTargetsPayload = {
+      items: [],
+      summary: {},
+      market_date: '',
+      filtered_total: 0,
+      filtered_summary: {},
+      page: 1,
+      total_pages: 1,
+    };
     let runtimeCurrentMarketDate = '';
     let rulesPayload = { selection: null, signals: null, computed_at_us: '' };
     let rulesLoadError = '';
@@ -22,6 +30,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       loaded: false,
       lastRefresh: '尚未加载',
       loadedRole: ''
+    };
+    const currentTargetState = {
+      page: 1,
+      perPage: 10,
+      requestToken: 0,
+      searchDebounceId: 0,
     };
 
     function escapeHtml(value) {
@@ -559,13 +573,16 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const visible = Array.isArray(filteredCurrentTargetRows) ? filteredCurrentTargetRows.length : 0;
         const visibleReady = (filteredCurrentTargetRows || []).filter((row) => row.technical_state === 'ready').length;
         const visibleActionable = (filteredCurrentTargetRows || []).filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
+        const currentPage = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
+        const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
+        const filteredTotal = Number(todayTargetsPayload.filtered_total || visible || 0) || 0;
         document.getElementById('heroTitle').textContent = '先看当前标的，再决定今天的盘中动作。';
         document.getElementById('heroCopy').textContent = '当前标的榜把 today targets、技术状态和今天已出信号放到一张表里，优先定位需要确认、等待执行和 ready 但尚未触发的标的。';
         document.getElementById('marketDateMeta').textContent = `Market Date ${todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate').value || '--'}`;
         document.getElementById('refreshInfo').textContent = todayTargetsPayload.computed_at_us
           ? `更新: ${todayTargetsPayload.computed_at_us}`
           : '数据未刷新';
-        document.getElementById('selectionInfo').textContent = `可见 ${visible} 条 · ready ${visibleReady} 条 · needs action ${visibleActionable} 条 · 总 targets ${summary.total || 0}`;
+        document.getElementById('selectionInfo').textContent = `第 ${currentPage}/${totalPages} 页 · 本页 ${visible} 条 · ready ${visibleReady} 条 · needs action ${visibleActionable} 条 · 过滤后 ${filteredTotal} / 总 ${summary.total || 0}`;
         renderCurrentTargetsSummary();
         return;
       }
@@ -620,7 +637,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
     }
 
-    async function activateTab(tab, { syncHistory = true } = {}) {
+    async function activateTab(tab, { syncHistory = true, reloadCurrentTargets = true } = {}) {
       activeTab = ['watchlist', 'monitor', 'targets'].includes(tab) ? tab : 'screener';
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
@@ -635,7 +652,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         await loadWatchlist(false);
       }
       if (activeTab === 'screener') {
-        await loadTodayTargets(false);
+        if (reloadCurrentTargets) {
+          await loadTodayTargets(false);
+        }
         activateScreenerView(activeScreenerView, { syncHistory: false });
       }
       updateHero();
@@ -751,46 +770,101 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         ready_only: Boolean(document.getElementById('currentReadyOnly')?.checked),
         signaled_only: Boolean(document.getElementById('currentSignaledOnly')?.checked),
         sort_by: document.getElementById('currentTargetSortBy')?.value || 'attention_asc',
+        per_page: Number(document.getElementById('currentTargetPageSize')?.value || currentTargetState.perPage || 10) || 10,
       };
     }
 
-    function matchesCurrentTargetSignalState(row, signalState) {
-      const value = String(signalState || '').trim().toLowerCase();
-      if (!value) return true;
-      const latestStatus = String(row.latest_signal_status || '').trim().toLowerCase();
-      if (value === 'needs_action') {
-        return latestStatus === 'awaiting_confirm' || latestStatus === 'pending';
-      }
-      if (value === 'signaled') return Boolean(row.has_signal_today);
-      if (value === 'no_signal') return !row.has_signal_today;
-      return latestStatus === value;
+    function getCurrentTargetPageSize() {
+      const rawValue = Number(document.getElementById('currentTargetPageSize')?.value || currentTargetState.perPage || 10);
+      if (!Number.isFinite(rawValue) || rawValue <= 0) return 10;
+      return Math.max(1, Math.min(100, Math.trunc(rawValue)));
     }
 
-    function sortCurrentTargetRows(rows, sortBy) {
-      const items = [...rows];
-      items.sort((left, right) => {
-        if (sortBy === 'symbol_asc') {
-          return String(left.symbol || '').localeCompare(String(right.symbol || ''));
+    function getCurrentTargetRequestParams(marketDate) {
+      const filters = getCurrentTargetFilters();
+      currentTargetState.perPage = getCurrentTargetPageSize();
+      return {
+        environment: currentEnvironment,
+        market_date: marketDate,
+        search: filters.search,
+        technical_state: filters.technical_state,
+        signal_state: filters.signal_state,
+        target_status: filters.target_status,
+        direction_bias: filters.direction_bias,
+        ready_only: filters.ready_only,
+        signaled_only: filters.signaled_only,
+        sort_by: filters.sort_by,
+        page: currentTargetState.page,
+        per_page: currentTargetState.perPage,
+      };
+    }
+
+    function getCurrentTargetPageButtons(page, totalPages) {
+      const pages = [];
+      const pushPage = (value) => {
+        if (pages.includes(value)) return;
+        pages.push(value);
+      };
+      pushPage(1);
+      for (let index = page - 1; index <= page + 1; index += 1) {
+        if (index > 1 && index < totalPages) pushPage(index);
+      }
+      if (totalPages > 1) pushPage(totalPages);
+      return pages.sort((left, right) => left - right);
+    }
+
+    function renderCurrentTargetPagination() {
+      const page = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
+      const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
+      const filteredTotal = Math.max(0, Number(todayTargetsPayload.filtered_total || 0) || 0);
+      const returnedCount = Array.isArray(filteredCurrentTargetRows) ? filteredCurrentTargetRows.length : 0;
+      const pageButtons = getCurrentTargetPageButtons(page, totalPages);
+      const controls = [];
+
+      controls.push(`<button class="mini-btn pagination-btn" type="button" onclick="setCurrentTargetPage(${page - 1})" ${page <= 1 ? 'disabled' : ''}>上一页</button>`);
+      let lastPage = 0;
+      pageButtons.forEach((value) => {
+        if (lastPage && value - lastPage > 1) {
+          controls.push('<span class="pagination-ellipsis">...</span>');
         }
-        if (sortBy === 'signal_desc') {
-          return (Number(right.latest_signal_time_ms) || 0) - (Number(left.latest_signal_time_ms) || 0)
-            || (Number(left.attention_rank) || 99) - (Number(right.attention_rank) || 99);
-        }
-        if (sortBy === 'tradability_desc') {
-          return (Number(right.tradability_score) || 0) - (Number(left.tradability_score) || 0)
-            || (Number(right.target_score) || 0) - (Number(left.target_score) || 0);
-        }
-        if (sortBy === 'target_desc') {
-          return (Number(right.target_score) || 0) - (Number(left.target_score) || 0)
-            || (Number(right.tradability_score) || 0) - (Number(left.tradability_score) || 0);
-        }
-        return (Number(left.attention_rank) || 99) - (Number(right.attention_rank) || 99)
-          || (Number(right.latest_signal_time_ms) || 0) - (Number(left.latest_signal_time_ms) || 0)
-          || (Number(right.tradability_score) || 0) - (Number(left.tradability_score) || 0)
-          || (Number(right.target_score) || 0) - (Number(left.target_score) || 0)
-          || String(left.symbol || '').localeCompare(String(right.symbol || ''));
+        controls.push(`<button class="mini-btn pagination-btn ${value === page ? 'active' : ''}" type="button" onclick="setCurrentTargetPage(${value})">${value}</button>`);
+        lastPage = value;
       });
-      return items;
+      controls.push(`<button class="mini-btn pagination-btn" type="button" onclick="setCurrentTargetPage(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>下一页</button>`);
+
+      ['currentTargetsPaginationTop', 'currentTargetsPaginationBottom'].forEach((id) => {
+        const mount = document.getElementById(id);
+        if (mount) mount.innerHTML = controls.join('');
+      });
+
+      const statusText = filteredTotal
+        ? `第 ${page} / ${totalPages} 页 · 本页 ${returnedCount} 条 · 过滤后 ${filteredTotal} 条`
+        : '第 1 / 1 页 · 当前没有结果';
+      ['currentTargetsPaginationStatusTop', 'currentTargetsPaginationStatusBottom'].forEach((id) => {
+        const mount = document.getElementById(id);
+        if (mount) mount.textContent = statusText;
+      });
+    }
+
+    function scheduleCurrentTargetReload() {
+      window.clearTimeout(currentTargetState.searchDebounceId);
+      currentTargetState.searchDebounceId = window.setTimeout(() => {
+        applyCurrentTargetFilters({ resetPage: true });
+      }, 260);
+    }
+
+    function applyCurrentTargetFilters({ resetPage = true } = {}) {
+      if (resetPage) currentTargetState.page = 1;
+      loadTodayTargets(false);
+    }
+
+    window.setCurrentTargetPage = function setCurrentTargetPage(page) {
+      const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
+      const nextPage = Math.max(1, Math.min(totalPages, Number(page) || 1));
+      if (nextPage === currentTargetState.page) return;
+      currentTargetState.page = nextPage;
+      window.clearTimeout(currentTargetState.searchDebounceId);
+      loadTodayTargets(false);
     }
 
     function formatCurrentSignalState(row) {
@@ -840,11 +914,16 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
       const rows = Array.isArray(filteredCurrentTargetRows) ? filteredCurrentTargetRows : [];
       const summary = todayTargetsPayload.summary || {};
+      const filteredSummary = todayTargetsPayload.filtered_summary || {};
+      const filteredTotal = Math.max(0, Number(todayTargetsPayload.filtered_total || rows.length || 0) || 0);
+      const currentPage = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
+      const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
       const readyCount = rows.filter((row) => row.technical_state === 'ready').length;
       const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
       const signaledCount = rows.filter((row) => row.has_signal_today).length;
-      meta.textContent = `交易日 ${marketDate} · 可见 ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · needs action ${needsActionCount} · 全量 ${summary.total || 0}`;
-      metaSecondary.textContent = `${workflow.scan_summary_time_et || '05:55'} ET 日筛先产出 candidate / active，${workflow.open_check_time_et || '09:20'} ET 盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新；当前排序先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
+      meta.textContent = `交易日 ${marketDate} · 第 ${currentPage}/${totalPages} 页 · 本页 ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · needs action ${needsActionCount} · 过滤后 ${filteredTotal} 条 · 全量 ${summary.total || 0}`;
+      metaSecondary.textContent = `过滤后 ready ${filteredSummary.ready_count || 0} 条 · signaled ${filteredSummary.signaled_count || 0} 条 · needs action ${filteredSummary.needs_action_count || 0} 条。${workflow.scan_summary_time_et || '05:55'} ET 日筛先产出 candidate / active，${workflow.open_check_time_et || '09:20'} ET 盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新；当前排序先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
+      renderCurrentTargetPagination();
 
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前条件下没有符合的标的。</td></tr>';
@@ -924,51 +1003,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }).join('');
     }
 
-    function applyCurrentTargetFilters() {
-      const filters = getCurrentTargetFilters();
-      const rows = (todayTargetsPayload.items || []).filter((row) => {
-        if (filters.search) {
-          const haystack = [
-            row.symbol,
-            row.exchange,
-            row.industry,
-            row.scan_reason,
-            row.note,
-            row.latest_signal_id,
-            row.latest_signal_status,
-            row.workflow_label,
-            row.workflow_summary,
-            row.workflow_next_action,
-            ...(Array.isArray(row.technical_flags) ? row.technical_flags : []),
-            ...(Array.isArray(row.operable_reasons) ? row.operable_reasons : []),
-            ...(Array.isArray(row.workflow_blockers) ? row.workflow_blockers : []),
-          ].join(' ').toUpperCase();
-          if (!haystack.includes(filters.search)) return false;
-        }
-        if (filters.technical_state && String(row.technical_state || '') !== filters.technical_state) return false;
-        if (filters.target_status && String(row.target_status || '') !== filters.target_status) return false;
-        if (filters.direction_bias && String(row.direction_bias || '') !== filters.direction_bias) return false;
-        if (!matchesCurrentTargetSignalState(row, filters.signal_state)) return false;
-        if (filters.ready_only && String(row.technical_state || '') !== 'ready') return false;
-        if (filters.signaled_only && !row.has_signal_today) return false;
-        return true;
-      });
-      filteredCurrentTargetRows = sortCurrentTargetRows(rows, filters.sort_by);
-      renderCurrentTargetTable();
-      if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
-    }
-
     async function loadTodayTargets(showToastOnSuccess = false) {
       const marketDate = document.getElementById('marketDate').value || getDailyTargetDate() || getUsDate();
+      window.clearTimeout(currentTargetState.searchDebounceId);
+      const requestToken = ++currentTargetState.requestToken;
       document.getElementById('currentTargetsMeta').textContent = `交易日 ${marketDate} · 正在加载...`;
       document.getElementById('currentTargetsMetaSecondary').textContent = '正在计算技术状态与今日信号聚合...';
       document.getElementById('currentTargetsTable').innerHTML = '<tr><td colspan="6" class="empty-state">加载中...</td></tr>';
+      renderCurrentTargetPagination();
 
       try {
-        const payload = await requestJson(`/api/custom/ibkr/today-targets${buildQuery({
-          environment: currentEnvironment,
-          market_date: marketDate
-        })}`);
+        const payload = await requestJson(`/api/custom/ibkr/today-targets${buildQuery(getCurrentTargetRequestParams(marketDate))}`);
+        if (requestToken !== currentTargetState.requestToken) return;
         runtimeCurrentMarketDate = String(payload?.current_market_date || payload?.market_date || runtimeCurrentMarketDate || '').trim();
         const items = Array.isArray(payload?.items) ? payload.items : [];
         if (items.length) {
@@ -978,19 +1024,26 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             console.warn('加载今日标的实时报价失败:', error);
           }
         }
+        if (requestToken !== currentTargetState.requestToken) return;
         todayTargetsPayload = {
-          ...(payload || { items: [], summary: {}, market_date: marketDate }),
+          ...(payload || { items: [], summary: {}, market_date: marketDate, filtered_total: 0, total_pages: 1, page: 1 }),
           items: items.map((row) => mergeTodayTargetRowWithRealtimeQuote(row)),
         };
-        applyCurrentTargetFilters();
+        currentTargetState.page = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
+        currentTargetState.perPage = getCurrentTargetPageSize();
+        filteredCurrentTargetRows = Array.isArray(todayTargetsPayload.items) ? todayTargetsPayload.items : [];
         renderRulesBoard();
+        renderCurrentTargetTable();
+        if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
         if (showToastOnSuccess) showToast('今日交易标的已刷新');
       } catch (error) {
-        todayTargetsPayload = { items: [], summary: {}, market_date: marketDate };
+        if (requestToken !== currentTargetState.requestToken) return;
+        todayTargetsPayload = { items: [], summary: {}, market_date: marketDate, filtered_total: 0, total_pages: 1, page: 1, filtered_summary: {} };
         filteredCurrentTargetRows = [];
         document.getElementById('currentTargetsMeta').textContent = `加载失败: ${error.message || error}`;
         document.getElementById('currentTargetsMetaSecondary').textContent = '当前标的榜加载失败。';
         document.getElementById('currentTargetsTable').innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        renderCurrentTargetPagination();
         renderRulesBoard();
         if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
       }
@@ -1266,6 +1319,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       });
       document.getElementById('marketDate').addEventListener('change', () => {
         const nextDate = document.getElementById('marketDate').value || getUsDate();
+        currentTargetState.page = 1;
         dailyTargetsState.selectedDate = nextDate;
         if (document.getElementById('dailyTargetDate')) {
           document.getElementById('dailyTargetDate').value = nextDate;
@@ -1278,22 +1332,30 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     }
 
     function bindCurrentTargetFilterEvents() {
-      const ids = [
-        'currentTargetSearch',
+      const immediateIds = [
         'currentTechnicalStateFilter',
         'currentSignalStateFilter',
         'currentTargetStatusFilter',
         'currentDirectionBiasFilter',
         'currentTargetSortBy',
+        'currentTargetPageSize',
         'currentReadyOnly',
         'currentSignaledOnly',
       ];
-      ids.forEach((id) => {
+      immediateIds.forEach((id) => {
         const element = document.getElementById(id);
         if (!element) return;
-        const eventName = element.tagName === 'INPUT' && element.type === 'text' ? 'input' : 'change';
-        element.addEventListener(eventName, applyCurrentTargetFilters);
+        element.addEventListener('change', () => applyCurrentTargetFilters({ resetPage: true }));
       });
+      const searchInput = document.getElementById('currentTargetSearch');
+      if (searchInput) {
+        searchInput.addEventListener('input', scheduleCurrentTargetReload);
+        searchInput.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter') return;
+          window.clearTimeout(currentTargetState.searchDebounceId);
+          applyCurrentTargetFilters({ resetPage: true });
+        });
+      }
       document.getElementById('openUniverseViewBtn')?.addEventListener('click', () => activateScreenerView('universe'));
     }
 
@@ -2164,5 +2226,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       activateScreenerView(activeScreenerView, { syncHistory: false });
       updateHero();
       await loadScreener(false);
-      await activateTab(activeTab, { syncHistory: false });
+      await activateTab(activeTab, {
+        syncHistory: false,
+        reloadCurrentTargets: activeTab !== 'screener',
+      });
     });

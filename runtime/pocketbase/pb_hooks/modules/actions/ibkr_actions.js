@@ -42,6 +42,8 @@ const IBKR_ACTIONS_VOLATILE_COMPARE_KEYS = {
     computed_at_us: true,
     computed_at_cn: true,
 }
+const IBKR_ET_OFFSET_MINUTES = -4 * 60
+const IBKR_CN_OFFSET_MINUTES = 8 * 60
 const IBKR_WATCHLIST_ROLE_TRADE = "trade"
 const IBKR_WATCHLIST_ROLE_MARKET_MONITOR = "market_monitor"
 
@@ -75,6 +77,61 @@ function ibkrActionsRecordNeedsUpdate(record, data) {
     return Object.keys(data || {}).some((key) => !globalThis.ibkrActionsValuesEqual(record.get(key), data[key]))
 }
 globalThis.ibkrActionsRecordNeedsUpdate = ibkrActionsRecordNeedsUpdate
+
+function ibkrActionsNormalizeInterval(value) {
+    const normalized = String(value || "").trim().toLowerCase()
+    const mapping = {
+        "5": "5m",
+        "5m": "5m",
+        "15": "15m",
+        "15m": "15m",
+        "30": "30m",
+        "30m": "30m",
+        "60": "1h",
+        "1h": "1h",
+        "240": "4h",
+        "4h": "4h",
+        "d": "1d",
+        "1d": "1d",
+    }
+    return mapping[normalized] || normalized || "5m"
+}
+globalThis.ibkrActionsNormalizeInterval = ibkrActionsNormalizeInterval
+
+function ibkrActionsIntervalToMs(value) {
+    const normalized = globalThis.ibkrActionsNormalizeInterval(value)
+    const mapping = {
+        "5m": 5 * 60 * 1000,
+        "15m": 15 * 60 * 1000,
+        "30m": 30 * 60 * 1000,
+        "1h": 60 * 60 * 1000,
+        "4h": 4 * 60 * 60 * 1000,
+        "1d": 24 * 60 * 60 * 1000,
+    }
+    return mapping[normalized] || mapping["5m"]
+}
+globalThis.ibkrActionsIntervalToMs = ibkrActionsIntervalToMs
+
+function ibkrActionsFormatOffsetDateTime(ms, offsetMinutes) {
+    if (!Number.isFinite(ms) || ms <= 0) return ""
+    return new Date(ms + offsetMinutes * 60000).toISOString().slice(0, 19).replace("T", " ")
+}
+globalThis.ibkrActionsFormatOffsetDateTime = ibkrActionsFormatOffsetDateTime
+
+function ibkrActionsBuildBarCloseMeta(barTimeMs, interval) {
+    const startMs = Math.trunc(Number(barTimeMs) || 0)
+    if (!Number.isFinite(startMs) || startMs <= 0) {
+        return {}
+    }
+    const closeMs = startMs + globalThis.ibkrActionsIntervalToMs(interval)
+    return {
+        bar_time_semantics: "start",
+        bar_close_time_ms: closeMs,
+        bar_close_us_time: globalThis.ibkrActionsFormatOffsetDateTime(closeMs, IBKR_ET_OFFSET_MINUTES),
+        bar_close_cn_time: globalThis.ibkrActionsFormatOffsetDateTime(closeMs, IBKR_CN_OFFSET_MINUTES),
+    }
+}
+globalThis.ibkrActionsBuildBarCloseMeta = ibkrActionsBuildBarCloseMeta
 
 function ibkrActionsUpsertRecord(collectionName, filterStr, filterParams, data) {
     let record = null
@@ -1621,7 +1678,7 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
     for (let i = 0; i < bars.length; i++) {
         const bar = bars[i]
         const symbol = String(bar.symbol || "").trim().toUpperCase()
-        const interval = String(bar.interval || "").trim()
+        const interval = globalThis.ibkrActionsNormalizeInterval(bar.interval)
         const barTimeMs = Number(bar.bar_time_ms)
         const environment = getRuntimeEnvironmentFromData(bar, defaultEnvironment)
 
@@ -1631,6 +1688,10 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
         }
 
         try {
+            const extra = bar.extra && typeof bar.extra === "object" && !Array.isArray(bar.extra)
+                ? { ...bar.extra }
+                : {}
+            Object.assign(extra, globalThis.ibkrActionsBuildBarCloseMeta(barTimeMs, interval))
             const result = actionHelpers.upsertRecord(
                 "ibkr_bars",
                 "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}",
@@ -1649,7 +1710,7 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
                     us_time: String(bar.us_time || "").trim(),
                     cn_time: String(bar.cn_time || "").trim(),
                     bar_time_ms: Math.trunc(barTimeMs),
-                    extra: bar.extra || {},
+                    extra: extra,
                 },
             )
             if (result.action === "created") {
@@ -1938,12 +1999,35 @@ routerAdd("GET", "/api/custom/ibkr/today-targets", (c) => {
         const { buildTodayTargetPayload } = require(`${__hooks}/lib/ibkr_today_targets.js`)
         const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
         const query = c.request.url.query()
+        const parseBoolean = (value, fallback) => {
+            if (value === undefined || value === null || value === "") return fallback
+            const normalized = String(value || "").trim().toLowerCase()
+            if (["true", "1", "yes", "y"].indexOf(normalized) !== -1) return true
+            if (["false", "0", "no", "n"].indexOf(normalized) !== -1) return false
+            return fallback
+        }
         const times = getTimeStrings()
         const marketDate = String(query.get("market_date") || query.get("date") || "").trim() || times.date
+        const rawPage = query.get("page")
+        const rawPerPage = query.get("per_page") || query.get("page_size")
+        const paginate = rawPage !== null || rawPerPage !== null
+        const page = Math.max(1, Number(rawPage || 1) || 1)
+        const perPage = Math.max(1, Math.min(200, Number(rawPerPage || 10) || 10))
 
         return c.json(200, buildTodayTargetPayload({
             environment: environment,
             marketDate: marketDate,
+            paginate: paginate,
+            page: page,
+            per_page: perPage,
+            search: String(query.get("search") || query.get("q") || "").trim(),
+            technical_state: String(query.get("technical_state") || "").trim(),
+            signal_state: String(query.get("signal_state") || "").trim(),
+            target_status: String(query.get("target_status") || "").trim(),
+            direction_bias: String(query.get("direction_bias") || "").trim(),
+            ready_only: parseBoolean(query.get("ready_only"), false),
+            signaled_only: parseBoolean(query.get("signaled_only"), false),
+            sort_by: String(query.get("sort_by") || "").trim() || "attention_asc",
         }))
     } catch (err) {
         console.error(`[IBKRActions] today-targets error: ${err.message}`)

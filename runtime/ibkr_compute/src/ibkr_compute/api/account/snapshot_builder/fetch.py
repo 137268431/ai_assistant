@@ -10,11 +10,17 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
     summary_error = ""
     positions_error = ""
     orders_error = ""
+    account_snapshot_requested = False
 
     fetchers = {}
     if hasattr(service, "order_lifecycle") and service.order_lifecycle:
-        fetchers["summary"] = lambda: service.order_lifecycle.get_account_summary(account_id)
-        fetchers["positions"] = lambda: service.order_lifecycle.get_positions(account_id)
+        snapshot_getter = getattr(service.order_lifecycle, "get_account_snapshot", None)
+        if callable(snapshot_getter):
+            account_snapshot_requested = True
+            fetchers["account_snapshot"] = lambda: snapshot_getter(account_id)
+        else:
+            fetchers["summary"] = lambda: service.order_lifecycle.get_account_summary(account_id)
+            fetchers["positions"] = lambda: service.order_lifecycle.get_positions(account_id)
     if hasattr(service, "order_tracker") and service.order_tracker:
         fetchers["orders"] = service.order_tracker.get_live_orders
 
@@ -29,7 +35,10 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
                 try:
                     value = future.result()
                 except Exception as exc:
-                    if name == "summary":
+                    if name == "account_snapshot":
+                        summary_error = str(exc)
+                        positions_error = str(exc)
+                    elif name == "summary":
                         summary_error = str(exc)
                     elif name == "positions":
                         positions_error = str(exc)
@@ -37,12 +46,33 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
                         orders_error = str(exc)
                     continue
 
-                if name == "summary":
+                if name == "account_snapshot":
+                    payload = value if isinstance(value, dict) else {}
+                    summary_raw = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+                    positions_raw = payload.get("positions") if isinstance(payload.get("positions"), list) else []
+                elif name == "summary":
                     summary_raw = value if isinstance(value, dict) else {}
                 elif name == "positions":
                     positions_raw = value if isinstance(value, list) else []
                 else:
                     orders_raw = value if isinstance(value, list) else []
+
+    # Fall back to the lightweight socket calls if the richer account download path
+    # yields no usable payload. This preserves the pre-existing behavior while
+    # allowing the account page to show full valuation fields when available.
+    if account_snapshot_requested and hasattr(service, "order_lifecycle") and service.order_lifecycle:
+        if not summary_raw:
+            try:
+                summary_raw = service.order_lifecycle.get_account_summary(account_id)
+                summary_error = ""
+            except Exception as exc:
+                summary_error = str(exc)
+        if not positions_raw:
+            try:
+                positions_raw = service.order_lifecycle.get_positions(account_id)
+                positions_error = ""
+            except Exception as exc:
+                positions_error = str(exc)
 
     return {
         "summary_raw": summary_raw,

@@ -346,6 +346,7 @@ body {
             border-radius: 18px;
             border: 1px solid rgba(255,255,255,0.08);
             background: rgba(255,255,255,0.03);
+            flex: 0 0 auto;
         }
         .chart-shell canvas {
             width: 100% !important;
@@ -355,10 +356,14 @@ body {
             position: relative;
             z-index: 1;
             display: grid;
+            flex: 1;
             gap: 10px;
-            max-height: 720px;
+            min-height: 0;
+            max-height: var(--panel-scroll-max-height);
             overflow: auto;
             padding-right: 2px;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable both-edges;
         }
         .run-item {
             padding: 14px;
@@ -417,7 +422,10 @@ body {
             position: relative;
             z-index: 1;
             display: grid;
+            flex: 1;
             gap: 12px;
+            min-height: 0;
+            align-content: start;
         }
         .detail-card {
             padding: 14px;
@@ -572,6 +580,15 @@ body {
             grid-template-columns: 1.1fr 0.9fr 0.8fr auto;
             gap: 10px;
             margin-bottom: 14px;
+            flex: 0 0 auto;
+        }
+        .backtest-scroll-region {
+            flex: 1;
+            min-height: 0;
+            max-height: var(--panel-scroll-max-height);
+            padding-right: 4px;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable both-edges;
         }
         .foot-note {
             margin-top: 12px;
@@ -583,6 +600,12 @@ body {
             .panel-grid,
             .dual-grid {
                 grid-template-columns: 1fr;
+            }
+            .run-list,
+            .backtest-scroll-region {
+                max-height: none;
+                padding-right: 0;
+                overflow: visible;
             }
         }
         @media (max-width: 768px) {

@@ -203,6 +203,33 @@ def _signal_panel(environment: str) -> dict:
     )
     params = DEFAULT_PARAMS
     dtp_early_bars = int(params.get("dtp_early_bars", 12))
+    trade_window_value = f"{trade_window_start}-{trade_window_end} ET"
+    signal_validity_value = f"{signal_validity_minutes}m"
+    active_count = _format_count(len(active_trade_symbols))
+    formula_long = (
+        "entry = close - ATR*"
+        f"{_format_number(params.get('entry_atr_mult', 1.0))}, "
+        "SL = max(entry - ATR*"
+        f"{_format_number(params.get('sl_atr_mult', 2.0))}, entry - max_loss/shares), "
+        "TP = entry + risk*"
+        f"{_format_number(params.get('rr_ratio', 1.5))}"
+    )
+    formula_short = (
+        "entry = close + ATR*"
+        f"{_format_number(params.get('entry_atr_mult', 1.0))}, "
+        "SL = min(entry + ATR*"
+        f"{_format_number(params.get('sl_atr_mult', 2.0))}, entry + max_loss/shares), "
+        "TP = entry - risk*"
+        f"{_format_number(params.get('rr_ratio', 1.5))}"
+    )
+    formula_risk = (
+        "position_amount="
+        f"{_format_number(params.get('position_amount', 10000))}, "
+        "max_loss_per_trade="
+        f"{_format_number(params.get('max_loss_per_trade', 150))}, "
+        "atr_multiplier="
+        f"{_format_number(params.get('atr_multiplier', 1.5))}"
+    )
 
     return {
         "title": "当前信号规则",
@@ -220,18 +247,100 @@ def _signal_panel(environment: str) -> dict:
             },
             {
                 "label": "交易窗口",
-                "value": f"{trade_window_start}-{trade_window_end} ET",
+                "value": trade_window_value,
                 "copy": f"start={trade_window_start_source}, end={trade_window_end_source}",
             },
             {
                 "label": "信号有效期",
-                "value": f"{signal_validity_minutes}m",
+                "value": signal_validity_value,
                 "copy": f"signal_validity_minutes · {signal_validity_source}",
             },
             {
                 "label": "当前 Active",
-                "value": _format_count(len(active_trade_symbols)),
+                "value": active_count,
                 "copy": "当前 active target 数量，用于盘中关注集合",
+            },
+        ],
+        "highlights": [
+            {
+                "id": "window",
+                "label": "交易窗口",
+                "value": trade_window_value,
+                "note": f"start={trade_window_start_source} · end={trade_window_end_source}",
+                "tone": "accent",
+            },
+            {
+                "id": "validity",
+                "label": "信号有效期",
+                "value": signal_validity_value,
+                "note": f"signal_validity_minutes · {signal_validity_source}",
+                "tone": "neutral",
+            },
+            {
+                "id": "structure",
+                "label": "结构入口",
+                "value": "4 类结构 / 2 多 2 空",
+                "note": "MR 窗口触发后，再看 EMA / fractal / divergence 组件",
+                "tone": "neutral",
+            },
+            {
+                "id": "blockers",
+                "label": "关键阻断",
+                "value": "DTP / EMA / 全局阻断",
+                "note": "monitor-only symbol 不出交易信号",
+                "tone": "warn",
+            },
+        ],
+        "details": [
+            {
+                "id": "trigger",
+                "title": "结构触发",
+                "summary": "4 类结构 / 2 多 2 空",
+                "tone": "neutral",
+                "lines": [
+                    "LONG T1 · sdUpper 窗口 + EMA bull touch + fractal_bull + bull divergence(cRSI/OBV 任一)",
+                    "LONG T2 · sdLower 窗口 + fractal_bull + bull divergence(cRSI/OBV 任一)",
+                    "SHORT T3 · sdUpper 窗口 + fractal_bear + bear divergence(cRSI/OBV 任一)",
+                    "SHORT T4 · sdLower 窗口 + EMA bear touch + fractal_bear + bear divergence(cRSI/OBV 任一)",
+                ],
+            },
+            {
+                "id": "blockers",
+                "title": "阻断条件",
+                "summary": "DTP / EMA / 全局阻断 / monitor-only",
+                "tone": "warn",
+                "lines": [
+                    f"DTP · LONG T2: dtp_dir=-1 且 (dtp_phase_bars <= {dtp_early_bars} 或 dtp_phase=confirmed) => block",
+                    f"DTP · SHORT T3: dtp_dir=1 且 (dtp_phase_bars <= {dtp_early_bars} 或 dtp_phase=confirmed) => block",
+                    "EMA trend · LONG T1 / SHORT T4: block_ema_trend=true => block",
+                    "Global kill · 任意方向: block_all_signals=true => block",
+                    "Monitor-only · market_monitor symbol 不出交易信号",
+                ],
+            },
+            {
+                "id": "execution",
+                "title": "执行窗口",
+                "summary": f"{trade_window_value} · valid {signal_validity_value}",
+                "tone": "accent",
+                "lines": [
+                    f"trade_window_start_time = {trade_window_start} ET ({trade_window_start_source})",
+                    f"trade_window_end_time = {trade_window_end} ET ({trade_window_end_source})",
+                    f"order_window_end_time = {order_window_end} ET ({order_window_end_source})",
+                    f"signal_validity_minutes = {signal_validity_minutes} ({signal_validity_source})",
+                    f"signal_manual_confirm_enabled = {manual_confirm_enabled} ({manual_confirm_source})",
+                    f"ibkr_trading_enabled = {trading_enabled} ({trading_enabled_source})",
+                ],
+            },
+            {
+                "id": "formula",
+                "title": "价格与仓位公式",
+                "summary": "RR / 仓位 / 单笔风险",
+                "tone": "muted",
+                "lines": [
+                    f"Long Formula: {formula_long}",
+                    f"Short Formula: {formula_short}",
+                    f"Risk Params: {formula_risk}",
+                ],
             },
         ],
         "sections": [
@@ -272,30 +381,9 @@ def _signal_panel(environment: str) -> dict:
                 "title": "仓位与价格公式",
                 "copy": "入场、止损、止盈和股数直接使用当前参数。",
                 "lines": [
-                    (
-                        "Long: entry = close - ATR*"
-                        f"{_format_number(params.get('entry_atr_mult', 1.0))}, "
-                        "SL = max(entry - ATR*"
-                        f"{_format_number(params.get('sl_atr_mult', 2.0))}, entry - max_loss/shares), "
-                        "TP = entry + risk*"
-                        f"{_format_number(params.get('rr_ratio', 1.5))}"
-                    ),
-                    (
-                        "Short: entry = close + ATR*"
-                        f"{_format_number(params.get('entry_atr_mult', 1.0))}, "
-                        "SL = min(entry + ATR*"
-                        f"{_format_number(params.get('sl_atr_mult', 2.0))}, entry + max_loss/shares), "
-                        "TP = entry - risk*"
-                        f"{_format_number(params.get('rr_ratio', 1.5))}"
-                    ),
-                    (
-                        "position_amount="
-                        f"{_format_number(params.get('position_amount', 10000))}, "
-                        "max_loss_per_trade="
-                        f"{_format_number(params.get('max_loss_per_trade', 150))}, "
-                        "atr_multiplier="
-                        f"{_format_number(params.get('atr_multiplier', 1.5))}"
-                    ),
+                    f"Long: {formula_long}",
+                    f"Short: {formula_short}",
+                    formula_risk,
                 ],
             },
         ],

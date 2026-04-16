@@ -9,6 +9,10 @@
     <script>document.write(getCommonStyles());</script>
     <script>document.write('<style>' + getIndicatorModalStyles() + '</style>');</script>
     <style>
+        body.rules-detail-open {
+            overflow: hidden;
+        }
+
         .search-row {
             margin-bottom: 6px;
         }
@@ -255,7 +259,25 @@
         .rules-summary {
             display: grid;
             gap: 12px;
+        }
+
+        .signals-top-workbench {
+            display: grid;
+            gap: 12px;
             margin-bottom: 14px;
+            align-items: start;
+        }
+
+        .signals-top-main {
+            display: grid;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .signals-top-main > .latency-summary,
+        .signals-top-main > .target-focus-shell,
+        .signals-top-workbench > .rules-summary {
+            margin-bottom: 0;
         }
 
         .rules-panel {
@@ -375,6 +397,400 @@
             border-radius: 999px;
             background: #63B3ED;
             box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+        }
+
+        .rules-rail {
+            position: relative;
+            display: grid;
+            gap: 12px;
+            padding: 14px;
+            border-radius: 18px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background:
+                radial-gradient(circle at top right, rgba(99,179,237,0.16), transparent 36%),
+                linear-gradient(180deg, rgba(17,24,39,0.96), rgba(9,14,24,0.98));
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.03),
+                0 18px 40px rgba(2, 8, 23, 0.18);
+            overflow: hidden;
+        }
+
+        .rules-rail::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.03), transparent 22%),
+                linear-gradient(90deg, rgba(99,179,237,0.06), transparent 26%);
+            pointer-events: none;
+        }
+
+        .rules-rail > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .rules-rail-head {
+            display: grid;
+            gap: 8px;
+        }
+
+        .rules-rail-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .rules-meta-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
+        .rules-meta-pill.active {
+            border-color: rgba(72,187,120,0.22);
+            background: rgba(72,187,120,0.12);
+            color: var(--long);
+        }
+
+        .rules-meta-pill.env {
+            border-color: rgba(99,179,237,0.22);
+            background: rgba(99,179,237,0.12);
+            color: var(--accent);
+        }
+
+        .rules-rail-stack {
+            display: grid;
+            gap: 10px;
+        }
+
+        .rules-rail-item {
+            position: relative;
+            padding: 10px 12px 10px 15px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.07);
+            background: rgba(255,255,255,0.03);
+            overflow: hidden;
+        }
+
+        .rules-rail-item::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 10px;
+            bottom: 10px;
+            width: 3px;
+            border-radius: 999px;
+            background: #8BA4C4;
+            box-shadow: 0 0 0 3px rgba(139,164,196,0.12);
+        }
+
+        .rules-rail-item.accent::before {
+            background: var(--accent);
+            box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+        }
+
+        .rules-rail-item.warn::before {
+            background: var(--pending);
+            box-shadow: 0 0 0 3px rgba(246,173,85,0.12);
+        }
+
+        .rules-rail-item.muted::before,
+        .rules-rail-item.neutral::before {
+            background: #8BA4C4;
+            box-shadow: 0 0 0 3px rgba(139,164,196,0.12);
+        }
+
+        .rules-rail-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+        }
+
+        .rules-rail-value {
+            margin-top: 8px;
+            font-size: 18px;
+            line-height: 1.15;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .rules-rail-note {
+            margin-top: 6px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--muted);
+        }
+
+        .rules-rail-actions {
+            display: grid;
+            gap: 8px;
+        }
+
+        .rules-rail-btn,
+        .rules-rail-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            min-height: 38px;
+            padding: 9px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background: rgba(99,179,237,0.08);
+            color: var(--text);
+            text-decoration: none;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .rules-rail-btn.primary {
+            background: linear-gradient(180deg, rgba(99,179,237,0.18), rgba(255,255,255,0.04));
+            border-color: rgba(99,179,237,0.24);
+            color: #D7F0FF;
+        }
+
+        .rules-rail-btn.secondary,
+        .rules-rail-link.secondary {
+            background: rgba(255,255,255,0.03);
+            border-color: rgba(255,255,255,0.08);
+            color: var(--muted);
+        }
+
+        .rules-rail-btn:hover,
+        .rules-rail-link:hover {
+            border-color: rgba(99,179,237,0.28);
+            color: var(--text);
+        }
+
+        .rules-detail-drawer {
+            position: fixed;
+            inset: 0;
+            z-index: 1400;
+            pointer-events: none;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .rules-detail-drawer.show {
+            pointer-events: auto;
+        }
+
+        .rules-detail-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(3, 7, 16, 0.56);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .rules-detail-drawer.show .rules-detail-backdrop {
+            opacity: 1;
+        }
+
+        .rules-detail-card {
+            position: relative;
+            width: min(460px, calc(100vw - 18px));
+            height: 100%;
+            margin-left: auto;
+            padding: 18px 16px 24px;
+            overflow-y: auto;
+            background: linear-gradient(180deg, rgba(9, 14, 24, 0.98), rgba(13, 20, 34, 0.98));
+            border-left: 1px solid rgba(99,179,237,0.14);
+            box-shadow: -24px 0 60px rgba(0, 0, 0, 0.28);
+            transform: translateX(104%);
+            transition: transform 0.22s ease;
+        }
+
+        .rules-detail-drawer.show .rules-detail-card {
+            transform: translateX(0);
+        }
+
+        .rules-drawer-shell {
+            display: grid;
+            gap: 12px;
+        }
+
+        .rules-drawer-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .rules-drawer-kicker {
+            color: var(--accent);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .rules-drawer-title {
+            margin-top: 6px;
+            color: var(--text);
+            font-size: 18px;
+            font-weight: 700;
+            line-height: 1.3;
+        }
+
+        .rules-drawer-subtitle {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+        }
+
+        .rules-drawer-close {
+            width: 34px;
+            height: 34px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--text);
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .rules-drawer-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .rules-drawer-stack {
+            display: grid;
+            gap: 10px;
+        }
+
+        .rules-drawer-section {
+            border-radius: 16px;
+            border: 1px solid rgba(99,179,237,0.10);
+            background: rgba(11, 17, 28, 0.84);
+            padding: 12px;
+            display: grid;
+            gap: 10px;
+        }
+
+        .rules-drawer-section.accent {
+            border-color: rgba(99,179,237,0.18);
+        }
+
+        .rules-drawer-section.warn {
+            border-color: rgba(246,173,85,0.18);
+        }
+
+        .rules-drawer-section.muted {
+            border-color: rgba(139,164,196,0.12);
+        }
+
+        .rules-drawer-section-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .rules-drawer-section-title {
+            font-size: 10px;
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .rules-drawer-section.warn .rules-drawer-section-title {
+            color: var(--pending);
+        }
+
+        .rules-drawer-section-summary {
+            font-size: 11px;
+            color: var(--muted);
+            line-height: 1.5;
+            font-family: 'JetBrains Mono', monospace;
+            text-align: right;
+        }
+
+        .rules-drawer-list,
+        .rules-drawer-formula-grid {
+            display: grid;
+            gap: 8px;
+        }
+
+        .rules-drawer-line {
+            display: grid;
+            gap: 6px;
+            padding: 10px;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .rules-drawer-line-tag {
+            display: inline-flex;
+            width: fit-content;
+            align-items: center;
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: rgba(99,179,237,0.12);
+            color: var(--accent);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .rules-drawer-section.warn .rules-drawer-line-tag {
+            background: rgba(246,173,85,0.14);
+            color: var(--pending);
+        }
+
+        .rules-drawer-line-copy {
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text);
+        }
+
+        .rules-drawer-formula {
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.03);
+            padding: 10px;
+        }
+
+        .rules-drawer-formula-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .rules-drawer-formula-copy {
+            margin-top: 7px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .rules-drawer-actions {
+            display: grid;
+            gap: 8px;
         }
 
         .target-focus-shell {
@@ -1152,6 +1568,10 @@
                 padding: 12px;
             }
 
+            .signals-top-workbench {
+                gap: 10px;
+            }
+
             .latency-summary-head {
                 flex-direction: column;
             }
@@ -1166,6 +1586,60 @@
 
             .latency-card-value {
                 font-size: 20px;
+            }
+
+            .rules-detail-drawer {
+                align-items: flex-end;
+                justify-content: stretch;
+            }
+
+            .rules-detail-card {
+                width: 100%;
+                height: auto;
+                max-height: min(78vh, 720px);
+                padding: 16px 14px 20px;
+                border-left: none;
+                border-top: 1px solid rgba(99,179,237,0.14);
+                border-radius: 20px 20px 0 0;
+                box-shadow: 0 -20px 48px rgba(0, 0, 0, 0.28);
+                transform: translateY(104%);
+            }
+
+            .rules-detail-drawer.show .rules-detail-card {
+                transform: translateY(0);
+            }
+
+            .rules-drawer-head,
+            .rules-drawer-section-head {
+                flex-direction: column;
+            }
+
+            .rules-drawer-section-summary {
+                text-align: left;
+            }
+        }
+
+        @media (min-width: 900px) and (max-width: 1279px) {
+            .rules-rail-stack,
+            .rules-rail-actions {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (min-width: 1280px) {
+            .signals-top-workbench {
+                grid-template-columns: minmax(0, 1fr) 300px;
+            }
+
+            .signals-top-workbench > .rules-summary {
+                grid-column: 2;
+                position: sticky;
+                top: 12px;
+                align-self: start;
+            }
+
+            .rules-rail {
+                min-height: 100%;
             }
         }
     </style>
@@ -1201,9 +1675,13 @@
             <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
         </div>
         <div id="filterNote"></div>
-        <div id="latencySummary" class="latency-summary"></div>
-        <div id="rulesSummary" class="rules-summary"></div>
-        <div id="currentTargetShell" class="target-focus-shell"></div>
+        <div class="signals-top-workbench">
+            <div class="signals-top-main">
+                <div id="latencySummary" class="latency-summary"></div>
+                <div id="currentTargetShell" class="target-focus-shell"></div>
+            </div>
+            <div id="rulesSummary" class="rules-summary"></div>
+        </div>
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
@@ -1227,6 +1705,12 @@
 
     <!-- 技术指标详情浮层（由 common.js 动态注入） -->
     <div id="indicatorModalContainer"></div>
+    <div id="rulesDetailDrawer" class="rules-detail-drawer" aria-hidden="true">
+        <div class="rules-detail-backdrop" onclick="closeRulesDrawer()"></div>
+        <aside class="rules-detail-card" role="dialog" aria-modal="true" aria-labelledby="rulesDetailTitle" onclick="event.stopPropagation()">
+            <div id="rulesDetailBody"></div>
+        </aside>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
     <script>
@@ -1260,6 +1744,7 @@
         let realtimeLatencySnapshot = null;
         let rulesSummarySnapshot = { signals: null, computed_at_us: '' };
         let rulesSummaryError = '';
+        let rulesDrawerOpen = false;
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const configValueCache = {};
 
@@ -1816,6 +2301,32 @@
             `;
         }
 
+        function normalizeRulesTone(value, fallback = 'neutral') {
+            const tone = String(value || fallback).trim().toLowerCase();
+            return ['accent', 'warn', 'muted', 'neutral'].includes(tone) ? tone : fallback;
+        }
+
+        function getRulesSummaryAction() {
+            const marketDate = currentTargetSnapshot.market_date || currentDate;
+            return {
+                actionHref: buildPageUrl('/ibkr_screener.html', {
+                    tab: 'screener',
+                    view: 'current',
+                    market_date: marketDate,
+                }, { environment: currentEnvironment }),
+                actionLabel: '当前标的榜',
+            };
+        }
+
+        function getRulesActiveChip(panel) {
+            const chips = Array.isArray(panel?.chips) ? panel.chips : [];
+            return chips.find((chip) => String(chip?.label || '').toLowerCase().includes('active')) || null;
+        }
+
+        function hasRulesRailPayload(panel) {
+            return Array.isArray(panel?.highlights) && panel.highlights.length && Array.isArray(panel?.details) && panel.details.length;
+        }
+
         function renderRulesPanelHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
             const chips = Array.isArray(panel?.chips) ? panel.chips : [];
             const sections = Array.isArray(panel?.sections) ? panel.sections : [];
@@ -1857,28 +2368,211 @@
             `;
         }
 
-        function renderRulesSummary() {
-            const mount = document.getElementById('rulesSummary');
-            if (!mount) return;
-            const marketDate = currentTargetSnapshot.market_date || currentDate;
-            if (rulesSummarySnapshot?.signals) {
-                mount.innerHTML = renderRulesPanelHtml(rulesSummarySnapshot.signals, {
-                    actionHref: buildPageUrl('/ibkr_screener.html', {
-                        tab: 'screener',
-                        view: 'current',
-                        market_date: marketDate,
-                    }, { environment: currentEnvironment }),
-                    actionLabel: '当前标的榜'
-                });
-                return;
-            }
-            mount.innerHTML = `
-                <section class="rules-panel">
-                    <div class="rules-panel-kicker">Rules Snapshot</div>
-                    <div class="rules-panel-title">规则摘要加载中</div>
+        function renderRulesRailHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
+            const highlights = Array.isArray(panel?.highlights) ? panel.highlights.slice(0, 4) : [];
+            const activeChip = getRulesActiveChip(panel);
+            const footer = rulesSummarySnapshot.computed_at_us ? `更新 ${rulesSummarySnapshot.computed_at_us}` : '';
+            return `
+                <section class="rules-rail">
+                    <div class="rules-rail-head">
+                        <div>
+                            <div class="rules-panel-kicker">Rules Rail</div>
+                            <div class="rules-panel-title">${escapeHtml(panel?.title || '当前信号规则')}</div>
+                            <div class="rules-panel-subtitle">${escapeHtml(panel?.subtitle || '盘中先看关键窗口和阻断，再决定是否展开完整规则。')}</div>
+                        </div>
+                        <div class="rules-rail-meta">
+                            <span class="rules-meta-pill env">ENV ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
+                            ${activeChip ? `<span class="rules-meta-pill active">${escapeHtml(activeChip.label || '当前 Active')} ${escapeHtml(String(activeChip.value || '--'))}</span>` : ''}
+                            ${footer ? `<span class="rules-meta-pill">${escapeHtml(footer)}</span>` : ''}
+                        </div>
+                    </div>
+                    <div class="rules-rail-stack">
+                        ${highlights.map((highlight) => `
+                            <article class="rules-rail-item ${escapeHtml(normalizeRulesTone(highlight?.tone))}">
+                                <div class="rules-rail-label">${escapeHtml(highlight?.label || '--')}</div>
+                                <div class="rules-rail-value">${escapeHtml(String(highlight?.value || '--'))}</div>
+                                ${highlight?.note ? `<div class="rules-rail-note">${escapeHtml(highlight.note)}</div>` : ''}
+                            </article>
+                        `).join('')}
+                    </div>
+                    <div class="rules-rail-actions">
+                        <button class="rules-rail-btn primary" type="button" onclick="openRulesDrawer()">查看完整规则</button>
+                        ${actionHref && actionLabel ? `<a class="rules-rail-link secondary" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
+                    </div>
+                </section>
+            `;
+        }
+
+        function renderRulesRailLoadingHtml() {
+            return `
+                <section class="rules-rail">
+                    <div class="rules-panel-kicker">Rules Rail</div>
+                    <div class="rules-panel-title">规则轨加载中</div>
                     <div class="rules-empty">${escapeHtml(rulesSummaryError || '正在读取当前 signal 结构、时间窗口和仓位参数。')}</div>
                 </section>
             `;
+        }
+
+        function renderRulesDetailLine(line, tone = 'neutral') {
+            const text = String(line || '--');
+            const dividerIndex = text.indexOf('·');
+            if (dividerIndex > -1) {
+                const tag = text.slice(0, dividerIndex).trim();
+                const body = text.slice(dividerIndex + 1).trim();
+                return `
+                    <div class="rules-drawer-line">
+                        <span class="rules-drawer-line-tag">${escapeHtml(tag)}</span>
+                        <div class="rules-drawer-line-copy">${escapeHtml(body)}</div>
+                    </div>
+                `;
+            }
+            if (tone === 'accent') {
+                const equalsIndex = text.indexOf('=');
+                if (equalsIndex > -1) {
+                    const tag = text.slice(0, equalsIndex).trim();
+                    const body = text.slice(equalsIndex + 1).trim();
+                    return `
+                        <div class="rules-drawer-line">
+                            <span class="rules-drawer-line-tag">${escapeHtml(tag)}</span>
+                            <div class="rules-drawer-line-copy">${escapeHtml(body)}</div>
+                        </div>
+                    `;
+                }
+            }
+            return `
+                <div class="rules-drawer-line">
+                    <div class="rules-drawer-line-copy">${escapeHtml(text)}</div>
+                </div>
+            `;
+        }
+
+        function renderRulesFormulaBlocks(lines) {
+            return `
+                <div class="rules-drawer-formula-grid">
+                    ${lines.map((line, index) => {
+                        const text = String(line || '--');
+                        const dividerIndex = text.indexOf(':');
+                        const label = dividerIndex > -1 ? text.slice(0, dividerIndex).trim() : `Rule ${index + 1}`;
+                        const copy = dividerIndex > -1 ? text.slice(dividerIndex + 1).trim() : text;
+                        return `
+                            <div class="rules-drawer-formula">
+                                <div class="rules-drawer-formula-label">${escapeHtml(label)}</div>
+                                <div class="rules-drawer-formula-copy">${escapeHtml(copy)}</div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        function renderRulesDetailSection(detail) {
+            const tone = normalizeRulesTone(detail?.tone);
+            const lines = Array.isArray(detail?.lines) ? detail.lines : [];
+            return `
+                <article class="rules-drawer-section ${escapeHtml(tone)}">
+                    <div class="rules-drawer-section-head">
+                        <div class="rules-drawer-section-title">${escapeHtml(detail?.title || '--')}</div>
+                        ${detail?.summary ? `<div class="rules-drawer-section-summary">${escapeHtml(detail.summary)}</div>` : ''}
+                    </div>
+                    ${detail?.id === 'formula'
+                        ? renderRulesFormulaBlocks(lines)
+                        : `<div class="rules-drawer-list">${lines.map((line) => renderRulesDetailLine(line, tone)).join('')}</div>`
+                    }
+                </article>
+            `;
+        }
+
+        function renderRulesDrawerBodyHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
+            const details = Array.isArray(panel?.details) ? panel.details : [];
+            const activeChip = getRulesActiveChip(panel);
+            const footer = rulesSummarySnapshot.computed_at_us ? `更新 ${rulesSummarySnapshot.computed_at_us}` : '';
+            return `
+                <div class="rules-drawer-shell">
+                    <div class="rules-drawer-head">
+                        <div>
+                            <div class="rules-drawer-kicker">Signal Rulebook</div>
+                            <div class="rules-drawer-title" id="rulesDetailTitle">${escapeHtml(panel?.title || '当前信号规则')}</div>
+                            <div class="rules-drawer-subtitle">${escapeHtml(panel?.subtitle || '结构、阻断、运行窗口和公式均直接读取当前 compute 逻辑与 runtime 配置。')}</div>
+                        </div>
+                        <button class="rules-drawer-close" type="button" onclick="closeRulesDrawer()" aria-label="关闭规则抽屉">×</button>
+                    </div>
+                    <div class="rules-drawer-meta">
+                        <span class="rules-meta-pill env">ENV ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
+                        ${activeChip ? `<span class="rules-meta-pill active">${escapeHtml(activeChip.label || '当前 Active')} ${escapeHtml(String(activeChip.value || '--'))}</span>` : ''}
+                        ${footer ? `<span class="rules-meta-pill">${escapeHtml(footer)}</span>` : ''}
+                    </div>
+                    <div class="rules-drawer-stack">
+                        ${details.map((detail) => renderRulesDetailSection(detail)).join('')}
+                    </div>
+                    <div class="rules-drawer-actions">
+                        ${actionHref && actionLabel ? `<a class="rules-rail-link secondary" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRulesDrawer() {
+            const body = document.getElementById('rulesDetailBody');
+            if (!body) return;
+            const panel = rulesSummarySnapshot?.signals;
+            if (panel && hasRulesRailPayload(panel)) {
+                body.innerHTML = renderRulesDrawerBodyHtml(panel, getRulesSummaryAction());
+                return;
+            }
+            body.innerHTML = `
+                <div class="rules-drawer-shell">
+                    <div class="rules-drawer-head">
+                        <div>
+                            <div class="rules-drawer-kicker">Signal Rulebook</div>
+                            <div class="rules-drawer-title" id="rulesDetailTitle">规则详情暂不可用</div>
+                            <div class="rules-drawer-subtitle">${escapeHtml(rulesSummaryError || '当前环境还没有返回可展开的规则明细。')}</div>
+                        </div>
+                        <button class="rules-drawer-close" type="button" onclick="closeRulesDrawer()" aria-label="关闭规则抽屉">×</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function openRulesDrawer() {
+            renderRulesDrawer();
+            const drawer = document.getElementById('rulesDetailDrawer');
+            if (!drawer) return;
+            drawer.classList.add('show');
+            drawer.setAttribute('aria-hidden', 'false');
+            document.body.classList.add('rules-detail-open');
+            rulesDrawerOpen = true;
+        }
+
+        function closeRulesDrawer() {
+            const drawer = document.getElementById('rulesDetailDrawer');
+            if (!drawer) return;
+            drawer.classList.remove('show');
+            drawer.setAttribute('aria-hidden', 'true');
+            document.body.classList.remove('rules-detail-open');
+            rulesDrawerOpen = false;
+        }
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && rulesDrawerOpen) {
+                closeRulesDrawer();
+            }
+        });
+
+        function renderRulesSummary() {
+            const mount = document.getElementById('rulesSummary');
+            if (!mount) return;
+            const panel = rulesSummarySnapshot?.signals;
+            if (panel && hasRulesRailPayload(panel)) {
+                mount.innerHTML = renderRulesRailHtml(panel, getRulesSummaryAction());
+            } else if (panel) {
+                mount.innerHTML = renderRulesPanelHtml(panel, getRulesSummaryAction());
+            } else {
+                mount.innerHTML = renderRulesRailLoadingHtml();
+            }
+
+            if (rulesDrawerOpen) {
+                renderRulesDrawer();
+            }
         }
 
         async function loadRulesSummarySnapshot() {
@@ -3246,6 +3940,7 @@
 
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
+            closeRulesDrawer();
             location.href = buildSignalsPageUrl();
         };
     </script>

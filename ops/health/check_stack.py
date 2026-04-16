@@ -68,6 +68,20 @@ def parse_iso_ms(text):
         return 0
 
 
+def normalize_bar_bucket_lag_seconds(lag_value, due_bucket_ms, completed_bucket_ms):
+    due_ms = int(due_bucket_ms or 0)
+    completed_ms = int(completed_bucket_ms or 0)
+    if due_ms > 0:
+        reference_ms = completed_ms if completed_ms > 0 and completed_ms >= due_ms else now_ms()
+        return round(max(0, reference_ms - due_ms) / 1000.0, 2)
+    raw_lag = float(lag_value or 0)
+    if raw_lag > 1000000000000:
+        return round(max(0, now_ms() - raw_lag) / 1000.0, 2)
+    if raw_lag > 1000000000:
+        return round(max(0, now_ms() / 1000.0 - raw_lag), 2)
+    return round(raw_lag, 2)
+
+
 def open_db():
     conn = sqlite3.connect(DB, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -353,6 +367,30 @@ session = runtime_payload.get("session") or {}
 websocket = runtime_payload.get("websocket") or {}
 realtime = runtime_payload.get("realtime_compute") or {}
 market_universe = runtime_payload.get("market_universe") or {}
+canonical_5m = runtime_payload.get("canonical_5m") or {}
+bar_freshness = market_universe.get("bar_freshness") or {}
+
+canonical_pending_total = int(canonical_5m.get("pending_symbols_total") or bar_freshness.get("pending_symbols_total") or 0)
+canonical_due_ms = int(canonical_5m.get("last_due_bucket_ms") or 0)
+canonical_completed_ms = int(canonical_5m.get("last_completed_bucket_ms") or 0)
+canonical_lag_s = normalize_bar_bucket_lag_seconds(
+    canonical_5m.get("lag_s") or bar_freshness.get("lag_s") or 0,
+    canonical_due_ms,
+    canonical_completed_ms,
+)
+canonical_bucket_stale = data_freshness_window.get("required") and (
+    str(bar_freshness.get("status") or "").strip().lower() == "stale"
+    or (
+        canonical_due_ms > 0
+        and (canonical_completed_ms <= 0 or canonical_completed_ms < canonical_due_ms)
+    )
+)
+if canonical_bucket_stale:
+    failures.append(
+        "runtime:canonical_5m_stale:"
+        f"pending={canonical_pending_total}:"
+        f"lag_s={round(canonical_lag_s, 2)}"
+    )
 
 if latest_signal is None:
     last_signal_count = int(((realtime.get("last_result") or {}).get("signals") or 0))
@@ -422,6 +460,7 @@ report = {
             "gateway": gateway,
             "session": session,
             "websocket": websocket,
+            "canonical_5m": canonical_5m,
             "realtime_compute": realtime,
             "market_universe": market_universe,
         },

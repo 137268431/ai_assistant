@@ -7,6 +7,8 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
+from .timeframe_utils import build_bar_close_timestamps, normalize_interval
+
 PB_SQLITE_PATH = os.environ.get("PB_SQLITE_PATH", "/opt/pocketbase/pb_data/data.db")
 PB_RECORD_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
 PB_RECORD_ID_LENGTH = 15
@@ -312,12 +314,17 @@ def upsert_bars(conn: sqlite3.Connection, bars: Iterable[dict]) -> int:
     now_text = pb_now_text()
     payload = []
     for bar in rows:
+        interval = normalize_interval(bar.get("interval") or "")
+        bar_time_ms = int(bar.get("bar_time_ms", 0) or 0)
+        extra = dict(bar.get("extra") or {})
+        if interval and bar_time_ms > 0:
+            extra.update(build_bar_close_timestamps(bar_time_ms, interval))
         payload.append(
             (
                 pb_record_id(),
                 str(bar.get("symbol") or "").upper(),
                 str(bar.get("exchange") or "").upper(),
-                str(bar.get("interval") or "").strip().lower(),
+                interval,
                 float(bar.get("open", 0) or 0),
                 float(bar.get("high", 0) or 0),
                 float(bar.get("low", 0) or 0),
@@ -326,8 +333,8 @@ def upsert_bars(conn: sqlite3.Connection, bars: Iterable[dict]) -> int:
                 str(bar.get("session_type") or ""),
                 str(bar.get("us_time") or ""),
                 str(bar.get("cn_time") or ""),
-                int(bar.get("bar_time_ms", 0) or 0),
-                pb_json_dumps(bar.get("extra") or {}),
+                bar_time_ms,
+                pb_json_dumps(extra),
                 str(bar.get("environment") or "live").strip().lower() or "live",
                 now_text,
                 now_text,

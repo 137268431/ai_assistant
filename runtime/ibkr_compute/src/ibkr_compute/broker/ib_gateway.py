@@ -173,6 +173,14 @@ class _PendingRequest:
     error: str = ""
 
 
+@dataclass
+class _AccountUpdatesCapture:
+    account: str
+    event: threading.Event = field(default_factory=threading.Event)
+    summary: Dict[str, dict] = field(default_factory=dict)
+    positions: Dict[str, dict] = field(default_factory=dict)
+
+
 class _IBGatewayApp(EWrapper, EClient):
     def __init__(self, host: str, port: int, client_id: int):
         EWrapper.__init__(self)
@@ -184,6 +192,8 @@ class _IBGatewayApp(EWrapper, EClient):
         self._connect_lock = threading.RLock()
         self._state_lock = threading.RLock()
         self._listener_lock = threading.RLock()
+        self._account_updates_lock = threading.RLock()
+        self._account_updates_request_lock = threading.Lock()
         self._request_seq = 1000
         self._ticker_seq = 50_000
         self._pending_requests: Dict[int, _PendingRequest] = {}
@@ -209,6 +219,7 @@ class _IBGatewayApp(EWrapper, EClient):
         self._positions: Dict[str, dict] = {}
         self._executions: Dict[str, dict] = {}
         self._account_summary: Dict[str, dict] = {}
+        self._account_updates_capture: Optional[_AccountUpdatesCapture] = None
         self._contract_cache_by_symbol: Dict[str, dict] = {}
         self._contract_cache_by_conid: Dict[int, dict] = {}
 
@@ -356,6 +367,21 @@ class _IBGatewayApp(EWrapper, EClient):
         if ctx.error:
             raise RuntimeError(ctx.error)
         return list(ctx.items)
+
+    @staticmethod
+    def _account_matches(requested: str, actual: str) -> bool:
+        requested_text = str(requested or "").strip()
+        actual_text = str(actual or "").strip()
+        if requested_text and actual_text:
+            return requested_text == actual_text
+        return True
+
+    def _get_account_updates_capture(self, account: str = "") -> Optional[_AccountUpdatesCapture]:
+        with self._account_updates_lock:
+            capture = self._account_updates_capture
+        if capture and self._account_matches(capture.account, account):
+            return capture
+        return None
 
     def _emit_tick(self, ticker_id: int):
         payload = dict(self._ticker_payloads.get(ticker_id) or {})
@@ -586,6 +612,65 @@ class _IBGatewayApp(EWrapper, EClient):
         if ctx:
             ctx.event.set()
 
+    def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):  # noqa: N802
+        account = str(accountName or "").strip()
+        bucket = self._account_summary.setdefault(account, {})
+        bucket[str(key or "")] = {
+            "value": str(val or ""),
+            "currency": str(currency or ""),
+        }
+        with self._state_lock:
+            self._last_message_at = time.time()
+        capture = self._get_account_updates_capture(account)
+        if capture:
+            capture.summary[str(key or "")] = {
+                "value": str(val or ""),
+                "currency": str(currency or ""),
+            }
+
+    def updatePortfolio(  # noqa: N802
+        self,
+        contract,
+        position: float,
+        marketPrice: float,
+        marketValue: float,
+        averageCost: float,
+        unrealizedPNL: float,
+        realizedPNL: float,
+        accountName: str,
+    ):
+        account = str(accountName or "").strip()
+        payload = {
+            "account": account,
+            "acctId": account,
+            "conid": int(getattr(contract, "conId", 0) or 0),
+            "ticker": str(getattr(contract, "symbol", "") or "").upper(),
+            "contractDesc": str(getattr(contract, "localSymbol", "") or getattr(contract, "symbol", "") or ""),
+            "position": _safe_float(position, 0.0),
+            "avgCost": _safe_float(averageCost, 0.0),
+            "avgPrice": _safe_float(averageCost, 0.0),
+            "mktPrice": _safe_float(marketPrice, 0.0),
+            "mktValue": _safe_float(marketValue, 0.0),
+            "unrealizedPnl": _safe_float(unrealizedPNL, 0.0),
+            "realizedPnl": _safe_float(realizedPNL, 0.0),
+            "currency": str(getattr(contract, "currency", "") or "").upper(),
+            "assetClass": str(getattr(contract, "secType", "") or "").upper(),
+            "updated_at": _iso_now(),
+        }
+        with self._state_lock:
+            self._last_message_at = time.time()
+        capture = self._get_account_updates_capture(account)
+        if capture:
+            position_key = f"{account}:{payload['conid'] or payload['ticker']}"
+            capture.positions[position_key] = payload
+
+    def accountDownloadEnd(self, accountName: str):  # noqa: N802
+        with self._state_lock:
+            self._last_message_at = time.time()
+        capture = self._get_account_updates_capture(str(accountName or "").strip())
+        if capture:
+            capture.event.set()
+
     def execDetails(self, reqId: int, contract, execution):  # noqa: N802
         exec_id = str(getattr(execution, "execId", "") or "")
         if not exec_id:
@@ -736,6 +821,41 @@ class _IBGatewayApp(EWrapper, EClient):
             return {}
         account = self._managed_accounts.split(",", 1)[0].strip() if self._managed_accounts else ""
         return dict(self._account_summary.get(account) or items[0] or {})
+
+    def request_account_updates(
+        self,
+        *,
+        account: str = "",
+        timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        with self._account_updates_request_lock:
+            self.connect_and_start(timeout=timeout)
+            requested_account = str(account or "").strip()
+            if not requested_account and self._managed_accounts:
+                requested_account = self._managed_accounts.split(",", 1)[0].strip()
+            if not requested_account:
+                raise RuntimeError("missing_managed_account")
+
+            capture = _AccountUpdatesCapture(account=requested_account)
+            with self._account_updates_lock:
+                self._account_updates_capture = capture
+            try:
+                self.reqAccountUpdates(True, requested_account)
+                if not capture.event.wait(timeout=max(1, int(timeout))):
+                    raise TimeoutError("account_updates_timeout")
+                return {
+                    "account": requested_account,
+                    "summary": dict(capture.summary),
+                    "positions": [dict(item) for item in capture.positions.values()],
+                }
+            finally:
+                try:
+                    self.reqAccountUpdates(False, requested_account)
+                except Exception:
+                    logger.debug("reqAccountUpdates(False) failed for %s", requested_account, exc_info=True)
+                with self._account_updates_lock:
+                    if self._account_updates_capture is capture:
+                        self._account_updates_capture = None
 
     def request_executions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
         self.connect_and_start(timeout=timeout)
@@ -1052,6 +1172,9 @@ class BrokerAdapter:
 
     def get_account_summary(self) -> Dict[str, dict]:
         return self.client.request_account_summary()
+
+    def get_account_snapshot(self, account: str = "") -> Dict[str, Any]:
+        return self.client.request_account_updates(account=account)
 
     def list_open_orders(self) -> List[dict]:
         return self.client.request_open_orders()

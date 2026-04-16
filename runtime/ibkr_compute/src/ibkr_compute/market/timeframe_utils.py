@@ -85,6 +85,21 @@ def format_cn_time(bar_time_ms: int) -> str:
     return ms_to_et(bar_time_ms).astimezone(CN).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def bar_close_ms(bar_time_ms: int, interval: str) -> int:
+    return int(bar_time_ms) + interval_to_ms(interval)
+
+
+def build_bar_close_timestamps(bar_time_ms: int, interval: str) -> Dict[str, object]:
+    normalized = normalize_interval(interval)
+    close_ms = bar_close_ms(bar_time_ms, normalized)
+    return {
+        "bar_time_semantics": "start",
+        "bar_close_time_ms": close_ms,
+        "bar_close_us_time": format_us_time(close_ms),
+        "bar_close_cn_time": format_cn_time(close_ms),
+    }
+
+
 def build_runtime_timestamps(now: datetime | None = None) -> Dict[str, object]:
     current = now.astimezone(ET) if now else datetime.now(ET)
     current_ms = int(current.timestamp() * 1000)

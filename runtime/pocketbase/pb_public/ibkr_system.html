@@ -837,6 +837,102 @@
             }));
         }
 
+        function getUsClockParts(date = new Date()) {
+            const values = {};
+            new Intl.DateTimeFormat('en-US', {
+                timeZone: 'America/New_York',
+                weekday: 'short',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+            }).formatToParts(date).forEach((part) => {
+                if (part.type !== 'literal') values[part.type] = part.value;
+            });
+            const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+            return {
+                date: values.year && values.month && values.day ? `${values.year}-${values.month}-${values.day}` : '',
+                hour: Number(values.hour || 0) || 0,
+                minute: Number(values.minute || 0) || 0,
+                weekday: weekdayMap[values.weekday] ?? -1,
+            };
+        }
+
+        function formatUsDateToken(timestampMs) {
+            const numeric = Number(timestampMs || 0);
+            if (!Number.isFinite(numeric) || numeric <= 0) return '';
+            const values = {};
+            new Intl.DateTimeFormat('en-US', {
+                timeZone: 'America/New_York',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+            }).formatToParts(new Date(numeric)).forEach((part) => {
+                if (part.type !== 'literal') values[part.type] = part.value;
+            });
+            return values.year && values.month && values.day ? `${values.year}-${values.month}-${values.day}` : '';
+        }
+
+        function isRuntimeBarFreshnessRequired(runtime = {}, latest5m = null) {
+            const clock = getUsClockParts();
+            const minuteOfDay = clock.hour * 60 + clock.minute;
+            const activeTargetCount = Number(runtime?.market_universe?.active_target_count || 0) || 0;
+            const latestBarDate = formatUsDateToken(latest5m?.last_bar_time_ms);
+            if (clock.weekday === 0 || clock.weekday === 6) return false;
+            if (minuteOfDay < (9 * 60 + 40)) return false;
+            if (minuteOfDay > (16 * 60 + 15)) return false;
+            return activeTargetCount > 0 || latestBarDate === clock.date;
+        }
+
+        function normalizeBarBucketLagSeconds(lagValue, dueBucketMs, completedBucketMs) {
+            const dueMs = Number(dueBucketMs || 0) || 0;
+            const completedMs = Number(completedBucketMs || 0) || 0;
+            if (dueMs > 0) {
+                const referenceMs = completedMs > 0 && completedMs >= dueMs ? completedMs : Date.now();
+                return Math.max(0, Math.round((referenceMs - dueMs) / 1000));
+            }
+            const rawLag = Number(lagValue || 0) || 0;
+            if (rawLag > 1000000000000) {
+                return Math.max(0, Math.round((Date.now() - rawLag) / 1000));
+            }
+            if (rawLag > 1000000000) {
+                return Math.max(0, Math.round(Date.now() / 1000 - rawLag));
+            }
+            return rawLag;
+        }
+
+        function buildRuntimeBarDataHealth(runtime = {}, latest5m = null) {
+            if (!isRuntimeBarFreshnessRequired(runtime, latest5m)) {
+                return null;
+            }
+            const marketUniverse = runtime?.market_universe || {};
+            const barFreshness = marketUniverse?.bar_freshness || {};
+            const canonical = runtime?.canonical_5m || {};
+            const pendingSymbolsTotal = Number(canonical.pending_symbols_total || barFreshness.pending_symbols_total || 0) || 0;
+            const dueBucketMs = Number(canonical.last_due_bucket_ms || 0) || 0;
+            const completedBucketMs = Number(canonical.last_completed_bucket_ms || 0) || 0;
+            const lagS = normalizeBarBucketLagSeconds(
+                Number(canonical.lag_s || barFreshness.lag_s || 0) || 0,
+                dueBucketMs,
+                completedBucketMs
+            );
+            const bucketStale = String(barFreshness.status || '').trim().toLowerCase() === 'stale'
+                || (dueBucketMs > 0 && (completedBucketMs <= 0 || completedBucketMs < dueBucketMs));
+            if (!bucketStale) {
+                return null;
+            }
+            return {
+                status: 'offline',
+                bar_bucket_status: String(barFreshness.status || 'stale'),
+                pending_symbols_total: pendingSymbolsTotal,
+                lag_s: lagS,
+                last_due_bucket_us: String(canonical.last_due_bucket_us || ''),
+                last_completed_bucket_us: String(canonical.last_completed_bucket_us || barFreshness.last_completed_bucket_us || ''),
+            };
+        }
+
         function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, freshnessItems = [], fallbackCompute = {}) {
             const runtime = statusPayload?.runtime || healthPayload?.runtime || {};
             const compute = buildSystemComputeSummary(healthPayload, statusPayload, fallbackCompute);
@@ -854,6 +950,13 @@
                 };
             } else if (!dataHealth || !dataHealth.status) {
                 dataHealth = { status: 'unknown' };
+            }
+            const runtimeBarDataHealth = buildRuntimeBarDataHealth(runtime, latest5m);
+            if (runtimeBarDataHealth) {
+                dataHealth = {
+                    ...dataHealth,
+                    ...runtimeBarDataHealth,
+                };
             }
 
             return {
@@ -1065,6 +1168,15 @@
             }
             if (dataHealth.last_bar_time_ms) {
                 dataEl.innerHTML += `<span style="color:var(--muted)"> · ${escapeHtml(formatTimeLabel(dataHealth.last_bar_time_ms))}</span>`;
+            }
+            const bucketMeta = [];
+            if (dataHealth.bar_bucket_status) bucketMeta.push(`bar bucket ${String(dataHealth.bar_bucket_status)}`);
+            if (Number(dataHealth.pending_symbols_total || 0) > 0) bucketMeta.push(`pending ${Number(dataHealth.pending_symbols_total || 0)}`);
+            if (Number(dataHealth.lag_s || 0) > 0) bucketMeta.push(`lag ${Math.round(Number(dataHealth.lag_s || 0))}s`);
+            if (dataHealth.last_due_bucket_us) bucketMeta.push(`due ${String(dataHealth.last_due_bucket_us)}`);
+            if (dataHealth.last_completed_bucket_us) bucketMeta.push(`done ${String(dataHealth.last_completed_bucket_us)}`);
+            if (bucketMeta.length) {
+                dataEl.innerHTML += `<span style="color:var(--muted)"> · ${escapeHtml(bucketMeta.join(' · '))}</span>`;
             }
 
             const comp = health.ibkr_compute || {};

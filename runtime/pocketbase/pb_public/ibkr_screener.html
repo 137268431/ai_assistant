@@ -114,6 +114,15 @@
                 </select>
               </div>
               <div class="field">
+                <label for="currentTargetPageSize">每页条数</label>
+                <select id="currentTargetPageSize">
+                  <option value="10">10</option>
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+              <div class="field">
                 <div class="checkbox-row">
                   <input id="currentReadyOnly" type="checkbox" />
                   <label for="currentReadyOnly">仅技术 ready</label>
@@ -135,6 +144,10 @@
               </div>
             </div>
             <div class="leaderboard-note" id="currentTargetsMetaSecondary">05:55 ET 日筛生成 candidate / active，09:20 ET 做盘前检查，盘中按 5m close 刷新技术与信号阶段。</div>
+            <div class="pagination-bar">
+              <div class="pagination-group" id="currentTargetsPaginationTop"></div>
+              <div class="pagination-status" id="currentTargetsPaginationStatusTop">第 1 / 1 页</div>
+            </div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -151,6 +164,10 @@
                   <tr><td colspan="6" class="loading">加载中...</td></tr>
                 </tbody>
               </table>
+            </div>
+            <div class="pagination-bar">
+              <div class="pagination-group" id="currentTargetsPaginationBottom"></div>
+              <div class="pagination-status" id="currentTargetsPaginationStatusBottom">第 1 / 1 页</div>
             </div>
           </section>
         </div>

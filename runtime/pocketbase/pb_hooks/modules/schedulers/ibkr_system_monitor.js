@@ -982,89 +982,31 @@ routerAdd("GET", "/api/custom/system/cronz", (c) => {
 
 routerAdd("GET", "/api/custom/system/healthz", (c) => {
     try {
-        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { normalizeRuntimeEnvironment, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { fetchComputeJsonWithFallback } = require(`${__hooks}/lib/compute_http.js`)
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
-        let compute = {
-            status: "offline",
-            engines: 0,
-            ready_engines: 0,
-            total_engines: 0,
-            compute_count: 0,
-            error_count: 0,
-            uptime_s: 0,
-            last_compute: null,
-            last_scan: null,
-        }
-        let runtime = {}
-        try {
-            const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
-            const healthResp = $http.send({ url: `${computeBaseUrl}/health`, method: "GET", timeout: 5 })
-            const healthData = JSON.parse(healthResp.raw || "{}")
-            const statusResp = $http.send({ url: `${computeBaseUrl}/status`, method: "GET", timeout: 5 })
-            const statusData = JSON.parse(statusResp.raw || "{}")
-            try {
-                const runtimeResp = $http.send({ url: `${computeBaseUrl}/ibkr/status`, method: "GET", timeout: 8 })
-                runtime = JSON.parse(runtimeResp.raw || "{}")
-            } catch (_) {}
-            compute = {
-                status: healthData.status || statusData.status || "unknown",
-                engines: Number(statusData.total_engines || 0) || 0,
-                ready_engines: Number(statusData.ready_engines || 0) || 0,
-                total_engines: Number(statusData.total_engines || 0) || 0,
-                compute_count: Number(healthData.compute_count || statusData.compute_count || 0) || 0,
-                error_count: Number(healthData.error_count || statusData.error_count || 0) || 0,
-                uptime_s: Number(healthData.uptime_s || 0) || 0,
-                last_compute: healthData.last_compute || statusData.last_compute || null,
-                last_scan: healthData.last_scan || statusData.last_scan || null,
-            }
-        } catch (err) {
-            compute.status = "offline"
-            compute.error = err.message || String(err)
-        }
-
-        let dataHealth = { status: "no_data" }
-        try {
-            const bars = $app.findRecordsByFilter("ibkr_bars", "environment = {:env}", "-bar_time_ms", 1, 0, { env: environment })
-            if (bars && bars.length > 0) {
-                const lastMs = Number(bars[0].get("bar_time_ms") || 0)
-                const ageMin = Math.round((Date.now() - lastMs) / 60000)
-                dataHealth = {
-                    status: ageMin <= 5 ? "online" : (ageMin <= 15 ? "delayed" : "offline"),
-                    last_bar_age_min: ageMin,
-                    last_bar_time_ms: lastMs,
-                    last_symbol: bars[0].get("symbol") || "",
-                }
-            }
-        } catch (err) {
-            dataHealth = { status: "unknown", error: err.message }
-        }
-
-        const computeEnabled = environment !== BACKTEST_ENVIRONMENT
-            && String(getConfigValue("ibkr_compute_enabled", "TRUE", environment)).trim().toLowerCase() !== "false"
-
-        return c.json(200, {
-            ok: compute.status === "running",
+        const fetchResult = fetchComputeJsonWithFallback("/ibkr/monitor", 10, environment)
+        const monitorPayload = fetchResult && fetchResult.payload && typeof fetchResult.payload === "object"
+            ? fetchResult.payload
+            : {}
+        const payload = {
+            ok: monitorPayload.ok !== false,
             environment: environment,
-            pb: { status: "running" },
-            ibkr_compute: {
-                status: compute.status || "unknown",
-                engines: compute.total_engines || 0,
-                ready_engines: compute.ready_engines || 0,
-                total_engines: compute.total_engines || 0,
-                compute_count: compute.compute_count || 0,
-                error_count: compute.error_count || 0,
-                uptime_s: compute.uptime_s || 0,
-                last_compute: compute.last_compute || null,
-                last_scan: compute.last_scan || null,
-            },
-            ibkr_data: dataHealth,
-            runtime: runtime,
-            compute_enabled: computeEnabled,
-        })
+            status: String(monitorPayload.status || (monitorPayload.ok === false ? "offline" : "ok")).trim().toLowerCase() || "ok",
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_system_monitor.pb.js",
+            proxy_route: "/api/custom/system/healthz",
+            proxy_upstream: String(fetchResult && fetchResult.upstream || ""),
+        }
+        return c.json(200, payload)
     } catch (err) {
-        return c.json(500, {
+        return c.json(200, {
             ok: false,
+            status: "offline",
             error: logRouteError("/api/custom/system/healthz", err),
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_system_monitor.pb.js",
+            proxy_route: "/api/custom/system/healthz",
         })
     }
 })
