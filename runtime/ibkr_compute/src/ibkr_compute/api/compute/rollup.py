@@ -150,21 +150,38 @@ def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None
     }
 
 
-def ensure_higher_timeframe_bars(environments, force: bool = False, symbols=None, incremental: bool = False):
+def ensure_higher_timeframe_bars(
+    environments,
+    force: bool = False,
+    symbols=None,
+    incremental: bool = False,
+    intervals=None,
+):
     api_app = _api_app()
     normalized_symbols = api_app.normalize_symbols(symbols)
+    target_intervals = _normalize_target_intervals(api_app, intervals)
     results = {}
     for environment in environments:
+        if not target_intervals:
+            results[environment] = {
+                "skipped": True,
+                "reason": "no_target_intervals",
+                "written": 0,
+                "errors": 0,
+                "intervals": [],
+            }
+            continue
+
         if normalized_symbols:
             since_ms = _recent_rollup_since_ms(
                 environment,
                 normalized_symbols,
-                intervals=api_app.HIGHER_INTERVALS,
+                intervals=target_intervals,
             ) if incremental else None
             rollup_result = rebuild_higher_timeframe_bars(
                 environment,
                 symbols=normalized_symbols,
-                intervals=api_app.HIGHER_INTERVALS,
+                intervals=target_intervals,
                 since_ms=since_ms,
             )
             rollup_result["targeted"] = True
@@ -178,11 +195,12 @@ def ensure_higher_timeframe_bars(environments, force: bool = False, symbols=None
                 "reason": "already_checked",
                 "written": 0,
                 "errors": 0,
+                "intervals": target_intervals,
             }
             continue
 
         missing_intervals = [
-            interval for interval in api_app.HIGHER_INTERVALS if force or not has_interval_bars(environment, interval)
+            interval for interval in target_intervals if force or not has_interval_bars(environment, interval)
         ]
         if not missing_intervals:
             api_app.rollup_bootstrap_checked.add(environment)
@@ -191,10 +209,11 @@ def ensure_higher_timeframe_bars(environments, force: bool = False, symbols=None
                 "reason": "already_present",
                 "written": 0,
                 "errors": 0,
+                "intervals": target_intervals,
             }
             continue
 
-        rollup_result = rebuild_higher_timeframe_bars(environment)
+        rollup_result = rebuild_higher_timeframe_bars(environment, intervals=target_intervals)
         rollup_result["missing_intervals"] = missing_intervals
         results[environment] = rollup_result
         api_app.rollup_bootstrap_checked.add(environment)

@@ -11,6 +11,43 @@ def _service_mod():
 
 
 class TradingServiceWarmupCycleMixin:
+    def _release_startup_after_trade_gate(
+        self,
+        snapshot: dict,
+        readiness: dict,
+        preflight_result: dict,
+        backfill_written: int,
+        started_at: str,
+        warmup_timings: dict,
+    ) -> bool:
+        finished_at = self._now_iso()
+        startup_detail = {
+            "Warmup结果": f"{readiness['ready_symbols']}/{snapshot['symbols_total']} ready",
+            "交易标的": f"{readiness['ready_trade_symbols']}/{snapshot['trade_symbols_total']} ready",
+            "监控标的": f"{readiness['ready_monitor_symbols']}/{snapshot['monitor_symbols_total']} ready",
+            "预检修复标的": self._format_symbol_list(
+                preflight_result.get("attempted_repair_symbols") or []
+            ),
+            "回补写入Bars": backfill_written,
+            "预热开始": started_at,
+            "预热完成": finished_at,
+            "预热耗时": f"{float(warmup_timings.get('total_elapsed_s', 0.0) or 0.0):.3f}s",
+            "交易门": "open",
+            "后续动作": "交易链路已开放，剩余 monitor / integrity repair 在后台继续。",
+            "待完成标的": self._format_symbol_list(
+                readiness.get("pending_symbols") or []
+            ),
+            "完整性阻塞": self._format_symbol_list(
+                readiness.get("integrity_pending_symbols") or []
+            ),
+        }
+        if not self._complete_startup_success(
+            "IBKR Runtime 启动完成（后台继续预热）",
+            startup_detail,
+        ):
+            return False
+        return True
+
     def _collect_warmup_readiness(self, snapshot: dict) -> dict:
         service_mod = _service_mod()
         from ibkr_compute.api import server as compute_server
@@ -498,6 +535,10 @@ class TradingServiceWarmupCycleMixin:
                 return
             if readiness["trading_gate_open"] and readiness["pending_symbols"]:
                 startup_gate_open_once = True
+                warmup_timings["total_elapsed_s"] = round(
+                    time.perf_counter() - warmup_started_perf,
+                    3,
+                )
                 self._set_warmup_state(
                     phase="running",
                     required_interval=readiness["required_interval"],
@@ -527,6 +568,14 @@ class TradingServiceWarmupCycleMixin:
                 service_mod.logger.info(
                     "Warmup trade gate open after bootstrap; continuing repair for pending symbols: %s",
                     ",".join(readiness["pending_symbols"]),
+                )
+                self._release_startup_after_trade_gate(
+                    snapshot,
+                    readiness,
+                    preflight_result,
+                    backfill_written,
+                    started_at,
+                    warmup_timings,
                 )
                 self._signal_wakeup.set()
 

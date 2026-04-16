@@ -28,6 +28,7 @@ class ComputeRollupPlanTest(unittest.TestCase):
         fake_app = mock.Mock()
         fake_app.SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
         fake_app.DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
         fake_app.INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"]
         fake_app.SIGNAL_SUPPRESSED_COMPUTE_SOURCES = {
             "history_repair",
@@ -51,11 +52,13 @@ class ComputeRollupPlanTest(unittest.TestCase):
         self.assertTrue(plan["targeted_rollup"])
         self.assertTrue(plan["force_rollup"])
         self.assertTrue(plan["incremental_rollup"])
+        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h"])
 
     def test_history_repair_keeps_full_targeted_rollup(self):
         fake_app = mock.Mock()
         fake_app.SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
         fake_app.DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
         fake_app.INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"]
         fake_app.SIGNAL_SUPPRESSED_COMPUTE_SOURCES = {
             "history_repair",
@@ -79,10 +82,11 @@ class ComputeRollupPlanTest(unittest.TestCase):
         self.assertTrue(plan["targeted_rollup"])
         self.assertTrue(plan["force_rollup"])
         self.assertFalse(plan["incremental_rollup"])
+        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h", "1d"])
 
 
 class IncrementalRollupWindowTest(unittest.TestCase):
-    def test_recent_rollup_uses_two_max_interval_windows(self):
+    def test_recent_rollup_respects_selected_intervals(self):
         fake_app = mock.Mock()
         fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
         fake_app.last_interval_fetch_ms = {("live", "5m"): 1776278100000}
@@ -91,10 +95,10 @@ class IncrementalRollupWindowTest(unittest.TestCase):
             since_ms = compute_rollup._recent_rollup_since_ms(
                 "live",
                 ["AAPL", "MSFT"],
-                intervals=fake_app.HIGHER_INTERVALS,
+                intervals=["15m", "30m", "1h", "4h"],
             )
 
-        self.assertEqual(since_ms, 1776278100000 - (2 * 24 * 60 * 60 * 1000))
+        self.assertEqual(since_ms, 1776278100000 - (2 * 4 * 60 * 60 * 1000))
 
 
 if __name__ == "__main__":

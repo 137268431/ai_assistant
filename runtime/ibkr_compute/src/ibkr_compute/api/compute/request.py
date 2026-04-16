@@ -34,6 +34,31 @@ def should_persist_compute_signals(payload: dict) -> bool:
     return source not in api_app.SIGNAL_SUPPRESSED_COMPUTE_SOURCES
 
 
+def get_rollup_intervals_for_source(source: str) -> list[str]:
+    api_app = _api_app()
+    configured = list(getattr(api_app, "HIGHER_INTERVALS", []) or [])
+    if not configured:
+        configured = [
+            interval
+            for interval in (getattr(api_app, "INTERVALS", []) or [])
+            if str(interval or "").strip().lower() != "5m"
+        ]
+
+    normalized = []
+    for value in configured:
+        interval = str(value or "").strip().lower()
+        if interval and interval not in normalized:
+            normalized.append(interval)
+
+    if source == "canonical_close":
+        # Daily rollup only closes when the trading day rolls over. Recomputing it
+        # on every intraday canonical close turns each 5m compute cycle into a
+        # multi-day rebuild for every symbol.
+        normalized = [interval for interval in normalized if interval != "1d"]
+
+    return normalized
+
+
 def get_requested_environments(payload=None, defaults=None):
     api_app = _api_app()
     payload = payload if isinstance(payload, dict) else get_json_payload()
@@ -120,5 +145,6 @@ def build_compute_execution_plan(payload=None) -> dict:
         "incremental_rollup": bool(requested_symbols) and source == "canonical_close",
         "skip_persisted_cursor": source in {"recompute", "history_repair", "history_rebuild", "targeted_recompute"},
         "force_rollup": force_rollup,
+        "rollup_intervals": get_rollup_intervals_for_source(source),
         "intervals": api_app.INTERVALS,
     }

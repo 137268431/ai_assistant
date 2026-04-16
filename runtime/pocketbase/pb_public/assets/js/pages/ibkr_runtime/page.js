@@ -375,6 +375,76 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             };
         }
 
+        function formatDurationCompact(totalSeconds) {
+            const seconds = Number(totalSeconds);
+            if (!Number.isFinite(seconds) || seconds < 0) return '--';
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const remainder = Math.round(seconds % 60);
+            if (hours > 0) return `${hours}h ${minutes}m`;
+            if (minutes > 0 && remainder > 0) return `${minutes}m ${remainder}s`;
+            return `${minutes}m`;
+        }
+
+        function getElapsedSeconds(startValue, endValue = null) {
+            const startMs = parseIsoMs(startValue);
+            if (startMs <= 0) return null;
+            const endMs = endValue ? parseIsoMs(endValue) : Date.now();
+            if (endMs <= 0 || endMs < startMs) return null;
+            return Math.max(0, Math.round((endMs - startMs) / 1000));
+        }
+
+        function getWarmupElapsedSeconds(warmup) {
+            return getElapsedSeconds(warmup?.started_at, warmup?.finished_at);
+        }
+
+        function deriveRealtimeComputeState(status) {
+            const realtime = status?.realtime_compute || {};
+            const inflight = realtime.inflight === true;
+            const stalled = realtime.stalled === true;
+            const queueSize = Number(realtime.queue_size || 0) || 0;
+            const inflightAgeS = Number(realtime.inflight_age_s);
+            const lastElapsedS = Number(realtime.last_elapsed_s);
+
+            if (stalled) {
+                return {
+                    phase: 'stalled',
+                    tone: 'error',
+                    title: 'Indicators 计算已卡住',
+                    summary: `started ${formatTimeLabel(realtime.last_started)} · age ${formatSecondsLabel(realtime.inflight_age_s)} · reason ${String(realtime.stall_reason || 'unknown')}`,
+                };
+            }
+
+            if (inflight) {
+                const longRunning = Number.isFinite(inflightAgeS) && inflightAgeS >= Math.max(60, Number.isFinite(lastElapsedS) ? lastElapsedS * 0.5 : 60);
+                return {
+                    phase: 'running',
+                    tone: longRunning ? 'warn' : 'info',
+                    title: longRunning
+                        ? `Indicators 计算耗时较长 · ${formatSecondsLabel(realtime.inflight_age_s)}`
+                        : `Indicators 正在计算 · ${formatSecondsLabel(realtime.inflight_age_s)}`,
+                    summary: `started ${formatTimeLabel(realtime.last_started)} · prev ${formatSecondsLabel(realtime.last_elapsed_s)} · queue ${queueSize}`,
+                };
+            }
+
+            if (queueSize > 0) {
+                return {
+                    phase: 'queued',
+                    tone: 'warn',
+                    title: `Indicators 等待计算 · queue ${queueSize}`,
+                    summary: `last run ${formatTimeLabel(realtime.last_run)} · lag ${formatSecondsLabel(realtime.lag_since_last_run_s)}`,
+                };
+            }
+
+            return {
+                phase: 'idle',
+                tone: 'ok',
+                title: 'Indicators 已追平',
+                summary: `last run ${formatTimeLabel(realtime.last_run)}`,
+            };
+        }
+
         function parseSymbolList(rawValue) {
             const seen = new Set();
             return String(rawValue || '')
@@ -1032,7 +1102,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function renderOpsGrid(summary, status, twoFactorState, startupState, latestBar, latestIndicator, latestSignal) {
             const dataHealth = deriveDataHealth(latestBar);
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
+            const realtimeState = deriveRealtimeComputeState(status);
             const warmup = normalizeWarmup(status);
+            const warmupElapsedS = getWarmupElapsedSeconds(warmup);
+            const canonical = status?.canonical_5m || {};
             const latestBarExtra = getExtraObject(latestBar);
             const latestIndicatorExtra = getExtraObject(latestIndicator);
             const latestSignalExtra = getExtraObject(latestSignal);
@@ -1125,6 +1198,22 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 blocker.tone = 'error';
                 blocker.title = `bars 停在 ${dataHealth.last_bar_label}`;
                 blocker.copy = `最新 live bar 已经落后 ${dataHealth.last_bar_age_min} 分钟，需要优先检查订阅、写入器和行情桥。`;
+            } else if ((Number(canonical.pending_symbols_total || 0) || 0) > 0 || (Number(canonical.lag_s || 0) || 0) > 0) {
+                blocker.tone = 'warn';
+                blocker.title = `Canonical 5m 仍在补齐 · ${String(canonical.last_completed_bucket_us || '--')}`;
+                blocker.copy = `due ${String(canonical.last_due_bucket_us || '--')} · completed ${String(canonical.last_completed_bucket_us || '--')} · pending ${Number(canonical.pending_symbols_total || 0) || 0}。`;
+            } else if (realtimeState.phase === 'stalled') {
+                blocker.tone = 'error';
+                blocker.title = realtimeState.title;
+                blocker.copy = `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，但 realtime compute 没有完成：${realtimeState.summary}。`;
+            } else if (realtimeState.phase === 'running') {
+                blocker.tone = realtimeState.tone;
+                blocker.title = realtimeState.title;
+                blocker.copy = `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，指标仍在追赶：${realtimeState.summary}。`;
+            } else if (realtimeState.phase === 'queued') {
+                blocker.tone = 'warn';
+                blocker.title = realtimeState.title;
+                blocker.copy = `canonical bar 已写入，但 compute 还在排队：${realtimeState.summary}。`;
             } else if (totalEngines && readyEngines < totalEngines) {
                 blocker.tone = 'warn';
                 blocker.title = `Warmup 未完成 ${readyEngines}/${totalEngines}`;
@@ -1143,8 +1232,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     realtimeMetrics.last_bar_close ? `close ${formatTimeLabel(realtimeMetrics.last_bar_close)}` : 'close --',
                     realtimeMetrics.close_delay_s != null ? `close delay ${formatSecondsLabel(realtimeMetrics.close_delay_s)}` : '',
                     realtimeMetrics.compute_after_close_s != null ? `compute ${formatSecondsLabel(realtimeMetrics.compute_after_close_s)}` : '',
+                    canonical.last_completed_bucket_us ? `canonical ${String(canonical.last_completed_bucket_us)}` : '',
+                    realtimeState.phase !== 'idle' ? `compute ${realtimeState.phase} ${realtimeState.phase === 'running' ? formatSecondsLabel(status?.realtime_compute?.inflight_age_s) : ''}`.trim() : 'compute ready',
                     latestBar && !latestBarExtra.computed_at_us && !latestBarExtra.computed_at_cn ? 'bar extra 缺失' : '',
-                    `warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}`,
+                    `warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}${warmupElapsedS != null ? ` · ${formatDurationCompact(warmupElapsedS)}` : ''}`,
                     latestIndicator ? `indicator ${latestIndicator.symbol || '--'} ${latestIndicator.interval || '--'} · ${String(getComputedTimeLabel(latestIndicator)).slice(0, 19)}` : 'indicator missing',
                     latestSignal ? `signal ${latestSignal.symbol || '--'} ${String(latestSignal.direction || '--').toUpperCase()} · ${latestSignal.status || '--'}` : 'signal 暂无',
                 ].filter(Boolean).join(' · ')
@@ -1246,7 +1337,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const computeHealth = normalizeComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
+            const realtimeState = deriveRealtimeComputeState(status);
             const warmup = normalizeWarmup(status);
+            const warmupElapsedS = getWarmupElapsedSeconds(warmup);
+            const canonical = status?.canonical_5m || {};
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const startup = normalizeStartupUiState(startupState);
             const startupStrategy = getStartupStrategy(status);
@@ -1307,8 +1401,24 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Error Count', String(computeHealth.error_count || 0)],
                 ['Uptime', `${Math.round(Number(computeHealth.uptime_s || 0) / 60)} min`],
                 ['Backfill Written', String(status?.data_backfill?.total_backfilled || 0)],
+                ['Canonical Due Bucket', String(canonical?.last_due_bucket_us || '--')],
+                ['Canonical Completed Bucket', String(canonical?.last_completed_bucket_us || '--')],
+                ['Canonical Lag', formatSecondsLabel(canonical?.lag_s)],
+                ['Canonical Written Bars', String(canonical?.last_written_bars || 0)],
+                ['Canonical Pending', String(canonical?.pending_symbols_total || 0)],
                 ['Close Compute Runs', String(status?.realtime_compute?.runs || 0)],
+                ['Close Compute State', String(realtimeState?.phase || '--').toUpperCase()],
                 ['Close Compute Queue', String(status?.realtime_compute?.queue_size || 0)],
+                ['Close Compute Inflight', status?.realtime_compute?.inflight ? 'YES' : 'NO'],
+                ['Close Compute Started', formatTimeLabel(status?.realtime_compute?.last_started)],
+                ['Close Compute Age', formatSecondsLabel(status?.realtime_compute?.inflight_age_s)],
+                ['Close Compute Last Elapsed', formatSecondsLabel(status?.realtime_compute?.last_elapsed_s)],
+                ['Close Compute Threshold', formatSecondsLabel(status?.realtime_compute?.inflight_timeout_threshold_s)],
+                ['Close Compute Stall', status?.realtime_compute?.stalled ? 'YES' : 'NO'],
+                ['Close Compute Stall Reason', String(status?.realtime_compute?.stall_reason || '--')],
+                ['Close Compute Processed', String(status?.realtime_compute?.last_processed || status?.realtime_compute?.last_result?.processed || 0)],
+                ['Close Compute Errors', String(status?.realtime_compute?.last_errors || status?.realtime_compute?.last_result?.errors || 0)],
+                ['Close Compute Signals', String(status?.realtime_compute?.last_signals || status?.realtime_compute?.last_result?.signals || 0)],
                 ['Last Bar Close', formatTimeLabel(status?.realtime_compute?.last_bar_close)],
                 ['Close Compute Last', formatTimeLabel(status?.realtime_compute?.last_run)],
                 ['Close Delay', formatSecondsLabel(realtimeMetrics.close_delay_s)],
@@ -1323,6 +1433,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Monitor Pending', String(warmup.monitor_pending_symbols_total || 0)],
                 ['Warmup Start', formatTimeLabel(warmup.started_at)],
                 ['Warmup Finish', formatTimeLabel(warmup.finished_at)],
+                ['Warmup Elapsed', formatDurationCompact(warmupElapsedS)],
                 ['Market Date', String(status?.market_universe?.market_date || '--')],
                 ['Last Daily Reset', formatTimeLabel(status?.market_universe?.last_daily_reset)],
                 ['Watchlist Pool', String(status?.market_universe?.watchlist_pool_count || 0)],
@@ -1583,7 +1694,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const latestIndicatorMs = Number(latestIndicator?.bar_time_ms || 0) || 0;
             const latestSignalMs = Number(latestSignal?.bar_time_ms || 0) || 0;
             const dataHealth = deriveDataHealth(latestBar);
+            const realtimeState = deriveRealtimeComputeState(status);
             const warmup = normalizeWarmup(status);
+            const warmupElapsedS = getWarmupElapsedSeconds(warmup);
+            const canonical = status?.canonical_5m || {};
             const latestBarExtra = getExtraObject(latestBar);
             const indicatorExtra = getExtraObject(latestIndicator);
             const signalExtra = getExtraObject(latestSignal);
@@ -1650,6 +1764,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (latestBarMs && latestIndicatorMs && latestIndicatorMs < latestBarMs - 5 * 60 * 1000) {
                 notes.push({ tone: 'warn', text: `indicator 落后最新 bar ${Math.round((latestBarMs - latestIndicatorMs) / 60000)} 分钟，建议执行 compute 或检查定时调度。` });
             }
+            if (latestBarMs && latestBar?.interval === '5m') {
+                notes.push({ tone: 'ok', text: '页面展示的是最新已收盘 5m bar，时间标签是 bar 起始时间，不显示正在形成的那根，所以视觉上会慢一根。' });
+            }
             if (latestBarMs && !latestBarExtra.computed_at_us && !latestBarExtra.computed_at_cn) {
                 notes.push({ tone: 'warn', text: '最新 bar 的 extra 仍为空，当前看到的是旧写入记录，暂时无法核对 bar 实际写入时间。' });
             }
@@ -1669,6 +1786,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 notes.push({ tone: 'error', text: `warmup 失败：${warmup.last_error || '需要检查回填与 compute 日志。'}` });
             } else if (warmup.trade_symbols_total > 0 && !warmup.gate_open) {
                 notes.push({ tone: 'warn', text: `交易闸门关闭：还有 ${(warmup.blocking_pending_symbols || []).join(', ') || '部分目标'} 未完成 ${warmup.required_interval} 预热。` });
+            } else if (warmupElapsedS != null && warmupElapsedS >= 120) {
+                notes.push({ tone: 'warn', text: `本轮 warmup 总耗时 ${formatDurationCompact(warmupElapsedS)}；这通常来自全量 symbol 的历史修复和 5m 引擎 materialize，不等于页面卡死。` });
+            }
+            if (realtimeState.phase === 'stalled') {
+                notes.push({ tone: 'error', text: `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，但 realtime compute 已卡住：${realtimeState.summary}。` });
+            } else if (realtimeState.phase === 'running') {
+                notes.push({ tone: 'warn', text: `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，指标还没追平，因为 realtime compute 仍在运行：${realtimeState.summary}。` });
+            } else if (realtimeState.phase === 'queued') {
+                notes.push({ tone: 'warn', text: `canonical 5m 已完成到 ${String(canonical.last_completed_bucket_us || '--')}，但 indicators 仍在等待排队计算：${realtimeState.summary}。` });
             }
             if (latestBar && String(latestBar.environment || '').trim() === '') {
                 notes.push({ tone: 'warn', text: '检测到 legacy 空 environment bars，已需要迁移到 live 才能保证页面与 compute 一致。' });
