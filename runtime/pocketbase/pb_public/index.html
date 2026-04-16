@@ -821,6 +821,9 @@
             </div>
         </header>
 
+        <div id="contextBar"></div>
+        <div id="pageBridge"></div>
+
         <main class="home-main">
             <section id="homeOverview" class="home-panel" data-ready="loading">
                 <div class="home-panel-head">
@@ -1807,6 +1810,8 @@
             bindResponsiveState();
             await initAuth();
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🏠 Trading Flight 首页', { description: '执行 / 分析 / 筛选 / 运维 / 系统入口' });
+            document.getElementById('pageBridge').innerHTML = renderHomeBridge();
             bindEnvironmentLinks();
             document.getElementById('nav').innerHTML = renderNav('/index.html');
             loadTodayTargets();

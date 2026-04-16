@@ -312,6 +312,7 @@
 <body>
     <div id="nav"></div>
     <div class="page-shell">
+        <div id="contextBar"></div>
         <div id="pageBridge"></div>
 
         <section class="hero">
@@ -702,6 +703,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_history_rebuild.html');
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🧱 历史重建', { description: 'purge / backfill / rollup / recompute' });
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_history_rebuild.html');
             document.getElementById('startButton').addEventListener('click', () => startRebuild('full_reset_rebuild'));
             document.getElementById('todayButton').addEventListener('click', () => startRebuild('rebuild_today', { lookback_days: 1 }));

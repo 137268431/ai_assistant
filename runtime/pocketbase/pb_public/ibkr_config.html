@@ -645,6 +645,8 @@
   <div id="configEnvironmentBar" style="margin-top:12px;"></div>
 </div>
 
+<div id="pageBridge"></div>
+
 <!-- Content -->
 <div class="content" id="configContainer">
   <div class="loading">LOADING...</div>
@@ -886,6 +888,7 @@ async function loadPbCronDefinitions() {
 
 // ── 渲染导航 ──
 document.getElementById('navContainer').innerHTML = renderNav('/ibkr_config.html')
+document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_config.html')
 
 function escapeHtml(value) {
   return String(value ?? '')

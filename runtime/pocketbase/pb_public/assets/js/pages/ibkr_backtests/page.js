@@ -1592,7 +1592,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (!initAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_backtests.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🧪 IBKR 回测工坊', { description: '隔离结果 / 参数覆盖 / replay 验证' });
-            document.getElementById('pageBridge').innerHTML = '';
+            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_backtests.html');
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             applyDefaultDates();
             syncSymbolSourceUI();

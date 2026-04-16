@@ -29,7 +29,7 @@ function renderNav(activePage) {
     { path: '/ibkr_indicators.html', aliases: ['/ibkr_chart.html', '/ibkr_stats.html'], icon: '📈', label: '指标' },
     { path: '/ibkr_screener.html', aliases: ['/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '筛选' },
     { path: '/ibkr_monitor.html', aliases: ['/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html'], icon: '🛠️', label: '运维' },
-    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html'], icon: '🖥️', label: '系统' },
+    { path: '/ibkr_system.html', aliases: ['/ibkr_runtime.html', '/ibkr_config.html'], icon: '🖥️', label: '系统' },
     { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' }
   ];
 
@@ -688,6 +688,141 @@ function renderSystemBridge(activePage) {
       label: '控制台',
       copy: '启动 / 2FA / compute / flow trace',
       active: activePage === '/ibkr_runtime.html'
+    },
+    {
+      path: '/ibkr_config.html',
+      kicker: 'Config',
+      label: '配置',
+      copy: 'global / live / paper / backtest',
+      options: { allowGlobal: true },
+      active: activePage === '/ibkr_config.html'
+    }
+  ]);
+}
+
+function renderExecutionBridge(activePage, params = {}) {
+  const bridgeParams = params && typeof params === 'object' ? params : {};
+  return renderPageBridge([
+    {
+      path: '/ibkr_signals.html',
+      params: bridgeParams,
+      kicker: 'Signals',
+      label: '主信号',
+      copy: '待确认 / 执行 / 指标快照',
+      active: activePage === '/ibkr_signals.html'
+    },
+    {
+      path: '/ibkr_reverse_signals.html',
+      params: bridgeParams,
+      kicker: 'Reverse',
+      label: '反转信号',
+      copy: '平仓 / 取消 / 调整流转',
+      active: activePage === '/ibkr_reverse_signals.html'
+    },
+    {
+      path: '/orders.html',
+      params: bridgeParams,
+      kicker: 'Orders',
+      label: '订单',
+      copy: '执行分组 / 当前状态 / 操作',
+      active: activePage === '/orders.html'
+    },
+    {
+      path: '/ibkr_order_details.html',
+      params: bridgeParams,
+      kicker: 'Timeline',
+      label: '订单明细',
+      copy: '事件时间线 / 关系展开',
+      active: activePage === '/ibkr_order_details.html'
+    },
+    {
+      path: '/ibkr_account.html',
+      params: bridgeParams,
+      kicker: 'Account',
+      label: '账户',
+      copy: '净值 / 持仓 / 实时挂单 / 操作',
+      active: activePage === '/ibkr_account.html'
+    }
+  ]);
+}
+
+function renderAnalyticsBridge(activePage, options = {}) {
+  const chartParams = options && typeof options.chartParams === 'object' && options.chartParams
+    ? options.chartParams
+    : {};
+
+  return renderPageBridge([
+    {
+      path: '/ibkr_indicators.html',
+      kicker: 'Indicators',
+      label: '指标列表',
+      copy: '浏览 / 快览 / 技术指标快照',
+      active: activePage === '/ibkr_indicators.html'
+    },
+    {
+      path: '/ibkr_chart.html',
+      params: chartParams,
+      kicker: 'Chart',
+      label: '图表工作台',
+      copy: '主图 / 副图 / 信号定位',
+      active: activePage === '/ibkr_chart.html'
+    },
+    {
+      path: '/ibkr_stats.html',
+      kicker: 'Stats',
+      label: '统计',
+      copy: '分析结果 / 收益分布 / 执行结果',
+      active: activePage === '/ibkr_stats.html'
+    },
+    {
+      path: '/ibkr_backtests.html',
+      kicker: 'Backtest',
+      label: '回测工坊',
+      copy: '隔离结果 / 参数覆盖 / replay 验证',
+      active: activePage === '/ibkr_backtests.html'
+    }
+  ]);
+}
+
+function renderHomeBridge() {
+  return renderPageBridge([
+    {
+      path: '/ibkr_signals.html',
+      kicker: 'Execution',
+      label: '执行域',
+      copy: '信号 / 反转 / 订单 / 账户'
+    },
+    {
+      path: '/ibkr_indicators.html',
+      kicker: 'Analytics',
+      label: '分析域',
+      copy: '指标 / 图表 / 统计 / 回测'
+    },
+    {
+      path: '/ibkr_screener.html',
+      params: { tab: 'screener', view: 'current' },
+      kicker: 'Screener',
+      label: '筛选域',
+      copy: '筛选 / 标池 / 每日标的 / 市场监控'
+    },
+    {
+      path: '/ibkr_monitor.html',
+      kicker: 'Ops',
+      label: '运维域',
+      copy: '监控 / 预热 / 数据质量 / 历史重建'
+    },
+    {
+      path: '/ibkr_system.html',
+      kicker: 'System',
+      label: '系统域',
+      copy: '总览 / 控制台 / 运行配置'
+    },
+    {
+      path: '/ibkr_config.html',
+      kicker: 'Config',
+      label: '配置域',
+      copy: 'global / live / paper / backtest',
+      options: { allowGlobal: true }
     }
   ]);
 }
@@ -815,4 +950,7 @@ window.closeIndicatorModal = function() {
 window.showIndicatorModal = showIndicatorModal;
 window.getIndicatorModalStyles = getIndicatorModalStyles;
 window.renderSystemBridge = renderSystemBridge;
+window.renderExecutionBridge = renderExecutionBridge;
+window.renderAnalyticsBridge = renderAnalyticsBridge;
+window.renderHomeBridge = renderHomeBridge;
 window.renderOpsBridge = renderOpsBridge;

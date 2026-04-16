@@ -3016,28 +3016,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_chart.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { description: '全屏分析 / 类 TradingView / bars → indicators → signals' });
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                {
-                    path: '/ibkr_indicators.html',
-                    kicker: 'Indicators',
-                    label: '指标列表',
-                    copy: '浏览 / 快览 / 打开图表页'
-                },
-                {
-                    path: '/ibkr_chart.html',
-                    params: { symbol: currentSymbol, interval: currentInterval },
-                    kicker: 'Chart',
-                    label: '图表工作台',
-                    copy: '主图 / 副图 / 时间周期 / 信号散点',
-                    active: true
-                },
-                {
-                    path: '/ibkr_stats.html',
-                    kicker: 'Stats',
-                    label: '统计',
-                    copy: '分析结果 / 收益分布 / 执行结果'
-                }
-            ]);
+            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_chart.html', { chartParams: { symbol: currentSymbol, interval: currentInterval } });
 
             document.getElementById('chartSymbolInput').addEventListener('keydown', async (event) => {
                 if (event.key !== 'Enter') return;

@@ -1,20 +1,40 @@
-const { chromium, devices } = require('playwright');
+const fs = require('fs');
+const { chromium, devices, request } = require('playwright');
 
 const DEFAULT_EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const DEFAULT_PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 const DEFAULT_BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
-const NAV_TIMEOUT_MS = Number(process.env.PB_SMOKE_NAV_TIMEOUT_MS || 15000);
-const SETTLE_MS = Number(process.env.PB_SMOKE_SETTLE_MS || 1800);
+const NAV_TIMEOUT_MS = Number(process.env.PB_SMOKE_NAV_TIMEOUT_MS || 20000);
+const SETTLE_MS = Number(process.env.PB_SMOKE_SETTLE_MS || 2200);
+const AUTH_TIMEOUT_MS = Number(process.env.PB_SMOKE_AUTH_TIMEOUT_MS || 15000);
+const PAGE_MAX_SPREAD_PX = Number(process.env.PB_SMOKE_PANEL_SPREAD_MAX || 24);
+const BRIDGE_MAX_SPREAD_PX = Number(process.env.PB_SMOKE_BRIDGE_SPREAD_MAX || 12);
 const DEFAULT_TARGETS = [
-  `${DEFAULT_BASE}/ibkr_runtime.html?environment=live`,
+  `${DEFAULT_BASE}/index.html?environment=live`,
   `${DEFAULT_BASE}/ibkr_system.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_runtime.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_config.html?environment=global`,
+  `${DEFAULT_BASE}/ibkr_monitor.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_warmup.html?environment=live`,
   `${DEFAULT_BASE}/ibkr_data_quality.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_history_rebuild.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_screener.html?environment=live&tab=screener&view=current`,
+  `${DEFAULT_BASE}/ibkr_signals.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_reverse_signals.html?environment=live`,
+  `${DEFAULT_BASE}/orders.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_order_details.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_account.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_indicators.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_chart.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_stats.html?environment=live`,
+  `${DEFAULT_BASE}/ibkr_backtests.html?environment=live`,
 ];
+const ARTIFACT_DIR = process.env.PB_SMOKE_ARTIFACT_DIR || '/tmp/ai_assistant_pb_smoke';
 
 function shouldIgnoreRequestFailure(req) {
   const errorText = req.failure()?.errorText || '';
   const url = req.url() || '';
-  if (url.includes('fonts.gstatic.com')) return true;
+  if (url.includes('fonts.gstatic.com') || url.includes('fonts.googleapis.com')) return true;
   return errorText === 'net::ERR_ABORTED';
 }
 
@@ -48,145 +68,187 @@ function parseArgs(argv) {
   return opts;
 }
 
-async function login(page, targetUrl) {
-  const target = new URL(targetUrl);
-  const redirectPath = `${target.pathname}${target.search}`;
-  await page.goto(`${DEFAULT_BASE}/login.html?from=${encodeURIComponent(redirectPath)}`, {
-    waitUntil: 'domcontentloaded',
-    timeout: NAV_TIMEOUT_MS,
+async function fetchToken() {
+  const api = await request.newContext({
+    baseURL: DEFAULT_BASE,
+    ignoreHTTPSErrors: true,
+    extraHTTPHeaders: { 'Content-Type': 'application/json' },
   });
-  if (page.url().includes('/ibkr_') || page.url().includes('/index.html')) return;
-
-  const email = page.locator('input[type="email"], input[name="identity"]');
-  const password = page.locator('input[type="password"]');
-  if (!(await email.count())) return;
-
-  await email.first().fill(DEFAULT_EMAIL);
-  await password.first().fill(DEFAULT_PASSWORD);
-  const loginButton = page.locator('button:has-text("登录"), button:has-text("Login"), button[type="submit"]');
-  await loginButton.first().click();
   try {
-    await page.waitForURL((url) => !url.pathname.endsWith('/login.html'), {
-      timeout: NAV_TIMEOUT_MS,
-    });
-  } catch (_) {
-    await page.waitForTimeout(SETTLE_MS);
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const resp = await api.post('/api/collections/_superusers/auth-with-password', {
+          data: {
+            identity: DEFAULT_EMAIL,
+            password: DEFAULT_PASSWORD,
+          },
+          timeout: AUTH_TIMEOUT_MS,
+        });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok || !payload?.token) {
+          lastError = new Error(`auth_failed:${resp.status()}:${JSON.stringify(payload)}`);
+        } else {
+          return payload.token;
+        }
+      } catch (err) {
+        lastError = err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+    throw lastError || new Error('auth_failed:unknown');
+  } finally {
+    await api.dispose();
   }
-  await page.waitForTimeout(SETTLE_MS);
 }
 
-async function waitForDashboardReady(page, url) {
-  const timeout = Math.max(NAV_TIMEOUT_MS, SETTLE_MS * 4);
-
-  if (url.includes('/index.html')) {
-    try {
-      await page.waitForFunction(() => {
-        const readyStates = {
-          overview: document.getElementById('homeOverview')?.dataset.ready || '',
-          targets: document.getElementById('homeTargets')?.dataset.ready || '',
-          market: document.getElementById('homeMarket')?.dataset.ready || '',
-          activity: document.getElementById('homeActivity')?.dataset.ready || '',
-        };
-        const overviewCards = document.querySelectorAll('#homeOverview .home-stat-card').length;
-        const quickLinks = document.querySelectorAll('#homeQuickLinks .home-quick-link').length;
-        const secondaryPanels = document.querySelectorAll('#homeSecondary > section').length;
-        const layout = document.body?.dataset?.homeLayout || '';
-        const isMobile = window.innerWidth <= 920;
-        const quickTop = document.getElementById('homeQuickLinks')?.getBoundingClientRect().top ?? 0;
-        const targetsTop = document.getElementById('homeTargets')?.getBoundingClientRect().top ?? 0;
-
-        return (
-          readyStates.overview === 'ready' &&
-          ['ready', 'empty'].includes(readyStates.targets) &&
-          ['ready', 'empty'].includes(readyStates.market) &&
-          ['ready', 'empty'].includes(readyStates.activity) &&
-          overviewCards >= 6 &&
-          quickLinks >= 6 &&
-          secondaryPanels >= 2 &&
-          Boolean(layout) &&
-          (!isMobile || quickTop <= targetsTop)
-        );
-      }, { timeout });
-      return;
-    } catch (_) {
-      // Fall back to the generic settle wait below.
-    }
-  }
-
-  if (url.includes('/ibkr_runtime.html')) {
-    try {
-      await page.waitForFunction(() => {
-        const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
-        const configText = document.getElementById('configDetail')?.innerText || '';
-        return refreshInfo && !refreshInfo.includes('加载中') && configText && !configText.includes('加载中');
-      }, { timeout });
-      return;
-    } catch (_) {
-      // Fall back to the generic settle wait below.
-    }
-  }
-
-  if (url.includes('/ibkr_system.html')) {
-    try {
-      await page.waitForFunction(() => {
-        const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
-        const configText = document.getElementById('configArea')?.innerText || '';
-        return refreshInfo && !refreshInfo.includes('加载中') && configText && !configText.includes('加载中');
-      }, { timeout });
-      return;
-    } catch (_) {
-      // Fall back to the generic settle wait below.
-    }
-  }
-
-  if (url.includes('/ibkr_data_quality.html')) {
-    try {
-      await page.waitForFunction(() => {
-        const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
-        const summaryInfo = document.getElementById('summaryInfo')?.textContent || '';
-        const summaryCards = document.querySelectorAll('#summaryGrid .summary-card').length;
-        const qualityRows = document.querySelectorAll('#qualityTable tr').length;
-        return (
-          refreshInfo &&
-          !refreshInfo.includes('等待加载') &&
-          !refreshInfo.includes('加载失败') &&
-          summaryInfo &&
-          !summaryInfo.includes('待加载') &&
-          summaryCards > 0 &&
-          qualityRows > 0
-        );
-      }, { timeout });
-      return;
-    } catch (_) {
-      // Fall back to the generic settle wait below.
-    }
-  }
-
-  if (url.includes('/ibkr_account.html')) {
-    try {
-      await page.waitForFunction(() => {
-        const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
-        const statCards = document.querySelectorAll('.summary-card, .stat-card, .metric-card').length;
-        return (
-          refreshInfo &&
-          !refreshInfo.includes('加载中') &&
-          !refreshInfo.includes('等待') &&
-          statCards > 0
-        );
-      }, { timeout });
-      return;
-    } catch (_) {
-      // Fall back to the generic settle wait below.
-    }
-  }
-
-  await page.waitForTimeout(SETTLE_MS);
-}
-
-async function inspectPage(browser, url, mobile) {
+async function createContext(browser, token, mobile) {
   const context = mobile
-    ? await browser.newContext({ ...devices['iPhone 12'] })
-    : await browser.newContext();
+    ? await browser.newContext({ ...devices['iPhone 12'], ignoreHTTPSErrors: true })
+    : await browser.newContext({ viewport: { width: 1440, height: 960 }, ignoreHTTPSErrors: true });
+  await context.addInitScript((savedToken) => {
+    localStorage.setItem('pb_token', savedToken);
+  }, token);
+  return context;
+}
+
+async function waitForPageReady(page, url) {
+  const timeout = Math.max(NAV_TIMEOUT_MS, SETTLE_MS * 4);
+  const path = new URL(url).pathname;
+
+  const waiters = {
+    '/index.html': () => page.waitForFunction(() => {
+      const readyStates = {
+        overview: document.getElementById('homeOverview')?.dataset.ready || '',
+        targets: document.getElementById('homeTargets')?.dataset.ready || '',
+        market: document.getElementById('homeMarket')?.dataset.ready || '',
+        activity: document.getElementById('homeActivity')?.dataset.ready || '',
+      };
+      return (
+        readyStates.overview === 'ready' &&
+        ['ready', 'empty'].includes(readyStates.targets) &&
+        ['ready', 'empty'].includes(readyStates.market) &&
+        ['ready', 'empty'].includes(readyStates.activity) &&
+        document.querySelectorAll('#homeOverview .home-stat-card').length >= 6 &&
+        document.querySelectorAll('#homeQuickLinks .home-quick-link').length >= 6
+      );
+    }, { timeout }),
+    '/ibkr_runtime.html': () => page.waitForFunction(() => {
+      const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
+      const configText = document.getElementById('configDetail')?.innerText || '';
+      return refreshInfo && !refreshInfo.includes('加载中') && configText && !configText.includes('加载中');
+    }, { timeout }),
+    '/ibkr_system.html': () => page.waitForFunction(() => {
+      const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
+      const configText = document.getElementById('configArea')?.innerText || '';
+      return refreshInfo && !refreshInfo.includes('加载中') && configText && !configText.includes('加载中');
+    }, { timeout }),
+    '/ibkr_data_quality.html': () => page.waitForFunction(() => {
+      const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
+      const summaryInfo = document.getElementById('summaryInfo')?.textContent || '';
+      return (
+        refreshInfo &&
+        !refreshInfo.includes('等待加载') &&
+        !refreshInfo.includes('加载失败') &&
+        summaryInfo &&
+        !summaryInfo.includes('待加载') &&
+        document.querySelectorAll('#summaryGrid .summary-card').length > 0
+      );
+    }, { timeout }),
+    '/ibkr_account.html': () => page.waitForFunction(() => {
+      const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
+      return (
+        refreshInfo &&
+        !refreshInfo.includes('加载中') &&
+        !refreshInfo.includes('等待') &&
+        document.querySelectorAll('.summary-card, .stat-card, .metric-card').length > 0
+      );
+    }, { timeout }),
+    '/ibkr_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
+    '/ibkr_reverse_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
+    '/orders.html': () => page.waitForFunction(() => !document.querySelector('#ordersContainer .loading'), { timeout }),
+    '/ibkr_order_details.html': () => page.waitForFunction(() => !document.querySelector('#detailsContainer .loading'), { timeout }),
+    '/ibkr_config.html': () => page.waitForFunction(() => !/LOADING/i.test(document.getElementById('configContainer')?.innerText || ''), { timeout }),
+  };
+
+  if (waiters[path]) {
+    try {
+      await waiters[path]();
+      return;
+    } catch (_) {
+      // Fall back below.
+    }
+  }
+
+  await page.waitForTimeout(SETTLE_MS);
+}
+
+function sanitizeFileStem(url, device) {
+  const parsed = new URL(url);
+  const suffix = parsed.search ? `_${parsed.search.replace(/[^a-zA-Z0-9]+/g, '_')}` : '';
+  return `${parsed.pathname.replace(/[^a-zA-Z0-9]+/g, '_')}_${device}${suffix}`.replace(/^_+|_+$/g, '');
+}
+
+async function collectLayoutMetrics(page) {
+  return page.evaluate(() => {
+    const groupRowSpread = (selector) => {
+      const nodes = Array.from(document.querySelectorAll(selector)).filter((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 1 && rect.height > 1;
+      });
+      const rows = new Map();
+      nodes.forEach((node) => {
+        const rect = node.getBoundingClientRect();
+        const key = Math.round(rect.top / 6) * 6;
+        const row = rows.get(key) || [];
+        row.push(Math.round(rect.height));
+        rows.set(key, row);
+      });
+      return Array.from(rows.entries()).map(([top, heights]) => ({
+        top,
+        count: heights.length,
+        min: Math.min(...heights),
+        max: Math.max(...heights),
+        spread: Math.max(...heights) - Math.min(...heights),
+      }));
+    };
+
+    const scrollIssues = [];
+    const selectors = ['.panel-body', '.data-table-wrap', '.section-scroll-body', '.card-scroll-body'];
+    selectors.forEach((selector) => {
+      document.querySelectorAll(selector).forEach((node, index) => {
+        const style = window.getComputedStyle(node);
+        const overflowY = style.overflowY || '';
+        const gap = node.scrollHeight - node.clientHeight;
+        if (gap > 24 && !['auto', 'scroll', 'overlay'].includes(overflowY)) {
+          scrollIssues.push({ selector, index, gap, overflowY });
+        }
+      });
+    });
+
+    const doc = document.documentElement;
+    const body = document.body;
+    const scrollWidth = Math.max(doc.scrollWidth, body ? body.scrollWidth : 0);
+    const bridgeRows = groupRowSpread('.page-bridge-link, .domain-tab');
+    const panelRows = groupRowSpread('.panel-grid > .panel, .table-grid > .panel, .dual-grid > .panel');
+
+    return {
+      viewport_width: window.innerWidth,
+      scroll_width: scrollWidth,
+      horizontal_overflow: scrollWidth > window.innerWidth + 4,
+      context_count: document.querySelectorAll('.page-context-bar').length,
+      bridge_count: document.querySelectorAll('.page-bridge-link, .domain-tab').length,
+      bridge_rows: bridgeRows,
+      panel_rows: panelRows,
+      bridge_row_spread_max: bridgeRows.reduce((max, row) => Math.max(max, row.spread), 0),
+      panel_row_spread_max: panelRows.reduce((max, row) => Math.max(max, row.spread), 0),
+      scroll_issues: scrollIssues.slice(0, 12),
+    };
+  });
+}
+
+async function inspectPage(browser, token, url, mobile) {
+  const context = await createContext(browser, token, mobile);
   const page = await context.newPage();
   const errors = [];
   let captureErrors = false;
@@ -207,118 +269,89 @@ async function inspectPage(browser, url, mobile) {
     }
   });
   page.on('requestfailed', (req) => {
-    if (shouldIgnoreRequestFailure(req)) return;
-    if (captureErrors) {
-      errors.push(`requestfailed:${req.failure()?.errorText || 'unknown'}:${req.url()}`);
-    }
+    if (!captureErrors || shouldIgnoreRequestFailure(req)) return;
+    errors.push(`requestfailed:${req.failure()?.errorText || 'unknown'}:${req.url()}`);
   });
 
   try {
-    await login(page, url);
-  } catch (err) {
-    errors.push(`login:${err.message}`);
-  }
-
-  try {
     captureErrors = true;
-    if (page.url() !== url) {
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: NAV_TIMEOUT_MS,
-      });
-    }
-    await waitForDashboardReady(page, url);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+    await waitForPageReady(page, url);
   } catch (err) {
     errors.push(`goto:${err.message}`);
   }
 
-  const title = await page.title();
+  const finalUrl = page.url();
+  const title = await page.title().catch(() => '');
   const navTexts = await page.locator('#nav .nav-item, #navContainer .nav-item').allTextContents().catch(() => []);
-  const bridgeTexts = await page.locator('.page-bridge .page-bridge-label').allTextContents().catch(() => []);
-  const bodyText = await page.locator('body').textContent().catch(() => '');
-  const opsCards = await page.locator('.ops-card').count().catch(() => 0);
-  const metricCards = await page.locator('.metric-card').count().catch(() => 0);
-  const summaryCards = await page.locator('.summary-card').count().catch(() => 0);
-  const qualityRows = await page.locator('#qualityTable tr').count().catch(() => 0);
-  const blockerTitle = await page.locator('#primaryBlockerTitle').innerText().catch(() => '');
-  const cronCards = await page.locator('#configArea .cron-card, #configDetail .cron-card').count().catch(() => 0);
-  const refreshInfo = await page.locator('#refreshInfo').innerText().catch(() => '');
-  const summaryInfo = await page.locator('#summaryInfo').innerText().catch(() => '');
-  const homeLayout = await page.locator('body').getAttribute('data-home-layout').catch(() => '');
-  const homeOverviewReady = await page.locator('#homeOverview').getAttribute('data-ready').catch(() => '');
-  const homeTargetsReady = await page.locator('#homeTargets').getAttribute('data-ready').catch(() => '');
-  const homeMarketReady = await page.locator('#homeMarket').getAttribute('data-ready').catch(() => '');
-  const homeActivityReady = await page.locator('#homeActivity').getAttribute('data-ready').catch(() => '');
-  const homeOverviewCards = await page.locator('#homeOverview .home-stat-card').count().catch(() => 0);
-  const homeQuickLinks = await page.locator('#homeQuickLinks .home-quick-link').count().catch(() => 0);
-  const homeTargetCards = await page.locator('#todayTargetsList .home-target-card').count().catch(() => 0);
-  const homeMarketCards = await page.locator('#homeMarket .home-market-card').count().catch(() => 0);
-  const homeActivityItems = await page.locator('#homeActivity .home-activity-item').count().catch(() => 0);
-  const homePanelOrder = await page.evaluate(() => {
-    const ids = ['homeOverview', 'homeQuickLinks', 'homeTargets', 'homeSecondary'];
-    return ids
-      .map((id) => {
-        const el = document.getElementById(id);
-        if (!el) return null;
-        const rect = el.getBoundingClientRect();
-        return { id, top: rect.top, left: rect.left };
-      })
-      .filter(Boolean)
-      .sort((a, b) => (a.top - b.top) || (a.left - b.left))
-      .map((item) => item.id);
-  }).catch(() => []);
+  const bridgeTexts = await page.locator('.page-bridge .page-bridge-label, .domain-tab .domain-tab-label').allTextContents().catch(() => []);
+  const layout = await collectLayoutMetrics(page).catch(() => ({
+    horizontal_overflow: true,
+    context_count: 0,
+    bridge_count: 0,
+    bridge_row_spread_max: 999,
+    panel_row_spread_max: 999,
+    bridge_rows: [],
+    panel_rows: [],
+    scroll_issues: [{ selector: 'layout_eval_failed', index: 0, gap: 0, overflowY: 'error' }],
+  }));
+
+  const layoutIssues = [];
+  if (/\/login\.html/.test(finalUrl)) layoutIssues.push('redirected_to_login');
+  if (!navTexts.length) layoutIssues.push('missing_nav');
+  if (!layout.context_count) layoutIssues.push('missing_context_bar');
+  if (!layout.bridge_count) layoutIssues.push('missing_bridge');
+  if (layout.horizontal_overflow) layoutIssues.push('horizontal_overflow');
+  if (layout.bridge_row_spread_max > BRIDGE_MAX_SPREAD_PX) layoutIssues.push(`bridge_spread:${layout.bridge_row_spread_max}`);
+  if (layout.panel_row_spread_max > PAGE_MAX_SPREAD_PX) layoutIssues.push(`panel_spread:${layout.panel_row_spread_max}`);
+  if (layout.scroll_issues.length) layoutIssues.push(`uncontained_scroll:${layout.scroll_issues.length}`);
+
+  let screenshot = '';
+  if (errors.length || layoutIssues.length) {
+    screenshot = `${ARTIFACT_DIR}/${sanitizeFileStem(url, mobile ? 'mobile' : 'desktop')}.png`;
+    await page.screenshot({
+      path: screenshot,
+      fullPage: true,
+    }).catch(() => {
+      screenshot = '';
+    });
+  }
 
   await context.close();
   return {
     url,
+    final_url: finalUrl,
     device: mobile ? 'iPhone 12' : 'desktop',
     title,
     nav_count: navTexts.length,
-    nav_texts: navTexts,
-    bridge_count: bridgeTexts.length,
+    bridge_count: layout.bridge_count,
     bridge_texts: bridgeTexts,
-    ops_cards: opsCards,
-    metric_cards: metricCards,
-    summary_cards: summaryCards,
-    quality_rows: qualityRows,
-    blocker_title: blockerTitle,
-    cron_cards: cronCards,
-    has_cron_summary: bodyText.includes('PB Cron 摘要'),
-    has_compute_cron_key: bodyText.includes('pb_cron_ibkr_compute_runtime_enabled'),
-    refresh_info: refreshInfo,
-    summary_info: summaryInfo,
-    has_gateway_running: /Gateway\s+ACTIVE|Gateway\s+RUNNING|IBKR 服务/.test(bodyText),
-    has_challenge_hint: bodyText.includes('Challenge/Response') || bodyText.includes('Response Code'),
-    home_layout: homeLayout,
-    home_overview_ready: homeOverviewReady,
-    home_targets_ready: homeTargetsReady,
-    home_market_ready: homeMarketReady,
-    home_activity_ready: homeActivityReady,
-    home_overview_cards: homeOverviewCards,
-    home_quick_links: homeQuickLinks,
-    home_target_cards: homeTargetCards,
-    home_market_cards: homeMarketCards,
-    home_activity_items: homeActivityItems,
-    home_panel_order: homePanelOrder,
+    layout,
     errors,
+    layout_issues: layoutIssues,
+    screenshot,
   };
 }
 
 (async () => {
   const opts = parseArgs(process.argv);
+  fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+  const token = await fetchToken();
   const browser = await chromium.launch({ headless: opts.headless });
   const results = [];
   for (const target of opts.targets) {
     if (!opts.mobileOnly) {
-      results.push(await inspectPage(browser, target, false));
+      results.push(await inspectPage(browser, token, target, false));
     }
     if (opts.mobile && !opts.desktopOnly) {
-      results.push(await inspectPage(browser, target, true));
+      results.push(await inspectPage(browser, token, target, true));
     }
   }
   await browser.close();
+
+  const failing = results.filter((item) => item.errors.length || item.layout_issues.length);
   console.log(JSON.stringify(results, null, 2));
-})().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+  if (failing.length) {
+    process.exit(1);
+  }
+})();

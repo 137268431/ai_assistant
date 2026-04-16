@@ -441,7 +441,8 @@
         </div>
     </div>
 
-    <div id="pageBridge" style="padding: 10px 16px 0;"></div>
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
 
     <div class="content">
         <div class="search-row" id="searchRow">
@@ -1230,6 +1231,7 @@
             if (!initAuth()) return;
 
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📜 订单时间线', { description: '事件关系 / detail / trade group / order replay' });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_order_details.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             const dateInput = document.getElementById('customDate');
@@ -1239,37 +1241,7 @@
             if (contextSignalId) executionParams.signal_id = contextSignalId;
             if (queryMode === 'trade_group_id' && effectiveFilter) executionParams.trade_group_id = effectiveFilter;
             if (queryMode === 'order_id' && effectiveFilter) executionParams.order_id = effectiveFilter;
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                {
-                    path: '/ibkr_signals.html',
-                    params: executionParams,
-                    kicker: 'Signals',
-                    label: '主信号',
-                    copy: '待确认 / 执行 / 指标快照'
-                },
-                {
-                    path: '/ibkr_reverse_signals.html',
-                    params: executionParams,
-                    kicker: 'Reverse',
-                    label: '反转信号',
-                    copy: '平仓 / 取消 / 调整流转'
-                },
-                {
-                    path: '/orders.html',
-                    params: executionParams,
-                    kicker: 'Orders',
-                    label: '订单',
-                    copy: '执行分组 / 当前状态 / 操作'
-                },
-                {
-                    path: '/ibkr_order_details.html',
-                    params: executionParams,
-                    kicker: 'Timeline',
-                    label: '订单明细',
-                    copy: '事件时间线 / 关系展开',
-                    active: true
-                }
-            ]);
+            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_order_details.html', executionParams);
 
             await loadDetails();
             changeRefreshInterval(30);

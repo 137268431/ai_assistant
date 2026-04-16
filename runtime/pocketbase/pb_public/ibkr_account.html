@@ -853,8 +853,9 @@
 <body>
     <div id="nav"></div>
 
-    <div class="page-shell account-shell">
+    <div class="page-shell page-shell-wide account-shell">
         <div id="contextBar"></div>
+        <div id="pageBridge"></div>
 
         <div class="page-header">
             <div>
@@ -903,7 +904,7 @@
                 </div>
                 <div class="section-copy mono" id="positionsMeta">--</div>
             </div>
-            <div class="card-list" id="positionsArea"></div>
+            <div class="card-list section-scroll-body" id="positionsArea"></div>
         </div>
 
         <div class="section">
@@ -915,7 +916,7 @@
                 <div class="section-copy mono" id="ordersMeta">--</div>
             </div>
             <div id="ordersSummary"></div>
-            <div class="card-list" id="ordersArea"></div>
+            <div class="card-list section-scroll-body" id="ordersArea"></div>
         </div>
 
         <div class="section">
@@ -2275,6 +2276,7 @@
             if (!initAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_account.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('💼 IBKR 账户', { description: '真实账户 / 持仓 / 挂单 / 操作入口' });
+            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_account.html');
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             toggleEntryPriceField();
             renderTicketPreview();

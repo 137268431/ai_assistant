@@ -14,8 +14,18 @@
             margin-bottom: 6px;
         }
 
-        .search-row > div:first-child {
+        .search-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            min-width: 0;
             margin-bottom: 4px;
+        }
+
+        .search-toolbar #datePicker {
+            flex: 1 1 220px;
+            min-width: 0;
         }
 
         .search-row .date-picker {
@@ -263,6 +273,7 @@
             display: flex;
             gap: 6px;
             align-items: center;
+            min-width: 0;
         }
 
         .refresh-btn {
@@ -283,6 +294,8 @@
 
         .refresh-select {
             flex: 1;
+            min-width: 0;
+            width: 100%;
             padding: 10px 12px;
             border-radius: 8px;
             border: 1px solid var(--border);
@@ -578,6 +591,20 @@
         }
 
         @media (max-width: 760px) {
+            .search-toolbar {
+                align-items: stretch;
+            }
+
+            .search-toolbar #datePicker,
+            .search-toolbar .refresh-control {
+                flex: 1 1 100%;
+            }
+
+            .search-toolbar .interval-filter {
+                flex: 0 1 96px;
+                width: auto;
+            }
+
             .chart-canvas {
                 height: 560px;
             }
@@ -609,8 +636,8 @@
 
     <div class="content">
         <div class="search-row">
-            <div style="display:flex;gap:8px;align-items:center;">
-                <div id="datePicker" style="flex:1;"></div>
+            <div class="search-toolbar">
+                <div id="datePicker"></div>
                 <select class="interval-filter" id="intervalFilter" onchange="onIntervalChange()">
                     <option value="">全部</option>
                     <option value="5">5m</option>
@@ -1905,27 +1932,7 @@
             if (urlSearch) currentSearch = urlSearch;
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 指标', { description: '技术快照 / 快览 / 进入图表' });
-            document.getElementById('pageBridge').innerHTML = renderPageBridge([
-                {
-                    path: '/ibkr_indicators.html',
-                    kicker: 'Indicators',
-                    label: '指标列表',
-                    copy: '浏览 / 快览 / 技术指标快照',
-                    active: true
-                },
-                {
-                    path: '/ibkr_chart.html',
-                    kicker: 'Chart',
-                    label: '图表工作台',
-                    copy: '主图 / 副图 / 信号定位'
-                },
-                {
-                    path: '/ibkr_stats.html',
-                    kicker: 'Stats',
-                    label: '统计',
-                    copy: '分析结果 / 收益分布 / 执行结果'
-                }
-            ]);
+            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_indicators.html');
             document.getElementById('navContainer').innerHTML = renderNav('/ibkr_indicators.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             syncDatePickerUI(currentDate);
