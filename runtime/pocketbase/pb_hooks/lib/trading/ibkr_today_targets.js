@@ -695,14 +695,29 @@ function buildTodayTargetPayload(options) {
     const requestedMarketDate = String(options && (options.marketDate || options.date) || "").trim() || currentMarketDate
     const marketStartCandidateMs = Date.parse(`${requestedMarketDate}T04:00:00.000Z`)
     const marketDate = Number.isFinite(marketStartCandidateMs) ? requestedMarketDate : currentMarketDate
+    const filters = normalizeTodayTargetFilters(options)
     const workflowGuide = buildWorkflowGuide(runtimeEnvironment, marketDate)
+    const targetFilterClauses = [
+        'environment = {:env}',
+        'date = {:date}',
+        '(status = "candidate" || status = "active")',
+    ]
+    const targetFilterParams = { env: runtimeEnvironment, date: marketDate }
+    if (filters.target_status) {
+        targetFilterClauses.push('status = {:target_status}')
+        targetFilterParams.target_status = filters.target_status
+    }
+    if (filters.direction_bias) {
+        targetFilterClauses.push('direction_bias = {:direction_bias}')
+        targetFilterParams.direction_bias = filters.direction_bias
+    }
     const targetRecords = $app.findRecordsByFilter(
         "ibkr_targets",
-        'environment = {:env} && date = {:date} && (status = "candidate" || status = "active")',
+        targetFilterClauses.join(" && "),
         "-updated",
         500,
         0,
-        { env: runtimeEnvironment, date: marketDate }
+        targetFilterParams
     ) || []
 
     const targetBySymbol = {}
@@ -970,7 +985,6 @@ function buildTodayTargetPayload(options) {
         items.push(row)
     }
 
-    const filters = normalizeTodayTargetFilters(options)
     const filteredItems = sortTodayTargetRows(items, filters.sort_by).filter((row) => matchesTodayTargetFilters(row, filters))
     const filteredSummary = buildFilteredTodayTargetSummary(filteredItems)
     const paginationEnabled = Boolean(options && options.paginate)

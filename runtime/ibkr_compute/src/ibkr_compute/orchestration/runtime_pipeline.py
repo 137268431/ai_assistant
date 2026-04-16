@@ -5,6 +5,7 @@ import threading
 import time
 
 from ibkr_compute.market.timeframe_utils import bucket_start_ms, format_us_time, interval_to_ms
+from ibkr_compute.market.timeframe_utils import latest_safe_closed_bucket_ms
 
 
 def _service_mod():
@@ -235,11 +236,11 @@ class TradingServiceRuntimePipelineMixin:
         )
 
     def _latest_safe_closed_5m_ms(self, now_ts: float | None = None) -> int:
-        delay_ms = int(self._official_5m_close_delay_sec() * 1000)
-        effective_ms = int((now_ts or time.time()) * 1000) - delay_ms
-        if effective_ms <= interval_to_ms("5m"):
-            return 0
-        return bucket_start_ms(effective_ms - interval_to_ms("5m"), "5m")
+        return latest_safe_closed_bucket_ms(
+            "5m",
+            delay_seconds=self._official_5m_close_delay_sec(),
+            now_ms=int((now_ts or time.time()) * 1000),
+        )
 
     def _run_official_5m_close_cycle(self, symbols_override: list[str] | None = None):
         service_mod = _service_mod()

@@ -36,6 +36,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let chartFocusMode = false;
         let chartPointerLocked = false;
         let inspectorDrawerOpen = false;
+        let chartLegendCollapsed = false;
+        let chartMarkerDensityTier = '';
         let mobileGestureHintSeen = false;
         let suppressNextChartClick = false;
         let chartTouchSession = {
@@ -50,7 +52,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let chartLayerState = {
             ema: true,
             vwap: true,
-            signals: true,
+            sdChannel: true,
+            fractal: true,
+            emaTouch: true,
+            divergence: true,
+            tradeSignals: true,
             volume: true,
         };
         const CHART_REALTIME_WARN_INTERVAL_MS = 60 * 1000;
@@ -258,6 +264,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     if (typeof prefs.focusMode === 'boolean') {
                         chartFocusMode = prefs.focusMode;
                     }
+                    if (typeof prefs.legendCollapsed === 'boolean') {
+                        chartLegendCollapsed = prefs.legendCollapsed;
+                    }
                 }
             } catch (_) {}
         }
@@ -267,6 +276,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 localStorage.setItem(CHART_UI_PREFS_KEY, JSON.stringify({
                     layerState: chartLayerState,
                     focusMode: chartFocusMode,
+                    legendCollapsed: chartLegendCollapsed,
                 }));
             } catch (_) {}
         }
@@ -310,6 +320,23 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return map[String(interval || '').trim().toLowerCase()] || String(interval || '--');
         }
 
+        function isTradeSignalInterval(interval = currentInterval) {
+            return normalizeInterval(interval || currentInterval) === '5m';
+        }
+
+        function getChartLayerDefs() {
+            return [
+                { key: 'ema', label: 'EMA', shortLabel: 'EMA', disabled: false },
+                { key: 'vwap', label: 'VWAP', shortLabel: 'VWAP', disabled: false },
+                { key: 'sdChannel', label: 'SD Channel', shortLabel: 'SD', disabled: false },
+                { key: 'fractal', label: 'Fractal', shortLabel: 'Frac', disabled: false },
+                { key: 'emaTouch', label: 'EMA Touch', shortLabel: 'Touch', disabled: false },
+                { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false },
+                { key: 'tradeSignals', label: 'Trade Signals', shortLabel: 'Signal', disabled: !isTradeSignalInterval() },
+                { key: 'volume', label: 'Volume', shortLabel: 'Vol', disabled: false },
+            ];
+        }
+
         function formatPrice(value) {
             const num = Number(value);
             return Number.isFinite(num) ? `$${num.toFixed(2)}` : '--';
@@ -323,6 +350,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function formatPercent(value, digits = 2) {
             const num = Number(value);
             return Number.isFinite(num) ? `${num > 0 ? '+' : ''}${num.toFixed(digits)}%` : '--';
+        }
+
+        function formatSignedPercent(value, digits = 2) {
+            return formatPercent(value, digits);
         }
 
         function signedColor(value) {
@@ -343,6 +374,135 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return '➡️ 中性';
         }
 
+        function getSdZoneText(value) {
+            const num = Number(value || 0);
+            if (num === 1) return '超买';
+            if (num === -1) return '超卖';
+            return '正常';
+        }
+
+        function getSdTrendText(value) {
+            const num = Number(value || 0);
+            if (num > 0) return '上升';
+            if (num < 0) return '下降';
+            return '平坦';
+        }
+
+        function getFractalSummary(indicator) {
+            if (!indicator) return '--';
+            const tags = [];
+            if (indicator.fractal_bull) tags.push('F↑');
+            if (indicator.fractal_bear) tags.push('F↓');
+            return tags.length ? tags.join(' / ') : '无';
+        }
+
+        function getFractalStateText(indicator) {
+            if (!indicator) return '--';
+            const tags = [];
+            if (indicator.fractal_bull) tags.push('分形多');
+            if (indicator.fractal_bear) tags.push('分形空');
+            return tags.length ? tags.join(' / ') : '无';
+        }
+
+        function getTouchSummary(indicator) {
+            if (!indicator) return '--';
+            const tags = [];
+            if (indicator.bull_touch_fast) tags.push('E↑F');
+            if (indicator.bull_touch_slow) tags.push('E↑S');
+            if (indicator.bear_touch_fast) tags.push('E↓F');
+            if (indicator.bear_touch_slow) tags.push('E↓S');
+            return tags.length ? tags.join(' / ') : '无';
+        }
+
+        function getTouchDetailText(indicator) {
+            if (!indicator) return '--';
+            const tags = [];
+            if (indicator.bull_touch_fast) tags.push('多头快线');
+            if (indicator.bull_touch_slow) tags.push('多头慢线');
+            if (indicator.bear_touch_fast) tags.push('空头快线');
+            if (indicator.bear_touch_slow) tags.push('空头慢线');
+            return tags.length ? tags.join(' / ') : '无';
+        }
+
+        function getIndicatorDivergenceTokens(indicator) {
+            if (!indicator) return [];
+            const tokens = [];
+            if (indicator.crsi_reg_bull_div) tokens.push('cR↑');
+            if (indicator.crsi_wide_bull_div) tokens.push('cW↑');
+            if (indicator.obv_reg_bull_div) tokens.push('oR↑');
+            if (indicator.obv_wide_bull_div) tokens.push('oW↑');
+            if (indicator.crsi_reg_hid_bull) tokens.push('cH↑');
+            if (indicator.crsi_wide_hid_bull) tokens.push('cWH↑');
+            if (indicator.obv_reg_hid_bull) tokens.push('oH↑');
+            if (indicator.obv_wide_hid_bull) tokens.push('oWH↑');
+            if (indicator.crsi_reg_bear_div) tokens.push('cR↓');
+            if (indicator.crsi_wide_bear_div) tokens.push('cW↓');
+            if (indicator.obv_reg_bear_div) tokens.push('oR↓');
+            if (indicator.obv_wide_bear_div) tokens.push('oW↓');
+            if (indicator.crsi_reg_hid_bear) tokens.push('cH↓');
+            if (indicator.crsi_wide_hid_bear) tokens.push('cWH↓');
+            if (indicator.obv_reg_hid_bear) tokens.push('oH↓');
+            if (indicator.obv_wide_hid_bear) tokens.push('oWH↓');
+            return tokens;
+        }
+
+        function getDivergenceSummary(indicator, maxItems = 4) {
+            const tokens = getIndicatorDivergenceTokens(indicator);
+            if (!tokens.length) return '无';
+            if (tokens.length <= maxItems) return tokens.join(' / ');
+            return `${tokens.slice(0, maxItems).join(' / ')} +${tokens.length - maxItems}`;
+        }
+
+        function getDivergenceDetailText(indicator) {
+            const tokens = getIndicatorDivergenceTokens(indicator);
+            return tokens.length ? tokens.join(' / ') : '无';
+        }
+
+        function getSignalExtra(signal) {
+            if (!signal || typeof signal !== 'object') return {};
+            return parseRecordExtra(signal.extra);
+        }
+
+        function buildTradeSignalLabel(signal) {
+            if (!signal || typeof signal !== 'object') return 'Signal';
+            const extra = getSignalExtra(signal);
+            const direction = String(signal.direction || '').trim().toLowerCase();
+            const signalWindow = String(extra.signal_window || '').trim().toLowerCase();
+            const signalMode = String(extra.signal_mode || '').trim().toLowerCase();
+            const touchLine = String(extra.ema_touch_line || '').trim().toLowerCase();
+            const prefix = signalWindow === 'sd_lower' ? 'SDL' : 'SDU';
+            const touchSuffix = touchLine === 'fast'
+                ? (direction === 'long' ? '+E↑F' : '+E↓F')
+                : touchLine === 'slow'
+                ? (direction === 'long' ? '+E↑S' : '+E↓S')
+                : '';
+            if (direction === 'long') {
+                if (signalMode === 'trend' && signalWindow === 'sd_upper') return `${prefix}·顺势做多${touchSuffix}`;
+                if (signalMode === 'mr' && signalWindow === 'sd_lower') return `${prefix}·均值回归做多`;
+            }
+            if (direction === 'short') {
+                if (signalMode === 'trend' && signalWindow === 'sd_lower') return `${prefix}·顺势做空${touchSuffix}`;
+                if (signalMode === 'mr' && signalWindow === 'sd_upper') return `${prefix}·均值回归做空`;
+            }
+            return String(signal.signal || signal.direction || 'Signal');
+        }
+
+        function getChartMarkerDensityTier(barsCount) {
+            const viewport = chartViewportState.totalBars === barsCount
+                ? chartViewportState
+                : getCurrentZoomWindow(barsCount);
+            const visibleBars = Math.max(1, Number(viewport.visibleBars || barsCount || 0));
+            if (visibleBars > 180) return 'wide';
+            if (visibleBars > 90) return 'mid';
+            return 'tight';
+        }
+
+        function toggleChartLegendCollapsed() {
+            chartLegendCollapsed = !chartLegendCollapsed;
+            saveChartUiPrefs();
+            renderChartFloatingLegend(getChartDisplayPayload());
+        }
+
         function formatSignalTime(item) {
             if (item?.us_time) return String(item.us_time);
             const ms = Number(item?.bar_time_ms || 0);
@@ -361,16 +521,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return String(signal?.direction || '').toLowerCase() === 'short' ? 'short' : 'long';
         }
 
-        function getSignalActionText(signal) {
-            const direction = String(signal?.direction || '').toLowerCase();
-            if (direction === 'short') return 'SELL Setup';
-            if (direction === 'long') return 'BUY Setup';
-            return 'Signal';
-        }
-
         function buildOrderDetailsUrl(signal, fallbackDate = '') {
             if (!signal || typeof signal !== 'object') return '';
-            const extra = signal.extra && typeof signal.extra === 'object' ? signal.extra : {};
+            const extra = getSignalExtra(signal);
             const signalId = String(signal.signal_id || extra.signal_id || '').trim();
             const tradeGroupId = String(
                 signal.trade_group_id
@@ -779,7 +932,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ? `OBV ${escapeHtml(formatNumber(indicator.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator.atr_pct))}`
                 : 'OBV / ATR --';
             const line4 = signal
-                ? `${escapeHtml(String(signal.signal || signal.direction || '--'))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}`
+                ? `${escapeHtml(buildTradeSignalLabel(signal))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}`
                 : '无信号';
             return `${line1}<br>${line2}<br>${line3}<br>${line4}`;
         }
@@ -797,7 +950,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         function isComputedSignal(signal) {
             const status = String(signal?.status || '').trim().toLowerCase();
-            const sourceKind = String(signal?.source_kind || signal?.extra?.source_kind || '').trim().toLowerCase();
+            const extra = getSignalExtra(signal);
+            const sourceKind = String(signal?.source_kind || extra?.source_kind || '').trim().toLowerCase();
             return status === 'computed' || sourceKind === 'computed';
         }
 
@@ -894,7 +1048,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 `trend ${latest ? getTrendText(latest.trend_dir) : '--'}`,
                 `EMA ${latest?.ema_bullish ? 'bull' : latest?.ema_bearish ? 'bear' : 'neutral'}`,
                 `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`,
-                `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`
+                `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`,
+                `SD ${latest ? getSdZoneText(latest.sd_zone) : '--'}/${latest ? getSdTrendText(latest.sd_trend) : '--'}`,
+                `Frac ${latest ? getFractalSummary(latest) : '--'}`
             ];
             if (realtimeQuoteSnapshot?.last_price != null) {
                 chips.push(`live ${formatPrice(realtimeQuoteSnapshot.last_price)}`);
@@ -1031,14 +1187,21 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 : [
                     'Crosshair',
                     `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`,
+                    getRangeLabel(currentRangeKey),
                     focus?.bar?.us_time || '等待数据'
                 ];
+            const timeframeButtons = SUPPORTED_INTERVALS.map((interval) => `
+                <button class="tv-tool-btn tf ${interval === currentInterval ? 'accent active' : ''}" type="button" onclick="selectChartInterval('${interval}')">${escapeHtml(interval.toUpperCase())}</button>
+            `).join('');
             toolbar.innerHTML = `
                 <div class="tv-toolbar-cluster">
                     <button class="tv-tool-btn" type="button" onclick="focusPreviousChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.prevBar)}</button>
                     <button class="tv-tool-btn" type="button" onclick="focusNextChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.nextBar)}</button>
                     <button class="tv-tool-btn" type="button" onclick="focusPreviousChartSignal()" ${signals.length ? '' : 'disabled'}>${escapeHtml(labels.prevSignal)}</button>
                     <button class="tv-tool-btn" type="button" onclick="focusNextChartSignal()" ${signals.length ? '' : 'disabled'}>${escapeHtml(labels.nextSignal)}</button>
+                </div>
+                <div class="tv-toolbar-cluster tv-toolbar-timeframes">
+                    ${timeframeButtons}
                 </div>
                 <div class="tv-toolbar-cluster">
                     <button class="tv-tool-btn accent" type="button" onclick="focusLatestChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.latest)}</button>
@@ -1062,7 +1225,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (!root) return;
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!bars.length) {
-                root.innerHTML = '<div class="tv-floating-row"><span class="tv-floating-pill brand">等待图表数据</span></div>';
+                root.innerHTML = '<div class="tv-floating-shell"><div class="tv-floating-head"><span class="tv-floating-pill brand">等待图表数据</span></div></div>';
                 return;
             }
             const activeIndex = getEffectiveCursorIndex(payload);
@@ -1079,62 +1242,79 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const focusLabel = hoverBarIndex >= 0 ? 'Cursor' : 'Focus';
             const compact = isCompactViewport();
             const phone = isPhoneViewport();
-            if (compact) {
-                const rows = [
-                    `
-                        <div class="tv-floating-row">
-                            <span class="tv-floating-pill brand">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>
-                            <span class="tv-floating-pill">${escapeHtml(focusLabel)} ${escapeHtml((bar?.us_time || '--').slice(5))}</span>
-                            ${chartPointerLocked ? '<span class="tv-floating-pill brand">Locked</span>' : ''}
-                            ${compareRow ? `<span class="tv-floating-pill ${getCompareStatusClass(compareRow?.status?.bar)}">${escapeHtml(getCompareStatusLabel(compareRow?.status?.bar))}</span>` : ''}
-                        </div>
-                    `,
-                    `
-                        <div class="tv-floating-row">
-                            <span class="tv-floating-pill ${deltaClass}">${escapeHtml(formatPrice(bar?.close))} · ${escapeHtml(formatPercent(deltaPercent))}</span>
-                            <span class="tv-floating-pill">O ${escapeHtml(formatPrice(bar?.open))} · H ${escapeHtml(formatPrice(bar?.high))}</span>
-                            <span class="tv-floating-pill">L ${escapeHtml(formatPrice(bar?.low))} · C ${escapeHtml(formatPrice(bar?.close))}</span>
-                            ${signal ? `<span class="tv-floating-pill ${escapeHtml(getSignalBadgeClass(signal))}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>` : ''}
-                        </div>
-                    `
-                ];
-                if (!phone) {
-                    rows.push(`
-                        <div class="tv-floating-row">
-                            <span class="tv-floating-pill">EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}</span>
-                            <span class="tv-floating-pill">EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}</span>
-                            <span class="tv-floating-pill">VWAP ${escapeHtml(formatPrice(indicator?.vwap))}</span>
-                            <span class="tv-floating-pill">ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}</span>
-                        </div>
-                    `);
-                }
-                root.innerHTML = rows.join('');
-                return;
-            }
+            const signalLabel = signal ? buildTradeSignalLabel(signal) : (isTradeSignalInterval() ? 'No trade signal' : 'Labels 仅 5m');
+            const summaryTime = compact ? String(bar?.us_time || '--').slice(5) : (bar?.us_time || '--');
+            const summaryPills = [
+                `<span class="tv-floating-pill brand">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>`,
+                `<span class="tv-floating-pill">${escapeHtml(focusLabel)} ${escapeHtml(summaryTime)}</span>`,
+                chartPointerLocked ? '<span class="tv-floating-pill brand">Locked</span>' : '',
+                `<span class="tv-floating-pill ${deltaClass}">${escapeHtml(formatPrice(bar?.close))} · ${escapeHtml(compact ? formatPercent(deltaPercent) : formatSignedPriceDelta(deltaValue))}${compact ? '' : ` · ${escapeHtml(formatPercent(deltaPercent))}`}</span>`,
+                compareRow ? `<span class="tv-floating-pill ${getCompareStatusClass(compareRow?.status?.bar)}">${escapeHtml(getCompareStatusLabel(compareRow?.status?.bar))}</span>` : '',
+            ].filter(Boolean).join('');
+            const detailRows = compact ? [
+                `
+                    <div class="tv-floating-row">
+                        <span class="tv-floating-pill">O ${escapeHtml(formatPrice(bar?.open))}</span>
+                        <span class="tv-floating-pill">H ${escapeHtml(formatPrice(bar?.high))}</span>
+                        <span class="tv-floating-pill">L ${escapeHtml(formatPrice(bar?.low))}</span>
+                        <span class="tv-floating-pill">C ${escapeHtml(formatPrice(bar?.close))}</span>
+                        <span class="tv-floating-pill">Vol ${escapeHtml(formatNumber(bar?.volume || 0, 0))}</span>
+                    </div>
+                `,
+                phone ? '' : `
+                    <div class="tv-floating-row">
+                        <span class="tv-floating-pill">EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}</span>
+                        <span class="tv-floating-pill">EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}</span>
+                        <span class="tv-floating-pill">VWAP ${escapeHtml(formatPrice(indicator?.vwap))}</span>
+                        <span class="tv-floating-pill">ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}</span>
+                    </div>
+                `,
+                `
+                    <div class="tv-floating-row">
+                        <span class="tv-floating-pill">SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}</span>
+                        <span class="tv-floating-pill">Frac ${escapeHtml(getFractalSummary(indicator))}</span>
+                        <span class="tv-floating-pill">Touch ${escapeHtml(getTouchSummary(indicator))}</span>
+                        <span class="tv-floating-pill">Div ${escapeHtml(getDivergenceSummary(indicator, phone ? 2 : 3))}</span>
+                    </div>
+                `
+            ] : [
+                `
+                    <div class="tv-floating-row">
+                        <span class="tv-floating-pill">O ${escapeHtml(formatPrice(bar?.open))}</span>
+                        <span class="tv-floating-pill">H ${escapeHtml(formatPrice(bar?.high))}</span>
+                        <span class="tv-floating-pill">L ${escapeHtml(formatPrice(bar?.low))}</span>
+                        <span class="tv-floating-pill">C ${escapeHtml(formatPrice(bar?.close))}</span>
+                        <span class="tv-floating-pill">Vol ${escapeHtml(formatNumber(bar?.volume || 0, 0))}</span>
+                        <span class="tv-floating-pill">EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}</span>
+                        <span class="tv-floating-pill">EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}</span>
+                        <span class="tv-floating-pill">EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))}</span>
+                        <span class="tv-floating-pill">VWAP ${escapeHtml(formatPrice(indicator?.vwap))}</span>
+                    </div>
+                `,
+                `
+                    <div class="tv-floating-row">
+                        <span class="tv-floating-pill">CRSI ${escapeHtml(formatNumber(indicator?.crsi))}</span>
+                        <span class="tv-floating-pill">OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))}</span>
+                        <span class="tv-floating-pill">ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}</span>
+                        <span class="tv-floating-pill">SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}</span>
+                        <span class="tv-floating-pill">Frac ${escapeHtml(getFractalSummary(indicator))}</span>
+                        <span class="tv-floating-pill">Touch ${escapeHtml(getTouchSummary(indicator))}</span>
+                        <span class="tv-floating-pill">Div ${escapeHtml(getDivergenceSummary(indicator, 6))}</span>
+                    </div>
+                `,
+                `
+                    <div class="tv-floating-row">
+                        <span class="tv-floating-pill ${signal ? getSignalBadgeClass(signal) : ''}">${escapeHtml(signalLabel)}</span>
+                    </div>
+                `
+            ];
             root.innerHTML = `
-                <div class="tv-floating-row">
-                    <span class="tv-floating-pill brand">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>
-                    <span class="tv-floating-pill">${focusLabel} ${escapeHtml(bar?.us_time || '--')}</span>
-                    ${chartPointerLocked ? '<span class="tv-floating-pill brand">Locked</span>' : ''}
-                    <span class="tv-floating-pill ${deltaClass}">${escapeHtml(formatPrice(bar?.close))} · ${escapeHtml(formatSignedPriceDelta(deltaValue))} · ${escapeHtml(formatPercent(deltaPercent))}</span>
-                    ${compareRow ? `<span class="tv-floating-pill ${getCompareStatusClass(compareRow?.status?.bar)}">Compare ${escapeHtml(getCompareStatusLabel(compareRow?.status?.bar))}</span>` : ''}
-                </div>
-                <div class="tv-floating-row">
-                    <span class="tv-floating-pill">O ${escapeHtml(formatPrice(bar?.open))}</span>
-                    <span class="tv-floating-pill">H ${escapeHtml(formatPrice(bar?.high))}</span>
-                    <span class="tv-floating-pill">L ${escapeHtml(formatPrice(bar?.low))}</span>
-                    <span class="tv-floating-pill">C ${escapeHtml(formatPrice(bar?.close))}</span>
-                    <span class="tv-floating-pill">Vol ${escapeHtml(formatNumber(bar?.volume || 0, 0))}</span>
-                    ${signal ? `<span class="tv-floating-pill ${escapeHtml(getSignalBadgeClass(signal))}">${escapeHtml(String(signal.direction || '--').toUpperCase())} · ${escapeHtml(String(signal.signal || signal.direction || '--'))}</span>` : ''}
-                </div>
-                <div class="tv-floating-row">
-                    <span class="tv-floating-pill">EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}</span>
-                    <span class="tv-floating-pill">EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}</span>
-                    <span class="tv-floating-pill">EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))}</span>
-                    <span class="tv-floating-pill">VWAP ${escapeHtml(formatPrice(indicator?.vwap))}</span>
-                    <span class="tv-floating-pill">CRSI ${escapeHtml(formatNumber(indicator?.crsi))}</span>
-                    <span class="tv-floating-pill">OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))}</span>
-                    <span class="tv-floating-pill">ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}</span>
+                <div class="tv-floating-shell ${chartLegendCollapsed ? 'collapsed' : ''}">
+                    <div class="tv-floating-head">
+                        <div class="tv-floating-summary">${summaryPills}</div>
+                        <button class="tv-floating-toggle" type="button" onclick="toggleChartLegendCollapsed()">${chartLegendCollapsed ? 'Expand' : 'Collapse'}</button>
+                    </div>
+                    ${chartLegendCollapsed ? '' : `<div class="tv-floating-body">${detailRows.filter(Boolean).join('')}</div>`}
                 </div>
             `;
         }
@@ -1278,14 +1458,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             panel.classList.toggle('show', mobileQuickPanelOpen);
             panel.setAttribute('aria-hidden', mobileQuickPanelOpen ? 'false' : 'true');
-            const layerDefs = [
-                { key: 'ema', label: 'EMA' },
-                { key: 'vwap', label: 'VWAP' },
-                { key: 'signals', label: 'Signals' },
-                { key: 'volume', label: 'Volume' },
-            ];
+            const layerDefs = getChartLayerDefs();
             layerRoot.innerHTML = layerDefs.map((item) => `
-                <button class="mobile-quick-chip ${chartLayerState[item.key] ? 'active' : ''}" type="button" onclick="toggleChartLayer('${item.key}')">${escapeHtml(item.label)}</button>
+                <button class="mobile-quick-chip ${chartLayerState[item.key] ? 'active' : ''} ${item.disabled ? 'disabled' : ''}" type="button" onclick="toggleChartLayer('${item.key}')" ${item.disabled ? 'disabled' : ''}>${escapeHtml(item.shortLabel)}${item.disabled ? ' · 5m' : ''}</button>
             `).join('');
             timeframeRoot.innerHTML = SUPPORTED_INTERVALS.map((interval) => `
                 <button class="mobile-quick-chip ${interval === currentInterval ? 'active' : ''}" type="button" onclick="selectChartInterval('${interval}')">${escapeHtml(getIntervalLabel(interval))}</button>
@@ -1564,23 +1739,26 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div class="cursor-value">${indicator ? `20 ${escapeHtml(formatPrice(indicator.ema_fast))} · 50 ${escapeHtml(formatPrice(indicator.ema_slow))}<br>100 ${escapeHtml(formatPrice(indicator.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator.vwap))}` : '--'}</div>
                 </div>
                 <div class="cursor-card">
+                    <div class="cursor-label">SD / Fractal</div>
+                    <div class="cursor-value">${indicator ? `Zone ${escapeHtml(getSdZoneText(indicator.sd_zone))} · ${escapeHtml(getSdTrendText(indicator.sd_trend))}<br>${escapeHtml(getFractalStateText(indicator))}` : '--'}</div>
+                </div>
+                <div class="cursor-card">
+                    <div class="cursor-label">Touch / Divergence</div>
+                    <div class="cursor-value">${indicator ? `${escapeHtml(getTouchDetailText(indicator))}<br>${escapeHtml(getDivergenceDetailText(indicator))}` : '--'}</div>
+                </div>
+                <div class="cursor-card">
                     <div class="cursor-label">Signal / Osc</div>
-                    <div class="cursor-value">${signal ? `${escapeHtml(String(signal.signal || signal.direction || '--'))}<br>${escapeHtml(String(signal.direction || '--').toUpperCase())}` : '暂无信号'}${indicator ? `<br>CRSI ${escapeHtml(formatNumber(indicator.crsi))} · OBV ${escapeHtml(formatNumber(indicator.obv_rsi))}` : ''}</div>
+                    <div class="cursor-value">${signal ? `${escapeHtml(buildTradeSignalLabel(signal))}<br>${escapeHtml(String(signal.direction || '--').toUpperCase())}` : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m')}${indicator ? `<br>CRSI ${escapeHtml(formatNumber(indicator.crsi))} · OBV ${escapeHtml(formatNumber(indicator.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator.atr_pct))}` : ''}</div>
                 </div>
             `;
             renderChartWorkspaceChrome(payload);
         }
 
         function renderLayerStrip() {
-            const defs = [
-                { key: 'ema', label: 'EMA 组' },
-                { key: 'vwap', label: 'VWAP' },
-                { key: 'signals', label: 'Signals' },
-                { key: 'volume', label: 'Volume' },
-            ];
+            const defs = getChartLayerDefs();
             document.getElementById('layerStrip').innerHTML = defs.map((item) => `
-                <button class="layer-btn ${chartLayerState[item.key] ? 'active' : ''}" type="button" onclick="toggleChartLayer('${item.key}')">
-                    ${escapeHtml(item.label)}
+                <button class="layer-btn ${chartLayerState[item.key] ? 'active' : ''} ${item.disabled ? 'disabled' : ''}" type="button" onclick="toggleChartLayer('${item.key}')" ${item.disabled ? 'disabled' : ''}>
+                    ${escapeHtml(item.label)}${item.disabled ? ' · 5m' : ''}
                 </button>
             `).join('');
         }
@@ -1704,8 +1882,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const orderUrl = buildPageUrl('/orders.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(signal, signalDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
-            const reason = signal.reason || signal.note || signal.extra?.reason || '暂无原因说明';
-            const computedAt = signal.extra?.computed_at_us || signal.extra?.computed_at_cn || signal.updated || signal.created || '--';
+            const extra = getSignalExtra(signal);
+            const reason = signal.reason || signal.note || extra.reason || '暂无原因说明';
+            const computedAt = extra.computed_at_us || extra.computed_at_cn || signal.updated || signal.created || '--';
             const statusText = isComputedSignal(signal) ? 'COMPUTED' : String(signal.status || '--').toUpperCase();
             const sourceNote = isComputedSignal(signal)
                 ? '当前信号点由 ibkr_bars 实时重算，未必对应历史信号台账。'
@@ -1715,7 +1894,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 <div class="drawer-head">
                     <div>
                         <div class="drawer-kicker">Signal Detail</div>
-                        <div class="drawer-title">${escapeHtml(signal.symbol || currentSymbol || '--')} · ${escapeHtml(getSignalActionText(signal))}</div>
+                        <div class="drawer-title">${escapeHtml(signal.symbol || currentSymbol || '--')} · ${escapeHtml(buildTradeSignalLabel(signal))}</div>
                         <div class="drawer-sub">${escapeHtml(signal.signal_id || signal.id || '--')}<br>${escapeHtml(formatSignalTime(signal))} · ${escapeHtml(getIntervalLabel(currentInterval))}</div>
                     </div>
                     <button class="drawer-close" type="button" onclick="closeSignalDrawer()">×</button>
@@ -1736,7 +1915,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     </div>
                     <div class="drawer-metric">
                         <div class="drawer-label">Shares / Industry</div>
-                        <div class="drawer-value">${escapeHtml(String(signal.shares || '--'))}<br>${escapeHtml(String(signal.extra?.industry || '--'))}</div>
+                        <div class="drawer-value">${escapeHtml(String(signal.shares || '--'))}<br>${escapeHtml(String(extra.industry || '--'))}</div>
                     </div>
                 </div>
 
@@ -1985,7 +2164,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             <div class="metric-item"><div class="metric-label">Open / High</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.open))} / ${escapeHtml(formatPrice(focusBar.high))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">Low / Close</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.low))} / ${escapeHtml(formatPrice(focusBar.close))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">Volume</div><div class="metric-value">${focusBar ? escapeHtml(formatNumber(focusBar.volume || 0, 0)) : '--'}</div></div>
-                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(String(focusSignal.signal || focusSignal.direction || '--')) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(buildTradeSignalLabel(focusSignal)) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
                         </div>
                         <div class="focus-actions">
                             ${focusSignal ? `<button class="mini-link mini-link-btn" type="button" onclick="openFocusedSignalDrawer()">信号详情</button>` : ''}
@@ -2003,7 +2182,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             <div class="metric-item"><div class="metric-label">OHLC</div><div class="metric-value">${compareRow?.stored?.bar ? `${escapeHtml(formatPrice(compareRow.stored.bar.open))} / ${escapeHtml(formatPrice(compareRow.stored.bar.high))}<br>${escapeHtml(formatPrice(compareRow.stored.bar.low))} / ${escapeHtml(formatPrice(compareRow.stored.bar.close))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">EMA / VWAP</div><div class="metric-value">${compareRow?.stored?.indicator ? `${escapeHtml(formatPrice(compareRow.stored.indicator.ema_fast))} / ${escapeHtml(formatPrice(compareRow.stored.indicator.ema_slow))}<br>${escapeHtml(formatPrice(compareRow.stored.indicator.vwap))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">CRSI / OBV</div><div class="metric-value">${compareRow?.stored?.indicator ? `${escapeHtml(formatNumber(compareRow.stored.indicator.crsi))} / ${escapeHtml(formatNumber(compareRow.stored.indicator.obv_rsi))}` : '--'}</div></div>
-                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${compareRow?.stored?.signal ? `${escapeHtml(String(compareRow.stored.signal.signal || '--'))}<br>${escapeHtml(String(compareRow.stored.signal.direction || '--').toUpperCase())}` : '无信号'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${compareRow?.stored?.signal ? `${escapeHtml(buildTradeSignalLabel(compareRow.stored.signal))}<br>${escapeHtml(String(compareRow.stored.signal.direction || '--').toUpperCase())}` : '无信号'}</div></div>
                         </div>
                     </div>
                     <div class="rail-card">
@@ -2014,7 +2193,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             <div class="metric-item"><div class="metric-label">OHLC</div><div class="metric-value">${compareRow?.ibkr?.bar ? `${escapeHtml(formatPrice(compareRow.ibkr.bar.open))} / ${escapeHtml(formatPrice(compareRow.ibkr.bar.high))}<br>${escapeHtml(formatPrice(compareRow.ibkr.bar.low))} / ${escapeHtml(formatPrice(compareRow.ibkr.bar.close))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">EMA / VWAP</div><div class="metric-value">${compareRow?.ibkr?.indicator ? `${escapeHtml(formatPrice(compareRow.ibkr.indicator.ema_fast))} / ${escapeHtml(formatPrice(compareRow.ibkr.indicator.ema_slow))}<br>${escapeHtml(formatPrice(compareRow.ibkr.indicator.vwap))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">CRSI / OBV</div><div class="metric-value">${compareRow?.ibkr?.indicator ? `${escapeHtml(formatNumber(compareRow.ibkr.indicator.crsi))} / ${escapeHtml(formatNumber(compareRow.ibkr.indicator.obv_rsi))}` : '--'}</div></div>
-                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${compareRow?.ibkr?.signal ? `${escapeHtml(String(compareRow.ibkr.signal.signal || '--'))}<br>${escapeHtml(String(compareRow.ibkr.signal.direction || '--').toUpperCase())}` : '无信号'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${compareRow?.ibkr?.signal ? `${escapeHtml(buildTradeSignalLabel(compareRow.ibkr.signal))}<br>${escapeHtml(String(compareRow.ibkr.signal.direction || '--').toUpperCase())}` : '无信号'}</div></div>
                         </div>
                     </div>
                     <div class="rail-card">
@@ -2034,7 +2213,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         <div class="metric-grid">
                             <div class="metric-item"><div class="metric-label">多头信号</div><div class="metric-value">${longCount}</div></div>
                             <div class="metric-item"><div class="metric-label">空头信号</div><div class="metric-value">${shortCount}</div></div>
-                            <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(String(latestSignal.signal || latestSignal.direction || '--')) : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(buildTradeSignalLabel(latestSignal)) : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
                         </div>
                         <div class="rail-sub">主图仍使用 stored bars 链路；IBKR 对比是临时拉取，不写回库。</div>
@@ -2049,7 +2228,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                                 return `
                                     <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
                                         <div class="signal-side">
-                                            <div class="signal-title">${escapeHtml(getSignalActionText(signal))}</div>
+                                            <div class="signal-title">${escapeHtml(buildTradeSignalLabel(signal))}</div>
                                             <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}</div>
                                         </div>
                                         <span class="signal-badge ${escapeHtml(getSignalBadgeClass(signal))}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
@@ -2076,7 +2255,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         <div class="metric-item"><div class="metric-label">Volume</div><div class="metric-value">${focusBar ? escapeHtml(formatNumber(focusBar.volume || 0, 0)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">VWAP Dist</div><div class="metric-value" style="color:${signedColor(focusIndicator?.vwap_dist)}">${focusIndicator ? escapeHtml(formatPercent(focusIndicator.vwap_dist)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">CRSI / OBV RSI</div><div class="metric-value">${focusIndicator ? `${escapeHtml(formatNumber(focusIndicator.crsi))} / ${escapeHtml(formatNumber(focusIndicator.obv_rsi))}` : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(String(focusSignal.signal || focusSignal.direction || '--')) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(buildTradeSignalLabel(focusSignal)) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
                     </div>
                     <div class="focus-actions">
                         ${focusSignal ? `<button class="mini-link mini-link-btn" type="button" onclick="openFocusedSignalDrawer()">信号详情</button>` : ''}
@@ -2101,10 +2280,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div class="metric-grid">
                         <div class="metric-item"><div class="metric-label">趋势</div><div class="metric-value">${latest ? escapeHtml(getTrendText(latest.trend_dir)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">EMA 状态</div><div class="metric-value">${latest?.ema_bullish ? '📈 多头' : latest?.ema_bearish ? '📉 空头' : '➡️ 中性'}</div></div>
+                        <div class="metric-item"><div class="metric-label">SD</div><div class="metric-value">${latest ? `${escapeHtml(getSdZoneText(latest.sd_zone))}<br>${escapeHtml(getSdTrendText(latest.sd_trend))}` : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Fractal</div><div class="metric-value">${latest ? escapeHtml(getFractalStateText(latest)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">VWAP 偏离</div><div class="metric-value" style="color:${signedColor(latest?.vwap_dist)}">${latest ? escapeHtml(formatPercent(latest.vwap_dist)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">ATR %</div><div class="metric-value">${latest ? escapeHtml(formatPercent(latest.atr_pct)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">CRSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.crsi)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">OBV RSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.obv_rsi)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Touch</div><div class="metric-value">${latest ? escapeHtml(getTouchSummary(latest)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Div</div><div class="metric-value">${latest ? escapeHtml(getDivergenceSummary(latest, 3)) : '--'}</div></div>
                     </div>
                     <div class="rail-sub">时间范围: ${escapeHtml(getRangeLabel(currentRangeKey))}<br>${escapeHtml(timeRange)}</div>
                 </div>
@@ -2113,10 +2296,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div class="metric-grid">
                         <div class="metric-item"><div class="metric-label">多头信号</div><div class="metric-value">${longCount}</div></div>
                         <div class="metric-item"><div class="metric-label">空头信号</div><div class="metric-value">${shortCount}</div></div>
-                        <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(String(latestSignal.signal || latestSignal.direction || '--')) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(buildTradeSignalLabel(latestSignal)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
                     </div>
-                    <div class="rail-sub">当前只在 5m 周期叠加按 bars 实时重算的买卖点；其它周期专注指标与价格结构。</div>
+                    <div class="rail-sub">所有周期都展示价格与技术图层；交易标签和信号散点仍只在 5m 周期叠加。</div>
                 </div>
                 <div class="rail-card">
                     <div class="rail-kicker">Recent Signals</div>
@@ -2129,7 +2312,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             return `
                             <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
                                 <div class="signal-side">
-                                    <div class="signal-title">${escapeHtml(signal.signal || signal.direction || '--')}</div>
+                                    <div class="signal-title">${escapeHtml(buildTradeSignalLabel(signal))}</div>
                                     <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}</div>
                                 </div>
                                 <span class="signal-badge ${String(signal.direction || '').toLowerCase() === 'short' ? 'short' : 'long'}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
@@ -2152,7 +2335,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return `${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
         }
 
-        function buildSignalScatter(signals, bars, priceResolver, color) {
+        function buildSignalScatter(signals, bars, priceResolver, color, labelBuilder = null) {
             const indexByMs = new Map(bars.map((bar, index) => [Number(bar.bar_time_ms || 0), index]));
             return signals.map((signal) => {
                 const barMs = Number(signal.bar_time_ms || 0);
@@ -2163,10 +2346,69 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return {
                     value: [xIndex, yValue],
                     itemStyle: { color },
-                    name: signal.signal || signal.direction || '',
+                    name: buildTradeSignalLabel(signal),
                     signal_id: signal.signal_id || '',
+                    labelText: typeof labelBuilder === 'function' ? String(labelBuilder(signal) || '') : '',
                 };
             }).filter(Boolean);
+        }
+
+        function buildIndicatorMarkerPoints(bars, indicatorMap, predicate, yResolver, labelBuilder) {
+            return bars.map((bar, index) => {
+                const indicator = indicatorMap.get(Number(bar?.bar_time_ms || 0));
+                if (!indicator || !predicate(indicator, bar, index)) return null;
+                const yValue = Number(yResolver(indicator, bar, index));
+                if (!Number.isFinite(yValue) || yValue <= 0) return null;
+                return {
+                    value: [index, yValue],
+                    labelText: typeof labelBuilder === 'function' ? String(labelBuilder(indicator, bar, index) || '') : '',
+                };
+            }).filter(Boolean);
+        }
+
+        function buildMarkerScatterSeries(name, data, options = {}) {
+            const color = options.color || '#7DD3FC';
+            const showLabel = Boolean(options.showLabel);
+            return {
+                name,
+                type: 'scatter',
+                xAxisIndex: 0,
+                yAxisIndex: 0,
+                data,
+                symbol: options.symbol || 'triangle',
+                symbolRotate: Number(options.symbolRotate || 0),
+                symbolSize: Number(options.symbolSize || 12),
+                z: Number(options.z || 8),
+                animation: false,
+                tooltip: { show: false },
+                label: {
+                    show: showLabel,
+                    formatter(params) {
+                        return params?.data?.labelText || '';
+                    },
+                    position: options.labelPosition || 'top',
+                    distance: Number(options.labelDistance || 4),
+                    color: options.labelColor || color,
+                    fontSize: Number(options.labelFontSize || 10),
+                    fontWeight: 700,
+                    fontFamily: 'JetBrains Mono, monospace',
+                    backgroundColor: showLabel ? 'rgba(8,12,20,0.92)' : 'transparent',
+                    borderColor: color,
+                    borderWidth: showLabel ? 1 : 0,
+                    borderRadius: 6,
+                    padding: showLabel ? [2, 4] : 0,
+                },
+                itemStyle: {
+                    color,
+                    borderColor: 'rgba(8,12,20,0.96)',
+                    borderWidth: 1.4,
+                    shadowBlur: Number(options.shadowBlur || 0),
+                    shadowColor: options.shadowColor || 'transparent',
+                },
+                emphasis: {
+                    disabled: true,
+                },
+            };
         }
 
         function buildTooltipHtml(payload, index) {
@@ -2180,7 +2422,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const signalText = bar?.preview || bar?.is_preview
                 ? 'Forming preview bar · 正式 5m 仍以收盘写入为准'
                 : signal
-                ? `${escapeHtml(String(signal.signal || signal.direction || '--'))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}`
+                ? `${escapeHtml(buildTradeSignalLabel(signal))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}`
                 : 'No signal on this bar';
             return `
                 <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.75;min-width:240px;">
@@ -2191,6 +2433,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div style="margin-top:6px;color:#8BA4C4;">EMA20 ${indicator ? escapeHtml(formatPrice(indicator.ema_fast)) : '--'} · EMA50 ${indicator ? escapeHtml(formatPrice(indicator.ema_slow)) : '--'}</div>
                     <div style="color:#8BA4C4;">EMA100 ${indicator ? escapeHtml(formatPrice(indicator.ema_trend)) : '--'} · VWAP ${indicator ? escapeHtml(formatPrice(indicator.vwap)) : '--'}</div>
                     <div style="color:#8BA4C4;">CRSI ${indicator ? escapeHtml(formatNumber(indicator.crsi)) : '--'} · OBV ${indicator ? escapeHtml(formatNumber(indicator.obv_rsi)) : '--'} · ATR ${indicator ? escapeHtml(formatPercent(indicator.atr_pct)) : '--'}</div>
+                    <div style="margin-top:6px;color:#8BA4C4;">SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}</div>
+                    <div style="color:#8BA4C4;">Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}</div>
                     <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
                 </div>
             `;
@@ -2237,6 +2481,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     chartInstance.dispose();
                     chartInstance = null;
                 }
+                chartMarkerDensityTier = '';
                 resetChartZoomState();
                 canvas.innerHTML = '<div class="chart-empty">当前没有可绘制的 bars 数据。<br>请先确认 ibkr_bars 已经写入该标的该周期。</div>';
                 note.textContent = '图表指标与信号基于 ibkr_bars 实时重算；如果 bars 为空，图表不会展示。';
@@ -2255,22 +2500,112 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const emaSlow = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_slow));
             const emaTrend = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_trend));
             const vwap = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap));
+            const sdReg = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_reg));
+            const sdSignalUpper = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_signal_upper));
+            const sdSignalLower = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_signal_lower));
+            const sdFilterUpper = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_filter_upper));
+            const sdFilterLower = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_filter_lower));
             const crsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi));
             const obvRsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.obv_rsi));
             const atrPct = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.atr_pct));
             const volume = sortedBars.map((bar) => Number(bar.volume || 0));
+            const markerOffset = (indicator, bar, multiplier = 1) => {
+                const atrBase = Number(indicator?.atr_raw || indicator?.atr || 0);
+                const rangeBase = Math.abs(Number(bar?.high || 0) - Number(bar?.low || 0));
+                const closeBase = Math.abs(Number(bar?.close || 0)) * 0.0008;
+                return Math.max(atrBase, rangeBase, closeBase, 0.05) * multiplier;
+            };
+            const densityTier = getChartMarkerDensityTier(sortedBars.length);
+            chartMarkerDensityTier = densityTier;
+            const showContextMarkers = densityTier !== 'wide';
+            const showMarkerLabels = densityTier === 'tight';
+            const showTradeLabels = densityTier === 'tight';
             const longSignals = buildSignalScatter(
                 signals.filter((item) => String(item.direction || '').toLowerCase() === 'long'),
                 sortedFormalBars,
                 (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
-                '#48BB78'
+                '#48BB78',
+                buildTradeSignalLabel
             );
             const shortSignals = buildSignalScatter(
                 signals.filter((item) => String(item.direction || '').toLowerCase() === 'short'),
                 sortedFormalBars,
                 (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
-                '#FC8181'
+                '#FC8181',
+                buildTradeSignalLabel
             );
+            const fractalBullMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.fractal_bull),
+                (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 0.45),
+                () => 'F↑'
+            );
+            const fractalBearMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.fractal_bear),
+                (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 0.45),
+                () => 'F↓'
+            );
+            const sdLowerMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.sd_lower),
+                (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 0.8),
+                () => 'SD↑'
+            );
+            const sdUpperMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.sd_upper),
+                (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 0.8),
+                () => 'SD↓'
+            );
+            const bullTouchFastMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.bull_touch_fast),
+                (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 1.05),
+                () => 'E↑F'
+            );
+            const bullTouchSlowMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.bull_touch_slow),
+                (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 1.3),
+                () => 'E↑S'
+            );
+            const bearTouchFastMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.bear_touch_fast),
+                (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 1.05),
+                () => 'E↓F'
+            );
+            const bearTouchSlowMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.bear_touch_slow),
+                (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 1.3),
+                () => 'E↓S'
+            );
+            const crsiRegBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_reg_bull_div), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 1.6), () => 'cR↑');
+            const crsiWideBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_wide_bull_div), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 1.9), () => 'cW↑');
+            const obvRegBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_reg_bull_div), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 2.2), () => 'oR↑');
+            const obvWideBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_wide_bull_div), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 2.5), () => 'oW↑');
+            const crsiRegHidBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_reg_hid_bull), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 2.8), () => 'cH↑');
+            const crsiWideHidBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_wide_hid_bull), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 3.1), () => 'cWH↑');
+            const obvRegHidBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_reg_hid_bull), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 3.4), () => 'oH↑');
+            const obvWideHidBullMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_wide_hid_bull), (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 3.7), () => 'oWH↑');
+            const crsiRegBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_reg_bear_div), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 1.6), () => 'cR↓');
+            const crsiWideBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_wide_bear_div), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 1.9), () => 'cW↓');
+            const obvRegBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_reg_bear_div), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 2.2), () => 'oR↓');
+            const obvWideBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_wide_bear_div), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 2.5), () => 'oW↓');
+            const crsiRegHidBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_reg_hid_bear), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 2.8), () => 'cH↓');
+            const crsiWideHidBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_wide_hid_bear), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 3.1), () => 'cWH↓');
+            const obvRegHidBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_reg_hid_bear), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 3.4), () => 'oH↓');
+            const obvWideHidBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_wide_hid_bear), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 3.7), () => 'oWH↓');
             const focus = getFocusContext(displayPayload) || buildContext(displayPayload, sortedBars.length - 1, selectedSignalId);
             const latestClose = Number(realtimeQuoteSnapshot?.last_price ?? previewBar?.close ?? latest?.close ?? sortedBars[sortedBars.length - 1]?.close ?? 0);
             const previousClose = Number(sortedBars.length > 1 ? sortedBars[sortedBars.length - 2]?.close : latestClose);
@@ -2292,8 +2627,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             note.textContent = !indicators.length
                 ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
-                ? `可用上方工具条与键盘在 bars / signals 间导航；当前主图${chartLayerState.signals ? '已叠加' : '未叠加'}实时重算信号点。`
-                : '当前为非 5m 周期，主图只展示 bars 实时重算出的价格结构与指标轨迹；仍可用工具条和图层按钮快速切换视角。';
+                ? `可用上方工具条与键盘在 bars / signals 间导航；当前主图${chartLayerState.tradeSignals ? '已叠加' : '未叠加'}交易标签与实时信号点。`
+                : '当前为非 5m 周期，主图仍展示 bars 实时重算出的价格结构与技术图层，但不叠加交易标签。';
             if (realtimeQuoteSnapshot?.last_price != null) {
                 note.textContent += ' 价格与日内涨幅来自 WS 实时快照。';
             }
@@ -2314,6 +2649,49 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             canvas.innerHTML = '';
             chartInstance = echarts.init(canvas);
+            const overlaySeries = [
+                ...(chartLayerState.sdChannel ? [
+                    { name: 'SD Reg', type: 'line', data: sdReg, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.05, color: 'rgba(125,211,252,0.48)', type: 'dashed' } },
+                    { name: 'SD Signal Upper', type: 'line', data: sdSignalUpper, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.15, color: 'rgba(248,113,113,0.70)' } },
+                    { name: 'SD Signal Lower', type: 'line', data: sdSignalLower, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.15, color: 'rgba(74,222,128,0.70)' } },
+                    { name: 'SD Filter Upper', type: 'line', data: sdFilterUpper, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.0, color: 'rgba(248,113,113,0.34)', type: 'dotted' } },
+                    { name: 'SD Filter Lower', type: 'line', data: sdFilterLower, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.0, color: 'rgba(74,222,128,0.34)', type: 'dotted' } },
+                    buildMarkerScatterSeries('SD MR Bull', sdLowerMarkers, { color: '#4CAF50', symbol: 'triangle', symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(76,175,80,0.24)' }),
+                    buildMarkerScatterSeries('SD MR Bear', sdUpperMarkers, { color: '#FF8A00', symbol: 'triangle', symbolRotate: 180, symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'top', shadowBlur: 10, shadowColor: 'rgba(255,138,0,0.24)' }),
+                ] : []),
+                ...(chartLayerState.fractal ? [
+                    buildMarkerScatterSeries('Fractal Bull', fractalBullMarkers, { color: '#14B8A6', symbol: 'triangle', symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('Fractal Bear', fractalBearMarkers, { color: '#F44336', symbol: 'triangle', symbolRotate: 180, symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                ] : []),
+                ...(chartLayerState.emaTouch && showContextMarkers ? [
+                    buildMarkerScatterSeries('EMA Touch Bull Fast', bullTouchFastMarkers, { color: '#00C853', symbol: 'triangle', symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('EMA Touch Bull Slow', bullTouchSlowMarkers, { color: '#64DD17', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('EMA Touch Bear Fast', bearTouchFastMarkers, { color: '#FF1744', symbol: 'triangle', symbolRotate: 180, symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('EMA Touch Bear Slow', bearTouchSlowMarkers, { color: '#D50000', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                ] : []),
+                ...(chartLayerState.divergence && showContextMarkers ? [
+                    buildMarkerScatterSeries('cRSI Reg Bull Div', crsiRegBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('cRSI Wide Bull Div', crsiWideBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('OBV Reg Bull Div', obvRegBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('OBV Wide Bull Div', obvWideBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('cRSI Hid Bull', crsiRegHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('cRSI Wide Hid Bull', crsiWideHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('OBV Hid Bull', obvRegHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('OBV Wide Hid Bull', obvWideHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
+                    buildMarkerScatterSeries('cRSI Reg Bear Div', crsiRegBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('cRSI Wide Bear Div', crsiWideBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('OBV Reg Bear Div', obvRegBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('OBV Wide Bear Div', obvWideBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('cRSI Hid Bear', crsiRegHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('cRSI Wide Hid Bear', crsiWideHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('OBV Hid Bear', obvRegHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('OBV Wide Hid Bear', obvWideHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                ] : []),
+                ...(isTradeSignalInterval() && chartLayerState.tradeSignals ? [
+                    buildMarkerScatterSeries('LONG Signal', longSignals, { color: '#48BB78', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(72,187,120,0.28)' }),
+                    buildMarkerScatterSeries('SHORT Signal', shortSignals, { color: '#FC8181', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' }),
+                ] : []),
+            ];
             const series = [
                 {
                     name: 'Price',
@@ -2375,10 +2753,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ...(chartLayerState.vwap ? [
                     { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.15, color: '#34D399' } },
                 ] : []),
-                ...(currentInterval === '5m' && chartLayerState.signals ? [
-                    { name: 'LONG Signal', type: 'scatter', data: longSignals, symbolSize: 12, itemStyle: { shadowBlur: 14, shadowColor: 'rgba(72,187,120,0.28)' } },
-                    { name: 'SHORT Signal', type: 'scatter', data: shortSignals, symbolSize: 12, itemStyle: { shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' } },
-                ] : []),
+                ...overlaySeries,
                 { name: 'CRSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: crsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#22C55E' }, markLine: { symbol: 'none', lineStyle: { color: 'rgba(245,158,11,0.42)' }, data: [{ yAxis: 80 }, { yAxis: 20 }] } },
                 { name: 'OBV RSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: obvRsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#F59E0B' } },
                 ...(chartLayerState.volume ? [
@@ -2548,6 +2923,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 if (!Number.isFinite(start) || !Number.isFinite(end)) return;
                 applyChartViewportState({ start, end }, sortedBars.length);
                 renderChartBottomBar(displayPayload);
+                const nextDensityTier = getChartMarkerDensityTier(sortedBars.length);
+                if (nextDensityTier !== chartMarkerDensityTier && lastPayload) {
+                    window.requestAnimationFrame(() => renderChart(lastPayload));
+                }
             });
             chartInstance.on('click', (params) => {
                 if (suppressNextChartClick) {
@@ -2623,6 +3002,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             chartRealtimePreviewError = '';
             resetChartRealtimeWarnings();
             chartDisplayPayload = null;
+            chartMarkerDensityTier = '';
 
             const input = document.getElementById('chartSymbolInput');
             if (input && currentSymbol) input.value = currentSymbol;
@@ -2787,6 +3167,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         window.toggleChartLayer = function(layer) {
             if (!Object.prototype.hasOwnProperty.call(chartLayerState, layer)) return;
+            const layerDef = getChartLayerDefs().find((item) => item.key === layer);
+            if (layerDef?.disabled) return;
             chartLayerState[layer] = !chartLayerState[layer];
             saveChartUiPrefs();
             renderLayerStrip();
@@ -2913,6 +3295,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             lockChartPointerAtIndex(index);
         };
         window.unlockChartPointer = unlockChartPointer;
+        window.toggleChartLegendCollapsed = toggleChartLegendCollapsed;
         window.toggleInspectorDrawer = toggleInspectorDrawer;
         window.closeInspectorDrawer = closeInspectorDrawer;
         window.openMobileQuickPanel = openMobileQuickPanel;

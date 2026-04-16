@@ -773,13 +773,6 @@ function renderAnalyticsBridge(activePage, options = {}) {
       label: '统计',
       copy: '分析结果 / 收益分布 / 执行结果',
       active: activePage === '/ibkr_stats.html'
-    },
-    {
-      path: '/ibkr_backtests.html',
-      kicker: 'Backtest',
-      label: '回测工坊',
-      copy: '隔离结果 / 参数覆盖 / replay 验证',
-      active: activePage === '/ibkr_backtests.html'
     }
   ]);
 }
@@ -796,7 +789,7 @@ function renderHomeBridge() {
       path: '/ibkr_indicators.html',
       kicker: 'Analytics',
       label: '分析域',
-      copy: '指标 / 图表 / 统计 / 回测'
+      copy: '指标 / 图表 / 统计'
     },
     {
       path: '/ibkr_screener.html',

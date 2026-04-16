@@ -148,6 +148,24 @@ def bucket_start_ms(bar_time_ms: int, interval: str) -> int:
     return int(start.timestamp() * 1000)
 
 
+def latest_safe_closed_bucket_ms(
+    interval: str,
+    *,
+    delay_seconds: float = 0.0,
+    now_ms: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    normalized = normalize_interval(interval)
+    effective_ms = int(now_ms or 0)
+    if effective_ms <= 0:
+        current = now.astimezone(ET) if now else datetime.now(ET)
+        effective_ms = int(current.timestamp() * 1000)
+    effective_ms -= max(0, int(float(delay_seconds or 0.0) * 1000))
+    if effective_ms <= interval_to_ms(normalized):
+        return 0
+    return bucket_start_ms(effective_ms - interval_to_ms(normalized), normalized)
+
+
 def build_signal_id(symbol: str, bar_time_ms: int, signal_type: str) -> str:
     dt = ms_to_et(bar_time_ms)
     prefix = f"{str(symbol or '').upper()}_{dt.strftime('%Y%m%d_%H%M')}"

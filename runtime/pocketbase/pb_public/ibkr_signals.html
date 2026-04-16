@@ -433,6 +433,8 @@
         .rules-rail-head {
             display: grid;
             gap: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
         }
 
         .rules-rail-meta {
@@ -469,13 +471,13 @@
 
         .rules-rail-stack {
             display: grid;
-            gap: 10px;
+            gap: 8px;
         }
 
         .rules-rail-item {
             position: relative;
-            padding: 10px 12px 10px 15px;
-            border-radius: 14px;
+            padding: 9px 11px 9px 14px;
+            border-radius: 13px;
             border: 1px solid rgba(255,255,255,0.07);
             background: rgba(255,255,255,0.03);
             overflow: hidden;
@@ -518,23 +520,35 @@
         }
 
         .rules-rail-value {
-            margin-top: 8px;
-            font-size: 18px;
+            margin-top: 7px;
+            font-size: 17px;
             line-height: 1.15;
             font-weight: 700;
             color: var(--text);
         }
 
         .rules-rail-note {
-            margin-top: 6px;
-            font-size: 11px;
-            line-height: 1.5;
+            margin-top: 4px;
+            font-size: 10px;
+            line-height: 1.45;
             color: var(--muted);
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
+        }
+
+        .rules-rail-item.compact .rules-rail-value {
+            font-size: 14px;
+            line-height: 1.35;
+            letter-spacing: 0;
         }
 
         .rules-rail-actions {
             display: grid;
             gap: 8px;
+            padding-top: 4px;
+            border-top: 1px solid rgba(255,255,255,0.06);
         }
 
         .rules-rail-btn,
@@ -971,6 +985,54 @@
             flex-wrap: wrap;
             gap: 8px;
             margin-top: 12px;
+        }
+
+        .target-focus-empty {
+            display: grid;
+            gap: 10px;
+            margin-top: 2px;
+            padding: 14px;
+            border-radius: 14px;
+            border: 1px dashed rgba(139,164,196,0.18);
+            background:
+                radial-gradient(circle at top right, rgba(99,179,237,0.08), transparent 34%),
+                rgba(255,255,255,0.02);
+        }
+
+        .target-focus-empty-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.4;
+        }
+
+        .target-focus-empty-copy {
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--muted);
+        }
+
+        .target-focus-empty-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .target-focus-empty-pill {
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
+        .target-focus-empty-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
         }
 
         /* 状态筛选 Tab */
@@ -2128,6 +2190,13 @@
             return labels[key] || (key ? key.replace(/_/g, ' ') : '--');
         }
 
+        function formatRulesUpdatedLabel(value) {
+            const text = String(value || '').trim();
+            if (!text) return '';
+            const match = text.match(/(\d{2}:\d{2})(?::\d{2})?/);
+            return match ? `更新 ${match[1]}` : `更新 ${text}`;
+        }
+
         function buildCurrentTargetFocusUrl(row = null) {
             const params = {
                 tab: 'screener',
@@ -2144,6 +2213,32 @@
             pills.push(`<span class="target-focus-pill ${escapeHtml(getCurrentTargetSignalState(row))}">${escapeHtml(formatCurrentTargetStateLabel(getCurrentTargetSignalState(row)))}</span>`);
             pills.push(`<span class="target-focus-pill ${escapeHtml(String(row.direction_bias || 'neutral'))}">${escapeHtml(String(row.direction_bias || 'neutral'))}</span>`);
             return pills.join('');
+        }
+
+        function renderCurrentTargetEmptyState(summary, screenerUrl, marketDate) {
+            const emptyPills = [];
+            emptyPills.push(`needs action ${Number((summary.awaiting_confirm_count || 0) + (summary.pending_count || 0))}`);
+            emptyPills.push(`ready ${Number(summary.technical_ready_count || 0)}`);
+            if (summary.signaled_count) emptyPills.push(`已出信号 ${Number(summary.signaled_count || 0)}`);
+            if (summary.stale_count) emptyPills.push(`stale ${Number(summary.stale_count || 0)}`);
+
+            const signalUrl = buildPageUrl('/ibkr_signals.html', {
+                date: marketDate,
+            }, { environment: currentEnvironment });
+
+            return `
+                <div class="target-focus-empty">
+                    <div class="target-focus-empty-title">当前没有需要立即盯盘的标的</div>
+                    <div class="target-focus-empty-copy">优先队列为空，说明当前没有 awaiting_confirm / pending，且没有 ready 但尚未出信号的标的。接下来更适合去看全量榜单，或者回到信号列表确认今天已出的信号。</div>
+                    <div class="target-focus-empty-pills">
+                        ${emptyPills.map((pill) => `<span class="target-focus-empty-pill">${escapeHtml(pill)}</span>`).join('')}
+                    </div>
+                    <div class="target-focus-empty-actions">
+                        <a class="target-focus-link" href="${screenerUrl}">打开当前标的榜</a>
+                        <a class="target-focus-link" href="${signalUrl}">查看今日信号</a>
+                    </div>
+                </div>
+            `;
         }
 
         function renderCurrentTargetShell() {
@@ -2226,7 +2321,7 @@
                                 `;
                             }).join('')}
                         </div>
-                    ` : `<div class="target-focus-copy">当前交易日没有需要重点关注的目标标的。</div>`}
+                    ` : renderCurrentTargetEmptyState(summary, screenerUrl, marketDate)}
                 </section>
             `;
         }
@@ -2371,14 +2466,14 @@
         function renderRulesRailHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
             const highlights = Array.isArray(panel?.highlights) ? panel.highlights.slice(0, 4) : [];
             const activeChip = getRulesActiveChip(panel);
-            const footer = rulesSummarySnapshot.computed_at_us ? `更新 ${rulesSummarySnapshot.computed_at_us}` : '';
+            const footer = formatRulesUpdatedLabel(rulesSummarySnapshot.computed_at_us);
             return `
                 <section class="rules-rail">
                     <div class="rules-rail-head">
                         <div>
                             <div class="rules-panel-kicker">Rules Rail</div>
                             <div class="rules-panel-title">${escapeHtml(panel?.title || '当前信号规则')}</div>
-                            <div class="rules-panel-subtitle">${escapeHtml(panel?.subtitle || '盘中先看关键窗口和阻断，再决定是否展开完整规则。')}</div>
+                            <div class="rules-panel-subtitle">盘中先看窗口、有效期、结构入口和关键阻断。</div>
                         </div>
                         <div class="rules-rail-meta">
                             <span class="rules-meta-pill env">ENV ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
@@ -2388,7 +2483,7 @@
                     </div>
                     <div class="rules-rail-stack">
                         ${highlights.map((highlight) => `
-                            <article class="rules-rail-item ${escapeHtml(normalizeRulesTone(highlight?.tone))}">
+                            <article class="rules-rail-item ${escapeHtml(normalizeRulesTone(highlight?.tone))} ${['structure', 'blockers'].includes(String(highlight?.id || '')) ? 'compact' : ''}">
                                 <div class="rules-rail-label">${escapeHtml(highlight?.label || '--')}</div>
                                 <div class="rules-rail-value">${escapeHtml(String(highlight?.value || '--'))}</div>
                                 ${highlight?.note ? `<div class="rules-rail-note">${escapeHtml(highlight.note)}</div>` : ''}
@@ -2485,7 +2580,7 @@
         function renderRulesDrawerBodyHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
             const details = Array.isArray(panel?.details) ? panel.details : [];
             const activeChip = getRulesActiveChip(panel);
-            const footer = rulesSummarySnapshot.computed_at_us ? `更新 ${rulesSummarySnapshot.computed_at_us}` : '';
+            const footer = formatRulesUpdatedLabel(rulesSummarySnapshot.computed_at_us);
             return `
                 <div class="rules-drawer-shell">
                     <div class="rules-drawer-head">

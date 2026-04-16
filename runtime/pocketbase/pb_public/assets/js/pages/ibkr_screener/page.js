@@ -22,6 +22,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       items: [],
       searchResults: [],
       loaded: false,
+      loadedDate: '',
       lastRefresh: '尚未加载'
     };
     const watchlistState = {
@@ -37,6 +38,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       requestToken: 0,
       searchDebounceId: 0,
     };
+    let rulesLoaded = false;
+    let rulesLoadingPromise = null;
+    let screenerLoadKey = '';
 
     function escapeHtml(value) {
       return String(value ?? '')
@@ -189,6 +193,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         return;
       }
       document.getElementById('marketDate').value = getUsDate();
+    }
+
+    function getSelectedMarketDate() {
+      return document.getElementById('marketDate')?.value || '';
+    }
+
+    function getScreenerLoadKey(marketDate = getSelectedMarketDate()) {
+      return `${currentEnvironment}::${String(marketDate || '').trim()}`;
     }
 
     function getRequestedTab() {
@@ -351,19 +363,51 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       `;
     }
 
-    async function loadRulesSummary() {
-      rulesLoadError = '';
-      renderRulesBoard();
-      try {
-        rulesPayload = await requestJson(`/api/custom/ibkr/rules${buildQuery({
-          environment: currentEnvironment
-        })}`);
-      } catch (error) {
-        console.error('loadRulesSummary failed:', error);
-        rulesPayload = { selection: null, signals: null, computed_at_us: '' };
-        rulesLoadError = error.message || String(error);
+    async function loadRulesSummary({ force = false } = {}) {
+      if (!force && rulesLoaded && !rulesLoadError) {
+        renderRulesBoard();
+        return rulesPayload;
       }
-      renderRulesBoard();
+      if (!force && rulesLoadingPromise) {
+        return rulesLoadingPromise;
+      }
+
+      const promise = (async () => {
+        rulesLoadError = '';
+        renderRulesBoard();
+        try {
+          rulesPayload = await requestJson(`/api/custom/ibkr/rules${buildQuery({
+            environment: currentEnvironment
+          })}`);
+          rulesLoaded = true;
+        } catch (error) {
+          console.error('loadRulesSummary failed:', error);
+          rulesPayload = { selection: null, signals: null, computed_at_us: '' };
+          rulesLoadError = error.message || String(error);
+          rulesLoaded = false;
+        }
+        renderRulesBoard();
+        return rulesPayload;
+      })();
+
+      if (!force) rulesLoadingPromise = promise;
+      try {
+        return await promise;
+      } finally {
+        if (rulesLoadingPromise === promise) {
+          rulesLoadingPromise = null;
+        }
+      }
+    }
+
+    async function ensureActiveScreenerDataLoaded({ force = false } = {}) {
+      if (activeScreenerView === 'universe') {
+        return loadScreener(false, { loadCurrentTargetsAfter: false, force });
+      }
+      await Promise.all([
+        loadRulesSummary(),
+        loadTodayTargets(false),
+      ]);
     }
 
     function renderScreenerSummary() {
@@ -601,7 +645,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       renderScreenerSummary();
     }
 
-    function activateScreenerView(view, { syncHistory = true } = {}) {
+    async function activateScreenerView(view, { syncHistory = true, ensureData = true, force = false } = {}) {
       activeScreenerView = view === 'universe' ? 'universe' : 'current';
       document.querySelectorAll('#screenerViewTabs .subview-tab').forEach((button) => {
         button.classList.toggle('active', button.dataset.view === activeScreenerView);
@@ -609,12 +653,19 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('currentViewPanel')?.classList.toggle('active', activeScreenerView === 'current');
       document.getElementById('universeViewPanel')?.classList.toggle('active', activeScreenerView === 'universe');
       if (syncHistory && activeTab === 'screener') syncUrl();
-      if (activeTab === 'screener') updateHero();
+      if (activeTab === 'screener') {
+        updateHero();
+        if (ensureData) {
+          await ensureActiveScreenerDataLoaded({ force });
+        }
+      }
     }
 
     function bindScreenerViewEvents() {
       document.querySelectorAll('#screenerViewTabs .subview-tab').forEach((button) => {
-        button.addEventListener('click', () => activateScreenerView(button.dataset.view || 'current'));
+        button.addEventListener('click', async () => {
+          await activateScreenerView(button.dataset.view || 'current');
+        });
       });
     }
 
@@ -637,7 +688,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
     }
 
-    async function activateTab(tab, { syncHistory = true, reloadCurrentTargets = true } = {}) {
+    async function activateTab(tab, { syncHistory = true, ensureScreenerData = true } = {}) {
       activeTab = ['watchlist', 'monitor', 'targets'].includes(tab) ? tab : 'screener';
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
@@ -645,17 +696,17 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('targetsTab').classList.toggle('active', activeTab === 'targets');
       document.getElementById('watchlistTab').classList.toggle('active', isWatchlistRoleTab());
       if (syncHistory) syncUrl();
-      if (activeTab === 'targets' && !dailyTargetsState.loaded) {
+      if (activeTab === 'targets' && (!dailyTargetsState.loaded || dailyTargetsState.loadedDate !== getDailyTargetDate())) {
         await loadDailyTargets(false);
       }
       if (isWatchlistRoleTab() && (!watchlistState.loaded || watchlistState.loadedRole !== getWatchlistRoleForTab())) {
         await loadWatchlist(false);
       }
       if (activeTab === 'screener') {
-        if (reloadCurrentTargets) {
-          await loadTodayTargets(false);
-        }
-        activateScreenerView(activeScreenerView, { syncHistory: false });
+        await activateScreenerView(activeScreenerView, {
+          syncHistory: false,
+          ensureData: ensureScreenerData,
+        });
       }
       updateHero();
     }
@@ -758,6 +809,29 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         display_price: quote?.last_price != null ? quote.last_price : row?.price,
         display_day_change_pct: quote?.day_change_pct != null ? quote.day_change_pct : row?.day_change_pct,
       };
+    }
+
+    async function refreshTodayTargetQuotes(items, requestToken) {
+      if (!Array.isArray(items) || !items.length) return;
+      try {
+        await fetchRealtimeQuotesIfNeeded(items.map((row) => row?.symbol).filter(Boolean), {
+          reset: false,
+          maxAgeMs: 15000,
+        });
+      } catch (error) {
+        console.warn('加载今日标的实时报价失败:', error);
+        return;
+      }
+      if (requestToken !== currentTargetState.requestToken) return;
+      todayTargetsPayload = {
+        ...todayTargetsPayload,
+        items: Array.isArray(todayTargetsPayload.items)
+          ? todayTargetsPayload.items.map((row) => mergeTodayTargetRowWithRealtimeQuote(row))
+          : [],
+      };
+      filteredCurrentTargetRows = Array.isArray(todayTargetsPayload.items) ? todayTargetsPayload.items : [];
+      renderCurrentTargetTable();
+      if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
     }
 
     function getCurrentTargetFilters() {
@@ -1017,14 +1091,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         if (requestToken !== currentTargetState.requestToken) return;
         runtimeCurrentMarketDate = String(payload?.current_market_date || payload?.market_date || runtimeCurrentMarketDate || '').trim();
         const items = Array.isArray(payload?.items) ? payload.items : [];
-        if (items.length) {
-          try {
-            await fetchRealtimeQuotes(items.map((row) => row?.symbol).filter(Boolean), { reset: false });
-          } catch (error) {
-            console.warn('加载今日标的实时报价失败:', error);
-          }
-        }
-        if (requestToken !== currentTargetState.requestToken) return;
         todayTargetsPayload = {
           ...(payload || { items: [], summary: {}, market_date: marketDate, filtered_total: 0, total_pages: 1, page: 1 }),
           items: items.map((row) => mergeTodayTargetRowWithRealtimeQuote(row)),
@@ -1035,6 +1101,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         renderRulesBoard();
         renderCurrentTargetTable();
         if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
+        void refreshTodayTargetQuotes(items, requestToken);
         if (showToastOnSuccess) showToast('今日交易标的已刷新');
       } catch (error) {
         if (requestToken !== currentTargetState.requestToken) return;
@@ -1058,6 +1125,28 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         display_price_source: quote?.last_price != null ? 'realtime_quote' : (row?.price_source || '--'),
         realtime_quote_age_s: quote?.quote_age_s != null ? quote.quote_age_s : null,
       };
+    }
+
+    async function refreshScreenerQuotes(items, loadKey) {
+      if (!Array.isArray(items) || !items.length) return;
+      try {
+        await fetchRealtimeQuotesIfNeeded(items.map((row) => row?.symbol).filter(Boolean), {
+          reset: false,
+          maxAgeMs: 15000,
+        });
+      } catch (error) {
+        console.warn('加载 screener 实时报价失败:', error);
+        return;
+      }
+      if (screenerLoadKey !== loadKey) return;
+      screenerPayload = {
+        ...screenerPayload,
+        items: Array.isArray(screenerPayload.items)
+          ? screenerPayload.items.map((row) => mergeScreenerRowWithRealtimeQuote(row))
+          : [],
+      };
+      applyFilters();
+      if (activeTab === 'screener') updateHero();
     }
 
     function statusChip(label, className) {
@@ -1224,7 +1313,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           }
         });
         showToast(`写入完成: created ${payload.created || 0}, updated ${payload.updated || 0}, skipped ${payload.skipped || 0}`);
-        await loadScreener(false);
+        await loadScreener(false, { force: true });
       } catch (error) {
         showToast(`写入失败: ${error.message || error}`);
       } finally {
@@ -1232,9 +1321,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
     };
 
-    async function loadScreener(showToastOnSuccess = false) {
+    async function loadScreener(showToastOnSuccess = false, { loadCurrentTargetsAfter = true, force = false } = {}) {
       if (!initAuth()) return;
       const marketDate = document.getElementById('marketDate').value || '';
+      const loadKey = getScreenerLoadKey(marketDate);
       const nextParams = { market_date: marketDate };
       if (activeTab === 'screener') {
         nextParams.view = activeScreenerView;
@@ -1253,6 +1343,21 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         window.history.replaceState({}, '', nextUrl);
       }
 
+      if (!force && screenerLoadKey === loadKey) {
+        populateSelect('exchangeFilter', screenerPayload.filters && screenerPayload.filters.exchanges);
+        populateSelect('industryFilter', screenerPayload.filters && screenerPayload.filters.industries);
+        populateSelect('targetStatusFilter', screenerPayload.filters && screenerPayload.filters.target_statuses);
+        populateSelect('directionFilter', screenerPayload.filters && screenerPayload.filters.direction_biases);
+        applyFilters();
+        renderRulesBoard();
+        if (loadCurrentTargetsAfter) {
+          await loadTodayTargets(false);
+        }
+        if (activeTab === 'screener') updateHero();
+        if (showToastOnSuccess) showToast('筛选器已刷新');
+        return screenerPayload;
+      }
+
       try {
         showLoading('正在聚合筛选器数据...');
         const rulesPromise = loadRulesSummary();
@@ -1261,29 +1366,28 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           market_date: marketDate
         })}`);
         const items = Array.isArray(payload?.items) ? payload.items : [];
-        if (items.length) {
-          try {
-            await fetchRealtimeQuotes(items.map((row) => row?.symbol).filter(Boolean), { reset: false });
-          } catch (error) {
-            console.warn('加载 screener 实时报价失败:', error);
-          }
-        }
         screenerPayload = {
           ...(payload || { items: [], summary: {}, filters: {} }),
           items: items.map((row) => mergeScreenerRowWithRealtimeQuote(row)),
         };
+        screenerLoadKey = loadKey;
         populateSelect('exchangeFilter', payload.filters && payload.filters.exchanges);
         populateSelect('industryFilter', payload.filters && payload.filters.industries);
         populateSelect('targetStatusFilter', payload.filters && payload.filters.target_statuses);
         populateSelect('directionFilter', payload.filters && payload.filters.direction_biases);
         applyFilters();
         await rulesPromise;
-        await loadTodayTargets(false);
+        if (loadCurrentTargetsAfter) {
+          await loadTodayTargets(false);
+        }
         renderRulesBoard();
         if (activeTab === 'screener') updateHero();
+        void refreshScreenerQuotes(items, loadKey);
         if (showToastOnSuccess) showToast('筛选器已刷新');
+        return screenerPayload;
       } catch (error) {
         console.error('loadScreener failed:', error);
+        screenerLoadKey = '';
         document.getElementById('refreshInfo').textContent = '加载失败';
         document.getElementById('screenerTable').innerHTML = `<tr><td colspan="9" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
         showToast(`加载失败: ${error.message || error}`);
@@ -1317,17 +1421,24 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const eventName = element.tagName === 'INPUT' && element.type === 'text' ? 'input' : 'change';
         element.addEventListener(eventName, applyFilters);
       });
-      document.getElementById('marketDate').addEventListener('change', () => {
+      document.getElementById('marketDate').addEventListener('change', async () => {
         const nextDate = document.getElementById('marketDate').value || getUsDate();
         currentTargetState.page = 1;
         dailyTargetsState.selectedDate = nextDate;
+        screenerLoadKey = '';
         if (document.getElementById('dailyTargetDate')) {
           document.getElementById('dailyTargetDate').value = nextDate;
         }
-        loadScreener(false);
-        if (activeTab === 'targets') {
-          loadDailyTargets(false);
+        syncUrl();
+        if (activeTab === 'screener') {
+          await ensureActiveScreenerDataLoaded({ force: true });
+          return;
         }
+        if (activeTab === 'targets') {
+          await loadDailyTargets(false);
+          return;
+        }
+        updateHero();
       });
     }
 
@@ -1356,7 +1467,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           applyCurrentTargetFilters({ resetPage: true });
         });
       }
-      document.getElementById('openUniverseViewBtn')?.addEventListener('click', () => activateScreenerView('universe'));
+      document.getElementById('openUniverseViewBtn')?.addEventListener('click', async () => {
+        await activateScreenerView('universe');
+      });
     }
 
     function parseSymbolList(rawValue) {
@@ -1585,7 +1698,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
     }
 
-    async function loadDailyTargets(showToastOnSuccess = false) {
+    async function loadDailyTargets(showToastOnSuccess = false, { refreshCurrentTargets = false } = {}) {
       dailyTargetsState.selectedDate = getDailyTargetDate();
       document.getElementById('dailyTargetDate').value = dailyTargetsState.selectedDate;
 
@@ -1597,15 +1710,19 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         });
         dailyTargetsState.items = Array.isArray(response.items) ? response.items : [];
         dailyTargetsState.loaded = true;
+        dailyTargetsState.loadedDate = dailyTargetsState.selectedDate;
         dailyTargetsState.lastRefresh = `更新: ${new Date().toLocaleTimeString()}`;
         document.getElementById('dailyTargetListMeta').textContent = `环境 ${getEnvironmentLabel(currentEnvironment)} / 日期 ${dailyTargetsState.selectedDate} / 原始记录 ${dailyTargetsState.items.length}`;
         renderDailyTargetRows();
-        await loadTodayTargets(false);
+        if (refreshCurrentTargets) {
+          await loadTodayTargets(false);
+        }
         syncUrl();
         if (showToastOnSuccess) showToast('ibkr_targets 已刷新');
       } catch (error) {
         dailyTargetsState.items = [];
-        dailyTargetsState.loaded = true;
+        dailyTargetsState.loaded = false;
+        dailyTargetsState.loadedDate = '';
         dailyTargetsState.lastRefresh = 'ibkr_targets 加载失败';
         document.getElementById('dailyTargetsTable').innerHTML = `<tr><td colspan="9" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
         document.getElementById('dailyTargetListMeta').textContent = `加载失败: ${error.message || error}`;
@@ -2223,11 +2340,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       renderSearchResults();
       renderDailyTargetRows();
       renderWatchlistRows();
-      activateScreenerView(activeScreenerView, { syncHistory: false });
-      updateHero();
-      await loadScreener(false);
       await activateTab(activeTab, {
         syncHistory: false,
-        reloadCurrentTargets: activeTab !== 'screener',
       });
     });

@@ -48,51 +48,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return true;
         }
 
-        function escapeHtml(value) {
-            return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }
-
-        function getAuthHeaders(extra = {}) {
-            const headers = { ...extra };
-            const token = getToken();
-            if (token) headers['Authorization'] = `Bearer ${token}`;
-            return headers;
-        }
-
         async function requestRuntimeJson(path, { method = 'GET', body = null } = {}) {
-            const options = {
+            return requestIbkrPageJson(path, {
+                environment: currentEnvironment,
                 method,
-                headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
-            };
-            if (body) options.body = JSON.stringify(body);
-            const response = await fetchWithRetry(
-                buildPageUrl(path, {}, { environment: currentEnvironment }),
-                options,
-                {
-                    attempts: 3,
-                    retryDelayMs: 500
-                }
-            );
-            if (response.status === 401 || response.status === 403) {
-                handleAuthError();
-                throw new Error('Authentication failed');
-            }
-            const text = await response.text();
-            let data = {};
-            try {
-                data = text ? JSON.parse(text) : {};
-            } catch (_) {
-                data = { ok: false, raw: text };
-            }
-            if (!response.ok) {
-                throw new Error(data.message || data.error || `Request failed (${response.status})`);
-            }
-            return data;
+                body,
+                retryAttempts: 3
+            });
         }
 
         function toArray(payload) {
@@ -115,17 +77,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function getManualAuthReasonLabel(reason) {
             return MANUAL_AUTH_REASON_LABELS[normalizeManualAuthReason(reason)] || '手动验证';
-        }
-
-        function normalizeBooleanText(value, fallback = 'TRUE') {
-            const text = String(value ?? fallback).trim().toUpperCase();
-            if (!text) return String(fallback || 'TRUE').trim().toUpperCase();
-            return text;
-        }
-
-        function isTruthyConfigValue(value, fallback = 'TRUE') {
-            const text = normalizeBooleanText(value, fallback);
-            return !(text === 'FALSE' || text === '0' || text === 'OFF' || text === 'NO');
         }
 
         function statusClass(value) {
@@ -166,15 +117,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const number = Number(value || 0);
             if (!Number.isFinite(number)) return '0';
             return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(number);
-        }
-
-        function formatTimeLabel(value) {
-            if (!value) return '--';
-            if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
-                return formatTime(value, 'America/New_York', 'default');
-            }
-            if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value;
-            return String(value);
         }
 
         function formatTimeLabelWithFallback(value) {
@@ -1593,90 +1535,41 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             `;
         }
 
-        function getMergedConfigMap(summary, runtimeConfig) {
-            const preferredKeys = [
-                'ibkr_compute_public_url',
-                'ibkr_compute_enabled',
-                'pb_scheduler_enabled',
-                'ibkr_bar_publish_enabled',
-                'ibkr_trading_enabled',
-                'ibkr_signal_source',
-                'signal_manual_confirm_enabled',
-                'position_limit_max',
-                'eod_close_time',
-                'eod_keep_symbols',
-                'watchlist_interval_min',
-                'ibkr_target_refresh_sec',
-                'ibkr_target_subscription_limit',
-                'ibkr_active_repair_interval_min',
-                'ibkr_watchlist_backfill_interval_min',
-                'ibkr_watchlist_backfill_batch_size',
-                'ibkr_watchlist_backfill_stale_min',
-                'trade_window_start_time',
-                'trade_window_end_time',
-                'order_window_end_time',
-                'signal_validity_minutes',
-                'order_validity_minutes',
-                'signal_poll_interval_sec',
-                'reverse_signal_threshold'
-            ];
-            const configMap = {};
-            runtimeConfig.forEach((item) => {
-                if (item?.key && !(item.key in configMap)) configMap[item.key] = item.value;
-            });
-            Object.entries(summary?.config || {}).forEach(([key, value]) => {
-                if (!(key in configMap)) configMap[key] = value;
-            });
-            return { configMap, preferredKeys };
-        }
-
-        function getCronEffectiveState(definition, configMap) {
-            const schedulerValue = configMap?.pb_scheduler_enabled ?? 'TRUE';
-            const cronValue = configMap?.[definition?.config_key] ?? definition?.default_value ?? 'TRUE';
-            const schedulerEnabled = isTruthyConfigValue(schedulerValue, 'TRUE');
-            const cronEnabled = isTruthyConfigValue(cronValue, definition?.default_value ?? 'TRUE');
-            return {
-                schedulerEnabled,
-                cronEnabled,
-                effectiveEnabled: schedulerEnabled && cronEnabled,
-            };
-        }
-
         function renderCronSummary(definitions, configMap) {
-            if (!Array.isArray(definitions) || !definitions.length) {
+            const cronCards = getIbkrCronCardDataList(definitions, configMap, currentEnvironment);
+            if (!cronCards.length) {
                 return renderEmpty('暂无 PB cron 定义');
             }
             return `
                 <div class="cron-stack">
-                    ${definitions.map((definition) => {
-                        const state = getCronEffectiveState(definition, configMap);
+                    ${cronCards.map((card) => {
                         return `
                             <div class="cron-card">
                                 <div class="cron-card-head">
                                     <div>
-                                        <div class="cron-card-title">${escapeHtml(definition.display_name || definition.config_display_name || definition.id || 'PB Cron')}</div>
-                                        <div class="cron-card-key">${escapeHtml(definition.config_key || definition.id || '-')}</div>
+                                        <div class="cron-card-title">${escapeHtml(card.title)}</div>
+                                        <div class="cron-card-key">${escapeHtml(card.configKey)}</div>
                                     </div>
-                                    <span class="pill ${state.effectiveEnabled ? 'pill-ok' : 'pill-error'}">${state.effectiveEnabled ? 'ENABLED' : 'DISABLED'}</span>
+                                    <span class="pill ${card.effectiveEnabled ? 'pill-ok' : 'pill-error'}">${card.effectiveEnabled ? 'ENABLED' : 'DISABLED'}</span>
                                 </div>
-                                <div class="cron-card-copy">${escapeHtml(definition.function_summary || '--')}</div>
+                                <div class="cron-card-copy">${escapeHtml(card.functionSummary)}</div>
                                 <div class="cron-card-meta">
                                     <div class="cron-card-row">
                                         <span class="label">时区</span>
                                         <div>
                                             <details class="cron-time-details">
                                                 <summary class="cron-time-summary">
-                                                    <span class="cron-time-primary">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '--')}</span>
+                                                    <span class="cron-time-primary">${escapeHtml(card.primaryCycleLabel)}</span>
                                                     <span class="cron-time-toggle">UTC / ET</span>
                                                 </summary>
                                                 <div class="cron-time-list">
                                                     <div class="cron-time-item">
                                                         <span class="cron-time-name">UTC</span>
-                                                        <span class="cron-time-text">${escapeHtml(definition.cycle_label || '--')}</span>
+                                                        <span class="cron-time-text">${escapeHtml(card.utcCycleLabel)}</span>
                                                     </div>
                                                     <div class="cron-time-item">
                                                         <span class="cron-time-name">ET</span>
-                                                        <span class="cron-time-text">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '--')}</span>
+                                                        <span class="cron-time-text">${escapeHtml(card.etCycleLabel)}</span>
                                                     </div>
                                                 </div>
                                             </details>
@@ -1687,19 +1580,19 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                         <div>
                                             <details class="cron-exp-details">
                                                 <summary class="cron-exp-summary">查看表达式</summary>
-                                                <div class="cron-exp-text">${escapeHtml(definition.cron_expr || '--')}</div>
+                                                <div class="cron-exp-text">${escapeHtml(card.cronExpr)}</div>
                                             </details>
                                         </div>
                                     </div>
                                     <div class="cron-card-row">
                                         <span class="label">窗口</span>
-                                        <span>${escapeHtml(definition.window_label || '--')}</span>
+                                        <span>${escapeHtml(card.windowLabel)}</span>
                                     </div>
                                 </div>
                                 <div class="cron-chip-row">
-                                    <span class="mini-tag"><span class="mini-label">PB</span>${state.schedulerEnabled ? 'ON' : 'OFF'}</span>
-                                    <span class="mini-tag"><span class="mini-label">THIS</span>${state.cronEnabled ? 'ON' : 'OFF'}</span>
-                                    <span class="mini-tag"><span class="mini-label">ENV</span>${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
+                                    <span class="mini-tag"><span class="mini-label">PB</span>${card.schedulerEnabled ? 'ON' : 'OFF'}</span>
+                                    <span class="mini-tag"><span class="mini-label">THIS</span>${card.cronEnabled ? 'ON' : 'OFF'}</span>
+                                    <span class="mini-tag"><span class="mini-label">ENV</span>${escapeHtml(card.environmentLabel)}</span>
                                 </div>
                             </div>
                         `;
@@ -1709,11 +1602,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function renderConfigDetail(summary, runtimeConfig, cronDefinitions) {
-            const { configMap, preferredKeys } = getMergedConfigMap(summary, runtimeConfig);
-            const chips = preferredKeys
-                .filter((key) => configMap[key] !== undefined && configMap[key] !== '')
-                .map((key) => `
-                    <span class="mini-tag"><span class="mini-label">${escapeHtml(key)}</span>${escapeHtml(String(configMap[key]))}</span>
+            const configMap = buildIbkrConfigMap(summary, runtimeConfig);
+            const chips = getOrderedIbkrConfigEntries(configMap)
+                .map((entry) => `
+                    <span class="mini-tag"><span class="mini-label">${escapeHtml(entry.key)}</span>${escapeHtml(String(entry.value))}</span>
                 `);
             const blocks = [];
             if (chips.length) {
@@ -1877,7 +1769,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function renderEngineTable(status) {
-            const engines = status?.engines && typeof status.engines === 'object' ? Object.entries(status.engines) : [];
+            const engines = getSortedEngineEntries(status?.engines);
             const readySummary = `${status?.ready_engines || 0}/${status?.total_engines || 0} ready`;
             const hasEngineSummaryOnly = Boolean(status?.engines_available) && !Boolean(status?.engines_included);
             document.getElementById('engineHint').textContent = hasEngineSummaryOnly
@@ -1890,13 +1782,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 document.getElementById('engineTable').innerHTML = renderEmpty(message);
                 return;
             }
-            const rows = engines.sort((a, b) => {
-                const readyDiff = Number(Boolean(b[1]?.is_ready)) - Number(Boolean(a[1]?.is_ready));
-                if (readyDiff) return readyDiff;
-                const barDiff = Number(b[1]?.bar_count || 0) - Number(a[1]?.bar_count || 0);
-                if (barDiff) return barDiff;
-                return a[0].localeCompare(b[0]);
-            }).slice(0, 20).map(([key, engine]) => `
+            const rows = engines.slice(0, 20).map(([key, engine]) => `
                 <tr>
                     <td class="mono">${escapeHtml(key)}</td>
                     <td>${engine.bar_count || 0}</td>

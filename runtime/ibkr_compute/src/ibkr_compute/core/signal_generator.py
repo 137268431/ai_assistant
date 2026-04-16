@@ -328,18 +328,26 @@ class SignalGenerator:
     # ── EMA 触及线判定 ──
 
     def _resolve_touch_line(self, snapshot: dict, direction: str) -> str:
+        touch_key = self._resolve_touch_line_key(snapshot, direction)
+        if touch_key == "fast":
+            return "ema的快线"
+        if touch_key == "slow":
+            return "ema的慢线"
+        return "ema的快线"
+
+    def _resolve_touch_line_key(self, snapshot: dict, direction: str) -> str:
         touch_type = self.params.get("ema_touch_type", "slow")
         if direction == "bull":
             if snapshot.get("bull_touch_fast", False) and (touch_type in ("fast", "both")):
-                return "ema的快线"
+                return "fast"
             if snapshot.get("bull_touch_slow", False) and (touch_type in ("slow", "both")):
-                return "ema的慢线"
+                return "slow"
         else:
             if snapshot.get("bear_touch_fast", False) and (touch_type in ("fast", "both")):
-                return "ema的快线"
+                return "fast"
             if snapshot.get("bear_touch_slow", False) and (touch_type in ("slow", "both")):
-                return "ema的慢线"
-        return "ema的快线"
+                return "slow"
+        return "none"
 
     # ── 信号构建 ──
 
@@ -347,22 +355,35 @@ class SignalGenerator:
                       sd_upper_valid: bool, sd_lower_valid: bool) -> dict:
         close = snapshot.get("close", 0)
         atr = snapshot.get("atr", 0)
+        signal_window = "sd_upper"
+        signal_mode = "mr"
+        ema_touch_line_key = "none"
 
         if direction == "long":
             pos = calc_long_position(close, atr, self.params)
             if sd_upper_valid and self.sd_upper_bull_touch_seen:
                 signal_type = "trend_sdUpper"
+                signal_window = "sd_upper"
+                signal_mode = "trend"
+                ema_touch_line_key = self._resolve_touch_line_key(snapshot, "bull")
                 reason = f"SD上轨→顺势做多(fractal↑+EMA-touch↑[{self.sd_upper_bull_touch_line}]+div↑)"
             else:
                 signal_type = "mr_sdLower"
+                signal_window = "sd_lower"
+                signal_mode = "mr"
                 reason = "SD下轨→均值回归做多(fractal↑+div↑)"
         else:
             pos = calc_short_position(close, atr, self.params)
             if sd_lower_valid and self.sd_lower_bear_touch_seen:
                 signal_type = "trend_sdLower"
+                signal_window = "sd_lower"
+                signal_mode = "trend"
+                ema_touch_line_key = self._resolve_touch_line_key(snapshot, "bear")
                 reason = f"SD下轨→顺势做空(fractal↓+EMA-touch↓[{self.sd_lower_bear_touch_line}]+div↓)"
             else:
                 signal_type = "mr_sdUpper"
+                signal_window = "sd_upper"
+                signal_mode = "mr"
                 reason = "SD上轨→均值回归做空(fractal↓+div↓)"
 
         div_source = self._get_div_source(direction)
@@ -383,6 +404,10 @@ class SignalGenerator:
             "extra": {
                 "sd_zone": self._zone_str(snapshot),
                 "sd_trend": self._trend_str(snapshot.get("sd_trend", 0)),
+                "signal_window": signal_window,
+                "signal_mode": signal_mode,
+                "ema_touch_line": ema_touch_line_key,
+                "div_source": "both" if div_source == "cRSI+OBV" else ("crsi" if div_source == "cRSI" else ("obv" if div_source == "OBV" else "none")),
                 "dtp_dir": self._dtp_str(snapshot.get("dtp_dir", 0)),
                 "dtp_phase": snapshot.get("dtp_phase", "neutral"),
                 "crsi_state": "overbought" if snapshot.get("crsi_ob") else ("oversold" if snapshot.get("crsi_os") else "normal"),

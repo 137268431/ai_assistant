@@ -246,8 +246,16 @@ class DivergenceDetector:
         result = {
             "crsi_bull_div": False, "crsi_bear_div": False,
             "crsi_hid_bull": False, "crsi_hid_bear": False,
+            "crsi_reg_bull_div": False, "crsi_reg_bear_div": False,
+            "crsi_wide_bull_div": False, "crsi_wide_bear_div": False,
+            "crsi_reg_hid_bull": False, "crsi_reg_hid_bear": False,
+            "crsi_wide_hid_bull": False, "crsi_wide_hid_bear": False,
             "obv_bull_div": False, "obv_bear_div": False,
             "obv_hid_bull": False, "obv_hid_bear": False,
+            "obv_reg_bull_div": False, "obv_reg_bear_div": False,
+            "obv_wide_bull_div": False, "obv_wide_bear_div": False,
+            "obv_reg_hid_bull": False, "obv_reg_hid_bear": False,
+            "obv_wide_hid_bull": False, "obv_wide_hid_bear": False,
             "any_bull_div": False, "any_bear_div": False,
         }
 
@@ -289,10 +297,24 @@ class DivergenceDetector:
                 self._prev_crsi_pl_rsi = wide["new_pl_rsi"]
                 self._prev_crsi_pl_bar = wide["new_pl_bar"]
 
-            bull = strict["bull_div"] or wide["bull_div"]
-            bear = strict["bear_div"] or wide["bear_div"]
-            hid_bull = strict["hid_bull"] or wide["hid_bull"]
-            hid_bear = strict["hid_bear"] or wide["hid_bear"]
+            strict_bull = strict["bull_div"]
+            strict_bear = strict["bear_div"]
+            strict_hid_bull = strict["hid_bull"]
+            strict_hid_bear = strict["hid_bear"]
+            wide_bull = wide["bull_div"]
+            wide_bear = wide["bear_div"]
+            wide_hid_bull = wide["hid_bull"]
+            wide_hid_bear = wide["hid_bear"]
+            if self.div_type == "regular":
+                strict_hid_bull = strict_hid_bear = False
+                wide_hid_bull = wide_hid_bear = False
+            elif self.div_type == "hidden":
+                strict_bull = strict_bear = False
+                wide_bull = wide_bear = False
+            bull = strict_bull or wide_bull
+            bear = strict_bear or wide_bear
+            hid_bull = strict_hid_bull or wide_hid_bull
+            hid_bear = strict_hid_bear or wide_hid_bear
             bull, bear, hid_bull, hid_bear = self._apply_type_filter(
                 bull, bear, hid_bull, hid_bear,
             )
@@ -300,6 +322,14 @@ class DivergenceDetector:
             result["crsi_bear_div"] = bear
             result["crsi_hid_bull"] = hid_bull
             result["crsi_hid_bear"] = hid_bear
+            result["crsi_reg_bull_div"] = strict_bull
+            result["crsi_reg_bear_div"] = strict_bear
+            result["crsi_wide_bull_div"] = wide_bull
+            result["crsi_wide_bear_div"] = wide_bear
+            result["crsi_reg_hid_bull"] = strict_hid_bull
+            result["crsi_reg_hid_bear"] = strict_hid_bear
+            result["crsi_wide_hid_bull"] = wide_hid_bull
+            result["crsi_wide_hid_bear"] = wide_hid_bear
 
         # ── OBV RSI divergence ──
         lb = self.obv_lookback
@@ -338,10 +368,24 @@ class DivergenceDetector:
                 self._prev_obv_pl_rsi = wide["new_pl_rsi"]
                 self._prev_obv_pl_bar = wide["new_pl_bar"]
 
-            bull = strict["bull_div"] or wide["bull_div"]
-            bear = strict["bear_div"] or wide["bear_div"]
-            hid_bull = strict["hid_bull"] or wide["hid_bull"]
-            hid_bear = strict["hid_bear"] or wide["hid_bear"]
+            strict_bull = strict["bull_div"]
+            strict_bear = strict["bear_div"]
+            strict_hid_bull = strict["hid_bull"]
+            strict_hid_bear = strict["hid_bear"]
+            wide_bull = wide["bull_div"]
+            wide_bear = wide["bear_div"]
+            wide_hid_bull = wide["hid_bull"]
+            wide_hid_bear = wide["hid_bear"]
+            if self.div_type == "regular":
+                strict_hid_bull = strict_hid_bear = False
+                wide_hid_bull = wide_hid_bear = False
+            elif self.div_type == "hidden":
+                strict_bull = strict_bear = False
+                wide_bull = wide_bear = False
+            bull = strict_bull or wide_bull
+            bear = strict_bear or wide_bear
+            hid_bull = strict_hid_bull or wide_hid_bull
+            hid_bear = strict_hid_bear or wide_hid_bear
             bull, bear, hid_bull, hid_bear = self._apply_type_filter(
                 bull, bear, hid_bull, hid_bear,
             )
@@ -349,6 +393,14 @@ class DivergenceDetector:
             result["obv_bear_div"] = bear
             result["obv_hid_bull"] = hid_bull
             result["obv_hid_bear"] = hid_bear
+            result["obv_reg_bull_div"] = strict_bull
+            result["obv_reg_bear_div"] = strict_bear
+            result["obv_wide_bull_div"] = wide_bull
+            result["obv_wide_bear_div"] = wide_bear
+            result["obv_reg_hid_bull"] = strict_hid_bull
+            result["obv_reg_hid_bear"] = strict_hid_bear
+            result["obv_wide_hid_bull"] = wide_hid_bull
+            result["obv_wide_hid_bear"] = wide_hid_bear
 
         # Aggregate
         result["any_bull_div"] = (

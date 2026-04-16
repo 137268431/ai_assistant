@@ -4,10 +4,38 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from ibkr_compute.market.timeframe_utils import normalize_interval
+from ibkr_compute.market.timeframe_utils import latest_safe_closed_bucket_ms, normalize_interval
 
 from ibkr_compute.api.compute.runtime_state.engines import get_or_create_engine
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
+
+
+def _safe_storage_upper_bound_ms(api_app, environment: str, interval: str) -> int:
+    normalized_interval = normalize_interval(interval)
+    if normalized_interval != "5m":
+        return 0
+
+    close_delay_seconds = 8
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None:
+        try:
+            close_delay_seconds = max(
+                0,
+                int(
+                    cfg.get_int_for_environment(
+                        "ibkr_official_5m_close_delay_sec",
+                        environment,
+                        8,
+                    )
+                ),
+            )
+        except Exception:
+            close_delay_seconds = 8
+
+    return latest_safe_closed_bucket_ms(
+        normalized_interval,
+        delay_seconds=close_delay_seconds,
+    )
 
 
 def bootstrap_engine_state(
@@ -45,6 +73,9 @@ def bootstrap_engine_state(
         f'interval = "{normalized_interval}"',
         api_app.build_bar_environment_filter(runtime_environment, include_legacy_empty=True),
     ]
+    safe_upper_ms = _safe_storage_upper_bound_ms(api_app, runtime_environment, normalized_interval)
+    if safe_upper_ms > 0:
+        filter_parts.append(f"bar_time_ms <= {safe_upper_ms}")
     if target_ms > 0:
         filter_parts.append(f"bar_time_ms {comparison} {target_ms}")
 
@@ -112,13 +143,17 @@ def materialize_engines_from_storage(
     started_at = time.perf_counter()
 
     symbol_filters = " || ".join(f'symbol = "{symbol}"' for symbol in normalized_symbols)
+    filter_parts = [
+        f'interval = "{normalized_interval}"',
+        api_app.build_bar_environment_filter(runtime_environment, include_legacy_empty=True),
+        f'({symbol_filters})',
+    ]
+    safe_upper_ms = _safe_storage_upper_bound_ms(api_app, runtime_environment, normalized_interval)
+    if safe_upper_ms > 0:
+        filter_parts.append(f"bar_time_ms <= {safe_upper_ms}")
     rows = api_app.pb.get_all_records(
         "ibkr_bars",
-        filter=(
-            f'interval = "{normalized_interval}" && '
-            f'{api_app.build_bar_environment_filter(runtime_environment, include_legacy_empty=True)} && '
-            f'({symbol_filters})'
-        ),
+        filter=" && ".join(filter_parts),
         sort="-bar_time_ms",
         max_pages=max(4, len(normalized_symbols)),
     )

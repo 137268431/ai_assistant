@@ -793,7 +793,7 @@ class _IBGatewayApp(EWrapper, EClient):
             str(bar_size),
             "TRADES",
             1 if use_rth else 0,
-            1,
+            2,
             False,
             [],
         )

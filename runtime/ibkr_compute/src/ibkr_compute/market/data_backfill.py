@@ -16,6 +16,7 @@ from ibkr_compute.broker import BrokerAdapter
 
 from .timeframe_utils import (
     build_runtime_timestamps,
+    latest_safe_closed_bucket_ms,
     classify_session,
     format_cn_time,
     format_us_time,
@@ -60,6 +61,10 @@ MAX_CONCURRENT_REQUESTS = max(
 MAX_RETRIES = max(0, int(os.environ.get("IBKR_HISTORY_MAX_RETRIES", "4")))
 RETRY_BASE_DELAY_SECONDS = max(0.5, float(os.environ.get("IBKR_HISTORY_RETRY_BASE_DELAY", "2.0")))
 RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+DEFAULT_HISTORY_CLOSE_DELAY_SECONDS = max(
+    1,
+    int(os.environ.get("IBKR_OFFICIAL_5M_CLOSE_DELAY_SEC", "8")),
+)
 
 IB_DURATION_SUFFIX = {
     "s": "S",
@@ -203,6 +208,25 @@ class DataBackfill:
     def _retry_base_delay(self) -> float:
         return max(0.5, self._get_float_setting("ibkr_history_retry_base_delay", RETRY_BASE_DELAY_SECONDS))
 
+    def _close_delay_seconds(self) -> int:
+        return max(
+            0,
+            self._get_int_setting(
+                "ibkr_official_5m_close_delay_sec",
+                DEFAULT_HISTORY_CLOSE_DELAY_SECONDS,
+            ),
+        )
+
+    def _safe_history_upper_bound_ms(self, interval: str, *, now_ts: float | None = None) -> int:
+        normalized = normalize_interval(interval)
+        if normalized != "5m":
+            return 0
+        return latest_safe_closed_bucket_ms(
+            normalized,
+            delay_seconds=self._close_delay_seconds(),
+            now_ms=int((now_ts or time.time()) * 1000),
+        )
+
     def _wait_for_request_slot(self):
         request_spacing = self._request_spacing()
         if request_spacing <= 0:
@@ -291,14 +315,18 @@ class DataBackfill:
         safe_symbol = str(symbol or "").upper().replace('"', '\\"')
         safe_interval = normalized.replace('"', '\\"')
         safe_environment = str(self.environment or "live").strip().lower().replace('"', '\\"')
+        safe_upper_ms = self._safe_history_upper_bound_ms(normalized)
         try:
+            filter_parts = [
+                f'symbol = "{safe_symbol}"',
+                f'interval = "{safe_interval}"',
+                f'environment = "{safe_environment}"',
+            ]
+            if safe_upper_ms > 0:
+                filter_parts.append(f"bar_time_ms <= {safe_upper_ms}")
             rows = self.pb_client.get_records(
                 "ibkr_bars",
-                filter=(
-                    f'symbol = "{safe_symbol}" && '
-                    f'interval = "{safe_interval}" && '
-                    f'environment = "{safe_environment}"'
-                ),
+                filter=" && ".join(filter_parts),
                 sort="-bar_time_ms",
                 per_page=1,
                 page=1,
@@ -492,6 +520,33 @@ class DataBackfill:
                     },
                 }
                 result.append(payload)
+
+            safe_upper_ms = self._safe_history_upper_bound_ms(normalized)
+            if safe_upper_ms > 0:
+                future_rows = [
+                    row for row in result
+                    if int(row.get("bar_time_ms", 0) or 0) > safe_upper_ms
+                ]
+                if future_rows:
+                    future_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+                    logger.warning(
+                        "Dropped %d unsafe future %s bars for %s: safe_upper_ms=%d(%s) first=%d(%s) last=%d(%s) repair=%s period=%s",
+                        len(future_rows),
+                        normalized,
+                        symbol,
+                        safe_upper_ms,
+                        format_us_time(safe_upper_ms),
+                        int(future_rows[0].get("bar_time_ms", 0) or 0),
+                        future_rows[0].get("us_time", ""),
+                        int(future_rows[-1].get("bar_time_ms", 0) or 0),
+                        future_rows[-1].get("us_time", ""),
+                        bool(repair),
+                        period,
+                    )
+                    result = [
+                        row for row in result
+                        if int(row.get("bar_time_ms", 0) or 0) <= safe_upper_ms
+                    ]
 
             latest_stored_ms = self._get_latest_stored_bar_ms(symbol, normalized)
             if latest_stored_ms > 0 and not repair:

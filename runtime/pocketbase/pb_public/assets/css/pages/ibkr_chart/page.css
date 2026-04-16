@@ -232,6 +232,15 @@
             transform: translateY(-1px);
         }
 
+        .layer-btn.disabled {
+            opacity: 0.42;
+            cursor: not-allowed;
+            border-style: dashed;
+            color: rgba(139, 164, 196, 0.78);
+            background: rgba(8, 12, 20, 0.62);
+            transform: none;
+        }
+
         .cursor-card {
             border-radius: 12px;
             border: 1px solid rgba(99,179,237,0.12);
@@ -497,6 +506,24 @@
             box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
         }
 
+        .tv-tool-btn.active {
+            color: #eff6ff;
+            border-color: rgba(125, 211, 252, 0.30);
+            background: linear-gradient(180deg, rgba(20, 38, 60, 0.98), rgba(10, 18, 32, 0.98));
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 22px rgba(8, 12, 20, 0.18);
+        }
+
+        .tv-tool-btn.tf {
+            min-width: 58px;
+            padding: 0 14px;
+            border-radius: 999px;
+            letter-spacing: 0.04em;
+        }
+
+        .tv-toolbar-timeframes {
+            gap: 6px;
+        }
+
         .tv-copy-chip {
             background: rgba(8, 12, 20, 0.86);
             color: var(--muted);
@@ -528,9 +555,68 @@
             top: 14px;
             left: 14px;
             right: 14px;
+            display: flex;
+            justify-content: flex-start;
+            align-items: flex-start;
+            pointer-events: auto;
+            z-index: 3;
+        }
+
+        .tv-floating-shell {
+            width: min(100%, 860px);
+            display: grid;
+            gap: 10px;
+            padding: 10px;
+            border-radius: 18px;
+            border: 1px solid rgba(99,179,237,0.16);
+            background: linear-gradient(180deg, rgba(6, 11, 20, 0.90), rgba(10, 16, 28, 0.84));
+            box-shadow: 0 18px 48px rgba(0, 0, 0, 0.26);
+            backdrop-filter: blur(14px) saturate(120%);
+        }
+
+        .tv-floating-shell.collapsed {
+            width: min(100%, 640px);
+            gap: 0;
+        }
+
+        .tv-floating-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .tv-floating-summary {
+            display: flex;
+            flex: 1 1 auto;
+            flex-wrap: wrap;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .tv-floating-body {
             display: grid;
             gap: 8px;
-            align-content: start;
+        }
+
+        .tv-floating-toggle {
+            flex: 0 0 auto;
+            min-height: 32px;
+            padding: 0 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.18);
+            background: linear-gradient(180deg, rgba(22, 33, 51, 0.96), rgba(9, 15, 25, 0.96));
+            color: #d7e2f0;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: border-color 0.16s ease, transform 0.16s ease, background 0.16s ease;
+        }
+
+        .tv-floating-toggle:hover {
+            transform: translateY(-1px);
+            border-color: rgba(125, 211, 252, 0.28);
+            background: linear-gradient(180deg, rgba(26, 40, 62, 0.98), rgba(11, 18, 30, 0.98));
         }
 
         .tv-floating-row {
@@ -833,6 +919,14 @@
             color: #dff7ff;
             border-color: rgba(125, 211, 252, 0.26);
             background: rgba(17, 31, 49, 0.96);
+        }
+
+        .mobile-quick-chip.disabled {
+            opacity: 0.42;
+            cursor: not-allowed;
+            border-style: dashed;
+            color: rgba(139, 164, 196, 0.78);
+            background: rgba(8, 12, 20, 0.62);
         }
 
         .inspector-drawer {
@@ -1420,7 +1514,27 @@
                 top: 10px;
                 left: 10px;
                 right: 10px;
+            }
+
+            .tv-floating-shell {
+                width: min(100%, 100%);
+                padding: 8px;
+                gap: 8px;
+                border-radius: 16px;
+            }
+
+            .tv-floating-head {
+                align-items: stretch;
+                flex-wrap: wrap;
+            }
+
+            .tv-floating-summary {
                 gap: 6px;
+            }
+
+            .tv-floating-toggle {
+                min-height: 30px;
+                padding: 0 10px;
             }
 
             .tv-watermark {
@@ -1610,6 +1724,24 @@
                 top: 8px;
                 left: 8px;
                 right: 8px;
+            }
+
+            .tv-floating-shell {
+                padding: 7px;
+                border-radius: 14px;
+            }
+
+            .tv-floating-head {
+                gap: 8px;
+            }
+
+            .tv-floating-summary,
+            .tv-floating-body {
+                gap: 6px;
+            }
+
+            .tv-floating-toggle {
+                width: 100%;
             }
 
             .chart-bottom-bar {

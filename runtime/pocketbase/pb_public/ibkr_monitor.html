@@ -340,6 +340,51 @@
         .state-active { color: #48BB78; }
         .state-stale { color: #FC8181; }
         .state-pending { color: #F6AD55; }
+        .symbol-pager {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 8px;
+            width: min(100%, 220px);
+        }
+        .symbol-page-btn {
+            width: 22px;
+            height: 22px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1;
+            cursor: pointer;
+            transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+        }
+        .symbol-page-btn:hover:not(:disabled) {
+            border-color: rgba(99, 179, 237, 0.32);
+            background: rgba(99, 179, 237, 0.12);
+            color: var(--text);
+        }
+        .symbol-page-btn:disabled {
+            opacity: 0.34;
+            cursor: default;
+        }
+        .symbol-page-body {
+            min-width: 0;
+            display: grid;
+            gap: 4px;
+        }
+        .symbol-page-text {
+            min-width: 0;
+            word-break: break-all;
+            line-height: 1.45;
+        }
+        .symbol-page-meta {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.4px;
+        }
 
         .split-grid {
             display: grid;
@@ -576,6 +621,7 @@
         let refreshTimer = null;
         let latestMonitorLoadId = 0;
         let lastCounterSnapshot = null;
+        let symbolPagerState = {};
 
         const DELTA_KEYS = [
             'request_count',
@@ -608,6 +654,78 @@
             const token = getToken();
             if (token) headers.Authorization = `Bearer ${token}`;
             return headers;
+        }
+
+        function chunkSymbolPages(value, pageSize = 18) {
+            const text = String(value ?? '').trim() || '--';
+            if (text.length <= pageSize) return [text];
+            const tokens = text.split(/([._:/\-\s]+)/).filter((item) => item !== '');
+            const pages = [];
+            let current = '';
+            tokens.forEach((token) => {
+                if (token.length > pageSize) {
+                    if (current) {
+                        pages.push(current);
+                        current = '';
+                    }
+                    for (let index = 0; index < token.length; index += pageSize) {
+                        pages.push(token.slice(index, index + pageSize));
+                    }
+                    return;
+                }
+                if (!current || (current + token).length <= pageSize) {
+                    current += token;
+                    return;
+                }
+                pages.push(current);
+                current = token;
+            });
+            if (current) pages.push(current);
+            const normalizedPages = pages.map((item) => item.trim()).filter(Boolean);
+            return normalizedPages.length ? normalizedPages : [text];
+        }
+
+        function renderPagedSymbol(value, key) {
+            const text = String(value ?? '').trim() || '--';
+            const pages = chunkSymbolPages(text);
+            if (pages.length <= 1) {
+                delete symbolPagerState[key];
+                return `<div class="symbol-page-text" title="${escapeHtml(text)}">${escapeHtml(text)}</div>`;
+            }
+            symbolPagerState[key] = { pages, index: 0 };
+            return `
+                <div class="symbol-pager" data-symbol-pager-key="${escapeHtml(key)}">
+                    <button class="symbol-page-btn" type="button" data-role="prev" onclick="stepSymbolPage('${escapeHtml(key)}', -1)" disabled aria-label="上一段">‹</button>
+                    <div class="symbol-page-body">
+                        <div class="symbol-page-text" data-role="text" title="${escapeHtml(text)}">${escapeHtml(pages[0])}</div>
+                        <div class="symbol-page-meta" data-role="meta">1 / ${pages.length}</div>
+                    </div>
+                    <button class="symbol-page-btn" type="button" data-role="next" onclick="stepSymbolPage('${escapeHtml(key)}', 1)" ${pages.length <= 1 ? 'disabled' : ''} aria-label="下一段">›</button>
+                </div>
+            `;
+        }
+
+        function syncSymbolPager(key) {
+            const state = symbolPagerState[key];
+            if (!state || !Array.isArray(state.pages) || !state.pages.length) return;
+            state.index = Math.max(0, Math.min(state.pages.length - 1, Number(state.index || 0)));
+            const root = document.querySelector(`[data-symbol-pager-key="${key}"]`);
+            if (!root) return;
+            const textEl = root.querySelector('[data-role="text"]');
+            const metaEl = root.querySelector('[data-role="meta"]');
+            const prevBtn = root.querySelector('[data-role="prev"]');
+            const nextBtn = root.querySelector('[data-role="next"]');
+            if (textEl) textEl.textContent = state.pages[state.index];
+            if (metaEl) metaEl.textContent = `${state.index + 1} / ${state.pages.length}`;
+            if (prevBtn) prevBtn.disabled = state.index <= 0;
+            if (nextBtn) nextBtn.disabled = state.index >= state.pages.length - 1;
+        }
+
+        function stepSymbolPage(key, delta) {
+            const state = symbolPagerState[key];
+            if (!state) return;
+            state.index = Number(state.index || 0) + Number(delta || 0);
+            syncSymbolPager(key);
         }
 
         function formatTimeLabel(value) {
@@ -1043,6 +1161,7 @@
         function renderSubscriptionView(payload) {
             const samples = payload?.samples || {};
             const activeSubscriptions = Array.isArray(samples.active_subscriptions) ? samples.active_subscriptions : [];
+            symbolPagerState = {};
             const tradeCount = activeSubscriptions.filter((item) => item.role === 'trade').length;
             const monitorCount = activeSubscriptions.filter((item) => item.role === 'market_monitor').length;
             document.getElementById('subscriptionMeta').textContent = `active ${activeSubscriptions.length} · trade ${tradeCount} · monitor ${monitorCount}`;
@@ -1092,12 +1211,13 @@
                 const roleDiff = (roleWeight[left?.role] ?? 9) - (roleWeight[right?.role] ?? 9);
                 if (roleDiff) return roleDiff;
                 return String(left?.symbol || '').localeCompare(String(right?.symbol || ''));
-            }).map((item) => {
+            }).map((item, index) => {
                 const stateText = item.stale ? 'STALE' : (item.visible ? 'ACTIVE' : 'PENDING');
                 const stateClass = item.stale ? 'state-stale' : (item.visible ? 'state-active' : 'state-pending');
+                const symbolPagerKey = `subscription-symbol-${index}`;
                 return `
                     <tr>
-                        <td class="mono">${escapeHtml(item.symbol || '--')}</td>
+                        <td class="mono">${renderPagedSymbol(item.symbol || '--', symbolPagerKey)}</td>
                         <td><span class="table-pill ${escapeHtml(item.role || 'subscription')}">${escapeHtml(item.role || 'subscription')}</span></td>
                         <td class="mono">${escapeHtml(String(item.conid ?? '--'))}</td>
                         <td>${escapeHtml(formatSeconds(item.last_update_age_s))}</td>

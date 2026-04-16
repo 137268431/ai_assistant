@@ -389,6 +389,11 @@ function getRealtimeQuote(symbol) {
   return realtimeQuoteCache[normalized] || null;
 }
 
+function getRealtimeQuoteCacheAgeMs() {
+  if (!realtimeQuoteCacheUpdatedAt) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Date.now() - realtimeQuoteCacheUpdatedAt);
+}
+
 async function fetchRealtimeQuotes(symbols = [], { reset = false } = {}) {
   const uniqueSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
     .map((symbol) => String(symbol || '').trim().toUpperCase())
@@ -418,6 +423,42 @@ async function fetchRealtimeQuotes(symbols = [], { reset = false } = {}) {
   }
   cacheRealtimeQuoteItems(payload.items || [], { reset, requestedSymbols: uniqueSymbols });
   return payload;
+}
+
+async function fetchRealtimeQuotesIfNeeded(symbols = [], { reset = false, maxAgeMs = 15000 } = {}) {
+  const uniqueSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
+    .map((symbol) => String(symbol || '').trim().toUpperCase())
+    .filter(Boolean))];
+
+  if (!uniqueSymbols.length) {
+    if (reset) {
+      realtimeQuoteCache = {};
+      realtimeQuoteCacheUpdatedAt = Date.now();
+    }
+    return { ok: true, count: 0, items: [], cached: true };
+  }
+
+  if (reset) {
+    return fetchRealtimeQuotes(uniqueSymbols, { reset: true });
+  }
+
+  const cacheAgeMs = getRealtimeQuoteCacheAgeMs();
+  const boundedMaxAgeMs = Math.max(0, Number(maxAgeMs) || 0);
+  const missingSymbols = uniqueSymbols.filter((symbol) => !realtimeQuoteCache[symbol]);
+  const cacheIsFresh = cacheAgeMs <= boundedMaxAgeMs;
+
+  if (cacheIsFresh && !missingSymbols.length) {
+    return {
+      ok: true,
+      count: uniqueSymbols.length,
+      items: uniqueSymbols.map((symbol) => realtimeQuoteCache[symbol]).filter(Boolean),
+      cached: true,
+      cache_age_ms: cacheAgeMs,
+    };
+  }
+
+  const fetchSymbols = cacheIsFresh ? missingSymbols : uniqueSymbols;
+  return fetchRealtimeQuotes(fetchSymbols, { reset: false });
 }
 
 function mergeIndicatorWithRealtimeQuote(indicator, realtimeQuoteOverride = null) {
