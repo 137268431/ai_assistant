@@ -185,7 +185,7 @@ auto_mode_for_target() {
       ibkr_requirements)
         append_unique AUTO_REASONS "requirements changed"
         ;;
-      ibkr_systemd|gateway_systemd)
+      ibkr_systemd|gateway_display_systemd|gateway_systemd)
         append_unique AUTO_REASONS "systemd changed"
         ;;
       pb_migrations)

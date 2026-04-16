@@ -11,8 +11,14 @@ def _service_mod():
 
 
 class TradingServiceRuntimeStatusMixin:
-    def status(self) -> dict:
+    def status(self, refresh_auth: bool = True) -> dict:
         service_mod = _service_mod()
+        session_status = self.session_keeper.status()
+        if refresh_auth:
+            try:
+                session_status = self.session_keeper.check_auth_status()
+            except Exception:
+                service_mod.logger.debug("Failed to refresh IB Gateway auth status", exc_info=True)
         now_ts = time.time()
         queue_size = int(self._compute_queue.qsize())
         last_bar_close_at = float(self._last_bar_close_at or 0.0)
@@ -117,7 +123,7 @@ class TradingServiceRuntimeStatusMixin:
             "environment": service_mod.ENVIRONMENT,
             "gateway": self.gateway_manager.status(),
             "auth_recovery": self._copy_auth_recovery_state(),
-            "session": self.session_keeper.status(),
+            "session": session_status,
             "websocket": self.ws_client.status(),
             "bar_aggregator": self.bar_aggregator.status(),
             "realtime_quotes": realtime_quotes,

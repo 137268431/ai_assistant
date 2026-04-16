@@ -1,11 +1,9 @@
 """
-Persist and restore IBKR gateway cookies across runtime clients.
+Persist lightweight IB Gateway cookie snapshots for auxiliary tooling.
 
-The Client Portal Gateway auth is cookie-bound. When the compute process or an
-individual runtime component restarts, a fresh requests.Session loses those
-cookies and immediately starts returning 401. Keeping a lightweight shared
-cookie jar lets the runtime reuse a still-valid gateway session after local
-restarts and keeps the 2FA / runtime status in sync.
+The socket API itself does not use these cookies, but the runtime still keeps a
+shared cookie file so a panic reset or related ops tooling can clear any stale
+auth remnants consistently.
 """
 
 from __future__ import annotations

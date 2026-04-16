@@ -111,6 +111,7 @@ remove_path /opt/ibkr_compute/ibkr_login.py
 remove_path /opt/ibkr_compute/ibkr_weekly_reauth.py
 remove_path /opt/ibkr_compute/ibkr_keepalive.py
 remove_path /opt/ibkr_compute/e2e_test.py
+remove_path /opt/ibkr/clientportal.gw
 remove_recursive_files /opt/ibkr_compute/src '*.bak.*'
 remove_recursive_files /opt/ibkr_compute/src '._*'
 remove_recursive_files /opt/ibkr_compute/src '*.pyc'

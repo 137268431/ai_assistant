@@ -14,12 +14,15 @@ import threading
 import queue
 from datetime import datetime, timezone, timedelta
 
+from ibkr_compute.broker import (
+    AuthController,
+    BrokerAdapter,
+    GatewayServiceManager,
+    SocketSessionKeeper,
+)
+from ibkr_compute.broker.cookie_store import clear_cookies
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.core.config import Config
-from ibkr_compute.gateway.gateway_manager import GatewayManager
-from ibkr_compute.gateway.session_keeper import SessionKeeper
-from ibkr_compute.gateway.auth_handler import AuthHandler
-from ibkr_compute.gateway.cookie_store import clear_cookies
 from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.ws_client import IBKRWebSocketClient
 from ibkr_compute.market.bar_aggregator import BarAggregator
@@ -65,7 +68,6 @@ ET = timezone(timedelta(hours=-4))
 
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://127.0.0.1:8090")
 PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", "").rstrip("/")
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 DEFAULT_SIGNAL_POLL_INTERVAL = 120
 DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
@@ -145,26 +147,31 @@ class IBKRTradingService(
         self.config = Config(pb_client=self.pb)
         self.config.refresh()
 
-        self.gateway_manager = GatewayManager()
-        self.auth_handler = AuthHandler(
-            gateway_url=GATEWAY_URL,
-            pb_client=self.pb,
+        self.broker = BrokerAdapter()
+        self.gateway_manager = GatewayServiceManager(broker=self.broker)
+        self.session_keeper = SocketSessionKeeper(
+            broker=self.broker,
             gateway_manager=self.gateway_manager,
-        )
-        self.session_keeper = SessionKeeper(
-            gateway_url=GATEWAY_URL,
             pb_client=self.pb,
             on_session_expired=self._on_session_expired,
             on_gateway_down=self._on_gateway_down,
+            environment=ENVIRONMENT,
+        )
+        self.auth_handler = AuthController(
+            pb_client=self.pb,
+            gateway_manager=self.gateway_manager,
+            broker=self.broker,
+            session_keeper=self.session_keeper,
+            environment=ENVIRONMENT,
         )
 
-        self.conid_resolver = ConidResolver(gateway_url=GATEWAY_URL, pb_client=self.pb)
+        self.conid_resolver = ConidResolver(pb_client=self.pb, broker=self.broker)
         self.data_writer = DataWriter(pb_client=self.pb, config=self.config, environment=ENVIRONMENT)
         self.data_backfill = DataBackfill(
-            gateway_url=GATEWAY_URL,
             data_writer=self.data_writer,
             config=self.config,
             environment=ENVIRONMENT,
+            broker=self.broker,
         )
         self.data_retention = DataRetention(
             pb_client=self.pb,
@@ -178,31 +185,34 @@ class IBKRTradingService(
             prev_close_provider=self._get_prev_close_for_quote,
         )
         self.ws_client = IBKRWebSocketClient(
-            gateway_url=GATEWAY_URL,
             on_tick=self._on_ws_market_tick,
             config=self.config,
             environment=ENVIRONMENT,
+            broker=self.broker,
         )
 
         self.order_placer = OrderPlacer(
-            gateway_url=GATEWAY_URL,
             pb_client=self.pb,
             config=self.config,
             environment=ENVIRONMENT,
+            broker=self.broker,
         )
-        self.order_modifier = OrderModifier(gateway_url=GATEWAY_URL, pb_client=self.pb)
+        self.order_modifier = OrderModifier(pb_client=self.pb, broker=self.broker)
         self.order_tracker = OrderTracker(
-            gateway_url=GATEWAY_URL, pb_client=self.pb,
+            pb_client=self.pb,
             on_fill=self._on_order_fill,
             on_cancel=self._on_order_cancel,
             config=self.config,
             environment=ENVIRONMENT,
+            broker=self.broker,
         )
         self.ws_client.set_order_update_callback(self.order_tracker.on_order_update)
         self.order_lifecycle = OrderLifecycle(
-            gateway_url=GATEWAY_URL, pb_client=self.pb,
+            pb_client=self.pb,
             order_modifier=self.order_modifier,
-            config=self.config, environment=ENVIRONMENT,
+            config=self.config,
+            environment=ENVIRONMENT,
+            broker=self.broker,
         )
 
         self.signal_router = SignalRouter(

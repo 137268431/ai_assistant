@@ -1,13 +1,18 @@
 [Unit]
-Description=IBKR Client Portal Gateway
-After=network.target
+Description=IBKR Gateway via IBC
+After=network-online.target ibkr-display.service
+Wants=network-online.target ibkr-display.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/ibkr/clientportal.gw
-ExecStart=/bin/bash bin/run.sh root/conf.yaml
-Restart=on-failure
-RestartSec=10
+EnvironmentFile=-/opt/ibkr_compute/.env
+WorkingDirectory=/opt/ibkr_compute
+ExecStart=/opt/ibkr_compute/src/ibkr_compute/broker/launch_ib_gateway.sh
+Restart=always
+RestartSec=20
+TimeoutStartSec=180
+TimeoutStopSec=30
+KillMode=mixed
 StandardOutput=journal
 StandardError=journal
 

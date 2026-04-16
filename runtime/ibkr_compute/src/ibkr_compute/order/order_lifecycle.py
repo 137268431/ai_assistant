@@ -1,24 +1,20 @@
 """
-订单生命周期管理
-- EOD 15:55 ET 平仓所有信号仓位
-- 每日重置
-- Ghost order 清理
-- 持仓查询
+Order lifecycle helpers built on top of IB Gateway socket API.
 """
 
-import os
-import time
-import logging
-import requests
-import threading
-from typing import Dict, List, Optional, Callable
-from datetime import datetime, timezone, timedelta
+from __future__ import annotations
 
-from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+import logging
+import os
+import threading
+import time
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional
+
+from ibkr_compute.broker import BrokerAdapter
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 ET = timezone(timedelta(hours=-4))
 
@@ -32,33 +28,28 @@ DEFAULT_KEEP_SYMBOLS = tuple(
 
 
 class OrderLifecycle:
-    def __init__(self, gateway_url: str = None, account_id: str = None,
-                 pb_client=None, order_modifier=None, config=None, environment: str = "live"):
-        self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
+    def __init__(
+        self,
+        gateway_url: str = None,
+        account_id: str = None,
+        pb_client=None,
+        order_modifier=None,
+        config=None,
+        environment: str = "live",
+        broker: BrokerAdapter | None = None,
+    ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.order_modifier = order_modifier
         self.config = config
-        self.environment = environment
+        self.environment = str(environment or "live").strip().lower() or "live"
+        self.broker = broker or BrokerAdapter()
 
-        self._session_local = threading.local()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._eod_closed_today = False
         self._daily_sl_count = 0
         self._daily_position_count = 0
-
-    def _api_url(self, path: str) -> str:
-        return f"{self.gateway_url}/v1/api{path}"
-
-    def _get_session(self) -> requests.Session:
-        session = getattr(self._session_local, "session", None)
-        if session is None:
-            session = requests.Session()
-            session.verify = False
-            self._session_local.session = session
-        load_cookies(session)
-        return session
 
     def _get_config_value(self, key: str, default: str) -> str:
         if not self.config:
@@ -97,90 +88,50 @@ class OrderLifecycle:
         }
 
     def get_positions(self, acct_id: str = None) -> List[Dict]:
-        acct = acct_id or self.account_id
         try:
-            session = self._get_session()
-            resp = session.get(
-                self._api_url(f"/portfolio/{acct}/positions/0"),
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            save_cookies(session)
-            return data if isinstance(data, list) else []
-        except Exception as e:
-            logger.warning("Failed to get positions: %s", e)
+            return list(self.broker.list_positions() or [])
+        except Exception as exc:
+            logger.warning("Failed to get positions: %s", exc)
             return []
 
     def get_account_summary(self, acct_id: str = None) -> Dict:
-        acct = acct_id or self.account_id
         try:
-            session = self._get_session()
-            resp = session.get(
-                self._api_url(f"/portfolio/{acct}/summary"),
-                timeout=15,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            save_cookies(session)
-            return payload
-        except Exception as e:
-            logger.warning("Failed to get account summary: %s", e)
+            return dict(self.broker.get_account_summary() or {})
+        except Exception as exc:
+            logger.warning("Failed to get account summary: %s", exc)
             return {}
 
     def eod_close_all(self, acct_id: str = None) -> Dict:
-        acct = acct_id or self.account_id
-        positions = self.get_positions(acct)
+        positions = self.get_positions(acct_id)
         closed = 0
         errors = 0
 
         if self.order_modifier:
-            self.order_modifier.cancel_all_orders(acct)
+            self.order_modifier.cancel_all_orders(acct_id)
 
         for pos in positions:
-            symbol = pos.get("ticker", pos.get("contractDesc", "")).upper()
-            position_qty = pos.get("position", 0)
-            conid = pos.get("conid")
-
+            symbol = str(pos.get("ticker") or pos.get("contractDesc") or "").upper()
+            position_qty = float(pos.get("position", 0) or 0)
+            conid = int(pos.get("conid", 0) or 0)
             if not position_qty or not conid:
                 continue
             if symbol in self._keep_symbols():
                 logger.info("Keeping EOD position: %s", symbol)
                 continue
 
-            side = "SELL" if position_qty > 0 else "BUY"
-            qty = abs(position_qty)
-
-            try:
-                url = self._api_url(f"/iserver/account/{acct}/orders")
-                orders = [{
-                    "acctId": acct,
-                    "conid": conid,
-                    "orderType": "MKT",
-                    "side": side,
-                    "quantity": qty,
-                    "tif": "DAY",
-                    "cOID": f"eod_{symbol}_{datetime.now(ET).strftime('%H%M%S')}",
-                }]
-
-                session = self._get_session()
-                resp = session.post(url, json={"orders": orders}, timeout=15)
-                resp.raise_for_status()
-                data = resp.json()
-                save_cookies(session)
-
-                if isinstance(data, list) and data and data[0].get("id"):
-                    reply_url = self._api_url(f"/iserver/reply/{data[0]['id']}")
-                    session = self._get_session()
-                    session.post(reply_url, json={"confirmed": True}, timeout=15)
-                    save_cookies(session)
-
+            direction = "long" if position_qty > 0 else "short"
+            result = self.broker.place_market_close(
+                conid=conid,
+                symbol=symbol,
+                direction=direction,
+                quantity=abs(int(round(position_qty))),
+            )
+            if result.get("ok"):
                 closed += 1
-                logger.info("EOD close: %s %s %d shares", symbol, side, qty)
-
-            except Exception as e:
+                logger.info("EOD close: %s %s %s shares", symbol, direction, abs(position_qty))
+            else:
                 errors += 1
-                logger.error("EOD close failed for %s: %s", symbol, e)
+                logger.error("EOD close failed for %s: %s", symbol, result.get("error"))
 
         self._eod_closed_today = True
         logger.info("EOD close complete: %d closed, %d errors", closed, errors)
@@ -210,20 +161,15 @@ class OrderLifecycle:
         logger.info("Order lifecycle monitor started")
         while self._running:
             et_now = datetime.now(ET)
-
             if et_now.hour == 0 and et_now.minute < 5:
                 self.daily_reset()
 
             eod_close_hour, eod_close_minute = self._eod_close_time()
-            if (
-                    (et_now.hour, et_now.minute) >= (eod_close_hour, eod_close_minute)
-                    and not self._eod_closed_today
-            ):
+            if (et_now.hour, et_now.minute) >= (eod_close_hour, eod_close_minute) and not self._eod_closed_today:
                 logger.info("EOD close triggered at %s", et_now.strftime("%H:%M:%S"))
                 self.eod_close_all()
 
             self._sync_positions_to_pb()
-
             for _ in range(30):
                 if not self._running:
                     break
@@ -235,11 +181,10 @@ class OrderLifecycle:
         try:
             positions = self.get_positions()
             for pos in positions:
-                symbol = pos.get("ticker", pos.get("contractDesc", ""))
-                conid = pos.get("conid")
+                symbol = str(pos.get("ticker") or pos.get("contractDesc") or "").upper()
+                conid = int(pos.get("conid", 0) or 0)
                 if not symbol or not conid:
                     continue
-
                 data = {
                     "symbol": symbol,
                     "conid": conid,
@@ -250,7 +195,6 @@ class OrderLifecycle:
                     "account": self.account_id,
                     "us_time": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S"),
                 }
-
                 existing = self.pb_client.get_records(
                     "ibkr_positions",
                     filter=f'symbol = "{symbol}" && account = "{self.account_id}"',
@@ -260,9 +204,8 @@ class OrderLifecycle:
                     self.pb_client.update_record("ibkr_positions", existing[0]["id"], data)
                 else:
                     self.pb_client.create_record("ibkr_positions", data)
-
-        except Exception as e:
-            logger.debug("Position sync failed: %s", e)
+        except Exception as exc:
+            logger.debug("Position sync failed: %s", exc)
 
     def start(self):
         if self._running:

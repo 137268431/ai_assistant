@@ -1,0 +1,18 @@
+[Unit]
+Description=Virtual Display for IBKR Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/opt/ibkr_compute/.env
+ExecStart=/bin/bash -lc 'set -euo pipefail; XVFB_BIN="$(command -v Xvfb)"; exec "$XVFB_BIN" "${IBKR_DISPLAY:-:1}" -screen 0 "${IBKR_DISPLAY_SCREEN:-1280x800x24}" -nolisten tcp -ac'
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

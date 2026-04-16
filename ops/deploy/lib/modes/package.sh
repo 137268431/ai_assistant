@@ -63,7 +63,7 @@ package_deploy_units() {
   for unit in "${units[@]}"; do
     build_package_stage_for_unit "$payload_root" "$unit"
   done
-  tar -C "$payload_root" -czf "$package_file" .
+  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar -C "$payload_root" --no-mac-metadata --format=ustar -czf "$package_file" .
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
     deploy_log "Dry run complete."
     cleanup_package_artifacts

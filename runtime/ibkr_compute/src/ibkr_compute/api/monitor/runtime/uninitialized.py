@@ -60,6 +60,7 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
         "session": {
             "authenticated": False,
             "consecutive_failures": 0,
+            "last_check": "",
             "last_tickle": "",
             "running": False,
         },

@@ -1,114 +1,51 @@
 """
-订单修改
-- 动态 ATR 止损调整
-- 修改价格/数量
-- 取消订单
+IB Gateway order modification and cancellation helpers.
 """
 
-import os
-import logging
-import requests
-from typing import Dict, Any, Optional
-from datetime import datetime, timezone, timedelta
+from __future__ import annotations
 
-from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+import logging
+import os
+from typing import Any, Dict
+
+from ibkr_compute.broker import BrokerAdapter
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
-ET = timezone(timedelta(hours=-4))
 
 
 class OrderModifier:
-    def __init__(self, gateway_url: str = None, account_id: str = None, pb_client=None):
-        self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
+    def __init__(
+        self,
+        gateway_url: str = None,
+        account_id: str = None,
+        pb_client=None,
+        broker: BrokerAdapter | None = None,
+    ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
-        self._session = requests.Session()
-        self._session.verify = False
-        load_cookies(self._session)
+        self.broker = broker or BrokerAdapter()
 
-    def _api_url(self, path: str) -> str:
-        return f"{self.gateway_url}/v1/api{path}"
+    def modify_order(self, order_id: str, updates: Dict[str, Any], acct_id: str = None) -> Dict[str, Any]:
+        result = self.broker.modify_order(str(order_id or "").strip(), dict(updates or {}))
+        if not result.get("ok"):
+            logger.error("Order modify failed for %s: %s", order_id, result.get("error"))
+        return result
 
-    def modify_order(self, order_id: str, updates: Dict[str, Any],
-                     acct_id: str = None) -> Dict[str, Any]:
-        acct = acct_id or self.account_id
-        url = self._api_url(f"/iserver/account/{acct}/order/{order_id}")
+    def update_stop_loss(self, order_id: str, new_sl_price: float, acct_id: str = None) -> Dict[str, Any]:
+        logger.info("Updating stop loss %s to %.4f", order_id, float(new_sl_price or 0.0))
+        return self.modify_order(order_id, {"auxPrice": float(new_sl_price or 0.0)}, acct_id)
 
-        try:
-            load_cookies(self._session)
-            resp = self._session.put(url, json=updates, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            save_cookies(self._session)
-
-            if isinstance(data, list) and data and data[0].get("id"):
-                return self._confirm_modify(data[0]["id"])
-
-            logger.info("Order %s modified: %s", order_id, updates)
-            return {"ok": True, "raw": data}
-
-        except Exception as e:
-            logger.error("Order modify failed for %s: %s", order_id, e)
-            return {"ok": False, "error": str(e)}
-
-    def _confirm_modify(self, reply_id: str) -> Dict[str, Any]:
-        url = self._api_url(f"/iserver/reply/{reply_id}")
-        try:
-            load_cookies(self._session)
-            resp = self._session.post(url, json={"confirmed": True}, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            save_cookies(self._session)
-            return {"ok": True, "raw": data}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    def update_stop_loss(self, order_id: str, new_sl_price: float,
-                         acct_id: str = None) -> Dict[str, Any]:
-        logger.info("Updating SL order %s to price=%.2f", order_id, new_sl_price)
-        return self.modify_order(order_id, {"price": new_sl_price}, acct_id)
-
-    def update_take_profit(self, order_id: str, new_tp_price: float,
-                           acct_id: str = None) -> Dict[str, Any]:
-        logger.info("Updating TP order %s to price=%.2f", order_id, new_tp_price)
-        return self.modify_order(order_id, {"price": new_tp_price}, acct_id)
+    def update_take_profit(self, order_id: str, new_tp_price: float, acct_id: str = None) -> Dict[str, Any]:
+        logger.info("Updating take profit %s to %.4f", order_id, float(new_tp_price or 0.0))
+        return self.modify_order(order_id, {"price": float(new_tp_price or 0.0)}, acct_id)
 
     def cancel_order(self, order_id: str, acct_id: str = None) -> Dict[str, Any]:
-        acct = acct_id or self.account_id
-        url = self._api_url(f"/iserver/account/{acct}/order/{order_id}")
-
-        try:
-            load_cookies(self._session)
-            resp = self._session.delete(url, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            save_cookies(self._session)
-            logger.info("Order %s cancelled", order_id)
-            return {"ok": True, "raw": data}
-        except Exception as e:
-            logger.error("Cancel order %s failed: %s", order_id, e)
-            return {"ok": False, "error": str(e)}
+        result = self.broker.cancel_order(str(order_id or "").strip())
+        if not result.get("ok"):
+            logger.error("Cancel order %s failed: %s", order_id, result.get("error"))
+        return result
 
     def cancel_all_orders(self, acct_id: str = None) -> Dict[str, Any]:
-        """Caution: cancels ALL open orders for the account."""
-        # Use order tracker to get all open orders, then cancel each
-        from ibkr_compute.order.order_tracker import OrderTracker
-        tracker = OrderTracker(self.gateway_url, acct_id or self.account_id)
-        orders = tracker.get_live_orders()
-
-        cancelled = 0
-        errors = 0
-        for order in orders:
-            oid = str(order.get("orderId", ""))
-            status = order.get("status", "").upper()
-            if oid and status not in ("FILLED", "CANCELLED", "CANCELED", "EXECUTED"):
-                result = self.cancel_order(oid, acct_id)
-                if result.get("ok"):
-                    cancelled += 1
-                else:
-                    errors += 1
-
-        return {"ok": True, "cancelled": cancelled, "errors": errors}
+        return self.broker.cancel_all_orders()

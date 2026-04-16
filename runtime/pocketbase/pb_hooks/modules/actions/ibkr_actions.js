@@ -1403,7 +1403,8 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
             authenticated: Boolean(session.authenticated),
             running: Boolean(session.running),
             consecutive_failures: Number(session.consecutive_failures || 0) || 0,
-            last_tickle: session.last_tickle || "",
+            last_check: session.last_check || session.last_tickle || "",
+            last_tickle: session.last_tickle || session.last_check || "",
         },
         websocket: {
             connected: Boolean(websocket.connected),
@@ -3858,7 +3859,8 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     authenticated: Boolean(session.authenticated),
                     running: Boolean(session.running),
                     consecutive_failures: Number(session.consecutive_failures || 0) || 0,
-                    last_tickle: session.last_tickle || "",
+                    last_check: session.last_check || session.last_tickle || "",
+                    last_tickle: session.last_tickle || session.last_check || "",
                 },
                 websocket: {
                     connected: Boolean(websocket.connected),

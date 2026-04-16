@@ -427,6 +427,49 @@ class TradingServiceLifecycleMixin:
             return "-"
         return self._format_elapsed_seconds(elapsed_seconds)
 
+    def clear_stale_startup_cycle(self, reason: str = "stale_cycle", source: str = "runtime_status") -> bool:
+        startup = self.startup_progress_snapshot()
+        if not startup.get("active"):
+            return False
+        if self._starting or self._running:
+            return False
+        fields = self._build_startup_progress_fields(
+            startup.get("reason") or reason or "startup",
+            startup.get("source") or source or "runtime_status",
+            bool(startup.get("trigger_login")),
+            {
+                "状态结论": "旧的启动轮次已失效，系统已自动清理该轮次状态。",
+                "清理原因": reason or "stale_cycle",
+                "检查时间": self._now_et(),
+            },
+        )
+        self._sync_startup_progress(
+            action="abort",
+            title="IBKR Runtime 启动轮次已清理",
+            summary="旧启动轮次已失效，已自动清理，等待 Runtime 重新恢复。",
+            current_step="runtime_resume",
+            current_blocker="旧启动轮次已结束",
+            operator_action="等待系统重新恢复 Runtime；如仍未恢复，再手动触发启动",
+            steps={
+                "runtime_resume": {
+                    "status": "done",
+                    "detail": "旧启动轮次已清理，不再阻塞当前运行态恢复。",
+                },
+            },
+            fields=fields,
+            reason=startup.get("reason") or reason or "startup",
+            source=startup.get("source") or source or "runtime_status",
+            trigger_login=bool(startup.get("trigger_login")),
+            record_event=True,
+            event_type="status_change",
+            event_title="IBKR Runtime 清理陈旧启动轮次",
+            event_detail=fields,
+            level="warning",
+            create_if_missing=False,
+            allow_when_disabled=True,
+        )
+        return True
+
     def _get_time_window(self, key: str, default: tuple[int, int]) -> tuple[int, int]:
         service_mod = _service_mod()
         raw_value = str(

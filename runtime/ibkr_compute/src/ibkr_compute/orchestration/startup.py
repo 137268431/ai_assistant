@@ -217,9 +217,8 @@ class TradingServiceStartupMixin:
             )
 
             # Do a one-shot auth check WITHOUT starting the keeper loop.
-            # Starting session_keeper here would cause it to periodically
-            # tickle + check_auth during the 2FA wait, creating a second/third
-            # HTTP client hitting the Gateway and interfering with the SSO flow.
+            # Starting session_keeper here would otherwise create extra auth
+            # probes during the 2FA wait and interfere with the current round.
             self.session_keeper.check_auth_status()
             time.sleep(1)
 

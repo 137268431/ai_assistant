@@ -1,23 +1,20 @@
 """
-订单状态跟踪
-- 定期轮询 IBKR 订单状态
-- 同步到 PocketBase
-- 检测 fill/cancel 事件
+Order tracking built on top of IB Gateway socket events plus polling fallback.
 """
+
+from __future__ import annotations
 
 import os
 import time
 import logging
 import threading
-import requests
-from typing import Any, Dict, Optional, Callable, List
+from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime, timezone, timedelta
 
-from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+from ibkr_compute.broker import BrokerAdapter
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 ORDER_UPDATES_MODE = str(os.environ.get("IBKR_ORDER_UPDATES_MODE", "hybrid") or "hybrid").strip().lower() or "hybrid"
 POLL_INTERVAL_ACTIVE = max(5, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_ACTIVE_SEC", "5")))
@@ -27,18 +24,25 @@ ET = timezone(timedelta(hours=-4))
 
 
 class OrderTracker:
-    def __init__(self, gateway_url: str = None, account_id: str = None,
-                 pb_client=None, on_fill: Callable = None, on_cancel: Callable = None,
-                 config=None, environment: str = "live"):
-        self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
+    def __init__(
+        self,
+        gateway_url: str = None,
+        account_id: str = None,
+        pb_client=None,
+        on_fill: Callable = None,
+        on_cancel: Callable = None,
+        config=None,
+        environment: str = "live",
+        broker: BrokerAdapter | None = None,
+    ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.on_fill = on_fill
         self.on_cancel = on_cancel
         self.config = config
         self.environment = str(environment or "live").strip().lower() or "live"
+        self.broker = broker or BrokerAdapter()
 
-        self._session_local = threading.local()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._known_orders: Dict[str, dict] = {}
@@ -46,7 +50,6 @@ class OrderTracker:
         self._last_live_update: Optional[float] = None
         self._last_order_activity: Optional[float] = None
         self._live_update_count = 0
-        self._account_selected = False
         self._poll_wakeup = threading.Event()
         self._initial_snapshot_pending = True
 
@@ -88,30 +91,13 @@ class OrderTracker:
         except (TypeError, ValueError):
             return default
 
-    def _api_url(self, path: str) -> str:
-        return f"{self.gateway_url}/v1/api{path}"
-
-    def _get_session(self) -> requests.Session:
-        session = getattr(self._session_local, "session", None)
-        if session is None:
-            session = requests.Session()
-            session.verify = False
-            self._session_local.session = session
-        load_cookies(session)
-        return session
-
     @staticmethod
     def _normalize_text(value: Any) -> str:
         return str(value or "").strip()
 
     @staticmethod
     def _extract_live_symbol(order: Dict) -> str:
-        return str(
-            order.get("ticker")
-            or order.get("symbol")
-            or order.get("contractDesc")
-            or ""
-        ).strip().upper()
+        return str(order.get("ticker") or order.get("symbol") or order.get("contractDesc") or "").strip().upper()
 
     @staticmethod
     def _extract_live_side(order: Dict) -> str:
@@ -139,106 +125,94 @@ class OrderTracker:
             "API_CANCELLED",
         }
 
-    def _ensure_account_selected(self) -> bool:
-        try:
-            session = self._get_session()
-            resp = session.get(
-                self._api_url("/iserver/accounts"),
-                timeout=10,
-            )
-            if resp.status_code == 401:
-                save_cookies(session)
-                return False
-            resp.raise_for_status()
-            save_cookies(session)
-            data = resp.json() if resp.text else {}
-            accounts = data.get("accounts", []) if isinstance(data, dict) else []
-            selected = data.get("selectedAccount", "") if isinstance(data, dict) else ""
-            if accounts or selected:
-                self._account_selected = True
-                logger.debug("iserver account selected: selected=%s accounts=%s", selected, accounts)
-                return True
-            return False
-        except Exception as exc:
-            logger.debug("Failed to select iserver account: %s", exc)
-            return False
-
-    def _fetch_live_orders_once(self, *, force: bool = True, timeout: int = 15) -> List[Dict]:
-        data = self._request_json(
-            "/iserver/account/orders",
-            params={"force": "true" if force else "false"},
-            timeout=timeout,
-        )
-
-        if isinstance(data, dict):
-            orders = data.get("orders", [])
-        elif isinstance(data, list):
-            orders = data
-        else:
-            orders = []
-        return orders if isinstance(orders, list) else []
-
-    def _request_json(self, path: str, *, params: Optional[Dict[str, Any]] = None, timeout: int = 15):
-        session = self._get_session()
-        resp = session.get(
-            self._api_url(path),
-            params=params or {},
-            timeout=timeout,
-        )
-        if resp.status_code == 401:
-            save_cookies(session)
-            raise PermissionError("IBKR session is not authenticated")
-        resp.raise_for_status()
-        save_cookies(session)
-        if not resp.text:
-            return {}
-        return resp.json()
-
     def get_live_orders(self, *, retries: int = 3, retry_delay: float = 0.5, force: bool = True) -> List[Dict]:
-        try:
-            if not self._account_selected:
-                self._ensure_account_selected()
-
-            attempts = max(1, int(retries or 1))
-            orders: List[Dict] = []
-            for attempt in range(attempts):
-                orders = self._fetch_live_orders_once(force=force, timeout=15)
-                if orders:
+        attempts = max(1, int(retries or 1))
+        for attempt in range(attempts):
+            try:
+                orders = list(self.broker.list_open_orders() or [])
+                if orders or attempt + 1 >= attempts:
                     return orders
-                if attempt == 0 and not orders and self._account_selected:
-                    self._ensure_account_selected()
-                if attempt + 1 < attempts:
-                    time.sleep(max(0.0, float(retry_delay or 0.0)))
-            return orders
-        except Exception as e:
-            logger.warning("Failed to get live orders: %s", e)
-            return []
+            except Exception as exc:
+                logger.warning("Failed to get live orders: %s", exc)
+                if attempt + 1 >= attempts:
+                    return []
+            time.sleep(max(0.0, float(retry_delay or 0.0)))
+        return []
+
+    def _build_fill_history_index(self) -> Dict[str, Dict[str, Any]]:
+        index: Dict[str, Dict[str, Any]] = {}
+        try:
+            fills = list(self.broker.list_recent_fills() or [])
+        except Exception as exc:
+            logger.debug("Recent fills fetch failed: %s", exc)
+            return index
+
+        for fill in fills:
+            order_id = self._normalize_text(fill.get("orderId"))
+            if not order_id:
+                continue
+            bucket = index.setdefault(order_id, {
+                "orderId": order_id,
+                "id": order_id,
+                "conid": int(fill.get("conid", 0) or 0),
+                "ticker": self._normalize_text(fill.get("ticker")).upper(),
+                "side": self._normalize_text(fill.get("side")).upper(),
+                "status": "FILLED",
+                "orderType": self._normalize_text(fill.get("orderType")).upper(),
+                "filledQuantity": 0.0,
+                "remainingQuantity": 0.0,
+                "avgPrice": 0.0,
+                "price": 0.0,
+                "submittedTime": self._normalize_text(fill.get("time")),
+                "lastExecutionTime": self._normalize_text(fill.get("time")),
+                "_fill_value": 0.0,
+            })
+            shares = self._to_float(fill.get("shares"), 0.0)
+            price = self._to_float(fill.get("price"), 0.0)
+            bucket["filledQuantity"] += shares
+            bucket["_fill_value"] += shares * price
+            if price > 0:
+                bucket["price"] = price
+            if self._normalize_text(fill.get("time")):
+                bucket["lastExecutionTime"] = self._normalize_text(fill.get("time"))
+
+        for payload in index.values():
+            filled_qty = self._to_float(payload.get("filledQuantity"), 0.0)
+            payload["avgPrice"] = round(payload.get("_fill_value", 0.0) / filled_qty, 6) if filled_qty > 0 else 0.0
+            payload["totalSize"] = filled_qty
+            payload.pop("_fill_value", None)
+        return index
+
+    def get_order_status(self, order_id: str) -> Dict:
+        normalized = self._normalize_text(order_id)
+        if not normalized:
+            return {}
+
+        snapshot = self.broker.get_order_snapshot(normalized)
+        if snapshot:
+            return snapshot
+
+        for order in self.get_live_orders():
+            live_order_id = self._normalize_text(order.get("orderId") or order.get("order_id") or order.get("id"))
+            if live_order_id == normalized:
+                return dict(order)
+
+        return dict(self._build_fill_history_index().get(normalized) or {})
 
     def get_orders_by_ids(self, broker_order_ids: List[str]) -> List[Dict]:
-        """Fetch individual order statuses by broker_order_id.
-        Used to supplement the bulk live orders when the Gateway session cache is stale.
-        Returns orders that are still in an active (non-closed) status.
-        """
         closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED"}
         results = []
-        for oid in (broker_order_ids or []):
-            oid = str(oid or "").strip()
-            if not oid:
+        for oid in broker_order_ids or []:
+            payload = self.get_order_status(str(oid or "").strip())
+            if not payload:
                 continue
-            try:
-                payload = self.get_order_status(oid)
-                if not payload or not isinstance(payload, dict):
-                    continue
-                status = self._extract_order_status(payload)
-                if status and status.upper() not in closed_statuses:
-                    results.append(payload)
-            except Exception as exc:
-                logger.debug("get_orders_by_ids failed for %s: %s", oid, exc)
+            status = self._extract_order_status(payload)
+            if status and status.upper() not in closed_statuses:
+                results.append(payload)
         return results
 
     def _build_live_seed_source_map(self, pb_seed_ids: Optional[List[str]] = None) -> Dict[str, List[str]]:
         seed_sources: Dict[str, List[str]] = {}
-
         for tracked in list(self._known_orders.values()):
             order_id = self._normalize_text(tracked.get("orderId") or tracked.get("order_id"))
             if not order_id:
@@ -246,20 +220,17 @@ class OrderTracker:
             status = self._extract_order_status(tracked)
             if not self._is_open_order_status(status):
                 continue
-            if order_id not in seed_sources:
-                seed_sources[order_id] = []
+            seed_sources.setdefault(order_id, [])
             if "tracker" not in seed_sources[order_id]:
                 seed_sources[order_id].append("tracker")
 
-        for oid in (pb_seed_ids or []):
+        for oid in pb_seed_ids or []:
             order_id = self._normalize_text(oid)
             if not order_id:
                 continue
-            if order_id not in seed_sources:
-                seed_sources[order_id] = []
+            seed_sources.setdefault(order_id, [])
             if "pb" not in seed_sources[order_id]:
                 seed_sources[order_id].append("pb")
-
         return seed_sources
 
     def get_complete_live_open_orders(
@@ -280,7 +251,7 @@ class OrderTracker:
         existing_ids = set()
         open_orders: List[Dict[str, Any]] = []
 
-        for item in (bulk_list or []):
+        for item in bulk_list or []:
             if not isinstance(item, dict):
                 continue
             order_id = self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
@@ -341,7 +312,7 @@ class OrderTracker:
                 "resolved_closed_order_ids": resolved_closed_ids,
                 "bulk_order_ids": [
                     self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
-                    for item in (bulk_list or [])
+                    for item in bulk_list or []
                     if isinstance(item, dict) and self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
                 ],
             },
@@ -385,7 +356,6 @@ class OrderTracker:
         for order in live_orders:
             if self._extract_live_parent_id(order):
                 continue
-
             live_status = self._extract_order_status(order)
             if not self._is_open_order_status(live_status):
                 continue
@@ -424,68 +394,40 @@ class OrderTracker:
 
     def get_broker_order_history(self, days: int = 1, force: bool = True) -> Dict[str, Any]:
         requested_days = max(1, int(days or 1))
-        # IBKR Client Portal `/iserver/account/orders` only covers the current market day.
-        effective_days = 1
-        if not self._account_selected:
-            self._ensure_account_selected()
-        try:
-            data = self._request_json(
-                "/iserver/account/orders",
-                params={"force": "true" if force else "false"},
-                timeout=20,
-            )
-            if isinstance(data, dict):
-                orders = data.get("orders", [])
-                snapshot = data
-            elif isinstance(data, list):
-                orders = data
-                snapshot = {"orders": data}
-            else:
-                orders = []
-                snapshot = {}
+        orders_by_id: Dict[str, Dict[str, Any]] = {}
 
-            return {
-                "ok": True,
-                "requested_days": requested_days,
-                "effective_days": effective_days,
-                "current_day_only": True,
-                "orders": orders if isinstance(orders, list) else [],
-                "raw": snapshot if isinstance(snapshot, dict) else {},
-                "limitations": [
-                    "IBKR Client Portal /iserver/account/orders 仅返回当前美东交易日订单。",
-                    "如果需要跨日历史订单，请补充 Flex / Statement 链路。",
-                ],
-            }
-        except Exception as e:
-            logger.warning("Failed to get broker order history: %s", e)
-            return {
-                "ok": False,
-                "requested_days": requested_days,
-                "effective_days": effective_days,
-                "current_day_only": True,
-                "orders": [],
-                "raw": {},
-                "error": str(e),
-                "limitations": [
-                    "IBKR Client Portal /iserver/account/orders 仅返回当前美东交易日订单。",
-                    "如果需要跨日历史订单，请补充 Flex / Statement 链路。",
-                ],
-            }
-
-    def get_order_status(self, order_id: str) -> Dict:
         try:
-            session = self._get_session()
-            resp = session.get(
-                self._api_url(f"/iserver/account/order/status/{order_id}"),
-                timeout=15,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            save_cookies(session)
-            return payload
-        except Exception as e:
-            logger.warning("Failed to get order status %s: %s", order_id, e)
-            return {}
+            for order in self.get_live_orders(force=force):
+                order_id = self._normalize_text(order.get("orderId") or order.get("order_id") or order.get("id"))
+                if order_id:
+                    orders_by_id[order_id] = dict(order)
+        except Exception as exc:
+            logger.warning("Failed to get live orders for history: %s", exc)
+
+        try:
+            fill_index = self._build_fill_history_index()
+            for order_id, payload in fill_index.items():
+                merged = dict(payload)
+                merged.update(orders_by_id.get(order_id) or {})
+                merged["orderId"] = order_id
+                if "status" not in merged or not merged["status"]:
+                    merged["status"] = "FILLED"
+                orders_by_id[order_id] = merged
+        except Exception as exc:
+            logger.warning("Failed to get recent fills for history: %s", exc)
+
+        return {
+            "ok": True,
+            "requested_days": requested_days,
+            "effective_days": 1,
+            "current_day_only": False,
+            "orders": list(orders_by_id.values()),
+            "raw": {"orders": list(orders_by_id.values())},
+            "limitations": [
+                "IB Gateway socket API 当前返回 open orders 与最近 executions 的组合视图。",
+                "如果需要完整跨日订单历史，请补充 Flex / Statement 链路。",
+            ],
+        }
 
     @staticmethod
     def _escape_filter_value(value: str) -> str:
@@ -563,7 +505,6 @@ class OrderTracker:
         merged.update(order)
         merged["orderId"] = order_id
         merged = self._stamp_known_order(merged, seen_live=True)
-        status = self._extract_order_status(merged)
         should_sync = self._order_needs_sync(prev, merged)
         self._known_orders[order_id] = merged
 
@@ -571,7 +512,13 @@ class OrderTracker:
             self._sync_to_pb(merged)
             self._emit_order_transition_callbacks(prev_status, merged)
 
-        logger.debug("Order update applied: source=%s order_id=%s status=%s sync=%s", source, order_id, status, should_sync)
+        logger.debug(
+            "Order update applied: source=%s order_id=%s status=%s sync=%s",
+            source,
+            order_id,
+            self._extract_order_status(merged),
+            should_sync,
+        )
         return True
 
     def _infer_disappeared_order_status(self, previous: Dict) -> str:
@@ -601,6 +548,7 @@ class OrderTracker:
         entry_price = seed.get("entry_price", 0)
         tp_price = seed.get("tp_price", 0)
         sl_price = seed.get("sl_price", 0)
+        entry_order_type = str(seed.get("entry_order_type") or "LMT").strip().upper() or "LMT"
 
         entry_order_id = indexed_ids[0] if len(indexed_ids) > 0 else ""
         tp_order_id = indexed_ids[1] if len(indexed_ids) > 1 else ""
@@ -611,7 +559,7 @@ class OrderTracker:
                 "orderId": entry_order_id,
                 "ticker": symbol,
                 "side": side,
-                "orderType": "LMT",
+                "orderType": entry_order_type,
                 "price": entry_price,
                 "totalSize": quantity,
                 "filledQuantity": 0,
@@ -641,6 +589,7 @@ class OrderTracker:
                 "side": close_side,
                 "orderType": "STP",
                 "price": sl_price,
+                "auxPrice": sl_price,
                 "totalSize": quantity,
                 "filledQuantity": 0,
                 "avgPrice": 0,
@@ -670,9 +619,8 @@ class OrderTracker:
             previous = dict(self._known_orders.get(order_id, {}))
             previous_status = self._extract_order_status(previous)
             missing_poll_count = int(previous.get("_missing_poll_count") or 0) + 1
-            first_missing_at = float(previous.get("_first_missing_at") or 0.0) or time.time()
             previous["_missing_poll_count"] = missing_poll_count
-            previous["_first_missing_at"] = first_missing_at
+            previous["_first_missing_at"] = float(previous.get("_first_missing_at") or 0.0) or time.time()
 
             payload = self.get_order_status(order_id)
             if not payload:
@@ -696,21 +644,7 @@ class OrderTracker:
 
             if status != previous_status:
                 self._sync_to_pb(merged)
-
-                if status in ("FILLED", "EXECUTED") and previous_status not in ("FILLED", "EXECUTED"):
-                    logger.info("Order FILLED after disappearance: %s %s", merged.get("ticker"), order_id)
-                    if self.on_fill:
-                        try:
-                            self.on_fill(merged)
-                        except Exception as e:
-                            logger.error("on_fill callback error: %s", e)
-                elif status in ("CANCELLED", "CANCELED", "INACTIVE", "REJECTED"):
-                    logger.info("Order CLOSED after disappearance: %s %s status=%s", merged.get("ticker"), order_id, status)
-                    if self.on_cancel:
-                        try:
-                            self.on_cancel(merged)
-                        except Exception as e:
-                            logger.error("on_cancel callback error: %s", e)
+                self._emit_order_transition_callbacks(previous_status, merged)
 
             if status in closed_statuses:
                 self._known_orders.pop(order_id, None)
@@ -726,11 +660,10 @@ class OrderTracker:
         )
         while self._running:
             try:
-                force_snapshot = self._initial_snapshot_pending or self._updates_mode() == "poll"
-                self._poll_orders(force=force_snapshot)
+                self._poll_orders(force=self._initial_snapshot_pending or self._updates_mode() == "poll")
                 self._initial_snapshot_pending = False
-            except Exception as e:
-                logger.error("Order poll error: %s", e)
+            except Exception as exc:
+                logger.error("Order poll error: %s", exc)
 
             if not self._running:
                 break
@@ -740,7 +673,6 @@ class OrderTracker:
     def _next_poll_interval(self) -> int:
         if self._updates_mode() == "poll":
             return self._active_poll_interval()
-
         active_orders = any(self._is_open_order_status(self._extract_order_status(order)) for order in self._known_orders.values())
         last_activity = float(self._last_order_activity or 0.0)
         if last_activity > 0 and (time.time() - last_activity) <= self._fast_track_window():
@@ -748,18 +680,15 @@ class OrderTracker:
         return self._active_poll_interval() if active_orders else self._idle_poll_interval()
 
     def _poll_orders(self, force: bool = False):
-        snapshot_force = bool(force or self._updates_mode() == "poll")
-        orders = self.get_live_orders(force=snapshot_force)
+        orders = self.get_live_orders(force=bool(force))
         self._last_poll = time.time()
         current_order_ids = set()
-
         for order in orders:
             order_id = self._normalize_text(order.get("orderId") or order.get("order_id"))
             if not order_id:
                 continue
             current_order_ids.add(order_id)
             self._handle_live_order_payload(order, source="poll")
-
         self._finalize_disappeared_orders(current_order_ids)
 
     def _sync_to_pb(self, order: dict):
@@ -775,12 +704,12 @@ class OrderTracker:
             now_str = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
             order_id_filter = self._escape_filter_value(order_id)
             coid_filter = self._escape_filter_value(coid)
-            runtime_environment = os.environ.get("IBKR_ENVIRONMENT", "live")
+            runtime_environment = self.environment
 
             if hasattr(self.pb_client, "upsert_order"):
                 normalized_side = str(order.get("side", "")).upper()
                 direction = "long" if normalized_side == "BUY" else "short" if normalized_side == "SELL" else ""
-                quantity = order.get("totalSize", 0)
+                quantity = order.get("totalSize", order.get("quantity", 0))
                 fill_qty = order.get("filledQuantity", 0)
                 avg_price = order.get("avgPrice", 0)
                 limit_price = order.get("price", 0)
@@ -886,9 +815,8 @@ class OrderTracker:
                     "bar_time_ms": int(time.time() * 1000),
                     "extra": extra,
                 })
-
-        except Exception as e:
-            logger.debug("PB order sync failed: %s", e)
+        except Exception as exc:
+            logger.debug("PB order sync failed: %s", exc)
 
     def start(self):
         if self._running:
@@ -914,8 +842,6 @@ class OrderTracker:
             "idle_poll_interval_s": self._idle_poll_interval(),
             "fast_track_window_s": self._fast_track_window(),
             "live_update_count": self._live_update_count,
-            "last_poll": datetime.fromtimestamp(self._last_poll, timezone.utc).isoformat()
-            if self._last_poll else None,
-            "last_live_update": datetime.fromtimestamp(self._last_live_update, timezone.utc).isoformat()
-            if self._last_live_update else None,
+            "last_poll": datetime.fromtimestamp(self._last_poll, timezone.utc).isoformat() if self._last_poll else None,
+            "last_live_update": datetime.fromtimestamp(self._last_live_update, timezone.utc).isoformat() if self._last_live_update else None,
         }

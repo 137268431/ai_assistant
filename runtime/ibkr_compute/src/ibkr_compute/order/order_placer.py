@@ -1,350 +1,132 @@
 """
-IBKR OCO Bracket 下单
-- 一次性提交 Entry + Take Profit + Stop Loss
-- 处理 CP API 二次确认 (reply)
-- 支持 LMT, MKT, STP 订单类型
+IB Gateway bracket and close order placement.
 """
 
-import os
-import time
-import logging
-import requests
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone, timedelta
+from __future__ import annotations
 
-from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+import logging
+import os
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List
+
+from ibkr_compute.broker import BrokerAdapter
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 PAPER_ACCOUNT_ID = os.environ.get("IBKR_PAPER_ACCOUNT_ID", "")
 ET = timezone(timedelta(hours=-4))
 
 
 class OrderPlacer:
-    def __init__(self, gateway_url: str = None, account_id: str = None, pb_client=None, config=None, environment: str = "live"):
-        self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
+    def __init__(
+        self,
+        gateway_url: str = None,
+        account_id: str = None,
+        pb_client=None,
+        config=None,
+        environment: str = "live",
+        broker: BrokerAdapter | None = None,
+    ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.config = config
         self.environment = str(environment or "live").strip().lower() or "live"
-        self._session = requests.Session()
-        self._session.verify = False
-        load_cookies(self._session)
+        self.broker = broker or BrokerAdapter()
         self._order_count = 0
         self._suppression_attempted = False
         self._suppression_enabled = False
         self._suppression_message_ids: List[str] = []
-
-    def _api_url(self, path: str) -> str:
-        return f"{self.gateway_url}/v1/api{path}"
-
-    def _get_bool_setting(self, key: str, fallback: bool = False) -> bool:
-        if not self.config:
-            return fallback
-        return self.config.get_bool_for_environment(key, self.environment, fallback)
-
-    def _get_str_setting(self, key: str, fallback: str = "") -> str:
-        if not self.config:
-            return fallback
-        return str(self.config.get_for_environment(key, self.environment, fallback) or fallback)
-
-    def _suppress_order_questions_if_enabled(self):
-        enabled = self._get_bool_setting("ibkr_order_question_suppress_enabled", False)
-        raw_message_ids = self._get_str_setting("ibkr_order_question_suppress_message_ids", "")
-        message_ids = [item.strip() for item in raw_message_ids.split(",") if item.strip()]
-        self._suppression_enabled = enabled
-        self._suppression_message_ids = list(message_ids)
-
-        if not enabled or not message_ids or self._suppression_attempted:
-            return
-
-        try:
-            load_cookies(self._session)
-            resp = self._session.post(
-                self._api_url("/iserver/questions/suppress"),
-                json={"messageIds": message_ids},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            save_cookies(self._session)
-            self._suppression_attempted = True
-            logger.info("Suppressed IBKR order questions for messageIds=%s", ",".join(message_ids))
-        except Exception as exc:
-            logger.warning("Failed to suppress IBKR order questions: %s", exc)
 
     def get_active_account_id(self, use_paper: bool = False) -> str:
         if use_paper:
             return PAPER_ACCOUNT_ID or self.account_id
         return self.account_id
 
-    def place_bracket_order(self, conid: int, symbol: str, direction: str,
-                            quantity: int, entry_price: float,
-                            take_profit_price: float, stop_loss_price: float,
-                            use_paper: bool = False, signal_id: str = "",
-                            entry_order_type: str = "LMT") -> Dict[str, Any]:
+    def place_bracket_order(
+        self,
+        conid: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        entry_price: float,
+        take_profit_price: float,
+        stop_loss_price: float,
+        use_paper: bool = False,
+        signal_id: str = "",
+        entry_order_type: str = "LMT",
+    ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
-        if not acct_id:
-            return {"ok": False, "error": "No account ID configured"}
-
-        et_now = datetime.now(ET)
-        ts = et_now.strftime("%Y%m%d_%H%M%S")
-        side = "BUY" if direction == "long" else "SELL"
-        close_side = "SELL" if direction == "long" else "BUY"
-
-        entry_coid = f"entry_{symbol}_{direction}_{ts}"
-        tp_coid = f"tp_{symbol}_{direction}_{ts}"
-        sl_coid = f"sl_{symbol}_{direction}_{ts}"
-
-        orders = [
-            {
-                "acctId": acct_id,
-                "conid": conid,
-                "cOID": entry_coid,
-                "orderType": entry_order_type,
-                "side": side,
-                "quantity": quantity,
-                "tif": "DAY",
-            },
-            {
-                "acctId": acct_id,
-                "conid": conid,
-                "cOID": tp_coid,
-                "parentId": entry_coid,
-                "orderType": "LMT",
-                "side": close_side,
-                "quantity": quantity,
-                "price": take_profit_price,
-                "tif": "GTC",
-            },
-            {
-                "acctId": acct_id,
-                "conid": conid,
-                "cOID": sl_coid,
-                "parentId": entry_coid,
-                "orderType": "STP",
-                "side": close_side,
-                "quantity": quantity,
-                "price": stop_loss_price,
-                "tif": "GTC",
-            },
-        ]
-
-        if entry_order_type != "MKT":
-            orders[0]["price"] = entry_price
-
-        logger.info("Placing bracket order: %s %s %d@%.2f TP=%.2f SL=%.2f (acct=%s)",
-                     symbol, direction, quantity, entry_price,
-                     take_profit_price, stop_loss_price, acct_id)
-
-        result = self._submit_orders(acct_id, orders)
-        if result.get("ok"):
-            result["order_ids"] = self._resolve_expected_order_ids(
-                expected_coids=[entry_coid, tp_coid, sl_coid],
-                initial_order_ids=result.get("order_ids", []),
-            )
-
+        logger.info(
+            "Placing bracket order: %s %s qty=%s entry=%s tp=%s sl=%s account=%s",
+            symbol,
+            direction,
+            quantity,
+            entry_price,
+            take_profit_price,
+            stop_loss_price,
+            acct_id or "-",
+        )
+        result = self.broker.place_bracket_order(
+            conid=int(conid or 0),
+            symbol=str(symbol or "").upper(),
+            direction=str(direction or "").lower(),
+            quantity=int(quantity or 0),
+            entry_price=float(entry_price or 0.0),
+            take_profit_price=float(take_profit_price or 0.0),
+            stop_loss_price=float(stop_loss_price or 0.0),
+            entry_order_type=str(entry_order_type or "LMT").upper(),
+        )
         if result.get("ok"):
             self._order_count += 1
             self._log_order_to_pb(
-                symbol=symbol, conid=conid, direction=direction,
-                entry_coid=entry_coid, tp_coid=tp_coid, sl_coid=sl_coid,
-                entry_price=entry_price, tp_price=take_profit_price,
-                sl_price=stop_loss_price, quantity=quantity,
-                signal_id=signal_id, account=acct_id,
-                order_ids=result.get("order_ids", []),
+                symbol=str(symbol or "").upper(),
+                conid=int(conid or 0),
+                direction=str(direction or "").lower(),
+                entry_coid=result.get("entry_coid") or "",
+                tp_coid=result.get("tp_coid") or "",
+                sl_coid=result.get("sl_coid") or "",
+                entry_price=float(entry_price or 0.0),
+                tp_price=float(take_profit_price or 0.0),
+                sl_price=float(stop_loss_price or 0.0),
+                quantity=int(quantity or 0),
+                signal_id=signal_id,
+                account=acct_id,
+                order_ids=result.get("order_ids") or [],
             )
-
         return {
-            "ok": result.get("ok", False),
-            "entry_coid": entry_coid,
-            "tp_coid": tp_coid,
-            "sl_coid": sl_coid,
-            "bracket_group": entry_coid,
-            "order_ids": result.get("order_ids", []),
+            "ok": bool(result.get("ok")),
+            "entry_coid": str(result.get("entry_coid") or ""),
+            "tp_coid": str(result.get("tp_coid") or ""),
+            "sl_coid": str(result.get("sl_coid") or ""),
+            "bracket_group": str(result.get("bracket_group") or result.get("entry_coid") or ""),
+            "order_ids": [str(item or "").strip() for item in (result.get("order_ids") or []) if str(item or "").strip()],
             "error": result.get("error"),
             "raw_response": result.get("raw"),
         }
 
-    def place_market_close(self, conid: int, symbol: str, direction: str,
-                           quantity: int, use_paper: bool = False) -> Dict[str, Any]:
-        acct_id = self.get_active_account_id(use_paper)
-        side = "SELL" if direction == "long" else "BUY"
-        et_now = datetime.now(ET)
-        coid = f"close_{symbol}_{direction}_{et_now.strftime('%Y%m%d_%H%M%S')}"
-
-        orders = [{
-            "acctId": acct_id,
-            "conid": conid,
-            "cOID": coid,
-            "orderType": "MKT",
-            "side": side,
-            "quantity": quantity,
-            "tif": "DAY",
-        }]
-
-        return self._submit_orders(acct_id, orders)
-
-    def _extract_response_order_ids(self, payload: Any) -> List[str]:
-        order_ids: List[str] = []
-        seen = set()
-
-        def visit(node: Any) -> None:
-            if isinstance(node, dict):
-                order_id = str(node.get("order_id") or node.get("orderId") or "").strip()
-                if order_id and order_id not in seen:
-                    seen.add(order_id)
-                    order_ids.append(order_id)
-                for value in node.values():
-                    if isinstance(value, (dict, list)):
-                        visit(value)
-            elif isinstance(node, list):
-                for item in node:
-                    visit(item)
-
-        visit(payload)
-        return order_ids
-
-    def _fetch_live_orders(self, *, force: bool = True, timeout: int = 15) -> List[Dict[str, Any]]:
-        load_cookies(self._session)
-        resp = self._session.get(
-            self._api_url("/iserver/account/orders"),
-            params={"force": "true" if force else "false"},
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        save_cookies(self._session)
-        if not resp.text:
-            return []
-        data = resp.json()
-        if isinstance(data, dict):
-            orders = data.get("orders", [])
-        elif isinstance(data, list):
-            orders = data
-        else:
-            orders = []
-        return orders if isinstance(orders, list) else []
-
-    def _lookup_order_ids_by_coid(
+    def place_market_close(
         self,
-        expected_coids: List[str],
-        *,
-        retries: int = 4,
-        retry_delay: float = 0.75,
-    ) -> List[str]:
-        normalized_coids = [str(item or "").strip() for item in (expected_coids or [])]
-        if not any(normalized_coids):
-            return []
-
-        resolved = {coid: "" for coid in normalized_coids if coid}
-        attempts = max(1, int(retries or 1))
-        for attempt in range(attempts):
-            try:
-                orders = self._fetch_live_orders(force=True, timeout=15)
-            except Exception as exc:
-                logger.warning("Live order lookup by cOID failed: %s", exc)
-                break
-
-            for order in orders:
-                if not isinstance(order, dict):
-                    continue
-                coid = str(
-                    order.get("cOID")
-                    or order.get("coid")
-                    or order.get("order_ref")
-                    or order.get("orderRef")
-                    or ""
-                ).strip()
-                order_id = str(order.get("orderId") or order.get("order_id") or order.get("id") or "").strip()
-                if coid in resolved and order_id:
-                    resolved[coid] = order_id
-
-            if all(resolved.get(coid) for coid in normalized_coids if coid):
-                break
-            if attempt + 1 < attempts:
-                time.sleep(max(0.0, float(retry_delay or 0.0)))
-
-        return [resolved.get(coid, "") if coid else "" for coid in normalized_coids]
-
-    def _resolve_expected_order_ids(self, expected_coids: List[str], initial_order_ids: List[str]) -> List[str]:
-        clean_initial_ids = [str(item or "").strip() for item in (initial_order_ids or [])]
-        normalized_coids = [str(item or "").strip() for item in (expected_coids or [])]
-        if not any(normalized_coids):
-            return [item for item in clean_initial_ids if item]
-
-        resolved_ids = self._lookup_order_ids_by_coid(normalized_coids)
-        for index in range(len(normalized_coids)):
-            if resolved_ids[index]:
-                continue
-            if index < len(clean_initial_ids) and clean_initial_ids[index]:
-                resolved_ids[index] = clean_initial_ids[index]
-
-        compact_ids = [item for item in resolved_ids if item]
-        if compact_ids and len(compact_ids) < len([item for item in normalized_coids if item]):
-            logger.warning(
-                "Bracket order ids partially resolved: expected=%s resolved=%s initial=%s",
-                normalized_coids,
-                resolved_ids,
-                clean_initial_ids,
-            )
-        if compact_ids:
-            last_non_empty_index = max(index for index, value in enumerate(resolved_ids) if value)
-            return resolved_ids[:last_non_empty_index + 1]
-        return [item for item in clean_initial_ids if item]
-
-    def _submit_orders(self, acct_id: str, orders: List[Dict]) -> Dict[str, Any]:
-        url = self._api_url(f"/iserver/account/{acct_id}/orders")
-
-        try:
-            self._suppress_order_questions_if_enabled()
-            load_cookies(self._session)
-            resp = self._session.post(url, json={"orders": orders}, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            save_cookies(self._session)
-
-            if isinstance(data, list) and data:
-                first = data[0]
-                if first.get("id"):
-                    reply_id = first["id"]
-                    logger.info("Order requires confirmation, replying to id=%s", reply_id)
-                    return self._confirm_order(reply_id)
-                order_ids = self._extract_response_order_ids(data)
-                if order_ids:
-                    return {"ok": True, "order_ids": order_ids, "raw": data}
-                elif first.get("error"):
-                    return {"ok": False, "error": first.get("error"), "raw": data}
-
-            return {"ok": True, "raw": data}
-
-        except Exception as e:
-            logger.error("Order submission failed: %s", e)
-            return {"ok": False, "error": str(e)}
-
-    def _confirm_order(self, reply_id: str) -> Dict[str, Any]:
-        url = self._api_url(f"/iserver/reply/{reply_id}")
-        try:
-            load_cookies(self._session)
-            resp = self._session.post(url, json={"confirmed": True}, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            save_cookies(self._session)
-
-            if isinstance(data, list) and data:
-                first = data[0]
-                if first.get("id"):
-                    return self._confirm_order(first["id"])
-                order_ids = self._extract_response_order_ids(data)
-                if order_ids:
-                    return {"ok": True, "order_ids": order_ids, "raw": data}
-                elif first.get("error"):
-                    return {"ok": False, "error": first.get("error"), "raw": data}
-
-            return {"ok": True, "raw": data}
-        except Exception as e:
-            logger.error("Order confirmation failed: %s", e)
-            return {"ok": False, "error": str(e)}
+        conid: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        use_paper: bool = False,
+    ) -> Dict[str, Any]:
+        acct_id = self.get_active_account_id(use_paper)
+        logger.info(
+            "Placing market close: %s %s qty=%s account=%s",
+            symbol,
+            direction,
+            quantity,
+            acct_id or "-",
+        )
+        return self.broker.place_market_close(
+            conid=int(conid or 0),
+            symbol=str(symbol or "").upper(),
+            direction=str(direction or "").lower(),
+            quantity=int(quantity or 0),
+        )
 
     def _log_order_to_pb(self, **kwargs):
         if not self.pb_client:
@@ -421,8 +203,8 @@ class OrderPlacer:
                     "filled_qty": 0,
                     "fill_price": 0,
                 })
-        except Exception as e:
-            logger.debug("PB order log failed: %s", e)
+        except Exception as exc:
+            logger.debug("PB order log failed: %s", exc)
 
     def status(self) -> dict:
         return {

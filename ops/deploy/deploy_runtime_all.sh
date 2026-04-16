@@ -54,12 +54,12 @@ Options:
   --plan-only         Print the resolved deployment plan and exit
   --package-name <n>  Override generated package name for package mode
   --migrations        Deploy PocketBase extension migrations
-  --ops-tools         Deploy IBKR operational auth/monitor tools
-  --gateway-service   Install ibkr-gateway systemd unit
+  --ops-tools         Deprecated legacy flag, kept only for CLI compatibility
+  --gateway-service   Install ibkr-display and ibkr-gateway systemd units
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote syntax validation
   --no-restart        Skip service restarts
-  --status-only       Show pocketbase / ibkr-compute / ibkr-gateway status and exit
+  --status-only       Show pocketbase / ibkr-compute / ibkr-display / ibkr-gateway status and exit
   -h, --help          Show this help
 EOF
 }

@@ -39,6 +39,13 @@ source "$LIB_ROOT/modes/scope.sh"
 source "$LIB_ROOT/modes/files.sh"
 source "$LIB_ROOT/modes/package.sh"
 
+purge_legacy_ibkr_artifacts() {
+  if [[ "${PLAN_ONLY:-0}" -eq 1 || "${DRY_RUN:-0}" -eq 1 || "${STATUS_ONLY:-0}" -eq 1 ]]; then
+    return 0
+  fi
+  ssh_run "rm -rf '$OPS_REMOTE_ROOT/auth' '$OPS_REMOTE_ROOT/monitor'" || true
+}
+
 usage() {
   cat <<EOF
 Usage: deploy_ibkr_compute_runtime.sh [options]
@@ -50,14 +57,14 @@ Options:
   --diff <range>        Git diff range, for example HEAD~1..HEAD
   --plan-only           Print the resolved deployment plan and exit
   --package-name <n>    Override generated package name for package mode
-  --ops-tools           Deploy ops/ibkr_compute/auth and ops/ibkr_compute/monitor
-  --gateway-service     Install runtime/ib_gateway/systemd/ibkr-gateway.service
+  --ops-tools           Deprecated legacy flag, no longer deploys Client Portal tools
+  --gateway-service     Install ibkr-display.service and ibkr-gateway.service
   --skip-requirements   Skip remote pip install -r requirements.txt
   --skip-systemd        Skip systemd unit sync
   --dry-run             Show rsync changes without mutating the remote host
   --skip-checks         Skip remote python syntax validation
   --no-restart          Skip service restart
-  --status-only         Show ibkr-compute and ibkr-gateway status and exit
+  --status-only         Show ibkr-compute / ibkr-display / ibkr-gateway status and exit
   -h, --help            Show this help
 EOF
 }
@@ -134,7 +141,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
-  ssh_run "systemctl is-active ibkr-compute ibkr-gateway"
+  ssh_run "systemctl is-active ibkr-compute ibkr-display ibkr-gateway"
   exit 0
 fi
 
@@ -164,3 +171,5 @@ case "$FINAL_MODE" in
     deploy_die "Unsupported final mode: $FINAL_MODE"
     ;;
 esac
+
+purge_legacy_ibkr_artifacts

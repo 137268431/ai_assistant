@@ -22,6 +22,24 @@ def _maybe_restore_ibkr_service(service):
         return
     if getattr(service, "is_busy", False):
         return
+    try:
+        auth_status = service.session_keeper.check_auth_status() if hasattr(service, "session_keeper") else {}
+    except Exception:
+        traceback.print_exc()
+        auth_status = {}
+    if (
+        hasattr(service, "clear_stale_startup_cycle")
+        and not getattr(service, "is_starting", False)
+        and not getattr(service, "is_running", False)
+        and bool(auth_status.get("authenticated"))
+    ):
+        try:
+            service.clear_stale_startup_cycle(
+                reason="authenticated_before_restore",
+                source="server_boot",
+            )
+        except Exception:
+            traceback.print_exc()
     if hasattr(service, "auto_restore_guard"):
         try:
             guard = service.auto_restore_guard() or {}

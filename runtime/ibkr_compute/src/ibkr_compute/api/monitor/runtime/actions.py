@@ -14,6 +14,10 @@ def _build_gateway_action_payload(
     extra: dict | None = None,
 ) -> dict:
     api_app = _api_app()
+    try:
+        service.session_keeper.check_auth_status()
+    except Exception:
+        pass
     payload = {
         "ok": bool(ok),
         "action": str(action or "").strip() or "gateway",

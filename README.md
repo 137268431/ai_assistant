@@ -43,7 +43,7 @@ This repo is split by responsibility instead of by product history.
   - `ops/ibkr_compute/monitor` -> `/opt/ibkr_compute/ops/monitor`
 - IB Gateway:
   - `runtime/ib_gateway/systemd/ibkr-gateway.service` -> `/etc/systemd/system/ibkr-gateway.service`
-  - The actual `clientportal.gw` runtime stays on the server at `/opt/ibkr/clientportal.gw`
+  - Bootstrap IB Gateway + IBC on the server with `ops/ibkr_compute/install/bootstrap_ib_gateway_remote.sh`
 
 ## Deploy Commands
 

@@ -12,9 +12,7 @@ import logging
 import threading
 from typing import Dict, List, Optional, Sequence
 
-import requests
-
-from ibkr_compute.gateway.cookie_store import load_cookies, save_cookies
+from ibkr_compute.broker import BrokerAdapter
 
 from .timeframe_utils import (
     build_runtime_timestamps,
@@ -27,7 +25,6 @@ from .timeframe_utils import (
 
 logger = logging.getLogger(__name__)
 
-GATEWAY_URL = os.environ.get("IBKR_GATEWAY_URL", "https://localhost:5001")
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 ET = timezone(timedelta(hours=-4))
 
@@ -63,6 +60,40 @@ MAX_CONCURRENT_REQUESTS = max(
 MAX_RETRIES = max(0, int(os.environ.get("IBKR_HISTORY_MAX_RETRIES", "4")))
 RETRY_BASE_DELAY_SECONDS = max(0.5, float(os.environ.get("IBKR_HISTORY_RETRY_BASE_DELAY", "2.0")))
 RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+
+IB_DURATION_SUFFIX = {
+    "s": "S",
+    "d": "D",
+    "w": "W",
+    "m": "M",
+    "y": "Y",
+}
+IB_BAR_SIZE_MAP = {
+    "5min": "5 mins",
+    "15min": "15 mins",
+    "30min": "30 mins",
+    "1h": "1 hour",
+    "4h": "4 hours",
+    "1d": "1 day",
+}
+
+
+def _to_ib_duration(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "1 D"
+    if " " in text:
+        return text.upper()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    suffix = "".join(ch for ch in text if ch.isalpha())
+    if digits and suffix in IB_DURATION_SUFFIX:
+        return f"{int(digits)} {IB_DURATION_SUFFIX[suffix]}"
+    return text.upper()
+
+
+def _to_ib_bar_size(value: str) -> str:
+    text = str(value or "").strip().lower()
+    return IB_BAR_SIZE_MAP.get(text, value)
 
 
 def _regular_session_gap_summary(
@@ -120,12 +151,19 @@ def _regular_session_gap_summary(
 
 
 class DataBackfill:
-    def __init__(self, gateway_url: str = None, data_writer=None, config=None, environment: str = ENVIRONMENT):
-        self.gateway_url = (gateway_url or GATEWAY_URL).rstrip("/")
+    def __init__(
+        self,
+        gateway_url: str = None,
+        data_writer=None,
+        config=None,
+        environment: str = ENVIRONMENT,
+        broker: BrokerAdapter | None = None,
+    ):
         self.data_writer = data_writer
         self.pb_client = getattr(data_writer, "pb_client", None) if data_writer else None
         self.config = config
         self.environment = str(environment or ENVIRONMENT).strip().lower() or ENVIRONMENT
+        self.broker = broker or BrokerAdapter()
         self.default_intervals = list(DEFAULT_BACKFILL_INTERVALS)
         self._backfill_count = 0
         self._request_count = 0
@@ -134,19 +172,6 @@ class DataBackfill:
         self._count_lock = threading.Lock()
         self._request_gate_lock = threading.Lock()
         self._next_request_at = 0.0
-        self._session_local = threading.local()
-
-    def _api_url(self, path: str) -> str:
-        return f"{self.gateway_url}/v1/api{path}"
-
-    def _get_session(self) -> requests.Session:
-        session = getattr(self._session_local, "session", None)
-        if session is None:
-            session = requests.Session()
-            session.verify = False
-            self._session_local.session = session
-        load_cookies(session)
-        return session
 
     def _resolve_intervals(self, intervals: Optional[Sequence[str]]) -> List[str]:
         if intervals is None:
@@ -203,53 +228,50 @@ class DataBackfill:
         bar_size: str,
         start_time: str = "",
     ) -> Dict:
-        params = {
-            "conid": conid,
-            "period": period,
-            "bar": bar_size,
-            "outsideRth": "true",
-        }
-        if start_time:
-            params["startTime"] = str(start_time)
-
         max_retries = self._max_retries()
         retry_base_delay = self._retry_base_delay()
         for attempt in range(max_retries + 1):
             self._wait_for_request_slot()
-            session = self._get_session()
             with self._count_lock:
                 self._request_count += 1
 
-            resp = session.get(
-                self._api_url("/iserver/marketdata/history"),
-                params=params,
-                timeout=30,
-            )
-
-            if resp.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries:
+            try:
+                bars = self.broker.request_historical_bars(
+                    conid=int(conid or 0),
+                    symbol=str(symbol or "").upper(),
+                    duration=_to_ib_duration(period),
+                    bar_size=_to_ib_bar_size(bar_size),
+                    end_datetime=str(start_time or ""),
+                    use_rth=False,
+                    timeout=30,
+                )
+                return {
+                    "serverId": "ib_gateway_socket",
+                    "symbol": str(symbol or "").upper(),
+                    "text": str(symbol or "").upper(),
+                    "data": list(bars or []),
+                    "points": len(bars or []),
+                    "mdAvailability": "IBGW",
+                }
+            except Exception as exc:
+                if attempt >= max_retries:
+                    raise RuntimeError(
+                        f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}:{exc}"
+                    ) from exc
                 delay = retry_base_delay * (2 ** attempt)
                 with self._count_lock:
                     self._retry_count += 1
-                    if resp.status_code == 429:
-                        self._throttle_count += 1
                 logger.warning(
-                    "History fetch retry for %s/%s (conid=%d, status=%d, attempt=%d/%d, sleep=%.1fs)",
+                    "History fetch retry for %s/%s (conid=%d, attempt=%d/%d, sleep=%.1fs): %s",
                     symbol,
                     interval,
                     conid,
-                    resp.status_code,
                     attempt + 1,
                     max_retries + 1,
                     delay,
+                    exc,
                 )
                 time.sleep(delay)
-                continue
-
-            resp.raise_for_status()
-            payload = resp.json()
-            save_cookies(session)
-            return payload
-
         raise RuntimeError(f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}")
 
     def _write_bars(self, bars: List[Dict]) -> int:
@@ -268,7 +290,7 @@ class DataBackfill:
         normalized = normalize_interval(interval)
         safe_symbol = str(symbol or "").upper().replace('"', '\\"')
         safe_interval = normalized.replace('"', '\\"')
-        safe_environment = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_environment = str(self.environment or "live").strip().lower().replace('"', '\\"')
         try:
             rows = self.pb_client.get_records(
                 "ibkr_bars",
@@ -323,7 +345,7 @@ class DataBackfill:
 
         safe_symbol = snapshot["symbol"].replace('"', '\\"')
         safe_interval = normalized.replace('"', '\\"')
-        safe_environment = str(ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_environment = str(self.environment or "live").strip().lower().replace('"', '\\"')
         bars_needed = max(1, int(min_bars or 0), int(gap_lookback or 0), 400)
         max_pages = max(1, min(8, (bars_needed + 199) // 200))
 
@@ -450,7 +472,7 @@ class DataBackfill:
                 payload = {
                     "symbol": symbol,
                     "conid": conid,
-                    "environment": ENVIRONMENT,
+                    "environment": self.environment,
                     "exchange": exchange,
                     "interval": normalized,
                     "open": float(bar.get("o", 0) or 0),
