@@ -279,13 +279,14 @@
             display: grid;
             grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
             gap: 14px;
-            align-items: start;
+            align-items: stretch;
         }
 
         .home-quick-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 10px;
+            align-content: start;
         }
 
         .home-quick-link {
@@ -341,6 +342,8 @@
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
         }
 
         .home-tool-chip {
@@ -516,6 +519,39 @@
             display: grid;
             grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
             gap: 14px;
+            align-items: stretch;
+        }
+
+        .home-primary-grid > .home-panel,
+        .home-secondary-grid > .home-panel {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .home-primary-grid > .home-panel {
+            min-height: clamp(640px, 72vh, 880px);
+            max-height: min(80vh, 980px);
+            overflow: hidden;
+        }
+
+        .home-primary-grid > .home-panel > .home-panel-head {
+            min-height: 92px;
+        }
+
+        .home-panel-meta-row {
+            margin-bottom: 12px;
+            text-align: left;
+            min-width: 0;
+        }
+
+        .home-panel-scroll {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable both-edges;
+            padding-right: 4px;
         }
 
         .home-market-grid {
@@ -665,6 +701,21 @@
             .home-primary-grid,
             .home-secondary-grid {
                 grid-template-columns: 1fr;
+            }
+
+            .home-primary-grid > .home-panel {
+                min-height: 0;
+                max-height: none;
+            }
+
+            .home-primary-grid > .home-panel > .home-panel-head {
+                min-height: 0;
+            }
+
+            .home-panel-scroll {
+                overflow: visible;
+                padding-right: 0;
+                scrollbar-gutter: auto;
             }
 
             .home-market-grid {
@@ -914,8 +965,8 @@
                         </div>
                         <a id="todayTargetsLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-inline-btn">查看当前标的榜</a>
                     </div>
-                    <div class="home-panel-meta" id="todayTargetsMeta" style="margin-bottom:12px; text-align:left;">加载中...</div>
-                    <div id="todayTargetsList" class="home-targets-grid">
+                    <div class="home-panel-meta home-panel-meta-row" id="todayTargetsMeta">加载中...</div>
+                    <div id="todayTargetsList" class="home-targets-grid home-panel-scroll">
                         <div class="home-empty">加载中...</div>
                     </div>
                 </section>
@@ -928,7 +979,8 @@
                             <div class="home-panel-copy">只保留最常用的主入口，避免同一批链接在首页重复堆叠。</div>
                         </div>
                     </div>
-                    <div class="home-quick-grid">
+                    <div class="home-panel-meta home-panel-meta-row" id="quickLinksMeta">高频入口加载中...</div>
+                    <div class="home-quick-grid home-panel-scroll">
                         <a id="actionScreenerLink" href="/ibkr_screener.html" class="home-quick-link">
                             <div class="home-quick-link-top">
                                 <div class="home-quick-icon">🔎</div>
@@ -1003,8 +1055,8 @@
                         </div>
                         <a id="marketPanelLink" href="/ibkr_indicators.html" class="home-inline-btn">更多指标</a>
                     </div>
-                    <div class="home-panel-meta" id="marketSummaryText" style="margin-bottom:12px; text-align:left;">加载中...</div>
-                    <div id="marketIndexGrid" class="home-market-grid">
+                    <div class="home-panel-meta home-panel-meta-row" id="marketSummaryText">加载中...</div>
+                    <div id="marketIndexGrid" class="home-market-grid home-panel-scroll">
                         <div class="home-empty">加载中...</div>
                     </div>
                 </section>
@@ -1018,8 +1070,8 @@
                         </div>
                         <a id="activityPanelLink" href="/ibkr_signals.html" class="home-inline-btn">查看全部</a>
                     </div>
-                    <div class="home-panel-meta" id="activityMeta" style="margin-bottom:12px; text-align:left;">加载中...</div>
-                    <div id="activityList" class="home-activity-list">
+                    <div class="home-panel-meta home-panel-meta-row" id="activityMeta">加载中...</div>
+                    <div id="activityList" class="home-activity-list home-panel-scroll">
                         <div class="home-empty">加载中...</div>
                     </div>
                 </section>
@@ -1216,6 +1268,14 @@
             document.getElementById('targetsSummaryLink').href = targetUrl;
             setCardTone('targetsSummaryLink', activeCount > 0 ? 'long' : (candidateCount > 0 ? 'candidate' : 'neutral'));
             renderOverviewMeta(marketDate);
+        }
+
+        function syncQuickLinksMeta() {
+            const primaryCount = document.querySelectorAll('#homeQuickLinks .home-quick-link').length;
+            const toolCount = document.querySelectorAll('#homeQuickLinks .home-tool-chip').length;
+            const metaEl = document.getElementById('quickLinksMeta');
+            if (!metaEl) return;
+            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖筛选 / 执行 / 账户 / 系统`;
         }
 
         function buildTargetSignalUrl(symbol, marketDate) {
@@ -1812,6 +1872,7 @@
             document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🏠 Trading Flight 首页', { description: '执行 / 分析 / 筛选 / 运维 / 系统入口' });
             document.getElementById('pageBridge').innerHTML = renderHomeBridge();
+            syncQuickLinksMeta();
             bindEnvironmentLinks();
             document.getElementById('nav').innerHTML = renderNav('/index.html');
             loadTodayTargets();

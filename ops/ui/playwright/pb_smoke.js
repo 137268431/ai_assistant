@@ -230,7 +230,15 @@ async function collectLayoutMetrics(page) {
     const body = document.body;
     const scrollWidth = Math.max(doc.scrollWidth, body ? body.scrollWidth : 0);
     const bridgeRows = groupRowSpread('.page-bridge-link, .domain-tab');
-    const panelRows = groupRowSpread('.panel-grid > .panel, .table-grid > .panel, .dual-grid > .panel');
+    const panelRows = groupRowSpread([
+      '.panel-grid > .panel',
+      '.table-grid > .panel',
+      '.dual-grid > .panel',
+      '.home-primary-grid > .home-panel',
+      '.home-secondary-grid > .home-panel',
+      '.workspace > .panel',
+      '.workspace > .rail-shell'
+    ].join(', '));
 
     return {
       viewport_width: window.innerWidth,

@@ -352,7 +352,12 @@
             grid-template-columns: minmax(0, 1fr) 320px;
             gap: 14px;
             padding: 0 16px 16px;
-            align-items: start;
+            align-items: stretch;
+        }
+
+        .workspace > .panel,
+        .workspace > .rail-shell {
+            min-height: 0;
         }
 
         body.chart-focus-mode .hero,
@@ -386,11 +391,18 @@
         }
 
         .chart-panel {
+            display: flex;
+            flex-direction: column;
             overflow: hidden;
+            max-height: min(82vh, 1040px);
         }
 
         .chart-shell {
             padding: 0 12px 12px;
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            scrollbar-gutter: stable both-edges;
         }
 
         .panel-header {
@@ -658,6 +670,10 @@
             display: grid;
             gap: 10px;
             align-content: start;
+            max-height: min(82vh, 1040px);
+            overflow: auto;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable both-edges;
         }
 
         .rail-nav {
@@ -1244,6 +1260,17 @@
         @media (max-width: 1080px) {
             .workspace {
                 grid-template-columns: 1fr;
+            }
+
+            .chart-panel,
+            .rail-shell {
+                max-height: none;
+            }
+
+            .chart-shell,
+            .rail-shell {
+                overflow: visible;
+                scrollbar-gutter: auto;
             }
 
             .chart-stage {
