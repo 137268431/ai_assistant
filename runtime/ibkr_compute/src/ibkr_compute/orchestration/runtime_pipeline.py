@@ -340,6 +340,19 @@ class TradingServiceRuntimePipelineMixin:
                 if latest_stored_ms < int(row.get("bar_time_ms", 0) or 0) <= due_bucket_ms
             ]
             candidate_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+            if fetched_rows and not candidate_rows:
+                fetched_times = sorted(int(row.get("bar_time_ms", 0) or 0) for row in fetched_rows)
+                service_mod.logger.warning(
+                    "Official 5m close filtered all fetched rows for %s: latest_stored_ms=%d due_bucket_ms=%d fetched_first=%d(%s) fetched_last=%d(%s) fetched_count=%d",
+                    symbol,
+                    latest_stored_ms,
+                    due_bucket_ms,
+                    fetched_times[0],
+                    format_us_time(fetched_times[0]),
+                    fetched_times[-1],
+                    format_us_time(fetched_times[-1]),
+                    len(fetched_times),
+                )
 
             max_written_ms = latest_stored_ms
             wrote_symbol = False

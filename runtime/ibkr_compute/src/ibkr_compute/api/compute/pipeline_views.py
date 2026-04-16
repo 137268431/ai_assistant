@@ -29,6 +29,7 @@ def build_compute_response(payload=None):
         errors = 0
         indicator_batch = []
         signal_batch = []
+        captured_signals = []
         dirty_cursor_environments = set()
 
         def flush_pending_indicators():
@@ -140,19 +141,18 @@ def build_compute_response(payload=None):
                             if len(indicator_batch) >= api_app.INDICATOR_BATCH_SIZE:
                                 flush_pending_indicators()
 
-                            if (
-                                not plan["persist_signals"]
-                                or interval != "5m"
-                                or not signal_generator
-                                or symbol not in signal_enabled_symbols
-                            ):
+                            if interval != "5m" or not signal_generator or symbol not in signal_enabled_symbols:
                                 continue
 
                             signal = signal_generator.update(snapshot)
                             if signal and api_app.is_recent_signal_bar(bar_ms, interval):
-                                signal_batch.append(api_app.build_signal_payload(environment, symbol, interval, bar, engine, signal))
-                                if len(signal_batch) >= api_app.SIGNAL_BATCH_SIZE:
-                                    flush_pending_signals()
+                                signal_payload = api_app.build_signal_payload(environment, symbol, interval, bar, engine, signal)
+                                if plan["capture_signals"]:
+                                    captured_signals.append(signal_payload)
+                                if plan["persist_signals"]:
+                                    signal_batch.append(signal_payload)
+                                    if len(signal_batch) >= api_app.SIGNAL_BATCH_SIZE:
+                                        flush_pending_signals()
         except Exception:
             errors += 1
             api_app.error_count += 1
@@ -172,7 +172,10 @@ def build_compute_response(payload=None):
             "symbols": plan["requested_symbols"],
             "processed": processed,
             "signals": signals_found,
+            "captured_signals": captured_signals,
+            "captured_signal_count": len(captured_signals),
             "persist_signals": plan["persist_signals"],
+            "capture_signals": plan["capture_signals"],
             "errors": errors,
             "rollup": rollup_results,
             "engines": len(api_app.engines),

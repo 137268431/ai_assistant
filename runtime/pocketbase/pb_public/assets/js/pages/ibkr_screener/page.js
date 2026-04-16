@@ -3,6 +3,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     let activeScreenerView = 'current';
     let screenerPayload = { items: [], summary: {}, filters: {} };
     let todayTargetsPayload = { items: [], summary: {}, market_date: '' };
+    let runtimeCurrentMarketDate = '';
     let rulesPayload = { selection: null, signals: null, computed_at_us: '' };
     let rulesLoadError = '';
     let filteredRows = [];
@@ -91,6 +92,22 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
         throw new Error(payload.message || payload.error || `Delete failed (${response.status})`);
       }
+    }
+
+    function getRuntimeWarning(payload) {
+      const reconcile = payload?.runtime_reconcile;
+      if (reconcile && reconcile.ok === false) {
+        return reconcile.error || 'runtime reconcile failed';
+      }
+      return '';
+    }
+
+    function getWatchlistSyncWarning(payload) {
+      const sync = payload?.watchlist_sync;
+      if (sync && sync.ok === false) {
+        return sync.error || 'watchlist sync failed';
+      }
+      return '';
     }
 
     function buildQuery(params) {
@@ -369,6 +386,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return normalizeWatchlistRole(role) === 'market_monitor' ? 'market_monitor' : 'trade';
     }
 
+    function formatWatchlistMember(item) {
+      const raw = item ? item.manual_member : undefined;
+      const normalized = String(raw == null ? '' : raw).trim().toLowerCase();
+      if (raw === false || normalized === 'false' || normalized === '0' || normalized === 'no') {
+        return 'AUTO(TARGET)';
+      }
+      return 'MANUAL';
+    }
+
     function normalizeWatchlistRole(role) {
       return String(role || '').trim().toLowerCase() === 'market_monitor' ? 'market_monitor' : 'trade';
     }
@@ -400,7 +426,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             item.industry,
             item.note,
             formatWatchlistRole(item.symbol_role),
-            formatRecordEnvironment(item.environment)
+            formatRecordEnvironment(item.environment),
+            formatWatchlistMember(item),
           ].some((value) => String(value || '').toUpperCase().includes(keyword));
         })
         .sort((left, right) => {
@@ -429,6 +456,24 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         || dailyTargetsState.selectedDate
         || document.getElementById('marketDate')?.value
         || getUsDate();
+    }
+
+    function getManualTargetAllowedDate() {
+      return runtimeCurrentMarketDate || getUsDate();
+    }
+
+    function isManualTargetDateAllowed(date = getDailyTargetDate()) {
+      return String(date || '').trim() === String(getManualTargetAllowedDate() || '').trim();
+    }
+
+    function ensureManualTargetDateAllowed() {
+      const selectedDate = getDailyTargetDate();
+      const allowedDate = getManualTargetAllowedDate();
+      if (isManualTargetDateAllowed(selectedDate)) {
+        return true;
+      }
+      showToast(`手动加入目标池只支持当前交易日 ${allowedDate}`);
+      return false;
     }
 
     function getFilteredDailyTargetItems() {
@@ -924,6 +969,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           environment: currentEnvironment,
           market_date: marketDate
         })}`);
+        runtimeCurrentMarketDate = String(payload?.current_market_date || payload?.market_date || runtimeCurrentMarketDate || '').trim();
         const items = Array.isArray(payload?.items) ? payload.items : [];
         if (items.length) {
           try {
@@ -1271,7 +1317,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     function formatExistingWatchlistScopes(items) {
       const seen = new Set();
       return (Array.isArray(items) ? items : [])
-        .map((item) => `${formatRecordEnvironment(item.environment)} ${formatWatchlistRole(item.symbol_role)}`)
+        .map((item) => `${formatRecordEnvironment(item.environment)} ${formatWatchlistRole(item.symbol_role)} ${formatWatchlistMember(item)}`)
         .filter((label) => {
           if (!label || seen.has(label)) return false;
           seen.add(label);
@@ -1316,7 +1362,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const secTypes = Array.isArray(item.sec_types) ? item.sec_types : [];
       return {
         environment: currentEnvironment,
+        source: 'manual_page_add',
         scope,
+        manual_member: true,
         symbol_role: getWatchlistRoleForTab(),
         symbol: item.symbol,
         exchange: item.exchange || '',
@@ -1336,6 +1384,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     function buildDailyTargetBody(item, draft) {
       return {
         environment: currentEnvironment,
+        source: 'manual_page_add',
         symbol: item.symbol,
         exchange: item.exchange || '',
         date: draft.date,
@@ -1369,6 +1418,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     function renderDailyTargetSearchResults() {
       const mount = document.getElementById('dailyTargetSearchResults');
       const draft = getDailyTargetDraft();
+      const manualDateAllowed = isManualTargetDateAllowed(draft.date);
 
       if (!dailyTargetsState.searchResults.length) {
         mount.innerHTML = '<div class="empty-state">暂无搜索结果。</div>';
@@ -1398,7 +1448,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
               ${(secTypes.length ? secTypes : [item.asset_class || 'UNKNOWN']).map((type) => `<span class="pool-pill">${escapeHtml(type)}</span>`).join('')}
             </div>
             <div class="card-bottom">
-              <button class="btn primary" type="button" onclick="addDailyTargetCandidate(${index})">加入目标池</button>
+              <button class="btn primary" type="button" onclick="addDailyTargetCandidate(${index})" ${manualDateAllowed ? '' : 'disabled'}>${manualDateAllowed ? '加入目标池' : '仅支持当前交易日'}</button>
               <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">查看图表</a>
             </div>
           </article>
@@ -1504,14 +1554,17 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     async function addDailyTargetCandidate(index) {
       const item = dailyTargetsState.searchResults[index];
       if (!item) return;
+      if (!ensureManualTargetDateAllowed()) return;
 
       const draft = getDailyTargetDraft();
       try {
-        await requestJson('/api/custom/ibkr/targets/upsert', {
+        const payload = await requestJson('/api/custom/ibkr/targets/upsert', {
           method: 'POST',
           body: buildDailyTargetBody(item, draft)
         });
         showToast(`${item.symbol} 已加入 ${draft.date} 目标池`);
+        const warning = getRuntimeWarning(payload) || getWatchlistSyncWarning(payload);
+        if (warning) showToast(`预热提示: ${warning}`);
         await loadDailyTargets(false);
       } catch (error) {
         showToast(`加入失败: ${error.message || error}`);
@@ -1548,10 +1601,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       if (nextReason === null) return;
 
       try {
-        await requestJson('/api/custom/ibkr/targets/upsert', {
+        const payload = await requestJson('/api/custom/ibkr/targets/upsert', {
           method: 'POST',
           body: {
             environment: currentEnvironment,
+            source: 'manual_page_edit',
             symbol: item.symbol,
             exchange: item.exchange || '',
             date: item.date || dailyTargetsState.selectedDate,
@@ -1563,6 +1617,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           }
         });
         showToast(`${item.symbol} 已更新`);
+        const warning = getRuntimeWarning(payload) || getWatchlistSyncWarning(payload);
+        if (warning) showToast(`联动提示: ${warning}`);
         await loadDailyTargets(false);
       } catch (error) {
         showToast(`更新失败: ${error.message || error}`);
@@ -1573,9 +1629,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       if (!recordId) return;
       if (!window.confirm(`确认删除 ${symbol} 的目标池记录？`)) return;
       try {
-        await deleteRecord('ibkr_targets', recordId);
+        const payload = await requestJson('/api/custom/ibkr/targets/remove', {
+          method: 'POST',
+          body: {
+            environment: currentEnvironment,
+            source: 'manual_page_remove',
+            record_id: recordId,
+            symbol
+          }
+        });
         showToast(`${symbol} 已删除`);
+        const warning = getRuntimeWarning(payload) || getWatchlistSyncWarning(payload);
+        if (warning) showToast(`清理提示: ${warning}`);
         await loadDailyTargets(false);
+        await loadWatchlist(false);
       } catch (error) {
         showToast(`删除失败: ${error.message || error}`);
       }
@@ -1584,6 +1651,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     async function batchAddDailyTargetSymbols() {
       const symbols = parseSymbolList(document.getElementById('dailyTargetBatchSymbolsInput').value);
       const draft = getDailyTargetDraft();
+      if (!ensureManualTargetDateAllowed()) return;
       if (!symbols.length) {
         showToast('先输入要批量加入的 symbols');
         return;
@@ -1629,7 +1697,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       let deleted = 0;
       for (const item of targets) {
         try {
-          await deleteRecord('ibkr_targets', item.id);
+          await requestJson('/api/custom/ibkr/targets/remove', {
+            method: 'POST',
+            body: {
+              environment: currentEnvironment,
+              source: 'manual_page_remove',
+              record_id: item.id,
+              symbol: item.symbol || ''
+            }
+          });
           deleted += 1;
         } catch (_) {
           // ignore batch delete failures and continue
@@ -1639,6 +1715,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('dailyTargetDeleteMeta').textContent = `批量删除完成: 删除 ${deleted} / 匹配 ${targets.length}`;
       showToast(`批量删除完成: ${deleted}/${targets.length}`);
       await loadDailyTargets(false);
+      await loadWatchlist(false);
     }
 
     function attachDailyTargetEvents() {
@@ -1649,7 +1726,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('dailyTargetBatchAddBtn').addEventListener('click', batchAddDailyTargetSymbols);
       document.getElementById('dailyTargetBatchClearBtn').addEventListener('click', () => {
         document.getElementById('dailyTargetBatchSymbolsInput').value = '';
-        document.getElementById('dailyTargetBatchMeta').textContent = '批量导入会逐个调用 IBKR 搜索，并取最佳候选写入所选日期。';
+        document.getElementById('dailyTargetBatchMeta').textContent = '批量导入只支持当前交易日的应急手动加入，会逐个调用 IBKR 搜索并触发运行时预热。';
       });
       document.getElementById('dailyTargetBatchDeleteBtn').addEventListener('click', batchDeleteDailyTargetSymbols);
       document.getElementById('dailyTargetRefreshBtn').addEventListener('click', () => loadDailyTargets(true));
@@ -1739,7 +1816,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const items = getFilteredWatchlistItems();
       const table = document.getElementById('watchlistTable');
       if (!items.length) {
-        table.innerHTML = `<tr><td colspan="8" class="empty-state">当前没有符合条件的 ${escapeHtml(getWatchlistRoleLabel())} 记录。</td></tr>`;
+        table.innerHTML = `<tr><td colspan="9" class="empty-state">当前没有符合条件的 ${escapeHtml(getWatchlistRoleLabel())} 记录。</td></tr>`;
       } else {
         table.innerHTML = items.map((item) => `
           <tr>
@@ -1753,6 +1830,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             <td>${escapeHtml(item.industry || '--')}</td>
             <td><span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span></td>
             <td>${escapeHtml(formatWatchlistRole(item.symbol_role || 'trade'))}</td>
+            <td>${escapeHtml(formatWatchlistMember(item))}</td>
             <td>${escapeHtml(item.note || '--')}</td>
             <td>
               <div class="meta-stack">
@@ -1821,7 +1899,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         watchlistState.loaded = true;
         watchlistState.loadedRole = getWatchlistRoleForTab();
         watchlistState.lastRefresh = 'watchlist 加载失败';
-        document.getElementById('watchlistTable').innerHTML = `<tr><td colspan="8" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        document.getElementById('watchlistTable').innerHTML = `<tr><td colspan="9" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
         document.getElementById('listMeta').textContent = `加载失败: ${error.message || error}`;
         if (isWatchlistRoleTab()) {
           renderSearchResults();
@@ -1841,6 +1919,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           body: buildWatchlistBody(item, scope, note)
         });
         showToast(`${item.symbol} 已写入 ${scope === 'global' ? 'GLOBAL' : getEnvironmentLabel(scope)} ${getWatchlistRoleLabel()}`);
+        const warning = getRuntimeWarning(payload);
+        if (warning) showToast(`预热提示: ${warning}`);
         await loadWatchlist(false);
         if (payload.action === 'created' || payload.action === 'updated') {
           document.getElementById('noteInput').value = '';
@@ -1881,11 +1961,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
 
       try {
-        await requestJson('/api/custom/ibkr/watchlist/upsert', {
+        const payload = await requestJson('/api/custom/ibkr/watchlist/upsert', {
           method: 'POST',
           body: {
             environment: currentEnvironment,
+            source: 'manual_page_edit',
             scope: nextScope,
+            manual_member: true,
             symbol_role: String(nextRole || '').trim(),
             symbol: item.symbol,
             exchange: String(nextExchange || '').trim().toUpperCase(),
@@ -1894,9 +1976,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           }
         });
         if ((nextScope !== originalScope || !rawScope) && recordId) {
-          await deleteRecord('watchlist', recordId);
+          await requestJson('/api/custom/ibkr/watchlist/remove', {
+            method: 'POST',
+            body: {
+              environment: currentEnvironment,
+              source: 'manual_page_scope_move',
+              record_id: recordId,
+              symbol: item.symbol,
+              remove_current_day_targets: false
+            }
+          });
         }
         showToast(`${item.symbol} 已更新`);
+        const warning = getRuntimeWarning(payload);
+        if (warning) showToast(`预热提示: ${warning}`);
         await loadWatchlist(false);
       } catch (error) {
         showToast(`更新失败: ${error.message || error}`);
@@ -1907,9 +2000,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       if (!recordId) return;
       if (!window.confirm(`确认删除 ${symbol} (${scopeLabel}) ?`)) return;
       try {
-        await deleteRecord('watchlist', recordId);
+        const payload = await requestJson('/api/custom/ibkr/watchlist/remove', {
+          method: 'POST',
+          body: {
+            environment: currentEnvironment,
+            source: 'manual_page_remove',
+            record_id: recordId,
+            symbol
+          }
+        });
         showToast(`${symbol} 已删除`);
+        const warning = getRuntimeWarning(payload);
+        if (warning) showToast(`清理提示: ${warning}`);
         await loadWatchlist(false);
+        await loadDailyTargets(false);
       } catch (error) {
         showToast(`删除失败: ${error.message || error}`);
       }
@@ -1964,7 +2068,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       let deleted = 0;
       for (const item of targets) {
         try {
-          await deleteRecord('watchlist', item.id);
+          await requestJson('/api/custom/ibkr/watchlist/remove', {
+            method: 'POST',
+            body: {
+              environment: currentEnvironment,
+              source: 'manual_page_remove',
+              record_id: item.id,
+              symbol: item.symbol || ''
+            }
+          });
           deleted += 1;
         } catch (_) {
           // ignore batch delete failures and continue
@@ -1974,6 +2086,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('deleteMeta').textContent = `批量删除完成: 删除 ${deleted} / 匹配 ${targets.length}`;
       showToast(`批量删除完成: ${deleted}/${targets.length}`);
       await loadWatchlist(false);
+      await loadDailyTargets(false);
     }
 
     function attachWatchlistEvents() {

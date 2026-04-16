@@ -86,6 +86,12 @@ class SignalRouter:
     def mark_processed(self, signal_id: str):
         self._processed_ids.add(signal_id)
 
+    def forget_processed(self, signal_ids):
+        for signal_id in (signal_ids or []):
+            text = str(signal_id or "").strip()
+            if text:
+                self._processed_ids.discard(text)
+
     def daily_reset(self):
         self._processed_ids.clear()
         logger.info("Signal router daily reset")

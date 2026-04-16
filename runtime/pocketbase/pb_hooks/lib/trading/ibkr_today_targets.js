@@ -585,9 +585,10 @@ function buildWorkflowMeta(row) {
 
 function buildTodayTargetPayload(options) {
     const runtimeEnvironment = normalizeRuntimeEnvironment(options && options.environment, LIVE_ENVIRONMENT)
-    const requestedMarketDate = String(options && (options.marketDate || options.date) || "").trim() || getCurrentMarketDate()
+    const currentMarketDate = getCurrentMarketDate()
+    const requestedMarketDate = String(options && (options.marketDate || options.date) || "").trim() || currentMarketDate
     const marketStartCandidateMs = Date.parse(`${requestedMarketDate}T04:00:00.000Z`)
-    const marketDate = Number.isFinite(marketStartCandidateMs) ? requestedMarketDate : getCurrentMarketDate()
+    const marketDate = Number.isFinite(marketStartCandidateMs) ? requestedMarketDate : currentMarketDate
     const workflowGuide = buildWorkflowGuide(runtimeEnvironment, marketDate)
     const targetRecords = $app.findRecordsByFilter(
         "ibkr_targets",
@@ -614,6 +615,7 @@ function buildTodayTargetPayload(options) {
             ok: true,
             environment: runtimeEnvironment,
             market_date: marketDate,
+            current_market_date: currentMarketDate,
             computed_at_ms: computedAtMs,
             computed_at_us: formatEtDateTime(computedAtMs),
             computed_at_cn: formatCnDateTime(computedAtMs),
@@ -880,6 +882,7 @@ function buildTodayTargetPayload(options) {
         ok: true,
         environment: runtimeEnvironment,
         market_date: marketDate,
+        current_market_date: currentMarketDate,
         computed_at_ms: computedAtMs,
         computed_at_us: formatEtDateTime(computedAtMs),
         computed_at_cn: formatCnDateTime(computedAtMs),

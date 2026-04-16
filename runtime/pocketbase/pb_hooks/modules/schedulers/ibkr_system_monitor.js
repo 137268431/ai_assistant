@@ -613,7 +613,7 @@ function loadDataGapSummary(environment, times) {
         const watchlistSymbols = loadWatchlistSymbols(environment)
         const targetSymbols = loadTargetSymbols(environment, times.date)
         const bars = loadRecentRowsBySymbol("ibkr_bars", environment, "5m", times.todayStart, 1200)
-        const indicators = loadRecentRowsBySymbol("ibkr_indicators", environment, "5m", times.todayStart, 1200)
+        const indicators = loadRecentRowsBySymbol("ibkr_indicators", environment, "5", times.todayStart, 1200)
         const latestBarBySymbol = bars.latest_by_symbol || {}
         const latestIndicatorBySymbol = indicators.latest_by_symbol || {}
         const monitoredSymbols = targetSymbols.length > 0 ? targetSymbols : Object.keys(latestBarBySymbol)

@@ -349,7 +349,7 @@
               <button id="dailyTargetBatchAddBtn" class="ghost-btn" type="button">批量加入目标池</button>
               <button id="dailyTargetBatchClearBtn" class="ghost-btn" type="button">清空</button>
             </div>
-            <div id="dailyTargetBatchMeta" class="muted-copy">批量导入会逐个调用 IBKR 搜索，并取最佳候选写入所选日期。</div>
+            <div id="dailyTargetBatchMeta" class="muted-copy">批量导入只支持当前交易日的应急手动加入，会逐个调用 IBKR 搜索并触发运行时预热。</div>
           </div>
         </section>
 
@@ -487,13 +487,14 @@
                   <th>Industry</th>
                   <th>Scope</th>
                   <th>Role</th>
+                  <th>Member</th>
                   <th>Note</th>
                   <th>Updated</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="watchlistTable">
-                <tr><td colspan="8" class="empty-state">尚未加载记录。</td></tr>
+                <tr><td colspan="9" class="empty-state">尚未加载记录。</td></tr>
               </tbody>
             </table>
           </div>

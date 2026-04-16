@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ibkr_compute.api.monitor.views import _build_ibkr_monitor_snapshot
+from ibkr_compute.api.shared.route_request import coerce_request_bool
 from ibkr_compute.api.runtime.common import (
     _api_app,
     _background_start_ibkr_service,
@@ -10,6 +11,20 @@ from ibkr_compute.api.runtime.common import (
     set_ibkr_runtime_control,
 )
 from ibkr_compute.api.runtime.restore import _maybe_restore_ibkr_service
+
+
+def _coerce_symbol_list(value) -> list[str]:
+    raw_items = value if isinstance(value, list) else [value]
+    normalized = []
+    seen = set()
+    for raw in raw_items:
+        parts = raw if isinstance(raw, list) else str(raw or "").replace("\n", ",").split(",")
+        for part in parts:
+            symbol = str(part or "").strip().upper()
+            if symbol and symbol not in seen:
+                seen.add(symbol)
+                normalized.append(symbol)
+    return normalized
 
 
 def _build_ibkr_start_response(payload: dict | None = None) -> tuple[dict, int]:
@@ -110,3 +125,48 @@ def _build_ibkr_monitor_response(requested_environment: str) -> tuple[dict, int]
         )
     _maybe_restore_ibkr_service(service)
     return _build_ibkr_monitor_snapshot(service, requested_environment=requested_environment), 200
+
+
+def _build_ibkr_universe_reconcile_response(payload: dict | None = None) -> tuple[dict, int]:
+    service = get_ibkr_service()
+    if not service:
+        return {"ok": False, "error": "IBKR service not initialized"}, 503
+
+    _maybe_restore_ibkr_service(service)
+    payload = payload if isinstance(payload, dict) else {}
+    runtime_environment = _ibkr_service_environment(service)
+    requested_environment = str(payload.get("environment") or runtime_environment).strip().lower() or runtime_environment
+    if requested_environment != runtime_environment:
+        return {
+            "ok": False,
+            "error": (
+                f"runtime environment mismatch: requested={requested_environment} "
+                f"running={runtime_environment}"
+            ),
+            "environment": runtime_environment,
+            "requested_environment": requested_environment,
+            "runtime_environment_mismatch": True,
+        }, 409
+
+    try:
+        result = service.reconcile_market_universe(
+            prime_symbols=_coerce_symbol_list(payload.get("prime_symbols")),
+            cleanup_symbols=_coerce_symbol_list(payload.get("cleanup_symbols")),
+            emit_signals=coerce_request_bool(payload.get("emit_signals"), False),
+            source=str(payload.get("source") or "runtime_api").strip().lower() or "runtime_api",
+            reason=str(payload.get("reason") or "manual_reconcile").strip() or "manual_reconcile",
+        )
+        return {
+            "ok": bool((result or {}).get("ok", True)),
+            **(result or {}),
+            "requested_environment": requested_environment,
+            "runtime_environment_mismatch": False,
+        }, 200
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "environment": runtime_environment,
+            "requested_environment": requested_environment,
+            "runtime_environment_mismatch": False,
+        }, 500

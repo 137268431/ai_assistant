@@ -1994,12 +1994,228 @@ routerAdd("GET", "/api/custom/ibkr/contracts/search", (c) => {
     }
 })
 
+function parseRouteBoolean(value, fallback) {
+    if (value === undefined || value === null || value === "") {
+        return Boolean(fallback)
+    }
+    if (typeof value === "boolean") {
+        return value
+    }
+    const normalized = String(value || "").trim().toLowerCase()
+    if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+        return true
+    }
+    if (["0", "false", "no", "n", "off"].includes(normalized)) {
+        return false
+    }
+    return Boolean(fallback)
+}
+globalThis.ibkrActionsParseRouteBoolean = parseRouteBoolean
+
+function getCurrentRuntimeMarketDate(environment) {
+    const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const fallbackDate = String(getTimeStrings().date || "").trim()
+    try {
+        const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/status`
+        const response = $http.send({
+            url: upstream,
+            method: "GET",
+            timeout: 8,
+        })
+        const payload = parseHookJson(response.raw)
+        const runtimeDate = String(
+            (payload && payload.market_universe && payload.market_universe.market_date)
+            || (payload && payload.market_date)
+            || ""
+        ).trim()
+        return runtimeDate || fallbackDate
+    } catch (_) {
+        return fallbackDate
+    }
+}
+globalThis.ibkrActionsGetCurrentRuntimeMarketDate = getCurrentRuntimeMarketDate
+
+function callUniverseReconcile(environment, payload) {
+    const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
+    const upstream = `${getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")}/ibkr/universe/reconcile`
+    const response = $http.send({
+        url: upstream,
+        method: "POST",
+        timeout: 180,
+        body: JSON.stringify({
+            ...(payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {}),
+            environment: environment,
+        }),
+        headers: { "Content-Type": "application/json" },
+    })
+    return {
+        statusCode: Number(response && response.statusCode) > 0 ? Number(response.statusCode) : 200,
+        payload: parseHookJson(response.raw),
+        upstream: upstream,
+    }
+}
+globalThis.ibkrActionsCallUniverseReconcile = callUniverseReconcile
+
+function findRecordByIdOrFilter(collectionName, recordId, filter, params) {
+    if (recordId) {
+        try {
+            return $app.findFirstRecordByFilter(collectionName, "id = {:id}", { id: String(recordId || "").trim() })
+        } catch (_) {}
+    }
+    if (filter) {
+        try {
+            return $app.findFirstRecordByFilter(collectionName, filter, params || {})
+        } catch (_) {}
+    }
+    return null
+}
+globalThis.ibkrActionsFindRecordByIdOrFilter = findRecordByIdOrFilter
+
+function deleteCollectionRecord(record) {
+    if (!record || !record.id) return false
+    $app.delete(record)
+    return true
+}
+globalThis.ibkrActionsDeleteCollectionRecord = deleteCollectionRecord
+
+function findWatchlistRecordForSymbol(symbol, environment) {
+    try {
+        return $app.findFirstRecordByFilter(
+            "watchlist",
+            "symbol = {:sym} && environment = {:env}",
+            { sym: String(symbol || "").trim().toUpperCase(), env: String(environment || "live").trim().toLowerCase() || "live" }
+        )
+    } catch (_) {
+        return null
+    }
+}
+globalThis.ibkrActionsFindWatchlistRecordForSymbol = findWatchlistRecordForSymbol
+
+function listActiveTodayTargets(symbol, environment, marketDate) {
+    const normalizedSymbol = String(symbol || "").trim().toUpperCase()
+    const normalizedEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    const normalizedMarketDate = String(marketDate || "").trim()
+    if (!normalizedSymbol || !normalizedMarketDate) return []
+    try {
+        return $app.findRecordsByFilter(
+            "ibkr_targets",
+            "symbol = {:sym} && date = {:d} && environment = {:env} && (status = \"candidate\" || status = \"active\")",
+            "-updated",
+            1000,
+            0,
+            { sym: normalizedSymbol, d: normalizedMarketDate, env: normalizedEnvironment }
+        ) || []
+    } catch (_) {
+        return []
+    }
+}
+globalThis.ibkrActionsListActiveTodayTargets = listActiveTodayTargets
+
+function hasEffectiveWatchlistMember(symbol, environment) {
+    const normalizedSymbol = String(symbol || "").trim().toUpperCase()
+    const normalizedEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    if (!normalizedSymbol) return false
+    try {
+        const rows = $app.findRecordsByFilter(
+            "watchlist",
+            "symbol = {:sym} && (environment = {:env} || environment = \"global\" || environment = \"\")",
+            "-updated",
+            20,
+            0,
+            { sym: normalizedSymbol, env: normalizedEnvironment }
+        ) || []
+        return rows.length > 0
+    } catch (_) {
+        return false
+    }
+}
+globalThis.ibkrActionsHasEffectiveWatchlistMember = hasEffectiveWatchlistMember
+
+function ensureTargetWatchlistRecord(opts) {
+    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+    const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const times = getTimeStrings()
+    const normalizedSymbol = String(opts && opts.symbol || "").trim().toUpperCase()
+    const environment = String(opts && opts.environment || "live").trim().toLowerCase() || "live"
+    if (!normalizedSymbol) {
+        return { action: "skipped", manual_member: false }
+    }
+
+    let existing = null
+    try {
+        existing = $app.findFirstRecordByFilter(
+            "watchlist",
+            "symbol = {:sym} && environment = {:env}",
+            { sym: normalizedSymbol, env: environment }
+        )
+    } catch (_) {}
+
+    const preservedManualMember = existing ? globalThis.ibkrActionsParseRouteBoolean(existing.get("manual_member"), false) : false
+    const payload = {
+        symbol: normalizedSymbol,
+        environment: environment,
+        exchange: String(
+            (opts && opts.exchange)
+            || (existing ? existing.get("exchange") : "")
+            || "SMART"
+        ).trim().toUpperCase(),
+        industry: String(
+            (opts && opts.industry)
+            || (existing ? existing.get("industry") : "")
+            || ""
+        ).trim(),
+        note: String(existing ? (existing.get("note") || "") : "").trim(),
+        symbol_role: String(existing ? (existing.get("symbol_role") || "trade") : "trade").trim() || "trade",
+        manual_member: preservedManualMember,
+        created_us: String(existing ? (existing.get("created_us") || times.us) : times.us).trim(),
+        created_cn: String(existing ? (existing.get("created_cn") || times.cn) : times.cn).trim(),
+        updated_us: times.us,
+        updated_cn: times.cn,
+        us_time: times.us,
+        cn_time: times.cn,
+        bar_time_ms: Date.now(),
+    }
+    const result = actionHelpers.upsertRecord(
+        "watchlist",
+        "symbol = {:sym} && environment = {:env}",
+        { sym: normalizedSymbol, env: environment },
+        payload
+    )
+    return {
+        action: result.action,
+        id: result.record && result.record.id ? result.record.id : "",
+        manual_member: preservedManualMember,
+    }
+}
+globalThis.ibkrActionsEnsureTargetWatchlistRecord = ensureTargetWatchlistRecord
+
+function removeAutoWatchlistRecordIfEligible(symbol, environment, marketDate) {
+    const remainingTargets = listActiveTodayTargets(symbol, environment, marketDate)
+    if (remainingTargets.length > 0) {
+        return { removed: false, reason: "target_still_active" }
+    }
+
+    const record = findWatchlistRecordForSymbol(symbol, environment)
+    if (!record) {
+        return { removed: false, reason: "watchlist_missing" }
+    }
+    if (globalThis.ibkrActionsParseRouteBoolean(record.get("manual_member"), true)) {
+        return { removed: false, reason: "manual_watchlist_retained", id: record.id || "" }
+    }
+
+    deleteCollectionRecord(record)
+    return { removed: true, reason: "auto_target_watchlist_removed", id: record.id || "" }
+}
+globalThis.ibkrActionsRemoveAutoWatchlistRecordIfEligible = removeAutoWatchlistRecordIfEligible
+
 routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environmentUtils = require(`${__hooks}/lib/environment.js`)
     const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const universeHelpers = require(`${__hooks}/lib/trading/ibkr_universe_maintenance.js`)
 
     const runtimeEnvironment = environmentUtils.getRuntimeEnvironmentFromData(d, environmentUtils.LIVE_ENVIRONMENT)
     const recordEnvironment = environmentUtils.normalizeConfigEnvironment(
@@ -2038,6 +2254,7 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
         : Date.now()
     const usTime = String(d.us_time || times.us).trim()
     const cnTime = String(d.cn_time || times.cn).trim()
+    const source = String(d.source || "manual_page").trim().toLowerCase()
 
     let existing = null
     try {
@@ -2050,6 +2267,10 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
     const symbolRole = normalizeWatchlistRole(
         d.symbol_role || d.role || (existing ? existing.get("symbol_role") : "")
     )
+    const manualMember = universeHelpers.parseBoolean(
+        d.manual_member,
+        existing ? existing.get("manual_member") : true
+    )
 
     const compareData = {
         symbol: symbol,
@@ -2058,17 +2279,7 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
         industry: industry,
         note: note,
         symbol_role: symbolRole,
-    }
-
-    if (existing && !actionHelpers.recordNeedsUpdate(existing, compareData)) {
-        return c.json(200, {
-            ok: true,
-            action: "skipped",
-            id: existing.id || "",
-            symbol: symbol,
-            environment: recordEnvironment,
-            symbol_role: symbolRole,
-        })
+        manual_member: manualMember,
     }
 
     const data = {
@@ -2093,6 +2304,25 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
             { sym: symbol, env: recordEnvironment },
             data
         )
+        let runtimeReconcile = null
+        try {
+            const reconcile = universeHelpers.callUniverseReconcile(runtimeEnvironment, {
+                source: source || "manual_page",
+                reason: "watchlist_upsert",
+                prime_symbols: [symbol],
+                emit_signals: false,
+            })
+            runtimeReconcile = {
+                ...reconcile.payload,
+                proxy_upstream: reconcile.upstream,
+                status_code: reconcile.statusCode,
+            }
+        } catch (reconcileErr) {
+            runtimeReconcile = {
+                ok: false,
+                error: reconcileErr.message || String(reconcileErr),
+            }
+        }
         return c.json(200, {
             ok: true,
             action: result.action,
@@ -2100,10 +2330,90 @@ routerAdd("POST", "/api/custom/ibkr/watchlist/upsert", (c) => {
             symbol: symbol,
             environment: recordEnvironment,
             symbol_role: symbolRole,
+            manual_member: manualMember,
+            runtime_reconcile: runtimeReconcile,
         })
     } catch (err) {
         console.error(`[IBKRActions] watchlist upsert error: ${err.message}`)
         return c.json(500, { ok: false, error: err.message })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/watchlist/remove", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    try {
+        const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const universeHelpers = require(`${__hooks}/lib/trading/ibkr_universe_maintenance.js`)
+        const runtimeEnvironment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+        const recordId = String(d.record_id || d.id || "").trim()
+        const symbolHint = String(d.symbol || "").trim().toUpperCase()
+        const removeCurrentDayTargets = universeHelpers.parseBoolean(d.remove_current_day_targets, true)
+        const marketDate = String(d.market_date || "").trim() || universeHelpers.getCurrentRuntimeMarketDate(runtimeEnvironment)
+        const record = universeHelpers.findRecordByIdOrFilter(
+            "watchlist",
+            recordId,
+            symbolHint
+                ? "symbol = {:sym} && environment = {:env}"
+                : "",
+            symbolHint
+                ? { sym: symbolHint, env: String(d.scope || d.target_environment || d.environment || runtimeEnvironment).trim().toLowerCase() || runtimeEnvironment }
+                : {}
+        )
+        if (!record) {
+            return c.json(404, { ok: false, error: "watchlist_record_not_found" })
+        }
+
+        const symbol = String(record.get("symbol") || symbolHint || "").trim().toUpperCase()
+        const symbolRole = String(record.get("symbol_role") || "").trim().toLowerCase()
+        universeHelpers.deleteCollectionRecord(record)
+
+        let removedTargetCount = 0
+        if (removeCurrentDayTargets && symbol && marketDate && symbolRole !== "market_monitor") {
+            const targetRows = universeHelpers.listActiveTodayTargets(symbol, runtimeEnvironment, marketDate)
+            for (let i = 0; i < targetRows.length; i++) {
+                try {
+                    universeHelpers.deleteCollectionRecord(targetRows[i])
+                    removedTargetCount += 1
+                } catch (_) {}
+            }
+        }
+
+        const keepWatchlist = universeHelpers.hasEffectiveWatchlistMember(symbol, runtimeEnvironment)
+        const keepTargets = universeHelpers.listActiveTodayTargets(symbol, runtimeEnvironment, marketDate).length > 0
+        let runtimeReconcile = null
+        if (symbol && !keepWatchlist && !keepTargets) {
+            try {
+                const reconcile = universeHelpers.callUniverseReconcile(runtimeEnvironment, {
+                    source: String(d.source || "manual_page_remove").trim().toLowerCase() || "manual_page_remove",
+                    reason: "watchlist_remove",
+                    cleanup_symbols: [symbol],
+                })
+                runtimeReconcile = {
+                    ...reconcile.payload,
+                    proxy_upstream: reconcile.upstream,
+                    status_code: reconcile.statusCode,
+                }
+            } catch (reconcileErr) {
+                runtimeReconcile = {
+                    ok: false,
+                    error: reconcileErr.message || String(reconcileErr),
+                }
+            }
+        }
+
+        return c.json(200, {
+            ok: true,
+            action: "deleted",
+            id: recordId || "",
+            symbol: symbol,
+            environment: runtimeEnvironment,
+            removed_target_count: removedTargetCount,
+            runtime_reconcile: runtimeReconcile,
+        })
+    } catch (err) {
+        console.error(`[IBKRActions] watchlist remove error: ${err.message}`)
+        return c.json(500, { ok: false, error: err.message || String(err) })
     }
 })
 
@@ -2113,14 +2423,25 @@ routerAdd("POST", "/api/custom/ibkr/targets/upsert", (c) => {
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
+    const universeHelpers = require(`${__hooks}/lib/trading/ibkr_universe_maintenance.js`)
 
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
     const symbol = String(d.symbol || "").trim().toUpperCase()
     const times = getTimeStrings()
     const date = String(d.date || times.date).trim()
+    const source = String(d.source || "manual_page_add").trim().toLowerCase()
+    const currentMarketDate = universeHelpers.getCurrentRuntimeMarketDate(environment)
 
     if (!symbol || !date) {
         return c.json(400, { ok: false, error: "Missing symbol or date" })
+    }
+    if (source === "manual_page_add" && date !== currentMarketDate) {
+        return c.json(400, {
+            ok: false,
+            error: "manual_target_only_current_market_date",
+            current_market_date: currentMarketDate,
+            date: date,
+        })
     }
 
     const exchange = String(d.exchange || "").trim().toUpperCase()
@@ -2180,6 +2501,55 @@ routerAdd("POST", "/api/custom/ibkr/targets/upsert", (c) => {
                 bar_time_ms: barTimeMs,
             }
         )
+        let watchlistSync = null
+        let runtimeReconcile = null
+        if (date === currentMarketDate && ["candidate", "active"].includes(status)) {
+            watchlistSync = universeHelpers.ensureTargetWatchlistRecord({
+                symbol: symbol,
+                environment: environment,
+                exchange: exchange,
+                industry: String(extra.industry || extra.asset_class || extra.description || "").trim(),
+            })
+            try {
+                const reconcile = universeHelpers.callUniverseReconcile(environment, {
+                    source: source || "manual_page_add",
+                    reason: "target_upsert",
+                    prime_symbols: [symbol],
+                    emit_signals: true,
+                })
+                runtimeReconcile = {
+                    ...reconcile.payload,
+                    proxy_upstream: reconcile.upstream,
+                    status_code: reconcile.statusCode,
+                }
+            } catch (reconcileErr) {
+                runtimeReconcile = {
+                    ok: false,
+                    error: reconcileErr.message || String(reconcileErr),
+                }
+            }
+        } else if (date === currentMarketDate && status === "removed") {
+            watchlistSync = universeHelpers.removeAutoWatchlistRecordIfEligible(symbol, environment, currentMarketDate)
+            if (!universeHelpers.hasEffectiveWatchlistMember(symbol, environment) && universeHelpers.listActiveTodayTargets(symbol, environment, currentMarketDate).length === 0) {
+                try {
+                    const reconcile = universeHelpers.callUniverseReconcile(environment, {
+                        source: source || "manual_page_edit",
+                        reason: "target_mark_removed",
+                        cleanup_symbols: [symbol],
+                    })
+                    runtimeReconcile = {
+                        ...reconcile.payload,
+                        proxy_upstream: reconcile.upstream,
+                        status_code: reconcile.statusCode,
+                    }
+                } catch (reconcileErr) {
+                    runtimeReconcile = {
+                        ok: false,
+                        error: reconcileErr.message || String(reconcileErr),
+                    }
+                }
+            }
+        }
         return c.json(200, {
             ok: true,
             action: result.action,
@@ -2187,10 +2557,81 @@ routerAdd("POST", "/api/custom/ibkr/targets/upsert", (c) => {
             symbol: symbol,
             date: date,
             environment: environment,
+            current_market_date: currentMarketDate,
+            watchlist_sync: watchlistSync,
+            runtime_reconcile: runtimeReconcile,
         })
     } catch (err) {
         console.error(`[IBKRActions] targets upsert error: ${err.message}`)
         return c.json(500, { ok: false, error: err.message })
+    }
+})
+
+routerAdd("POST", "/api/custom/ibkr/targets/remove", (c) => {
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    try {
+        const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const universeHelpers = require(`${__hooks}/lib/trading/ibkr_universe_maintenance.js`)
+        const fallbackEnvironment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+        const recordId = String(d.record_id || d.id || "").trim()
+        const symbolHint = String(d.symbol || "").trim().toUpperCase()
+        const record = universeHelpers.findRecordByIdOrFilter(
+            "ibkr_targets",
+            recordId,
+            symbolHint
+                ? "symbol = {:sym} && environment = {:env}"
+                : "",
+            symbolHint
+                ? { sym: symbolHint, env: fallbackEnvironment }
+                : {}
+        )
+        if (!record) {
+            return c.json(404, { ok: false, error: "target_record_not_found" })
+        }
+
+        const environment = String(record.get("environment") || fallbackEnvironment).trim().toLowerCase() || fallbackEnvironment
+        const symbol = String(record.get("symbol") || symbolHint || "").trim().toUpperCase()
+        const currentMarketDate = universeHelpers.getCurrentRuntimeMarketDate(environment)
+        universeHelpers.deleteCollectionRecord(record)
+
+        const autoWatchlist = universeHelpers.removeAutoWatchlistRecordIfEligible(symbol, environment, currentMarketDate)
+        const keepWatchlist = universeHelpers.hasEffectiveWatchlistMember(symbol, environment)
+        const keepTargets = universeHelpers.listActiveTodayTargets(symbol, environment, currentMarketDate).length > 0
+        let runtimeReconcile = null
+        if (symbol && !keepWatchlist && !keepTargets) {
+            try {
+                const reconcile = universeHelpers.callUniverseReconcile(environment, {
+                    source: String(d.source || "manual_page_remove").trim().toLowerCase() || "manual_page_remove",
+                    reason: "target_remove",
+                    cleanup_symbols: [symbol],
+                })
+                runtimeReconcile = {
+                    ...reconcile.payload,
+                    proxy_upstream: reconcile.upstream,
+                    status_code: reconcile.statusCode,
+                }
+            } catch (reconcileErr) {
+                runtimeReconcile = {
+                    ok: false,
+                    error: reconcileErr.message || String(reconcileErr),
+                }
+            }
+        }
+
+        return c.json(200, {
+            ok: true,
+            action: "deleted",
+            id: recordId || "",
+            symbol: symbol,
+            environment: environment,
+            current_market_date: currentMarketDate,
+            watchlist_sync: autoWatchlist,
+            runtime_reconcile: runtimeReconcile,
+        })
+    } catch (err) {
+        console.error(`[IBKRActions] targets remove error: ${err.message}`)
+        return c.json(500, { ok: false, error: err.message || String(err) })
     }
 })
 

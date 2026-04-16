@@ -11,6 +11,23 @@ def _service_mod():
 
 
 class TradingServiceWarmupCycleMixin:
+    def _is_local_pb_unavailable_error(self, error) -> bool:
+        text = str(error or "").strip().lower()
+        if not text:
+            return False
+        if "8090" not in text:
+            return False
+        if "127.0.0.1" not in text and "localhost" not in text:
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "connection refused",
+                "failed to establish a new connection",
+                "max retries exceeded",
+            )
+        )
+
     def _release_startup_after_trade_gate(
         self,
         snapshot: dict,
@@ -625,6 +642,71 @@ class TradingServiceWarmupCycleMixin:
         except Exception as exc:
             last_error = str(exc)
             service_mod.logger.error("Warmup cycle failed: %s", exc)
+            if self._is_local_pb_unavailable_error(exc):
+                retry_delay_s = 30
+                service_mod.logger.warning(
+                    "Warmup pending retry because PocketBase is temporarily unavailable: retry_in=%ss error=%s",
+                    retry_delay_s,
+                    exc,
+                )
+                self._set_warmup_state(
+                    phase="pending",
+                    reason="pb_unavailable_retry",
+                    requested_at=self._now_iso(),
+                    started_at=started_at,
+                    finished_at=None,
+                    last_error=last_error,
+                    trading_gate_open=False,
+                    trading_gate_reason="pb_unavailable_retry",
+                    target_date=snapshot["target_date"],
+                    symbols_total=snapshot["symbols_total"],
+                    trade_symbols_total=snapshot["trade_symbols_total"],
+                    monitor_symbols_total=snapshot["monitor_symbols_total"],
+                    symbols=snapshot["symbols"],
+                    trade_symbols=snapshot["trade_symbols"],
+                    monitor_symbols=snapshot["monitor_symbols"],
+                    ready_symbols=0,
+                    ready_trade_symbols=0,
+                    ready_monitor_symbols=0,
+                    ready_symbols_list=[],
+                    pending_symbols=snapshot["symbols"],
+                    symbol_status=[],
+                    integrity_pending_symbols=[],
+                    integrity_repair_reasons={},
+                    preflight_repair={},
+                    backfill_written=backfill_written,
+                    backfill_result=backfill_result,
+                    compute_result=compute_result,
+                    timings=warmup_timings,
+                    last_duration_s=round(time.perf_counter() - warmup_started_perf, 3),
+                )
+                self._sync_startup_progress(
+                    action="update",
+                    title="IBKR Runtime 启动中",
+                    summary="PocketBase 本地服务暂时不可达，Warmup 已进入自动重试等待。",
+                    current_step="warmup",
+                    current_blocker="等待 PocketBase 恢复可用后自动重试 Warmup",
+                    operator_action="无需人工干预，系统将在短暂延迟后自动重试；如持续失败再检查 PB hooks 发布流程",
+                    steps={
+                        "warmup": {
+                            "status": "running",
+                            "detail": f"pb_retry_in={retry_delay_s}s error={last_error}",
+                        },
+                    },
+                    fields=self._build_startup_progress_fields(
+                        self._startup_reason or "warmup",
+                        self._startup_source or "api_start",
+                        bool(self._startup_trigger_login),
+                    ),
+                    reason=self._startup_reason or "warmup",
+                    source=self._startup_source or "api_start",
+                    trigger_login=bool(self._startup_trigger_login),
+                )
+                if self._running:
+                    time.sleep(retry_delay_s)
+                    if self._running:
+                        self._warmup_wakeup.set()
+                return
 
         readiness = self._collect_warmup_readiness(snapshot)
         final_preflight = dict(compute_result.get("preflight_repair") or {})

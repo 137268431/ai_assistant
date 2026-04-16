@@ -115,6 +115,7 @@ def build_compute_execution_plan(payload=None) -> dict:
     requested_symbols = get_requested_symbols(payload)
     requested_environments = get_requested_environments(payload)
     enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
+    capture_signals = _coerce_payload_bool(payload.get("capture_signals"), False)
     targeted_rebuild = bool(requested_symbols) and source in {
         "history_repair",
         "history_rebuild",
@@ -137,6 +138,7 @@ def build_compute_execution_plan(payload=None) -> dict:
         "payload": payload,
         "source": source,
         "persist_signals": should_persist_compute_signals(payload),
+        "capture_signals": capture_signals,
         "requested_symbols": requested_symbols,
         "requested_environments": requested_environments,
         "enabled_environments": enabled_environments,

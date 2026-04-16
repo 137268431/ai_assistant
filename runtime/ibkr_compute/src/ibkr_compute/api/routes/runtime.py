@@ -15,6 +15,7 @@ from ibkr_compute.api.runtime.views import (
     _build_ibkr_start_response,
     _build_ibkr_status_response,
     _build_ibkr_stop_response,
+    _build_ibkr_universe_reconcile_response,
 )
 
 
@@ -47,6 +48,10 @@ def register_runtime_routes(app):
     def ibkr_monitor():
         requested_environment = get_requested_environment("live")
         return build_json_pair_response(_build_ibkr_monitor_response, requested_environment)
+
+    @app.route("/ibkr/universe/reconcile", methods=["POST"])
+    def ibkr_universe_reconcile():
+        return build_json_request_response(_build_ibkr_universe_reconcile_response)
 
     @app.route("/ibkr/2fa/takeover", methods=["POST"])
     def ibkr_2fa_takeover():

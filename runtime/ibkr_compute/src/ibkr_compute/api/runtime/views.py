@@ -22,6 +22,7 @@ from ibkr_compute.api.runtime.control_views import (
     _build_ibkr_start_response,
     _build_ibkr_status_response,
     _build_ibkr_stop_response,
+    _build_ibkr_universe_reconcile_response,
 )
 from ibkr_compute.api.runtime.gateway_views import (
     _build_ibkr_gateway_restart_response,

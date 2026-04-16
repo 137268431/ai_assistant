@@ -207,6 +207,15 @@
             },
             {
                 "hidden": false,
+                "id": "wl_manual_member",
+                "name": "manual_member",
+                "presentable": true,
+                "required": false,
+                "system": false,
+                "type": "bool"
+            },
+            {
+                "hidden": false,
                 "id": "autodate2990389176",
                 "name": "created",
                 "onCreate": true,

@@ -99,6 +99,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return Array.isArray(payload?.items) ? payload.items : [];
         }
 
+        function getTotalItems(payload, fallback = 0) {
+            const total = Number(payload?.totalItems);
+            if (Number.isFinite(total)) return total;
+            if (Array.isArray(payload?.items)) return payload.items.length;
+            return Number(fallback || 0) || 0;
+        }
+
         function normalizeManualAuthReason(value) {
             const text = String(value || '').trim().toLowerCase();
             if (!text) return 'manual_reauth';
@@ -459,6 +466,47 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function buildEnvironmentFilter() {
             return `environment = "${escapeQueryValue(currentEnvironment)}"`;
+        }
+
+        function resolveRuntimeMarketDate(status) {
+            const marketDate = String(
+                status?.runtime?.market_universe?.market_date
+                || status?.market_universe?.market_date
+                || ''
+            ).trim();
+            return marketDate || new Date().toISOString().slice(0, 10);
+        }
+
+        async function loadRuntimeTodayCounts(status) {
+            const envFilter = buildEnvironmentFilter();
+            const marketDate = resolveRuntimeMarketDate(status);
+            const todayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${envFilter}`;
+            const targetDateFilter = `date = "${escapeQueryValue(marketDate)}" && ${envFilter}`;
+
+            const [
+                barsCountResp,
+                indicatorsCountResp,
+                signalsCountResp,
+                ordersCountResp,
+                eventsCountResp,
+                targetsCountResp,
+            ] = await Promise.all([
+                apiFetch('ibkr_bars', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
+                apiFetch('ibkr_indicators', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
+                apiFetch('ibkr_signals', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
+                apiFetch('orders', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
+                apiFetch('system_events', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
+                apiFetch('ibkr_targets', { filter: targetDateFilter, perPage: 1, page: 1 }).catch(() => null),
+            ]);
+
+            return {
+                ibkr_bars: getTotalItems(barsCountResp),
+                ibkr_indicators: getTotalItems(indicatorsCountResp),
+                ibkr_signals: getTotalItems(signalsCountResp),
+                orders: getTotalItems(ordersCountResp),
+                events: getTotalItems(eventsCountResp),
+                ibkr_targets: getTotalItems(targetsCountResp),
+            };
         }
 
         function getRuntimeEnvironmentMismatch(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
@@ -2058,6 +2106,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
                 const runtimeConfig = Array.isArray(runtimeConfigResp?.items) ? runtimeConfigResp.items : [];
                 const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
+                const todayCounts = await loadRuntimeTodayCounts(status).catch(() => null);
+                if (loadId !== latestRuntimeLoadId) return;
+                const resolvedSummary = {
+                    ...(summary || {}),
+                    today: {
+                        ...((summary && summary.today) || {}),
+                        ...(todayCounts || {})
+                    }
+                };
                 latestRuntimeStatus = status || {};
                 const twoFactorState = twoFactorResp?.state || {};
                 const startupState = startupResp?.state || {};
@@ -2068,13 +2125,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 const latestBar = barsItems[0] || null;
                 const latestIndicator = indicatorItems[0] || null;
                 const latestSignal = signalItems[0] || null;
-                renderHero(summary, health, status, runtimeConfig, twoFactorState, latestStartupState, latestBar);
-                renderOpsGrid(summary, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                renderMetricCards(summary, health, status, twoFactorState, latestBar);
+                renderHero(resolvedSummary, health, status, runtimeConfig, twoFactorState, latestStartupState, latestBar);
+                renderOpsGrid(resolvedSummary, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
+                renderMetricCards(resolvedSummary, health, status, twoFactorState, latestBar);
                 renderTwoFactorPanel(twoFactorState);
-                renderRuntimeDetail(summary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                renderConfigDetail(summary, runtimeConfig, cronDefinitions);
-                renderPipelinePanel(summary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
+                renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
+                renderConfigDetail(resolvedSummary, runtimeConfig, cronDefinitions);
+                renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
                 syncActionLocks();
                 renderEngineTable(status);
                 void loadEngineDetail(loadId, status);

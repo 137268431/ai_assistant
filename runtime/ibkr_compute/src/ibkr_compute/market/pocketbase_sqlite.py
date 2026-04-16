@@ -187,6 +187,106 @@ def delete_rows_by_environment(conn: sqlite3.Connection, table: str, environment
     return delete_rows(conn, table, where="environment = ?", params=(str(environment or "live"),))
 
 
+def _normalize_symbols(symbols: Sequence[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen = set()
+    for item in symbols or ():
+        symbol = str(item or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            normalized.append(symbol)
+    return normalized
+
+
+def _environment_where_clause(environment: str, *, include_legacy_empty: bool = True) -> tuple[str, list[Any]]:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    if include_legacy_empty and runtime_environment == "live":
+        return "(environment = ? OR environment = '')", [runtime_environment]
+    return "environment = ?", [runtime_environment]
+
+
+def _symbol_where_clause(symbols: Sequence[str]) -> tuple[str, list[Any]]:
+    normalized_symbols = _normalize_symbols(symbols)
+    if not normalized_symbols:
+        return "1 = 0", []
+    placeholders = ", ".join("?" for _ in normalized_symbols)
+    return f"symbol IN ({placeholders})", list(normalized_symbols)
+
+
+def delete_symbol_runtime_data(
+    conn: sqlite3.Connection,
+    environment: str,
+    symbols: Sequence[str],
+) -> dict[str, Any]:
+    normalized_symbols = _normalize_symbols(symbols)
+    if not normalized_symbols:
+        return {
+            "symbols": [],
+            "deleted": {},
+            "deleted_signal_ids": [],
+            "preserved_signal_ids": [],
+        }
+
+    env_where, env_params = _environment_where_clause(environment, include_legacy_empty=True)
+    symbol_where, symbol_params = _symbol_where_clause(normalized_symbols)
+    base_where = f"{env_where} AND {symbol_where}"
+    base_params = [*env_params, *symbol_params]
+
+    linked_signal_ids = [
+        str(row["signal_id"] or "").strip()
+        for row in conn.execute(
+            f"""
+            SELECT DISTINCT signal_id
+            FROM orders
+            WHERE {env_where}
+              AND {symbol_where}
+              AND COALESCE(signal_id, '') != ''
+            """,
+            tuple(base_params),
+        ).fetchall()
+        if str(row["signal_id"] or "").strip()
+    ]
+
+    deleted: dict[str, int] = {}
+    deleted["ibkr_bars"] = delete_rows(conn, "ibkr_bars", where=base_where, params=base_params)
+    deleted["ibkr_indicators"] = delete_rows(conn, "ibkr_indicators", where=base_where, params=base_params)
+    deleted["ibkr_reverse_signals"] = delete_rows(conn, "ibkr_reverse_signals", where=base_where, params=base_params)
+    deleted["ibkr_bar_integrity"] = delete_rows(conn, "ibkr_bar_integrity", where=base_where, params=base_params)
+
+    signal_where = f"{base_where} AND LOWER(COALESCE(status, '')) != 'executed'"
+    signal_params: list[Any] = list(base_params)
+    if linked_signal_ids:
+        placeholders = ", ".join("?" for _ in linked_signal_ids)
+        signal_where += f" AND (COALESCE(signal_id, '') = '' OR signal_id NOT IN ({placeholders}))"
+        signal_params.extend(linked_signal_ids)
+
+    deleted_signal_ids = [
+        str(row["signal_id"] or "").strip()
+        for row in conn.execute(
+            f"""
+            SELECT signal_id
+            FROM ibkr_signals
+            WHERE {signal_where}
+            """,
+            tuple(signal_params),
+        ).fetchall()
+        if str(row["signal_id"] or "").strip()
+    ]
+    deleted["ibkr_signals"] = delete_rows(
+        conn,
+        "ibkr_signals",
+        where=signal_where,
+        params=signal_params,
+    )
+
+    return {
+        "symbols": normalized_symbols,
+        "deleted": deleted,
+        "deleted_signal_ids": deleted_signal_ids,
+        "preserved_signal_ids": linked_signal_ids,
+    }
+
+
 def delete_state_rows(
     conn: sqlite3.Connection,
     environment: str,
