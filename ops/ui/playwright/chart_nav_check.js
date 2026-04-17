@@ -33,8 +33,18 @@ async function latestDate(token, collection, sort) {
     headers: { Authorization: `Bearer ${token}` }
   });
   const json = await resp.json();
-  if (!resp.ok) throw new Error(`${collection}_query_failed:${JSON.stringify(json)}`);
-  return deriveDate(Array.isArray(json.items) ? json.items[0] : null);
+  if (!resp.ok) {
+    const message = String(json?.message || '');
+    if (resp.status === 404 && message.includes('Missing collection context.')) {
+      return { date: null, unavailable: true, reason: 'missing_collection_context' };
+    }
+    throw new Error(`${collection}_query_failed:${JSON.stringify(json)}`);
+  }
+  return {
+    date: deriveDate(Array.isArray(json.items) ? json.items[0] : null),
+    unavailable: false,
+    reason: '',
+  };
 }
 
 function buildTargetUrl(path, date) {
@@ -110,14 +120,20 @@ async function inspect(browser, token, spec, mobile = false) {
   };
 
   const specs = [
-    { name: 'signals_to_chart', url: buildTargetUrl('/ibkr_signals.html', dates.signals) },
-    { name: 'reverse_to_chart', url: buildTargetUrl('/ibkr_reverse_signals.html', dates.reverse) },
-    { name: 'orders_to_chart', url: buildTargetUrl('/ibkr_orders.html', dates.orders) },
+    { name: 'signals_to_chart', url: buildTargetUrl('/ibkr_signals.html', dates.signals.date) },
+    dates.reverse.unavailable
+      ? { name: 'reverse_to_chart', skipped: true, reason: dates.reverse.reason }
+      : { name: 'reverse_to_chart', url: buildTargetUrl('/ibkr_reverse_signals.html', dates.reverse.date) },
+    { name: 'orders_to_chart', url: buildTargetUrl('/ibkr_orders.html', dates.orders.date) },
   ];
 
   const browser = await chromium.launch({ headless: true });
   const results = [];
   for (const spec of specs) {
+    if (spec.skipped) {
+      results.push({ name: spec.name, skipped: true, reason: spec.reason });
+      continue;
+    }
     results.push(await inspect(browser, token, spec, false));
     results.push(await inspect(browser, token, spec, true));
   }

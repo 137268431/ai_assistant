@@ -708,6 +708,7 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'manual_stop_notify_enabled',
   'health_check_notify_enabled',
   'inspection_notify_enabled',
+  'system_monitor_host_load_consecutive_count',
   'reverse_signal_threshold',
   'ibkr_compute_public_url',
   'ibkr_compute_enabled',
@@ -778,6 +779,7 @@ const CONFIG_META = {
   manual_stop_notify_enabled: meta('手动停止通知', '系统通知', 920, 'TRUE', '手动停止算法时发送通知'),
   health_check_notify_enabled: meta('兜底心跳通知', '系统通知', 930, 'TRUE', '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),
   inspection_notify_enabled: meta('巡检告警', '系统通知', 940, 'TRUE', '孤立持仓、恢复异常、数据缺口等巡检告警'),
+  system_monitor_host_load_consecutive_count: meta('Load 连续命中次数', '系统通知', 945, '2', '仅对 host_load_high / host_load_critical 生效；Monitor Cron 每 5 分钟检查一次，默认需连续 2 次命中才发告警'),
 
   ibkr_compute_public_url: meta('Compute 公网地址', '服务接入', 1000, 'https://qc.lzw-glory.top', 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址'),
 }
@@ -826,7 +828,8 @@ const NUMERIC_CONFIG_RULES = {
   signal_validity_minutes: { min: '5', max: '120', step: '5' },
   order_validity_minutes: { min: '5', max: '120', step: '5' },
   signal_poll_interval_sec: { min: '15', max: '600', step: '15' },
-  reverse_signal_threshold: { min: '1', max: '10', step: '1' }
+  reverse_signal_threshold: { min: '1', max: '10', step: '1' },
+  system_monitor_host_load_consecutive_count: { min: '1', max: '12', step: '1' }
 }
 
 const SELECT_CONFIGS = {

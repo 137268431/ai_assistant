@@ -9,11 +9,16 @@ tws_path="${IBKR_IBG_HOME:-/opt}"
 tws_settings="${IBKR_TWS_SETTINGS_PATH:-${IBKR_IBG_USER_DIR:-/opt/ibgateway/userdir}}"
 trading_mode="${IBKR_GATEWAY_TRADING_MODE:-live}"
 twofa_timeout="${IBKR_2FA_TIMEOUT_ACTION:-exit}"
+gateway_tz="${IBKR_GATEWAY_TZ:-America/New_York}"
 java_path="${IBKR_GATEWAY_JAVA_HOME:-}"
 log_dir="${IBKR_GATEWAY_LOG_DIR:-/opt/ibkr_compute/logs/ibgateway}"
 tws_version="${IBKR_TWS_MAJOR_VERSION:-}"
 
 mkdir -p "$tws_settings" "$log_dir"
+
+if [[ -n "$gateway_tz" ]]; then
+  export TZ="$gateway_tz"
+fi
 
 if [[ -n "$java_path" && ! -x "$java_path/java" && -x "$java_path/bin/java" ]]; then
   java_path="$java_path/bin"

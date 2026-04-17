@@ -332,6 +332,11 @@ if not username or not password:
 
 trading_mode = (data.get("IBKR_GATEWAY_TRADING_MODE") or data.get("IBKR_ENVIRONMENT") or "live").strip() or "live"
 twofa_action = (data.get("IBKR_2FA_TIMEOUT_ACTION") or "exit").strip() or "exit"
+gateway_tz = (data.get("IBKR_GATEWAY_TZ") or "America/New_York").strip() or "America/New_York"
+auto_restart_time = data.get("IBKR_AUTO_RESTART_TIME", "08:05 PM")
+if auto_restart_time is None:
+    auto_restart_time = "08:05 PM"
+auto_restart_time = str(auto_restart_time).strip()
 java_home = data.get("IBKR_GATEWAY_JAVA_HOME", "").strip()
 if java_home in {
     "/usr/lib/jvm/java-17-openjdk-amd64",
@@ -356,6 +361,8 @@ updates = {
     "IBKR_IBG_USER_DIR": user_dir,
     "IBKR_TWS_SETTINGS_PATH": user_dir,
     "IBKR_TWS_MAJOR_VERSION": detected_tws_version,
+    "IBKR_GATEWAY_TZ": gateway_tz,
+    "IBKR_AUTO_RESTART_TIME": auto_restart_time,
     "IBKR_GATEWAY_TRADING_MODE": trading_mode,
     "IBKR_2FA_TIMEOUT_ACTION": twofa_action,
     "IBKR_GATEWAY_JAVA_HOME": java_home,
@@ -397,6 +404,8 @@ preferred_order = [
     "IBKR_IBG_USER_DIR",
     "IBKR_TWS_SETTINGS_PATH",
     "IBKR_TWS_MAJOR_VERSION",
+    "IBKR_GATEWAY_TZ",
+    "IBKR_AUTO_RESTART_TIME",
     "IBKR_GATEWAY_TRADING_MODE",
     "IBKR_2FA_TIMEOUT_ACTION",
     "IBKR_GATEWAY_JAVA_HOME",
@@ -451,6 +460,10 @@ api_port = (data.get("IBGW_PORT") or "4001").strip() or "4001"
 user_dir = (data.get("IBKR_TWS_SETTINGS_PATH") or data.get("IBKR_IBG_USER_DIR") or "").strip()
 relogin = "yes" if (data.get("IBKR_2FA_TIMEOUT_ACTION", "exit").strip().lower() == "restart") else "no"
 trusted_ips = data.get("IBKR_TRUSTED_API_CLIENT_IPS", "").strip()
+auto_restart_time = data.get("IBKR_AUTO_RESTART_TIME", "08:05 PM")
+if auto_restart_time is None:
+    auto_restart_time = "08:05 PM"
+auto_restart_time = str(auto_restart_time).strip()
 
 lines = [
     "IbLoginId=" + username,
@@ -467,7 +480,7 @@ lines = [
     "AcceptIncomingConnectionAction=accept",
     "AllowBlindTrading=yes",
     "TrustedTwsApiClientIPs=" + trusted_ips,
-    "AutoRestartTime=",
+    "AutoRestartTime=" + auto_restart_time,
     "IbDir=" + user_dir,
 ]
 

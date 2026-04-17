@@ -763,7 +763,7 @@ function buildTodayTargetPayload(options) {
     const marketStartMs = Date.parse(`${marketDate}T04:00:00.000Z`)
     const marketEndMs = marketStartMs + 24 * 60 * 60 * 1000
     const lookbackDailyMs = marketStartMs - 20 * 24 * 60 * 60 * 1000
-    const indicatorLookbackMs = marketStartMs - 5 * 24 * 60 * 60 * 1000
+    const indicatorLookbackMs = marketStartMs
     const dailyFilter = [
         'interval = "1d"',
         barEnvironmentFilter,
@@ -792,9 +792,9 @@ function buildTodayTargetPayload(options) {
     ].join(" && ")
 
     const dailyRecords = $app.findRecordsByFilter("ibkr_bars", dailyFilter, "bar_time_ms", 20000, 0) || []
-    const intradayRecords = $app.findRecordsByFilter("ibkr_bars", intradayFilter, "bar_time_ms", 50000, 0) || []
-    const indicatorRecords = $app.findRecordsByFilter("ibkr_indicators", indicatorFilter, "-bar_time_ms", 10000, 0) || []
-    const signalRecords = $app.findRecordsByFilter("ibkr_signals", signalFilter, "-bar_time_ms,-updated", 10000, 0) || []
+    const intradayRecords = $app.findRecordsByFilter("ibkr_bars", intradayFilter, "", 50000, 0) || []
+    const indicatorRecords = $app.findRecordsByFilter("ibkr_indicators", indicatorFilter, "", 10000, 0) || []
+    const signalRecords = $app.findRecordsByFilter("ibkr_signals", signalFilter, "", 10000, 0) || []
 
     const dailyHistoryBySymbol = {}
     const fallbackDailyBySymbol = {}
@@ -835,7 +835,10 @@ function buildTodayTargetPayload(options) {
             us_time: String(record.get("us_time") || "").trim(),
             volume: toNumber(record.get("volume"), 0),
         }
-        latestIntradayBySymbol[symbol] = row
+        const currentLatest = latestIntradayBySymbol[symbol]
+        if (!currentLatest || row.bar_time_ms >= currentLatest.bar_time_ms) {
+            latestIntradayBySymbol[symbol] = row
+        }
         if (!volumeStatsBySymbol[symbol]) {
             volumeStatsBySymbol[symbol] = { premarket: 0, today: 0 }
         }
@@ -849,7 +852,9 @@ function buildTodayTargetPayload(options) {
     for (let i = 0; i < indicatorRecords.length; i++) {
         const record = indicatorRecords[i]
         const symbol = String(record.get("symbol") || "").trim().toUpperCase()
-        if (symbol && !latestIndicatorBySymbol[symbol]) {
+        if (!symbol) continue
+        const currentLatest = latestIndicatorBySymbol[symbol]
+        if (!currentLatest || toInt(record.get("bar_time_ms"), 0) >= toInt(currentLatest.get("bar_time_ms"), 0)) {
             latestIndicatorBySymbol[symbol] = record
         }
     }

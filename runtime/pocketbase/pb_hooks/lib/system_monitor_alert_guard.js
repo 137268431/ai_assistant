@@ -1,5 +1,7 @@
 const MONITOR_ALERT_COOLDOWN_MS = 15 * 60 * 1000
 const MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
+const HOST_LOAD_CONSECUTIVE_CONFIG_KEY = "system_monitor_host_load_consecutive_count"
+const DEFAULT_HOST_LOAD_CONSECUTIVE_COUNT = 2
 const MONITOR_ALERT_FLAG_CODES = {
     monitor_endpoint_unavailable: true,
     gateway_offline: true,
@@ -23,10 +25,26 @@ const MONITOR_ALERT_FLAG_CODES = {
     pb_disk_critical: true,
 }
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
+const LOAD_MONITOR_ALERT_CODES = {
+    host_load_high: 1,
+    host_load_critical: 2,
+}
 
 function toNumber(value, fallback) {
     const num = Number(value)
     return Number.isFinite(num) ? num : (fallback || 0)
+}
+
+function normalizePositiveInt(value, fallback) {
+    const num = Math.floor(Number(value))
+    if (Number.isFinite(num) && num >= 1) {
+        return num
+    }
+    const safeFallback = Math.floor(Number(fallback))
+    if (Number.isFinite(safeFallback) && safeFallback >= 1) {
+        return safeFallback
+    }
+    return 1
 }
 
 function parseStateValue(raw) {
@@ -138,6 +156,81 @@ function buildMonitorAlertFingerprint(monitorPayload, flags) {
     })
 }
 
+function getHostLoadConsecutiveThreshold(environment) {
+    const { getConfigValue } = require(`${__hooks}/lib/environment.js`)
+    return normalizePositiveInt(
+        getConfigValue(
+            HOST_LOAD_CONSECUTIVE_CONFIG_KEY,
+            String(DEFAULT_HOST_LOAD_CONSECUTIVE_COUNT),
+            environment
+        ),
+        DEFAULT_HOST_LOAD_CONSECUTIVE_COUNT
+    )
+}
+
+function isLoadMonitorAlertFlag(flag) {
+    const code = String(flag && flag.code || "").trim()
+    return !!LOAD_MONITOR_ALERT_CODES[code]
+}
+
+function selectPrimaryLoadMonitorAlertFlag(flags) {
+    let selected = null
+    let selectedRank = 0
+    for (let i = 0; i < (flags || []).length; i++) {
+        const item = flags[i]
+        const rank = LOAD_MONITOR_ALERT_CODES[String(item && item.code || "").trim()] || 0
+        if (rank > selectedRank) {
+            selected = item
+            selectedRank = rank
+        }
+    }
+    return selected
+}
+
+function evaluateMonitorAlertFlags(alertFlags, previousState, threshold, observedAt) {
+    const immediateAlertFlags = []
+    for (let i = 0; i < (alertFlags || []).length; i++) {
+        const item = alertFlags[i]
+        if (!isLoadMonitorAlertFlag(item)) {
+            immediateAlertFlags.push(item)
+        }
+    }
+
+    const loadAlertFlag = selectPrimaryLoadMonitorAlertFlag(alertFlags)
+    if (!loadAlertFlag) {
+        return {
+            effective_alert_flags: immediateAlertFlags,
+            pending_only: false,
+            state_patch: {
+                pending_host_load_hits: 0,
+                pending_host_load_since: "",
+                pending_host_load_active_code: "",
+            },
+            threshold_met: false,
+        }
+    }
+
+    const prev = previousState || {}
+    const prevHits = Math.max(0, Math.floor(toNumber(prev.pending_host_load_hits, 0)))
+    const prevHadLoad = !!LOAD_MONITOR_ALERT_CODES[String(prev.pending_host_load_active_code || "").trim()]
+    const nextHits = prevHadLoad ? (prevHits + 1) : 1
+    const normalizedThreshold = normalizePositiveInt(threshold, DEFAULT_HOST_LOAD_CONSECUTIVE_COUNT)
+    const thresholdMet = nextHits >= normalizedThreshold
+
+    return {
+        effective_alert_flags: thresholdMet
+            ? immediateAlertFlags.concat([loadAlertFlag])
+            : immediateAlertFlags,
+        pending_only: immediateAlertFlags.length === 0 && !thresholdMet,
+        state_patch: {
+            pending_host_load_hits: nextHits,
+            pending_host_load_since: String(prev.pending_host_load_since || "").trim() || String(observedAt || ""),
+            pending_host_load_active_code: String(loadAlertFlag.code || "").trim(),
+        },
+        threshold_met: thresholdMet,
+    }
+}
+
 function formatBytes(value) {
     const bytes = Number(value)
     if (!Number.isFinite(bytes) || bytes < 0) return "--"
@@ -179,6 +272,7 @@ function runSystemMonitorAlertGuard(logPrefix) {
             continue
         }
 
+        const threshold = getHostLoadConsecutiveThreshold(environment)
         const baseAlertFlags = selectMonitorAlertFlags(monitorPayload.flags || [])
         const syntheticAlertFlags = buildSyntheticMonitorAlertFlags(monitorPayload)
         const alertFlags = baseAlertFlags.concat(
@@ -187,18 +281,34 @@ function runSystemMonitorAlertGuard(logPrefix) {
                 return !baseAlertFlags.some((baseItem) => String(baseItem && baseItem.code || "").trim() === syntheticCode)
             })
         )
+        const state = getStateData(MONITOR_ALERT_STATE_KEY, environment, times.date).data || {}
+        const evaluation = evaluateMonitorAlertFlags(alertFlags, state, threshold, times.us)
+        const effectiveAlertFlags = evaluation.effective_alert_flags || []
         if (!alertFlags.length) {
             saveStateData(MONITOR_ALERT_STATE_KEY, environment, times.date, {
                 last_monitor_check_at: times.us,
                 last_monitor_issue_at: "",
                 last_monitor_alert_hash: "",
                 last_monitor_alert_ms: 0,
+                ...evaluation.state_patch,
             })
             continue
         }
 
-        const fingerprint = buildMonitorAlertFingerprint(monitorPayload, alertFlags)
-        const state = getStateData(MONITOR_ALERT_STATE_KEY, environment, times.date).data || {}
+        if (!effectiveAlertFlags.length) {
+            saveStateData(MONITOR_ALERT_STATE_KEY, environment, times.date, {
+                last_monitor_check_at: times.us,
+                ...evaluation.state_patch,
+            })
+            if (evaluation.pending_only) {
+                console.log(
+                    `${prefix} ${environment}: host load pending ${evaluation.state_patch.pending_host_load_hits}/${threshold}, waiting before alert`
+                )
+            }
+            continue
+        }
+
+        const fingerprint = buildMonitorAlertFingerprint(monitorPayload, effectiveAlertFlags)
         const lastAlertHash = String(state.last_monitor_alert_hash || "")
         const lastAlertMs = toNumber(state.last_monitor_alert_ms, 0)
         const shouldNotify = (
@@ -213,6 +323,7 @@ function runSystemMonitorAlertGuard(logPrefix) {
                 last_monitor_issue_at: String(state.last_monitor_issue_at || times.us),
                 last_monitor_alert_hash: lastAlertHash,
                 last_monitor_alert_ms: lastAlertMs,
+                ...evaluation.state_patch,
             })
             continue
         }
@@ -225,16 +336,16 @@ function runSystemMonitorAlertGuard(logPrefix) {
         const loadavg = host.loadavg || {}
         const pocketbaseDisk = ((monitorPayload.pocketbase || {}).disk) || {}
         const pocketbaseFilesystem = pocketbaseDisk.filesystem || {}
-        const level = alertFlags.some((item) => String(item && item.severity || "").trim().toLowerCase() === "error")
+        const level = effectiveAlertFlags.some((item) => String(item && item.severity || "").trim().toLowerCase() === "error")
             ? "error"
             : "warning"
         const title = level === "error"
-            ? `IBKR Monitor 严重告警（${alertFlags.length}项）`
-            : `IBKR Monitor 告警（${alertFlags.length}项）`
+            ? `IBKR Monitor 严重告警（${effectiveAlertFlags.length}项）`
+            : `IBKR Monitor 告警（${effectiveAlertFlags.length}项）`
         const detail = {
             "检查时间": times.us,
             "监控状态": String(monitorPayload.status || "unknown").toUpperCase(),
-            "触发项": alertFlags.slice(0, 4).map((item) => `${item.title || item.code}: ${item.detail || ""}`).join(" | "),
+            "触发项": effectiveAlertFlags.slice(0, 4).map((item) => `${item.title || item.code}: ${item.detail || ""}`).join(" | "),
             "订阅占用": `${toNumber(apiUtilization.active_subscription_count, 0)}/${toNumber(apiUtilization.subscription_limit, 0)} (${toNumber(apiUtilization.utilization_pct, 0).toFixed(2)}%)`,
             "WebSocket": `msg_age=${apiUtilization.last_message_age_s != null ? `${apiUtilization.last_message_age_s}s` : "--"} · subs=${toNumber(apiUtilization.ws_subscribed_count, 0)} · pending=${toNumber(apiUtilization.pending_subscription_count, 0)}`,
             "主机CPU": cpu.used_pct != null ? `${cpu.used_pct}%` : "--",
@@ -255,11 +366,16 @@ function runSystemMonitorAlertGuard(logPrefix) {
             last_monitor_issue_at: times.us,
             last_monitor_alert_hash: fingerprint,
             last_monitor_alert_ms: nowMs,
+            ...evaluation.state_patch,
         })
-        console.log(`${prefix} ${environment}: level=${level}, notified=${notified}, flags=${alertFlags.map((item) => item.code).join(",")}`)
+        console.log(`${prefix} ${environment}: level=${level}, notified=${notified}, flags=${effectiveAlertFlags.map((item) => item.code).join(",")}`)
     }
 }
 
 module.exports = {
+    DEFAULT_HOST_LOAD_CONSECUTIVE_COUNT,
+    HOST_LOAD_CONSECUTIVE_CONFIG_KEY,
+    evaluateMonitorAlertFlags,
+    normalizePositiveInt,
     runSystemMonitorAlertGuard,
 }

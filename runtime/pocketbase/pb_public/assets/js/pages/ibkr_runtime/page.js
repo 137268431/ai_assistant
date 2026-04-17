@@ -186,16 +186,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return `<div class="table-empty">${escapeHtml(message)}</div>`;
         }
 
-        function normalizeComputeHealth(health) {
-            return {
-                status: health?.ibkr_compute?.status || health?.status || 'unknown',
-                last_compute: health?.ibkr_compute?.last_compute || health?.last_compute || null,
-                last_scan: health?.ibkr_compute?.last_scan || health?.last_scan || null,
-                error_count: health?.ibkr_compute?.error_count ?? health?.error_count ?? 0,
-                uptime_s: health?.ibkr_compute?.uptime_s ?? health?.uptime_s ?? 0
-            };
-        }
-
         function normalizeSymbolList(values) {
             const source = Array.isArray(values) ? values : [values];
             const seen = new Set();
@@ -283,18 +273,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function deriveDataHealth(latestBar) {
-            const lastBarTimeMs = Number(latestBar?.bar_time_ms || 0) || 0;
-            if (!lastBarTimeMs) {
-                return { status: 'no_data', last_bar_age_min: null, last_symbol: '', last_bar_time_ms: 0, last_bar_label: '--' };
-            }
-            const ageMin = Math.max(0, Math.round((Date.now() - lastBarTimeMs) / 60000));
-            return {
-                status: ageMin <= 5 ? 'online' : (ageMin <= 15 ? 'delayed' : 'offline'),
-                last_bar_age_min: ageMin,
-                last_symbol: latestBar?.symbol || '',
-                last_bar_time_ms: lastBarTimeMs,
-                last_bar_label: formatBarTimeMsToET(lastBarTimeMs),
-            };
+            return buildIbkrDataHealth(latestBar?.bar_time_ms, {
+                symbol: latestBar?.symbol || '',
+                noDataStatus: 'no_data'
+            });
         }
 
         function deriveRealtimeMetrics(status, latestBar) {
@@ -468,12 +450,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function getRuntimeStarted(status = latestRuntimeStatus) {
-            return Boolean(
-                status?.starting
-                || status?.session?.running
-                || status?.websocket?.running
-                || status?.order_tracker?.running
-            );
+            return getIbkrRuntimeStarted(status);
         }
 
         function normalizeStartupUiState(startupState = latestStartupState) {
@@ -1016,18 +993,17 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function renderMetricCards(summary, health, status, twoFactorState, latestBar) {
             const today = summary?.today || {};
-            const computeHealth = normalizeComputeHealth(health);
+            const computeHealth = normalizeIbkrComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
-            const isAuthenticated = Boolean(status?.session?.authenticated);
-            const gatewayRunning = Boolean(status?.gateway?.running || status?.gateway?.reachable);
+            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toUpperCase() || '--';
             const cards = [
                 {
                     label: 'Session Auth',
-                    value: isAuthenticated ? 'AUTHED' : 'WAITING',
-                    copy: `2FA ${twoFactorStatus} · gateway ${gatewayRunning ? 'active' : 'offline'}`
+                    value: runtimeStatus.authenticated ? 'AUTHED' : (runtimeStatus.started ? 'WAITING' : 'STOPPED'),
+                    copy: `2FA ${twoFactorStatus} · gateway ${runtimeStatus.gatewayActive ? 'active' : 'offline'}`
                 },
                 {
                     label: 'Ready Engines',
@@ -1101,9 +1077,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const latestSignalExtra = getExtraObject(latestSignal);
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const startup = normalizeStartupUiState(startupState);
-            const gatewayActive = Boolean(status?.gateway?.running || status?.gateway?.reachable);
-            const runtimeStarted = getRuntimeStarted(status);
-            const sessionAuthenticated = Boolean(status?.session?.authenticated);
+            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const gatewayActive = runtimeStatus.gatewayActive;
+            const runtimeStarted = runtimeStatus.started;
+            const sessionAuthenticated = runtimeStatus.authenticated;
             const readyEngines = Number(status?.ready_engines || 0) || 0;
             const totalEngines = Number(status?.total_engines || 0) || 0;
             const twoFactorStatus = String(twoFactor?.status || '').trim().toLowerCase();
@@ -1268,14 +1245,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function renderHero(summary, health, status, runtimeConfig, twoFactorState, startupState, latestBar) {
-            const computeHealth = normalizeComputeHealth(health);
+            const computeHealth = normalizeIbkrComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
             const warmup = normalizeWarmup(status);
             const startup = normalizeStartupUiState(startupState);
             const dataStatus = dataHealth.status || 'no_data';
             const computeStatus = computeHealth.status || 'unknown';
-            const gatewayRunning = Boolean(status?.gateway?.running || status?.gateway?.reachable);
-            const sessionAuthenticated = Boolean(status?.session?.authenticated);
+            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const gatewayRunning = runtimeStatus.gatewayActive;
+            const sessionAuthenticated = runtimeStatus.authenticated;
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toLowerCase() || 'idle';
             latestNextActionModel = deriveNextAuthActionModel(status, twoFactorState, startup);
             renderAuthActionBanner(latestNextActionModel);
@@ -1301,7 +1279,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase}`;
             const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
             const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
-            const runtimeStarted = getRuntimeStarted(status);
+            const runtimeStarted = runtimeStatus.started;
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
             const keepCurrentCycleHint = isTwoFactorCycleActive(twoFactorState) ? ' · keep current cycle' : '';
             const authSummary = sessionAuthenticated
@@ -1324,7 +1302,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function renderRuntimeDetail(summary, health, status, twoFactorState, startupState, latestBar, latestIndicator, latestSignal) {
-            const computeHealth = normalizeComputeHealth(health);
+            const computeHealth = normalizeIbkrComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const realtimeState = deriveRealtimeComputeState(status);
@@ -1642,8 +1620,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const indicatorExtra = getExtraObject(latestIndicator);
             const signalExtra = getExtraObject(latestSignal);
             const engineCount = Number(status?.total_engines || 0) || 0;
-            const isAuthenticated = Boolean(status?.session?.authenticated);
-            const gatewayActive = Boolean(status?.gateway?.running || status?.gateway?.reachable);
+            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const isAuthenticated = runtimeStatus.authenticated;
+            const gatewayActive = runtimeStatus.gatewayActive;
 
             let chainValue = 'WAITING';
             let chainCopy = '等待 bars 写入';
@@ -1715,7 +1694,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
             if (!gatewayActive) {
                 notes.push({ tone: 'error', text: 'Gateway 当前不可达，先恢复网关进程，再谈 2FA 和 bars 刷新。' });
-            } else if (!status?.session?.running && !status?.websocket?.running && !status?.order_tracker?.running) {
+            } else if (!runtimeStatus.started) {
                 notes.push({ tone: 'warn', text: '当前 runtime service 没有真正拉起；这种状态下会看到 Session 待认证，但根因通常是服务停止或刚重启后未恢复。' });
             } else if (!isAuthenticated) {
                 notes.push({ tone: 'warn', text: 'Gateway 已在线，但 IBKR Session 仍未认证，新的 bars/高周期 bars 不会持续刷新。' });
@@ -1782,15 +1761,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 document.getElementById('engineTable').innerHTML = renderEmpty(message);
                 return;
             }
-            const rows = engines.slice(0, 20).map(([key, engine]) => `
-                <tr>
-                    <td class="mono">${escapeHtml(key)}</td>
-                    <td>${engine.bar_count || 0}</td>
-                    <td><span class="pill ${engine.is_ready ? 'pill-ok' : 'pill-pending'}">${engine.is_ready ? 'READY' : 'WARMING'}</span></td>
-                    <td>${engine.last_close != null ? formatMoney(engine.last_close) : '--'}</td>
-                    <td class="mono">${engine.last_bar_time_ms ? formatBarTimeMsToET(engine.last_bar_time_ms) : '--'}</td>
-                </tr>
-            `).join('');
+            const rows = engines.slice(0, 20).map(([key, engine]) => {
+                const model = getIbkrEngineViewModel(key, engine, currentEnvironment);
+                return `
+                    <tr>
+                        <td class="mono">${escapeHtml(model.key)}</td>
+                        <td>${model.barCount}</td>
+                        <td><span class="pill ${model.ready ? 'pill-ok' : 'pill-pending'}">${escapeHtml(model.readyLabel)}</span></td>
+                        <td>${escapeHtml(model.lastCloseLabel)}</td>
+                        <td class="mono">${escapeHtml(model.lastBarLabel)}</td>
+                    </tr>
+                `;
+            }).join('');
             document.getElementById('engineTable').innerHTML = `
                 <table class="data-table">
                     <thead>

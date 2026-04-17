@@ -177,13 +177,10 @@ function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, fresh
 
     let dataHealth = healthPayload?.ibkr_data || {};
     if (latest5m) {
-        const ageMin = Number(latest5m.age_min);
-        dataHealth = {
-            status: ageMin <= 5 ? 'online' : (ageMin <= 15 ? 'delayed' : 'offline'),
-            last_bar_age_min: Number.isFinite(ageMin) ? ageMin : null,
-            last_bar_time_ms: Number(latest5m.last_bar_time_ms || 0) || 0,
-            last_symbol: latest5m.symbol || '',
-        };
+        dataHealth = buildIbkrDataHealth(latest5m.last_bar_time_ms, {
+            symbol: latest5m.symbol || '',
+            noDataStatus: 'unknown'
+        });
     } else if (!dataHealth || !dataHealth.status) {
         dataHealth = { status: 'unknown' };
     }
@@ -403,81 +400,17 @@ function buildStatusCardMarkup(dotClass, mainText, subText = '') {
 }
 
 function renderStatus(health) {
-    const dataHealth = health.ibkr_data || {};
     const dataEl = document.getElementById('dataStatus');
-    let dataDotClass = 'dot-gray';
-    let dataMainText = dataHealth.status || '无数据';
-    if (dataHealth.status === 'online') {
-        dataDotClass = 'dot-green';
-        dataMainText = '在线';
-    } else if (dataHealth.status === 'delayed') {
-        dataDotClass = 'dot-yellow';
-        dataMainText = '延迟';
-    } else if (dataHealth.status === 'offline') {
-        dataDotClass = 'dot-red';
-        dataMainText = '离线';
-    }
-    if (dataHealth.last_bar_age_min != null && dataHealth.last_bar_age_min !== '') {
-        dataMainText += ` · ${String(dataHealth.last_bar_age_min)}m`;
-    }
-    const dataMeta = [];
-    if (dataHealth.last_bar_time_ms) {
-        dataMeta.push(formatTimeLabel(dataHealth.last_bar_time_ms));
-    }
-    if (dataHealth.last_symbol) {
-        dataMeta.push(String(dataHealth.last_symbol));
-    }
-    const bucketMeta = [];
-    if (dataHealth.bar_bucket_status) bucketMeta.push(`bar bucket ${String(dataHealth.bar_bucket_status)}`);
-    if (Number(dataHealth.pending_symbols_total || 0) > 0) bucketMeta.push(`pending ${Number(dataHealth.pending_symbols_total || 0)}`);
-    if (Number(dataHealth.lag_s || 0) > 0) bucketMeta.push(`lag ${Math.round(Number(dataHealth.lag_s || 0))}s`);
-    if (dataHealth.last_due_bucket_us) bucketMeta.push(`due ${String(dataHealth.last_due_bucket_us)}`);
-    if (dataHealth.last_completed_bucket_us) bucketMeta.push(`done ${String(dataHealth.last_completed_bucket_us)}`);
-    if (bucketMeta.length) dataMeta.push(bucketMeta.join(' · '));
-    dataEl.innerHTML = buildStatusCardMarkup(dataDotClass, dataMainText, dataMeta.join(' · '));
+    const dataStatusModel = getIbkrDataStatusCardModel(health.ibkr_data || {});
+    dataEl.innerHTML = buildStatusCardMarkup(dataStatusModel.dotClass, dataStatusModel.mainText, dataStatusModel.subText);
 
-    const comp = health.ibkr_compute || {};
     const compEl = document.getElementById('computeStatus');
-    const compMeta = [];
-    if (Number(comp.total_engines || 0) > 0) {
-        compMeta.push(`${Number(comp.ready_engines || 0)}/${Number(comp.total_engines || 0)} ready`);
-    }
-    if (Number(comp.last_realtime_elapsed_s || 0) > 0) compMeta.push(`${Number(comp.last_realtime_elapsed_s || 0).toFixed(2)}s`);
-    if (Number(comp.last_realtime_signals || 0) > 0) compMeta.push(`sig ${Number(comp.last_realtime_signals || 0)}`);
-    if (Number(comp.last_realtime_errors || 0) > 0) compMeta.push(`err ${Number(comp.last_realtime_errors || 0)}`);
-    if (Number(comp.queue_size || 0) > 0) compMeta.push(`queue ${Number(comp.queue_size || 0)}`);
-    if (!compMeta.length && comp.last_realtime_run) compMeta.push(`run ${formatTimeLabel(comp.last_realtime_run)}`);
-    if (comp.status === 'running') {
-        compEl.innerHTML = buildStatusCardMarkup('dot-green', '运行', compMeta.join(' · '));
-    } else if (comp.status === 'offline') {
-        compEl.innerHTML = buildStatusCardMarkup('dot-red', '离线', compMeta.join(' · '));
-    } else {
-        compEl.innerHTML = buildStatusCardMarkup(comp.status === 'error' ? 'dot-red' : 'dot-gray', comp.status || '--', compMeta.join(' · '));
-    }
+    const computeStatusModel = getIbkrComputeStatusCardModel(health.ibkr_compute || {});
+    compEl.innerHTML = buildStatusCardMarkup(computeStatusModel.dotClass, computeStatusModel.mainText, computeStatusModel.subText);
 
-    const runtime = health.runtime || {};
     const runtimeEl = document.getElementById('runtimeStatus');
-    const runtimeStarted = Boolean(
-        runtime.starting
-        || runtime?.session?.running
-        || runtime?.websocket?.running
-        || runtime?.order_tracker?.running
-    );
-    const runtimeAuthed = Boolean(runtime?.session?.authenticated);
-    const runtimeMeta = [];
-    if (runtime?.gateway?.running || runtime?.gateway?.reachable) runtimeMeta.push('gateway');
-    if (runtime?.session?.running) runtimeMeta.push(runtimeAuthed ? 'session 已认证' : 'session 待认证');
-    if (runtime?.websocket?.running) runtimeMeta.push('ws 运行');
-    if (runtime?.order_tracker?.running) runtimeMeta.push('orders 运行');
-    if (runtimeStarted && runtimeAuthed) {
-        runtimeEl.innerHTML = buildStatusCardMarkup('dot-green', '认证', runtimeMeta.join(' · '));
-    } else if (runtimeStarted) {
-        runtimeEl.innerHTML = buildStatusCardMarkup('dot-yellow', '待认证', runtimeMeta.join(' · '));
-    } else if (runtime?.gateway?.running || runtime?.gateway?.reachable) {
-        runtimeEl.innerHTML = buildStatusCardMarkup('dot-red', '未启动', runtimeMeta.join(' · '));
-    } else {
-        runtimeEl.innerHTML = buildStatusCardMarkup('dot-gray', '离线', runtimeMeta.join(' · '));
-    }
+    const runtimeStatusModel = getIbkrRuntimeStatusCardModel(health.runtime || {});
+    runtimeEl.innerHTML = buildStatusCardMarkup(runtimeStatusModel.dotClass, runtimeStatusModel.mainText, runtimeStatusModel.subText);
 }
 
 function renderTodayStats(today) {
@@ -515,42 +448,24 @@ function renderFreshness(data) {
     const cards = tfs.map((tf) => {
         const item = byInterval[tf];
         if (!item) {
+            const freshnessVisual = getIbkrFreshnessVisualState(null);
             return `<div class="freshness-card is-empty">
                 <div class="freshness-card-head">
                     <span class="freshness-label">${tf}</span>
-                    <span class="freshness-chip is-empty">--</span>
+                    <span class="freshness-chip ${freshnessVisual.chipClass}">${escapeHtml(freshnessVisual.ageLabel)}</span>
                 </div>
                 <div class="freshness-meta">
                     <div class="freshness-meta-top">
                         <span class="freshness-link" style="color:var(--muted)">--</span>
-                        <span class="freshness-state">缺失</span>
+                        <span class="freshness-state">${freshnessVisual.stateText}</span>
                     </div>
                     <div class="freshness-time">--</div>
                 </div>
-                <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:0;background:#64748b"></div></div>
+                <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${freshnessVisual.pct}%;background:${freshnessVisual.color}"></div></div>
             </div>`;
         }
         const age = Math.max(0, Number(item.age_min || 0) || 0);
-        let color = '#ef4444';
-        let pct = 18;
-        let chipClass = 'is-stale';
-        let stateText = '滞后';
-        if (age <= 2) {
-            color = '#22c55e';
-            pct = 100;
-            chipClass = 'is-fresh';
-            stateText = '正常';
-        } else if (age <= 5) {
-            color = '#eab308';
-            pct = 72;
-            chipClass = 'is-warn';
-            stateText = '延迟';
-        } else if (age <= 15) {
-            color = '#f97316';
-            pct = 45;
-            chipClass = 'is-warn';
-            stateText = '偏慢';
-        }
+        const freshnessVisual = getIbkrFreshnessVisualState(age);
         const chartHref = item.symbol
             ? buildPageUrl('/ibkr_chart.html', { symbol: item.symbol, interval: tf }, { environment: currentEnvironment })
             : '';
@@ -561,16 +476,16 @@ function renderFreshness(data) {
         return `<div class="freshness-card">
             <div class="freshness-card-head">
                 <span class="freshness-label">${tf}</span>
-                <span class="freshness-chip ${chipClass}">${escapeHtml(String(age))}m</span>
+                <span class="freshness-chip ${freshnessVisual.chipClass}">${escapeHtml(freshnessVisual.ageLabel)}</span>
             </div>
             <div class="freshness-meta">
                 <div class="freshness-meta-top">
                     ${chartHref ? `<a class="freshness-link" href="${chartHref}">${escapeHtml(item.symbol || '--')}</a>` : '<span class="freshness-link" style="color:var(--muted)">--</span>'}
-                    <span class="freshness-state" style="color:${color}">${stateText}</span>
+                    <span class="freshness-state" style="color:${freshnessVisual.color}">${freshnessVisual.stateText}</span>
                 </div>
                 <div class="freshness-time">${escapeHtml(timeLabel)}</div>
             </div>
-            <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+            <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${freshnessVisual.pct}%;background:${freshnessVisual.color}"></div></div>
         </div>`;
     });
     el.innerHTML = `<div class="freshness-grid">${cards.join('')}</div>`;
@@ -601,42 +516,31 @@ function renderEngines(computeData) {
     let html = '<div class="engine-summary">总览页只保留最关键的 12 条引擎概况；完整排查与动作控制请切到控制台。</div>';
     html += '<div class="engine-grid">';
     engines.slice(0, 12).forEach(([key, engine]) => {
-        const readyIcon = engine.is_ready ? 'READY' : 'WARMING';
-        const lastClose = engine.last_close != null ? `$${Number(engine.last_close).toFixed(2)}` : '--';
-        const [environmentLabel, symbolLabel = '', intervalLabel = ''] = String(key).split(':');
-        const envDisplay = getEnvironmentLabel(environmentLabel || currentEnvironment);
-        const displayName = symbolLabel
-            ? `${symbolLabel}${intervalLabel ? ` · ${intervalLabel}` : ''}`
-            : key;
-        const subText = symbolLabel ? envDisplay : `${envDisplay} · ${key}`;
-        const chartHref = symbolLabel
-            ? buildPageUrl('/ibkr_chart.html', { symbol: symbolLabel, interval: intervalLabel || '5m' }, { environment: environmentLabel || currentEnvironment })
-            : '';
-        const lastBar = engine.last_bar_time_ms ? formatBarTimeMsToET(engine.last_bar_time_ms) : '--';
+        const model = getIbkrEngineViewModel(key, engine, currentEnvironment);
         html += `<div class="engine-card">
             <div class="engine-card-head">
                 <div class="engine-card-title">
-                    <div class="engine-card-name">${escapeHtml(displayName)}</div>
-                    <div class="engine-card-sub">${escapeHtml(subText)}</div>
+                    <div class="engine-card-name">${escapeHtml(model.displayName)}</div>
+                    <div class="engine-card-sub">${escapeHtml(model.subtitle)}</div>
                 </div>
-                <span class="engine-state ${engine.is_ready ? 'ready' : 'warming'}">${escapeHtml(readyIcon)}</span>
+                <span class="engine-state ${model.ready ? 'ready' : 'warming'}">${escapeHtml(model.readyLabel)}</span>
             </div>
             <div class="engine-meta-grid">
                 <div class="engine-meta-item">
                     <span class="engine-meta-label">Bars</span>
-                    <span class="engine-meta-value">${escapeHtml(String(engine.bar_count || 0))}</span>
+                    <span class="engine-meta-value">${escapeHtml(String(model.barCount))}</span>
                 </div>
                 <div class="engine-meta-item">
                     <span class="engine-meta-label">Last Close</span>
-                    <span class="engine-meta-value">${escapeHtml(lastClose)}</span>
+                    <span class="engine-meta-value">${escapeHtml(model.lastCloseLabel)}</span>
                 </div>
                 <div class="engine-meta-item">
                     <span class="engine-meta-label">Last Bar</span>
-                    <span class="engine-meta-value">${escapeHtml(lastBar)}</span>
+                    <span class="engine-meta-value">${escapeHtml(model.lastBarLabel)}</span>
                 </div>
                 <div class="engine-meta-item">
                     <span class="engine-meta-label">Chart</span>
-                    <span class="engine-meta-value">${chartHref ? `<a class="engine-link" href="${chartHref}">打开图表</a>` : '--'}</span>
+                    <span class="engine-meta-value">${model.chartHref ? `<a class="engine-link" href="${model.chartHref}">打开图表</a>` : '--'}</span>
                 </div>
             </div>
         </div>`;

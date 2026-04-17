@@ -166,8 +166,11 @@ async function clickFirstChartButton(page, errors) {
         await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
         await page.waitForTimeout(2500);
         if (latestSignal?.symbol) {
-          await page.locator('#ticketSymbol').fill(String(latestSignal.symbol));
-          await page.waitForTimeout(300);
+          const visibleTicketInput = page.locator('#ticketSymbol:visible').first();
+          if (await visibleTicketInput.count().catch(() => 0)) {
+            await visibleTicketInput.fill(String(latestSignal.symbol));
+            await page.waitForTimeout(300);
+          }
         }
         return {
           url,

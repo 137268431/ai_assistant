@@ -45,6 +45,19 @@ class PBClient:
                 retryable = status_code is None or status_code in PB_RETRY_STATUS_CODES
                 last_error = exc
                 if not retryable or attempt >= PB_RETRY_ATTEMPTS:
+                    response = getattr(exc, "response", None)
+                    if response is not None:
+                        try:
+                            body = (response.text or "").strip()
+                        except Exception:
+                            body = ""
+                        if body:
+                            body = body.replace("\n", " ")
+                            if len(body) > 500:
+                                body = body[:500] + "..."
+                            raise RuntimeError(
+                                f"pb_request_failed:{method.upper()}:{url}:status={status_code}:body={body}"
+                            ) from exc
                     raise
                 time.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 5.0)

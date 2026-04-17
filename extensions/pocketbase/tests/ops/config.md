@@ -4,6 +4,7 @@
 - [配置表结构](#配置表结构)
 - [信号相关配置](#信号相关配置)
 - [逆向信号配置](#逆向信号配置)
+- [系统监控配置](#系统监控配置)
 - [飞书相关配置](#飞书相关配置)
 - [配置管理 API](#配置管理-api)
 
@@ -106,6 +107,31 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 ---
 
+## 系统监控配置
+
+### system_monitor_host_load_consecutive_count
+
+主机 `load / CPU` 连续命中告警阈值。
+
+```bash
+curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "key": "system_monitor_host_load_consecutive_count",
+      "value": "2"
+    }'
+```
+
+| 值 | 行为 |
+|----|------|
+| `1` | 保持旧行为，单次命中 `host_load_high/critical` 就告警 |
+| `2` | 默认；PocketBase Monitor Cron 每 5 分钟检查一次，约连续 10 分钟异常才告警 |
+| `3` | 更保守；约连续 15 分钟异常才告警 |
+
+> 仅影响 `host_load_high` / `host_load_critical`，不影响 Gateway、WebSocket、Session 等即时告警。
+
+---
+
 ## 飞书相关配置
 
 飞书 Webhook URL 在 `feishu.js` 中硬编码，非配置项。
@@ -177,6 +203,7 @@ curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_I
 | `signal_auto_confirm` | `"true"` | 自动确认信号 |
 | `signal_action_token` | `""` | 飞书按钮验证 Token |
 | `reverse_signal_threshold` | `"6"` | 逆向信号通知阈值 |
+| `system_monitor_host_load_consecutive_count` | `"2"` | Host load 连续命中告警阈值 |
 
 ---
 

@@ -21,8 +21,8 @@ function ibkrActionsParseHttpJson(rawValue) {
 globalThis.ibkrActionsParseHttpJson = ibkrActionsParseHttpJson
 
 function ibkrActionsSafeParseHttpJson(rawValue) {
-    const parser = typeof globalThis.ibkrActionsParseHttpJson === "function"
-        ? globalThis.ibkrActionsParseHttpJson
+    const parser = typeof ibkrActionsParseHttpJson === "function"
+        ? ibkrActionsParseHttpJson
         : null
     if (parser) {
         return parser(rawValue)
@@ -69,12 +69,12 @@ function ibkrActionsNormalizeForCompare(value) {
 globalThis.ibkrActionsNormalizeForCompare = ibkrActionsNormalizeForCompare
 
 function ibkrActionsValuesEqual(left, right) {
-    return JSON.stringify(globalThis.ibkrActionsNormalizeForCompare(left)) === JSON.stringify(globalThis.ibkrActionsNormalizeForCompare(right))
+    return JSON.stringify(ibkrActionsNormalizeForCompare(left)) === JSON.stringify(ibkrActionsNormalizeForCompare(right))
 }
 globalThis.ibkrActionsValuesEqual = ibkrActionsValuesEqual
 
 function ibkrActionsRecordNeedsUpdate(record, data) {
-    return Object.keys(data || {}).some((key) => !globalThis.ibkrActionsValuesEqual(record.get(key), data[key]))
+    return Object.keys(data || {}).some((key) => !ibkrActionsValuesEqual(record.get(key), data[key]))
 }
 globalThis.ibkrActionsRecordNeedsUpdate = ibkrActionsRecordNeedsUpdate
 
@@ -99,7 +99,7 @@ function ibkrActionsNormalizeInterval(value) {
 globalThis.ibkrActionsNormalizeInterval = ibkrActionsNormalizeInterval
 
 function ibkrActionsIntervalToMs(value) {
-    const normalized = globalThis.ibkrActionsNormalizeInterval(value)
+    const normalized = ibkrActionsNormalizeInterval(value)
     const mapping = {
         "5m": 5 * 60 * 1000,
         "15m": 15 * 60 * 1000,
@@ -123,12 +123,12 @@ function ibkrActionsBuildBarCloseMeta(barTimeMs, interval) {
     if (!Number.isFinite(startMs) || startMs <= 0) {
         return {}
     }
-    const closeMs = startMs + globalThis.ibkrActionsIntervalToMs(interval)
+    const closeMs = startMs + ibkrActionsIntervalToMs(interval)
     return {
         bar_time_semantics: "start",
         bar_close_time_ms: closeMs,
-        bar_close_us_time: globalThis.ibkrActionsFormatOffsetDateTime(closeMs, IBKR_ET_OFFSET_MINUTES),
-        bar_close_cn_time: globalThis.ibkrActionsFormatOffsetDateTime(closeMs, IBKR_CN_OFFSET_MINUTES),
+        bar_close_us_time: ibkrActionsFormatOffsetDateTime(closeMs, IBKR_ET_OFFSET_MINUTES),
+        bar_close_cn_time: ibkrActionsFormatOffsetDateTime(closeMs, IBKR_CN_OFFSET_MINUTES),
     }
 }
 globalThis.ibkrActionsBuildBarCloseMeta = ibkrActionsBuildBarCloseMeta
@@ -144,7 +144,7 @@ function ibkrActionsUpsertRecord(collectionName, filterStr, filterParams, data) 
     if (!record) {
         record = new Record(col, {})
         action = "created"
-    } else if (!globalThis.ibkrActionsRecordNeedsUpdate(record, data)) {
+    } else if (!ibkrActionsRecordNeedsUpdate(record, data)) {
         return { record: record, action: "skipped" }
     }
     Object.keys(data).forEach((key) => {
@@ -1309,6 +1309,7 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
     const payload = ibkrActionsCloneObject(runtimePayload)
     const gateway = ibkrActionsCloneObject(payload.gateway)
     const session = ibkrActionsCloneObject(payload.session)
+    const authRecovery = ibkrActionsCloneObject(payload.auth_recovery)
     const websocket = ibkrActionsCloneObject(payload.websocket)
     const dataBackfill = ibkrActionsCloneObject(payload.data_backfill)
     const orderTracker = ibkrActionsCloneObject(payload.order_tracker)
@@ -1316,6 +1317,21 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
     const realtimeCompute = ibkrActionsCloneObject(payload.realtime_compute)
     const realtimeResult = ibkrActionsCloneObject(realtimeCompute.last_result)
     const marketUniverse = ibkrActionsCloneObject(payload.market_universe)
+    const authRecoverySummary = {
+        cycle_id: String(authRecovery.cycle_id || ""),
+        recovery_phase: String(authRecovery.recovery_phase || ""),
+        recovery_reason: String(authRecovery.recovery_reason || ""),
+        interruption_kind: String(authRecovery.interruption_kind || ""),
+        last_runtime_authenticated_at: authRecovery.last_runtime_authenticated_at || "",
+        last_gateway_status_code: Number(authRecovery.last_gateway_status_code || 0) || 0,
+        last_recovery_source: String(authRecovery.last_recovery_source || ""),
+        probe_result: String(authRecovery.probe_result || ""),
+        probe_last_checked_at: authRecovery.probe_last_checked_at || "",
+        probe_attempts: Number(authRecovery.probe_attempts || 0) || 0,
+        auto_restart_scheduled: Boolean(authRecovery.auto_restart_scheduled),
+        manual_takeover_active: Boolean(authRecovery.manual_takeover_active),
+        lock_owner: String(authRecovery.lock_owner || ""),
+    }
 
     const normalizeSymbolList = (values) => {
         const source = Array.isArray(values) ? values : [values]
@@ -1463,6 +1479,7 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
             last_check: session.last_check || session.last_tickle || "",
             last_tickle: session.last_tickle || session.last_check || "",
         },
+        auth_recovery: authRecoverySummary,
         websocket: {
             connected: Boolean(websocket.connected),
             ready: Boolean(websocket.ready),
@@ -1648,86 +1665,147 @@ routerAdd("GET", "/api/custom/ibkr/ping_write", (c) => {
 // 批量OHLCV接收 → ibkr_bars
 // ══════════════════════════════════════
 routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
-    const reqInfo = c.requestInfo()
-    const d = reqInfo.body || reqInfo.data || {}
-    const bars = d.bars || []
-    const { getRuntimeEnvironmentFromData, getConfigValue, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
-    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
-    const defaultEnvironment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
+    try {
+        const reqInfo = c.requestInfo()
+        const d = reqInfo.body || reqInfo.data || {}
+        const bars = Array.isArray(d.bars) ? d.bars : []
+        const { getRuntimeEnvironmentFromData, getConfigValue, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { isEnabledConfigValue } = require(`${__hooks}/lib/runtime_modes.js`)
+        const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
+        const defaultEnvironment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
 
-    if (!bars.length) {
-        return c.json(400, { ok: false, error: "Empty bars array" })
-    }
+        if (!bars.length) {
+            return c.json(400, { ok: false, error: "Empty bars array" })
+        }
 
-    const enabled = getConfigValue("ibkr_bar_publish_enabled", "true", defaultEnvironment)
-    if (!isEnabledConfigValue(enabled)) {
-        return c.json(200, {
-            ok: true,
-            skipped: true,
-            reason: "ibkr_bar_publish_enabled=false",
-            config_value: String(enabled || ""),
+        const enabled = getConfigValue("ibkr_bar_publish_enabled", "true", defaultEnvironment)
+        if (!isEnabledConfigValue(enabled)) {
+            return c.json(200, {
+                ok: true,
+                skipped: true,
+                reason: "ibkr_bar_publish_enabled=false",
+                config_value: String(enabled || ""),
+            })
+        }
+
+        const normalizeIntervalValue = (value) => {
+            const normalized = String(value || "").trim().toLowerCase()
+            const mapping = {
+                "5": "5m",
+                "5m": "5m",
+                "15": "15m",
+                "15m": "15m",
+                "30": "30m",
+                "30m": "30m",
+                "60": "1h",
+                "1h": "1h",
+                "240": "4h",
+                "4h": "4h",
+                "d": "1d",
+                "1d": "1d",
+            }
+            return mapping[normalized] || normalized || "5m"
+        }
+
+        const intervalToMs = (value) => {
+            const normalized = normalizeIntervalValue(value)
+            const mapping = {
+                "5m": 5 * 60 * 1000,
+                "15m": 15 * 60 * 1000,
+                "30m": 30 * 60 * 1000,
+                "1h": 60 * 60 * 1000,
+                "4h": 4 * 60 * 60 * 1000,
+                "1d": 24 * 60 * 60 * 1000,
+            }
+            return mapping[normalized] || mapping["5m"]
+        }
+
+        const formatOffsetDateTime = (ms, offsetMinutes) => {
+            if (!Number.isFinite(ms) || ms <= 0) return ""
+            return new Date(ms + offsetMinutes * 60000).toISOString().slice(0, 19).replace("T", " ")
+        }
+
+        const buildBarCloseMeta = (barTimeMs, intervalValue) => {
+            const startMs = Math.trunc(Number(barTimeMs) || 0)
+            if (!Number.isFinite(startMs) || startMs <= 0) {
+                return {}
+            }
+            const closeMs = startMs + intervalToMs(intervalValue)
+            return {
+                bar_time_semantics: "start",
+                bar_close_time_ms: closeMs,
+                bar_close_us_time: formatOffsetDateTime(closeMs, -4 * 60),
+                bar_close_cn_time: formatOffsetDateTime(closeMs, 8 * 60),
+            }
+        }
+
+        let created = 0
+        let updated = 0
+        let skipped = 0
+        let errors = 0
+
+        for (let i = 0; i < bars.length; i++) {
+            const bar = bars[i]
+            try {
+                const symbol = String(bar && bar.symbol || "").trim().toUpperCase()
+                const interval = normalizeIntervalValue(bar && bar.interval)
+                const barTimeMs = Number(bar && bar.bar_time_ms)
+                const environment = getRuntimeEnvironmentFromData(bar || {}, defaultEnvironment)
+
+                if (!symbol || !interval || !Number.isFinite(barTimeMs) || barTimeMs <= 0) {
+                    errors++
+                    console.error(`[IBKRActions] bars invalid payload at index=${i}`)
+                    continue
+                }
+
+                const extra = bar && bar.extra && typeof bar.extra === "object" && !Array.isArray(bar.extra)
+                    ? { ...bar.extra }
+                    : {}
+                Object.assign(extra, buildBarCloseMeta(barTimeMs, interval))
+                const result = actionHelpers.upsertRecord(
+                    "ibkr_bars",
+                    "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}",
+                    { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment },
+                    {
+                        symbol: symbol,
+                        environment: environment,
+                        exchange: String(bar && bar.exchange || "").trim().toUpperCase(),
+                        interval: interval,
+                        open: Number(bar && bar.open) || 0,
+                        high: Number(bar && bar.high) || 0,
+                        low: Number(bar && bar.low) || 0,
+                        close: Number(bar && bar.close) || 0,
+                        volume: Number(bar && bar.volume) || 0,
+                        session_type: String(bar && bar.session_type || "").trim(),
+                        us_time: String(bar && bar.us_time || "").trim(),
+                        cn_time: String(bar && bar.cn_time || "").trim(),
+                        bar_time_ms: Math.trunc(barTimeMs),
+                        extra: extra,
+                    },
+                )
+                if (result.action === "created") {
+                    created++
+                } else if (result.action === "updated") {
+                    updated++
+                } else {
+                    skipped++
+                }
+            } catch (err) {
+                errors++
+                console.error(`[IBKRActions] bars item error at index=${i}: ${err.message}`)
+            }
+        }
+
+        console.log(`[IBKRActions] bars: received=${bars.length}, created=${created}, updated=${updated}, skipped=${skipped}, errors=${errors}`)
+        return c.json(200, { ok: true, received: bars.length, created, updated, skipped, errors })
+    } catch (err) {
+        console.error(`[IBKRActions] bars route fatal: ${err.stack || err.message || err}`)
+        return c.json(500, {
+            ok: false,
+            error: err && err.message ? err.message : String(err || "ibkr_bars_route_failed"),
+            route: "ibkr/bars",
         })
     }
-
-    let created = 0
-    let updated = 0
-    let skipped = 0
-    let errors = 0
-
-    for (let i = 0; i < bars.length; i++) {
-        const bar = bars[i]
-        const symbol = String(bar.symbol || "").trim().toUpperCase()
-        const interval = globalThis.ibkrActionsNormalizeInterval(bar.interval)
-        const barTimeMs = Number(bar.bar_time_ms)
-        const environment = getRuntimeEnvironmentFromData(bar, defaultEnvironment)
-
-        if (!symbol || !interval || !Number.isFinite(barTimeMs) || barTimeMs <= 0) {
-            errors++
-            continue
-        }
-
-        try {
-            const extra = bar.extra && typeof bar.extra === "object" && !Array.isArray(bar.extra)
-                ? { ...bar.extra }
-                : {}
-            Object.assign(extra, globalThis.ibkrActionsBuildBarCloseMeta(barTimeMs, interval))
-            const result = actionHelpers.upsertRecord(
-                "ibkr_bars",
-                "symbol = {:sym} && interval = {:tf} && bar_time_ms = {:ms} && environment = {:env}",
-                { sym: symbol, tf: interval, ms: Math.trunc(barTimeMs), env: environment },
-                {
-                    symbol: symbol,
-                    environment: environment,
-                    exchange: String(bar.exchange || "").trim().toUpperCase(),
-                    interval: interval,
-                    open: Number(bar.open) || 0,
-                    high: Number(bar.high) || 0,
-                    low: Number(bar.low) || 0,
-                    close: Number(bar.close) || 0,
-                    volume: Number(bar.volume) || 0,
-                    session_type: String(bar.session_type || "").trim(),
-                    us_time: String(bar.us_time || "").trim(),
-                    cn_time: String(bar.cn_time || "").trim(),
-                    bar_time_ms: Math.trunc(barTimeMs),
-                    extra: extra,
-                },
-            )
-            if (result.action === "created") {
-                created++
-            } else if (result.action === "updated") {
-                updated++
-            } else {
-                skipped++
-            }
-        } catch (err) {
-            errors++
-            console.error(`[IBKRActions] bars upsert error: ${symbol}/${interval}/${barTimeMs}: ${err.message}`)
-        }
-    }
-
-    console.log(`[IBKRActions] bars: received=${bars.length}, created=${created}, updated=${updated}, skipped=${skipped}, errors=${errors}`)
-    return c.json(200, { ok: true, received: bars.length, created, updated, skipped, errors })
 })
 
 // ══════════════════════════════════════
@@ -3346,7 +3424,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         const symbolFilter = buildSymbolFilter(normalizedUniverse)
         const barEnvironmentFilter = buildBarEnvironmentFilter(environment)
         const lookbackDailyMs = marketStartMs - 20 * 24 * 60 * 60 * 1000
-        const indicatorLookbackMs = marketStartMs - 5 * 24 * 60 * 60 * 1000
+        const indicatorLookbackMs = marketStartMs
         const dailyFilter = [
             'interval = "1d"',
             barEnvironmentFilter,
@@ -3369,8 +3447,8 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         ].join(" && ")
 
         const dailyRecords = $app.findRecordsByFilter("ibkr_bars", dailyFilter, "bar_time_ms", 20000, 0) || []
-        const intradayRecords = $app.findRecordsByFilter("ibkr_bars", intradayFilter, "bar_time_ms", 50000, 0) || []
-        const indicatorRecords = $app.findRecordsByFilter("ibkr_indicators", indicatorFilter, "-bar_time_ms", 10000, 0) || []
+        const intradayRecords = $app.findRecordsByFilter("ibkr_bars", intradayFilter, "", 50000, 0) || []
+        const indicatorRecords = $app.findRecordsByFilter("ibkr_indicators", indicatorFilter, "", 10000, 0) || []
 
         const dailyHistoryBySymbol = {}
         const fallbackDailyBySymbol = {}
@@ -3411,7 +3489,10 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
                 us_time: String(record.get("us_time") || "").trim(),
                 volume: toNumber(record.get("volume"), 0),
             }
-            latestIntradayBySymbol[symbol] = row
+            const currentLatest = latestIntradayBySymbol[symbol]
+            if (!currentLatest || row.bar_time_ms >= currentLatest.bar_time_ms) {
+                latestIntradayBySymbol[symbol] = row
+            }
             if (!volumeStatsBySymbol[symbol]) {
                 volumeStatsBySymbol[symbol] = { premarket: 0, today: 0 }
             }
@@ -3425,7 +3506,9 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         for (let i = 0; i < indicatorRecords.length; i++) {
             const record = indicatorRecords[i]
             const symbol = String(record.get("symbol") || "").trim().toUpperCase()
-            if (symbol && !latestIndicatorBySymbol[symbol]) {
+            if (!symbol) continue
+            const currentLatest = latestIndicatorBySymbol[symbol]
+            if (!currentLatest || toInt(record.get("bar_time_ms"), 0) >= toInt(currentLatest.get("bar_time_ms"), 0)) {
                 latestIndicatorBySymbol[symbol] = record
             }
         }
@@ -4231,6 +4314,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const payload = cloneObject(runtimePayload)
             const gateway = cloneObject(payload.gateway)
             const session = cloneObject(payload.session)
+            const authRecovery = cloneObject(payload.auth_recovery)
             const websocket = cloneObject(payload.websocket)
             const realtimeQuotes = cloneObject(payload.realtime_quotes)
             const canonical5m = cloneObject(payload.canonical_5m)
@@ -4240,6 +4324,21 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const realtimeCompute = cloneObject(payload.realtime_compute)
             const realtimeResult = cloneObject(realtimeCompute.last_result)
             const marketUniverse = cloneObject(payload.market_universe)
+            const authRecoverySummary = {
+                cycle_id: String(authRecovery.cycle_id || ""),
+                recovery_phase: String(authRecovery.recovery_phase || ""),
+                recovery_reason: String(authRecovery.recovery_reason || ""),
+                interruption_kind: String(authRecovery.interruption_kind || ""),
+                last_runtime_authenticated_at: authRecovery.last_runtime_authenticated_at || "",
+                last_gateway_status_code: Number(authRecovery.last_gateway_status_code || 0) || 0,
+                last_recovery_source: String(authRecovery.last_recovery_source || ""),
+                probe_result: String(authRecovery.probe_result || ""),
+                probe_last_checked_at: authRecovery.probe_last_checked_at || "",
+                probe_attempts: Number(authRecovery.probe_attempts || 0) || 0,
+                auto_restart_scheduled: Boolean(authRecovery.auto_restart_scheduled),
+                manual_takeover_active: Boolean(authRecovery.manual_takeover_active),
+                lock_owner: String(authRecovery.lock_owner || ""),
+            }
 
             const normalizeSymbolList = (values) => {
                 const source = Array.isArray(values) ? values : [values]
@@ -4387,6 +4486,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     last_check: session.last_check || session.last_tickle || "",
                     last_tickle: session.last_tickle || session.last_check || "",
                 },
+                auth_recovery: authRecoverySummary,
                 websocket: {
                     connected: Boolean(websocket.connected),
                     ready: Boolean(websocket.ready),

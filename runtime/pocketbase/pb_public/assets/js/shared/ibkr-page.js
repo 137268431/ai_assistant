@@ -118,6 +118,266 @@ function getSortedEngineEntries(engines) {
     });
 }
 
+function getIbkrDataHealthStatus(ageMin, { noDataStatus = 'no_data' } = {}) {
+    const numericAge = Number(ageMin);
+    if (!Number.isFinite(numericAge) || numericAge < 0) return noDataStatus;
+    if (numericAge <= 5) return 'online';
+    if (numericAge <= 15) return 'delayed';
+    return 'offline';
+}
+
+function buildIbkrDataHealth(lastBarTimeMs, { symbol = '', noDataStatus = 'no_data' } = {}) {
+    const numericTime = Number(lastBarTimeMs || 0) || 0;
+    if (numericTime <= 0) {
+        return {
+            status: noDataStatus,
+            last_bar_age_min: null,
+            last_symbol: String(symbol || ''),
+            last_bar_time_ms: 0,
+            last_bar_label: '--',
+        };
+    }
+
+    const ageMin = Math.max(0, Math.round((Date.now() - numericTime) / 60000));
+    return {
+        status: getIbkrDataHealthStatus(ageMin, { noDataStatus }),
+        last_bar_age_min: ageMin,
+        last_symbol: String(symbol || ''),
+        last_bar_time_ms: numericTime,
+        last_bar_label: formatBarTimeMsToET(numericTime),
+    };
+}
+
+function getIbkrFreshnessVisualState(ageMin) {
+    const numericAge = Number(ageMin);
+    if (!Number.isFinite(numericAge) || numericAge < 0) {
+        return {
+            color: '#64748b',
+            pct: 0,
+            chipClass: 'is-empty',
+            stateText: '缺失',
+            ageLabel: '--',
+        };
+    }
+
+    if (numericAge <= 2) {
+        return {
+            color: '#22c55e',
+            pct: 100,
+            chipClass: 'is-fresh',
+            stateText: '正常',
+            ageLabel: `${numericAge}m`,
+        };
+    }
+
+    if (numericAge <= 5) {
+        return {
+            color: '#eab308',
+            pct: 72,
+            chipClass: 'is-warn',
+            stateText: '延迟',
+            ageLabel: `${numericAge}m`,
+        };
+    }
+
+    if (numericAge <= 15) {
+        return {
+            color: '#f97316',
+            pct: 45,
+            chipClass: 'is-warn',
+            stateText: '偏慢',
+            ageLabel: `${numericAge}m`,
+        };
+    }
+
+    return {
+        color: '#ef4444',
+        pct: 18,
+        chipClass: 'is-stale',
+        stateText: '滞后',
+        ageLabel: `${numericAge}m`,
+    };
+}
+
+function getIbkrEngineViewModel(key, engine = {}, defaultEnvironment = '') {
+    const safeKey = String(key || '');
+    const [environment, symbol = '', interval = ''] = safeKey.split(':');
+    const effectiveEnvironment = environment || defaultEnvironment || '';
+    const environmentLabel = getEnvironmentLabel(effectiveEnvironment);
+    const hasSymbol = Boolean(symbol);
+    const normalizedInterval = interval || '5m';
+    return {
+        key: safeKey,
+        environment: effectiveEnvironment,
+        environmentLabel,
+        symbol,
+        interval,
+        displayName: hasSymbol ? `${symbol}${interval ? ` · ${interval}` : ''}` : safeKey,
+        subtitle: hasSymbol ? environmentLabel : `${environmentLabel} · ${safeKey}`,
+        chartHref: hasSymbol
+            ? buildPageUrl('/ibkr_chart.html', { symbol, interval: normalizedInterval }, { environment: effectiveEnvironment })
+            : '',
+        ready: Boolean(engine?.is_ready),
+        readyLabel: engine?.is_ready ? 'READY' : 'WARMING',
+        barCount: Number(engine?.bar_count || 0) || 0,
+        lastCloseLabel: engine?.last_close != null ? `$${Number(engine.last_close).toFixed(2)}` : '--',
+        lastBarLabel: engine?.last_bar_time_ms ? formatBarTimeMsToET(engine.last_bar_time_ms) : '--',
+    };
+}
+
+function isIbkrGatewayActive(runtime = {}) {
+    return Boolean(runtime?.gateway?.running || runtime?.gateway?.reachable);
+}
+
+function getIbkrRuntimeStarted(runtime = {}) {
+    return Boolean(
+        runtime?.starting
+        || runtime?.session?.running
+        || runtime?.websocket?.running
+        || runtime?.order_tracker?.running
+    );
+}
+
+function normalizeIbkrComputeHealth(health = {}) {
+    return {
+        status: health?.ibkr_compute?.status || health?.status || 'unknown',
+        last_compute: health?.ibkr_compute?.last_compute || health?.last_compute || null,
+        last_scan: health?.ibkr_compute?.last_scan || health?.last_scan || null,
+        error_count: health?.ibkr_compute?.error_count ?? health?.error_count ?? 0,
+        uptime_s: health?.ibkr_compute?.uptime_s ?? health?.uptime_s ?? 0
+    };
+}
+
+function getIbkrDataStatusCardModel(dataHealth = {}) {
+    let dotClass = 'dot-gray';
+    let mainText = dataHealth?.status || '无数据';
+
+    if (dataHealth?.status === 'online') {
+        dotClass = 'dot-green';
+        mainText = '在线';
+    } else if (dataHealth?.status === 'delayed') {
+        dotClass = 'dot-yellow';
+        mainText = '延迟';
+    } else if (dataHealth?.status === 'offline') {
+        dotClass = 'dot-red';
+        mainText = '离线';
+    }
+
+    if (dataHealth?.last_bar_age_min != null && dataHealth.last_bar_age_min !== '') {
+        mainText += ` · ${String(dataHealth.last_bar_age_min)}m`;
+    }
+
+    const metaParts = [];
+    if (dataHealth?.last_bar_time_ms) {
+        metaParts.push(formatTimeLabel(dataHealth.last_bar_time_ms));
+    }
+    if (dataHealth?.last_symbol) {
+        metaParts.push(String(dataHealth.last_symbol));
+    }
+
+    const bucketMeta = [];
+    if (dataHealth?.bar_bucket_status) bucketMeta.push(`bar bucket ${String(dataHealth.bar_bucket_status)}`);
+    if (Number(dataHealth?.pending_symbols_total || 0) > 0) bucketMeta.push(`pending ${Number(dataHealth.pending_symbols_total || 0)}`);
+    if (Number(dataHealth?.lag_s || 0) > 0) bucketMeta.push(`lag ${Math.round(Number(dataHealth.lag_s || 0))}s`);
+    if (dataHealth?.last_due_bucket_us) bucketMeta.push(`due ${String(dataHealth.last_due_bucket_us)}`);
+    if (dataHealth?.last_completed_bucket_us) bucketMeta.push(`done ${String(dataHealth.last_completed_bucket_us)}`);
+    if (bucketMeta.length) metaParts.push(bucketMeta.join(' · '));
+
+    return {
+        dotClass,
+        mainText,
+        subText: metaParts.join(' · ')
+    };
+}
+
+function getIbkrComputeStatusCardModel(compute = {}) {
+    const metaParts = [];
+    if (Number(compute?.total_engines || 0) > 0) {
+        metaParts.push(`${Number(compute.ready_engines || 0)}/${Number(compute.total_engines || 0)} ready`);
+    }
+    if (Number(compute?.last_realtime_elapsed_s || 0) > 0) metaParts.push(`${Number(compute.last_realtime_elapsed_s || 0).toFixed(2)}s`);
+    if (Number(compute?.last_realtime_signals || 0) > 0) metaParts.push(`sig ${Number(compute.last_realtime_signals || 0)}`);
+    if (Number(compute?.last_realtime_errors || 0) > 0) metaParts.push(`err ${Number(compute.last_realtime_errors || 0)}`);
+    if (Number(compute?.queue_size || 0) > 0) metaParts.push(`queue ${Number(compute.queue_size || 0)}`);
+    if (!metaParts.length && compute?.last_realtime_run) metaParts.push(`run ${formatTimeLabel(compute.last_realtime_run)}`);
+
+    if (compute?.status === 'running') {
+        return {
+            dotClass: 'dot-green',
+            mainText: '运行',
+            subText: metaParts.join(' · ')
+        };
+    }
+
+    if (compute?.status === 'offline') {
+        return {
+            dotClass: 'dot-red',
+            mainText: '离线',
+            subText: metaParts.join(' · ')
+        };
+    }
+
+    return {
+        dotClass: compute?.status === 'error' ? 'dot-red' : 'dot-gray',
+        mainText: compute?.status || '--',
+        subText: metaParts.join(' · ')
+    };
+}
+
+function getIbkrRuntimeStatusCardModel(runtime = {}) {
+    const started = getIbkrRuntimeStarted(runtime);
+    const gatewayActive = isIbkrGatewayActive(runtime);
+    const authenticated = Boolean(runtime?.session?.authenticated);
+    const metaParts = [];
+
+    if (gatewayActive) metaParts.push('gateway');
+    if (runtime?.session?.running) metaParts.push(authenticated ? 'session 已认证' : 'session 待认证');
+    if (runtime?.websocket?.running) metaParts.push('ws 运行');
+    if (runtime?.order_tracker?.running) metaParts.push('orders 运行');
+
+    if (started && authenticated) {
+        return {
+            dotClass: 'dot-green',
+            mainText: '认证',
+            subText: metaParts.join(' · '),
+            started,
+            gatewayActive,
+            authenticated
+        };
+    }
+
+    if (started) {
+        return {
+            dotClass: 'dot-yellow',
+            mainText: '待认证',
+            subText: metaParts.join(' · '),
+            started,
+            gatewayActive,
+            authenticated
+        };
+    }
+
+    if (gatewayActive) {
+        return {
+            dotClass: 'dot-red',
+            mainText: '未启动',
+            subText: metaParts.join(' · '),
+            started,
+            gatewayActive,
+            authenticated
+        };
+    }
+
+    return {
+        dotClass: 'dot-gray',
+        mainText: '离线',
+        subText: metaParts.join(' · '),
+        started,
+        gatewayActive,
+        authenticated
+    };
+}
+
 const IBKR_CONFIG_DETAIL_KEYS = [
     'ibkr_compute_public_url',
     'ibkr_compute_enabled',
