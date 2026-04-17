@@ -27,7 +27,7 @@ def _coerce_live_bool(value, default: bool = False) -> bool:
 
 def _canonical_order_status(value) -> str:
     text = str(value or "").strip().upper()
-    if text in {"PENDING", "PRESUBMITTED", "SUBMITTED", "PENDINGSUBMIT", "INPROGRESS", "INIT"}:
+    if text in {"PENDING", "PRESUBMITTED", "SUBMITTED", "PENDINGSUBMIT", "INPROGRESS", "INIT", "APIPENDING", "API_PENDING"}:
         return "SUBMITTED"
     if text in {"FILLED", "EXECUTED"}:
         return "FILLED"

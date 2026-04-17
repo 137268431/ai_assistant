@@ -323,162 +323,37 @@ routerAdd("POST", "/api/custom/ibkr/orders/upsert", (c) => {
 
 // POST /api/custom/ibkr/orders/reconcile - 回补 orders 缺失的 ibkr_order_details
 routerAdd("POST", "/api/custom/ibkr/orders/reconcile", (c) => {
-  const { appendOrderDetail } = require(`${__hooks}/lib/order_events.js`)
-  const { COLLECTIONS } = require(`${__hooks}/lib/collections.js`)
+  const orderDetailReconcile = require(`${__hooks}/lib/order_detail_reconcile.js`)
   const envUtils = require(`${__hooks}/lib/environment.js`)
   const request = c.requestInfo().body || c.requestInfo().data || {}
-
-  function parseBoolean(value, fallback) {
-    if (value === undefined || value === null || value === "") return fallback
-    const text = String(value).trim().toLowerCase()
-    if (["1", "true", "yes", "y", "on"].includes(text)) return true
-    if (["0", "false", "no", "n", "off"].includes(text)) return false
-    return fallback
-  }
 
   try {
     const environment = envUtils.getRuntimeEnvironmentFromData(request, envUtils.LIVE_ENVIRONMENT)
     const signalId = String(request.signal_id || "").trim()
-    const limit = Math.max(1, Math.min(100, parseInt(request.limit, 10) || 20))
-    const onlyMissing = parseBoolean(request.only_missing, true)
-    const dryRun = parseBoolean(request.dry_run, false)
-    const suppressNotification = parseBoolean(request.suppress_notification, true)
+    const uniqueId = String(request.unique_id || request.id || "").trim()
+    const tradeGroupId = String(request.trade_group_id || "").trim()
+    const limit = orderDetailReconcile.parseInteger(request.limit, 20, 1, 100)
+    const offset = orderDetailReconcile.parseInteger(request.offset, 0, 0)
+    const onlyMissing = orderDetailReconcile.parseBoolean(request.only_missing, true)
+    const dryRun = orderDetailReconcile.parseBoolean(request.dry_run, false)
+    const suppressNotification = orderDetailReconcile.parseBoolean(request.suppress_notification, true)
 
-    const params = { env: environment, signalId: signalId }
-    const filters = ["environment = {:env}"]
-    if (signalId) {
-      filters.push("signal_id = {:signalId}")
-    }
-
-    const orderRecords = $app.findRecordsByFilter(
-      "orders",
-      filters.join(" && "),
-      "-updated,-created",
-      limit,
-      0,
-      params
-    ) || []
-
-    const results = []
-    let repaired = 0
-    let skipped = 0
-    let failed = 0
-
-    for (let i = 0; i < orderRecords.length; i++) {
-      const orderRecord = orderRecords[i]
-      const currentSignalId = String(orderRecord.get("signal_id") || "").trim()
-      const uniqueId = String(orderRecord.get("unique_id") || "").trim()
-      const symbol = String(orderRecord.get("symbol") || "").trim()
-      const status = String(orderRecord.get("status") || "").trim() || "Submitted"
-
-      if (!uniqueId || !symbol) {
-        skipped++
-        results.push({
-          signal_id: currentSignalId,
-          unique_id: uniqueId,
-          status: "skipped_invalid_source",
-          symbol: symbol,
-        })
-        continue
-      }
-
-      const existingDetails = $app.findRecordsByFilter(
-        COLLECTIONS.ORDER_DETAILS,
-        "order_id = {:orderId} && environment = {:env}",
-        "-bar_time_ms",
-        1,
-        0,
-        { orderId: uniqueId, env: environment }
-      ) || []
-
-      if (onlyMissing && existingDetails.length > 0) {
-        skipped++
-        results.push({
-          signal_id: currentSignalId,
-          unique_id: uniqueId,
-          status: "skipped_existing_detail",
-          symbol: symbol,
-          detail_record_id: existingDetails[0].id,
-        })
-        continue
-      }
-
-      const payload = {
-        environment: environment,
-        unique_id: uniqueId,
-        symbol: symbol,
-        status: status,
-        signal_id: currentSignalId,
-        order_type: String(orderRecord.get("order_type") || "").trim(),
-        order_id: String(orderRecord.get("order_id") || "").trim(),
-        broker_order_id: String(orderRecord.get("broker_order_id") || "").trim(),
-        us_time: String(orderRecord.get("us_time") || "").trim(),
-        cn_time: String(orderRecord.get("cn_time") || "").trim(),
-        bar_time_ms: Number(orderRecord.get("bar_time_ms") || 0) || 0,
-        suppress_notification: suppressNotification,
-      }
-
-      if (dryRun) {
-        repaired++
-        results.push({
-          signal_id: currentSignalId,
-          unique_id: uniqueId,
-          status: "dry_run_ready",
-          symbol: symbol,
-          payload: payload,
-        })
-        continue
-      }
-
-      try {
-        const detailRecord = appendOrderDetail(orderRecord, {
-          environment: environment,
-          status: status,
-          source: "orders/reconcile",
-          reason: onlyMissing ? "reconciled_missing_ibkr_order_details" : "reconciled_order_snapshot",
-          us_time: payload.us_time,
-          cn_time: payload.cn_time,
-          bar_time_ms: payload.bar_time_ms,
-          extra: {
-            repair_source: "orders/reconcile",
-            suppress_notification: suppressNotification,
-          },
-        })
-
-        repaired++
-        results.push({
-          signal_id: currentSignalId,
-          unique_id: uniqueId,
-          status: "repaired_detail",
-          symbol: symbol,
-          detail_record_id: detailRecord.id,
-        })
-      } catch (err) {
-        failed++
-        results.push({
-          signal_id: currentSignalId,
-          unique_id: uniqueId,
-          status: "failed_exception",
-          symbol: symbol,
-          error: err.message || String(err),
-        })
-      }
-    }
-
-    return c.json(200, {
-      success: true,
+    const result = orderDetailReconcile.reconcileOrderDetails({
+      app: $app,
       environment: environment,
-      dry_run: dryRun,
-      only_missing: onlyMissing,
-      suppress_notification: suppressNotification,
-      summary: {
-        scanned: orderRecords.length,
-        repaired: repaired,
-        skipped: skipped,
-        failed: failed,
-      },
-      results: results,
+      signalId: signalId,
+      uniqueId: uniqueId,
+      tradeGroupId: tradeGroupId,
+      limit: limit,
+      offset: offset,
+      onlyMissing: onlyMissing,
+      dryRun: dryRun,
+      suppressNotification: suppressNotification,
+      source: "orders/reconcile",
+      repairSource: "orders/reconcile",
     })
+
+    return c.json(200, result)
   } catch (err) {
     console.error("[OrderReconcile] 失败:", err)
     return c.json(500, { success: false, error: err.message || String(err) })

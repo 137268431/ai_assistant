@@ -21,10 +21,34 @@ from ibkr_compute.api.account.snapshot_builder.recovery import (
 )
 
 
-def _normalize_snapshot_rows(positions_raw: list[dict], orders_raw: list[dict], live_open_payload: dict, fallback_ids: list[str]):
+def _filter_orders_for_account(account_id: str, rows: list[dict]) -> list[dict]:
+    normalized_account = str(account_id or "").strip()
+    if not normalized_account:
+        return list(rows or [])
+    filtered = []
+    for item in rows or []:
+        if not isinstance(item, dict):
+            continue
+        row_account = str(item.get("account") or "").strip()
+        if row_account and row_account != normalized_account:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _normalize_snapshot_rows(
+    account_id: str,
+    positions_raw: list[dict],
+    orders_raw: list[dict],
+    live_open_payload: dict,
+    fallback_ids: list[str],
+):
     positions = [_normalize_live_position(item) for item in (positions_raw or []) if isinstance(item, dict)]
-    orders = [_normalize_live_order(item) for item in (orders_raw or []) if isinstance(item, dict)]
-    live_open_orders = [_normalize_live_order(item) for item in (live_open_payload.get("orders") or []) if isinstance(item, dict)]
+    filtered_orders_raw = _filter_orders_for_account(account_id, orders_raw)
+    filtered_live_open_raw = _filter_orders_for_account(account_id, live_open_payload.get("orders") or [])
+    orders = [_normalize_live_order(item) for item in filtered_orders_raw if isinstance(item, dict)]
+    live_open_orders = [_normalize_live_order(item) for item in filtered_live_open_raw if isinstance(item, dict)]
+    live_open_payload["orders"] = filtered_live_open_raw
     if not live_open_orders:
         existing_coverage = live_open_payload.get("coverage") or {}
         live_open_orders = [item for item in orders if item.get("is_open")]
@@ -94,6 +118,7 @@ def _build_ibkr_account_snapshot(service) -> dict:
         fallback_ids,
     )
     positions, orders, live_open_orders, live_open_payload = _normalize_snapshot_rows(
+        context["account_id"],
         snapshot_sources["positions_raw"],
         merged_orders_raw,
         live_open_payload,

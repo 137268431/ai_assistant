@@ -125,11 +125,18 @@ class OrderTracker:
             "API_CANCELLED",
         }
 
-    def get_live_orders(self, *, retries: int = 3, retry_delay: float = 0.5, force: bool = True) -> List[Dict]:
+    def get_live_orders(
+        self,
+        *,
+        retries: int = 3,
+        retry_delay: float = 0.5,
+        force: bool = True,
+        include_all: bool = False,
+    ) -> List[Dict]:
         attempts = max(1, int(retries or 1))
         for attempt in range(attempts):
             try:
-                orders = list(self.broker.list_open_orders() or [])
+                orders = list(self.broker.list_open_orders(include_all=include_all) or [])
                 if orders or attempt + 1 >= attempts:
                     return orders
             except Exception as exc:
@@ -233,6 +240,14 @@ class OrderTracker:
                 seed_sources[order_id].append("pb")
         return seed_sources
 
+    def _merge_order_with_known_state(self, order_id: str, payload: Optional[Dict]) -> Dict[str, Any]:
+        merged = dict(self._known_orders.get(order_id) or {})
+        if isinstance(payload, dict):
+            merged.update(payload)
+        if order_id:
+            merged["orderId"] = order_id
+        return merged
+
     def get_complete_live_open_orders(
         self,
         *,
@@ -248,6 +263,16 @@ class OrderTracker:
             retry_delay=retry_delay,
             force=force,
         )
+        if not bulk_list and seed_sources:
+            try:
+                bulk_list = self.get_live_orders(
+                    retries=1,
+                    retry_delay=retry_delay,
+                    force=force,
+                    include_all=True,
+                )
+            except Exception as exc:
+                logger.debug("All-open-orders recovery fallback failed: %s", exc)
         existing_ids = set()
         open_orders: List[Dict[str, Any]] = []
 
@@ -257,11 +282,10 @@ class OrderTracker:
             order_id = self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
             if not order_id or order_id in existing_ids:
                 continue
-            status = self._extract_order_status(item)
+            merged = self._merge_order_with_known_state(order_id, item)
+            status = self._extract_order_status(merged)
             if not self._is_open_order_status(status):
                 continue
-            merged = dict(item)
-            merged["orderId"] = order_id
             merged["_recovery_source"] = "bulk"
             merged["_seed_sources"] = list(seed_sources.get(order_id) or [])
             open_orders.append(merged)
@@ -276,10 +300,9 @@ class OrderTracker:
                 continue
             payload = self.get_order_status(order_id)
             if payload and isinstance(payload, dict):
-                status = self._extract_order_status(payload)
+                merged = self._merge_order_with_known_state(order_id, payload)
+                status = self._extract_order_status(merged)
                 if status and self._is_open_order_status(status):
-                    merged = dict(payload)
-                    merged["orderId"] = order_id
                     merged["_recovery_source"] = "status_recovered"
                     merged["_seed_sources"] = list(sources or [])
                     open_orders.append(merged)
@@ -442,6 +465,86 @@ class OrderTracker:
             or order.get("state")
             or ""
         ).strip().upper()
+
+    def _find_pb_order_by_broker_id(
+        self,
+        order_id: str,
+        *,
+        runtime_environment: str,
+        symbol: str = "",
+        role: str = "",
+        per_page: int = 5,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_order_id = self._normalize_text(order_id)
+        if not normalized_order_id:
+            return None
+
+        order_id_filter = self._escape_filter_value(normalized_order_id)
+        environment_filter = self._escape_filter_value(runtime_environment)
+        matches = self.pb_client.get_records(
+            "orders",
+            filter=(
+                f'(broker_order_id = "{order_id_filter}" || order_id = "{order_id_filter}") '
+                f'&& environment = "{environment_filter}"'
+            ),
+            sort="-updated",
+            per_page=max(1, int(per_page or 1)),
+        )
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+
+        open_matches = [
+            item for item in matches
+            if self._normalize_text(item.get("relation_status")).lower() in {"active", "planned"}
+            or self._normalize_text(item.get("status")).upper() in {"SUBMITTED", "PRESUBMITTED", "PENDINGSUBMIT", "PENDING", "INIT", "APIPENDING", "API_PENDING"}
+        ]
+        if len(open_matches) == 1:
+            return open_matches[0]
+        if len(open_matches) > 1:
+            matches = open_matches
+
+        normalized_symbol = self._normalize_text(symbol).upper()
+        if normalized_symbol:
+            symbol_matches = [
+                item for item in matches
+                if self._normalize_text(item.get("symbol")).upper() == normalized_symbol
+            ]
+            if len(symbol_matches) == 1:
+                return symbol_matches[0]
+            if len(symbol_matches) > 1:
+                matches = symbol_matches
+
+        normalized_role = self._normalize_text(role)
+        if normalized_role:
+            role_matches = [
+                item for item in matches
+                if self._normalize_text(item.get("role")) == normalized_role
+            ]
+            if len(role_matches) == 1:
+                return role_matches[0]
+            if len(role_matches) > 1:
+                matches = role_matches
+
+        logger.warning(
+            "Ambiguous PB order match by broker_order_id: order_id=%s symbol=%s role=%s environment=%s candidates=%s",
+            normalized_order_id,
+            normalized_symbol,
+            normalized_role,
+            runtime_environment,
+            [
+                {
+                    "id": str(item.get("id") or ""),
+                    "unique_id": str(item.get("unique_id") or ""),
+                    "symbol": str(item.get("symbol") or ""),
+                    "role": str(item.get("role") or ""),
+                    "status": str(item.get("status") or ""),
+                }
+                for item in matches
+            ],
+        )
+        return None
 
     def _stamp_known_order(self, order: Dict, *, seen_live: bool) -> Dict:
         stamped = dict(order or {})
@@ -726,6 +829,8 @@ class OrderTracker:
                 mapped_status = {
                     "PRESUBMITTED": "Submitted",
                     "SUBMITTED": "Submitted",
+                    "APIPENDING": "Submitted",
+                    "API_PENDING": "Submitted",
                     "FILLED": "Filled",
                     "EXECUTED": "Filled",
                     "CANCELLED": "Canceled",
@@ -740,19 +845,19 @@ class OrderTracker:
                 canonical_unique_id = entry_order_unique_id if not parent_id else coid
                 existing_order = None
 
-                if order_id:
-                    order_filter = (
-                        f'(broker_order_id = "{order_id_filter}" || order_id = "{order_id_filter}") '
-                        f'&& environment = "{self._escape_filter_value(runtime_environment)}"'
-                    )
-                    matches = self.pb_client.get_records("orders", filter=order_filter, per_page=1)
-                    existing_order = matches[0] if matches else None
-                if not existing_order and coid:
+                if coid:
                     coid_order_filter = (
                         f'unique_id = "{coid_filter}" && environment = "{self._escape_filter_value(runtime_environment)}"'
                     )
-                    matches = self.pb_client.get_records("orders", filter=coid_order_filter, per_page=1)
+                    matches = self.pb_client.get_records("orders", filter=coid_order_filter, sort="-updated", per_page=1)
                     existing_order = matches[0] if matches else None
+                if not existing_order and order_id:
+                    existing_order = self._find_pb_order_by_broker_id(
+                        order_id,
+                        runtime_environment=runtime_environment,
+                        symbol=symbol,
+                        role=role,
+                    )
 
                 if existing_order:
                     canonical_unique_id = str(existing_order.get("unique_id") or canonical_unique_id or order_id).strip()
@@ -762,14 +867,13 @@ class OrderTracker:
                     parent_order_unique_id = str(existing_order.get("parent_order_unique_id") or "").strip()
                     role = str(existing_order.get("role") or role).strip() or role
                 elif parent_id:
-                    parent_filter = self._escape_filter_value(str(parent_id))
-                    parent_order_filter = (
-                        f'(broker_order_id = "{parent_filter}" || order_id = "{parent_filter}") '
-                        f'&& environment = "{self._escape_filter_value(runtime_environment)}"'
+                    parent_record = self._find_pb_order_by_broker_id(
+                        str(parent_id),
+                        runtime_environment=runtime_environment,
+                        symbol=symbol,
+                        role="entry",
                     )
-                    matches = self.pb_client.get_records("orders", filter=parent_order_filter, per_page=1)
-                    if matches:
-                        parent_record = matches[0]
+                    if parent_record:
                         parent_order_unique_id = str(parent_record.get("unique_id") or "").strip()
                         trade_group_id = str(parent_record.get("trade_group_id") or parent_record.get("entry_order_unique_id") or trade_group_id).strip()
                         entry_order_unique_id = str(parent_record.get("entry_order_unique_id") or parent_order_unique_id or entry_order_unique_id).strip()

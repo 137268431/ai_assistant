@@ -35,7 +35,7 @@ function cloneStringList(values) {
 
 function canonicalOrderStatus(status) {
     const key = toText(status).toUpperCase()
-    if (["PENDING", "PRESUBMITTED", "SUBMITTED", "PENDINGSUBMIT", "INPROGRESS", "INIT"].indexOf(key) !== -1) return "SUBMITTED"
+    if (["PENDING", "PRESUBMITTED", "SUBMITTED", "PENDINGSUBMIT", "INPROGRESS", "INIT", "APIPENDING", "API_PENDING"].indexOf(key) !== -1) return "SUBMITTED"
     if (["FILLED", "EXECUTED"].indexOf(key) !== -1) return "FILLED"
     if (["CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED", "API_CANCELLED"].indexOf(key) !== -1) return "CANCELED"
     return key || "UNKNOWN"
@@ -224,14 +224,24 @@ function buildPbOrderLookup(normalizedOrders) {
         by_broker_order_id: {},
         by_order_id: {},
         by_unique_id: {},
+        ambiguous_broker_order_ids: {},
+        ambiguous_order_ids: {},
+    }
+    function trackMatch(map, ambiguousMap, key, order) {
+        if (!key) return
+        if (!map[key]) {
+            map[key] = order
+            return
+        }
+        if (map[key].record_id === order.record_id) return
+        ambiguousMap[key] = true
+        map[key] = null
     }
     for (let i = 0; i < normalizedOrders.length; i++) {
         const order = normalizedOrders[i]
-        if (order.broker_order_id && !lookup.by_broker_order_id[order.broker_order_id]) {
-            lookup.by_broker_order_id[order.broker_order_id] = order
-        }
-        if (order.order_id && !lookup.by_order_id[order.order_id]) {
-            lookup.by_order_id[order.order_id] = order
+        if (isOpenLikeOrder(order)) {
+            trackMatch(lookup.by_broker_order_id, lookup.ambiguous_broker_order_ids, order.broker_order_id, order)
+            trackMatch(lookup.by_order_id, lookup.ambiguous_order_ids, order.order_id, order)
         }
         if (order.unique_id && !lookup.by_unique_id[order.unique_id]) {
             lookup.by_unique_id[order.unique_id] = order
@@ -317,12 +327,19 @@ function normalizeLiveOrder(order) {
 
 function resolvePbMatch(liveOrder, lookup) {
     if (!liveOrder) return null
-    const orderId = toText(liveOrder.order_id)
     const clientOrderId = toText(liveOrder.client_order_id)
+    if (clientOrderId && lookup.by_unique_id[clientOrderId]) return lookup.by_unique_id[clientOrderId]
+    const orderId = toText(liveOrder.order_id)
     if (orderId && lookup.by_broker_order_id[orderId]) return lookup.by_broker_order_id[orderId]
     if (orderId && lookup.by_order_id[orderId]) return lookup.by_order_id[orderId]
-    if (clientOrderId && lookup.by_unique_id[clientOrderId]) return lookup.by_unique_id[clientOrderId]
     return null
+}
+
+function isAmbiguousPbOrderMatch(liveOrder, lookup) {
+    if (!liveOrder || !lookup) return false
+    const orderId = toText(liveOrder.order_id)
+    if (!orderId) return false
+    return Boolean(lookup.ambiguous_broker_order_ids[orderId] || lookup.ambiguous_order_ids[orderId])
 }
 
 function buildLiveGroupKey(liveOrder, pbMatch) {
@@ -336,10 +353,10 @@ function buildLiveGroupKey(liveOrder, pbMatch) {
     ])
 }
 
-function buildDiagnosticNote(liveOrder, pbMatch, tags) {
+function buildDiagnosticNote(liveOrder, pbMatch, tags, ambiguousMatch) {
     const notes = []
     if (!pbMatch) {
-        notes.push("broker 实时挂单未匹配到 PB 订单记录")
+        notes.push(ambiguousMatch ? "broker_order_id 命中多个 PB 订单记录，已跳过自动关联" : "broker 实时挂单未匹配到 PB 订单记录")
     }
     if (tags.indexOf("status_recovered") !== -1) {
         notes.push("该订单由单笔状态接口补回")
@@ -354,13 +371,19 @@ function buildDiagnosticNote(liveOrder, pbMatch, tags) {
     return notes.join("；")
 }
 
-function buildPbContext(liveOrder, pbMatch) {
+function buildPbContext(liveOrder, pbMatch, ambiguousMatch) {
     const tags = cloneStringList(liveOrder && liveOrder.diagnostic_tags)
+    const liveTotalQuantity = toNumber(liveOrder && liveOrder.total_quantity, 0)
+    const liveFilledQuantity = toNumber(liveOrder && liveOrder.filled_quantity, 0)
+    const liveHasExplicitQuantity = liveTotalQuantity > 0 || liveFilledQuantity > 0
     if (liveOrder && liveOrder.recovery_source === "status_recovered" && tags.indexOf("status_recovered") === -1) {
         tags.push("status_recovered")
     }
     if (liveOrder && !toText(liveOrder.client_order_id) && tags.indexOf("missing_client_order_id") === -1) {
         tags.push("missing_client_order_id")
+    }
+    if (ambiguousMatch && tags.indexOf("ambiguous_broker_order_id") === -1) {
+        tags.push("ambiguous_broker_order_id")
     }
     if (!pbMatch) {
         return {
@@ -381,17 +404,17 @@ function buildPbContext(liveOrder, pbMatch) {
             pb_limit_price: 0,
             pb_fill_price: 0,
             diagnostic_tags: tags,
-            diagnostic_note: buildDiagnosticNote(liveOrder, null, tags),
+            diagnostic_note: buildDiagnosticNote(liveOrder, null, tags, ambiguousMatch),
         }
     }
 
     if (canonicalOrderStatus(liveOrder.status_key || liveOrder.status) !== pbMatch.status_key && tags.indexOf("status_mismatch") === -1) {
         tags.push("status_mismatch")
     }
-    if (Math.abs(toNumber(liveOrder.total_quantity, 0) - toNumber(pbMatch.quantity, 0)) > 1e-9 && tags.indexOf("quantity_mismatch") === -1) {
+    if (liveHasExplicitQuantity && Math.abs(liveTotalQuantity - toNumber(pbMatch.quantity, 0)) > 1e-9 && tags.indexOf("quantity_mismatch") === -1) {
         tags.push("quantity_mismatch")
     }
-    if (Math.abs(toNumber(liveOrder.filled_quantity, 0) - toNumber(pbMatch.filled_qty, 0)) > 1e-9 && tags.indexOf("filled_qty_mismatch") === -1) {
+    if (liveFilledQuantity > 0 && Math.abs(liveFilledQuantity - toNumber(pbMatch.filled_qty, 0)) > 1e-9 && tags.indexOf("filled_qty_mismatch") === -1) {
         tags.push("filled_qty_mismatch")
     }
 
@@ -413,7 +436,7 @@ function buildPbContext(liveOrder, pbMatch) {
         pb_limit_price: pbMatch.limit_price || 0,
         pb_fill_price: pbMatch.fill_price || 0,
         diagnostic_tags: tags,
-        diagnostic_note: buildDiagnosticNote(liveOrder, pbMatch, tags),
+        diagnostic_note: buildDiagnosticNote(liveOrder, pbMatch, tags, ambiguousMatch),
     }
 }
 
@@ -531,7 +554,8 @@ function buildManagedOrderContext(environment, liveOrders) {
         liveOrderIds[liveOrder.order_id] = true
 
         const pbMatch = resolvePbMatch(liveOrder, pbLookup)
-        const pbContext = buildPbContext(liveOrder, pbMatch)
+        const ambiguousPbMatch = !pbMatch && isAmbiguousPbOrderMatch(liveOrder, pbLookup)
+        const pbContext = buildPbContext(liveOrder, pbMatch, ambiguousPbMatch)
         liveOrder.pb_context = pbContext
         liveOrder.diagnostic_tags = cloneStringList(pbContext.diagnostic_tags)
         liveOrder.diagnostic_note = toText(pbContext.diagnostic_note)
@@ -540,6 +564,14 @@ function buildManagedOrderContext(environment, liveOrders) {
         liveOrder.entry_order_unique_id = pbContext.entry_order_unique_id
         liveOrder.relation_status = pbContext.relation_status
         liveOrder.match_state = pbContext.match_state
+        if (!toText(liveOrder.symbol) && pbMatch && pbMatch.symbol) liveOrder.symbol = pbMatch.symbol
+        if (!toText(liveOrder.role) && pbContext.role) liveOrder.role = pbContext.role
+        if (toNumber(liveOrder.total_quantity, 0) <= 0 && toNumber(pbContext.pb_quantity, 0) > 0) {
+            liveOrder.total_quantity = toNumber(pbContext.pb_quantity, 0)
+        }
+        if (toNumber(liveOrder.price, 0) <= 0 && toNumber(pbContext.pb_limit_price, 0) > 0) {
+            liveOrder.price = toNumber(pbContext.pb_limit_price, 0)
+        }
         liveOrder.direction = pbContext.direction
         liveOrder.position_side = pbContext.position_side
         normalizedLiveOrders.push(liveOrder)

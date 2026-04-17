@@ -41,7 +41,11 @@ apply_runtime_restart_policy() {
   [[ ${#PLAN_UNITS[@]} -gt 0 ]] || return 0
   for unit in "${PLAN_UNITS[@]}"; do
     case "$unit" in
-      pb_public|pb_hooks)
+      pb_public)
+        ;;
+      pb_hooks)
+        skip_restart_for_runtime_files=0
+        break
         ;;
       *)
         skip_restart_for_runtime_files=0
@@ -50,7 +54,7 @@ apply_runtime_restart_policy() {
     esac
   done
   if [[ "$skip_restart_for_runtime_files" -eq 1 ]]; then
-    deploy_log "PocketBase files deploy detected for pb_public/pb_hooks only; skipping explicit systemctl restart."
+    deploy_log "PocketBase public-only files deploy detected; skipping explicit systemctl restart."
     WAIT_FOR_AUTO_RELOAD=1
     RESTART_SERVICE=0
   fi

@@ -541,6 +541,7 @@ class _IBGatewayApp(EWrapper, EClient):
             "orderId": str(orderId),
             "id": str(orderId),
             "conid": int(getattr(contract, "conId", 0) or 0),
+            "account": str(getattr(order, "account", "") or "").strip(),
             "ticker": str(getattr(contract, "symbol", "") or "").upper(),
             "contractDesc": str(getattr(contract, "localSymbol", "") or getattr(contract, "symbol", "") or ""),
             "side": str(getattr(order, "action", "") or "").upper(),
@@ -601,7 +602,7 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def openOrderEnd(self):  # noqa: N802
         for req_id, ctx in list(self._pending_requests.items()):
-            if ctx.kind == "open_orders":
+            if ctx.kind in {"open_orders", "open_orders_all"}:
                 with self._state_lock:
                     ctx.items = [dict(item) for item in self._open_orders.values()]
                 ctx.event.set()
@@ -839,10 +840,18 @@ class _IBGatewayApp(EWrapper, EClient):
         )
         return self._await(req_id, ctx, timeout)
 
-    def request_open_orders(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
+    def request_open_orders(
+        self,
+        timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        *,
+        include_all: bool = False,
+    ) -> List[dict]:
         self.connect_and_start(timeout=timeout)
-        req_id, ctx = self._next_request("open_orders")
-        self.reqOpenOrders()
+        req_id, ctx = self._next_request("open_orders_all" if include_all else "open_orders")
+        if include_all:
+            self.reqAllOpenOrders()
+        else:
+            self.reqOpenOrders()
         return self._await(req_id, ctx, timeout)
 
     def request_positions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
@@ -1496,8 +1505,8 @@ class BrokerAdapter:
     def get_account_snapshot(self, account: str = "") -> Dict[str, Any]:
         return self.client.request_account_updates(account=account)
 
-    def list_open_orders(self) -> List[dict]:
-        return self.client.request_open_orders()
+    def list_open_orders(self, *, include_all: bool = False) -> List[dict]:
+        return self.client.request_open_orders(include_all=include_all)
 
     def list_recent_fills(self) -> List[dict]:
         return self.client.request_executions()
