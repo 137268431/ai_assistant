@@ -68,6 +68,40 @@ def parse_iso_ms(text):
         return 0
 
 
+def normalize_interval_label(value):
+    text = str(value or "").strip().lower()
+    mapping = {
+        "1": "1m",
+        "1m": "1m",
+        "5": "5m",
+        "5m": "5m",
+        "15": "15m",
+        "15m": "15m",
+        "30": "30m",
+        "30m": "30m",
+        "60": "1h",
+        "1h": "1h",
+        "240": "4h",
+        "4h": "4h",
+        "d": "1d",
+        "1d": "1d",
+    }
+    return mapping.get(text, text)
+
+
+def interval_sort_key(value):
+    order = {
+        "1m": 1,
+        "5m": 2,
+        "15m": 3,
+        "30m": 4,
+        "1h": 5,
+        "4h": 6,
+        "1d": 7,
+    }
+    return order.get(normalize_interval_label(value), 999)
+
+
 def normalize_bar_bucket_lag_seconds(lag_value, due_bucket_ms, completed_bucket_ms):
     due_ms = int(due_bucket_ms or 0)
     completed_ms = int(completed_bucket_ms or 0)
@@ -144,6 +178,17 @@ def row_dict(row):
     return dict(row) if row is not None else None
 
 
+def apply_interval_label(row):
+    item = row_dict(row) if not isinstance(row, dict) else dict(row)
+    if item is None:
+        return None
+    raw_interval = str(item.get("interval") or "").strip()
+    if raw_interval:
+        item["raw_interval"] = raw_interval
+        item["interval"] = normalize_interval_label(raw_interval)
+    return item
+
+
 def latest_row(conn, table: str, environment: str, where_sql: str = "", params=()):
     sql = f"select * from {table} where environment=?"
     sql_params = [environment]
@@ -151,7 +196,7 @@ def latest_row(conn, table: str, environment: str, where_sql: str = "", params=(
         sql += f" and {where_sql}"
         sql_params.extend(params)
     sql += " order by bar_time_ms desc, created desc limit 1"
-    return row_dict(conn.execute(sql, tuple(sql_params)).fetchone())
+    return apply_interval_label(conn.execute(sql, tuple(sql_params)).fetchone())
 
 
 def latest_signal_row(conn, environment: str):
@@ -165,7 +210,7 @@ def latest_signal_row(conn, environment: str):
         """,
         (environment,),
     ).fetchone()
-    return row_dict(row)
+    return apply_interval_label(row)
 
 
 def interval_freshness(conn, table: str, environment: str) -> list[dict]:
@@ -178,33 +223,34 @@ def interval_freshness(conn, table: str, environment: str) -> list[dict]:
         """,
         (environment,),
     ).fetchall()
-    order = {
-        "1m": 1,
-        "5m": 2,
-        "5": 2,
-        "15m": 3,
-        "15": 3,
-        "30m": 4,
-        "30": 4,
-        "1h": 5,
-        "60": 5,
-        "4h": 6,
-        "240": 6,
-        "1d": 7,
-        "d": 7,
-        "D": 7,
-    }
-    items = []
+    by_interval = {}
     for row in rows:
+        raw_interval = str(row["interval"] or "").strip()
+        normalized_interval = normalize_interval_label(raw_interval)
+        if not normalized_interval:
+            continue
         last_ms = int(row["last_ms"] or 0)
-        items.append({
-            "interval": row["interval"],
-            "last_ms": last_ms,
-            "last_us": format_us(last_ms),
-            "age_min": age_minutes(last_ms),
-            "row_count": int(row["row_count"] or 0),
-        })
-    items.sort(key=lambda item: order.get(str(item.get("interval") or ""), 999))
+        row_count = int(row["row_count"] or 0)
+        item = by_interval.get(normalized_interval)
+        if item is None:
+            by_interval[normalized_interval] = {
+                "interval": normalized_interval,
+                "last_ms": last_ms,
+                "last_us": format_us(last_ms),
+                "age_min": age_minutes(last_ms),
+                "row_count": row_count,
+                "raw_intervals": [raw_interval] if raw_interval else [],
+            }
+            continue
+        item["row_count"] += row_count
+        if last_ms > int(item.get("last_ms") or 0):
+            item["last_ms"] = last_ms
+            item["last_us"] = format_us(last_ms)
+            item["age_min"] = age_minutes(last_ms)
+        if raw_interval and raw_interval not in item["raw_intervals"]:
+            item["raw_intervals"].append(raw_interval)
+    items = list(by_interval.values())
+    items.sort(key=lambda item: interval_sort_key(item.get("interval")))
     return items
 
 

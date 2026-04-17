@@ -46,6 +46,53 @@ const IBKR_ET_OFFSET_MINUTES = -4 * 60
 const IBKR_CN_OFFSET_MINUTES = 8 * 60
 const IBKR_WATCHLIST_ROLE_TRADE = "trade"
 const IBKR_WATCHLIST_ROLE_MARKET_MONITOR = "market_monitor"
+const IBKR_SCREENER_PAYLOAD_CACHE_TTL_MS = 15 * 1000
+
+const ibkrScreenerPayloadCache = {}
+
+function ibkrActionsPruneScreenerPayloadCache(nowMs) {
+    const cacheNowMs = Math.trunc(Number(nowMs) || Date.now())
+    Object.keys(ibkrScreenerPayloadCache).forEach((key) => {
+        const entry = ibkrScreenerPayloadCache[key]
+        if (!entry || Math.trunc(Number(entry.expires_at_ms) || 0) <= cacheNowMs) {
+            delete ibkrScreenerPayloadCache[key]
+        }
+    })
+}
+
+function ibkrActionsBuildScreenerPayloadCacheKey(environment, marketDate, symbolsText, limit) {
+    return JSON.stringify({
+        environment: String(environment || "").trim().toLowerCase(),
+        market_date: String(marketDate || "").trim(),
+        symbols: String(symbolsText || "").trim().toUpperCase(),
+        limit: Math.max(0, Math.trunc(Number(limit) || 0)),
+    })
+}
+globalThis.ibkrActionsBuildScreenerPayloadCacheKey = ibkrActionsBuildScreenerPayloadCacheKey
+
+function ibkrActionsGetCachedScreenerPayload(cacheKey, nowMs) {
+    ibkrActionsPruneScreenerPayloadCache(nowMs)
+    const entry = ibkrScreenerPayloadCache[String(cacheKey || "")]
+    return entry && entry.payload ? entry.payload : null
+}
+globalThis.ibkrActionsGetCachedScreenerPayload = ibkrActionsGetCachedScreenerPayload
+
+function ibkrActionsSetCachedScreenerPayload(cacheKey, payload, nowMs) {
+    ibkrActionsPruneScreenerPayloadCache(nowMs)
+    ibkrScreenerPayloadCache[String(cacheKey || "")] = {
+        expires_at_ms: Math.trunc(Number(nowMs) || Date.now()) + IBKR_SCREENER_PAYLOAD_CACHE_TTL_MS,
+        payload: payload,
+    }
+    return payload
+}
+globalThis.ibkrActionsSetCachedScreenerPayload = ibkrActionsSetCachedScreenerPayload
+
+function ibkrActionsClearScreenerPayloadCache() {
+    Object.keys(ibkrScreenerPayloadCache).forEach((key) => {
+        delete ibkrScreenerPayloadCache[key]
+    })
+}
+globalThis.ibkrActionsClearScreenerPayloadCache = ibkrActionsClearScreenerPayloadCache
 
 function ibkrActionsNormalizeForCompare(value) {
     if (Array.isArray(value)) {
@@ -1353,6 +1400,93 @@ function ibkrActionsBuildStatuszRuntimePayload(runtimePayload, includeWarmupDeta
             items.push(symbol)
         })
         return items
+    }
+    const shouldPromoteReadySnapshot = Boolean(
+        liveReadiness
+        && liveReadiness.snapshot_differs
+        && Boolean(liveReadiness.gate_open)
+        && String(liveReadiness.phase || "").trim().toLowerCase() === "ready"
+        && (Number(liveReadiness.pending_symbols_total || 0) || 0) === 0
+    )
+    if (shouldPromoteReadySnapshot) {
+        const normalizedWarmupSymbols = normalizeSymbolList(
+            Array.isArray(warmup.symbols) && warmup.symbols.length
+                ? warmup.symbols
+                : marketUniverse.data_symbols
+        )
+        const normalizedScanSymbols = normalizeSymbolList(
+            Array.isArray(warmup.scan_symbols) && warmup.scan_symbols.length
+                ? warmup.scan_symbols
+                : marketUniverse.scan_symbols
+        )
+        const normalizedTradeSymbols = normalizeSymbolList(
+            Array.isArray(warmup.trade_symbols) && warmup.trade_symbols.length
+                ? warmup.trade_symbols
+                : marketUniverse.active_trade_symbols
+        )
+        const normalizedMonitorSymbols = normalizeSymbolList(
+            Array.isArray(warmup.monitor_symbols) && warmup.monitor_symbols.length
+                ? warmup.monitor_symbols
+                : marketUniverse.market_ws_symbols
+        )
+        const scanSymbolSet = {}
+        const tradeSymbolSet = {}
+        const monitorSymbolSet = {}
+        normalizedScanSymbols.forEach((symbol) => {
+            scanSymbolSet[symbol] = true
+        })
+        normalizedTradeSymbols.forEach((symbol) => {
+            tradeSymbolSet[symbol] = true
+        })
+        normalizedMonitorSymbols.forEach((symbol) => {
+            monitorSymbolSet[symbol] = true
+        })
+        const existingStatusRows = {}
+        ;(Array.isArray(warmup.symbol_status) ? warmup.symbol_status : []).forEach((item) => {
+            const symbol = String(item && item.symbol || "").trim().toUpperCase()
+            if (!symbol) return
+            existingStatusRows[symbol] = ibkrActionsCloneObject(item)
+        })
+
+        warmup.phase = "ready"
+        warmup.trading_gate_open = true
+        warmup.trading_gate_reason = String(liveReadiness.gate_reason || warmup.trading_gate_reason || "ready")
+        warmup.required_interval = String(liveReadiness.required_interval || warmup.required_interval || "")
+        warmup.symbols = normalizedWarmupSymbols
+        warmup.scan_symbols = normalizedScanSymbols
+        warmup.trade_symbols = normalizedTradeSymbols
+        warmup.monitor_symbols = normalizedMonitorSymbols
+        warmup.symbols_total = normalizedWarmupSymbols.length || (Number(liveReadiness.symbols_total || 0) || 0)
+        warmup.trade_symbols_total = normalizedTradeSymbols.length || (Number(liveReadiness.trade_symbols_total || 0) || 0)
+        warmup.monitor_symbols_total = normalizedMonitorSymbols.length || (Number(liveReadiness.monitor_symbols_total || 0) || 0)
+        warmup.ready_symbols = Number(liveReadiness.ready_symbols || warmup.symbols_total || 0) || 0
+        warmup.ready_trade_symbols = Number(liveReadiness.ready_trade_symbols || warmup.trade_symbols_total || 0) || 0
+        warmup.ready_monitor_symbols = Number(liveReadiness.ready_monitor_symbols || warmup.monitor_symbols_total || 0) || 0
+        warmup.ready_symbols_list = normalizedWarmupSymbols
+        warmup.pending_symbols = []
+        warmup.last_error = ""
+        if (String(warmup.reason || "").trim().toLowerCase() === "pb_unavailable_retry") {
+            warmup.reason = ""
+        }
+        warmup.symbol_status = normalizedWarmupSymbols.map((symbol) => {
+            const current = existingStatusRows[symbol] || {}
+            let role = "data"
+            if (tradeSymbolSet[symbol]) {
+                role = "trade"
+            } else if (monitorSymbolSet[symbol]) {
+                role = "monitor"
+            } else if (scanSymbolSet[symbol]) {
+                role = "scan"
+            }
+            return {
+                ...current,
+                symbol: symbol,
+                role: String(current.role || role),
+                ready: true,
+                integrity_ready: true,
+                integrity_reason: "",
+            }
+        })
     }
     const activeTradeSymbols = ibkrActionsTrimArray(
         marketUniverse.active_trade_symbols,
@@ -3317,6 +3451,49 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         }
         const marketEndMs = marketStartMs + 24 * 60 * 60 * 1000
         const nowMs = Date.now()
+        const screenerPayloadCacheTtlMs = 15 * 1000
+        const screenerPayloadCache = globalThis.__ibkrScreenerPayloadCache
+            && typeof globalThis.__ibkrScreenerPayloadCache === "object"
+            ? globalThis.__ibkrScreenerPayloadCache
+            : (globalThis.__ibkrScreenerPayloadCache = {})
+        const pruneScreenerPayloadCache = (cacheNowMs) => {
+            const effectiveNowMs = Math.trunc(Number(cacheNowMs) || Date.now())
+            Object.keys(screenerPayloadCache).forEach((key) => {
+                const entry = screenerPayloadCache[key]
+                if (!entry || Math.trunc(Number(entry.expires_at_ms) || 0) <= effectiveNowMs) {
+                    delete screenerPayloadCache[key]
+                }
+            })
+        }
+        const buildScreenerPayloadCacheKey = (runtimeEnvironment, runtimeMarketDate, symbolsText, itemLimit) => JSON.stringify({
+            environment: String(runtimeEnvironment || "").trim().toLowerCase(),
+            market_date: String(runtimeMarketDate || "").trim(),
+            symbols: String(symbolsText || "").trim().toUpperCase(),
+            limit: Math.max(0, Math.trunc(Number(itemLimit) || 0)),
+        })
+        const getCachedScreenerPayload = (cacheKey, cacheNowMs) => {
+            pruneScreenerPayloadCache(cacheNowMs)
+            const entry = screenerPayloadCache[String(cacheKey || "")]
+            return entry && entry.payload ? entry.payload : null
+        }
+        const setCachedScreenerPayload = (cacheKey, payload, cacheNowMs) => {
+            pruneScreenerPayloadCache(cacheNowMs)
+            screenerPayloadCache[String(cacheKey || "")] = {
+                expires_at_ms: Math.trunc(Number(cacheNowMs) || Date.now()) + screenerPayloadCacheTtlMs,
+                payload: payload,
+            }
+            return payload
+        }
+        const screenerCacheKey = buildScreenerPayloadCacheKey(
+            environment,
+            marketDate,
+            requestedSymbols.join(","),
+            limit
+        )
+        const cachedScreenerPayload = getCachedScreenerPayload(screenerCacheKey, nowMs)
+        if (cachedScreenerPayload) {
+            return c.json(200, cachedScreenerPayload)
+        }
 
         const watchRecords = $app.findRecordsByFilter(
             "watchlist",
@@ -3394,7 +3571,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
         const normalizedUniverse = normalizeSymbols(universeSymbols)
         if (!normalizedUniverse.length) {
             const computedAtMs = Date.now()
-            return c.json(200, {
+            const payload = {
                 ok: true,
                 environment,
                 market_date: marketDate,
@@ -3418,7 +3595,8 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
                     direction_biases: [],
                 },
                 items: [],
-            })
+            }
+            return c.json(200, setCachedScreenerPayload(screenerCacheKey, payload, nowMs))
         }
 
         const symbolFilter = buildSymbolFilter(normalizedUniverse)
@@ -3616,7 +3794,7 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
 
         const visibleItems = limit > 0 ? items.slice(0, limit) : items
         const computedAtMs = Date.now()
-        return c.json(200, {
+        const payload = {
             ok: true,
             environment,
             market_date: marketDate,
@@ -3646,7 +3824,8 @@ routerAdd("GET", "/api/custom/ibkr/screener", (c) => {
                 direction_biases: Object.keys(directionValues).sort(),
             },
             items: visibleItems,
-        })
+        }
+        return c.json(200, setCachedScreenerPayload(screenerCacheKey, payload, nowMs))
     } catch (err) {
         return c.json(500, { ok: false, error: err.message || String(err) })
     }
@@ -3797,6 +3976,18 @@ routerAdd("POST", "/api/custom/ibkr/screener/targets", (c) => {
                 console.error(`[IBKRActions] screener target upsert error: ${symbol}/${marketDate}: ${err.message}`)
             }
         }
+
+        try {
+            if (globalThis.__ibkrScreenerPayloadCache && typeof globalThis.__ibkrScreenerPayloadCache === "object") {
+                Object.keys(globalThis.__ibkrScreenerPayloadCache).forEach((key) => {
+                    delete globalThis.__ibkrScreenerPayloadCache[key]
+                })
+            }
+            const { clearTodayTargetPayloadCache } = require(`${__hooks}/lib/ibkr_today_targets.js`)
+            if (typeof clearTodayTargetPayloadCache === "function") {
+                clearTodayTargetPayloadCache()
+            }
+        } catch (_) {}
 
         return c.json(200, {
             ok: errors === 0,
@@ -4360,6 +4551,93 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     items.push(symbol)
                 })
                 return items
+            }
+            const shouldPromoteReadySnapshot = Boolean(
+                liveReadiness
+                && liveReadiness.snapshot_differs
+                && Boolean(liveReadiness.gate_open)
+                && String(liveReadiness.phase || "").trim().toLowerCase() === "ready"
+                && (Number(liveReadiness.pending_symbols_total || 0) || 0) === 0
+            )
+            if (shouldPromoteReadySnapshot) {
+                const normalizedWarmupSymbols = normalizeSymbolList(
+                    Array.isArray(warmup.symbols) && warmup.symbols.length
+                        ? warmup.symbols
+                        : marketUniverse.data_symbols
+                )
+                const normalizedScanSymbols = normalizeSymbolList(
+                    Array.isArray(warmup.scan_symbols) && warmup.scan_symbols.length
+                        ? warmup.scan_symbols
+                        : marketUniverse.scan_symbols
+                )
+                const normalizedTradeSymbols = normalizeSymbolList(
+                    Array.isArray(warmup.trade_symbols) && warmup.trade_symbols.length
+                        ? warmup.trade_symbols
+                        : marketUniverse.active_trade_symbols
+                )
+                const normalizedMonitorSymbols = normalizeSymbolList(
+                    Array.isArray(warmup.monitor_symbols) && warmup.monitor_symbols.length
+                        ? warmup.monitor_symbols
+                        : marketUniverse.market_ws_symbols
+                )
+                const scanSymbolSet = {}
+                const tradeSymbolSet = {}
+                const monitorSymbolSet = {}
+                normalizedScanSymbols.forEach((symbol) => {
+                    scanSymbolSet[symbol] = true
+                })
+                normalizedTradeSymbols.forEach((symbol) => {
+                    tradeSymbolSet[symbol] = true
+                })
+                normalizedMonitorSymbols.forEach((symbol) => {
+                    monitorSymbolSet[symbol] = true
+                })
+                const existingStatusRows = {}
+                ;(Array.isArray(warmup.symbol_status) ? warmup.symbol_status : []).forEach((item) => {
+                    const symbol = String(item && item.symbol || "").trim().toUpperCase()
+                    if (!symbol) return
+                    existingStatusRows[symbol] = cloneObject(item)
+                })
+
+                warmup.phase = "ready"
+                warmup.trading_gate_open = true
+                warmup.trading_gate_reason = String(liveReadiness.gate_reason || warmup.trading_gate_reason || "ready")
+                warmup.required_interval = String(liveReadiness.required_interval || warmup.required_interval || "")
+                warmup.symbols = normalizedWarmupSymbols
+                warmup.scan_symbols = normalizedScanSymbols
+                warmup.trade_symbols = normalizedTradeSymbols
+                warmup.monitor_symbols = normalizedMonitorSymbols
+                warmup.symbols_total = normalizedWarmupSymbols.length || (Number(liveReadiness.symbols_total || 0) || 0)
+                warmup.trade_symbols_total = normalizedTradeSymbols.length || (Number(liveReadiness.trade_symbols_total || 0) || 0)
+                warmup.monitor_symbols_total = normalizedMonitorSymbols.length || (Number(liveReadiness.monitor_symbols_total || 0) || 0)
+                warmup.ready_symbols = Number(liveReadiness.ready_symbols || warmup.symbols_total || 0) || 0
+                warmup.ready_trade_symbols = Number(liveReadiness.ready_trade_symbols || warmup.trade_symbols_total || 0) || 0
+                warmup.ready_monitor_symbols = Number(liveReadiness.ready_monitor_symbols || warmup.monitor_symbols_total || 0) || 0
+                warmup.ready_symbols_list = normalizedWarmupSymbols
+                warmup.pending_symbols = []
+                warmup.last_error = ""
+                if (String(warmup.reason || "").trim().toLowerCase() === "pb_unavailable_retry") {
+                    warmup.reason = ""
+                }
+                warmup.symbol_status = normalizedWarmupSymbols.map((symbol) => {
+                    const current = existingStatusRows[symbol] || {}
+                    let role = "data"
+                    if (tradeSymbolSet[symbol]) {
+                        role = "trade"
+                    } else if (monitorSymbolSet[symbol]) {
+                        role = "monitor"
+                    } else if (scanSymbolSet[symbol]) {
+                        role = "scan"
+                    }
+                    return {
+                        ...current,
+                        symbol: symbol,
+                        role: String(current.role || role),
+                        ready: true,
+                        integrity_ready: true,
+                        integrity_reason: "",
+                    }
+                })
             }
             const activeTradeSymbols = trimArray(
                 marketUniverse.active_trade_symbols,

@@ -14,9 +14,21 @@ from ibkr_compute.market.data_backfill import DataBackfill
 class _FakeBroker:
     def __init__(self, bars):
         self._bars = list(bars or [])
+        self.calls = 0
 
     def request_historical_bars(self, **_kwargs):
+        self.calls += 1
         return list(self._bars)
+
+
+class _FailingBroker:
+    def __init__(self, error_text):
+        self.error_text = str(error_text)
+        self.calls = 0
+
+    def request_historical_bars(self, **_kwargs):
+        self.calls += 1
+        raise RuntimeError(self.error_text)
 
 
 class HistoricalRequestFormatDateTest(unittest.TestCase):
@@ -86,6 +98,37 @@ class BackfillFutureGuardTest(unittest.TestCase):
                 "2026-04-16 13:40:00",
             ],
         )
+
+    def test_terminal_history_errors_do_not_retry(self):
+        terminal_errors = [
+            "contract_not_found:ZTS",
+            "No security definition has been found for the request",
+            "Historical Market Data Service error message:HMDS query returned no data: ZTS@SMART Trades",
+        ]
+
+        for error_text in terminal_errors:
+            with self.subTest(error_text=error_text):
+                broker = _FailingBroker(error_text)
+                backfill = DataBackfill(
+                    data_writer=None,
+                    config=None,
+                    environment="live",
+                    broker=broker,
+                )
+
+                with mock.patch("ibkr_compute.market.data_backfill.time.sleep") as sleep_mock:
+                    rows = backfill.fetch_history(
+                        121665622,
+                        "ZTS",
+                        interval="5m",
+                        exchange="BATS",
+                        repair=False,
+                        request_period="1d",
+                    )
+
+                self.assertEqual(rows, [])
+                self.assertEqual(broker.calls, 1)
+                sleep_mock.assert_not_called()
 
 
 if __name__ == "__main__":

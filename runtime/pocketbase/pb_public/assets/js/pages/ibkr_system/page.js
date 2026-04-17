@@ -4,36 +4,6 @@ let currentFocus = '';
 let hasLoadedSystemData = false;
 let latestSystemLoadId = 0;
 
-function setSystemLoading(active, title, copy) {
-    const overlay = document.getElementById('pageLoading');
-    if (!overlay) return;
-    if (title) {
-        const titleEl = document.getElementById('pageLoadingTitle');
-        if (titleEl) titleEl.textContent = title;
-    }
-    if (copy) {
-        const copyEl = document.getElementById('pageLoadingCopy');
-        if (copyEl) copyEl.textContent = copy;
-    }
-    overlay.classList.toggle('is-hidden', !active);
-}
-
-function initSystemAuth() {
-    const token = getToken();
-    if (!token) {
-        redirectToLogin(`${location.pathname}${location.search}`);
-        return false;
-    }
-    return true;
-}
-
-async function requestSystemJson(path, { retryAttempts = 2 } = {}) {
-    return requestIbkrPageJson(path, {
-        environment: currentEnvironment,
-        retryAttempts
-    });
-}
-
 function buildSystemComputeSummary(healthPayload = {}, statusPayload = {}, fallbackPayload = {}) {
     const statusCompute = statusPayload?.compute || {};
     const runtimeCompute = statusPayload?.runtime?.realtime_compute || {};
@@ -60,13 +30,18 @@ function buildSystemComputeSummary(healthPayload = {}, statusPayload = {}, fallb
 
 function normalizeFreshnessItems(freshnessPayload = []) {
     if (Array.isArray(freshnessPayload)) {
-        return freshnessPayload.filter((item) => item && item.interval);
+        return freshnessPayload
+            .filter((item) => item && item.interval)
+            .map((item) => ({
+                ...item,
+                interval: normalizeIbkrInterval(item.interval, item.interval),
+            }));
     }
     if (!freshnessPayload || typeof freshnessPayload !== 'object') {
         return [];
     }
     return Object.entries(freshnessPayload).map(([interval, item]) => ({
-        interval,
+        interval: normalizeIbkrInterval(interval, interval),
         last_bar_time_ms: Number(item?.last_bar_time_ms || 0) || 0,
         age_min: Number.isFinite(Number(item?.age_min)) ? Number(item.age_min) : null,
         symbol: item?.symbol || '',
@@ -200,11 +175,11 @@ function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, fresh
 }
 
 async function loadSystemData(showToastOnSuccess = false) {
-    if (!initSystemAuth()) return;
+    if (!ensureIbkrPageAuth()) return;
     const loadId = ++latestSystemLoadId;
     const isInitialLoad = !hasLoadedSystemData;
     if (isInitialLoad) {
-        setSystemLoading(
+        setIbkrPageLoading(
             true,
             '系统概览加载中',
             `正在拉取 ${getEnvironmentLabel(currentEnvironment)} 环境的健康状态、freshness、配置与最近事件。`
@@ -219,7 +194,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         const secondaryErrors = [];
         const safeRequestSystemJson = async (bucket, label, path, fallback = {}, timeoutMs = coreTimeoutMs, options = {}) => {
             try {
-                return await withTimeout(requestSystemJson(path, options), timeoutMs, label);
+                return await withTimeout(requestIbkrEnvironmentJson(path, currentEnvironment, options), timeoutMs, label);
             } catch (error) {
                 bucket.push(`${label}: ${error.message || error}`);
                 return fallback;
@@ -281,7 +256,7 @@ async function loadSystemData(showToastOnSuccess = false) {
 
         if (isInitialLoad) {
             hasLoadedSystemData = true;
-            setSystemLoading(false);
+            setIbkrPageLoading(false);
         }
 
         document.getElementById('refreshInfo').textContent = coreErrors.length
@@ -373,7 +348,7 @@ async function loadSystemData(showToastOnSuccess = false) {
     } finally {
         if (isInitialLoad && !hasLoadedSystemData) {
             hasLoadedSystemData = true;
-            setSystemLoading(false);
+            setIbkrPageLoading(false);
         }
     }
 }
@@ -753,7 +728,7 @@ function renderBacktests(batches, runs) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    if (!initSystemAuth()) return;
+    if (!ensureIbkrPageAuth()) return;
     currentFocus = String(new URLSearchParams(window.location.search).get('focus') || '').trim().toLowerCase();
     document.getElementById('nav').innerHTML = renderNav('/ibkr_system.html');
     document.getElementById('contextBar').innerHTML = renderPageContextBar('🖥️ IBKR 总览', { description: '健康 / freshness / 配置总览' });

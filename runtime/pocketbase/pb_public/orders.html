@@ -626,6 +626,7 @@
         let currentOrdersRequestId = 0;
         let isLoadingOrders = false;
         let isOrdersDatasetPartial = false;
+        let currentOrdersSource = 'orders';
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const ORDERS_FETCH_PAGE_SIZE = 200;
         const ORDERS_FETCH_MAX_PAGES = 40;
@@ -767,6 +768,35 @@
         function buildOrdersFilter() {
             const { startTimeMs, endTimeMs } = getOrdersTimeRange();
             return `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
+        }
+
+        function buildOrderDetailsFallbackFilter() {
+            const environmentFilter = `environment = "${currentEnvironment}"`;
+            if (filterSignalId) {
+                return `${environmentFilter} && signal_id = "${escapeFilterValue(filterSignalId)}"`;
+            }
+            if (filterTradeGroupId) {
+                return `${environmentFilter} && trade_group_id = "${escapeFilterValue(filterTradeGroupId)}"`;
+            }
+            if (currentSearch) {
+                const safe = escapeFilterValue(currentSearch);
+                return `${environmentFilter} && (
+                    symbol ~ "${safe}" ||
+                    order_id ~ "${safe}" ||
+                    broker_order_id ~ "${safe}" ||
+                    signal_id ~ "${safe}" ||
+                    trade_group_id ~ "${safe}" ||
+                    entry_order_unique_id ~ "${safe}" ||
+                    parent_order_unique_id ~ "${safe}" ||
+                    sibling_order_unique_id ~ "${safe}" ||
+                    id ~ "${safe}"
+                )`;
+            }
+
+            const { startTimeMs, endTimeMs } = getOrdersTimeRange();
+            const startTime = `${currentDate} 00:00:00`;
+            const endTime = `${currentDate} 23:59:59`;
+            return `${environmentFilter} && ((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`;
         }
 
         function formatCountValue(value) {
@@ -1053,6 +1083,20 @@
             };
         }
 
+        function buildLatestOrdersFromDetails(records) {
+            const latestByOrder = new Map();
+            (Array.isArray(records) ? records : []).forEach((record) => {
+                const normalized = normalizeOrder(record);
+                const key = normalized.order_id || normalized.broker_order_id || normalized.unique_id || normalized.id;
+                if (!key) return;
+                const previous = latestByOrder.get(key);
+                if (!previous || Number(normalized.time_key || 0) >= Number(previous.time_key || 0)) {
+                    latestByOrder.set(key, normalized);
+                }
+            });
+            return Array.from(latestByOrder.values());
+        }
+
         function roleRank(role) {
             return {
                 entry: 0,
@@ -1180,6 +1224,7 @@
                 <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${formatCountValue(filtered.length)}</div></div>
                 <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">${formatCountValue(filtered.reduce((sum, group) => sum + group.orders.length, 0))}</div></div>
                 <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">${formatCountValue(openGroups)}</div></div>
+                ${currentOrdersSource === 'ibkr_order_details' ? '<div class="summary-hint">当前使用 ibkr_order_details 最新快照回退展示，可查看图表与交易组明细，但不提供撤单/平仓操作。</div>' : ''}
                 ${isOrdersDatasetPartial ? '<div class="summary-hint">首屏已加载，剩余订单后台补齐中</div>' : ''}
             `;
         }
@@ -1216,6 +1261,7 @@
             if (filterTradeGroupId) notes.push(`trade_group_id=${filterTradeGroupId}`);
             if (currentSearch) notes.push(`search=${currentSearch}`);
             if (resolvedLegacySearch) notes.push(`resolved_from=${resolvedLegacySearch}`);
+            if (currentOrdersSource === 'ibkr_order_details') notes.push('dataset=detail_snapshot');
             if (isOrdersDatasetPartial) notes.push('dataset=首屏快照');
             document.getElementById('filterNote').innerHTML = notes.length
                 ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
@@ -1282,6 +1328,7 @@
             const primary = group.primaryOrder;
             const tpOrder = group.orders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
             const slOrder = group.orders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
+            const isReadOnlySnapshot = currentOrdersSource === 'ibkr_order_details';
             const exitText = group.exitOrder
                 ? `已由 ${getRoleText(group.exitOrder.role, group.exitOrder.order_type)} 成交退出`
                 : group.activeChildCount > 0
@@ -1308,6 +1355,7 @@
                                 <span class="status-badge ${statusClass(group.status)}">${escapeHtml(ORDER_STATUS_TEXT[group.status] || group.status || '-')}</span>
                                 ${group.exitOrder ? `<span class="chip highlight-chip">${escapeHtml(getRoleText(group.exitOrder.role, group.exitOrder.order_type))} 成交</span>` : ''}
                                 ${group.relationAlert ? `<span class="chip warn-chip">存在孤儿单</span>` : ''}
+                                ${isReadOnlySnapshot ? '<span class="chip">明细快照</span>' : ''}
                                 ${isOrdersDatasetPartial ? '<span class="chip">数据补齐中</span>' : ''}
                             </div>
                             <div class="group-subtitle">${escapeHtml(exitText)}</div>
@@ -1345,8 +1393,8 @@
                             <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}', '${encodeURIComponent(group.signal_id || '')}')">📜 交易组明细</button>
                         </div>
                         <div class="action-row">
-                            ${!isOrdersDatasetPartial && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId || cancelTargetOrderId)}', '${encodeURIComponent(cancelTargetOrderId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
-                            ${!isOrdersDatasetPartial && canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓整组</button>` : ''}
+                            ${!isOrdersDatasetPartial && !isReadOnlySnapshot && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId || cancelTargetOrderId)}', '${encodeURIComponent(cancelTargetOrderId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
+                            ${!isOrdersDatasetPartial && !isReadOnlySnapshot && canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓整组</button>` : ''}
                         </div>
                     </div>
                 </div>
@@ -1368,10 +1416,11 @@
             updateCountdowns();
         }
 
-        function applyOrdersDataset(records, { partial = false, requestId = 0 } = {}) {
+        function applyOrdersDataset(records, { partial = false, requestId = 0, source = 'orders' } = {}) {
             if (requestId && requestId !== currentOrdersRequestId) return;
 
-            allOrders = (Array.isArray(records) ? records : []).map(normalizeOrder);
+            currentOrdersSource = source;
+            allOrders = Array.isArray(records) ? records : [];
             allGroups = buildTradeGroups(allOrders);
             isOrdersDatasetPartial = partial;
 
@@ -1389,6 +1438,18 @@
             updateLoadMoreButton();
         }
 
+        async function loadOrderDetailsFallback(requestId) {
+            const detailRecords = await fetchCollectionFullList('ibkr_order_details', {
+                filter: buildOrderDetailsFallbackFilter(),
+                sort: '-bar_time_ms,-created',
+                perPage: ORDERS_FETCH_PAGE_SIZE,
+                maxPages: ORDERS_FETCH_MAX_PAGES,
+                requestId
+            });
+            if (!detailRecords || requestId !== currentOrdersRequestId) return null;
+            return buildLatestOrdersFromDetails(detailRecords);
+        }
+
         async function hydrateRemainingOrders(baseFilter, initialItems, requestId) {
             try {
                 const remainingItems = await fetchCollectionFullList('orders', {
@@ -1400,7 +1461,7 @@
                     requestId
                 });
                 if (!remainingItems || requestId !== currentOrdersRequestId) return;
-                applyOrdersDataset([...(initialItems || []), ...remainingItems], { partial: false, requestId });
+                applyOrdersDataset([...(initialItems || []), ...remainingItems].map(normalizeOrder), { partial: false, requestId, source: 'orders' });
             } catch (error) {
                 console.error('后台补齐订单失败:', error);
             }
@@ -1429,8 +1490,14 @@
                     if (requestId !== currentOrdersRequestId) return;
 
                     const firstPageItems = Array.isArray(firstPage?.items) ? firstPage.items : [];
+                    if (!firstPageItems.length) {
+                        const fallbackRecords = await loadOrderDetailsFallback(requestId);
+                        if (!fallbackRecords || requestId !== currentOrdersRequestId) return;
+                        applyOrdersDataset(fallbackRecords, { partial: false, requestId, source: fallbackRecords.length ? 'ibkr_order_details' : 'orders' });
+                        return;
+                    }
                     const hasMorePages = Number(firstPage?.totalItems || 0) > firstPageItems.length;
-                    applyOrdersDataset(firstPageItems, { partial: hasMorePages, requestId });
+                    applyOrdersDataset(firstPageItems.map(normalizeOrder), { partial: hasMorePages, requestId, source: 'orders' });
 
                     if (hasMorePages) {
                         hydrateRemainingOrders(baseFilter, firstPageItems, requestId);
@@ -1446,7 +1513,13 @@
                     requestId
                 });
                 if (!records || requestId !== currentOrdersRequestId) return;
-                applyOrdersDataset(records, { partial: false, requestId });
+                if (!records.length) {
+                    const fallbackRecords = await loadOrderDetailsFallback(requestId);
+                    if (!fallbackRecords || requestId !== currentOrdersRequestId) return;
+                    applyOrdersDataset(fallbackRecords, { partial: false, requestId, source: fallbackRecords.length ? 'ibkr_order_details' : 'orders' });
+                    return;
+                }
+                applyOrdersDataset(records.map(normalizeOrder), { partial: false, requestId, source: 'orders' });
             } catch (error) {
                 console.error('加载订单失败:', error);
                 if (error.status === 401 || error.status === 403) {

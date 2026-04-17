@@ -11,6 +11,9 @@ const DEFAULT_TECHNICAL_STATE = "watch"
 const DAILY_SCAN_SUMMARY_TIME_ET = "05:55"
 const MARKET_OPEN_CHECK_TIME_ET = "09:20"
 const INTRADAY_REFRESH_RULE = "5m close-driven"
+const TODAY_TARGET_PAYLOAD_CACHE_TTL_MS = 15 * 1000
+
+const todayTargetPayloadCache = {}
 
 function toNumber(value, fallback) {
     const number = Number(value)
@@ -349,6 +352,7 @@ function normalizeTodayTargetFilters(options) {
 function matchesTodayTargetFilters(row, filters) {
     const normalized = filters || normalizeTodayTargetFilters({})
     if (normalized.search) {
+        ensureTodayTargetRowDetails(row)
         const haystack = [
             row && row.symbol,
             row && row.exchange,
@@ -689,6 +693,71 @@ function buildWorkflowMeta(row) {
     }
 }
 
+function pruneTodayTargetPayloadCache(nowMs) {
+    const cacheNowMs = toInt(nowMs, Date.now())
+    const keys = Object.keys(todayTargetPayloadCache)
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i]
+        const entry = todayTargetPayloadCache[key]
+        if (!entry || toInt(entry.expires_at_ms, 0) <= cacheNowMs) {
+            delete todayTargetPayloadCache[key]
+        }
+    }
+}
+
+function buildTodayTargetPayloadCacheKey(environment, marketDate, filters, paginationEnabled, page, perPage) {
+    const normalizedFilters = filters || normalizeTodayTargetFilters({})
+    return JSON.stringify({
+        environment: String(environment || LIVE_ENVIRONMENT).trim().toLowerCase(),
+        market_date: String(marketDate || "").trim(),
+        search: normalizedFilters.search || "",
+        technical_state: normalizedFilters.technical_state || "",
+        signal_state: normalizedFilters.signal_state || "",
+        target_status: normalizedFilters.target_status || "",
+        direction_bias: normalizedFilters.direction_bias || "",
+        ready_only: Boolean(normalizedFilters.ready_only),
+        signaled_only: Boolean(normalizedFilters.signaled_only),
+        sort_by: normalizedFilters.sort_by || "attention_asc",
+        paginate: Boolean(paginationEnabled),
+        page: Math.max(1, toInt(page, 1)),
+        per_page: Math.max(1, toInt(perPage, 10)),
+    })
+}
+
+function getCachedTodayTargetPayload(cacheKey, nowMs) {
+    pruneTodayTargetPayloadCache(nowMs)
+    const entry = todayTargetPayloadCache[String(cacheKey || "")]
+    if (!entry || !entry.payload) return null
+    return entry.payload
+}
+
+function setCachedTodayTargetPayload(cacheKey, payload, nowMs) {
+    pruneTodayTargetPayloadCache(nowMs)
+    todayTargetPayloadCache[String(cacheKey || "")] = {
+        expires_at_ms: toInt(nowMs, Date.now()) + TODAY_TARGET_PAYLOAD_CACHE_TTL_MS,
+        payload: payload,
+    }
+    return payload
+}
+
+function clearTodayTargetPayloadCache() {
+    const keys = Object.keys(todayTargetPayloadCache)
+    for (let i = 0; i < keys.length; i++) {
+        delete todayTargetPayloadCache[keys[i]]
+    }
+}
+
+function ensureTodayTargetRowDetails(row) {
+    if (!row || row.workflow_summary) return row
+    const workflowMeta = buildWorkflowMeta(row)
+    row.workflow_stage = workflowMeta.stage
+    row.workflow_label = workflowMeta.label
+    row.workflow_summary = workflowMeta.summary
+    row.workflow_blockers = workflowMeta.blockers
+    row.workflow_next_action = workflowMeta.next_action
+    return row
+}
+
 function buildTodayTargetPayload(options) {
     const runtimeEnvironment = normalizeRuntimeEnvironment(options && options.environment, LIVE_ENVIRONMENT)
     const currentMarketDate = getCurrentMarketDate()
@@ -697,20 +766,28 @@ function buildTodayTargetPayload(options) {
     const marketDate = Number.isFinite(marketStartCandidateMs) ? requestedMarketDate : currentMarketDate
     const filters = normalizeTodayTargetFilters(options)
     const workflowGuide = buildWorkflowGuide(runtimeEnvironment, marketDate)
+    const paginationEnabled = Boolean(options && options.paginate)
+    const requestedPerPage = Math.max(1, Math.min(200, toInt(options && (options.per_page || options.perPage), 10)))
+    const requestedPage = paginationEnabled ? Math.max(1, toInt(options && options.page, 1)) : 1
+    const cacheNowMs = Date.now()
+    const cacheKey = buildTodayTargetPayloadCacheKey(
+        runtimeEnvironment,
+        marketDate,
+        filters,
+        paginationEnabled,
+        requestedPage,
+        requestedPerPage
+    )
+    const cachedPayload = getCachedTodayTargetPayload(cacheKey, cacheNowMs)
+    if (cachedPayload) {
+        return cachedPayload
+    }
     const targetFilterClauses = [
         'environment = {:env}',
         'date = {:date}',
         '(status = "candidate" || status = "active")',
     ]
     const targetFilterParams = { env: runtimeEnvironment, date: marketDate }
-    if (filters.target_status) {
-        targetFilterClauses.push('status = {:target_status}')
-        targetFilterParams.target_status = filters.target_status
-    }
-    if (filters.direction_bias) {
-        targetFilterClauses.push('direction_bias = {:direction_bias}')
-        targetFilterParams.direction_bias = filters.direction_bias
-    }
     const targetRecords = $app.findRecordsByFilter(
         "ibkr_targets",
         targetFilterClauses.join(" && "),
@@ -972,12 +1049,6 @@ function buildTodayTargetPayload(options) {
         const attentionState = resolveAttentionState(row)
         row.attention_state = attentionState.state
         row.attention_rank = attentionState.rank
-        const workflowMeta = buildWorkflowMeta(row)
-        row.workflow_stage = workflowMeta.stage
-        row.workflow_label = workflowMeta.label
-        row.workflow_summary = workflowMeta.summary
-        row.workflow_blockers = workflowMeta.blockers
-        row.workflow_next_action = workflowMeta.next_action
         if (targetStatus === "active") activeCount += 1
         if (targetStatus === "candidate") candidateCount += 1
         if (row.is_operable) operableCount += 1
@@ -992,20 +1063,21 @@ function buildTodayTargetPayload(options) {
 
     const filteredItems = sortTodayTargetRows(items, filters.sort_by).filter((row) => matchesTodayTargetFilters(row, filters))
     const filteredSummary = buildFilteredTodayTargetSummary(filteredItems)
-    const paginationEnabled = Boolean(options && options.paginate)
-    const requestedPerPage = Math.max(1, Math.min(200, toInt(options && (options.per_page || options.perPage), 10)))
     const totalPages = paginationEnabled
         ? Math.max(1, Math.ceil(filteredItems.length / requestedPerPage))
         : 1
     const page = paginationEnabled
-        ? Math.min(Math.max(1, toInt(options && options.page, 1)), totalPages)
+        ? Math.min(requestedPage, totalPages)
         : 1
     const offset = paginationEnabled ? (page - 1) * requestedPerPage : 0
     const pagedItems = paginationEnabled
         ? filteredItems.slice(offset, offset + requestedPerPage)
         : filteredItems
+    for (let i = 0; i < pagedItems.length; i++) {
+        ensureTodayTargetRowDetails(pagedItems[i])
+    }
 
-    return {
+    const payload = {
         ok: true,
         environment: runtimeEnvironment,
         market_date: marketDate,
@@ -1038,9 +1110,11 @@ function buildTodayTargetPayload(options) {
         returned_count: pagedItems.length,
         items: pagedItems,
     }
+    return setCachedTodayTargetPayload(cacheKey, payload, cacheNowMs)
 }
 
 module.exports = {
     TODAY_TARGET_STATUSES,
+    clearTodayTargetPayloadCache,
     buildTodayTargetPayload,
 }

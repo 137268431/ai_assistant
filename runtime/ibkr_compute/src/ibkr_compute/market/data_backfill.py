@@ -208,6 +208,17 @@ class DataBackfill:
     def _retry_base_delay(self) -> float:
         return max(0.5, self._get_float_setting("ibkr_history_retry_base_delay", RETRY_BASE_DELAY_SECONDS))
 
+    def _is_terminal_history_error(self, error: Exception | str | None) -> bool:
+        text = str(error or "").strip().lower()
+        if not text:
+            return False
+        terminal_markers = (
+            "contract_not_found",
+            "no security definition has been found for the request",
+            "hmds query returned no data",
+        )
+        return any(marker in text for marker in terminal_markers)
+
     def _close_delay_seconds(self) -> int:
         return max(
             0,
@@ -280,6 +291,10 @@ class DataBackfill:
                     "mdAvailability": "IBGW",
                 }
             except Exception as exc:
+                if self._is_terminal_history_error(exc):
+                    raise RuntimeError(
+                        f"history_fetch_terminal:{symbol}:{interval}:{conid}:{exc}"
+                    ) from exc
                 if attempt >= max_retries:
                     raise RuntimeError(
                         f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}:{exc}"

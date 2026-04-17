@@ -40,10 +40,12 @@ async function latestDate(token, collection, sort) {
     }
     throw new Error(`${collection}_query_failed:${JSON.stringify(json)}`);
   }
+  const items = Array.isArray(json.items) ? json.items : [];
+  const date = deriveDate(items[0] || null);
   return {
-    date: deriveDate(Array.isArray(json.items) ? json.items[0] : null),
-    unavailable: false,
-    reason: '',
+    date,
+    unavailable: !date,
+    reason: date ? '' : 'no_records',
   };
 }
 
@@ -124,7 +126,9 @@ async function inspect(browser, token, spec, mobile = false) {
     dates.reverse.unavailable
       ? { name: 'reverse_to_chart', skipped: true, reason: dates.reverse.reason }
       : { name: 'reverse_to_chart', url: buildTargetUrl('/ibkr_reverse_signals.html', dates.reverse.date) },
-    { name: 'orders_to_chart', url: buildTargetUrl('/ibkr_orders.html', dates.orders.date) },
+    dates.orders.unavailable
+      ? { name: 'orders_to_chart', skipped: true, reason: dates.orders.reason }
+      : { name: 'orders_to_chart', url: buildTargetUrl('/ibkr_orders.html', dates.orders.date) },
   ];
 
   const browser = await chromium.launch({ headless: true });

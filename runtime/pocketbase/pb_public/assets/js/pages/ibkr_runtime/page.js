@@ -25,38 +25,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             health_check: '启动后健康检查'
         };
 
-        function setRuntimeLoading(active, title, copy) {
-            const overlay = document.getElementById('pageLoading');
-            if (!overlay) return;
-            if (title) {
-                const titleEl = document.getElementById('pageLoadingTitle');
-                if (titleEl) titleEl.textContent = title;
-            }
-            if (copy) {
-                const copyEl = document.getElementById('pageLoadingCopy');
-                if (copyEl) copyEl.textContent = copy;
-            }
-            overlay.classList.toggle('is-hidden', !active);
-        }
-
-        function initRuntimeAuth() {
-            const token = getToken();
-            if (!token) {
-                redirectToLogin(`${location.pathname}${location.search}`);
-                return false;
-            }
-            return true;
-        }
-
-        async function requestRuntimeJson(path, { method = 'GET', body = null } = {}) {
-            return requestIbkrPageJson(path, {
-                environment: currentEnvironment,
-                method,
-                body,
-                retryAttempts: 3
-            });
-        }
-
         function toArray(payload) {
             return Array.isArray(payload?.items) ? payload.items : [];
         }
@@ -119,14 +87,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(number);
         }
 
-        function formatTimeLabelWithFallback(value) {
-            const formatted = formatTimeLabel(value);
-            if (formatted && formatted !== '--') return formatted;
-            const raw = String(value || '').trim();
-            if (!raw) return '--';
-            return raw.replace('T', ' ').slice(0, 19);
-        }
-
         function formatAgo(isoValue) {
             if (!isoValue) return '--';
             const date = new Date(isoValue);
@@ -146,7 +106,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function intervalToMs(interval) {
-            const value = String(interval || '').trim().toLowerCase();
+            const value = normalizeIbkrInterval(interval);
             const mapping = {
                 '1m': 60 * 1000,
                 '5m': 5 * 60 * 1000,
@@ -160,26 +120,19 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function formatSecondsLabel(value) {
-            const number = Number(value);
-            if (!Number.isFinite(number)) return '--';
-            if (number < 1) return `${number.toFixed(3)}s`;
-            if (number < 10) return `${number.toFixed(2)}s`;
-            if (number < 60) return `${number.toFixed(1)}s`;
-            return `${Math.round(number)}s`;
+            return formatIbkrSecondsLabel(value);
         }
 
         function getExtraObject(record) {
-            return record && typeof record.extra === 'object' && record.extra ? record.extra : {};
+            return getIbkrExtraObject(record);
         }
 
         function getComputedTimeLabel(record) {
-            const extra = getExtraObject(record);
-            return extra.computed_at_us || extra.computed_at_cn || record?.updated || record?.created || '--';
+            return getIbkrComputedTimeLabel(record);
         }
 
         function getRecordBarLabel(record) {
-            if (!record) return '--';
-            return record.bar_time_ms ? formatBarTimeMsToET(record.bar_time_ms) : (record.us_time || '--');
+            return getIbkrRecordBarLabel(record);
         }
 
         function renderEmpty(message) {
@@ -514,190 +467,29 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function deriveNextAuthActionModel(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState, startupState = latestStartupState) {
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
-            const runtimeStarted = getRuntimeStarted(status);
-            const sessionAuthenticated = Boolean(status?.session?.authenticated);
+            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const runtimeStarted = runtimeStatus.started;
+            const sessionAuthenticated = runtimeStatus.authenticated;
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
+            const twoFactorCyclePhase = getIbkrTwoFactorCyclePhase(twoFactor);
             const startup = normalizeStartupUiState(startupState);
             const reason = getEffectiveManualAuthReason(status, twoFactor, startup);
             const reasonLabel = getManualAuthReasonLabel(reason);
             const startupStepLabel = getStartupCurrentStepLabel(startup) || '等待下一步';
-
-            if (runtimeMismatch) {
-                return {
-                    visible: true,
-                    tone: 'error',
-                    badge: '环境错配',
-                    stepLabel: '切换环境',
-                    title: `当前实际运行环境是 ${String(runtimeMismatch.actual || '--').toUpperCase()}`,
-                    copy: runtimeMismatch.message,
-                    meta: ['动作已阻止', '请切到对应环境页面'],
-                    buttonLabel: '刷新状态',
-                    behavior: 'refresh'
-                };
-            }
-
-            if (twoFactor.status === 'waiting_response') {
-                if (twoFactor.reset_recommended) {
-                    return {
-                        visible: true,
-                        tone: 'error',
-                        badge: reasonLabel,
-                        stepLabel: '重开验证',
-                        title: '旧 2FA 轮次已失配',
-                        copy: buildWaitingResponseHelper(twoFactor),
-                        meta: [startupStepLabel, '不要重复发起新一轮'],
-                        buttonLabel: '干净重开 2FA',
-                        behavior: 'action',
-                        actionName: 'panic_reset_2fa'
-                    };
-                }
-                if (canSubmitTwoFactorResponse(twoFactor)) {
-                    return {
-                        visible: true,
-                        tone: 'warn',
-                        badge: reasonLabel,
-                        stepLabel: '提交响应码',
-                        title: '继续当前 2FA 轮次',
-                        copy: '当前已经进入 Challenge/Response。请直接在下方 2FA 控制台提交 Response Code，不要重新发起。',
-                        meta: [startupStepLabel, '继续当前轮次'],
-                        buttonLabel: '定位到响应码输入',
-                        behavior: 'focus_response'
-                    };
-                }
-                return {
-                    visible: true,
-                    tone: 'warn',
-                    badge: reasonLabel,
-                    stepLabel: '等待响应码流程',
-                    title: '当前轮次仍在收口',
-                    copy: buildWaitingResponseHelper(twoFactor),
-                    meta: [startupStepLabel, '不要重新触发'],
-                    buttonLabel: '刷新状态',
-                    behavior: 'refresh'
-                };
-            }
-
-            if (twoFactor.status === 'waiting_confirm') {
-                return {
-                    visible: true,
-                    tone: 'warn',
-                    badge: reasonLabel,
-                    stepLabel: '手机确认',
-                    title: '等待手机确认',
-                    copy: '这一步只看手机通知，不要再发起新一轮。确认完成后回到这里刷新状态。',
-                    meta: [startupStepLabel, '继续当前轮次'],
-                    buttonLabel: '刷新状态',
-                    behavior: 'refresh'
-                };
-            }
-
-            if (twoFactor.status === 'triggered') {
-                return {
-                    visible: true,
-                    tone: 'info',
-                    badge: reasonLabel,
-                    stepLabel: '等待验证模式',
-                    title: '当前轮次已手动触发',
-                    copy: '飞书按钮已经点下。现在等待手机确认，或稍后切到响应码模式。',
-                    meta: [startupStepLabel, '不要重复触发'],
-                    buttonLabel: '刷新状态',
-                    behavior: 'refresh'
-                };
-            }
-
-            if (twoFactor.status === 'requested') {
-                return {
-                    visible: true,
-                    tone: reason === 'weekly_reauth' ? 'warn' : 'info',
-                    badge: reasonLabel,
-                    stepLabel: '去飞书开始',
-                    title: reason === 'weekly_reauth' ? '开始本周重登验证' : '去飞书开始 2FA 验证',
-                    copy: startup.operator_action || '这一步还没有真正开始验证。请去飞书点击“开始 2FA 验证”，点完后回到这里刷新状态。',
-                    meta: [startupStepLabel, startup.current_blocker || '当前停在待手动触发'],
-                    buttonLabel: '刷新 / 复用 2FA 卡片',
-                    behavior: 'action',
-                    actionName: 'reauth',
-                    requestTarget: {
-                        path: '/api/custom/ibkr/2fa/request',
-                        body: {
-                            environment: currentEnvironment,
-                            reason: reason === 'weekly_reauth' ? 'weekly_reauth' : 'manual_start',
-                            source: 'runtime_page_banner',
-                            force_reset: true,
-                            message: reason === 'weekly_reauth'
-                                ? '本周重登仍等待你在飞书手动点开始验证。'
-                                : '启动验证仍等待你在飞书手动点开始验证。'
-                        }
-                    }
-                };
-            }
-
-            if (!sessionAuthenticated && !runtimeStarted && !startup.active) {
-                return {
-                    visible: true,
-                    tone: 'info',
-                    badge: '顶部主入口',
-                    stepLabel: '先拉起服务',
-                    title: '先启动 IBKR 服务',
-                    copy: '这一步只拉起服务，不会自动触发手机 Push。启动后顶部入口会切到飞书手动验证。',
-                    meta: ['启动后再进入手动验证', '不会自动往下推进'],
-                    buttonLabel: '启动 IBKR 服务',
-                    behavior: 'action',
-                    actionName: 'start',
-                    requestTarget: {
-                        path: '/api/custom/ibkr/start',
-                        body: {
-                            environment: currentEnvironment,
-                            trigger_login: false,
-                            reason: 'manual_start',
-                            source: 'runtime_page_banner'
-                        }
-                    }
-                };
-            }
-
-            if (!sessionAuthenticated && (startup.active || reason === 'weekly_reauth' || reason === 'manual_start' || reason === 'panic_reset_2fa')) {
-                return {
-                    visible: true,
-                    tone: reason === 'weekly_reauth' ? 'warn' : 'info',
-                    badge: reasonLabel,
-                    stepLabel: startupStepLabel,
-                    title: reason === 'weekly_reauth' ? '开始本周重登验证' : '继续手动验证',
-                    copy: startup.operator_action || startup.current_blocker || '请先把同一张 2FA 卡片刷到飞书，然后去飞书点击开始验证。',
-                    meta: [startup.summary || '按顶部入口一步一步推进', '只有人工确认后才继续'],
-                    buttonLabel: '请求 / 刷新 2FA 卡片',
-                    behavior: 'action',
-                    actionName: 'reauth',
-                    requestTarget: {
-                        path: '/api/custom/ibkr/2fa/request',
-                        body: {
-                            environment: currentEnvironment,
-                            reason: reason === 'weekly_reauth' ? 'weekly_reauth' : 'manual_start',
-                            source: 'runtime_page_banner',
-                            force_reset: true,
-                            message: reason === 'weekly_reauth'
-                                ? '本周重登等待你在飞书手动点开始验证。'
-                                : '启动验证等待你在飞书手动点开始验证。'
-                        }
-                    }
-                };
-            }
-
-            if (sessionAuthenticated && startup.active && startup.status === 'active') {
-                return {
-                    visible: true,
-                    tone: 'ok',
-                    badge: '启动推进中',
-                    stepLabel: startupStepLabel,
-                    title: 'Runtime 正在继续恢复',
-                    copy: startup.current_blocker || startup.summary || '当前不需要额外手动操作，等待 Runtime 完成剩余恢复与检查。',
-                    meta: [startup.operator_action || '等待系统继续推进'],
-                    buttonLabel: '刷新状态',
-                    behavior: 'refresh'
-                };
-            }
-
-            return { visible: false };
+            const model = getIbkrRuntimeAuthGuidanceModel({
+                runtimeMismatch,
+                sessionAuthenticated,
+                runtimeStarted,
+                startup,
+                reason,
+                reasonLabel,
+                startupStepLabel,
+                twoFactorCyclePhase,
+                twoFactorState: twoFactor,
+                environment: currentEnvironment,
+                source: 'runtime_page_banner'
+            });
+            return model;
         }
 
         function renderAuthActionBanner(model = latestNextActionModel) {
@@ -735,23 +527,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             `;
         }
 
-        function normalizeTwoFactorStatus(value) {
-            const text = String(value || '').trim().toLowerCase();
-            if (!text) return 'requested';
-            if (['pending', 'waiting_mobile_approval', 'mobile_approval', 'awaiting_mobile_approval'].includes(text)) return 'waiting_confirm';
-            if (['complete', 'completed', 'authenticated'].includes(text)) return 'success';
-            if (text === 'error') return 'failed';
-            return text;
-        }
-
-        function getTwoFactorStatusKey(twoFactorState = latestTwoFactorState) {
-            return normalizeTwoFactorStatus(twoFactorState?.status || '');
-        }
-
-        function isTwoFactorCycleActive(twoFactorState = latestTwoFactorState) {
-            return ['triggered', 'waiting_confirm', 'waiting_response'].includes(getTwoFactorStatusKey(twoFactorState));
-        }
-
         function parseShiftedTimeMs(value, offsetMinutes) {
             const text = String(value || '').trim();
             if (!text) return 0;
@@ -767,7 +542,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function deriveTwoFactorUiState(twoFactorState = latestTwoFactorState, options = {}) {
             const nowMs = Number(options.now_ms || Date.now()) || Date.now();
             const state = { ...(twoFactorState || {}) };
-            const status = normalizeTwoFactorStatus(state.status || '');
+            const status = normalizeIbkrTwoFactorStatus(state.status || '');
             const responseStatus = String(state.response_status || '').trim().toLowerCase();
             const challengeCode = String(state.challenge_code || '').trim();
             const feedback = String(state.challenge_feedback || '').trim();
@@ -827,87 +602,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return state;
         }
 
-        function buildWaitingResponseHelper(twoFactorState = latestTwoFactorState) {
-            const state = deriveTwoFactorUiState(twoFactorState);
-            const feedback = state.challenge_feedback || 'Authentication failed';
-            if (state.reset_recommended) {
-                if (state.response_status === 'gateway_rejected') {
-                    return 'Gateway 已拒绝当前 Response Code，且旧轮次长时间未恢复。当前旧 2FA / Session 状态很可能已失配，请直接执行“放弃当前轮次并干净重开”。';
-                }
-                return 'Response Code 已提交较久但 Gateway 仍未恢复认证。当前旧 2FA / Session 状态很可能已失配，请直接执行“放弃当前轮次并干净重开”。';
-            }
-            if (state.response_status === 'received') {
-                return 'Runtime 已收到 Response Code，正在等待 compute 浏览器提交流程。此时不要重复输入，也不要触发新一轮。';
-            }
-            if (state.response_status === 'submitted') {
-                return '浏览器已提交 Response Code，正在等待 Gateway 恢复认证。此时不要重复提交旧 Response，也不要触发新一轮。';
-            }
-            if (state.response_status === 'gateway_rejected') {
-                return `Gateway 已拒绝当前 Response Code（${feedback}）。请核对当前 Challenge，用 IBKR App 重新生成后在这里重提。`;
-            }
-            if (state.response_status === 'submit_failed') {
-                return '浏览器提交动作失败。请在这里重新提交当前 Challenge 的 Response Code，不要重新触发。';
-            }
-            return '当前已切到 Challenge/Response。仅在手机上点确认不会完成验证；请在 IBKR App 的 Two-Factor Authentication 中输入当前 Challenge，拿到 Response Code 后回到这里提交。不要重复触发新一轮。';
-        }
-
-        function canSubmitTwoFactorResponse(twoFactorState = latestTwoFactorState) {
-            const state = deriveTwoFactorUiState(twoFactorState);
-            return (
-                state.status === 'waiting_response'
-                && !!String(state.challenge_code || '').trim()
-                && !state.reset_recommended
-                && ['', 'gateway_rejected', 'submit_failed'].includes(state.response_status)
-            );
-        }
-
-        function shouldShowTwoFactorResetCta(twoFactorState = latestTwoFactorState) {
-            const state = deriveTwoFactorUiState(twoFactorState);
-            return state.status === 'waiting_response' && state.reset_recommended;
-        }
-
         function getTwoFactorActionLockReason(action, twoFactorState = latestTwoFactorState) {
             const guarded = new Set(['start', 'reauth', 'reauth_force_new', 'probe']);
             if (!guarded.has(action)) return '';
 
             const state = deriveTwoFactorUiState(twoFactorState);
-            const status = getTwoFactorStatusKey(state);
-            if (!isTwoFactorCycleActive(state)) return '';
-
-            if (action === 'probe') {
-                if (state.reset_recommended) {
-                    return '当前旧 2FA / Session 状态很可能已失配，先执行“放弃当前轮次并干净重开”；此时再做静默探测只会增加判断噪音。';
-                }
-                return '当前已有一轮 2FA 正在进行，先等这一轮收口；此时再做静默探测只会增加判断噪音。';
-            }
-            if (action === 'reauth_force_new') {
-                if (state.reset_recommended) {
-                    return '当前旧 2FA / Session 状态很可能已失配。如要放弃当前轮次，请只使用“放弃当前轮次并干净重开”。';
-                }
-                return '当前已有一轮 2FA 正在进行。如要放弃当前轮次，请只使用“放弃当前轮次并干净重开”。';
-            }
-            if (status === 'waiting_response') {
-                if (state.reset_recommended) {
-                    return '当前旧 2FA / Session 状态很可能已失配，请直接执行“放弃当前轮次并干净重开”，不要重新触发。';
-                }
-                if (state.response_status === 'submitted') {
-                    return '当前 Response Code 已提交，正在等待 Gateway 恢复认证；不要重新触发。';
-                }
-                if (state.response_status === 'gateway_rejected') {
-                    return 'Gateway 已拒绝当前 Response Code，请先在本页按当前 Challenge 重试，不要重新触发。';
-                }
-                if (state.response_status === 'submit_failed') {
-                    return '浏览器提交 Response Code 失败，请先在本页重试，不要重新触发。';
-                }
-                if (state.response_status === 'received') {
-                    return 'Runtime 已收到 Response Code，正在等待浏览器提交流程；不要重新触发。';
-                }
-                return '当前已进入 Challenge/Response，请继续当前轮次并提交 Response Code，不要重复触发。';
-            }
-            if (status === 'waiting_confirm') {
-                return '当前正在等待手机确认，请继续当前轮次，不要重复触发。';
-            }
-            return '当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。';
+            if (!isIbkrTwoFactorCycleActive(state)) return '';
+            return getIbkrTwoFactorCycleActionLockReason(action, getIbkrTwoFactorCyclePhase(state));
         }
 
         function syncActionLocks() {
@@ -934,34 +635,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (action === 'reauth' || action === 'reauth_force_new') {
                 if (payload.message) return payload.message;
                 const actionState = deriveTwoFactorUiState(payload?.state || latestTwoFactorState);
-                const actionStatus = getTwoFactorStatusKey(actionState);
+                const cyclePhase = getIbkrTwoFactorCyclePhase(actionState);
                 if (payload?.state?.runtime_authenticated && payload?.state?.gateway_reachable && Number(payload?.state?.gateway_status_code || 0) !== 401) {
                     return '当前 Gateway 会话已认证，无需再次确认。';
                 }
-                if (actionStatus === 'waiting_response') {
-                    if (actionState.reset_recommended) {
-                        return '当前旧 2FA / Session 状态很可能已失配，请打开 Runtime 页面执行“放弃当前轮次并干净重开”，不要重复触发。';
-                    }
-                    if (actionState.response_status === 'submitted') {
-                        return '当前 Response Code 已提交，正在等待 Gateway 恢复认证；请继续当前轮次，不要重复触发。';
-                    }
-                    if (actionState.response_status === 'gateway_rejected') {
-                        return 'Gateway 已拒绝当前 Response Code，请打开 Runtime 页面核对当前 Challenge 后重新提交，不要重复触发。';
-                    }
-                    if (actionState.response_status === 'submit_failed') {
-                        return '浏览器提交 Response Code 失败，请打开 Runtime 页面重试当前 Challenge，不要重复触发。';
-                    }
-                    if (actionState.response_status === 'received') {
-                        return 'Runtime 已收到 Response Code，正在等待浏览器提交流程；请继续当前轮次，不要重复触发。';
-                    }
-                    return '当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。';
-                }
-                if (isTwoFactorCycleActive(actionState)) {
-                    return '当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。';
-                }
-                return action === 'reauth_force_new'
-                    ? '已开始新一轮 2FA，请立即查看手机通知或飞书卡片。'
-                    : '已请求 2FA 卡片，请在飞书点击按钮触发验证。';
+                return getIbkrTwoFactorCycleActionSummary(action, cyclePhase);
             }
             if (action === 'gateway_start' || action === 'gateway_stop' || action === 'gateway_restart') {
                 if (payload.message) return payload.message;
@@ -1081,10 +759,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const realtimeState = deriveRealtimeComputeState(status);
             const warmup = normalizeWarmup(status);
             const warmupElapsedS = getWarmupElapsedSeconds(warmup);
+            const warmupSummaryText = getIbkrWarmupSummaryText(warmup, {
+                elapsedText: warmupElapsedS != null ? formatDurationCompact(warmupElapsedS) : ''
+            });
             const canonical = status?.canonical_5m || {};
-            const latestBarExtra = getExtraObject(latestBar);
-            const latestIndicatorExtra = getExtraObject(latestIndicator);
-            const latestSignalExtra = getExtraObject(latestSignal);
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const startup = normalizeStartupUiState(startupState);
             const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
@@ -1096,146 +774,47 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const twoFactorStatus = String(twoFactor?.status || '').trim().toLowerCase();
             const challengeCode = String(twoFactor?.challenge_code || '').trim();
             const recoveryPhase = String(twoFactor?.recovery_phase || '').trim().toLowerCase();
+            const responsePhase = getIbkrTwoFactorResponsePhase(twoFactor);
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactor);
+            const blocker = getIbkrRuntimePrimaryBlockerCardModel({
+                runtimeMismatch,
+                startup,
+                sessionAuthenticated,
+                gatewayActive,
+                runtimeStarted,
+                responsePhase,
+                twoFactorStatus,
+                challengeCode,
+                twoFactorState: twoFactor,
+                recoveryPhase,
+                warmup,
+                dataHealth,
+                canonical,
+                realtimeState,
+                readyEngines,
+                totalEngines,
+            });
 
-            const blocker = { tone: 'info', kicker: 'Primary Blocker', title: '运行链路可控', copy: '当前没有硬阻塞，继续观察 bars → indicators → signals 是否连续刷新。' };
-            if (runtimeMismatch) {
-                blocker.tone = 'error';
-                blocker.title = `Runtime 环境错配 · ${getEnvironmentLabel(runtimeMismatch.actual)}`;
-                blocker.copy = runtimeMismatch.message;
-            } else if (!sessionAuthenticated && startup.active && startup.current_step === 'manual_trigger') {
-                blocker.tone = startup.reason === 'weekly_reauth' ? 'warn' : 'info';
-                blocker.title = startup.reason === 'weekly_reauth' ? '本周重登等待手动触发' : '启动流程等待手动触发';
-                blocker.copy = startup.operator_action || '现在只需要去飞书点击“开始 2FA 验证”，系统不会自动往下继续。';
-            } else if (!sessionAuthenticated && startup.active && startup.current_step === 'manual_confirm') {
-                blocker.tone = 'warn';
-                blocker.title = '等待当前 2FA 轮次完成';
-                blocker.copy = startup.current_blocker || '请继续当前轮次的手机确认或响应码提交流程，不要重复触发。';
-            } else if (recoveryPhase === 'panic_resetting') {
-                blocker.tone = 'warn';
-                blocker.title = '正在全量清空旧 2FA 状态';
-                blocker.copy = '系统正在停止旧 runtime、清理 cookie 并准备拉起一轮新的干净验证；这期间旧 challenge / response 不再可信。';
-            } else if (recoveryPhase === 'manual_takeover') {
-                blocker.tone = 'warn';
-                blocker.title = '人工接管中';
-                blocker.copy = '当前视为你正在真实账户里确认挂单；系统不会把这轮直接判死，但后台仍会持续探测认证是否已恢复。';
-            } else if (!gatewayActive) {
-                blocker.tone = 'error';
-                blocker.title = 'Gateway 当前离线';
-                blocker.copy = '先恢复网关或重启 IBKR 服务，否则 2FA、bars、订单和信号链路都会停住。';
-            } else if (!runtimeStarted) {
-                blocker.tone = 'warn';
-                blocker.title = 'Runtime 当前未启动';
-                blocker.copy = '这次更像是 runtime service 没有拉起，不是单纯 session pending；重启 compute 后如果没有自动恢复，需要重新触发一次 IBKR start / 2FA。';
-            } else if (twoFactorStatus === 'waiting_response') {
-                if (twoFactor.reset_recommended) {
-                    blocker.tone = 'error';
-                    blocker.title = '旧 2FA / Session 状态已失配';
-                    blocker.copy = '当前旧 Challenge / Response 状态已经不可信。不要继续围绕旧轮次重试，请直接执行“放弃当前轮次并干净重开”。';
-                } else if (twoFactor.response_status === 'gateway_rejected') {
-                    blocker.tone = 'error';
-                    blocker.title = `Gateway 已拒绝当前 Response${challengeCode ? ` · ${challengeCode}` : ''}`;
-                    blocker.copy = buildWaitingResponseHelper(twoFactor);
-                } else if (twoFactor.response_status === 'submit_failed') {
-                    blocker.tone = 'error';
-                    blocker.title = `Response Code 浏览器提交失败${challengeCode ? ` · ${challengeCode}` : ''}`;
-                    blocker.copy = buildWaitingResponseHelper(twoFactor);
-                } else if (twoFactor.response_status === 'submitted') {
-                    blocker.tone = 'warn';
-                    blocker.title = `Response Code 已提交${challengeCode ? ` · ${challengeCode}` : ''}`;
-                    blocker.copy = buildWaitingResponseHelper(twoFactor);
-                } else if (twoFactor.response_status === 'received') {
-                    blocker.tone = 'warn';
-                    blocker.title = `Response Code 已收到${challengeCode ? ` · ${challengeCode}` : ''}`;
-                    blocker.copy = buildWaitingResponseHelper(twoFactor);
-                } else {
-                    blocker.tone = 'warn';
-                    blocker.title = `等待 Response Code${challengeCode ? ` · ${challengeCode}` : ''}`;
-                    blocker.copy = buildWaitingResponseHelper(twoFactor);
-                }
-            } else if (!sessionAuthenticated) {
-                blocker.tone = twoFactorStatus === 'waiting_confirm' ? 'warn' : 'error';
-                blocker.title = twoFactorStatus === 'waiting_confirm' ? '等待手机确认 2FA' : 'Session 仍未认证';
-                blocker.copy = twoFactorStatus === 'waiting_confirm'
-                    ? '浏览器已经停在手机确认阶段，确认完成后会自动继续；请继续当前轮次，不要重复点重新验证 / 开始新一轮。'
-                    : '当前还没有拿到可用 Session，新的 bars / backfill / 订单链路都不会继续刷新。';
-            } else if (warmup.phase === 'failed') {
-                blocker.tone = 'error';
-                blocker.title = 'Warmup 执行失败';
-                blocker.copy = warmup.last_error || '启动后的预热链路失败，交易闸门保持关闭，需要检查回填与 compute 日志。';
-            } else if (warmup.phase === 'pending' || warmup.phase === 'running') {
-                blocker.tone = 'warn';
-                blocker.title = `Startup Warmup ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`;
-                blocker.copy = `正在为 ${warmup.required_interval} 建立交易预热，blocking ${warmup.blocking_pending_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。`;
-            } else if (warmup.trade_symbols_total > 0 && !warmup.gate_open) {
-                blocker.tone = 'warn';
-                blocker.title = `Trading Gate Closed · ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`;
-                blocker.copy = `目标池还没有全部预热完成，pending: ${(warmup.blocking_pending_symbols || []).slice(0, 4).join(', ') || 'n/a'}。`;
-            } else if (dataHealth.last_bar_age_min != null && dataHealth.last_bar_age_min > 30) {
-                blocker.tone = 'error';
-                blocker.title = `bars 停在 ${dataHealth.last_bar_label}`;
-                blocker.copy = `最新 live bar 已经落后 ${dataHealth.last_bar_age_min} 分钟，需要优先检查订阅、写入器和行情桥。`;
-            } else if ((Number(canonical.pending_symbols_total || 0) || 0) > 0 || (Number(canonical.lag_s || 0) || 0) > 0) {
-                blocker.tone = 'warn';
-                blocker.title = `Canonical 5m 仍在补齐 · ${String(canonical.last_completed_bucket_us || '--')}`;
-                blocker.copy = `due ${String(canonical.last_due_bucket_us || '--')} · completed ${String(canonical.last_completed_bucket_us || '--')} · pending ${Number(canonical.pending_symbols_total || 0) || 0}。`;
-            } else if (realtimeState.phase === 'stalled') {
-                blocker.tone = 'error';
-                blocker.title = realtimeState.title;
-                blocker.copy = `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，但 realtime compute 没有完成：${realtimeState.summary}。`;
-            } else if (realtimeState.phase === 'running') {
-                blocker.tone = realtimeState.tone;
-                blocker.title = realtimeState.title;
-                blocker.copy = `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，指标仍在追赶：${realtimeState.summary}。`;
-            } else if (realtimeState.phase === 'queued') {
-                blocker.tone = 'warn';
-                blocker.title = realtimeState.title;
-                blocker.copy = `canonical bar 已写入，但 compute 还在排队：${realtimeState.summary}。`;
-            } else if (totalEngines && readyEngines < totalEngines) {
-                blocker.tone = 'warn';
-                blocker.title = `Warmup 未完成 ${readyEngines}/${totalEngines}`;
-                blocker.copy = '指标链路还在预热，ready engines 没起来前，signals 偏少通常是正常现象。';
-            }
+            const dataChain = getIbkrRuntimeDataChainCardModel({
+                latestBar,
+                latestIndicator,
+                latestSignal,
+                dataHealth,
+                realtimeMetrics,
+                realtimeState,
+                canonical,
+                warmupSummaryText,
+                inflightAgeS: status?.realtime_compute?.inflight_age_s,
+            });
 
-            const dataChain = {
-                tone: dataHealth.last_bar_age_min != null && dataHealth.last_bar_age_min > 30 ? 'warn' : 'info',
-                kicker: 'Data Chain',
-                title: latestBar
-                    ? `${latestBar.symbol || '--'} ${latestBar.interval || '--'} · ${dataHealth.last_bar_age_min || 0}m`
-                    : '当前没有 live bars',
-                copy: [
-                    latestBar ? `bar ${getRecordBarLabel(latestBar)}` : 'bars missing',
-                    latestBar ? `write ${String(getComputedTimeLabel(latestBar)).slice(0, 19)}` : 'write --',
-                    realtimeMetrics.last_bar_close ? `close ${formatTimeLabel(realtimeMetrics.last_bar_close)}` : 'close --',
-                    realtimeMetrics.close_delay_s != null ? `close delay ${formatSecondsLabel(realtimeMetrics.close_delay_s)}` : '',
-                    realtimeMetrics.compute_after_close_s != null ? `compute ${formatSecondsLabel(realtimeMetrics.compute_after_close_s)}` : '',
-                    canonical.last_completed_bucket_us ? `canonical ${String(canonical.last_completed_bucket_us)}` : '',
-                    realtimeState.phase !== 'idle' ? `compute ${realtimeState.phase} ${realtimeState.phase === 'running' ? formatSecondsLabel(status?.realtime_compute?.inflight_age_s) : ''}`.trim() : 'compute ready',
-                    latestBar && !latestBarExtra.computed_at_us && !latestBarExtra.computed_at_cn ? 'bar extra 缺失' : '',
-                    `warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}${warmupElapsedS != null ? ` · ${formatDurationCompact(warmupElapsedS)}` : ''}`,
-                    latestIndicator ? `indicator ${latestIndicator.symbol || '--'} ${latestIndicator.interval || '--'} · ${String(getComputedTimeLabel(latestIndicator)).slice(0, 19)}` : 'indicator missing',
-                    latestSignal ? `signal ${latestSignal.symbol || '--'} ${String(latestSignal.direction || '--').toUpperCase()} · ${latestSignal.status || '--'}` : 'signal 暂无',
-                ].filter(Boolean).join(' · ')
-            };
-
-            const shortcuts = {
-                tone: 'ok',
-                kicker: 'Quick View',
-                title: '把排查入口放在一层',
-                copy: [
-                    `bars ${formatCompactNumber(summary?.today?.ibkr_bars || 0)}`,
-                    `indicators ${formatCompactNumber(summary?.today?.ibkr_indicators || 0)}`,
-                    `signals ${formatCompactNumber(summary?.today?.ibkr_signals || 0)}`,
-                    latestIndicatorExtra.computed_at_us ? `latest calc ${String(getComputedTimeLabel(latestIndicator)).slice(0, 19)}` : '',
-                    latestSignalExtra.computed_at_us ? `signal calc ${String(getComputedTimeLabel(latestSignal)).slice(0, 19)}` : '',
-                ].filter(Boolean).join(' · '),
-                links: [
-                    { path: '/ibkr_signals.html', label: '看信号' },
-                    { path: '/ibkr_indicators.html', label: '看指标' },
-                    { path: '/orders.html', label: '看订单' },
-                    { path: '/ibkr_config.html', label: '改配置', options: { allowGlobal: true, environment: currentEnvironment } },
-                ]
-            };
+            const shortcuts = getIbkrRuntimeQuickViewCardModel({
+                barsCountLabel: formatCompactNumber(summary?.today?.ibkr_bars || 0),
+                indicatorsCountLabel: formatCompactNumber(summary?.today?.ibkr_indicators || 0),
+                signalsCountLabel: formatCompactNumber(summary?.today?.ibkr_signals || 0),
+                latestIndicator,
+                latestSignal,
+                environment: currentEnvironment,
+            });
 
             const cards = [blocker, dataChain, shortcuts];
             document.getElementById('opsGrid').innerHTML = cards.map((card) => `
@@ -1259,6 +838,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const dataHealth = deriveDataHealth(latestBar);
             const warmup = normalizeWarmup(status);
             const startup = normalizeStartupUiState(startupState);
+            const warmupSummaryText = getIbkrWarmupSummaryText(warmup);
             const dataStatus = dataHealth.status || 'no_data';
             const computeStatus = computeHealth.status || 'unknown';
             const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
@@ -1287,20 +867,25 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 || summary?.config?.ibkr_compute_public_url
                 || 'https://qc.lzw-glory.top';
             document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase}`;
+            const effectiveReasonLabel = getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactorState, startup));
             const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
             const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
-            const runtimeStarted = runtimeStatus.started;
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
-            const keepCurrentCycleHint = isTwoFactorCycleActive(twoFactorState) ? ' · keep current cycle' : '';
-            const authSummary = sessionAuthenticated
-                ? (runtimeMismatch
-                    ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
-                    : `session authenticated · ${startup.active ? `${getStartupCurrentStepLabel(startup) || 'startup active'}` : `warmup ${warmup.gate_open ? 'gate open' : `${warmup.phase || 'idle'} ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`}`}`)
-                : !runtimeStarted
-                    ? 'runtime stopped · waiting manual start'
-                : (runtimeMismatch
-                    ? `runtime mismatch · actual ${String(runtimeMismatch.actual || '--').toUpperCase()}`
-                    : `${getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactorState, startup))} · 2FA ${twoFactorStatus}${twoFactorMode ? ` · ${twoFactorMode}` : ''}${recoveryPhase ? ` · ${recoveryPhase}` : ''}${twoFactorState?.last_request_at ? ` · requested ${formatTimeLabel(twoFactorState.last_request_at)}` : ''}${keepCurrentCycleHint}`);
+            const keepCurrentCycle = isIbkrTwoFactorCycleActive(twoFactorState);
+            const lastRequestAtLabel = twoFactorState?.last_request_at ? formatTimeLabel(twoFactorState.last_request_at) : '';
+            const authSummary = getIbkrRuntimeHeroAuthSummaryText({
+                runtimeMismatch,
+                runtimeStatus,
+                startupActive: startup.active,
+                startupStepLabel: getStartupCurrentStepLabel(startup) || 'startup active',
+                warmupSummaryText,
+                effectiveReasonLabel,
+                twoFactorStatus,
+                twoFactorMode,
+                recoveryPhase,
+                lastRequestAtLabel: lastRequestAtLabel && lastRequestAtLabel !== '--' ? lastRequestAtLabel : '',
+                keepCurrentCycle
+            });
             document.getElementById('authInfo').textContent = startup.startup_label
                 ? `${authSummary} · ${startup.startup_label}`
                 : authSummary;
@@ -1445,61 +1030,26 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function renderTwoFactorPanel(twoFactorState) {
             latestTwoFactorState = deriveTwoFactorUiState(twoFactorState || {});
             const state = latestTwoFactorState;
-            const status = getTwoFactorStatusKey(state) || 'requested';
-            const mode = String(state?.mode || '').trim();
-            const challengeCode = String(state?.challenge_code || '').trim();
-            const recoveryPhase = String(state?.recovery_phase || '').trim().toLowerCase();
-            const responseStatus = String(state?.response_status || '').trim().toLowerCase();
-            const previousCycle = state?.previous_cycle && typeof state.previous_cycle === 'object'
-                ? state.previous_cycle
-                : null;
-            const canSubmit = canSubmitTwoFactorResponse(state);
-            const showResetCta = shouldShowTwoFactorResetCta(state);
             const runtimeMismatch = getRuntimeEnvironmentMismatch(latestRuntimeStatus, state);
-            let helper = state?.last_result || '当前没有等待中的 Challenge。';
-            if (runtimeMismatch) {
-                helper = runtimeMismatch.message;
-            } else if (recoveryPhase === 'panic_resetting') {
-                helper = '系统正在全量清空旧 2FA / Session 状态，并准备拉起一轮新的干净验证。当前旧 Challenge / Response 不应再继续使用。';
-            } else if (state?.manual_takeover_active) {
-                helper = '当前处于人工接管中。你可以继续去真实账户里确认挂单；系统不会直接把当前轮次判死，但后台仍会持续静默探测会话是否已恢复。';
-            } else if (status === 'success') {
-                helper = state?.message || '当前 Gateway 会话已认证，无需提交 Response Code。';
-            } else if (status === 'requested') {
-                helper = '这一步只是把 2FA 卡片发到或刷新到飞书，还没有真正开始验证。请直接用页面顶部主入口或去飞书点击“开始 2FA 验证”。';
-            } else if (status === 'triggered') {
-                helper = state?.last_result || '登录流程已经触发，等待 IBKR 返回手机确认或 Challenge/Response。当前已有 active 轮次，请不要重复触发。';
-            } else if (status === 'waiting_response') {
-                helper = buildWaitingResponseHelper(state);
-            } else if (status === 'waiting_confirm') {
-                helper = '当前是手机推送模式，只需要点手机通知确认；如果页面后续切成 Challenge/Response，手机确认将不再够用，这里会出现 Challenge 与响应码输入框。当前已有 active 轮次，请不要重复触发。';
-            }
-
-            if (previousCycle?.superseded_at) {
-                const previousStatus = String(previousCycle.status || 'unknown').trim() || 'unknown';
-                helper = `上一轮 ${previousStatus} 已在 ${formatTimeLabelWithFallback(previousCycle.superseded_at)} 被替换。后续请只跟当前这一轮。 ${helper}`;
-            }
-
-            const panelMeta = [];
-            panelMeta.push(`当前用途 ${state?.reason ? getManualAuthReasonLabel(state.reason) : '--'}`);
-            if (responseStatus) panelMeta.push(`响应状态 ${responseStatus}`);
-            if (state?.challenge_feedback) panelMeta.push(`Gateway反馈 ${state.challenge_feedback}`);
-            if (state?.operator_action) panelMeta.push(`建议动作 ${state.operator_action}`);
-            if (state?.reset_recommended) panelMeta.push('建议干净重开');
+            const panel = getIbkrTwoFactorPanelViewModel({
+                twoFactorState: state,
+                runtimeMismatch,
+                manualAuthReasonLabel: state?.reason ? getManualAuthReasonLabel(state.reason) : '--',
+            });
 
             document.getElementById('twoFactorPanel').innerHTML = `
                 <div class="challenge-shell">
                     <div class="challenge-head">
-                        <span class="mini-tag"><span class="mini-label">STATUS</span><span class="pill ${statusClass(status)}">${escapeHtml(String(state?.status || '--').toUpperCase())}</span></span>
-                        <span class="mini-tag"><span class="mini-label">MODE</span>${escapeHtml(mode || '--')}</span>
-                        <span class="mini-tag"><span class="mini-label">RECOVERY</span>${escapeHtml(String(state?.recovery_phase || '--'))}</span>
-                        <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(String(state?.source || '--'))}</span>
-                        <span class="mini-tag"><span class="mini-label">RESPONSE</span>${escapeHtml(responseStatus || '--')}</span>
+                        <span class="mini-tag"><span class="mini-label">STATUS</span><span class="pill ${statusClass(panel.statusKey)}">${escapeHtml(panel.statusText)}</span></span>
+                        <span class="mini-tag"><span class="mini-label">MODE</span>${escapeHtml(panel.modeText)}</span>
+                        <span class="mini-tag"><span class="mini-label">RECOVERY</span>${escapeHtml(panel.recoveryText)}</span>
+                        <span class="mini-tag"><span class="mini-label">SOURCE</span>${escapeHtml(panel.sourceText)}</span>
+                        <span class="mini-tag"><span class="mini-label">RESPONSE</span>${escapeHtml(panel.responseText)}</span>
                     </div>
-                    <div class="challenge-code ${challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(challengeCode || (runtimeMismatch ? `当前实际 runtime: ${String(runtimeMismatch.actual || '--').toUpperCase()}` : (status === 'success' ? '当前无需 Challenge' : '当前未检测到 Challenge')))}</div>
-                    <div class="challenge-copy">${escapeHtml(helper)}</div>
-                    ${panelMeta.length ? `<div class="challenge-copy">${escapeHtml(panelMeta.join(' · '))}</div>` : ''}
-                    ${canSubmit ? `
+                    <div class="challenge-code ${panel.challengeCode ? '' : 'is-empty'}" id="challengeCodeDisplay">${escapeHtml(panel.challengeDisplayText)}</div>
+                    <div class="challenge-copy">${escapeHtml(panel.helperText)}</div>
+                    ${panel.metaItems.length ? `<div class="challenge-copy">${escapeHtml(panel.metaItems.join(' · '))}</div>` : ''}
+                    ${panel.canSubmit ? `
                         <label class="response-label" for="challengeResponseInput">Response Code</label>
                         <div class="response-row">
                             <input
@@ -1509,11 +1059,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                 inputmode="numeric"
                                 autocomplete="off"
                                 spellcheck="false"
-                                placeholder="${responseStatus === 'gateway_rejected' ? '重新输入 Response Code' : '输入 Response Code'}"
+                                placeholder="${panel.inputPlaceholder}"
                             />
                             <button id="challengeResponseSubmit" class="response-btn" onclick="submitTwoFactorResponse()">提交响应码</button>
                         </div>
-                    ` : showResetCta ? `
+                    ` : panel.showResetCta ? `
                         <label class="response-label">Reset Recommended</label>
                         <div class="response-row">
                             <button class="response-btn response-danger" onclick="handleRuntimeAction('panic_reset_2fa')">放弃当前轮次并干净重开</button>
@@ -1655,12 +1205,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 },
                 {
                     label: 'Latest Bar',
-                    value: latestBar ? `${latestBar.symbol || '--'} ${latestBar.interval || '--'}` : '--',
+                    value: latestBar ? `${latestBar.symbol || '--'} ${formatIbkrIntervalLabel(latestBar.interval)}` : '--',
                     copy: latestBar ? `${getRecordBarLabel(latestBar)} · ${latestBar.session_type || 'session?'}` : '当前环境没有 bar',
                 },
                 {
                     label: 'Latest Indicator',
-                    value: latestIndicator ? `${latestIndicator.symbol || '--'} ${latestIndicator.interval || '--'}` : '--',
+                    value: latestIndicator ? `${latestIndicator.symbol || '--'} ${formatIbkrIntervalLabel(latestIndicator.interval)}` : '--',
                     copy: latestIndicator ? `${getRecordBarLabel(latestIndicator)} · calc ${getComputedTimeLabel(latestIndicator)}` : 'ibkr_indicators 暂无记录',
                 },
                 {
@@ -1693,7 +1243,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (latestBarMs && latestIndicatorMs && latestIndicatorMs < latestBarMs - 5 * 60 * 1000) {
                 notes.push({ tone: 'warn', text: `indicator 落后最新 bar ${Math.round((latestBarMs - latestIndicatorMs) / 60000)} 分钟，建议执行 compute 或检查定时调度。` });
             }
-            if (latestBarMs && latestBar?.interval === '5m') {
+            if (latestBarMs && normalizeIbkrInterval(latestBar?.interval) === '5m') {
                 notes.push({ tone: 'ok', text: '页面展示的是最新已收盘 5m bar，时间标签是 bar 起始时间，不显示正在形成的那根，所以视觉上会慢一根。' });
             }
             if (latestBarMs && !latestBarExtra.computed_at_us && !latestBarExtra.computed_at_cn) {
@@ -1801,7 +1351,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
 
             try {
-                const fullStatus = await requestRuntimeJson('/api/custom/ibkr/statusz?full=1');
+                const fullStatus = await requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?full=1', currentEnvironment, { retryAttempts: 3 });
                 if (loadId !== latestRuntimeLoadId) return;
                 renderEngineTable(fullStatus);
             } catch (error) {
@@ -1829,7 +1379,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                 <td class="mono">${item.bar_time_ms ? formatBarTimeMsToET(item.bar_time_ms) : escapeHtml(item.us_time || '--')}</td>
                                 <td class="mono">${escapeHtml(String(getComputedTimeLabel(item)).slice(0, 19))}</td>
                                 <td>${escapeHtml(item.symbol || '--')}</td>
-                                <td>${escapeHtml(item.interval || '--')}</td>
+                                <td>${escapeHtml(formatIbkrIntervalLabel(item.interval))}</td>
                                 <td>${formatMoney(item.close)}</td>
                                 <td>${escapeHtml(getExtraObject(item).source || '--')}</td>
                             </tr>
@@ -1857,7 +1407,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                 <tr>
                                     <td class="mono">${escapeHtml(String(getComputedTimeLabel(item)).slice(0, 19))}</td>
                                     <td>${escapeHtml(item.symbol || '--')}</td>
-                                    <td>${escapeHtml(item.interval || extra.chart_tf || '--')}</td>
+                                    <td>${escapeHtml(formatIbkrIntervalLabel(item.interval || extra.chart_tf))}</td>
                                     <td class="mono">${escapeHtml(getRecordBarLabel(item))}</td>
                                     <td>${close}</td>
                                     <td>${escapeHtml(item.script_tag || extra.script_tag || '--')}</td>
@@ -1954,11 +1504,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         async function loadRuntimeData(showToastOnSuccess = false) {
-            if (!initRuntimeAuth()) return;
+            if (!ensureIbkrPageAuth()) return;
             const loadId = ++latestRuntimeLoadId;
             const isInitialLoad = !hasLoadedRuntimeData;
             if (isInitialLoad) {
-                setRuntimeLoading(
+                setIbkrPageLoading(
                     true,
                     '控制台加载中',
                     `正在拉取 ${getEnvironmentLabel(currentEnvironment)} 环境的 runtime、2FA、配置与最近链路数据。`
@@ -1967,13 +1517,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             try {
                 const envFilter = buildEnvironmentFilter();
                 const [health, status, summary, cronResp, twoFactorResp, startupResp, runtimeConfigResp, barsResp, indicatorsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
-                    requestRuntimeJson('/api/custom/ibkr/healthz'),
-                    requestRuntimeJson('/api/custom/ibkr/statusz?lite=1'),
-                    requestRuntimeJson('/api/custom/system/summaryz?lite=1'),
-                    requestRuntimeJson('/api/custom/system/cronz').catch(() => ({ items: [] })),
-                    requestRuntimeJson('/api/custom/ibkr/2fa/status'),
-                    requestRuntimeJson('/api/custom/ibkr/startup/status').catch(() => ({ state: {} })),
-                    requestRuntimeJson('/api/custom/ibkr/runtime/config'),
+                    requestIbkrEnvironmentJson('/api/custom/ibkr/healthz', currentEnvironment, { retryAttempts: 3 }),
+                    requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?lite=1', currentEnvironment, { retryAttempts: 3 }),
+                    requestIbkrEnvironmentJson('/api/custom/system/summaryz?lite=1', currentEnvironment, { retryAttempts: 3 }),
+                    requestIbkrEnvironmentJson('/api/custom/system/cronz', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ items: [] })),
+                    requestIbkrEnvironmentJson('/api/custom/ibkr/2fa/status', currentEnvironment, { retryAttempts: 3 }),
+                    requestIbkrEnvironmentJson('/api/custom/ibkr/startup/status', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ state: {} })),
+                    requestIbkrEnvironmentJson('/api/custom/ibkr/runtime/config', currentEnvironment, { retryAttempts: 3 }),
                     apiFetch('ibkr_bars', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
                     apiFetch('ibkr_indicators', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
                     apiFetch('ibkr_signals', { filter: envFilter, sort: '-created', perPage: 8 }),
@@ -2028,13 +1578,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             } finally {
                 if (isInitialLoad) {
                     hasLoadedRuntimeData = true;
-                    setRuntimeLoading(false);
+                    setIbkrPageLoading(false);
                 }
             }
         }
 
         async function submitTwoFactorResponse() {
-            if (!initRuntimeAuth()) return;
+            if (!ensureIbkrPageAuth()) return;
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch) {
                 document.getElementById('lastAction').textContent = runtimeMismatch.message;
@@ -2042,6 +1592,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return;
             }
             const twoFactorState = deriveTwoFactorUiState(latestTwoFactorState);
+            const responsePhase = getIbkrTwoFactorResponsePhase(twoFactorState);
             const input = document.getElementById('challengeResponseInput');
             const button = document.getElementById('challengeResponseSubmit');
             const responseCode = normalizeCode(input?.value || '');
@@ -2051,14 +1602,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 showToast('当前没有可提交的 Challenge');
                 return;
             }
-            if (twoFactorState.reset_recommended) {
+            if (responsePhase.showResetCta) {
                 const message = '当前旧 2FA / Session 状态很可能已失配，请执行“放弃当前轮次并干净重开”。';
                 document.getElementById('lastAction').textContent = message;
                 showToast(message);
                 return;
             }
-            if (!canSubmitTwoFactorResponse(twoFactorState)) {
-                const message = buildWaitingResponseHelper(twoFactorState);
+            if (!responsePhase.canSubmit) {
+                const message = getIbkrTwoFactorWaitingResponseHelperText(twoFactorState);
                 document.getElementById('lastAction').textContent = message;
                 showToast(message);
                 return;
@@ -2071,14 +1622,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
             if (button) button.disabled = true;
             try {
-                const payload = await requestRuntimeJson('/api/custom/ibkr/2fa/respond', {
+                const payload = await requestIbkrEnvironmentJson('/api/custom/ibkr/2fa/respond', currentEnvironment, {
                     method: 'POST',
                     body: {
                         environment: currentEnvironment,
                         response_code: responseCode,
                         challenge_code: challengeCode,
                         source: 'runtime_page'
-                    }
+                    },
+                    retryAttempts: 3
                 });
                 if (input) input.value = '';
                 document.getElementById('lastAction').textContent = `最近动作：已提交 Challenge Response (${payload.status || 'ok'})`;
@@ -2209,7 +1761,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             setActionState(true);
             document.getElementById('lastAction').textContent = `执行中：${action} ...`;
             try {
-                const payload = await requestRuntimeJson(target.path, { method: 'POST', body: target.body });
+                const payload = await requestIbkrEnvironmentJson(target.path, currentEnvironment, {
+                    method: 'POST',
+                    body: target.body,
+                    retryAttempts: 3
+                });
                 const message = summarizeAction(action, payload);
                 document.getElementById('lastAction').textContent = `最近动作：${message}`;
                 showToast(message);
@@ -2294,7 +1850,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (action === 'panic_reset_2fa' && !window.confirm('确认执行“放弃当前轮次并干净重开”？这会终止当前 2FA、清空旧 Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起新的验证流程。')) {
                 return;
             }
-            if (!initRuntimeAuth()) return;
+            if (!ensureIbkrPageAuth()) return;
             await executeRuntimeAction(action, overrideTarget);
         }
 
@@ -2307,7 +1863,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         };
 
         document.addEventListener('DOMContentLoaded', async () => {
-            if (!initRuntimeAuth()) return;
+            if (!ensureIbkrPageAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 控制台', { description: '控制 / 调度 / 链路观察 / 跳转账户与统计' });
             document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_runtime.html');
