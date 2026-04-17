@@ -21,6 +21,7 @@ class SignalRouter:
         self.config = config
         self.environment = environment
         self._processed_ids = set()
+        self._inflight_ids = set()
         self._last_poll: Optional[float] = None
 
     @property
@@ -38,10 +39,17 @@ class SignalRouter:
         )
 
         signals: List[Dict] = []
+        seen_signal_ids = set()
         for row in rows:
             signal_id = row.get("signal_id", row.get("id", ""))
-            if not signal_id or signal_id in self._processed_ids:
+            if (
+                not signal_id
+                or signal_id in seen_signal_ids
+                or signal_id in self._processed_ids
+                or signal_id in self._inflight_ids
+            ):
                 continue
+            seen_signal_ids.add(signal_id)
 
             source = self._resolve_source(row)
             if source_mode == "tradingview" and source != "tradingview":
@@ -84,16 +92,34 @@ class SignalRouter:
         return "unknown"
 
     def mark_processed(self, signal_id: str):
-        self._processed_ids.add(signal_id)
+        text = str(signal_id or "").strip()
+        if not text:
+            return
+        self._inflight_ids.discard(text)
+        self._processed_ids.add(text)
+
+    def claim_signal(self, signal_id: str) -> bool:
+        text = str(signal_id or "").strip()
+        if not text or text in self._processed_ids or text in self._inflight_ids:
+            return False
+        self._inflight_ids.add(text)
+        return True
+
+    def release_signal(self, signal_id: str):
+        text = str(signal_id or "").strip()
+        if text:
+            self._inflight_ids.discard(text)
 
     def forget_processed(self, signal_ids):
         for signal_id in (signal_ids or []):
             text = str(signal_id or "").strip()
             if text:
                 self._processed_ids.discard(text)
+                self._inflight_ids.discard(text)
 
     def daily_reset(self):
         self._processed_ids.clear()
+        self._inflight_ids.clear()
         logger.info("Signal router daily reset")
 
     def status(self) -> dict:
@@ -101,6 +127,7 @@ class SignalRouter:
             "signal_source": self.signal_source,
             "environment": self.environment,
             "processed_count": len(self._processed_ids),
+            "inflight_count": len(self._inflight_ids),
             "last_poll": datetime.fromtimestamp(self._last_poll, timezone.utc).isoformat()
             if self._last_poll else None,
         }

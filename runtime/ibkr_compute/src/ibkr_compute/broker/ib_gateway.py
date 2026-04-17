@@ -232,6 +232,7 @@ class _IBGatewayApp(EWrapper, EClient):
         self._conid_to_ticker: Dict[int, int] = {}
         self._open_orders: Dict[str, dict] = {}
         self._open_order_objects: Dict[str, tuple[Any, Any]] = {}
+        self._order_errors: Dict[str, dict] = {}
         self._positions: Dict[str, dict] = {}
         self._executions: Dict[str, dict] = {}
         self._account_summary: Dict[str, dict] = {}
@@ -307,6 +308,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 self._ready_event.clear()
                 self._last_disconnect_at = time.time()
                 self._status_code = 0
+                self._order_errors = {}
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
         self._thread = None
@@ -317,6 +319,7 @@ class _IBGatewayApp(EWrapper, EClient):
             self._status_code = 0
             self._ready_event.clear()
             self._last_disconnect_at = time.time()
+            self._order_errors = {}
 
     def nextValidId(self, orderId: int):  # noqa: N802
         with self._state_lock:
@@ -338,6 +341,15 @@ class _IBGatewayApp(EWrapper, EClient):
             self._last_error_message = str(errorString or "")
             if errorCode not in BENIGN_ERROR_CODES:
                 logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, errorCode, errorString)
+                numeric_req_id = int(reqId or 0)
+                if numeric_req_id > 0:
+                    self._order_errors[str(numeric_req_id)] = {
+                        "order_id": str(numeric_req_id),
+                        "code": int(errorCode or 0),
+                        "message": str(errorString or ""),
+                        "advanced_reject_json": str(_advancedOrderRejectJson or ""),
+                        "at": _iso_now(),
+                    }
             if errorCode in {502, 504, 1100, 2110}:
                 self._ready = False
                 self._status_code = 503
@@ -909,6 +921,82 @@ class _IBGatewayApp(EWrapper, EClient):
         contract, order = item
         return copy.deepcopy(contract), copy.deepcopy(order)
 
+    def clear_order_error(self, order_id: str):
+        self._order_errors.pop(str(order_id or "").strip(), None)
+
+    def get_order_error(self, order_id: str) -> dict:
+        return dict(self._order_errors.get(str(order_id or "").strip()) or {})
+
+    def await_order_submission(
+        self,
+        order_id: str,
+        *,
+        timeout: float = 3.0,
+        poll_interval: float = 0.2,
+    ) -> dict:
+        normalized_order_id = str(order_id or "").strip()
+        if not normalized_order_id:
+            return {"ok": False, "error": "missing_order_id"}
+
+        deadline = time.time() + max(0.5, float(timeout or 0.0))
+        request_timeout = max(1, min(3, int(max(1.0, float(timeout or 0.0)))))
+
+        while time.time() < deadline:
+            order_error = self.get_order_error(normalized_order_id)
+            if order_error:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": str(order_error.get("message") or "order_rejected"),
+                    "details": order_error,
+                }
+
+            snapshot = self.get_order_snapshot(normalized_order_id)
+            if snapshot:
+                return {
+                    "ok": True,
+                    "order_id": normalized_order_id,
+                    "source": "snapshot",
+                    "order": snapshot,
+                }
+
+            try:
+                open_orders = self.request_open_orders(timeout=request_timeout)
+            except Exception as exc:
+                logger.debug("await_order_submission reqOpenOrders failed for %s: %s", normalized_order_id, exc)
+                open_orders = []
+            for open_order in open_orders or []:
+                open_order_id = str(
+                    open_order.get("orderId")
+                    or open_order.get("order_id")
+                    or open_order.get("id")
+                    or ""
+                ).strip()
+                if open_order_id == normalized_order_id:
+                    return {
+                        "ok": True,
+                        "order_id": normalized_order_id,
+                        "source": "open_orders",
+                        "order": dict(open_order),
+                    }
+
+            time.sleep(max(0.05, float(poll_interval or 0.2)))
+
+        order_error = self.get_order_error(normalized_order_id)
+        if order_error:
+            return {
+                "ok": False,
+                "order_id": normalized_order_id,
+                "error": str(order_error.get("message") or "order_rejected"),
+                "details": order_error,
+            }
+
+        return {
+            "ok": False,
+            "order_id": normalized_order_id,
+            "error": "order_submission_unconfirmed",
+        }
+
     def status(self) -> dict:
         with self._state_lock:
             return {
@@ -1072,6 +1160,15 @@ class BrokerAdapter:
         if settle_seconds and float(settle_seconds) > 0:
             time.sleep(max(0.0, float(settle_seconds)))
         return self.health()
+
+    @staticmethod
+    def _clear_legacy_order_flags(order: Any):
+        if order is None:
+            return
+        if hasattr(order, "eTradeOnly"):
+            order.eTradeOnly = False
+        if hasattr(order, "firmQuoteOnly"):
+            order.firmQuoteOnly = False
 
     @staticmethod
     def _contract_exchange_values(item: dict) -> set[str]:
@@ -1445,6 +1542,7 @@ class BrokerAdapter:
         entry.tif = str(tif or "DAY")
         entry.orderRef = entry_ref
         entry.transmit = False
+        self._clear_legacy_order_flags(entry)
         if entry.orderType == "LMT":
             entry.lmtPrice = float(entry_price)
 
@@ -1458,6 +1556,7 @@ class BrokerAdapter:
         tp.parentId = int(order_ids[0])
         tp.orderRef = tp_ref
         tp.transmit = False
+        self._clear_legacy_order_flags(tp)
 
         sl = Order()
         sl.orderId = int(order_ids[2])
@@ -1469,13 +1568,33 @@ class BrokerAdapter:
         sl.parentId = int(order_ids[0])
         sl.orderRef = sl_ref
         sl.transmit = True
+        self._clear_legacy_order_flags(sl)
 
         try:
+            for broker_order_id in order_ids:
+                self.client.clear_order_error(str(broker_order_id))
             self.client.place_order(contract, entry)
             self.client.place_order(contract, tp)
             self.client.place_order(contract, sl)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+        entry_result = self.client.await_order_submission(str(order_ids[0]), timeout=3.0, poll_interval=0.2)
+        if not entry_result.get("ok"):
+            entry_error = entry_result.get("details") or {}
+            error_message = str(entry_result.get("error") or "order_submission_failed")
+            if entry_error.get("code"):
+                error_message = f"{error_message} (code={entry_error.get('code')})"
+            return {
+                "ok": False,
+                "error": error_message,
+                "entry_error": entry_result,
+                "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
+                "bracket_group": group,
+                "entry_coid": entry_ref,
+                "tp_coid": tp_ref,
+                "sl_coid": sl_ref,
+            }
 
         return {
             "ok": True,
@@ -1505,10 +1624,26 @@ class BrokerAdapter:
         order.totalQuantity = float(quantity)
         order.tif = "DAY"
         order.orderRef = f"close_{contract.symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
+        self._clear_legacy_order_flags(order)
         try:
+            self.client.clear_order_error(str(order_id))
             self.client.place_order(contract, order)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+        entry_result = self.client.await_order_submission(str(order_id), timeout=3.0, poll_interval=0.2)
+        if not entry_result.get("ok"):
+            order_error = entry_result.get("details") or {}
+            error_message = str(entry_result.get("error") or "order_submission_failed")
+            if order_error.get("code"):
+                error_message = f"{error_message} (code={order_error.get('code')})"
+            return {
+                "ok": False,
+                "error": error_message,
+                "entry_error": entry_result,
+                "order_ids": [str(order_id)],
+                "bracket_group": order.orderRef,
+                "entry_coid": order.orderRef,
+            }
         return {
             "ok": True,
             "order_ids": [str(order_id)],
@@ -1537,10 +1672,19 @@ class BrokerAdapter:
             order.totalQuantity = float(updates["quantity"])
         if "tif" in updates and updates["tif"]:
             order.tif = str(updates["tif"])
+        self._clear_legacy_order_flags(order)
         try:
+            self.client.clear_order_error(str(order_id))
             self.client.place_order(contract, order)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+        entry_result = self.client.await_order_submission(str(order_id), timeout=3.0, poll_interval=0.2)
+        if not entry_result.get("ok"):
+            order_error = entry_result.get("details") or {}
+            error_message = str(entry_result.get("error") or "order_submission_failed")
+            if order_error.get("code"):
+                error_message = f"{error_message} (code={order_error.get('code')})"
+            return {"ok": False, "error": error_message, "entry_error": entry_result, "order_id": str(order_id)}
         return {"ok": True, "order_id": str(order_id)}
 
     def get_order_snapshot(self, order_id: str) -> dict:

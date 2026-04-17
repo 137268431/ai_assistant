@@ -24,6 +24,44 @@ function toNumber(value, fallback) {
     return Number.isFinite(num) ? num : (fallback || 0)
 }
 
+function normalizeSymbolList(values, limit = 12) {
+    if (!Array.isArray(values)) return []
+    const normalized = []
+    const seen = {}
+    for (let i = 0; i < values.length; i++) {
+        const symbol = String(values[i] || "").trim().toUpperCase()
+        if (!symbol || seen[symbol]) continue
+        seen[symbol] = true
+        normalized.push(symbol)
+        if (normalized.length >= limit) break
+    }
+    return normalized
+}
+
+function formatPendingSymbolsPreview(symbols, limit = 4) {
+    const items = normalizeSymbolList(symbols, Math.max(1, limit))
+    if (!items.length) return ""
+    const clipped = items.slice(0, Math.max(1, limit))
+    const more = items.length - clipped.length
+    return more > 0 ? `${clipped.join(",")} +${more}` : clipped.join(",")
+}
+
+function formatPendingDetailPreview(details, limit = 4) {
+    if (!Array.isArray(details) || !details.length) return ""
+    const clipped = details.slice(0, Math.max(1, limit)).map((item) => {
+        const symbol = String(item && item.symbol || "").trim().toUpperCase()
+        const missingTimes = Array.isArray(item && item.missing_us_times) ? item.missing_us_times : []
+        const firstMissing = missingTimes.length ? String(missingTimes[0] || "").trim().slice(11, 16) : ""
+        if (symbol && firstMissing) {
+            return `${symbol}(${firstMissing})`
+        }
+        return symbol
+    }).filter(Boolean)
+    if (!clipped.length) return ""
+    const more = details.length - clipped.length
+    return more > 0 ? `${clipped.join(",")} +${more}` : clipped.join(",")
+}
+
 function parseStateValue(raw) {
     if (!raw) return {}
     if (typeof raw === "object") return raw
@@ -426,6 +464,11 @@ function buildBarBucketLabel(bucket) {
     }
     if (toNumber(bucket && bucket.pending_symbols_total, 0) > 0) {
         parts.push(`pending ${toNumber(bucket.pending_symbols_total, 0)}`)
+        const pendingPreview = formatPendingDetailPreview(bucket && bucket.pending_symbol_details)
+            || formatPendingSymbolsPreview(bucket && bucket.pending_symbols)
+        if (pendingPreview) {
+            parts.push(`symbols ${pendingPreview}`)
+        }
     } else if (toNumber(bucket && bucket.lag_s, 0) > 0) {
         parts.push(`lag ${Math.round(toNumber(bucket.lag_s, 0))}s`)
     }
@@ -477,6 +520,18 @@ function buildBarBucketSnapshot(runtimePayload) {
         ),
         lag_s: lagS,
         pending_symbols_total: pendingTotal,
+        pending_symbols: normalizeSymbolList(canonical.pending_symbols),
+        pending_symbol_details: Array.isArray(canonical.pending_symbol_details)
+            ? canonical.pending_symbol_details.slice(0, 8).map((item) => ({
+                symbol: String(item && item.symbol || "").trim().toUpperCase(),
+                missing_count: toNumber(item && item.missing_count, 0),
+                missing_us_times: Array.isArray(item && item.missing_us_times)
+                    ? item.missing_us_times.slice(0, 4).map((value) => String(value || ""))
+                    : [],
+            })).filter((item) => item.symbol)
+            : [],
+        sequence_gap_count: toNumber(canonical.sequence_gap_count, 0),
+        missing_required_bars_total: toNumber(canonical.missing_required_bars_total, 0),
         last_completed_bucket_ms: completedBucketMs,
         last_completed_bucket_us: String(canonical.last_completed_bucket_us || freshness.last_completed_bucket_us || ""),
         last_due_bucket_ms: dueBucketMs,
@@ -504,6 +559,11 @@ function listBarBucketProblems(snapshot, freshnessWindow) {
         let label = "当前 5m bar 桶未完成"
         if (pendingTotal > 0) {
             label += `，pending ${pendingTotal}`
+            const pendingPreview = formatPendingDetailPreview(bucket.pending_symbol_details)
+                || formatPendingSymbolsPreview(bucket.pending_symbols)
+            if (pendingPreview) {
+                label += `：${pendingPreview}`
+            }
         } else if (lagS > 0) {
             label += `，lag ${Math.round(lagS)}s`
         } else if (bucket.last_due_bucket_us || bucket.last_completed_bucket_us) {
@@ -994,7 +1054,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                 || hasBarBucketIssue(snapshot, freshnessWindow)
                 )
             ) {
-                const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}:${snapshot.bar_bucket.status || ""}:${snapshot.bar_bucket.last_due_bucket_ms || 0}:${snapshot.bar_bucket.last_completed_bucket_ms || 0}:${snapshot.bar_bucket.pending_symbols_total || 0}`
+                const fingerprint = `data:${snapshot.latest_bar.bar_time_ms || 0}:${snapshot.latest_indicator.bar_time_ms || 0}:${snapshot.latest_bar.age_min || 0}:${snapshot.latest_indicator.lag_min || 0}:${snapshot.bar_bucket.status || ""}:${snapshot.bar_bucket.last_due_bucket_ms || 0}:${snapshot.bar_bucket.last_completed_bucket_ms || 0}:${snapshot.bar_bucket.pending_symbols_total || 0}:${formatPendingSymbolsPreview(snapshot.bar_bucket.pending_symbols, 8)}`
                 const problemSummary = listDataHealthProblems(snapshot, freshnessWindow)
                 const issueSummary = problemSummary.length
                     ? `当前数据链路不正确：${problemSummary.join("；")}。`
@@ -1041,6 +1101,11 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                             "指标状态": snapshot.latest_indicator.label,
                             "WebSocket": snapshot.websocket.label,
                             "建议": buildDataHealthRecommendation(snapshot, freshnessWindow),
+                        }
+                        const pendingPreview = formatPendingDetailPreview(snapshot.bar_bucket.pending_symbol_details, 8)
+                            || formatPendingSymbolsPreview(snapshot.bar_bucket.pending_symbols, 8)
+                        if (pendingPreview) {
+                            detail["待补齐标的"] = pendingPreview
                         }
                         const notified = feishuSystem.notifySystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment)
                         writeSystemEvent("heartbeat", "warning", "pb", "IBKR 数据健康异常", detail, environment, notified)

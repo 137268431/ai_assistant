@@ -716,16 +716,9 @@ class TradingServiceLifecycleMixin:
                 missing_ms = max(0, expected_today_regular_ms - latest_today_regular_ms)
                 missing_bars = max(1, int((missing_ms + expected_ms - 1) // expected_ms))
                 stale_minutes = max(0, int(missing_ms // 60000))
-                latest_bar_grace = (
-                    missing_bars == 1
-                    and int(snapshot.get("today_gap_count", 0) or 0) == 0
-                    and current_et < session_end
-                )
-                if not latest_bar_grace:
-                    reasons.append(f"today_regular_incomplete={missing_bars}")
+                reasons.append(f"today_regular_incomplete={missing_bars}")
                 if (
-                    not latest_bar_grace
-                    and stale_minutes > 0
+                    stale_minutes > 0
                     and stale_minutes > int(freshness_tolerance_ms // 60000)
                 ):
                     reasons.append(f"today_regular_stale={stale_minutes}m")

@@ -350,7 +350,7 @@ function buildSignalDisplayData(recordOrData) {
     var prevPct = Number(extra.prev_close_change_pct || 0)
     var d7Pct = Number(extra.change_7d || 0)
     if (extra.day_change_pct !== undefined) {
-        changeDisplay = (dayPct > 0 ? "+" : "") + dayPct.toFixed(2) + "%/" + (prevPct > 0 ? "+" : "") + prevPct.toFixed(2) + "%/" + (d7Pct > 0 ? "+" : "") + d7Pct.toFixed(2) + "%"
+        changeDisplay = "当日 " + (dayPct > 0 ? "+" : "") + dayPct.toFixed(2) + "% / 昨日 " + (prevPct > 0 ? "+" : "") + prevPct.toFixed(2) + "% / 7日 " + (d7Pct > 0 ? "+" : "") + d7Pct.toFixed(2) + "%"
     }
 
     var isLong = direction === "long"
@@ -468,7 +468,7 @@ function buildSignalInfoElements(d) {
 
     leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**标的:** " + d.symbol } })
     leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**方向:** " + directionText } })
-    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅:** " + d.changeDisplay } })
+    leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**涨幅(当日/昨日/7日):** " + d.changeDisplay } })
     leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**入场:** $" + d.entry.toFixed(2) } })
     leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止盈:** $" + d.take_profit.toFixed(2) } })
     leftColumn.push({ tag: "div", text: { tag: "lark_md", content: "**止损:** $" + d.stop_loss.toFixed(2) } })

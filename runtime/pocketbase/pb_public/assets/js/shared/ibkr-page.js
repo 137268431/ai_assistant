@@ -78,6 +78,22 @@ function normalizeIbkrInterval(value, fallback = '') {
     return mapping[text] || text;
 }
 
+function formatSymbolPreview(values, limit = 4) {
+    if (!Array.isArray(values)) return '';
+    const normalized = [];
+    const seen = new Set();
+    for (let i = 0; i < values.length; i++) {
+        const symbol = String(values[i] ?? '').trim().toUpperCase();
+        if (!symbol || seen.has(symbol)) continue;
+        seen.add(symbol);
+        normalized.push(symbol);
+    }
+    if (!normalized.length) return '';
+    const clipped = normalized.slice(0, Math.max(1, limit));
+    const more = normalized.length - clipped.length;
+    return more > 0 ? `${clipped.join(', ')} +${more}` : clipped.join(', ');
+}
+
 function formatIbkrIntervalLabel(value, fallback = '--') {
     const normalized = normalizeIbkrInterval(value);
     return normalized || String(fallback ?? '--');
@@ -371,6 +387,9 @@ function getIbkrDataStatusCardModel(dataHealth = {}) {
     const bucketMeta = [];
     if (dataHealth?.bar_bucket_status) bucketMeta.push(`bar bucket ${String(dataHealth.bar_bucket_status)}`);
     if (Number(dataHealth?.pending_symbols_total || 0) > 0) bucketMeta.push(`pending ${Number(dataHealth.pending_symbols_total || 0)}`);
+    if (Array.isArray(dataHealth?.pending_symbols) && dataHealth.pending_symbols.length) {
+        bucketMeta.push(`symbols ${formatSymbolPreview(dataHealth.pending_symbols, 4)}`);
+    }
     if (Number(dataHealth?.lag_s || 0) > 0) bucketMeta.push(`lag ${Math.round(Number(dataHealth.lag_s || 0))}s`);
     if (dataHealth?.last_due_bucket_us) bucketMeta.push(`due ${String(dataHealth.last_due_bucket_us)}`);
     if (dataHealth?.last_completed_bucket_us) bucketMeta.push(`done ${String(dataHealth.last_completed_bucket_us)}`);
@@ -1216,7 +1235,8 @@ function getIbkrRuntimePrimaryBlockerCardModel({
     } else if (blockerPhase === 'canonical_lagging') {
         blocker.tone = 'warn';
         blocker.title = `Canonical 5m 仍在补齐 · ${String(canonical?.last_completed_bucket_us || '--')}`;
-        blocker.copy = `due ${String(canonical?.last_due_bucket_us || '--')} · completed ${String(canonical?.last_completed_bucket_us || '--')} · pending ${Number(canonical?.pending_symbols_total || 0)}。`;
+        const pendingPreview = formatSymbolPreview(canonical?.pending_symbols, 4);
+        blocker.copy = `due ${String(canonical?.last_due_bucket_us || '--')} · completed ${String(canonical?.last_completed_bucket_us || '--')} · pending ${Number(canonical?.pending_symbols_total || 0)}${pendingPreview ? ` · ${pendingPreview}` : ''}。`;
     } else if (blockerPhase === 'realtime_stalled') {
         blocker.tone = 'error';
         blocker.title = realtimeState?.title || 'Indicators 计算已卡住';

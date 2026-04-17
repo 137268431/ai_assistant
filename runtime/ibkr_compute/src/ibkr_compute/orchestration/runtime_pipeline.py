@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 import queue
 import threading
 import time
 
-from ibkr_compute.market.timeframe_utils import bucket_start_ms, format_us_time, interval_to_ms
+from ibkr_compute.market.timeframe_utils import ET, bucket_start_ms, format_us_time, interval_to_ms
 from ibkr_compute.market.timeframe_utils import latest_safe_closed_bucket_ms
 
 
@@ -58,6 +59,9 @@ class TradingServiceRuntimePipelineMixin:
             "written_symbols_total": 0,
             "pending_symbols": [],
             "pending_symbols_total": 0,
+            "pending_symbol_details": [],
+            "sequence_gap_count": 0,
+            "missing_required_bars_total": 0,
             "last_error": "",
         }
 
@@ -242,6 +246,174 @@ class TradingServiceRuntimePipelineMixin:
             now_ms=int((now_ts or time.time()) * 1000),
         )
 
+    def _official_5m_required_window_start_ms(
+        self,
+        last_completed_bucket_ms: int,
+        due_bucket_ms: int,
+    ) -> int:
+        step_ms = interval_to_ms("5m")
+        if step_ms <= 0 or due_bucket_ms <= 0:
+            return 0
+        if last_completed_bucket_ms > 0:
+            return last_completed_bucket_ms + step_ms
+        return due_bucket_ms
+
+    def _official_5m_session_start_ms(self, due_bucket_ms: int) -> int:
+        if due_bucket_ms <= 0:
+            return 0
+        due_dt = datetime.fromtimestamp(int(due_bucket_ms) / 1000.0, ET)
+        session_start_dt = due_dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        return int(session_start_dt.timestamp() * 1000)
+
+    def _restore_official_5m_state_from_storage(
+        self,
+        symbols: list[str],
+        monitor_symbols: list[str],
+        due_bucket_ms: int,
+        request_period: str,
+    ):
+        session_start_ms = self._official_5m_session_start_ms(due_bucket_ms)
+        required_window_active = session_start_ms > 0 and due_bucket_ms >= session_start_ms
+        step_ms = interval_to_ms("5m")
+        pending_symbols = []
+        pending_detail_by_symbol = {}
+        earliest_missing_ms = 0
+        cycle_errors = []
+
+        for symbol in symbols:
+            latest_stored_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+            sequence_status = {}
+            if required_window_active:
+                sequence_status = self.data_backfill.get_required_sequence_snapshot(
+                    symbol,
+                    "5m",
+                    start_ms=session_start_ms,
+                    end_ms=due_bucket_ms,
+                    example_limit=4,
+                )
+
+            missing_bar_times = list(sequence_status.get("missing_bar_times") or [])
+            missing_us_times = list(sequence_status.get("missing_us_times") or [])
+            missing_count = int(sequence_status.get("missing_count", 0) or 0)
+            query_error = str(sequence_status.get("query_error") or "").strip()
+            if query_error:
+                cycle_errors.append(f"{symbol}:sequence:{query_error}")
+            if missing_bar_times:
+                first_missing_ms = int(missing_bar_times[0] or 0)
+                if first_missing_ms > 0 and (earliest_missing_ms <= 0 or first_missing_ms < earliest_missing_ms):
+                    earliest_missing_ms = first_missing_ms
+
+            symbol_pending = bool(query_error)
+            if required_window_active and missing_count > 0:
+                symbol_pending = True
+            elif required_window_active and latest_stored_ms < due_bucket_ms:
+                symbol_pending = True
+
+            if not symbol_pending:
+                continue
+
+            pending_symbols.append(symbol)
+            pending_detail_by_symbol[symbol] = {
+                "symbol": symbol,
+                "missing_count": max(missing_count, 1 if required_window_active else 0),
+                "missing_us_times": (
+                    missing_us_times[:4]
+                    if missing_us_times
+                    else ([format_us_time(due_bucket_ms)] if required_window_active and due_bucket_ms > 0 else [])
+                ),
+                "required_start_us": format_us_time(session_start_ms) if required_window_active else "",
+                "due_bucket_us": format_us_time(due_bucket_ms) if due_bucket_ms > 0 else "",
+                "latest_stored_us": format_us_time(latest_stored_ms) if latest_stored_ms > 0 else "",
+                "has_sequence_gap": bool(missing_count > 0 or query_error),
+            }
+
+        blocking_pending_symbols = self._non_monitor_pending_symbols(
+            pending_symbols,
+            monitor_symbols,
+        )
+        pending_symbol_details = [
+            dict(pending_detail_by_symbol.get(symbol) or {"symbol": symbol})
+            for symbol in blocking_pending_symbols
+        ]
+
+        next_last_completed_bucket_ms = 0
+        if due_bucket_ms > 0 and not blocking_pending_symbols:
+            next_last_completed_bucket_ms = due_bucket_ms
+        elif (
+            required_window_active
+            and earliest_missing_ms > session_start_ms
+            and step_ms > 0
+        ):
+            next_last_completed_bucket_ms = max(0, earliest_missing_ms - step_ms)
+
+        self._set_official_5m_state(
+            enabled=self._official_5m_enabled(),
+            close_delay_sec=self._official_5m_close_delay_sec(),
+            request_period=request_period,
+            last_run=self._now_iso(),
+            last_due_bucket_ms=due_bucket_ms,
+            last_due_bucket_us=format_us_time(due_bucket_ms) if due_bucket_ms > 0 else "",
+            last_completed_bucket_ms=next_last_completed_bucket_ms,
+            last_completed_bucket_us=(
+                format_us_time(next_last_completed_bucket_ms)
+                if next_last_completed_bucket_ms > 0 else ""
+            ),
+            last_written_bars=0,
+            written_symbols=[],
+            written_symbols_total=0,
+            pending_symbols=blocking_pending_symbols,
+            pending_symbols_total=len(blocking_pending_symbols),
+            pending_symbol_details=pending_symbol_details,
+            sequence_gap_count=sum(1 for item in pending_symbol_details if bool(item.get("has_sequence_gap"))),
+            missing_required_bars_total=sum(max(0, int(item.get("missing_count", 0) or 0)) for item in pending_symbol_details),
+            last_error="; ".join(cycle_errors),
+        )
+        self._official_5m_last_cycle_at = time.time()
+
+    def _official_5m_candidate_rows(
+        self,
+        fetched_rows: list[dict] | None,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[dict]:
+        rows = [
+            dict(row)
+            for row in (fetched_rows or [])
+            if start_ms <= int(row.get("bar_time_ms", 0) or 0) <= end_ms
+        ]
+        rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+        return rows
+
+    def _write_official_5m_rows(
+        self,
+        rows: list[dict] | None,
+        exchange: str,
+        request_period: str,
+    ) -> tuple[bool, int, int]:
+        service_mod = _service_mod()
+        wrote_symbol = False
+        written_bars = 0
+        max_written_ms = 0
+        for row in (rows or []):
+            payload = dict(row)
+            payload["environment"] = service_mod.ENVIRONMENT
+            payload["exchange"] = exchange
+            payload["source"] = "ibkr_history_close"
+            extra = dict(payload.get("extra") or {})
+            extra.update(
+                {
+                    "source": "ibkr_history_close",
+                    "canonical": True,
+                    "request_period": request_period,
+                }
+            )
+            payload["extra"] = extra
+            if self.data_writer.write_bar(payload):
+                wrote_symbol = True
+                written_bars += 1
+                max_written_ms = max(max_written_ms, int(payload.get("bar_time_ms", 0) or 0))
+        return wrote_symbol, written_bars, max_written_ms
+
     def _run_official_5m_close_cycle(self, symbols_override: list[str] | None = None):
         service_mod = _service_mod()
         state = self._copy_official_5m_state()
@@ -266,16 +438,6 @@ class TradingServiceRuntimePipelineMixin:
         ):
             return
 
-        if self._starting:
-            self._set_official_5m_state(
-                enabled=self._official_5m_enabled(),
-                close_delay_sec=self._official_5m_close_delay_sec(),
-                request_period=self._official_5m_request_period(),
-                last_due_bucket_ms=due_bucket_ms,
-                last_due_bucket_us=format_us_time(due_bucket_ms) if due_bucket_ms > 0 else "",
-            )
-            return
-
         snapshot = self._warmup_snapshot_from_subscriptions()
         override_set = {
             str(symbol or "").strip().upper()
@@ -288,16 +450,30 @@ class TradingServiceRuntimePipelineMixin:
         ]
         conid_map = dict(snapshot.get("conid_map") or {})
         symbol_meta = dict(snapshot.get("symbol_meta") or {})
+        request_period = self._official_5m_request_period()
+
+        if self._starting:
+            self._restore_official_5m_state_from_storage(
+                symbols,
+                snapshot.get("monitor_symbols") or [],
+                due_bucket_ms,
+                request_period,
+            )
+            return
+
         if not symbols:
             self._set_official_5m_state(
                 enabled=self._official_5m_enabled(),
                 close_delay_sec=self._official_5m_close_delay_sec(),
-                request_period=self._official_5m_request_period(),
+                request_period=request_period,
                 last_run=self._now_iso(),
                 last_due_bucket_ms=due_bucket_ms,
                 last_due_bucket_us=format_us_time(due_bucket_ms),
                 pending_symbols=[],
                 pending_symbols_total=0,
+                pending_symbol_details=[],
+                sequence_gap_count=0,
+                missing_required_bars_total=0,
                 written_symbols=[],
                 written_symbols_total=0,
                 last_written_bars=0,
@@ -305,9 +481,13 @@ class TradingServiceRuntimePipelineMixin:
             )
             return
 
-        request_period = self._official_5m_request_period()
+        required_window_start_ms = self._official_5m_required_window_start_ms(
+            last_completed_bucket_ms,
+            due_bucket_ms,
+        )
         written_symbols = []
         next_pending_symbols = []
+        pending_detail_by_symbol = {}
         written_bars = 0
         cycle_errors = []
 
@@ -315,71 +495,151 @@ class TradingServiceRuntimePipelineMixin:
             conid = int(conid_map.get(symbol) or 0)
             if conid <= 0:
                 next_pending_symbols.append(symbol)
+                pending_detail_by_symbol[symbol] = {
+                    "symbol": symbol,
+                    "missing_count": 1 if due_bucket_ms > 0 else 0,
+                    "missing_us_times": [format_us_time(due_bucket_ms)] if due_bucket_ms > 0 else [],
+                    "required_start_us": format_us_time(required_window_start_ms) if required_window_start_ms > 0 else "",
+                    "due_bucket_us": format_us_time(due_bucket_ms) if due_bucket_ms > 0 else "",
+                    "latest_stored_us": "",
+                    "has_sequence_gap": False,
+                }
                 continue
 
             exchange = str((symbol_meta.get(symbol) or {}).get("exchange") or "").upper()
             latest_stored_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
-            if latest_stored_ms >= due_bucket_ms:
-                continue
+            max_written_ms = latest_stored_ms
+            wrote_symbol = False
 
-            try:
-                fetched_rows = self.data_backfill.fetch_history(
+            if latest_stored_ms < due_bucket_ms:
+                try:
+                    fetched_rows = self.data_backfill.fetch_history(
+                        conid,
+                        symbol,
+                        interval="5m",
+                        exchange=exchange,
+                        repair=False,
+                        request_period=request_period,
+                    )
+                except Exception as exc:
+                    fetched_rows = []
+                    cycle_errors.append(f"{symbol}:{exc}")
+
+                candidate_rows = self._official_5m_candidate_rows(
+                    fetched_rows,
+                    latest_stored_ms + 1,
+                    due_bucket_ms,
+                )
+                if fetched_rows and not candidate_rows:
+                    fetched_times = sorted(int(row.get("bar_time_ms", 0) or 0) for row in fetched_rows)
+                    service_mod.logger.warning(
+                        "Official 5m close filtered all fetched rows for %s: latest_stored_ms=%d due_bucket_ms=%d fetched_first=%d(%s) fetched_last=%d(%s) fetched_count=%d",
+                        symbol,
+                        latest_stored_ms,
+                        due_bucket_ms,
+                        fetched_times[0],
+                        format_us_time(fetched_times[0]),
+                        fetched_times[-1],
+                        format_us_time(fetched_times[-1]),
+                        len(fetched_times),
+                    )
+
+                incremental_wrote, incremental_bars, incremental_max_ms = self._write_official_5m_rows(
+                    candidate_rows,
+                    exchange,
+                    request_period,
+                )
+                wrote_symbol = wrote_symbol or incremental_wrote
+                written_bars += incremental_bars
+                max_written_ms = max(max_written_ms, incremental_max_ms)
+
+            if wrote_symbol:
+                written_symbols.append(symbol)
+
+            sequence_status = {}
+            if required_window_start_ms > 0 and required_window_start_ms <= due_bucket_ms:
+                if wrote_symbol and not self.data_writer.flush():
+                    cycle_errors.append(f"{symbol}:flush:incremental")
+                sequence_status = self.data_backfill.get_required_sequence_snapshot(
+                    symbol,
+                    "5m",
+                    start_ms=required_window_start_ms,
+                    end_ms=due_bucket_ms,
+                    example_limit=4,
+                )
+                if str(sequence_status.get("query_error") or "").strip():
+                    cycle_errors.append(f"{symbol}:sequence:{sequence_status['query_error']}")
+
+            missing_bar_times = list(sequence_status.get("missing_bar_times") or [])
+            missing_us_times = list(sequence_status.get("missing_us_times") or [])
+            missing_count = int(sequence_status.get("missing_count", 0) or 0)
+            if missing_count > 0:
+                repair_rows = self.data_backfill.fetch_history(
                     conid,
                     symbol,
                     interval="5m",
                     exchange=exchange,
-                    repair=False,
+                    repair=True,
                     request_period=request_period,
                 )
-            except Exception as exc:
-                fetched_rows = []
-                cycle_errors.append(f"{symbol}:{exc}")
-
-            candidate_rows = [
-                dict(row)
-                for row in (fetched_rows or [])
-                if latest_stored_ms < int(row.get("bar_time_ms", 0) or 0) <= due_bucket_ms
-            ]
-            candidate_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
-            if fetched_rows and not candidate_rows:
-                fetched_times = sorted(int(row.get("bar_time_ms", 0) or 0) for row in fetched_rows)
-                service_mod.logger.warning(
-                    "Official 5m close filtered all fetched rows for %s: latest_stored_ms=%d due_bucket_ms=%d fetched_first=%d(%s) fetched_last=%d(%s) fetched_count=%d",
-                    symbol,
-                    latest_stored_ms,
+                repair_candidate_rows = self._official_5m_candidate_rows(
+                    repair_rows,
+                    required_window_start_ms,
                     due_bucket_ms,
-                    fetched_times[0],
-                    format_us_time(fetched_times[0]),
-                    fetched_times[-1],
-                    format_us_time(fetched_times[-1]),
-                    len(fetched_times),
                 )
-
-            max_written_ms = latest_stored_ms
-            wrote_symbol = False
-            for row in candidate_rows:
-                payload = dict(row)
-                payload["environment"] = service_mod.ENVIRONMENT
-                payload["exchange"] = exchange
-                payload["source"] = "ibkr_history_close"
-                extra = dict(payload.get("extra") or {})
-                extra.update(
-                    {
-                        "source": "ibkr_history_close",
-                        "canonical": True,
-                        "request_period": request_period,
-                    }
+                repair_wrote, repair_bars, repair_max_ms = self._write_official_5m_rows(
+                    repair_candidate_rows,
+                    exchange,
+                    request_period,
                 )
-                payload["extra"] = extra
-                if self.data_writer.write_bar(payload):
-                    wrote_symbol = True
-                    written_bars += 1
-                    max_written_ms = max(max_written_ms, int(payload.get("bar_time_ms", 0) or 0))
+                wrote_symbol = wrote_symbol or repair_wrote
+                written_bars += repair_bars
+                max_written_ms = max(max_written_ms, repair_max_ms)
+                if repair_wrote and symbol not in written_symbols:
+                    written_symbols.append(symbol)
+                if repair_wrote and not self.data_writer.flush():
+                    cycle_errors.append(f"{symbol}:flush:repair")
 
-            if wrote_symbol:
-                written_symbols.append(symbol)
-            if max_written_ms < due_bucket_ms:
+                sequence_status = self.data_backfill.get_required_sequence_snapshot(
+                    symbol,
+                    "5m",
+                    start_ms=required_window_start_ms,
+                    end_ms=due_bucket_ms,
+                    example_limit=4,
+                )
+                missing_bar_times = list(sequence_status.get("missing_bar_times") or [])
+                missing_us_times = list(sequence_status.get("missing_us_times") or [])
+                missing_count = int(sequence_status.get("missing_count", 0) or 0)
+                if missing_count > 0:
+                    service_mod.logger.warning(
+                        "Official 5m close still missing required bars for %s: required_start_ms=%d(%s) due_bucket_ms=%d(%s) missing=%s latest_stored_ms=%d(%s)",
+                        symbol,
+                        required_window_start_ms,
+                        format_us_time(required_window_start_ms),
+                        due_bucket_ms,
+                        format_us_time(due_bucket_ms),
+                        ",".join(missing_us_times) or ",".join(format_us_time(ms) for ms in missing_bar_times[:4]),
+                        max_written_ms,
+                        format_us_time(max_written_ms) if max_written_ms > 0 else "",
+                    )
+
+            has_sequence_gap = missing_count > 0
+            bucket_unfilled = max_written_ms < due_bucket_ms
+            if has_sequence_gap or bucket_unfilled:
                 next_pending_symbols.append(symbol)
+                pending_detail_by_symbol[symbol] = {
+                    "symbol": symbol,
+                    "missing_count": max(missing_count, 1 if bucket_unfilled and due_bucket_ms > 0 else 0),
+                    "missing_us_times": (
+                        missing_us_times[:4]
+                        if missing_us_times
+                        else ([format_us_time(due_bucket_ms)] if bucket_unfilled and due_bucket_ms > 0 else [])
+                    ),
+                    "required_start_us": format_us_time(required_window_start_ms) if required_window_start_ms > 0 else "",
+                    "due_bucket_us": format_us_time(due_bucket_ms) if due_bucket_ms > 0 else "",
+                    "latest_stored_us": format_us_time(max_written_ms) if max_written_ms > 0 else "",
+                    "has_sequence_gap": has_sequence_gap,
+                }
 
         compute_symbols = [
             symbol for symbol in symbols
@@ -394,6 +654,10 @@ class TradingServiceRuntimePipelineMixin:
             next_pending_symbols,
             snapshot.get("monitor_symbols") or [],
         )
+        pending_symbol_details = [
+            dict(pending_detail_by_symbol.get(symbol) or {"symbol": symbol})
+            for symbol in blocking_pending_symbols
+        ]
         next_last_completed_bucket_ms = last_completed_bucket_ms
         if not blocking_pending_symbols:
             next_last_completed_bucket_ms = max(last_completed_bucket_ms, due_bucket_ms)
@@ -413,6 +677,9 @@ class TradingServiceRuntimePipelineMixin:
             written_symbols_total=len(written_symbols),
             pending_symbols=blocking_pending_symbols,
             pending_symbols_total=len(blocking_pending_symbols),
+            pending_symbol_details=pending_symbol_details,
+            sequence_gap_count=sum(1 for item in pending_symbol_details if bool(item.get("has_sequence_gap"))),
+            missing_required_bars_total=sum(max(0, int(item.get("missing_count", 0) or 0)) for item in pending_symbol_details),
             last_error="; ".join(cycle_errors),
         )
         self._official_5m_last_cycle_at = time.time()

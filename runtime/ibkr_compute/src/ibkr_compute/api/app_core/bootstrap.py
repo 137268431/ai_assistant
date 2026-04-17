@@ -77,7 +77,9 @@ def build_runtime_state_bundle() -> dict:
         "host_cpu_snapshot_cache": None,
         "_start_time": time.time(),
         "_ibkr_service": None,
+        "_ibkr_service_lock": threading.Lock(),
         "_ibkr_restore_attempted": False,
+        "_ibkr_restore_lock": threading.Lock(),
     }
 
 

@@ -219,6 +219,22 @@ function normalizeIndicatorRecord(record) {
   return { ...record, ...record.extra };
 }
 
+function formatSignedPercentHtml(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '<span style="color: var(--muted)">--</span>';
+  const color = num > 0 ? 'var(--long)' : num < 0 ? 'var(--short)' : 'var(--muted)';
+  const sign = num > 0 ? '+' : '';
+  return `<span style="color: ${color}">${sign}${num.toFixed(2)}%</span>`;
+}
+
+function formatChangeTripletHtml(dayChangePct, prevCloseChangePct, change7d) {
+  return [
+    formatSignedPercentHtml(dayChangePct),
+    formatSignedPercentHtml(prevCloseChangePct),
+    formatSignedPercentHtml(change7d),
+  ].join(' / ');
+}
+
 // ── 构建技术指标徽章 HTML ──
 function buildIndicatorBadges(signal, latestIndicator) {
   const badges = [];
@@ -332,9 +348,13 @@ function renderIndicatorModal(latestIndicator) {
           <div class="modal-value">$${(latestIndicator.open || 0).toFixed(2)}</div>
         </div>
         <div class="modal-item">
-          <div class="modal-label">涨幅</div>
-          <div class="modal-value" style="color: ${(indicatorView.display_day_change_pct || 0) > 0 ? 'var(--long)' : 'var(--short)'}">
-            ${(indicatorView.display_day_change_pct || 0) > 0 ? '+' : ''}${((indicatorView.display_day_change_pct || 0)).toFixed(2)}% / ${(indicatorView.display_prev_close_change_pct || 0) > 0 ? '+' : ''}${((indicatorView.display_prev_close_change_pct || 0)).toFixed(2)}% / ${(indicatorView.display_change_7d || 0) > 0 ? '+' : ''}${((indicatorView.display_change_7d || 0)).toFixed(2)}%
+          <div class="modal-label">涨幅(当日/昨日/7日)</div>
+          <div class="modal-value">
+            ${formatChangeTripletHtml(
+              indicatorView.display_day_change_pct || 0,
+              indicatorView.display_prev_close_change_pct || 0,
+              indicatorView.display_change_7d || 0
+            )}
           </div>
         </div>
         <div class="modal-item">

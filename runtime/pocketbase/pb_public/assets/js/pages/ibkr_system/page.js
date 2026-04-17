@@ -122,6 +122,9 @@ function buildRuntimeBarDataHealth(runtime = {}, latest5m = null) {
     const barFreshness = marketUniverse?.bar_freshness || {};
     const canonical = runtime?.canonical_5m || {};
     const pendingSymbolsTotal = Number(canonical.pending_symbols_total || barFreshness.pending_symbols_total || 0) || 0;
+    const pendingSymbols = Array.isArray(canonical.pending_symbols)
+        ? canonical.pending_symbols.slice(0, 8).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean)
+        : [];
     const dueBucketMs = Number(canonical.last_due_bucket_ms || 0) || 0;
     const completedBucketMs = Number(canonical.last_completed_bucket_ms || 0) || 0;
     const lagS = normalizeBarBucketLagSeconds(
@@ -138,6 +141,7 @@ function buildRuntimeBarDataHealth(runtime = {}, latest5m = null) {
         status: 'offline',
         bar_bucket_status: String(barFreshness.status || 'stale'),
         pending_symbols_total: pendingSymbolsTotal,
+        pending_symbols: pendingSymbols,
         lag_s: lagS,
         last_due_bucket_us: String(canonical.last_due_bucket_us || ''),
         last_completed_bucket_us: String(canonical.last_completed_bucket_us || barFreshness.last_completed_bucket_us || ''),

@@ -55,122 +55,138 @@ class TradingServiceSignalsMixin:
         pending_signals = self.signal_router.fetch_pending_signals()
 
         for sig in pending_signals:
-            valid, reason = self.signal_processor.validate_signal(sig)
-            if not valid:
-                if (
-                    str(reason or "").startswith("warmup")
-                    or reason in {"session_unauthenticated", "runtime_stopped", "no_trade_symbols"}
-                ):
+            signal_id = str(sig.get("signal_id") or "").strip()
+            if not signal_id:
+                continue
+            if not self.signal_router.claim_signal(signal_id):
+                service_mod.logger.info("Skip duplicate in-flight signal: %s", signal_id)
+                continue
+
+            finalized = False
+            try:
+                valid, reason = self.signal_processor.validate_signal(sig)
+                if not valid:
+                    if (
+                        str(reason or "").startswith("warmup")
+                        or reason in {"session_unauthenticated", "runtime_stopped", "no_trade_symbols"}
+                    ):
+                        service_mod.logger.info(
+                            "Signal deferred: %s %s - %s",
+                            sig.get("symbol"),
+                            sig.get("direction"),
+                            reason,
+                        )
+                        continue
                     service_mod.logger.info(
-                        "Signal deferred: %s %s - %s",
+                        "Signal rejected: %s %s - %s",
                         sig.get("symbol"),
                         sig.get("direction"),
                         reason,
                     )
+                    self.signal_router.mark_processed(signal_id)
+                    finalized = True
                     continue
-                service_mod.logger.info(
-                    "Signal rejected: %s %s - %s",
-                    sig.get("symbol"),
-                    sig.get("direction"),
-                    reason,
+
+                symbol = sig["symbol"]
+                duplicate_order = self.order_tracker.find_duplicate_open_entry(
+                    symbol=symbol,
+                    direction=sig["direction"],
+                    quantity=sig["shares"],
+                    entry_price=sig["entry"],
+                    entry_order_type="LMT",
                 )
-                self.signal_router.mark_processed(sig["signal_id"])
-                continue
+                if duplicate_order:
+                    broker_order_id = str(
+                        duplicate_order.get("orderId") or duplicate_order.get("id") or ""
+                    ).strip()
+                    broker_status = str(duplicate_order.get("status") or "").strip()
+                    broker_price = duplicate_order.get("price")
+                    try:
+                        self.order_tracker.sync_live_orders_snapshot([duplicate_order])
+                    except Exception as sync_err:
+                        service_mod.logger.error("Duplicate broker order sync failed: %s", sync_err)
+                    self._mark_signal_duplicate_open_order(sig, duplicate_order)
+                    service_mod.logger.warning(
+                        "Skip duplicate order submission: signal_id=%s symbol=%s direction=%s broker_order_id=%s status=%s price=%s",
+                        signal_id,
+                        symbol,
+                        sig.get("direction"),
+                        broker_order_id or "-",
+                        broker_status or "-",
+                        broker_price,
+                    )
+                    self.signal_router.mark_processed(signal_id)
+                    finalized = True
+                    continue
 
-            symbol = sig["symbol"]
-            duplicate_order = self.order_tracker.find_duplicate_open_entry(
-                symbol=symbol,
-                direction=sig["direction"],
-                quantity=sig["shares"],
-                entry_price=sig["entry"],
-                entry_order_type="LMT",
-            )
-            if duplicate_order:
-                broker_order_id = str(
-                    duplicate_order.get("orderId") or duplicate_order.get("id") or ""
-                ).strip()
-                broker_status = str(duplicate_order.get("status") or "").strip()
-                broker_price = duplicate_order.get("price")
-                try:
-                    self.order_tracker.sync_live_orders_snapshot([duplicate_order])
-                except Exception as sync_err:
-                    service_mod.logger.error("Duplicate broker order sync failed: %s", sync_err)
-                self._mark_signal_duplicate_open_order(sig, duplicate_order)
-                service_mod.logger.warning(
-                    "Skip duplicate order submission: signal_id=%s symbol=%s direction=%s broker_order_id=%s status=%s price=%s",
-                    sig.get("signal_id"),
-                    symbol,
-                    sig.get("direction"),
-                    broker_order_id or "-",
-                    broker_status or "-",
-                    broker_price,
+                conid = self.conid_resolver.resolve(symbol)
+                if not conid:
+                    service_mod.logger.warning("Cannot resolve conid for %s, skipping", symbol)
+                    continue
+
+                result = self.order_placer.place_bracket_order(
+                    conid=conid,
+                    symbol=symbol,
+                    direction=sig["direction"],
+                    quantity=sig["shares"],
+                    entry_price=sig["entry"],
+                    take_profit_price=sig["take_profit"],
+                    stop_loss_price=sig["stop_loss"],
+                    use_paper=service_mod.ENVIRONMENT == "paper",
+                    signal_id=signal_id,
                 )
-                self.signal_router.mark_processed(sig["signal_id"])
-                continue
 
-            conid = self.conid_resolver.resolve(symbol)
-            if not conid:
-                service_mod.logger.warning("Cannot resolve conid for %s, skipping", symbol)
-                continue
-
-            result = self.order_placer.place_bracket_order(
-                conid=conid,
-                symbol=symbol,
-                direction=sig["direction"],
-                quantity=sig["shares"],
-                entry_price=sig["entry"],
-                take_profit_price=sig["take_profit"],
-                stop_loss_price=sig["stop_loss"],
-                use_paper=service_mod.ENVIRONMENT == "paper",
-                signal_id=sig["signal_id"],
-            )
-
-            if result.get("ok"):
-                service_mod.logger.info(
-                    "Order placed: %s %s bracket_group=%s",
-                    symbol,
-                    sig["direction"],
-                    result.get("bracket_group"),
-                )
-                try:
-                    self.order_tracker.register_submitted_orders(
-                        result.get("order_ids") or [],
+                if result.get("ok"):
+                    service_mod.logger.info(
+                        "Order placed: %s %s bracket_group=%s",
+                        symbol,
+                        sig["direction"],
+                        result.get("bracket_group"),
+                    )
+                    try:
+                        self.order_tracker.register_submitted_orders(
+                            result.get("order_ids") or [],
+                            {
+                                "symbol": symbol,
+                                "direction": sig["direction"],
+                                "quantity": sig["shares"],
+                                "entry_price": sig["entry"],
+                                "tp_price": sig["take_profit"],
+                                "sl_price": sig["stop_loss"],
+                                "entry_unique_id": result.get("entry_coid")
+                                or result.get("bracket_group")
+                                or "",
+                                "tp_unique_id": result.get("tp_coid") or "",
+                                "sl_unique_id": result.get("sl_coid") or "",
+                            },
+                        )
+                    except Exception as track_err:
+                        service_mod.logger.error("Order tracker register failed: %s", track_err)
+                    try:
+                        self._ack_signal_after_order_submission(sig, result)
+                    except Exception as ack_err:
+                        service_mod.logger.error(
+                            "Signal ack failed after order placement: %s signal_id=%s",
+                            ack_err,
+                            signal_id,
+                        )
+                    self.signal_processor.register_position(
+                        symbol,
                         {
-                            "symbol": symbol,
                             "direction": sig["direction"],
-                            "quantity": sig["shares"],
-                            "entry_price": sig["entry"],
-                            "tp_price": sig["take_profit"],
-                            "sl_price": sig["stop_loss"],
-                            "entry_unique_id": result.get("entry_coid")
-                            or result.get("bracket_group")
-                            or "",
-                            "tp_unique_id": result.get("tp_coid") or "",
-                            "sl_unique_id": result.get("sl_coid") or "",
+                            "bracket_group": result.get("bracket_group"),
                         },
                     )
-                except Exception as track_err:
-                    service_mod.logger.error("Order tracker register failed: %s", track_err)
-                try:
-                    self._ack_signal_after_order_submission(sig, result)
-                except Exception as ack_err:
-                    service_mod.logger.error(
-                        "Signal ack failed after order placement: %s signal_id=%s",
-                        ack_err,
-                        sig.get("signal_id"),
-                    )
-                self.signal_processor.register_position(
-                    symbol,
-                    {
-                        "direction": sig["direction"],
-                        "bracket_group": result.get("bracket_group"),
-                    },
-                )
-                self.order_lifecycle.increment_position_count()
-            else:
-                service_mod.logger.error("Order failed: %s - %s", symbol, result.get("error"))
+                    self.order_lifecycle.increment_position_count()
+                else:
+                    service_mod.logger.error("Order failed: %s - %s", symbol, result.get("error"))
+                    self._mark_signal_submit_failed(sig, result)
 
-            self.signal_router.mark_processed(sig["signal_id"])
+                self.signal_router.mark_processed(signal_id)
+                finalized = True
+            finally:
+                if not finalized:
+                    self.signal_router.release_signal(signal_id)
 
     def _mark_signal_duplicate_open_order(self, sig: dict, broker_order: dict):
         service_mod = _service_mod()
@@ -238,6 +254,67 @@ class TradingServiceSignalsMixin:
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal duplicate-open-order: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+
+    def _mark_signal_submit_failed(self, sig: dict, result: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+
+        safe_signal_id = signal_id.replace('"', '\\"')
+        safe_environment = str(service_mod.ENVIRONMENT or "live").replace('"', '\\"')
+
+        try:
+            record = self.pb.get_first_record(
+                "ibkr_signals",
+                filter=(
+                    f'signal_id = "{safe_signal_id}" && '
+                    f'environment = "{safe_environment}"'
+                ),
+            )
+            if not record or not record.get("id"):
+                return
+
+            existing_extra = record.get("extra") or {}
+            if isinstance(existing_extra, str):
+                try:
+                    existing_extra = json.loads(existing_extra)
+                except Exception:
+                    existing_extra = {}
+            if not isinstance(existing_extra, dict):
+                existing_extra = {}
+
+            error_text = str((result or {}).get("error") or "submit_failed").strip() or "submit_failed"
+            entry_error = (result or {}).get("entry_error") if isinstance(result, dict) else {}
+            if not isinstance(entry_error, dict):
+                entry_error = {}
+
+            patch = {
+                "status": "rejected",
+                "note": "submit_failed",
+                "extra": {
+                    **existing_extra,
+                    "status_reason": "submit_failed",
+                    "submit_failed": True,
+                    "submit_failed_error": error_text,
+                    "submit_failed_at": self._now_iso(),
+                    "submit_failed_order_ids": list((result or {}).get("order_ids") or []),
+                    "submit_failed_bracket_group": str((result or {}).get("bracket_group") or ""),
+                    "submit_failed_entry_error_code": entry_error.get("code"),
+                    "submit_failed_entry_error": str(entry_error.get("error") or ""),
+                    "submit_failed_entry_details": entry_error,
+                },
+            }
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal submit-failed: signal_id=%s error=%s",
                 signal_id,
                 exc,
             )

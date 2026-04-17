@@ -969,6 +969,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Canonical Lag', formatSecondsLabel(canonical?.lag_s)],
                 ['Canonical Written Bars', String(canonical?.last_written_bars || 0)],
                 ['Canonical Pending', String(canonical?.pending_symbols_total || 0)],
+                ['Canonical Pending Symbols', (Array.isArray(canonical?.pending_symbols) && canonical.pending_symbols.length) ? canonical.pending_symbols.slice(0, 8).join(', ') : '--'],
                 ['Close Compute Runs', String(status?.realtime_compute?.runs || 0)],
                 ['Close Compute State', String(realtimeState?.phase || '--').toUpperCase()],
                 ['Close Compute Queue', String(status?.realtime_compute?.queue_size || 0)],

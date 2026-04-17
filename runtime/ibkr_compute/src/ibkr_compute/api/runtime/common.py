@@ -105,14 +105,26 @@ def _background_start_ibkr_service(service, trigger_login: bool, reason: str, so
 
 def get_ibkr_service():
     api_app = _api_app()
-    if api_app._ibkr_service is None:
+    service = getattr(api_app, "_ibkr_service", None)
+    if service is not None:
+        return service
+
+    service_lock = getattr(api_app, "_ibkr_service_lock", None)
+    if service_lock is None:
+        service_lock = threading.Lock()
+        api_app._ibkr_service_lock = service_lock
+
+    with service_lock:
+        service = getattr(api_app, "_ibkr_service", None)
+        if service is not None:
+            return service
         try:
             from ibkr_compute.ibkr_service import IBKRTradingService
 
             api_app._ibkr_service = IBKRTradingService()
         except Exception as exc:
             print(f"[IBKR] Service init failed: {exc}")
-    return api_app._ibkr_service
+        return getattr(api_app, "_ibkr_service", None)
 
 
 def _normalize_runtime_environment_name(value, default: str = "live") -> str:

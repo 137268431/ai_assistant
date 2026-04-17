@@ -155,6 +155,24 @@ def _regular_session_gap_summary(
     }
 
 
+def _regular_session_expected_bar_times(
+    start_ms: int,
+    end_ms: int,
+    interval: str,
+) -> List[int]:
+    expected_ms = interval_to_ms(interval)
+    if expected_ms <= 0 or start_ms <= 0 or end_ms <= 0 or start_ms > end_ms:
+        return []
+
+    expected_times: List[int] = []
+    current_ms = start_ms
+    while current_ms <= end_ms:
+        if classify_session(format_us_time(current_ms), current_ms).strip().lower() == "regular":
+            expected_times.append(current_ms)
+        current_ms += expected_ms
+    return expected_times
+
+
 class DataBackfill:
     def __init__(
         self,
@@ -474,6 +492,90 @@ class DataBackfill:
         snapshot["gap_count"] = int(gap_summary.get("gap_count", 0) or 0)
         snapshot["gap_examples"] = list(gap_summary.get("gap_examples") or [])
 
+        return snapshot
+
+    def get_required_sequence_snapshot(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        start_ms: int = 0,
+        end_ms: int = 0,
+        example_limit: int = 4,
+    ) -> Dict:
+        normalized = normalize_interval(interval)
+        normalized_symbol = str(symbol or "").strip().upper()
+        range_start_ms = int(start_ms or 0)
+        range_end_ms = int(end_ms or 0)
+        snapshot = {
+            "symbol": normalized_symbol,
+            "interval": normalized,
+            "start_ms": range_start_ms,
+            "start_us": format_us_time(range_start_ms) if range_start_ms > 0 else "",
+            "end_ms": range_end_ms,
+            "end_us": format_us_time(range_end_ms) if range_end_ms > 0 else "",
+            "expected_count": 0,
+            "stored_count": 0,
+            "missing_count": 0,
+            "missing_bar_times": [],
+            "missing_us_times": [],
+            "query_error": "",
+        }
+        if not self.pb_client:
+            return snapshot
+        if range_start_ms <= 0 or range_end_ms <= 0 or range_start_ms > range_end_ms:
+            return snapshot
+
+        expected_bar_times = _regular_session_expected_bar_times(range_start_ms, range_end_ms, normalized)
+        snapshot["expected_count"] = len(expected_bar_times)
+        if not expected_bar_times:
+            return snapshot
+
+        safe_symbol = normalized_symbol.replace('"', '\\"')
+        safe_interval = normalized.replace('"', '\\"')
+        safe_environment = str(self.environment or "live").strip().lower().replace('"', '\\"')
+        max_pages = max(1, min(8, (len(expected_bar_times) + 199) // 200))
+
+        try:
+            rows = self.pb_client.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{safe_symbol}" && '
+                    f'interval = "{safe_interval}" && '
+                    f'environment = "{safe_environment}" && '
+                    f'session_type = "regular" && '
+                    f'bar_time_ms >= {range_start_ms} && '
+                    f'bar_time_ms <= {range_end_ms}'
+                ),
+                sort="bar_time_ms",
+                max_pages=max_pages,
+            )
+        except Exception as exc:
+            snapshot["query_error"] = str(exc)
+            logger.warning(
+                "Failed to inspect required sequence for %s/%s (%s -> %s): %s",
+                normalized_symbol,
+                normalized,
+                snapshot["start_us"] or range_start_ms,
+                snapshot["end_us"] or range_end_ms,
+                exc,
+            )
+            return snapshot
+
+        stored_bar_times = sorted({
+            int(row.get("bar_time_ms", 0) or 0)
+            for row in (rows or [])
+            if int(row.get("bar_time_ms", 0) or 0) > 0
+        })
+        snapshot["stored_count"] = len(stored_bar_times)
+
+        stored_set = set(stored_bar_times)
+        missing_bar_times = [bar_time_ms for bar_time_ms in expected_bar_times if bar_time_ms not in stored_set]
+        snapshot["missing_count"] = len(missing_bar_times)
+        snapshot["missing_bar_times"] = missing_bar_times
+        snapshot["missing_us_times"] = [
+            format_us_time(bar_time_ms)
+            for bar_time_ms in missing_bar_times[: max(1, int(example_limit or 0))]
+        ]
         return snapshot
 
     def fetch_history(

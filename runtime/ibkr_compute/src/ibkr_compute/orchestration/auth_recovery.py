@@ -252,7 +252,11 @@ class TradingServiceAuthRecoveryMixin:
                 )
             except Exception as exc:
                 service_mod.logger.debug("Failed to report auth recovery success: %s", exc)
-        if resume_recovery and not self._running:
+        if resume_recovery and self._starting:
+            service_mod.logger.info(
+                "Skip auth recovery restart because runtime startup is already in progress"
+            )
+        elif resume_recovery and not self._running:
             scheduled = self._schedule_auth_restart(
                 reason=restart_reason or "auto_restore",
                 source=restart_source or "server_boot",
@@ -543,6 +547,9 @@ class TradingServiceAuthRecoveryMixin:
         with self._auth_recovery_lock:
             thread = self._auth_restart_thread
             if thread and thread.is_alive():
+                return False
+            if self._starting:
+                service_mod.logger.info("Skip auth recovery restart while runtime startup is in progress")
                 return False
             current = self._copy_auth_recovery_state()
             current_phase = str(current.get("recovery_phase") or "")

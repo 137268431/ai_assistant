@@ -201,6 +201,10 @@ class TradingServiceRuntimeStatusMixin:
                     "lag_s": float(official_5m.get("lag_s", 0) or 0),
                     "last_completed_bucket_us": str(official_5m.get("last_completed_bucket_us") or ""),
                     "pending_symbols_total": int(official_5m.get("pending_symbols_total", 0) or 0),
+                    "pending_symbols": list(official_5m.get("pending_symbols") or []),
+                    "pending_symbol_details": list(official_5m.get("pending_symbol_details") or []),
+                    "sequence_gap_count": int(official_5m.get("sequence_gap_count", 0) or 0),
+                    "missing_required_bars_total": int(official_5m.get("missing_required_bars_total", 0) or 0),
                 },
                 "indicator_freshness": {
                     "status": indicator_freshness_status,
