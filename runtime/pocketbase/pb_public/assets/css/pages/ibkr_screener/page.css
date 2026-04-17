@@ -37,9 +37,9 @@
     }
 
     .hero {
-      padding: 22px;
+      padding: 20px;
       display: grid;
-      gap: 18px;
+      gap: 16px;
     }
 
     .hero-top {
@@ -58,16 +58,17 @@
     }
 
     .hero-title {
-      font-size: 30px;
-      line-height: 1.22;
+      font-size: 27px;
+      line-height: 1.18;
       font-weight: 800;
       max-width: 960px;
     }
 
     .hero-copy {
-      margin-top: 10px;
+      margin-top: 8px;
       color: var(--screen-muted);
-      line-height: 1.65;
+      font-size: 13px;
+      line-height: 1.62;
       max-width: 980px;
     }
 
@@ -106,7 +107,7 @@
     }
 
     .summary-card {
-      padding: 16px;
+      padding: 14px 15px;
       border-radius: 18px;
       background: linear-gradient(180deg, rgba(16, 33, 46, 0.95), rgba(10, 22, 31, 0.92));
       border: 1px solid rgba(148, 163, 184, 0.12);
@@ -120,8 +121,8 @@
     }
 
     .summary-value {
-      margin-top: 10px;
-      font-size: 30px;
+      margin-top: 8px;
+      font-size: 26px;
       font-weight: 800;
       letter-spacing: -0.03em;
     }
@@ -146,7 +147,7 @@
     }
 
     .panel {
-      padding: 20px;
+      padding: 18px;
     }
 
     .rules-panel {
@@ -173,7 +174,7 @@
 
     .rules-panel-title {
       margin-top: 6px;
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 800;
       line-height: 1.2;
     }
@@ -259,7 +260,7 @@
     }
 
     .panel-title {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 800;
     }
 
@@ -281,7 +282,7 @@
       flex: 1 1 240px;
       border: 1px solid rgba(148, 163, 184, 0.18);
       border-radius: 18px;
-      padding: 14px 16px;
+      padding: 12px 14px;
       background: linear-gradient(180deg, rgba(15, 28, 38, 0.98), rgba(9, 18, 25, 0.94));
       color: var(--screen-text);
       text-align: left;
@@ -308,8 +309,8 @@
     }
 
     .domain-tab-label {
-      margin-top: 8px;
-      font-size: 18px;
+      margin-top: 7px;
+      font-size: 16px;
       font-weight: 800;
     }
 
@@ -341,7 +342,7 @@
       flex: 1 1 220px;
       border: 1px solid rgba(148, 163, 184, 0.18);
       border-radius: 16px;
-      padding: 13px 14px;
+      padding: 12px 13px;
       background: rgba(8, 14, 24, 0.46);
       color: var(--screen-text);
       text-align: left;
@@ -368,8 +369,8 @@
     }
 
     .subview-tab-label {
-      margin-top: 8px;
-      font-size: 17px;
+      margin-top: 7px;
+      font-size: 15px;
       font-weight: 800;
     }
 
@@ -925,7 +926,7 @@
       }
 
       .hero-title {
-        font-size: 24px;
+        font-size: 22px;
       }
 
       .hero-meta {

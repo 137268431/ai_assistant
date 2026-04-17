@@ -3,6 +3,29 @@ from __future__ import annotations
 from ibkr_compute.api.monitor.host import _api_app, _copy_active_subscription_map, _normalize_symbol_list
 
 
+def _resolve_total_subscription_limit(config_source, runtime_environment: str) -> int:
+    total_limit = max(
+        0,
+        int(config_source.get_int_for_environment("ibkr_total_subscription_limit", runtime_environment, 80) or 0),
+    )
+    if total_limit > 0:
+        return total_limit
+    return max(
+        0,
+        int(config_source.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 80) or 0),
+    )
+
+
+def _resolve_trade_subscription_limit(config_source, runtime_environment: str) -> int:
+    trade_limit = max(
+        0,
+        int(config_source.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 80) or 0),
+    )
+    if trade_limit > 0:
+        return trade_limit
+    return _resolve_total_subscription_limit(config_source, runtime_environment)
+
+
 def _build_monitor_samples(service, runtime_status: dict) -> dict:
     api_app = _api_app()
     warmup = runtime_status.get("warmup") or {}
@@ -98,11 +121,19 @@ def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_s
     websocket = runtime_status.get("websocket") or {}
     market_universe = runtime_status.get("market_universe") or {}
     data_backfill = runtime_status.get("data_backfill") or {}
+    active_trade_symbol_count = int(market_universe.get("active_target_count") or 0)
     active_subscription_count = int(
         market_universe.get("active_subscription_count")
         or len(sample_payload.get("active_subscriptions") or [])
         or 0
     )
+    active_monitor_symbol_count = sum(
+        1
+        for item in (sample_payload.get("active_subscriptions") or [])
+        if str((item or {}).get("role") or "").strip().lower() == api_app.WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR
+    )
+    if active_monitor_symbol_count <= 0:
+        active_monitor_symbol_count = max(0, active_subscription_count - active_trade_symbol_count)
     ws_subscribed_count = int(
         websocket.get("subscribed_count")
         or len(websocket.get("subscribed_conids") or [])
@@ -119,18 +150,28 @@ def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_s
             config_source.refresh()
         except Exception:
             pass
-    subscription_limit = max(
-        0,
-        int(config_source.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 60) or 0),
+    total_subscription_limit = _resolve_total_subscription_limit(config_source, runtime_environment)
+    trade_subscription_limit = _resolve_trade_subscription_limit(config_source, runtime_environment)
+    total_utilization_pct = (
+        round((active_subscription_count / total_subscription_limit) * 100.0, 2)
+        if total_subscription_limit > 0 else None
     )
-    utilization_pct = round((active_subscription_count / subscription_limit) * 100.0, 2) if subscription_limit > 0 else None
+    trade_utilization_pct = (
+        round((active_trade_symbol_count / trade_subscription_limit) * 100.0, 2)
+        if trade_subscription_limit > 0 else None
+    )
     return {
-        "subscription_limit": subscription_limit,
+        "subscription_limit": total_subscription_limit,
+        "total_subscription_limit": total_subscription_limit,
         "active_subscription_count": active_subscription_count,
-        "active_trade_symbol_count": int(market_universe.get("active_target_count") or 0),
+        "active_trade_symbol_count": active_trade_symbol_count,
+        "active_monitor_symbol_count": active_monitor_symbol_count,
+        "trade_subscription_limit": trade_subscription_limit,
         "ws_subscribed_count": ws_subscribed_count,
         "pending_subscription_count": pending_subscription_count,
-        "utilization_pct": utilization_pct,
+        "utilization_pct": total_utilization_pct,
+        "total_utilization_pct": total_utilization_pct,
+        "trade_utilization_pct": trade_utilization_pct,
         "request_count": int(data_backfill.get("request_count", 0) or 0),
         "retry_count": int(data_backfill.get("retry_count", 0) or 0),
         "throttle_count": int(data_backfill.get("throttle_count", 0) or 0),

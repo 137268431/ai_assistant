@@ -70,23 +70,34 @@ def _selection_panel(environment: str) -> dict:
         == app_mod.WATCHLIST_SYMBOL_ROLE_TRADE
     ]
     active_trade_symbols = sorted(get_active_trade_symbols(environment))
-    daily_scan = build_daily_scan_rule_summary()
+    daily_scan = build_daily_scan_rule_summary(environment)
     tradability = build_tradability_rule_summary()
-    scan_schedule, scan_schedule_source = _resolve_config_text(
+    daily_scan_time, daily_scan_time_source = _resolve_config_text(
         app_mod.cfg,
-        "ibkr_scan_schedule",
+        "ibkr_daily_scan_time_et",
         environment,
-        "7:00-10:00",
+        str(daily_scan.get("scan_time_et") or "09:20"),
     )
+    quality_gates = daily_scan.get("quality_gates") or {}
+    subscription_budget = daily_scan.get("subscription_budget") or {}
+    trade_budget = subscription_budget.get("trade_budget") or "unlimited"
+    total_limit = int(subscription_budget.get("total_limit") or 0)
+    monitor_count = int(subscription_budget.get("monitor_count") or 0)
+    if total_limit > 0:
+        budget_value = f"{trade_budget} trade / {total_limit} total"
+        budget_copy = f"市场监控先预留 {monitor_count} 个 WS 名额"
+    else:
+        budget_value = str(trade_budget)
+        budget_copy = f"当前 market monitor 预留 {monitor_count} 个名额"
 
     return {
         "title": "当前选标规则",
-        "subtitle": "盘前先按 multi-TF 投票生成 candidate / active，再按 tradability score 排序看盘中优先级。",
+        "subtitle": "09:20 ET 先按 multi-TF 投票叠加量能/波动门槛产出 candidate / active，其中 trade active 会先扣除 monitor 订阅名额。",
         "chips": [
             {
-                "label": "扫描时段",
-                "value": f"{scan_schedule} ET",
-                "copy": f"ibkr_scan_schedule · {scan_schedule_source}",
+                "label": "日筛时间",
+                "value": f"{daily_scan_time} ET",
+                "copy": f"ibkr_daily_scan_time_et · {daily_scan_time_source}",
             },
             {
                 "label": "Trade Watchlist",
@@ -94,20 +105,20 @@ def _selection_panel(environment: str) -> dict:
                 "copy": "当前参与日筛的 trade 标池数量",
             },
             {
-                "label": "Active Targets",
-                "value": _format_count(len(active_trade_symbols)),
-                "copy": "当前 active target 数量，盘中优先盯这个集合",
+                "label": "Trade WS Budget",
+                "value": budget_value,
+                "copy": budget_copy,
             },
             {
-                "label": "Operable Gate",
-                "value": f">= {tradability['operable_requirements']['score_gte']}",
-                "copy": "tradability score 达标后才算可操作",
+                "label": "Active Targets",
+                "value": _format_count(len(active_trade_symbols)),
+                "copy": "当前有效 active trade 集合，会参与盘中信号与优先盯盘",
             },
         ],
         "sections": [
             {
-                "title": "盘前日筛投票",
-                "copy": "每个 ready timeframe 只要命中任一条件，就给对应方向加票并加分。",
+                "title": "09:20 日筛投票",
+                "copy": "每个 ready timeframe 只要命中任一条件，就给对应方向加票并加分；方向打平直接淘汰。",
                 "lines": [
                     f"做多主条件: {' / '.join(daily_scan['long_primary'])} 任一命中 => long +1票, +{daily_scan['primary_weight']}分",
                     f"做空主条件: {' / '.join(daily_scan['short_primary'])} 任一命中 => short +1票, +{daily_scan['primary_weight']}分",
@@ -118,8 +129,29 @@ def _selection_panel(environment: str) -> dict:
                 ],
             },
             {
-                "title": "全量筛选榜打分",
-                "copy": "轻量 tradability 评分直接来自 compute 当前阈值。",
+                "title": "量能与波动门槛",
+                "copy": "只有同时过掉下面四个硬门槛的 symbol，才会进入今日自动目标池。",
+                "lines": [
+                    f"avg_10d_volume >= {_format_count(int(quality_gates.get('avg_10d_volume_gte') or 0))}",
+                    f"premarket_volume >= {_format_count(int(quality_gates.get('premarket_volume_gte') or 0))}",
+                    f"atr_pct >= {_format_number(quality_gates.get('atr_pct_gte') or 0)}",
+                    f"|day_change_pct| >= {_format_number(quality_gates.get('abs_day_change_pct_gte') or 0)}%",
+                    "通过后的自动候选会按 technical_score、|day_change_pct|、premarket_volume、avg_10d_volume、atr_pct 顺序排序。",
+                ],
+            },
+            {
+                "title": "WS 订阅预算",
+                "copy": "active 不是无限扩张，先扣市场监控订阅，再给 trade 标的分配剩余额度。",
+                "lines": [
+                    f"总订阅上限: {total_limit if total_limit > 0 else 'unlimited'}",
+                    f"market monitor 预留: {monitor_count}",
+                    f"trade 可用预算: {trade_budget}",
+                    "manual active 会优先保留；自动日筛只会把预算内的标的写成 active，其余保留 candidate。",
+                ],
+            },
+            {
+                "title": "盘中优先级",
+                "copy": "进入目标池后，页面上的全量榜仍会按 tradability score 继续排序，用来做盘中盯盘优先级。",
                 "lines": [
                     "价位: " + "; ".join(
                         f"{rule['summary']} +{rule['score']}" for rule in tradability["price"]

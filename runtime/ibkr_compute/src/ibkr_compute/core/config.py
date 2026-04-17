@@ -12,7 +12,8 @@ class Config:
         "ibkr_market_ws_enabled": "true",
         "ibkr_market_ws_symbols": "SPY,QQQ,VIX",
         "ibkr_target_filter_on": "false",
-        "ibkr_target_subscription_limit": "60",
+        "ibkr_target_subscription_limit": "80",
+        "ibkr_total_subscription_limit": "80",
         "ibkr_target_refresh_sec": "60",
         "ibkr_live_warmup_days": "14",
         "ibkr_restart_overlap_days": "1",
@@ -58,7 +59,12 @@ class Config:
         "ibkr_order_fast_track_sec": "30",
         "ibkr_order_question_suppress_enabled": "false",
         "ibkr_order_question_suppress_message_ids": "",
-        "ibkr_scan_schedule": "7:00-10:00",
+        "ibkr_scan_schedule": "09:20-10:00",
+        "ibkr_daily_scan_time_et": "09:20",
+        "ibkr_daily_scan_min_avg_10d_volume": "100000",
+        "ibkr_daily_scan_min_atr_pct": "0.15",
+        "ibkr_daily_scan_min_abs_day_change_pct": "1.0",
+        "ibkr_daily_scan_min_premarket_volume": "5000",
         "ibkr_publish_batch_size": "10",
         "ibkr_signal_source": "both",
         "signal_manual_confirm_enabled": "true",
@@ -160,4 +166,4 @@ class Config:
 
     @property
     def scan_schedule(self) -> str:
-        return self.get("ibkr_scan_schedule", "7:00-10:00")
+        return self.get("ibkr_scan_schedule", "09:20-10:00")

@@ -995,8 +995,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const readyCount = rows.filter((row) => row.technical_state === 'ready').length;
       const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
       const signaledCount = rows.filter((row) => row.has_signal_today).length;
+      const scanTimeEt = String(workflow.scan_summary_time_et || '09:20');
+      const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt);
+      const workflowTimingCopy = scanTimeEt === openCheckTimeEt
+        ? `${scanTimeEt} ET 日筛先产出 candidate / active，并完成盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新`
+        : `${scanTimeEt} ET 日筛先产出 candidate / active，${openCheckTimeEt} ET 盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新`;
       meta.textContent = `交易日 ${marketDate} · 第 ${currentPage}/${totalPages} 页 · 本页 ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · needs action ${needsActionCount} · 过滤后 ${filteredTotal} 条 · 全量 ${summary.total || 0}`;
-      metaSecondary.textContent = `过滤后 ready ${filteredSummary.ready_count || 0} 条 · signaled ${filteredSummary.signaled_count || 0} 条 · needs action ${filteredSummary.needs_action_count || 0} 条。${workflow.scan_summary_time_et || '05:55'} ET 日筛先产出 candidate / active，${workflow.open_check_time_et || '09:20'} ET 盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新；当前排序先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
+      metaSecondary.textContent = `过滤后 ready ${filteredSummary.ready_count || 0} 条 · signaled ${filteredSummary.signaled_count || 0} 条 · needs action ${filteredSummary.needs_action_count || 0} 条。${workflowTimingCopy}；当前排序先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
       renderCurrentTargetPagination();
 
       if (!rows.length) {

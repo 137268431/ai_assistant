@@ -1,9 +1,59 @@
 from __future__ import annotations
 
+import json
 import traceback
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.market.screener import load_effective_watchlist
+
+
+MANUAL_TARGET_SOURCES = {
+    "ibkr_screener",
+    "manual_page",
+    "manual_page_add",
+    "manual_page_edit",
+    "manual_page_remove",
+    "screener_targets_tab",
+}
+
+
+def _safe_extra(row: dict | None) -> dict:
+    payload = (row or {}).get("extra")
+    if isinstance(payload, dict):
+        return dict(payload)
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _target_row_is_manual(row: dict | None) -> bool:
+    extra = _safe_extra(row)
+    source = str(extra.get("source") or "").strip().lower()
+    if source.startswith("manual_"):
+        return True
+    return source in MANUAL_TARGET_SOURCES
+
+
+def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    target_limit = max(
+        0,
+        int(api_app.cfg.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 80) or 0),
+    )
+    total_limit = max(
+        0,
+        int(api_app.cfg.get_int_for_environment("ibkr_total_subscription_limit", runtime_environment, 80) or 0),
+    )
+    trade_budget: int | None = target_limit if target_limit > 0 else None
+    if total_limit > 0:
+        remaining_budget = max(0, total_limit - len(get_market_monitor_symbols(runtime_environment)))
+        trade_budget = remaining_budget if trade_budget is None else min(trade_budget, remaining_budget)
+    return trade_budget
 
 
 def get_market_monitor_symbols(environment: str) -> set[str]:
@@ -43,11 +93,29 @@ def get_active_trade_symbols(environment: str, market_date: str | None = None) -
     except Exception:
         traceback.print_exc()
         return set()
-    return {
-        str(row.get("symbol", "")).strip().upper()
+    trade_budget = _get_trade_subscription_budget(api_app, runtime_environment)
+    active_rows = [
+        row
         for row in rows
         if str(row.get("symbol", "")).strip()
-    }
+    ]
+    prioritized_rows = [
+        row for row in active_rows if _target_row_is_manual(row)
+    ] + [
+        row for row in active_rows if not _target_row_is_manual(row)
+    ]
+
+    selected_symbols = []
+    seen = set()
+    for row in prioritized_rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        if trade_budget is not None and len(selected_symbols) >= trade_budget:
+            break
+        selected_symbols.append(symbol)
+        seen.add(symbol)
+    return set(selected_symbols)
 
 
 def get_signal_generator_params(environment: str) -> dict:

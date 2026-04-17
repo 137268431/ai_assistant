@@ -1,21 +1,44 @@
 """
-每日标的扫描器 — 盘前7:00-10:00扫描全部watchlist标的
+每日标的扫描器
 
-扫描逻辑 (初版, 纯技术面):
-  1. 读取 watchlist 全部标的
-  2. 对每个标的取多TF指标快照
-  3. 评分: SD位置 + DTP方向/phase + EMA排列 + ATR波动 + 盘前涨跌幅
-  4. 写入 ibkr_targets
-
-TODO P4: 完整实现评分逻辑
+当前实现改为 09:20 ET 的日内波动型初筛：
+  1. 读取 trade watchlist
+  2. 复用 screener 聚合得到量能 / 波动指标
+  3. 保留 multi-TF 技术投票方向
+  4. 叠加 avg_10d_volume / premarket_volume / atr_pct / day_change_pct 的质量门
+  5. 根据 WS 订阅预算把通过标的写成 active / candidate
 """
 
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_symbols
+from ibkr_compute.api.market.screener.payload import build_screener_payload
+from ibkr_compute.api.market.screener.runtime import get_api_app
 from ibkr_compute.integrations.pb_client import PBClient
 
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
+DAILY_SCAN_SOURCE = "daily_scan"
+DAILY_SCAN_STAGE = "daily_scan_0920"
 DAILY_SCAN_PRIMARY_WEIGHT = 2
 DAILY_SCAN_SECONDARY_WEIGHT = 1
 DAILY_SCAN_READY_TIMEFRAME_BONUS = 1
+DEFAULT_SCAN_TIME_ET = "09:20"
+DEFAULT_MIN_AVG_10D_VOLUME = 100_000
+DEFAULT_MIN_ATR_PCT = 0.15
+DEFAULT_MIN_ABS_DAY_CHANGE_PCT = 1.0
+DEFAULT_MIN_PREMARKET_VOLUME = 5_000
+MANUAL_TARGET_SOURCES = {
+    "ibkr_screener",
+    "manual_page",
+    "manual_page_add",
+    "manual_page_edit",
+    "manual_page_remove",
+    "screener_targets_tab",
+}
 
 DAILY_SCAN_LONG_PRIMARY_RULES = (
     ("trend_dir", 1, "trend_dir=1"),
@@ -59,7 +82,175 @@ def _daily_scan_matches_any(snapshot: dict, rules) -> bool:
     return any(_daily_scan_rule_matches(snapshot, rule) for rule in rules)
 
 
-def build_daily_scan_rule_summary() -> dict:
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_extra(row: dict | None) -> dict:
+    payload = (row or {}).get("extra")
+    if isinstance(payload, dict):
+        return dict(payload)
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _target_row_is_manual(row: dict | None) -> bool:
+    extra = _safe_extra(row)
+    source = str(extra.get("source") or "").strip().lower()
+    if source.startswith("manual_"):
+        return True
+    return source in MANUAL_TARGET_SOURCES
+
+
+def _format_threshold(value: float | int) -> str:
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.3f}".rstrip("0").rstrip(".")
+
+
+def _metric_rank_bonus(row: dict) -> int:
+    avg_10d_volume = _safe_float(row.get("avg_10d_volume"))
+    premarket_volume = _safe_float(row.get("premarket_volume"))
+    atr_pct = abs(_safe_float(row.get("atr_pct")))
+    day_change_pct = abs(_safe_float(row.get("day_change_pct")))
+    bonus = 0
+
+    if avg_10d_volume >= 1_000_000:
+        bonus += 5
+    elif avg_10d_volume >= 500_000:
+        bonus += 3
+    elif avg_10d_volume >= DEFAULT_MIN_AVG_10D_VOLUME:
+        bonus += 1
+
+    if premarket_volume >= 30_000:
+        bonus += 5
+    elif premarket_volume >= 10_000:
+        bonus += 3
+    elif premarket_volume >= DEFAULT_MIN_PREMARKET_VOLUME:
+        bonus += 1
+
+    if atr_pct >= 0.30:
+        bonus += 5
+    elif atr_pct >= 0.20:
+        bonus += 3
+    elif atr_pct >= DEFAULT_MIN_ATR_PCT:
+        bonus += 1
+
+    if day_change_pct >= 4.0:
+        bonus += 5
+    elif day_change_pct >= 2.0:
+        bonus += 3
+    elif day_change_pct >= DEFAULT_MIN_ABS_DAY_CHANGE_PCT:
+        bonus += 1
+
+    return bonus
+
+
+def _load_scan_settings(environment: str) -> dict:
+    api_app = get_api_app()
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    api_app.cfg.refresh()
+    monitor_count = len(get_market_monitor_symbols(runtime_environment))
+    target_limit_raw = api_app.cfg.get_int_for_environment(
+        "ibkr_target_subscription_limit",
+        runtime_environment,
+        80,
+    )
+    total_limit_raw = api_app.cfg.get_int_for_environment(
+        "ibkr_total_subscription_limit",
+        runtime_environment,
+        80,
+    )
+    target_limit = max(0, int(target_limit_raw or 0))
+    total_limit = max(0, int(total_limit_raw or 0))
+    trade_budget: int | None = target_limit if target_limit > 0 else None
+    if total_limit > 0:
+        total_budget = max(0, total_limit - monitor_count)
+        trade_budget = total_budget if trade_budget is None else min(trade_budget, total_budget)
+
+    return {
+        "scan_time_et": str(
+            api_app.cfg.get_for_environment(
+                "ibkr_daily_scan_time_et",
+                runtime_environment,
+                DEFAULT_SCAN_TIME_ET,
+            )
+            or DEFAULT_SCAN_TIME_ET
+        ).strip()
+        or DEFAULT_SCAN_TIME_ET,
+        "min_avg_10d_volume": max(
+            0,
+            _safe_int(
+                api_app.cfg.get_for_environment(
+                    "ibkr_daily_scan_min_avg_10d_volume",
+                    runtime_environment,
+                    str(DEFAULT_MIN_AVG_10D_VOLUME),
+                ),
+                DEFAULT_MIN_AVG_10D_VOLUME,
+            ),
+        ),
+        "min_atr_pct": max(
+            0.0,
+            _safe_float(
+                api_app.cfg.get_for_environment(
+                    "ibkr_daily_scan_min_atr_pct",
+                    runtime_environment,
+                    str(DEFAULT_MIN_ATR_PCT),
+                ),
+                DEFAULT_MIN_ATR_PCT,
+            ),
+        ),
+        "min_abs_day_change_pct": max(
+            0.0,
+            _safe_float(
+                api_app.cfg.get_for_environment(
+                    "ibkr_daily_scan_min_abs_day_change_pct",
+                    runtime_environment,
+                    str(DEFAULT_MIN_ABS_DAY_CHANGE_PCT),
+                ),
+                DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
+            ),
+        ),
+        "min_premarket_volume": max(
+            0,
+            _safe_int(
+                api_app.cfg.get_for_environment(
+                    "ibkr_daily_scan_min_premarket_volume",
+                    runtime_environment,
+                    str(DEFAULT_MIN_PREMARKET_VOLUME),
+                ),
+                DEFAULT_MIN_PREMARKET_VOLUME,
+            ),
+        ),
+        "monitor_count": monitor_count,
+        "target_subscription_limit": target_limit,
+        "total_subscription_limit": total_limit,
+        "trade_subscription_budget": trade_budget,
+    }
+
+
+def build_daily_scan_rule_summary(environment: str | None = None) -> dict:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    settings = _load_scan_settings(runtime_environment)
+    trade_budget = settings["trade_subscription_budget"]
+    budget_label = "unlimited" if trade_budget is None else str(int(trade_budget))
     return {
         "primary_weight": DAILY_SCAN_PRIMARY_WEIGHT,
         "secondary_weight": DAILY_SCAN_SECONDARY_WEIGHT,
@@ -71,6 +262,18 @@ def build_daily_scan_rule_summary() -> dict:
         "tie_behavior": "long_votes == short_votes => direction_bias=neutral, score=0",
         "final_bonus": "direction_bias 非 neutral 时额外加上 ready_timeframes_count",
         "reason_fields": [label for _, label in DAILY_SCAN_REASON_RULES],
+        "scan_time_et": settings["scan_time_et"],
+        "quality_gates": {
+            "avg_10d_volume_gte": settings["min_avg_10d_volume"],
+            "atr_pct_gte": settings["min_atr_pct"],
+            "abs_day_change_pct_gte": settings["min_abs_day_change_pct"],
+            "premarket_volume_gte": settings["min_premarket_volume"],
+        },
+        "subscription_budget": {
+            "trade_budget": budget_label,
+            "total_limit": int(settings["total_subscription_limit"] or 0),
+            "monitor_count": int(settings["monitor_count"] or 0),
+        },
     }
 
 
@@ -78,66 +281,207 @@ class DailyScanner:
     def __init__(self, pb_client: PBClient, engines: dict):
         self.pb_client = pb_client
         self.engines = engines
+        self.api_app = get_api_app()
 
     def run_scan(self, date: str, environments=None) -> dict:
         """
-        执行盘前扫描
+        执行每日自动筛选。
 
-        返回: {scanned: int, candidates: int, errors: int}
+        返回聚合统计，active / candidate 已经按订阅预算写入。
         """
         scanned = 0
         candidates = 0
+        active = 0
+        removed = 0
         errors = 0
+        environment_results = []
 
         runtime_environments = environments or ["live", "paper"]
 
         for environment in runtime_environments:
-            watchlist = self._get_watchlist(environment)
-            for item in watchlist:
-                symbol = item.get("symbol", "").upper()
-                if not symbol:
-                    continue
-                scanned += 1
+            result = self._run_environment_scan(date, environment)
+            environment_results.append(result)
+            scanned += int(result.get("scanned", 0) or 0)
+            candidates += int(result.get("candidates", 0) or 0)
+            active += int(result.get("active", 0) or 0)
+            removed += int(result.get("removed", 0) or 0)
+            errors += int(result.get("errors", 0) or 0)
 
-                try:
-                    result = self.evaluate_symbol(symbol, date, environment)
-                    if result and result.get("score", 0) > 0:
-                        self.pb_client.upsert_scan({
-                            "environment": environment,
-                            "symbol": symbol,
-                            "exchange": item.get("exchange", ""),
-                            "date": date,
-                            "direction_bias": result.get("direction_bias", "neutral"),
-                            "score": result.get("score", 0),
-                            "scan_reason": result.get("reason", ""),
-                            "status": "candidate",
-                            "extra": {"environment": environment, **result.get("extra", {})},
-                        })
-                        candidates += 1
-                except Exception as e:
-                    errors += 1
-                    print(f"[Scanner] {environment}/{symbol} error: {e}")
+        return {
+            "scanned": scanned,
+            "candidates": candidates,
+            "active": active,
+            "removed": removed,
+            "errors": errors,
+            "environment_results": environment_results,
+        }
 
-        return {"scanned": scanned, "candidates": candidates, "errors": errors}
+    def _run_environment_scan(self, date: str, environment: str) -> dict:
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        settings = _load_scan_settings(runtime_environment)
+        watchlist = self._get_watchlist(runtime_environment)
+        watchlist_symbols = sorted(
+            {
+                str(item.get("symbol", "")).strip().upper()
+                for item in watchlist
+                if str(item.get("symbol", "")).strip()
+            }
+        )
+        metric_rows = self._build_metric_rows(date, runtime_environment, watchlist_symbols)
+        existing_rows = self._load_today_target_rows(date, runtime_environment)
+        manual_rows = {
+            str(row.get("symbol", "")).strip().upper(): row
+            for row in existing_rows
+            if _target_row_is_manual(row)
+        }
+        manual_retained_symbols = set(manual_rows.keys())
+        manual_active_count = sum(
+            1
+            for row in manual_rows.values()
+            if str(row.get("status", "")).strip().lower() == "active"
+        )
 
-    def evaluate_symbol(self, symbol: str, date: str, environment: str) -> dict:
+        eligible = []
+        errors = 0
+        for item in watchlist:
+            symbol = str(item.get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            try:
+                result = self.evaluate_symbol(
+                    symbol,
+                    date,
+                    runtime_environment,
+                    metrics=metric_rows.get(symbol) or {},
+                    settings=settings,
+                )
+                if result and bool(result.get("quality_gate_passed")):
+                    result["exchange"] = str(item.get("exchange", "") or result.get("exchange", "")).strip().upper()
+                    eligible.append(result)
+            except Exception as exc:
+                errors += 1
+                print(f"[Scanner] {runtime_environment}/{symbol} error: {exc}")
+
+        eligible.sort(
+            key=lambda item: (
+                -_safe_float(item.get("technical_score")),
+                -abs(_safe_float(item.get("day_change_pct"))),
+                -_safe_float(item.get("premarket_volume")),
+                -_safe_float(item.get("avg_10d_volume")),
+                -_safe_float(item.get("atr_pct")),
+                str(item.get("symbol", "")).strip().upper(),
+            )
+        )
+
+        trade_budget = settings["trade_subscription_budget"]
+        if trade_budget is None:
+            auto_active_budget = len(eligible)
+        else:
+            auto_active_budget = max(0, int(trade_budget) - manual_active_count)
+
+        retained_symbols = set(manual_retained_symbols)
+        active_symbols = {
+            symbol
+            for symbol, row in manual_rows.items()
+            if str(row.get("status", "")).strip().lower() == "active"
+        }
+        active_count = 0
+        candidate_count = 0
+
+        auto_rank = 0
+        for result in eligible:
+            symbol = str(result.get("symbol", "")).strip().upper()
+            if not symbol or symbol in manual_retained_symbols:
+                continue
+
+            auto_rank += 1
+            status = "active" if auto_rank <= auto_active_budget else "candidate"
+            retained_symbols.add(symbol)
+            if status == "active":
+                active_symbols.add(symbol)
+                active_count += 1
+            else:
+                candidate_count += 1
+
+            extra = {
+                **(result.get("extra") or {}),
+                "environment": runtime_environment,
+                "source": DAILY_SCAN_SOURCE,
+                "scan_stage": DAILY_SCAN_STAGE,
+                "technical_score": round(_safe_float(result.get("technical_score")), 3),
+                "avg_10d_volume": round(_safe_float(result.get("avg_10d_volume")), 2),
+                "premarket_volume": round(_safe_float(result.get("premarket_volume")), 2),
+                "atr_pct": round(_safe_float(result.get("atr_pct")), 4),
+                "day_change_pct": round(_safe_float(result.get("day_change_pct")), 2),
+                "subscription_rank": len(active_symbols) if status == "active" else 0,
+                "within_subscription_budget": status == "active",
+            }
+            self.pb_client.upsert_scan(
+                {
+                    "environment": runtime_environment,
+                    "symbol": symbol,
+                    "exchange": str(result.get("exchange", "") or "").strip().upper(),
+                    "date": date,
+                    "direction_bias": result.get("direction_bias", "neutral"),
+                    "score": round(_safe_float(result.get("score")), 3),
+                    "scan_reason": result.get("reason", ""),
+                    "status": status,
+                    "extra": extra,
+                }
+            )
+
+        removed = self._reconcile_removed_targets(
+            date=date,
+            environment=runtime_environment,
+            retained_symbols=retained_symbols,
+        )
+
+        return {
+            "environment": runtime_environment,
+            "scan_stage": DAILY_SCAN_STAGE,
+            "scanned": len(watchlist_symbols),
+            "eligible": len([item for item in eligible if str(item.get("symbol", "")).strip().upper() not in manual_retained_symbols]),
+            "candidates": candidate_count + sum(
+                1
+                for row in manual_rows.values()
+                if str(row.get("status", "")).strip().lower() == "candidate"
+            ),
+            "active": active_count + manual_active_count,
+            "removed": removed,
+            "errors": errors,
+            "trade_subscription_budget": trade_budget,
+            "manual_active_count": manual_active_count,
+            "manual_retained_count": len(manual_retained_symbols),
+        }
+
+    def evaluate_symbol(
+        self,
+        symbol: str,
+        date: str,
+        environment: str,
+        *,
+        metrics: dict | None = None,
+        settings: dict | None = None,
+    ) -> dict | None:
         """
-        单标的评分
-
-        先提供一个稳定的轻量评分，避免 scan 永远产出 0 个候选。
+        单标的评分：
+        先看 multi-TF 方向，再叠加日内波动型质量门。
         """
+        del date
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        settings = settings or _load_scan_settings(runtime_environment)
         snapshots = {}
-        for (runtime_environment, sym, tf), engine in self.engines.items():
-            if runtime_environment == environment and sym == symbol and engine.is_ready():
+        for (engine_environment, sym, tf), engine in self.engines.items():
+            if engine_environment == runtime_environment and sym == symbol and engine.is_ready():
                 snapshots[tf] = engine.get_snapshot()
 
         if not snapshots:
             return None
 
-        score = 0
+        technical_score = 0
         long_votes = 0
         short_votes = 0
-        reasons = []
+        technical_reasons = []
 
         for tf, snapshot in snapshots.items():
             if not isinstance(snapshot, dict):
@@ -145,21 +489,21 @@ class DailyScanner:
 
             if _daily_scan_matches_any(snapshot, DAILY_SCAN_LONG_PRIMARY_RULES):
                 long_votes += 1
-                score += DAILY_SCAN_PRIMARY_WEIGHT
+                technical_score += DAILY_SCAN_PRIMARY_WEIGHT
             if _daily_scan_matches_any(snapshot, DAILY_SCAN_SHORT_PRIMARY_RULES):
                 short_votes += 1
-                score += DAILY_SCAN_PRIMARY_WEIGHT
+                technical_score += DAILY_SCAN_PRIMARY_WEIGHT
 
             if _daily_scan_matches_any(snapshot, DAILY_SCAN_LONG_SECONDARY_RULES):
                 long_votes += 1
-                score += DAILY_SCAN_SECONDARY_WEIGHT
+                technical_score += DAILY_SCAN_SECONDARY_WEIGHT
             if _daily_scan_matches_any(snapshot, DAILY_SCAN_SHORT_SECONDARY_RULES):
                 short_votes += 1
-                score += DAILY_SCAN_SECONDARY_WEIGHT
+                technical_score += DAILY_SCAN_SECONDARY_WEIGHT
 
             for rule_key, rule_label in DAILY_SCAN_REASON_RULES:
                 if snapshot.get(rule_key):
-                    reasons.append(f"{tf}:{rule_label}")
+                    technical_reasons.append(f"{tf}:{rule_label}")
 
         if long_votes == short_votes:
             direction_bias = "neutral"
@@ -170,30 +514,135 @@ class DailyScanner:
 
         if direction_bias == "neutral":
             return {
+                "symbol": symbol,
                 "score": 0,
+                "technical_score": 0,
                 "direction_bias": direction_bias,
                 "reason": "vote_tie",
+                "quality_gate_passed": False,
                 "extra": {
-                    "environment": environment,
+                    "environment": runtime_environment,
                     "timeframes_ready": sorted(snapshots.keys()),
                     "long_votes": long_votes,
                     "short_votes": short_votes,
                 },
             }
 
-        score += len(snapshots) * DAILY_SCAN_READY_TIMEFRAME_BONUS
+        technical_score += len(snapshots) * DAILY_SCAN_READY_TIMEFRAME_BONUS
+        metric_row = dict(metrics or {})
+        avg_10d_volume = _safe_float(metric_row.get("avg_10d_volume"))
+        premarket_volume = _safe_float(metric_row.get("premarket_volume"))
+        atr_pct = abs(_safe_float(metric_row.get("atr_pct")))
+        day_change_pct = _safe_float(metric_row.get("day_change_pct"))
+        quality_gate_passed = (
+            avg_10d_volume >= _safe_float(settings.get("min_avg_10d_volume"), DEFAULT_MIN_AVG_10D_VOLUME)
+            and premarket_volume >= _safe_float(settings.get("min_premarket_volume"), DEFAULT_MIN_PREMARKET_VOLUME)
+            and atr_pct >= _safe_float(settings.get("min_atr_pct"), DEFAULT_MIN_ATR_PCT)
+            and abs(day_change_pct) >= _safe_float(
+                settings.get("min_abs_day_change_pct"),
+                DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
+            )
+        )
+
+        gate_reasons = [
+            f"10d>={_format_threshold(settings['min_avg_10d_volume'])}",
+            f"pre>={_format_threshold(settings['min_premarket_volume'])}",
+            f"atr>={_format_threshold(settings['min_atr_pct'])}",
+            f"|day|>={_format_threshold(settings['min_abs_day_change_pct'])}",
+        ]
+        final_score = technical_score + _metric_rank_bonus(metric_row)
+        reason_items = list(dict.fromkeys(technical_reasons[:4] + gate_reasons))
+        reason_text = ", ".join(reason_items[:8]).strip()
+        if not reason_text:
+            reason_text = (
+                f"dir={direction_bias}, tech={technical_score}, pre={round(premarket_volume)}, "
+                f"avg10d={round(avg_10d_volume)}, atr={round(atr_pct, 4)}, day={round(day_change_pct, 2)}"
+            )
 
         return {
-            "score": score,
+            "symbol": symbol,
+            "score": round(final_score, 3),
+            "technical_score": round(technical_score, 3),
             "direction_bias": direction_bias,
-            "reason": ", ".join(reasons[:6]),
+            "reason": reason_text,
+            "quality_gate_passed": quality_gate_passed,
+            "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
+            "avg_10d_volume": round(avg_10d_volume, 2),
+            "premarket_volume": round(premarket_volume, 2),
+            "atr_pct": round(atr_pct, 4),
+            "day_change_pct": round(day_change_pct, 2),
             "extra": {
-                "environment": environment,
+                "environment": runtime_environment,
                 "timeframes_ready": sorted(snapshots.keys()),
                 "long_votes": long_votes,
                 "short_votes": short_votes,
             },
         }
+
+    def _build_metric_rows(self, date: str, environment: str, symbols: list[str]) -> dict[str, dict]:
+        if not symbols:
+            return {}
+        payload = build_screener_payload(
+            environment=environment,
+            market_date=date,
+            symbols=symbols,
+            limit=0,
+        )
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        rows = {}
+        for item in items:
+            symbol = str((item or {}).get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            rows[symbol] = dict(item)
+        return rows
+
+    def _load_today_target_rows(self, date: str, environment: str) -> list[dict]:
+        try:
+            return self.pb_client.get_all_records(
+                "ibkr_targets",
+                filter=(
+                    f'date = "{date}" && '
+                    f'environment = "{environment}" && '
+                    '(status = "candidate" || status = "active")'
+                ),
+                max_pages=20,
+            )
+        except Exception as exc:
+            print(f"[Scanner] load targets error: {exc}")
+            return []
+
+    def _reconcile_removed_targets(self, *, date: str, environment: str, retained_symbols: set[str]) -> int:
+        rows = self._load_today_target_rows(date, environment)
+        removed = 0
+        for row in rows:
+            symbol = str(row.get("symbol", "")).strip().upper()
+            if not symbol or symbol in retained_symbols or _target_row_is_manual(row):
+                continue
+            record_id = str(row.get("id") or "").strip()
+            if not record_id:
+                continue
+            extra = _safe_extra(row)
+            next_extra = {
+                **extra,
+                "source": extra.get("source") or DAILY_SCAN_SOURCE,
+                "scan_stage": DAILY_SCAN_STAGE,
+                "removed_reason": "daily_scan_trim",
+                "removed_at": int(time.time() * 1000),
+            }
+            try:
+                self.pb_client.update_record(
+                    "ibkr_targets",
+                    record_id,
+                    {
+                        "status": "removed",
+                        "extra": next_extra,
+                    },
+                )
+                removed += 1
+            except Exception as exc:
+                print(f"[Scanner] mark removed error: {environment}/{symbol}: {exc}")
+        return removed
 
     def _get_watchlist(self, environment: str) -> list:
         try:
@@ -203,7 +652,7 @@ class DailyScanner:
                     f'(environment = "{environment}" || environment = "global" || environment = "") '
                     f'&& (symbol_role = "{WATCHLIST_SYMBOL_ROLE_TRADE}" || symbol_role = "")'
                 ),
-                per_page=500
+                per_page=500,
             )
             merged = {}
             priority = {"": 0, "global": 1, environment: 2}
@@ -219,6 +668,6 @@ class DailyScanner:
                 applied[symbol] = rank
                 merged[symbol] = item
             return list(merged.values())
-        except Exception as e:
-            print(f"[Scanner] get watchlist error: {e}")
+        except Exception as exc:
+            print(f"[Scanner] get watchlist error: {exc}")
             return []

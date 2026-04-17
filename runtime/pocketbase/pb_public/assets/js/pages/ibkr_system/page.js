@@ -428,7 +428,7 @@ function renderFreshness(data) {
         const item = byInterval[tf];
         if (!item) {
             const freshnessVisual = getIbkrFreshnessVisualState(null);
-            return `<div class="freshness-card is-empty">
+            return `<div class="freshness-card ${freshnessVisual.chipClass}">
                 <div class="freshness-card-head">
                     <span class="freshness-label">${tf}</span>
                     <span class="freshness-chip ${freshnessVisual.chipClass}">${escapeHtml(freshnessVisual.ageLabel)}</span>
@@ -452,7 +452,7 @@ function renderFreshness(data) {
             ? formatTimeLabel(item.last_bar_time_ms)
             : (item.last_bar_time ? formatTimeLabel(item.last_bar_time) : '--');
 
-        return `<div class="freshness-card">
+        return `<div class="freshness-card ${freshnessVisual.chipClass}">
             <div class="freshness-card-head">
                 <span class="freshness-label">${tf}</span>
                 <span class="freshness-chip ${freshnessVisual.chipClass}">${escapeHtml(freshnessVisual.ageLabel)}</span>

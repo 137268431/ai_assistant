@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 
@@ -8,6 +9,38 @@ def _service_mod():
     from . import trading_service as service_mod
 
     return service_mod
+
+
+MANUAL_TARGET_SOURCES = {
+    "ibkr_screener",
+    "manual_page",
+    "manual_page_add",
+    "manual_page_edit",
+    "manual_page_remove",
+    "screener_targets_tab",
+}
+
+
+def _safe_extra(row: dict | None) -> dict:
+    payload = (row or {}).get("extra")
+    if isinstance(payload, dict):
+        return dict(payload)
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _target_row_is_manual(row: dict | None) -> bool:
+    extra = _safe_extra(row)
+    source = str(extra.get("source") or "").strip().lower()
+    if source.startswith("manual_"):
+        return True
+    return source in MANUAL_TARGET_SOURCES
 
 
 class TradingServiceMarketUniverseMixin:
@@ -141,7 +174,34 @@ class TradingServiceMarketUniverseMixin:
 
     def _get_target_subscription_limit(self) -> int:
         service_mod = _service_mod()
-        return max(0, self.config.get_int_for_environment("ibkr_target_subscription_limit", service_mod.ENVIRONMENT, 60))
+        return max(0, self.config.get_int_for_environment("ibkr_target_subscription_limit", service_mod.ENVIRONMENT, 80))
+
+    def _get_total_subscription_limit(self) -> int:
+        service_mod = _service_mod()
+        return max(0, self.config.get_int_for_environment("ibkr_total_subscription_limit", service_mod.ENVIRONMENT, 80))
+
+    def _get_trade_subscription_budget(self) -> int | None:
+        target_limit = self._get_target_subscription_limit()
+        total_limit = self._get_total_subscription_limit()
+        trade_budget = target_limit if target_limit > 0 else None
+        if total_limit > 0:
+            remaining_budget = max(0, total_limit - len(self._market_ws_symbols()))
+            trade_budget = remaining_budget if trade_budget is None else min(trade_budget, remaining_budget)
+        return trade_budget
+
+    def _parse_hhmm(self, raw_value) -> tuple[int, int] | None:
+        text = str(raw_value or "").strip()
+        if not text:
+            return None
+        try:
+            hour_text, minute_text = text.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            return None
+        return None
 
     def _today_target_rows(self):
         service_mod = _service_mod()
@@ -161,21 +221,29 @@ class TradingServiceMarketUniverseMixin:
 
     def _build_target_subscription_plan(self):
         target_date, rows = self._today_target_rows()
-        limit = self._get_target_subscription_limit()
+        trade_budget = self._get_trade_subscription_budget()
         selected_symbols = []
         selected_meta = {}
         selected_rows = []
         seen = set()
 
-        for row in rows:
+        active_rows = [
+            row
+            for row in rows
+            if str(row.get("status", "") or "").strip().lower() == "active"
+        ]
+        prioritized_rows = [
+            row for row in active_rows if _target_row_is_manual(row)
+        ] + [
+            row for row in active_rows if not _target_row_is_manual(row)
+        ]
+
+        for row in prioritized_rows:
             symbol = str(row.get("symbol", "")).upper()
             if not symbol or symbol in seen:
                 continue
-            if limit and len(selected_symbols) >= limit:
+            if trade_budget is not None and len(selected_rows) >= trade_budget:
                 break
-            score = float(row.get("score", 0) or 0)
-            if score <= 0:
-                continue
 
             watchlist_row = self._watchlist_records.get(symbol) or {}
             selected_symbols.append(symbol)
@@ -233,6 +301,8 @@ class TradingServiceMarketUniverseMixin:
             record_id = str(row.get("id") or "")
             if not record_id:
                 continue
+            if _target_row_is_manual(row):
+                continue
             desired = "active" if record_id in selected_ids else "candidate"
             current = str(row.get("status", "") or "").strip().lower()
             if current == desired:
@@ -244,19 +314,19 @@ class TradingServiceMarketUniverseMixin:
 
     def _scan_schedule_start(self) -> tuple[int, int]:
         service_mod = _service_mod()
+        preferred = self._parse_hhmm(
+            self.config.get_for_environment("ibkr_daily_scan_time_et", service_mod.ENVIRONMENT, "09:20")
+        )
+        if preferred:
+            return preferred
         raw_schedule = str(
-            self.config.get_for_environment("ibkr_scan_schedule", service_mod.ENVIRONMENT, "7:00-10:00") or ""
+            self.config.get_for_environment("ibkr_scan_schedule", service_mod.ENVIRONMENT, "09:20-10:00") or ""
         ).strip()
-        start_text = raw_schedule.split("-", 1)[0].strip() or "07:00"
-        try:
-            hour_text, minute_text = start_text.split(":", 1)
-            hour = int(hour_text)
-            minute = int(minute_text)
-            if 0 <= hour <= 23 and 0 <= minute <= 59:
-                return hour, minute
-        except Exception:
-            pass
-        return 7, 0
+        start_text = raw_schedule.split("-", 1)[0].strip() or "09:20"
+        scheduled = self._parse_hhmm(start_text)
+        if scheduled:
+            return scheduled
+        return 9, 20
 
     def _scan_window_open(self) -> bool:
         service_mod = _service_mod()

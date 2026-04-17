@@ -294,19 +294,32 @@
 .freshness-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+    gap: 12px;
 }
 .freshness-card {
     display: grid;
-    gap: 8px;
+    gap: 10px;
     min-width: 0;
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: var(--surface2);
-    border: 1px solid rgba(255,255,255,0.05);
+    padding: 12px;
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(20,28,46,0.92), rgba(10,16,28,0.98));
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 }
 .freshness-card.is-empty {
     opacity: 0.82;
+}
+.freshness-card.is-fresh {
+    border-color: rgba(34,197,94,0.16);
+    background: linear-gradient(180deg, rgba(16,40,32,0.9), rgba(10,16,28,0.98));
+}
+.freshness-card.is-warn {
+    border-color: rgba(245,158,11,0.2);
+    background: linear-gradient(180deg, rgba(43,28,14,0.92), rgba(10,16,28,0.98));
+}
+.freshness-card.is-stale {
+    border-color: rgba(239,68,68,0.2);
+    background: linear-gradient(180deg, rgba(46,20,24,0.92), rgba(10,16,28,0.98));
 }
 .freshness-card-head {
     display: flex;
@@ -327,7 +340,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 3px 8px;
+    padding: 4px 8px;
     border-radius: 999px;
     font-size: 9px;
     line-height: 1;
@@ -355,7 +368,7 @@
 }
 .freshness-meta {
     display: grid;
-    gap: 4px;
+    gap: 6px;
     min-width: 0;
 }
 .freshness-meta-top {
@@ -367,27 +380,51 @@
 }
 .freshness-bar-bg {
     width: 100%;
-    height: 7px;
-    background: var(--surface2);
-    border-radius: 3px;
+    height: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 999px;
     overflow: hidden;
 }
 .freshness-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: 999px;
     transition: width 0.5s;
 }
 .freshness-state {
-    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
     font-size: 9px;
+    line-height: 1;
     font-family: 'JetBrains Mono', monospace;
-    text-align: right;
+    text-align: center;
     flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    color: var(--muted);
+}
+.freshness-card.is-fresh .freshness-state {
+    color: #22c55e;
+    border-color: rgba(34,197,94,0.22);
+    background: rgba(34,197,94,0.12);
+}
+.freshness-card.is-warn .freshness-state {
+    color: #f59e0b;
+    border-color: rgba(245,158,11,0.24);
+    background: rgba(245,158,11,0.12);
+}
+.freshness-card.is-stale .freshness-state {
+    color: #ef4444;
+    border-color: rgba(239,68,68,0.24);
+    background: rgba(239,68,68,0.12);
 }
 .freshness-link {
     color: var(--accent);
     text-decoration: none;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     min-width: 0;
     overflow: hidden;
@@ -399,9 +436,9 @@
 }
 .freshness-time {
     color: var(--muted);
-    font-size: 9px;
+    font-size: 10px;
     font-family: 'JetBrains Mono', monospace;
-    line-height: 1.5;
+    line-height: 1.45;
     word-break: break-word;
 }
 
@@ -783,6 +820,12 @@
     color: var(--muted);
     line-height: 1.6;
     word-break: break-word;
+}
+
+@media (min-width: 1400px) {
+    .freshness-grid {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
 }
 
 @media (max-width: 1480px) {

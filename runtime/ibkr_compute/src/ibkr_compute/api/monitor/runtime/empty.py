@@ -3,6 +3,31 @@ from __future__ import annotations
 from ibkr_compute.api.monitor.host import _api_app
 
 
+def _resolve_total_subscription_limit(runtime_environment: str) -> int:
+    api_app = _api_app()
+    total_limit = max(
+        0,
+        int(api_app.cfg.get_int_for_environment("ibkr_total_subscription_limit", runtime_environment, 80) or 0),
+    )
+    if total_limit > 0:
+        return total_limit
+    return max(
+        0,
+        int(api_app.cfg.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 80) or 0),
+    )
+
+
+def _resolve_trade_subscription_limit(runtime_environment: str) -> int:
+    api_app = _api_app()
+    trade_limit = max(
+        0,
+        int(api_app.cfg.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 80) or 0),
+    )
+    if trade_limit > 0:
+        return trade_limit
+    return _resolve_total_subscription_limit(runtime_environment)
+
+
 def _build_empty_monitor_samples() -> dict:
     return {
         "active_subscriptions": [],
@@ -14,17 +39,18 @@ def _build_empty_monitor_samples() -> dict:
 
 
 def _build_empty_api_utilization_snapshot(runtime_environment: str) -> dict:
-    api_app = _api_app()
     return {
-        "subscription_limit": max(
-            0,
-            int(api_app.cfg.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 60) or 0),
-        ),
+        "subscription_limit": _resolve_total_subscription_limit(runtime_environment),
+        "total_subscription_limit": _resolve_total_subscription_limit(runtime_environment),
         "active_subscription_count": 0,
         "active_trade_symbol_count": 0,
+        "active_monitor_symbol_count": 0,
+        "trade_subscription_limit": _resolve_trade_subscription_limit(runtime_environment),
         "ws_subscribed_count": 0,
         "pending_subscription_count": 0,
         "utilization_pct": 0.0,
+        "total_utilization_pct": 0.0,
+        "trade_utilization_pct": 0.0,
         "request_count": 0,
         "retry_count": 0,
         "throttle_count": 0,

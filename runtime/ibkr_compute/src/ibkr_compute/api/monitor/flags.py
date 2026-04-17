@@ -47,25 +47,45 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             "实时行情 WebSocket 未连通或未进入 ready 状态。",
         )
 
-    utilization_pct = api_utilization.get("utilization_pct")
-    subscription_limit = int(api_utilization.get("subscription_limit", 0) or 0)
+    trade_utilization_pct = api_utilization.get("trade_utilization_pct")
+    trade_subscription_limit = int(
+        api_utilization.get("trade_subscription_limit")
+        or api_utilization.get("subscription_limit", 0)
+        or 0
+    )
+    active_trade_symbol_count = int(api_utilization.get("active_trade_symbol_count", 0) or 0)
     active_subscription_count = int(api_utilization.get("active_subscription_count", 0) or 0)
-    if utilization_pct is not None and subscription_limit > 0:
-        if active_subscription_count > subscription_limit:
+    active_monitor_symbol_count = int(
+        api_utilization.get("active_monitor_symbol_count")
+        or max(0, active_subscription_count - active_trade_symbol_count)
+        or 0
+    )
+    if trade_utilization_pct is not None and trade_subscription_limit > 0:
+        detail_suffix = (
+            f" 另有固定 market monitor {active_monitor_symbol_count} 个。"
+            if active_monitor_symbol_count > 0 else ""
+        )
+        if active_trade_symbol_count > trade_subscription_limit:
             _append_monitor_flag(
                 flags,
                 "error",
                 "subscription_utilization_critical",
                 "Subscription utilization critical",
-                f"当前订阅占用 {active_subscription_count}/{subscription_limit} ({utilization_pct:.2f}%) ，已经超过上限。",
+                (
+                    f"当前 trade 订阅占用 {active_trade_symbol_count}/{trade_subscription_limit} "
+                    f"({trade_utilization_pct:.2f}%) ，已经超过上限。{detail_suffix}"
+                ),
             )
-        elif active_subscription_count >= subscription_limit:
+        elif active_trade_symbol_count >= trade_subscription_limit:
             _append_monitor_flag(
                 flags,
                 "warning",
                 "subscription_utilization_high",
                 "Subscription utilization high",
-                f"当前订阅占用 {active_subscription_count}/{subscription_limit} ({utilization_pct:.2f}%) ，已经达到上限。",
+                (
+                    f"当前 trade 订阅占用 {active_trade_symbol_count}/{trade_subscription_limit} "
+                    f"({trade_utilization_pct:.2f}%) ，已经达到上限。{detail_suffix}"
+                ),
             )
 
     pending_subscription_count = int(api_utilization.get("pending_subscription_count", 0) or 0)

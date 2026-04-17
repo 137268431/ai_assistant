@@ -115,6 +115,9 @@ function fetchComputeJson(path, timeoutSeconds, environment) {
     if (result && result.upstream && !Array.isArray(payload) && !payload.proxy_upstream) {
         payload.proxy_upstream = result.upstream
     }
+    if (result && result.status_code && !Array.isArray(payload) && payload.proxy_status_code == null) {
+        payload.proxy_status_code = Number(result.status_code || 0) || 0
+    }
     return payload
 }
 
@@ -133,9 +136,13 @@ function selectMonitorAlertFlags(flags) {
 
 function buildSyntheticMonitorAlertFlags(monitorPayload) {
     const status = String(monitorPayload && monitorPayload.status || "").trim().toLowerCase()
-    const code = toNumber(monitorPayload && monitorPayload.code, 0)
+    const code = toNumber(monitorPayload && (monitorPayload.proxy_status_code != null ? monitorPayload.proxy_status_code : monitorPayload.code), 0)
     const error = String(monitorPayload && monitorPayload.error || "").trim()
-    if (!error && status !== "offline" && status !== "error" && code < 500) {
+    const proxyUpstream = String(monitorPayload && monitorPayload.proxy_upstream || "").trim()
+    if (proxyUpstream && code < 400) {
+        return []
+    }
+    if (!error && status !== "offline" && code < 400) {
         return []
     }
     const detail = error || (code > 0
@@ -246,6 +253,30 @@ function formatBytes(value) {
     return `${size.toFixed(digits)} ${units[unitIndex]}`
 }
 
+function formatMonitorSubscriptionUsage(apiUtilization) {
+    const totalCount = toNumber(apiUtilization && apiUtilization.active_subscription_count, 0)
+    const totalLimit = toNumber(apiUtilization && (apiUtilization.total_subscription_limit != null ? apiUtilization.total_subscription_limit : apiUtilization.subscription_limit), 0)
+    const tradeCount = toNumber(apiUtilization && apiUtilization.active_trade_symbol_count, 0)
+    const tradeLimit = toNumber(apiUtilization && (apiUtilization.trade_subscription_limit != null ? apiUtilization.trade_subscription_limit : apiUtilization.subscription_limit), 0)
+    const tradePct = toNumber(apiUtilization && (apiUtilization.trade_utilization_pct != null ? apiUtilization.trade_utilization_pct : apiUtilization.utilization_pct), 0)
+    const monitorCount = toNumber(
+        apiUtilization && (apiUtilization.active_monitor_symbol_count != null
+            ? apiUtilization.active_monitor_symbol_count
+            : Math.max(0, totalCount - tradeCount)),
+        0
+    )
+    const parts = [
+        `trade ${tradeCount}/${tradeLimit || "--"} (${tradePct.toFixed(2)}%)`,
+    ]
+    if (totalCount > 0 || totalLimit > 0) {
+        parts.push(`total ${totalCount}/${totalLimit || "--"}`)
+    }
+    if (monitorCount > 0) {
+        parts.push(`monitor ${monitorCount}`)
+    }
+    return parts.join(" · ")
+}
+
 function runSystemMonitorAlertGuard(logPrefix) {
     const prefix = logPrefix || "[IBKRMonitorAlert]"
     const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
@@ -346,7 +377,7 @@ function runSystemMonitorAlertGuard(logPrefix) {
             "检查时间": times.us,
             "监控状态": String(monitorPayload.status || "unknown").toUpperCase(),
             "触发项": effectiveAlertFlags.slice(0, 4).map((item) => `${item.title || item.code}: ${item.detail || ""}`).join(" | "),
-            "订阅占用": `${toNumber(apiUtilization.active_subscription_count, 0)}/${toNumber(apiUtilization.subscription_limit, 0)} (${toNumber(apiUtilization.utilization_pct, 0).toFixed(2)}%)`,
+            "订阅占用": formatMonitorSubscriptionUsage(apiUtilization),
             "WebSocket": `msg_age=${apiUtilization.last_message_age_s != null ? `${apiUtilization.last_message_age_s}s` : "--"} · subs=${toNumber(apiUtilization.ws_subscribed_count, 0)} · pending=${toNumber(apiUtilization.pending_subscription_count, 0)}`,
             "主机CPU": cpu.used_pct != null ? `${cpu.used_pct}%` : "--",
             "主机Load/CPU": loadavg.per_cpu_1 != null ? String(loadavg.per_cpu_1) : "--",
