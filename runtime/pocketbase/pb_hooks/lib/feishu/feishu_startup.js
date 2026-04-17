@@ -18,12 +18,12 @@ var STEP_ORDER = [
 ]
 
 var STEP_LABELS = {
-    service_boot: "服务已拉起",
-    card_ready: "已准备 2FA 卡片",
-    manual_trigger: "已在飞书手动触发 2FA",
-    manual_confirm: "已完成当前 2FA 验证",
-    runtime_resume: "鉴权成功并恢复 Runtime",
-    health_check: "健康检查通过",
+    service_boot: "服务拉起",
+    card_ready: "准备 2FA 卡片",
+    manual_trigger: "在飞书手动触发 2FA",
+    manual_confirm: "完成当前 2FA 验证",
+    runtime_resume: "恢复 Runtime 运行态",
+    health_check: "启动后健康检查",
 }
 
 var LEGACY_STEP_KEY_MAP = {
@@ -293,10 +293,162 @@ function mergeSteps(existingSteps, patchSteps, context) {
     return translatePatchSteps(existingSteps, patchSteps, context)
 }
 
+function getStepOrderIndex(key) {
+    var normalizedKey = mapStepKeyToDisplayKey(key)
+    for (var i = 0; i < STEP_ORDER.length; i++) {
+        if (STEP_ORDER[i] === normalizedKey) return i
+    }
+    return -1
+}
+
+function isRecoveredProgressStatus(status) {
+    var normalizedStatus = normalizeStepStatus(status)
+    return normalizedStatus === "running" || normalizedStatus === "done"
+}
+
+function hasManualAuthProgress(steps, state) {
+    if (state && state.trigger_login === true) return true
+    var manualKeys = ["card_ready", "manual_trigger", "manual_confirm"]
+    for (var i = 0; i < manualKeys.length; i++) {
+        var key = manualKeys[i]
+        var stepStatus = normalizeStepStatus(((steps || {})[key] || {}).status)
+        if (stepStatus !== "pending" && stepStatus !== "skipped") {
+            return true
+        }
+    }
+    return false
+}
+
+function hasRecoveredRuntimeProgress(state) {
+    var normalized = state && typeof state === "object" ? state : {}
+    var steps = normalized.steps || {}
+    var currentStepIndex = getStepOrderIndex(normalized.current_step)
+    var runtimeResumeIndex = getStepOrderIndex("runtime_resume")
+    var runtimeResumeStatus = normalizeStepStatus((steps.runtime_resume || {}).status)
+    var healthCheckStatus = normalizeStepStatus((steps.health_check || {}).status)
+    var overallStatus = String(normalized.status || "").trim().toLowerCase()
+    return isRecoveredProgressStatus(runtimeResumeStatus)
+        || isRecoveredProgressStatus(healthCheckStatus)
+        || (runtimeResumeIndex >= 0 && currentStepIndex >= runtimeResumeIndex)
+        || overallStatus === "completed"
+}
+
+function reconcileRecoveredStartupState(state) {
+    var normalized = state && typeof state === "object" ? state : {}
+    normalized.steps = normalizeSteps(normalized.steps)
+
+    if (!hasRecoveredRuntimeProgress(normalized)) {
+        return normalized
+    }
+
+    var steps = normalized.steps || {}
+    var overallStatus = String(normalized.status || "").trim().toLowerCase()
+    var archivedRecovery = overallStatus === "aborted" || overallStatus === "failed"
+    var currentStepIndex = getStepOrderIndex(normalized.current_step)
+    var runtimeResumeIndex = getStepOrderIndex("runtime_resume")
+    var healthCheckStatus = normalizeStepStatus((steps.health_check || {}).status)
+    var manualAuthProgress = hasManualAuthProgress(steps, normalized)
+    var runtimeResumeShouldBeDone = archivedRecovery
+        || overallStatus === "completed"
+        || healthCheckStatus === "done"
+        || (runtimeResumeIndex >= 0 && currentStepIndex > runtimeResumeIndex)
+    var serviceBootStatus = normalizeStepStatus((steps.service_boot || {}).status)
+    var cardReadyStatus = normalizeStepStatus((steps.card_ready || {}).status)
+    var manualTriggerStatus = normalizeStepStatus((steps.manual_trigger || {}).status)
+    var manualConfirmStatus = normalizeStepStatus((steps.manual_confirm || {}).status)
+    var runtimeResumeStatus = normalizeStepStatus((steps.runtime_resume || {}).status)
+
+    if (serviceBootStatus !== "done") {
+        applyStepPatch(steps, "service_boot", {
+            status: "done",
+            detail: (steps.service_boot && steps.service_boot.detail) || "Gateway 已启动并可访问。",
+        })
+    }
+
+    if (!manualAuthProgress) {
+        applyStepPatch(steps, "card_ready", {
+            status: "skipped",
+            detail: "当前轮次复用了已有认证，无需准备新的 2FA 卡片。",
+        })
+        applyStepPatch(steps, "manual_trigger", {
+            status: "skipped",
+            detail: "当前轮次复用了已有认证，无需手动触发 2FA。",
+        })
+        applyStepPatch(steps, "manual_confirm", {
+            status: "skipped",
+            detail: "当前轮次复用了已有认证，无需额外人工确认。",
+        })
+    } else if (archivedRecovery) {
+        if (cardReadyStatus !== "done") {
+            applyStepPatch(steps, "card_ready", {
+                status: "skipped",
+                detail: "旧启动轮次已结束，这张 2FA 卡片不再影响当前运行态。",
+            })
+        }
+        if (manualTriggerStatus !== "done") {
+            applyStepPatch(steps, "manual_trigger", {
+                status: "skipped",
+                detail: "旧失败轮次已结束，不再沿用之前的手动触发结果。",
+            })
+        }
+        if (manualConfirmStatus !== "done") {
+            applyStepPatch(steps, "manual_confirm", {
+                status: "skipped",
+                detail: "旧失败轮次已结束，不再沿用之前的人工验证结果。",
+            })
+        }
+    } else {
+        if (cardReadyStatus !== "done") {
+            applyStepPatch(steps, "card_ready", {
+                status: "done",
+                detail: "当前 2FA 卡片阶段已结束。",
+            })
+        }
+        if (manualTriggerStatus !== "done") {
+            applyStepPatch(steps, "manual_trigger", {
+                status: "done",
+                detail: "当前轮次的手动触发步骤已完成。",
+            })
+        }
+        if (manualConfirmStatus !== "done") {
+            applyStepPatch(steps, "manual_confirm", {
+                status: "done",
+                detail: "当前轮次的 2FA 验证已完成。",
+            })
+        }
+    }
+
+    if (runtimeResumeStatus !== "done" && runtimeResumeStatus !== "running") {
+        applyStepPatch(steps, "runtime_resume", {
+            status: runtimeResumeShouldBeDone ? "done" : "running",
+            detail: archivedRecovery
+                ? "旧启动轮次已结束，当前运行态已恢复。"
+                : (runtimeResumeShouldBeDone
+                    ? "认证恢复后 Runtime 已回到可运行状态。"
+                    : "认证已恢复，正在继续恢复 Runtime。"),
+        })
+    } else if (runtimeResumeStatus === "running" && runtimeResumeShouldBeDone) {
+        applyStepPatch(steps, "runtime_resume", {
+            status: "done",
+            detail: (steps.runtime_resume && steps.runtime_resume.detail) || "认证恢复后 Runtime 已回到可运行状态。",
+        })
+    }
+
+    if (archivedRecovery && healthCheckStatus !== "done") {
+        applyStepPatch(steps, "health_check", {
+            status: "skipped",
+            detail: "旧启动轮次已结束，健康检查不再沿用该轮次结果。",
+        })
+    }
+
+    normalized.steps = steps
+    return normalized
+}
+
 function normalizeState(rawState, environment) {
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || "", envUtils.LIVE_ENVIRONMENT)
     var state = rawState && typeof rawState === "object" ? rawState : {}
-    return {
+    return reconcileRecoveredStartupState({
         cycle_id: String(state.cycle_id || ""),
         startup_seq: Math.max(0, parseInt(state.startup_seq, 10) || 0),
         startup_label: String(state.startup_label || ""),
@@ -322,7 +474,7 @@ function normalizeState(rawState, environment) {
         last_delivery_error: String(state.last_delivery_error || ""),
         fields: normalizeFields(state.fields),
         steps: normalizeSteps(state.steps),
-    }
+    })
 }
 
 function getStatePayload(environment) {
@@ -463,6 +615,8 @@ function resolveHeader(state) {
     var status = String(state.status || "active").trim().toLowerCase()
     var hasBlockingFailure = false
     var steps = state.steps || {}
+    var recoveredRuntime = hasRecoveredRuntimeProgress(state)
+    var healthCheckDone = normalizeStepStatus((steps.health_check || {}).status) === "done"
     for (var i = 0; i < STEP_ORDER.length; i++) {
         var key = STEP_ORDER[i]
         if (normalizeStepStatus((steps[key] || {}).status) === "failed") {
@@ -471,8 +625,11 @@ function resolveHeader(state) {
         }
     }
 
-    if (status === "completed") {
+    if (status === "completed" || (recoveredRuntime && healthCheckDone)) {
         return { icon: "✅", template: "green" }
+    }
+    if (recoveredRuntime) {
+        return { icon: "ℹ️", template: "blue" }
     }
     if (status === "failed") {
         return { icon: "❌", template: "red" }

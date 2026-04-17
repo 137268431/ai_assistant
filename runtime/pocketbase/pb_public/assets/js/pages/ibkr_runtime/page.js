@@ -17,12 +17,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             panic_reset_2fa: '重开验证'
         };
         const STARTUP_STEP_LABELS = {
-            service_boot: '服务已拉起',
-            card_ready: '已准备 2FA 卡片',
-            manual_trigger: '已在飞书手动触发 2FA',
-            manual_confirm: '已完成当前 2FA 验证',
-            runtime_resume: '鉴权成功并恢复 Runtime',
-            health_check: '健康检查通过'
+            service_boot: '服务拉起',
+            card_ready: '准备 2FA 卡片',
+            manual_trigger: '在飞书手动触发 2FA',
+            manual_confirm: '完成当前 2FA 验证',
+            runtime_resume: '恢复 Runtime 运行态',
+            health_check: '启动后健康检查'
         };
 
         function setRuntimeLoading(active, title, copy) {
@@ -735,8 +735,17 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             `;
         }
 
+        function normalizeTwoFactorStatus(value) {
+            const text = String(value || '').trim().toLowerCase();
+            if (!text) return 'requested';
+            if (['pending', 'waiting_mobile_approval', 'mobile_approval', 'awaiting_mobile_approval'].includes(text)) return 'waiting_confirm';
+            if (['complete', 'completed', 'authenticated'].includes(text)) return 'success';
+            if (text === 'error') return 'failed';
+            return text;
+        }
+
         function getTwoFactorStatusKey(twoFactorState = latestTwoFactorState) {
-            return String(twoFactorState?.status || '').trim().toLowerCase();
+            return normalizeTwoFactorStatus(twoFactorState?.status || '');
         }
 
         function isTwoFactorCycleActive(twoFactorState = latestTwoFactorState) {
@@ -758,7 +767,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function deriveTwoFactorUiState(twoFactorState = latestTwoFactorState, options = {}) {
             const nowMs = Number(options.now_ms || Date.now()) || Date.now();
             const state = { ...(twoFactorState || {}) };
-            const status = String(state.status || '').trim().toLowerCase();
+            const status = normalizeTwoFactorStatus(state.status || '');
             const responseStatus = String(state.response_status || '').trim().toLowerCase();
             const challengeCode = String(state.challenge_code || '').trim();
             const feedback = String(state.challenge_feedback || '').trim();
@@ -807,6 +816,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 operatorAction = 'request_new_cycle';
             }
 
+            state.status = status;
             state.response_status = responseStatus;
             state.challenge_feedback = feedback;
             state.operator_action = operatorAction;

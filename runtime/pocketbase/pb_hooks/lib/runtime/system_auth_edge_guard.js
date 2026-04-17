@@ -94,10 +94,13 @@ function loadRuntimeSnapshot(environment) {
     return {
         ok: payload.ok !== false,
         starting: payload.starting,
+        runtime_phase: payload.runtime_phase || "",
+        auth_recovery: payload.auth_recovery || {},
         session: payload.session || {},
         gateway: payload.gateway || {},
         websocket: payload.websocket || {},
         order_tracker: payload.order_tracker || {},
+        warmup: payload.warmup || {},
     }
 }
 
@@ -134,6 +137,11 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
         pending_too_long: pendingTooLong,
         cycle_id: String(state.cycle_id || ""),
         recovery_phase: String(state.recovery_phase || ""),
+        recovery_reason: String(state.recovery_reason || ""),
+        interruption_kind: String(state.interruption_kind || ""),
+        last_runtime_authenticated_at: String(state.last_runtime_authenticated_at || ""),
+        last_gateway_status_code: toNumber(state.last_gateway_status_code, 0),
+        last_recovery_source: String(state.last_recovery_source || ""),
         age_min: ageMin,
         requested_at: String(state.requested_at || ""),
         triggered_at: String(state.triggered_at || ""),
@@ -156,6 +164,8 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
         runtime_authenticated: runtimeAuthenticated,
         gateway_reachable: gatewayReachable,
         gateway_status_code: gatewayStatusCode,
+        gateway_pid: toNumber(runtimeStatus.gateway && runtimeStatus.gateway.pid, 0),
+        gateway_uptime_s: toNumber(runtimeStatus.gateway && runtimeStatus.gateway.uptime_s, 0),
     }
 }
 
@@ -165,6 +175,16 @@ function isAuthActiveStatus(status) {
 
 function isWaitingResponseIssueKind(kind) {
     return String(kind || "").trim().toLowerCase().indexOf("waiting_response") === 0
+}
+
+function isGatewayDownAuthIssue(auth) {
+    if (!auth || typeof auth !== "object") return false
+    const markers = [
+        auth.reason,
+        auth.recovery_reason,
+        auth.interruption_kind,
+    ]
+    return markers.some((value) => String(value || "").trim().toLowerCase() === "gateway_down")
 }
 
 function buildWaitingResponseAdvice(auth) {
@@ -270,6 +290,13 @@ function buildAuthImmediateIssue(auth) {
     }
 
     if (gatewayStatusCode === 401 && !runtimeAuthenticated) {
+        if (isGatewayDownAuthIssue(auth)) {
+            return {
+                kind: "gateway_restart_reauth_required",
+                title: "IBKR Gateway 已重启，需重新完成 2FA",
+                summary: "检测到 Gateway 重启后会话尚未恢复认证（401），当前需要重新完成这一轮 2FA。",
+            }
+        }
         return {
             kind: "session_expired",
             title: "IBKR Session 已失效，需重新触发 2FA",
@@ -301,6 +328,8 @@ function buildAuthImmediateFingerprint(auth, issue) {
         requested_at: auth && auth.requested_at || "",
         triggered_at: auth && auth.triggered_at || "",
         gateway_status_code: auth && auth.gateway_status_code || 0,
+        recovery_reason: auth && auth.recovery_reason || "",
+        interruption_kind: auth && auth.interruption_kind || "",
         runtime_started: auth && auth.runtime_started ? "yes" : "no",
         runtime_authenticated: auth && auth.runtime_authenticated ? "yes" : "no",
         challenge_code: auth && auth.challenge_code || "",
@@ -435,11 +464,16 @@ function runIbkrAuthEdgeGuard() {
                 "Session认证": auth.runtime_authenticated ? "yes" : "no",
                 "Runtime已启动": auth.runtime_started ? "yes" : "no",
                 "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
+                "Gateway运行时长(s)": auth.gateway_uptime_s > 0 ? String(auth.gateway_uptime_s) : "n/a",
                 "处理建议": isWaitingResponseIssueKind(issue.kind)
                     ? buildWaitingResponseAdvice(auth)
+                    : issue.kind === "gateway_restart_reauth_required"
+                        ? "本次是 Gateway 重启后的新轮次。优先处理当前 2FA，不要把它当成旧 Session 自然失效后反复重触发。"
                     : "优先打开 Runtime 页面确认当前状态；如果仍是 waiting_confirm，只在 IBKR App 点一次确认。",
             }
             if (auth.reason) detail["触发原因"] = auth.reason
+            if (auth.recovery_reason) detail["恢复原因"] = auth.recovery_reason
+            if (auth.interruption_kind) detail["中断类型"] = auth.interruption_kind
             if (auth.message) detail["最近反馈"] = auth.message
             if (auth.mode) detail["验证模式"] = auth.mode
             if (auth.challenge_code) detail["Challenge"] = auth.challenge_code
@@ -453,6 +487,8 @@ function runIbkrAuthEdgeGuard() {
             if (auth.reset_reason) detail["重开原因"] = auth.reset_reason
             if (auth.requested_at) detail["请求时间"] = auth.requested_at
             if (auth.triggered_at) detail["触发时间"] = auth.triggered_at
+            if (auth.last_runtime_authenticated_at) detail["上次认证成功"] = auth.last_runtime_authenticated_at
+            if (auth.gateway_pid > 0) detail["GatewayPID"] = String(auth.gateway_pid)
             if (auth.page_url) detail["页面"] = auth.page_url
             if (auth.last_error) detail["最近错误"] = auth.last_error
             if (auth.last_result) detail["最近结果"] = auth.last_result
@@ -567,7 +603,10 @@ function runIbkrAuthPendingGuard() {
                 "Runtime已启动": auth.runtime_started ? "yes" : "no",
                 "Session认证": auth.runtime_authenticated ? "yes" : "no",
                 "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
+                "Gateway运行时长(s)": auth.gateway_uptime_s > 0 ? String(auth.gateway_uptime_s) : "n/a",
             }
+            if (auth.recovery_reason) detail["恢复原因"] = auth.recovery_reason
+            if (auth.interruption_kind) detail["中断类型"] = auth.interruption_kind
             if (auth.mode) detail["验证模式"] = auth.mode
             if (auth.challenge_code) detail["Challenge"] = auth.challenge_code
             if (auth.response_status) detail["响应状态"] = auth.response_status
@@ -579,6 +618,8 @@ function runIbkrAuthPendingGuard() {
             if (auth.reset_recommended) detail["建议重开"] = "yes"
             if (auth.reset_reason) detail["重开原因"] = auth.reset_reason
             if (auth.triggered_at) detail["触发时间"] = auth.triggered_at
+            if (auth.last_runtime_authenticated_at) detail["上次认证成功"] = auth.last_runtime_authenticated_at
+            if (auth.gateway_pid > 0) detail["GatewayPID"] = String(auth.gateway_pid)
             if (auth.last_result) detail["最近反馈"] = auth.last_result
             if (auth.last_error) detail["最近错误"] = auth.last_error
             detail["处理建议"] = auth.status === "waiting_response"

@@ -100,6 +100,19 @@ var STATUS_CONFIG = {
     }
 }
 
+function normalizeTwoFactorStatus(value) {
+    var text = String(value || "").trim().toLowerCase()
+    if (!text) return "requested"
+    if (text === "pending" || text === "waiting_mobile_approval" || text === "mobile_approval" || text === "awaiting_mobile_approval") {
+        return "waiting_confirm"
+    }
+    if (text === "complete" || text === "completed" || text === "authenticated") {
+        return "success"
+    }
+    if (text === "error") return "failed"
+    return text
+}
+
 function safeJsonParse(value) {
     if (!value) return {}
     if (typeof value === "object") return value
@@ -157,7 +170,7 @@ function syncStartupAuthProgress(environment, status, stateData) {
             return { ok: true, skipped: true, reason: "no_active_startup_cycle" }
         }
 
-        var normalizedStatus = String(status || "").trim().toLowerCase() || "requested"
+        var normalizedStatus = normalizeTwoFactorStatus(status)
         var data = stateData && typeof stateData === "object" ? stateData : {}
         var currentBlocker = ""
         var operatorAction = ""
@@ -314,22 +327,22 @@ function parseUsTimeMs(value) {
 }
 
 function isActiveStatus(status) {
-    return ACTIVE_STATUSES.indexOf(String(status || "")) !== -1
+    return ACTIVE_STATUSES.indexOf(normalizeTwoFactorStatus(status)) !== -1
 }
 
 function isCurrentCycleActiveStatus(status) {
-    var text = String(status || "").trim().toLowerCase()
+    var text = normalizeTwoFactorStatus(status)
     return ["triggered", "waiting_confirm", "waiting_response"].indexOf(text) !== -1
 }
 
 function isTerminalStatus(status) {
-    return TERMINAL_STATUSES.indexOf(String(status || "")) !== -1
+    return TERMINAL_STATUSES.indexOf(normalizeTwoFactorStatus(status)) !== -1
 }
 
 function derive2faActionState(stateData, options) {
     var nowMs = toNumber(options && options.now_ms, Date.now())
     var state = { ...(stateData || {}) }
-    var status = String(state.status || "").trim().toLowerCase()
+    var status = normalizeTwoFactorStatus(state.status || "")
     var responseStatus = String(state.response_status || "").trim().toLowerCase()
     var challengeCode = String(state.challenge_code || "").trim()
     var feedback = String(state.challenge_feedback || "").trim()
@@ -378,6 +391,7 @@ function derive2faActionState(stateData, options) {
         operatorAction = "request_new_cycle"
     }
 
+    state.status = status
     state.response_status = responseStatus
     state.challenge_feedback = feedback
     state.operator_action = operatorAction
@@ -593,7 +607,7 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
         if (!runtimeStarted) {
             state.browser_authenticated = false
         }
-        if (String(state.status || "").trim().toLowerCase() === "success") {
+        if (normalizeTwoFactorStatus(state.status || "") === "success") {
             state.status = "requested"
             state.message = "旧 Gateway 认证已失效，请重新触发 2FA。"
             state.last_result = "旧 Gateway 认证已失效，等待重新触发 2FA。"
@@ -622,6 +636,7 @@ function saveState(environment, patch, options) {
         ...(patch || {}),
         updated_at: times.us,
     }
+    next.status = normalizeTwoFactorStatus(next.status || "requested")
 
     record.set("state_key", IBKR_2FA_STATE_KEY)
     record.set("date", IBKR_2FA_STATE_DATE)
@@ -643,7 +658,7 @@ function ensureRequestedState(environment, options) {
     var current = getStatePayload(runtimeEnvironment)
     var currentData = current.data || {}
     var times = timeUtils.getTimeStrings()
-    var status = currentData.status || ""
+    var status = normalizeTwoFactorStatus(currentData.status || "")
     var isActive = isActiveStatus(status)
     var forceReset = !!opts.forceReset
     var keepActiveFlow = !forceReset && ["triggered", "waiting_confirm", "waiting_response"].indexOf(status) !== -1
@@ -1061,7 +1076,7 @@ function request2faApproval(options) {
         message: opts.message,
         forceReset: !!opts.forceReset,
     })
-    var currentStatus = currentData.status || ""
+    var currentStatus = normalizeTwoFactorStatus(currentData.status || "")
     var currentMessageId = currentData.message_id || ""
     var lastRequestPushMs = toNumber(currentData.last_request_push_ms, 0)
     var alreadyActive = isCurrentCycleActiveStatus(currentStatus)
@@ -1309,7 +1324,7 @@ function trigger2faFlow(options) {
 function report2faResult(options) {
     var opts = options || {}
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(opts.environment || "", envUtils.LIVE_ENVIRONMENT)
-    var status = String(opts.status || "requested").trim().toLowerCase() || "requested"
+    var status = normalizeTwoFactorStatus(opts.status || "requested")
     if (!STATUS_CONFIG[status]) status = "failed"
     var currentState = getStatePayload(runtimeEnvironment).data || {}
     var statePatch = opts.state_patch && typeof opts.state_patch === "object" ? opts.state_patch : {}
@@ -1423,7 +1438,7 @@ function submit2faResponse(options) {
         }
     }
 
-    if (["timeout", "failed"].indexOf(String(currentData.status || "").trim().toLowerCase()) !== -1) {
+    if (["timeout", "failed"].indexOf(normalizeTwoFactorStatus(currentData.status || "")) !== -1) {
         return {
             ok: false,
             environment: runtimeEnvironment,
@@ -1442,7 +1457,7 @@ function submit2faResponse(options) {
     }
 
     var saved = saveState(runtimeEnvironment, {
-        status: currentData.status === "success" ? "success" : "waiting_response",
+        status: normalizeTwoFactorStatus(currentData.status || "") === "success" ? "success" : "waiting_response",
         response_code: responseCode,
         response_status: "received",
         response_received_at: timeUtils.getTimeStrings().us,
@@ -1480,7 +1495,7 @@ function handle2faCardCallback(c, options) {
         }, updateToken)
     }
 
-    if (currentData.status === "success") {
+    if (normalizeTwoFactorStatus(currentData.status || "") === "success") {
         return feishuApp.sendFeishuCallbackResponse(c, {
             toast: { type: "success", content: "当前已通过验证" },
             card: { type: "raw", data: build2faCard(currentData, runtimeEnvironment) }
