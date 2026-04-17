@@ -12,6 +12,7 @@ DEPLOY_HOOKS=1
 DEPLOY_MIGRATIONS=0
 DRY_RUN=0
 RESTART_SERVICE=1
+WAIT_FOR_AUTO_RELOAD=0
 SKIP_CHECKS=0
 STATUS_ONLY=0
 PLAN_ONLY=0
@@ -50,6 +51,7 @@ apply_runtime_restart_policy() {
   done
   if [[ "$skip_restart_for_runtime_files" -eq 1 ]]; then
     deploy_log "PocketBase files deploy detected for pb_public/pb_hooks only; skipping explicit systemctl restart."
+    WAIT_FOR_AUTO_RELOAD=1
     RESTART_SERVICE=0
   fi
 }

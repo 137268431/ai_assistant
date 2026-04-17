@@ -306,8 +306,18 @@ function isRecoveredProgressStatus(status) {
     return normalizedStatus === "running" || normalizedStatus === "done"
 }
 
+function isServerBootAutoRestoreWithoutManualTrigger(state) {
+    if (!state || typeof state !== "object") return false
+    var reason = String(state.reason || "").trim().toLowerCase()
+    var source = String(state.source || "").trim().toLowerCase()
+    return state.trigger_login !== true
+        && reason === "auto_restore"
+        && source === "server_boot"
+}
+
 function hasManualAuthProgress(steps, state) {
     if (state && state.trigger_login === true) return true
+    if (isServerBootAutoRestoreWithoutManualTrigger(state)) return false
     var manualKeys = ["card_ready", "manual_trigger", "manual_confirm"]
     for (var i = 0; i < manualKeys.length; i++) {
         var key = manualKeys[i]
@@ -343,6 +353,7 @@ function reconcileRecoveredStartupState(state) {
 
     var steps = normalized.steps || {}
     var overallStatus = String(normalized.status || "").trim().toLowerCase()
+    var runtimePhase = String(normalized.runtime_phase || "").trim().toLowerCase()
     var archivedRecovery = overallStatus === "aborted" || overallStatus === "failed"
     var currentStepIndex = getStepOrderIndex(normalized.current_step)
     var runtimeResumeIndex = getStepOrderIndex("runtime_resume")
@@ -357,6 +368,9 @@ function reconcileRecoveredStartupState(state) {
     var manualTriggerStatus = normalizeStepStatus((steps.manual_trigger || {}).status)
     var manualConfirmStatus = normalizeStepStatus((steps.manual_confirm || {}).status)
     var runtimeResumeStatus = normalizeStepStatus((steps.runtime_resume || {}).status)
+    var runtimeRunning = runtimePhase === "running"
+    var healthCheckShouldBeDone = archivedRecovery && runtimeRunning
+    var healthCheckShouldBeRunning = !healthCheckShouldBeDone && runtimeRunning
 
     if (serviceBootStatus !== "done") {
         applyStepPatch(steps, "service_boot", {
@@ -434,11 +448,45 @@ function reconcileRecoveredStartupState(state) {
         })
     }
 
-    if (archivedRecovery && healthCheckStatus !== "done") {
+    if (healthCheckShouldBeDone && healthCheckStatus !== "done") {
+        applyStepPatch(steps, "health_check", {
+            status: "done",
+            detail: "当前运行态已恢复，这张旧启动卡不再阻塞健康检查展示。",
+        })
+    } else if (
+        healthCheckShouldBeRunning
+        && (healthCheckStatus === "pending" || healthCheckStatus === "waiting")
+    ) {
+        applyStepPatch(steps, "health_check", {
+            status: "running",
+            detail: "Runtime 已恢复，正在执行启动后健康检查与稳定性观察。",
+        })
+    } else if (archivedRecovery && healthCheckStatus !== "done") {
         applyStepPatch(steps, "health_check", {
             status: "skipped",
-            detail: "旧启动轮次已结束，健康检查不再沿用该轮次结果。",
+            detail:
+                "旧启动轮次已结束，健康检查不再沿用该轮次结果。",
         })
+    }
+
+    if (
+        healthCheckShouldBeRunning
+        && currentStepIndex >= 0
+        && runtimeResumeIndex >= 0
+        && currentStepIndex <= runtimeResumeIndex
+    ) {
+        normalized.current_step = "health_check"
+        if (!normalized.current_blocker) {
+            normalized.current_blocker = "启动后健康检查进行中"
+        }
+        if (!normalized.operator_action) {
+            normalized.operator_action = "等待系统继续完成健康检查"
+        }
+    } else if (archivedRecovery && currentStepIndex <= runtimeResumeIndex) {
+        normalized.current_step = "runtime_resume"
+        if (!normalized.current_blocker) {
+            normalized.current_blocker = "旧启动轮次已结束"
+        }
     }
 
     normalized.steps = steps

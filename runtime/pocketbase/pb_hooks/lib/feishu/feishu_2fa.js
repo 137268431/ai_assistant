@@ -16,6 +16,7 @@ var CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000
 var ACTIVE_STATUSES = ["requested", "triggered", "waiting_confirm", "waiting_response"]
 var TERMINAL_STATUSES = ["success", "timeout", "failed"]
 var MANUAL_AUTH_REASON_LABELS = {
+    auto_restore: "静默恢复",
     weekly_reauth: "每周重登验证",
     manual_start: "启动验证",
     startup: "启动验证",
@@ -76,6 +77,13 @@ var STATUS_CONFIG = {
         template: "orange",
         summary: "当前已进入 Challenge/Response。请在 App 输入 Challenge 生成 Response Code，并去 Runtime 页面提交；不要重复触发新一轮。",
         button: "打开 Runtime 提交响应码"
+    },
+    resume_pending: {
+        emoji: "♻️",
+        title: "IBKR Session 静默恢复中",
+        template: "blue",
+        summary: "当前正在尝试复用已有 Gateway Session，不会自动触发新的 2FA。",
+        button: "查看恢复状态"
     },
     success: {
         emoji: "✅",
@@ -181,7 +189,7 @@ function syncStartupAuthProgress(environment, status, stateData) {
                 detail: "Gateway 已启动并进入当前验证流程。",
             },
         }
-        var reasonLabel = getManualAuthReasonLabel(data.reason)
+        var reasonLabel = getManualAuthReasonLabel(data.reason || data.recovery_reason)
 
         if (normalizedStatus === "requested") {
             currentBlocker = "等待手动触发 2FA"
@@ -265,6 +273,24 @@ function syncStartupAuthProgress(environment, status, stateData) {
                 status: "running",
                 detail: "认证已恢复，正在继续恢复 Runtime。",
             }
+        } else if (normalizedStatus === "resume_pending") {
+            currentBlocker = "等待静默恢复 Gateway Session"
+            operatorAction = data.probe_result === "resume_probe_timeout"
+                ? "如需立即恢复，请去 Runtime 页面人工接管或手动触发 2FA"
+                : "等待系统继续静默探测；当前不会自动触发新的 2FA"
+            summary = data.probe_result === "resume_probe_timeout"
+                ? "静默恢复尚未自动成功，当前仍不会自动补发新的 2FA。"
+                : "当前启动先尝试复用已有 Gateway 会话，不会自动触发新的 2FA。"
+            steps.card_ready = {
+                status: "done",
+                detail: "当前不会自动新开 2FA 卡片。",
+            }
+            steps.runtime_resume = {
+                status: "running",
+                detail: data.probe_result === "resume_probe_timeout"
+                    ? "静默恢复未自动成功，系统仍会继续被动观察当前 Gateway Session。"
+                    : "系统正在静默探测当前 Gateway Session 是否可直接复用。",
+            }
         } else {
             currentBlocker = "2FA 未完成，需手动重新触发"
             operatorAction = "回到当前启动卡片，重新点击下方“开始 2FA 验证”"
@@ -285,7 +311,7 @@ function syncStartupAuthProgress(environment, status, stateData) {
             create_if_missing: false,
             title: "IBKR Runtime 启动中",
             summary: summary,
-            current_step: normalizedStatus === "success"
+            current_step: normalizedStatus === "success" || normalizedStatus === "resume_pending"
                 ? "runtime_resume"
                 : (normalizedStatus === "triggered" || normalizedStatus === "waiting_confirm" || normalizedStatus === "waiting_response"
                     ? "manual_confirm"
@@ -339,6 +365,19 @@ function isTerminalStatus(status) {
     return TERMINAL_STATUSES.indexOf(normalizeTwoFactorStatus(status)) !== -1
 }
 
+function isServerBootResumeRecoveryState(stateData) {
+    var state = stateData && typeof stateData === "object" ? stateData : {}
+    var interruptionKind = String(state.interruption_kind || "").trim().toLowerCase()
+    var recoveryPhase = String(state.recovery_phase || "").trim().toLowerCase()
+    var recoveryReason = String(state.recovery_reason || "").trim().toLowerCase()
+    var lastRecoverySource = String(state.last_recovery_source || "").trim().toLowerCase()
+    return (
+        interruptionKind === "server_boot_resume"
+        || recoveryPhase === "resume_waiting_manual"
+        || (recoveryReason === "auto_restore" && lastRecoverySource === "server_boot")
+    )
+}
+
 function derive2faActionState(stateData, options) {
     var nowMs = toNumber(options && options.now_ms, Date.now())
     var state = { ...(stateData || {}) }
@@ -385,6 +424,8 @@ function derive2faActionState(stateData, options) {
         operatorAction = "confirm_push"
     } else if (status === "triggered") {
         operatorAction = "wait_for_mode"
+    } else if (status === "resume_pending") {
+        operatorAction = recoveryPhase === "resume_waiting_manual" ? "check_runtime_status" : "wait_auth_restore"
     } else if (status === "success") {
         operatorAction = "none"
     } else if (status === "timeout" || status === "failed") {
@@ -574,6 +615,8 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
         }
     })
     if (!state.recovery_phase) state.recovery_phase = runtimeAuthenticated ? "recovered" : "idle"
+    var normalizedStatus = normalizeTwoFactorStatus(state.status || "")
+    var serverBootResumePending = isServerBootResumeRecoveryState(state) && !runtimeAuthenticated
 
     if (runtimeAuthenticated && gatewayReachable && gatewayStatusCode !== 401) {
         state.status = "success"
@@ -607,7 +650,31 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
         if (!runtimeStarted) {
             state.browser_authenticated = false
         }
-        if (normalizeTwoFactorStatus(state.status || "") === "success") {
+        if (
+            serverBootResumePending
+            && ["triggered", "waiting_confirm", "waiting_response"].indexOf(normalizedStatus) === -1
+        ) {
+            state.status = "resume_pending"
+            state.message = state.probe_result === "resume_probe_timeout"
+                ? "静默恢复尚未自动成功；当前不会自动补发新的 2FA，如需立即恢复请去 Runtime 页面人工处理。"
+                : "Compute 重启后正在静默复用现有 Gateway Session，本轮不会自动重开 2FA。"
+            state.last_result = state.probe_result === "resume_probe_timeout"
+                ? "静默恢复未自动成功，当前保持被动等待，不会自动新开 2FA。"
+                : "已进入 server_boot 静默恢复窗口。"
+            state.last_error = ""
+            state.mode = ""
+            state.challenge_code = ""
+            state.challenge_detected_at = ""
+            state.response_code = ""
+            state.response_status = ""
+            state.response_received_at = ""
+            state.response_submitted_at = ""
+            state.response_rejected_at = ""
+            state.challenge_feedback = ""
+            state.page_title = ""
+            state.page_url = ""
+            state.gateway_trace = ""
+        } else if (normalizedStatus === "success") {
             state.status = "requested"
             state.message = "旧 Gateway 认证已失效，请重新触发 2FA。"
             state.last_result = "旧 Gateway 认证已失效，等待重新触发 2FA。"
@@ -785,7 +852,7 @@ function build2faCard(stateData, environment) {
     var effectiveState = derive2faActionState(stateData)
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || effectiveState.environment || "", envUtils.LIVE_ENVIRONMENT)
     var cfg = getStatusConfig(effectiveState.status)
-    var reasonLabel = getManualAuthReasonLabel(effectiveState.reason)
+    var reasonLabel = getManualAuthReasonLabel(effectiveState.reason || effectiveState.recovery_reason)
     var summary = effectiveState.status === "waiting_response"
         ? buildWaitingResponseSummary(effectiveState)
         : (effectiveState.message || cfg.summary)
@@ -887,13 +954,17 @@ function build2faCard(stateData, environment) {
 
     var primaryButton = null
     if ((effectiveState.status || "requested") !== "success") {
-        primaryButton = currentCycleActive
-            ? buildOpenButton(
-                getActiveCyclePrimaryLabel(effectiveState),
-                runtimeUrl,
-                "primary"
-            )
-            : buildActionButton(effectiveState, runtimeEnvironment)
+        if (effectiveState.status === "resume_pending") {
+            primaryButton = buildOpenButton("查看恢复状态", runtimeUrl, "primary")
+        } else {
+            primaryButton = currentCycleActive
+                ? buildOpenButton(
+                    getActiveCyclePrimaryLabel(effectiveState),
+                    runtimeUrl,
+                    "primary"
+                )
+                : buildActionButton(effectiveState, runtimeEnvironment)
+        }
     }
 
     elements.push({ tag: "hr" })

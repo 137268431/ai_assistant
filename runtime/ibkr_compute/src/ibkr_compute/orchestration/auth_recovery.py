@@ -131,11 +131,99 @@ class TradingServiceAuthRecoveryMixin:
             return False
         return True
 
+    def _is_server_boot_resume_recovery(
+        self,
+        interruption_kind: str = "",
+        recovery_reason: str = "",
+        source: str = "",
+        recovery_phase: str = "",
+    ) -> bool:
+        kind_key = str(interruption_kind or "").strip().lower()
+        reason_key = str(recovery_reason or "").strip().lower()
+        source_key = str(source or "").strip().lower()
+        phase_key = str(recovery_phase or "").strip().lower()
+        if phase_key == "resume_waiting_manual":
+            return True
+        if kind_key == "server_boot_resume":
+            return True
+        return reason_key == "auto_restore" and source_key == "server_boot"
+
+    def _auth_probe_window_seconds(self, interruption_kind: str) -> int:
+        service_mod = _service_mod()
+        default_window = max(service_mod.AUTH_PROBE_INTERVAL_SECONDS, int(service_mod.AUTH_PROBE_WINDOW_SECONDS or 0))
+        if self._is_server_boot_resume_recovery(interruption_kind=interruption_kind):
+            return max(default_window, 300)
+        return default_window
+
+    def _wait_for_server_boot_resume_auth(
+        self,
+        cycle_id: str,
+        recovery_reason: str,
+        source: str,
+        attempts: int,
+    ) -> tuple[bool, int]:
+        service_mod = _service_mod()
+        passive_interval = max(30, service_mod.AUTH_PROBE_INTERVAL_SECONDS * 6)
+        while not self._auth_probe_stop.is_set():
+            current = self._copy_auth_recovery_state()
+            if str(current.get("cycle_id") or "") != cycle_id:
+                return False, attempts
+            if self._starting or self._running:
+                service_mod.logger.info(
+                    "Server boot resume passive probe exiting because runtime already moved forward"
+                )
+                return False, attempts
+            attempts += 1
+            authenticated = False
+            gateway_status_code = 0
+            try:
+                auth_payload = self.session_keeper.check_auth_status()
+                authenticated = bool(auth_payload.get("authenticated", False))
+            except Exception as exc:
+                service_mod.logger.debug("Server boot passive auth probe failed: %s", exc)
+            try:
+                gateway_status_code = int(self.gateway_manager.status().get("status_code") or 0)
+            except Exception:
+                gateway_status_code = 0
+            self._set_auth_recovery_state(
+                cycle_id=cycle_id,
+                recovery_phase="resume_waiting_manual",
+                interruption_kind="server_boot_resume",
+                recovery_reason=recovery_reason,
+                probe_started_at=current.get("probe_started_at") or self._now_iso(),
+                probe_last_checked_at=self._now_iso(),
+                probe_attempts=attempts,
+                probe_result="authenticated" if authenticated else "resume_probe_timeout",
+                auto_restart_scheduled=False,
+                last_gateway_status_code=gateway_status_code,
+                last_recovery_source=source,
+                lock_owner="",
+                lock_expires_at="",
+                manual_takeover_active=False,
+            )
+            if authenticated:
+                self._mark_auth_recovered(
+                    source="server_boot_resume_probe",
+                    reason=recovery_reason or source,
+                )
+                return True, attempts
+            if self._auth_probe_stop.wait(timeout=passive_interval):
+                return False, attempts
+        return False, attempts
+
     def _mark_auth_recovered(self, source: str, reason: str = ""):
         service_mod = _service_mod()
         stamp = self._now_iso()
         current = self._copy_auth_recovery_state()
         previous_phase = str(current.get("recovery_phase") or "")
+        restart_reason = str(current.get("recovery_reason") or reason or "auto_restore")
+        restart_source = str(current.get("last_recovery_source") or source or "server_boot")
+        resume_recovery = self._is_server_boot_resume_recovery(
+            interruption_kind=str(current.get("interruption_kind") or ""),
+            recovery_reason=restart_reason,
+            source=restart_source,
+            recovery_phase=previous_phase,
+        )
         snapshot = self._set_auth_recovery_state(
             cycle_id=current.get("cycle_id") or self._next_auth_cycle_id(),
             recovery_phase="recovered",
@@ -164,6 +252,138 @@ class TradingServiceAuthRecoveryMixin:
                 )
             except Exception as exc:
                 service_mod.logger.debug("Failed to report auth recovery success: %s", exc)
+        if resume_recovery and not self._running:
+            scheduled = self._schedule_auth_restart(
+                reason=restart_reason or "auto_restore",
+                source=restart_source or "server_boot",
+                trigger_login=False,
+            )
+            if scheduled:
+                self._set_auth_recovery_state(
+                    cycle_id=snapshot.get("cycle_id") or current.get("cycle_id") or self._next_auth_cycle_id(),
+                    recovery_phase="recovered",
+                    recovery_reason=restart_reason or "auto_restore",
+                    probe_result="authenticated_resume_restart_scheduled",
+                    auto_restart_scheduled=True,
+                    last_recovery_source=restart_source or "server_boot",
+                )
+
+    def _attempt_auth_probe_self_heal(
+        self,
+        cycle_id: str,
+        interruption_kind: str,
+        recovery_reason: str,
+        source: str,
+        attempts: int,
+    ) -> tuple[bool, int]:
+        service_mod = _service_mod()
+        attempts = max(0, int(attempts or 0))
+        current = self._copy_auth_recovery_state()
+        if str(current.get("cycle_id") or "") != cycle_id or self._auth_probe_stop.is_set():
+            return False, attempts
+        if not self.gateway_manager.is_running:
+            service_mod.logger.warning(
+                "Auth probe timeout with gateway service down; skipping self-heal and escalating: cycle=%s",
+                cycle_id,
+            )
+            return False, attempts
+
+        service_mod.logger.warning(
+            "Auth probe timeout; attempting forced broker reconnect before manual 2FA: cycle=%s reason=%s source=%s",
+            cycle_id,
+            recovery_reason or "-",
+            source or "-",
+        )
+        gateway_status_code = 0
+        try:
+            gateway_status_code = int(self.gateway_manager.status().get("status_code") or 0)
+        except Exception:
+            gateway_status_code = 0
+        self._set_auth_recovery_state(
+            cycle_id=cycle_id,
+            recovery_phase="manual_takeover" if self._manual_takeover_active(current) else "silent_probe",
+            interruption_kind=interruption_kind,
+            recovery_reason=recovery_reason,
+            probe_started_at=current.get("probe_started_at") or self._now_iso(),
+            probe_last_checked_at=self._now_iso(),
+            probe_attempts=attempts,
+            probe_result="self_heal",
+            last_gateway_status_code=gateway_status_code,
+            last_recovery_source=source,
+            lock_owner="auth_probe",
+            lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
+        )
+
+        authenticated = False
+        try:
+            reconnect_payload = self.broker.force_reconnect(reason="auth_probe_timeout")
+            authenticated = bool(reconnect_payload.get("authenticated") or reconnect_payload.get("ready"))
+            gateway_status_code = int(reconnect_payload.get("status_code") or gateway_status_code or 0)
+        except Exception as exc:
+            service_mod.logger.warning("Forced broker reconnect during auth probe failed: %s", exc)
+
+        attempts += 1
+        self._set_auth_recovery_state(
+            cycle_id=cycle_id,
+            recovery_phase="manual_takeover" if self._manual_takeover_active() else "silent_probe",
+            interruption_kind=interruption_kind,
+            recovery_reason=recovery_reason,
+            probe_started_at=current.get("probe_started_at") or self._now_iso(),
+            probe_last_checked_at=self._now_iso(),
+            probe_attempts=attempts,
+            probe_result="authenticated" if authenticated else "self_heal_pending",
+            last_gateway_status_code=gateway_status_code,
+            last_recovery_source=source,
+            lock_owner="auth_probe",
+            lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
+        )
+        if authenticated:
+            try:
+                self.session_keeper.check_auth_status()
+            except Exception:
+                service_mod.logger.debug("Post-reconnect auth refresh failed", exc_info=True)
+            self._mark_auth_recovered(source="auth_probe_self_heal", reason=recovery_reason or source)
+            return True, attempts
+
+        grace_deadline = time.time() + service_mod.AUTH_PROBE_SELF_HEAL_GRACE_SECONDS
+        while not self._auth_probe_stop.is_set() and time.time() < grace_deadline:
+            current = self._copy_auth_recovery_state()
+            if str(current.get("cycle_id") or "") != cycle_id:
+                return False, attempts
+            attempts += 1
+            authenticated = False
+            try:
+                auth_payload = self.session_keeper.check_auth_status()
+                authenticated = bool(auth_payload.get("authenticated", False))
+            except Exception as exc:
+                service_mod.logger.debug("Auth self-heal probe failed: %s", exc)
+            try:
+                gateway_status_code = int(self.gateway_manager.status().get("status_code") or 0)
+            except Exception:
+                gateway_status_code = 0
+            self._set_auth_recovery_state(
+                cycle_id=cycle_id,
+                recovery_phase="manual_takeover" if self._manual_takeover_active(current) else "silent_probe",
+                interruption_kind=interruption_kind,
+                recovery_reason=recovery_reason,
+                probe_started_at=current.get("probe_started_at") or self._now_iso(),
+                probe_last_checked_at=self._now_iso(),
+                probe_attempts=attempts,
+                probe_result="authenticated" if authenticated else "self_heal_pending",
+                last_gateway_status_code=gateway_status_code,
+                last_recovery_source=source,
+                lock_owner="auth_probe",
+                lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
+            )
+            if authenticated:
+                self._mark_auth_recovered(source="auth_probe_self_heal", reason=recovery_reason or source)
+                return True, attempts
+            remaining = max(0.0, grace_deadline - time.time())
+            if remaining <= 0:
+                break
+            if self._auth_probe_stop.wait(timeout=min(service_mod.AUTH_PROBE_INTERVAL_SECONDS, remaining)):
+                return False, attempts
+        return False, attempts
 
     def _ensure_auth_probe(self, cycle_id: str, interruption_kind: str, recovery_reason: str, source: str):
         service_mod = _service_mod()
@@ -176,6 +396,7 @@ class TradingServiceAuthRecoveryMixin:
             def worker():
                 started_perf = time.time()
                 attempts = 0
+                probe_window_seconds = self._auth_probe_window_seconds(interruption_kind)
                 try:
                     while not self._auth_probe_stop.is_set():
                         current = self._copy_auth_recovery_state()
@@ -193,7 +414,16 @@ class TradingServiceAuthRecoveryMixin:
                             gateway_status_code = int(self.gateway_manager.status().get("status_code") or 0)
                         except Exception:
                             gateway_status_code = 0
-                        phase = "manual_takeover" if self._manual_takeover_active(current) else "silent_probe"
+                        phase = "manual_takeover" if self._manual_takeover_active(current) else (
+                            "resume_waiting_manual"
+                            if self._is_server_boot_resume_recovery(
+                                interruption_kind=interruption_kind,
+                                recovery_reason=recovery_reason,
+                                source=source,
+                                recovery_phase=str(current.get("recovery_phase") or ""),
+                            ) and str(current.get("recovery_phase") or "").strip().lower() == "resume_waiting_manual"
+                            else "silent_probe"
+                        )
                         self._set_auth_recovery_state(
                             cycle_id=cycle_id,
                             recovery_phase=phase,
@@ -202,16 +432,78 @@ class TradingServiceAuthRecoveryMixin:
                             probe_started_at=current.get("probe_started_at") or self._now_iso(),
                             probe_last_checked_at=self._now_iso(),
                             probe_attempts=attempts,
-                            probe_result="authenticated" if authenticated else "pending",
+                            probe_result="authenticated" if authenticated else (
+                                "resume_probe_timeout" if phase == "resume_waiting_manual" else "pending"
+                            ),
                             last_gateway_status_code=gateway_status_code,
                             last_recovery_source=source,
-                            lock_owner="auth_probe",
-                            lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
+                            lock_owner="" if phase == "resume_waiting_manual" else "auth_probe",
+                            lock_expires_at="" if phase == "resume_waiting_manual" else self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
                         )
                         if authenticated:
                             self._mark_auth_recovered(source="auth_probe", reason=recovery_reason or source)
                             return
-                        if (time.time() - started_perf) >= service_mod.AUTH_PROBE_WINDOW_SECONDS:
+                        if (time.time() - started_perf) >= probe_window_seconds:
+                            if self._manual_takeover_active(current):
+                                self._set_auth_recovery_state(
+                                    cycle_id=cycle_id,
+                                    recovery_phase="manual_takeover",
+                                    interruption_kind=interruption_kind,
+                                    recovery_reason=recovery_reason,
+                                    probe_last_checked_at=self._now_iso(),
+                                    probe_attempts=attempts,
+                                    probe_result="manual_takeover_waiting",
+                                    auto_restart_scheduled=False,
+                                    last_recovery_source=source,
+                                    lock_owner="manual_takeover",
+                                    lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
+                                )
+                                if self._auth_probe_stop.wait(timeout=service_mod.AUTH_PROBE_INTERVAL_SECONDS):
+                                    return
+                                continue
+                            recovered, attempts = self._attempt_auth_probe_self_heal(
+                                cycle_id=cycle_id,
+                                interruption_kind=interruption_kind,
+                                recovery_reason=recovery_reason,
+                                source=source,
+                                attempts=attempts,
+                            )
+                            current = self._copy_auth_recovery_state()
+                            if recovered:
+                                return
+                            if self._auth_probe_stop.is_set() or str(current.get("cycle_id") or "") != cycle_id:
+                                return
+                            if self._manual_takeover_active(current):
+                                continue
+                            if self._is_server_boot_resume_recovery(
+                                interruption_kind=interruption_kind,
+                                recovery_reason=recovery_reason,
+                                source=source,
+                            ):
+                                service_mod.logger.warning(
+                                    "Server boot resume auth probe timed out; keeping runtime in silent-resume wait without auto 2FA"
+                                )
+                                self._set_auth_recovery_state(
+                                    cycle_id=cycle_id,
+                                    recovery_phase="resume_waiting_manual",
+                                    interruption_kind=interruption_kind,
+                                    recovery_reason=recovery_reason,
+                                    probe_last_checked_at=self._now_iso(),
+                                    probe_attempts=attempts,
+                                    probe_result="resume_probe_timeout",
+                                    auto_restart_scheduled=False,
+                                    last_recovery_source=source,
+                                    lock_owner="",
+                                    lock_expires_at="",
+                                    manual_takeover_active=False,
+                                )
+                                self._wait_for_server_boot_resume_auth(
+                                    cycle_id=cycle_id,
+                                    recovery_reason=recovery_reason,
+                                    source=source,
+                                    attempts=attempts,
+                                )
+                                return
                             self._set_auth_recovery_state(
                                 cycle_id=cycle_id,
                                 recovery_phase="requested",
@@ -219,7 +511,7 @@ class TradingServiceAuthRecoveryMixin:
                                 recovery_reason=recovery_reason,
                                 probe_last_checked_at=self._now_iso(),
                                 probe_attempts=attempts,
-                                probe_result="timeout",
+                                probe_result="timeout_after_self_heal",
                                 auto_restart_scheduled=False,
                                 last_recovery_source=source,
                                 lock_owner="",
@@ -228,7 +520,7 @@ class TradingServiceAuthRecoveryMixin:
                             )
                             self._request_manual_2fa(
                                 recovery_reason or "auth_probe_timeout",
-                                "会话未在探测窗口内自动恢复，请在飞书 2FA 卡片手动触发当前轮次。",
+                                "会话未在静默探测与本地重连窗口内自动恢复，请在飞书 2FA 卡片手动触发当前轮次。",
                             )
                             return
                         if self._auth_probe_stop.wait(timeout=service_mod.AUTH_PROBE_INTERVAL_SECONDS):

@@ -251,6 +251,7 @@ class DataBackfill:
         period: str,
         bar_size: str,
         start_time: str = "",
+        exchange: str = "",
     ) -> Dict:
         max_retries = self._max_retries()
         retry_base_delay = self._retry_base_delay()
@@ -263,6 +264,7 @@ class DataBackfill:
                 bars = self.broker.request_historical_bars(
                     conid=int(conid or 0),
                     symbol=str(symbol or "").upper(),
+                    exchange=str(exchange or "").upper(),
                     duration=_to_ib_duration(period),
                     bar_size=_to_ib_bar_size(bar_size),
                     end_datetime=str(start_time or ""),
@@ -474,7 +476,7 @@ class DataBackfill:
             period = str(request_period).strip()
 
         try:
-            data = self._request_history_json(conid, symbol, normalized, period, bar_size)
+            data = self._request_history_json(conid, symbol, normalized, period, bar_size, exchange=exchange)
             bars = data.get("data", [])
             result = []
             fetch_meta = {

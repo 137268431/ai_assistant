@@ -187,6 +187,19 @@ function isGatewayDownAuthIssue(auth) {
     return markers.some((value) => String(value || "").trim().toLowerCase() === "gateway_down")
 }
 
+function isServerBootResumeRecovery(auth) {
+    if (!auth || typeof auth !== "object") return false
+    const interruptionKind = String(auth.interruption_kind || "").trim().toLowerCase()
+    const recoveryPhase = String(auth.recovery_phase || "").trim().toLowerCase()
+    const recoveryReason = String(auth.recovery_reason || "").trim().toLowerCase()
+    const lastRecoverySource = String(auth.last_recovery_source || "").trim().toLowerCase()
+    return (
+        interruptionKind === "server_boot_resume"
+        || recoveryPhase === "resume_waiting_manual"
+        || (recoveryReason === "auto_restore" && lastRecoverySource === "server_boot")
+    )
+}
+
 function buildWaitingResponseAdvice(auth) {
     if (!auth) return "优先打开 Runtime 页面确认当前轮次。"
     if (auth.reset_recommended) {
@@ -289,6 +302,16 @@ function buildAuthImmediateIssue(auth) {
         }
     }
 
+    if (isServerBootResumeRecovery(auth) && !runtimeAuthenticated) {
+        return {
+            kind: "server_boot_resume_pending",
+            title: "IBKR 会话静默恢复中，暂不需要重新 2FA",
+            summary: auth.recovery_phase === "resume_waiting_manual"
+                ? "检测到 compute 重启后的静默恢复尚未自动成功；当前不会自动补发新的 2FA，如需立即恢复请去 Runtime 页面人工接管或手动重开。"
+                : "检测到 compute 重启后正在静默复用现有 Gateway Session；当前不会自动触发新的 2FA，请先等待恢复窗口结束。",
+        }
+    }
+
     if (gatewayStatusCode === 401 && !runtimeAuthenticated) {
         if (isGatewayDownAuthIssue(auth)) {
             return {
@@ -317,7 +340,12 @@ function buildAuthImmediateIssue(auth) {
 
 function isOperational2faIssue(issue) {
     const kind = String(issue && issue.kind || "")
-    return kind === "requested" || kind === "waiting_confirm" || isWaitingResponseIssueKind(kind)
+    return (
+        kind === "requested"
+        || kind === "waiting_confirm"
+        || kind === "server_boot_resume_pending"
+        || isWaitingResponseIssueKind(kind)
+    )
 }
 
 function buildAuthImmediateFingerprint(auth, issue) {

@@ -15,6 +15,7 @@ class ConidResolver:
         self.pb_client = pb_client
         self.broker = broker or BrokerAdapter()
         self._cache: Dict[str, int] = {}
+        self._validated_symbols: set[str] = set()
 
     def load_cache_from_pb(self):
         if not self.pb_client:
@@ -53,7 +54,27 @@ class ConidResolver:
             return None
         cached = self._cache.get(normalized)
         if cached:
-            return int(cached)
+            if normalized in self._validated_symbols:
+                return int(cached)
+            try:
+                contract = self.broker.resolve_contract(symbol=normalized, conid=int(cached))
+            except Exception as exc:
+                logger.warning("Cached conid validation failed for %s=%s: %s", normalized, cached, exc)
+                contract = None
+            resolved_conid = int((contract or {}).get("conid") or 0)
+            if resolved_conid > 0:
+                self._validated_symbols.add(normalized)
+                if resolved_conid != int(cached):
+                    logger.warning(
+                        "Corrected cached conid for %s: %s -> %s",
+                        normalized,
+                        cached,
+                        resolved_conid,
+                    )
+                    self._cache[normalized] = resolved_conid
+                    self._save_to_pb(normalized, resolved_conid)
+                return resolved_conid
+            self._cache.pop(normalized, None)
         try:
             contract = self.broker.resolve_contract(symbol=normalized)
         except Exception as exc:
@@ -62,6 +83,7 @@ class ConidResolver:
         conid = int((contract or {}).get("conid") or 0)
         if conid > 0:
             self._cache[normalized] = conid
+            self._validated_symbols.add(normalized)
             self._save_to_pb(normalized, conid)
             return conid
         return None

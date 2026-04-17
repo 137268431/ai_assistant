@@ -66,6 +66,22 @@ TICK_LAST_SIZE = 5
 TICK_VOLUME = 8
 TICK_LAST_TIMESTAMP = 45
 BENIGN_ERROR_CODES = {2104, 2106, 2107, 2108, 2158}
+PREFERRED_CONTRACT_EXCHANGES = (
+    "NYSE",
+    "NASDAQ",
+    "ARCA",
+    "AMEX",
+    "CBOE",
+    "BATS",
+    "IEX",
+    "ISLAND",
+    "SMART",
+)
+PREFERRED_CONTRACT_SEC_TYPE_SCORE = {
+    "STK": 80,
+    "ETF": 75,
+    "IND": 70,
+}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -738,6 +754,7 @@ class _IBGatewayApp(EWrapper, EClient):
         conid: int = 0,
         exchange: str = "SMART",
         currency: str = "USD",
+        sec_type: str = "STK",
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> List[dict]:
         self.connect_and_start(timeout=timeout)
@@ -745,15 +762,17 @@ class _IBGatewayApp(EWrapper, EClient):
         contract = Contract()
         if int(conid or 0) > 0:
             contract.conId = int(conid)
-        if symbol:
-            contract.symbol = str(symbol or "").upper()
-            contract.secType = "STK"
-            contract.exchange = str(exchange or "SMART")
-            contract.currency = str(currency or "USD")
-        elif exchange:
-            contract.exchange = str(exchange)
-        elif currency:
-            contract.currency = str(currency)
+        else:
+            if symbol:
+                contract.symbol = str(symbol or "").upper()
+                if sec_type:
+                    contract.secType = str(sec_type or "").upper()
+                contract.exchange = str(exchange or "SMART")
+                contract.currency = str(currency or "USD")
+            elif exchange:
+                contract.exchange = str(exchange)
+            elif currency:
+                contract.currency = str(currency)
         self.reqContractDetails(req_id, contract)
         return self._await(req_id, ctx, timeout)
 
@@ -768,6 +787,8 @@ class _IBGatewayApp(EWrapper, EClient):
         *,
         conid: int,
         symbol: str,
+        exchange: str = "",
+        sec_type: str = "",
         duration: str,
         bar_size: str,
         end_datetime: str = "",
@@ -775,14 +796,21 @@ class _IBGatewayApp(EWrapper, EClient):
         timeout: int = 30,
     ) -> List[dict]:
         self.connect_and_start(timeout=timeout)
-        details = self.request_contract_details(symbol=symbol, conid=conid, timeout=timeout)
+        details = self.request_contract_details(conid=conid, timeout=timeout)
+        if not details and symbol:
+            details = self.request_contract_details(
+                symbol=symbol,
+                exchange=exchange or "SMART",
+                sec_type=sec_type or "STK",
+                timeout=timeout,
+            )
         if not details:
             raise RuntimeError(f"contract_not_found:{symbol or conid}")
         contract = Contract()
         contract.conId = int(details[0]["conid"])
         contract.symbol = str(details[0]["symbol"])
-        contract.secType = str(details[0]["sec_type"] or "STK")
-        contract.exchange = str(details[0]["exchange"] or "SMART")
+        contract.secType = str(details[0]["sec_type"] or sec_type or "STK")
+        contract.exchange = str(details[0]["exchange"] or details[0].get("primary_exchange") or exchange or "SMART")
         contract.currency = str(details[0]["currency"] or "USD")
         req_id, ctx = self._next_request("historical")
         self.reqHistoricalData(
@@ -1030,6 +1058,143 @@ class BrokerAdapter:
             **self.status(),
         }
 
+    def force_reconnect(self, reason: str = "", settle_seconds: float = 1.0) -> dict:
+        if reason:
+            logger.warning(
+                "Forcing IB Gateway broker reconnect: client_id=%s reason=%s",
+                self.client_id,
+                reason,
+            )
+        try:
+            self.disconnect()
+        except Exception:
+            logger.debug("Failed to disconnect broker before forced reconnect", exc_info=True)
+        if settle_seconds and float(settle_seconds) > 0:
+            time.sleep(max(0.0, float(settle_seconds)))
+        return self.health()
+
+    @staticmethod
+    def _contract_exchange_values(item: dict) -> set[str]:
+        values: set[str] = set()
+        for key in ("exchange", "primary_exchange", "listing_exchange"):
+            text = str((item or {}).get(key) or "").strip().upper()
+            if text:
+                values.add(text)
+        valid_exchanges = str((item or {}).get("valid_exchanges") or "")
+        for part in valid_exchanges.replace(";", ",").split(","):
+            text = str(part or "").strip().upper()
+            if text:
+                values.add(text)
+        return values
+
+    @classmethod
+    def _contract_matches(
+        cls,
+        item: dict,
+        *,
+        symbol: str = "",
+        exchange: str = "",
+        sec_type: str = "",
+    ) -> bool:
+        if not item:
+            return False
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_exchange = str(exchange or "").strip().upper()
+        normalized_sec_type = str(sec_type or "").strip().upper()
+        if normalized_symbol and str(item.get("symbol") or "").strip().upper() != normalized_symbol:
+            return False
+        if normalized_sec_type and str(item.get("sec_type") or "").strip().upper() != normalized_sec_type:
+            return False
+        if normalized_exchange and normalized_exchange not in cls._contract_exchange_values(item):
+            return False
+        return True
+
+    @classmethod
+    def _contract_has_preferred_exchange(cls, item: dict) -> bool:
+        values = cls._contract_exchange_values(item)
+        return any(exchange in values for exchange in PREFERRED_CONTRACT_EXCHANGES)
+
+    @classmethod
+    def _contract_rank(
+        cls,
+        item: dict,
+        *,
+        symbol: str = "",
+        exchange: str = "",
+        sec_type: str = "",
+        conid: int = 0,
+    ) -> int:
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_exchange = str(exchange or "").strip().upper()
+        normalized_sec_type = str(sec_type or "").strip().upper()
+        item_symbol = str(item.get("symbol") or "").strip().upper()
+        item_sec_type = str(item.get("sec_type") or "").strip().upper()
+        item_conid = int(item.get("conid") or 0)
+        exchange_values = cls._contract_exchange_values(item)
+
+        score = 0
+        if normalized_symbol:
+            score += 1000 if item_symbol == normalized_symbol else -1000
+        if normalized_exchange:
+            score += 300 if normalized_exchange in exchange_values else -300
+        else:
+            preferred_count = len(PREFERRED_CONTRACT_EXCHANGES)
+            for idx, preferred in enumerate(PREFERRED_CONTRACT_EXCHANGES):
+                if preferred in exchange_values:
+                    score += preferred_count - idx
+                    break
+        if normalized_sec_type:
+            score += 200 if item_sec_type == normalized_sec_type else -100
+        else:
+            score += PREFERRED_CONTRACT_SEC_TYPE_SCORE.get(item_sec_type, 0)
+        if int(conid or 0) > 0 and item_conid == int(conid):
+            score += 10
+        return score
+
+    @classmethod
+    def _select_contract_candidate(
+        cls,
+        items: Iterable[dict],
+        *,
+        symbol: str = "",
+        exchange: str = "",
+        sec_type: str = "",
+        conid: int = 0,
+    ) -> Optional[dict]:
+        candidates = [dict(item) for item in (items or []) if int((item or {}).get("conid") or 0) > 0]
+        if not candidates:
+            return None
+        strict = [
+            item
+            for item in candidates
+            if cls._contract_matches(item, symbol=symbol, exchange=exchange, sec_type=sec_type)
+        ]
+        pool = strict
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_sec_type = str(sec_type or "").strip().upper()
+        if not pool and normalized_symbol:
+            pool = [
+                item
+                for item in candidates
+                if str(item.get("symbol") or "").strip().upper() == normalized_symbol
+                and (
+                    not normalized_sec_type
+                    or str(item.get("sec_type") or "").strip().upper() == normalized_sec_type
+                )
+            ]
+        if not pool:
+            pool = candidates
+        return max(
+            pool,
+            key=lambda item: cls._contract_rank(
+                item,
+                symbol=symbol,
+                exchange=exchange,
+                sec_type=sec_type,
+                conid=conid,
+            ),
+        )
+
     def add_market_data_listener(self, callback: Callable[[dict], None]):
         self.client.add_market_data_listener(callback)
 
@@ -1042,20 +1207,64 @@ class BrokerAdapter:
     def remove_order_update_listener(self, callback: Callable[[dict], None]):
         self.client.remove_order_update_listener(callback)
 
-    def resolve_contract(self, symbol: str = "", conid: int = 0) -> Optional[dict]:
+    def resolve_contract(
+        self,
+        symbol: str = "",
+        conid: int = 0,
+        exchange: str = "",
+        sec_type: str = "",
+    ) -> Optional[dict]:
         normalized_symbol = str(symbol or "").strip().upper()
-        if normalized_symbol and normalized_symbol in self.client._contract_cache_by_symbol:
-            return dict(self.client._contract_cache_by_symbol[normalized_symbol])
-        if int(conid or 0) > 0 and int(conid) in self.client._contract_cache_by_conid:
-            return dict(self.client._contract_cache_by_conid[int(conid)])
+        normalized_exchange = str(exchange or "").strip().upper()
+        normalized_sec_type = str(sec_type or "").strip().upper()
+        target_conid = int(conid or 0)
 
-        if int(conid or 0) > 0 or normalized_symbol:
+        cached_candidates = []
+        if normalized_symbol and normalized_symbol in self.client._contract_cache_by_symbol:
+            cached_candidates.append(dict(self.client._contract_cache_by_symbol[normalized_symbol]))
+        if target_conid > 0 and target_conid in self.client._contract_cache_by_conid:
+            cached_candidates.append(dict(self.client._contract_cache_by_conid[target_conid]))
+        cached = self._select_contract_candidate(
+            cached_candidates,
+            symbol=normalized_symbol,
+            exchange=normalized_exchange,
+            sec_type=normalized_sec_type,
+            conid=target_conid,
+        )
+        if cached and self._contract_matches(
+            cached,
+            symbol=normalized_symbol,
+            exchange=normalized_exchange,
+            sec_type=normalized_sec_type,
+        ):
+            if normalized_exchange or not normalized_symbol or self._contract_has_preferred_exchange(cached):
+                return dict(cached)
+
+        if target_conid > 0:
             try:
-                details = self.client.request_contract_details(symbol=normalized_symbol, conid=int(conid or 0))
+                details = self.client.request_contract_details(conid=target_conid)
             except Exception:
                 details = []
-            if details:
-                return dict(details[0])
+            selected = self._select_contract_candidate(
+                details,
+                symbol=normalized_symbol,
+                exchange=normalized_exchange,
+                sec_type=normalized_sec_type,
+                conid=target_conid,
+            )
+            if selected and (
+                not normalized_symbol
+                or (
+                    self._contract_matches(
+                        selected,
+                        symbol=normalized_symbol,
+                        exchange=normalized_exchange,
+                        sec_type=normalized_sec_type,
+                    )
+                    and (normalized_exchange or self._contract_has_preferred_exchange(selected))
+                )
+            ):
+                return dict(selected)
 
         if not normalized_symbol:
             return None
@@ -1065,25 +1274,32 @@ class BrokerAdapter:
         except Exception:
             samples = []
 
-        best = None
-        for item in samples:
-            symbol_match = str(item.get("symbol") or "").strip().upper() == normalized_symbol
-            sec_type = str(item.get("sec_type") or "").strip().upper()
-            if symbol_match and sec_type in {"STK", "ETF", "IND"}:
-                best = item
-                break
-            if best is None:
-                best = item
+        best = self._select_contract_candidate(
+            samples,
+            symbol=normalized_symbol,
+            exchange=normalized_exchange,
+            sec_type=normalized_sec_type,
+            conid=target_conid,
+        )
         if best:
             try:
-                details = self.client.request_contract_details(
-                    symbol=str(best.get("symbol") or normalized_symbol),
-                    conid=int(best.get("conid") or 0),
-                )
+                details = self.client.request_contract_details(conid=int(best.get("conid") or 0))
             except Exception:
                 details = []
-            if details:
-                return dict(details[0])
+            selected = self._select_contract_candidate(
+                details,
+                symbol=normalized_symbol,
+                exchange=normalized_exchange,
+                sec_type=normalized_sec_type,
+                conid=int(best.get("conid") or 0),
+            )
+            if selected and self._contract_matches(
+                selected,
+                symbol=normalized_symbol,
+                exchange=normalized_exchange,
+                sec_type=normalized_sec_type,
+            ):
+                return dict(selected)
             return dict(best)
         return None
 
@@ -1116,15 +1332,22 @@ class BrokerAdapter:
         *,
         conid: int,
         symbol: str,
+        exchange: str = "",
+        sec_type: str = "",
         duration: str,
         bar_size: str,
         end_datetime: str = "",
         use_rth: bool = False,
         timeout: int = 30,
     ) -> List[dict]:
+        contract = self.resolve_contract(symbol=symbol, conid=conid, exchange=exchange, sec_type=sec_type)
+        if not contract:
+            raise RuntimeError(f"contract_not_found:{symbol or conid}")
         return self.client.request_historical_bars(
-            conid=conid,
-            symbol=symbol,
+            conid=int(contract.get("conid") or conid),
+            symbol=str(contract.get("symbol") or symbol),
+            exchange=str(contract.get("exchange") or exchange or ""),
+            sec_type=str(contract.get("sec_type") or sec_type or ""),
             duration=duration,
             bar_size=bar_size,
             end_datetime=end_datetime,
@@ -1133,7 +1356,7 @@ class BrokerAdapter:
         )
 
     def subscribe_market_data(self, conid: int, symbol: str, exchange: str = "SMART") -> int:
-        contract = self.resolve_contract(symbol=symbol, conid=conid)
+        contract = self.resolve_contract(symbol=symbol, conid=conid, exchange=exchange)
         if not contract:
             raise RuntimeError(f"contract_not_found:{symbol or conid}")
         self.connect()
@@ -1484,6 +1707,7 @@ class AuthController:
         detail: Optional[dict] = None,
         message: str = "",
         force_reset: bool = True,
+        report_pending: bool = True,
     ) -> bool:
         if not self.pb_client:
             return False
@@ -1496,14 +1720,15 @@ class AuthController:
                 message=message,
                 force_reset=force_reset,
             )
-            self.pb_client.report_ibkr_2fa_result(
-                "pending",
-                detail=detail or {},
-                source=source,
-                environment=self.environment,
-                message=message,
-                last_result="waiting_manual_approval",
-            )
+            if report_pending:
+                self.pb_client.report_ibkr_2fa_result(
+                    "pending",
+                    detail=detail or {},
+                    source=source,
+                    environment=self.environment,
+                    message=message,
+                    last_result="waiting_manual_approval",
+                )
             return True
         except Exception as exc:
             logger.warning("2FA approval request failed: %s", exc)

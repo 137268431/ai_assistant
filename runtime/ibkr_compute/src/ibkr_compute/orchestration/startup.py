@@ -133,6 +133,9 @@ class TradingServiceStartupMixin:
             self._set_auth_recovery_state(
                 recovery_phase="starting_runtime",
                 recovery_reason=reason,
+                interruption_kind="",
+                probe_result="",
+                auto_restart_scheduled=False,
                 last_recovery_source=source,
                 lock_owner="runtime_start",
                 lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
@@ -224,6 +227,40 @@ class TradingServiceStartupMixin:
 
             if not self.session_keeper.is_authenticated:
                 if not trigger_login:
+                    if self._is_server_boot_resume_attempt(reason, source, trigger_login):
+                        service_mod.logger.info(
+                            "Server boot resume detected without active auth; entering silent auth recovery"
+                        )
+                        self._auth_required_reason = ""
+                        silent_detail = {
+                            "状态结论": "检测到 Compute 重启后 Runtime 未认证，先尝试静默复用现有 Gateway Session。",
+                            "检查时间": self._now_et(),
+                            "当前动作": "系统正在静默探测与本地自愈，不会自动触发新的 2FA。",
+                        }
+                        self._sync_startup_progress(
+                            action="update",
+                            title="IBKR Runtime 启动中",
+                            summary="当前启动先尝试复用已有 Gateway 会话，不会自动触发新的 2FA。",
+                            current_step="auth",
+                            current_blocker="等待静默探测当前 Gateway Session",
+                            operator_action="等待系统静默恢复；若长时间未恢复，再去 Runtime 页面人工接管或手动触发 2FA",
+                            steps={
+                                "auth": {
+                                    "status": "running",
+                                    "detail": "server_boot 默认仅尝试复用现有 Session，不会自动补发新的 Push。",
+                                },
+                            },
+                            fields=self._build_startup_progress_fields(reason, source, False, silent_detail),
+                            reason=reason,
+                            source=source,
+                            trigger_login=False,
+                        )
+                        self._start_auth_recovery(
+                            interruption_kind="server_boot_resume",
+                            recovery_reason=reason or "auto_restore",
+                            source=source or "server_boot",
+                        )
+                        return
                     if self._should_promote_auth_wait_to_startup_cycle(reason, source, trigger_login):
                         service_mod.logger.info(
                             "Promoting hidden auth wait into visible startup cycle (reason=%s source=%s)",
@@ -656,7 +693,7 @@ class TradingServiceStartupMixin:
             "session_expired",
             "IBKR Session 已失效，需重新触发 2FA",
             "检测到 IBKR Session 已失效，运行态已降为未认证，实时行情和交易链路可能不可用。",
-            "系统会先尝试静默探测恢复；若仍未恢复，会自动重开一轮 2FA。你也可以在 Runtime 页面开启人工接管或手动全量重置。",
+            "系统会先尝试静默探测与本地重连自愈；若仍未恢复，会发出可复用的 2FA 卡片，需在飞书手动点击开始验证。你也可以在 Runtime 页面开启人工接管或手动全量重置。",
             {
                 "恢复动作": "已进入静默探测窗口",
             },
@@ -682,7 +719,7 @@ class TradingServiceStartupMixin:
             "gateway_down",
             "IBKR Gateway 不可达，已触发重启",
             "检测到 Gateway 一度不可达，已执行自动重启；当前运行态不可用，通常需要重新完成 2FA。",
-            "系统会先尝试静默探测恢复；若仍未恢复，会自动重开一轮 2FA。必要时可在 Runtime 页面执行全量清空后重试。",
+            "系统会先尝试静默探测与本地重连自愈；若仍未恢复，会发出可复用的 2FA 卡片，需在飞书手动点击开始验证。必要时可在 Runtime 页面执行全量清空后重试。",
             {
                 "Gateway动作": "已自动重启",
                 "恢复动作": "已进入静默探测窗口",

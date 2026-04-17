@@ -28,6 +28,7 @@ class TradingServiceLifecycleMixin:
             detail=self._build_2fa_detail(reason),
             message=message,
             force_reset=True,
+            report_pending=False,
         )
         if requested:
             service_mod.logger.info("Manual 2FA request sent: %s", reason)
@@ -41,6 +42,13 @@ class TradingServiceLifecycleMixin:
             return False
         return str(source or "").strip().lower() in service_mod.FRESH_MANUAL_AUTH_SOURCES
 
+    def _is_server_boot_resume_attempt(self, reason: str, source: str, trigger_login: bool) -> bool:
+        if bool(trigger_login) or not bool(self._server_boot_resume_only):
+            return False
+        source_key = str(source or "").strip().lower()
+        reason_key = str(reason or "").strip().lower()
+        return source_key == "server_boot" or reason_key == "auto_restore"
+
     def _should_restart_gateway_before_start(self, reason: str, source: str, trigger_login: bool) -> bool:
         if bool(trigger_login):
             return False
@@ -50,6 +58,8 @@ class TradingServiceLifecycleMixin:
             return bool(self._manual_start_restart_gateway)
         if reason_key == "weekly_reauth":
             return bool(self._weekly_reauth_restart_gateway)
+        if self._is_server_boot_resume_attempt(reason, source, False):
+            return False
         if reason_key == "auto_restore" or source_key == "server_boot":
             return not bool(self._server_boot_resume_only)
         return False
@@ -293,6 +303,8 @@ class TradingServiceLifecycleMixin:
         reason_key = str(reason or "").strip().lower()
         if bool(trigger_login):
             return True
+        if self._is_server_boot_resume_attempt(reason, source, False):
+            return bool(self._server_boot_publish_startup_card or not self._server_boot_resume_only)
         if reason_key == "auto_restore" or source_key == "server_boot":
             return bool(self._server_boot_publish_startup_card or not self._server_boot_resume_only)
         if source_key in {"api_start", "runtime_page", "feishu_callback", "feishu_2fa", "codex_validation"}:
@@ -303,6 +315,8 @@ class TradingServiceLifecycleMixin:
 
     def _should_promote_auth_wait_to_startup_cycle(self, reason: str, source: str, trigger_login: bool) -> bool:
         if bool(trigger_login) or self._startup_progress_enabled:
+            return False
+        if self._is_server_boot_resume_attempt(reason, source, trigger_login):
             return False
         source_key = str(source or "").strip().lower()
         reason_key = str(reason or "").strip().lower()

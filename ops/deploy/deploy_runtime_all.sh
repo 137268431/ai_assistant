@@ -34,6 +34,9 @@ OPS_REMOTE_ROOT="$IBKR_REMOTE_ROOT/ops"
 VENV_DIR="$IBKR_REMOTE_ROOT/venv"
 REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
 DEPLOY_IGNORE_UNMANAGED=0
+HEALTH_CHECK_ENVIRONMENT="${DEPLOY_HEALTH_ENVIRONMENT:-live}"
+STACK_HEALTH_TIMEOUT_SECONDS="${DEPLOY_STACK_HEALTH_TIMEOUT_SECONDS:-420}"
+STACK_HEALTH_RETRY_INTERVAL_SECONDS="${DEPLOY_STACK_HEALTH_RETRY_INTERVAL_SECONDS:-15}"
 
 source "$LIB_ROOT/common.sh"
 source "$LIB_ROOT/cli.sh"
@@ -169,6 +172,36 @@ run_ibkr() {
   fi
 }
 
+wait_for_full_stack_health() {
+  [[ "${PLAN_ONLY:-0}" -eq 1 ]] && return 0
+  [[ "${DRY_RUN:-0}" -eq 1 ]] && return 0
+  [[ "${STATUS_ONLY:-0}" -eq 1 ]] && return 0
+  [[ "${NO_RESTART:-0}" -eq 1 ]] && return 0
+  command -v python3 >/dev/null 2>&1 || {
+    deploy_warn "python3 not found; skipping final stack health wait."
+    return 0
+  }
+
+  local deadline
+  local output=""
+  deadline=$(( $(date +%s) + STACK_HEALTH_TIMEOUT_SECONDS ))
+  deploy_log "Waiting for full stack health (environment=$HEALTH_CHECK_ENVIRONMENT)..."
+
+  while true; do
+    if output="$(python3 "$AI_ASSISTANT_ROOT/ops/health/check_stack.py" --environment "$HEALTH_CHECK_ENVIRONMENT" --json 2>&1)"; then
+      deploy_log "Full stack health check passed."
+      return 0
+    fi
+    if (( $(date +%s) >= deadline )); then
+      deploy_error "Full stack health check timed out."
+      printf '%s\n' "$output" >&2
+      return 1
+    fi
+    deploy_log "Stack not ready yet; retrying in ${STACK_HEALTH_RETRY_INTERVAL_SECONDS}s..."
+    sleep "$STACK_HEALTH_RETRY_INTERVAL_SECONDS"
+  done
+}
+
 prepare_target_plan all
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
@@ -206,6 +239,7 @@ done
 if [[ "$REQUESTED_MODE" == "scope" && "$HAS_CHANGE_SOURCE" -eq 0 ]]; then
   run_ibkr
   run_pb
+  wait_for_full_stack_health
   exit 0
 fi
 
@@ -215,3 +249,5 @@ fi
 if array_contains "pocketbase" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_pb
 fi
+
+wait_for_full_stack_health
