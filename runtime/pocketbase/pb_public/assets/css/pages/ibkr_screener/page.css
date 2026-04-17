@@ -92,6 +92,7 @@
     .control-grid {
       display: grid;
       gap: 12px;
+      min-width: 0;
     }
 
     .summary-grid {
@@ -322,6 +323,7 @@
     .tab-panel {
       display: none;
       margin-top: 16px;
+      min-width: 0;
     }
 
     .tab-panel.active {
@@ -380,6 +382,7 @@
 
     .subview-panel {
       display: none;
+      min-width: 0;
     }
 
     .subview-panel.active {
@@ -388,6 +391,7 @@
 
     .panel-stack {
       margin-top: 0;
+      min-width: 0;
     }
 
     .filters,
@@ -558,10 +562,14 @@
 
     .table-wrap {
       margin-top: 14px;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
       overflow-x: auto;
       border-radius: 18px;
       border: 1px solid rgba(148, 163, 184, 0.08);
       background: rgba(8, 14, 24, 0.42);
+      overscroll-behavior-x: contain;
     }
 
     table {

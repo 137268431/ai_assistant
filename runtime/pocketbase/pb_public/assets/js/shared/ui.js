@@ -853,6 +853,40 @@ function renderOpsBridge(activePage) {
   ]);
 }
 
+function renderBacktestsBridge(activePage) {
+  return renderPageBridge([
+    {
+      path: '/ibkr_backtests.html',
+      kicker: 'Replay',
+      label: '回测工坊',
+      copy: '批量运行 / replay / 清理',
+      active: activePage === '/ibkr_backtests.html'
+    },
+    {
+      path: '/ibkr_chart.html',
+      kicker: 'Chart',
+      label: '图表工作台',
+      copy: '核对 bars / 指标 / 信号定位',
+      active: activePage === '/ibkr_chart.html'
+    },
+    {
+      path: '/ibkr_signals.html',
+      kicker: 'Signals',
+      label: '主信号',
+      copy: '对照 live 信号链路',
+      active: activePage === '/ibkr_signals.html'
+    },
+    {
+      path: '/ibkr_screener.html',
+      params: { tab: 'targets', view: 'current' },
+      kicker: 'Targets',
+      label: '筛选与标池',
+      copy: '回测前筛标 / 对照今日目标',
+      active: activePage === '/ibkr_screener.html'
+    }
+  ]);
+}
+
 // ── 通用 CSS 样式 ──
 function getCommonStyles() {
   return '<link rel="stylesheet" href="/assets/css/common.css">';
@@ -947,3 +981,4 @@ window.renderExecutionBridge = renderExecutionBridge;
 window.renderAnalyticsBridge = renderAnalyticsBridge;
 window.renderHomeBridge = renderHomeBridge;
 window.renderOpsBridge = renderOpsBridge;
+window.renderBacktestsBridge = renderBacktestsBridge;

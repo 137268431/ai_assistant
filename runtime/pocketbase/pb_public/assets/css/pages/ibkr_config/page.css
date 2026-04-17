@@ -1,0 +1,686 @@
+  /* ── Config Section ── */
+  .config-section {
+    margin-bottom: 24px;
+  }
+
+  .config-action-bar {
+    position: sticky;
+    top: 94px;
+    z-index: 24;
+    width: min(100%, var(--page-shell-max));
+    margin: 0 auto 12px;
+    padding: 0 var(--page-gutter);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .config-action-copy {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(99,179,237,0.14);
+    background: rgba(14,20,32,0.92);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .config-action-buttons {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  #configContainer {
+    width: min(100%, var(--page-shell-max));
+    margin: 0 auto;
+    padding: 0 var(--page-gutter) 110px;
+  }
+
+  .config-toolbar {
+    position: sticky;
+    top: 164px;
+    z-index: 20;
+    margin-bottom: 18px;
+    padding-bottom: 8px;
+    background: linear-gradient(180deg, rgba(11,15,18,0.98) 0%, rgba(11,15,18,0.92) 70%, rgba(11,15,18,0) 100%);
+  }
+
+  .config-tabs {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 4px 0 8px;
+    scrollbar-width: none;
+  }
+
+  .config-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .config-tab {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .config-tab:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .config-tab.active {
+    background: rgba(99,179,237,0.14);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .config-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--surface2);
+    color: inherit;
+    font-size: 10px;
+  }
+
+  .config-tab-summary {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
+  .section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-count {
+    font-size: 10px;
+    letter-spacing: 0;
+    color: var(--muted);
+  }
+
+  /* ── Config Item ── */
+  .config-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    transition: border-color 0.2s;
+  }
+
+  .config-item:hover {
+    border-color: rgba(99,179,237,0.3);
+  }
+
+  .config-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 8px;
+    gap: 12px;
+  }
+
+  .config-title-wrap {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .config-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+
+  .config-key {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    word-break: break-all;
+  }
+
+  .config-default {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--surface2);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .config-desc {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+
+  /* ── Input Controls ── */
+  .config-input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 16px; /* 防止移动端输入时页面放大 */
+    font-family: 'JetBrains Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .config-input:focus {
+    border-color: var(--accent);
+  }
+
+  /* Number Stepper */
+  .stepper-container {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+
+  .stepper-btn {
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .stepper-container .stepper-btn:first-of-type {
+    border-radius: 8px 0 0 8px;
+  }
+
+  .stepper-container .stepper-btn:last-of-type {
+    border-radius: 0 8px 8px 0;
+  }
+
+  .stepper-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .stepper-btn:active {
+    transform: scale(0.95);
+  }
+
+  .stepper-input {
+    width: 70px;
+    text-align: center;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+
+  .stepper-input:focus {
+    border-color: var(--border);
+  }
+
+  /* Toggle Switch */
+  .toggle-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.3s;
+  }
+
+  .toggle.active {
+    background: var(--long);
+    border-color: var(--long);
+  }
+
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: var(--text);
+    border-radius: 50%;
+    transition: transform 0.3s;
+  }
+
+  .toggle.active::after {
+    transform: translateX(20px);
+  }
+
+  .toggle-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .toggle.active + .toggle-label {
+    color: var(--long);
+  }
+
+  /* Select */
+  .config-select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 16px; /* 防止移动端输入时页面放大 */
+    font-family: 'JetBrains Mono', monospace;
+    outline: none;
+    cursor: pointer;
+  }
+
+  .config-select:focus {
+    border-color: var(--accent);
+  }
+
+  /* ── Save Button ── */
+  .save-btn {
+    position: static;
+    min-width: 124px;
+    padding: 12px 20px;
+    border-radius: 14px;
+    border: 1px solid rgba(72,187,120,0.32);
+    background: linear-gradient(135deg, #48BB78, #38A169);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    font-family: 'Sora', sans-serif;
+    box-shadow: 0 4px 12px rgba(72,187,120,0.3);
+  }
+
+  .save-btn:active {
+    transform: scale(0.97);
+  }
+
+  .save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ── Modified Indicator ── */
+  .config-item.modified {
+    border-color: var(--accent);
+    background: rgba(99,179,237,0.03);
+  }
+
+  /* ── Reset Button ── */
+  .reset-btn {
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .reset-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .reset-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  /* ── Reset All Button ── */
+  .reset-all-btn {
+    position: static;
+    min-width: 108px;
+    padding: 12px 18px;
+    border-radius: 14px;
+    border: 1px solid rgba(99,179,237,0.16);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'Sora', sans-serif;
+  }
+
+  .reset-all-btn:hover {
+    border-color: #E53E3E;
+    color: #E53E3E;
+  }
+
+  .reset-all-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  @media (max-width: 900px) {
+    .config-action-bar {
+      top: 88px;
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .config-action-buttons {
+      width: 100%;
+      justify-content: stretch;
+    }
+
+    .config-action-buttons > * {
+      flex: 1 1 180px;
+    }
+
+    .config-toolbar {
+      top: 192px;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .config-action-bar {
+      top: 82px;
+    }
+
+    .config-toolbar {
+      top: 236px;
+    }
+
+    .config-action-buttons > * {
+      flex-basis: 100%;
+    }
+  }
+
+  .cron-overview {
+    margin-bottom: 24px;
+    padding: 16px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(99,179,237,0.08) 0%, rgba(18,24,29,0.96) 100%);
+  }
+
+  .cron-overview-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 14px;
+  }
+
+  .cron-overview-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .cron-overview-subtitle {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .cron-overview-badge {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.04);
+    color: var(--accent);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .cron-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+  }
+
+  .cron-card {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.03);
+    padding: 14px;
+  }
+
+  .cron-card-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: flex-start;
+    margin-bottom: 10px;
+  }
+
+  .cron-card-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .cron-card-id {
+    margin-top: 4px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--muted);
+    word-break: break-all;
+  }
+
+  .cron-state {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    border: 1px solid var(--border);
+  }
+
+  .cron-state.on {
+    color: #68D391;
+    border-color: rgba(104,211,145,0.35);
+    background: rgba(104,211,145,0.12);
+  }
+
+  .cron-state.off {
+    color: #FC8181;
+    border-color: rgba(252,129,129,0.35);
+    background: rgba(252,129,129,0.12);
+  }
+
+  .cron-meta {
+    display: grid;
+    gap: 7px;
+  }
+
+  .cron-meta-row {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 10px;
+    align-items: start;
+    font-size: 11px;
+  }
+
+  .cron-meta-label {
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .cron-meta-value {
+    color: var(--text);
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .cron-time-details {
+    border: 1px dashed rgba(255,255,255,0.08);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.02);
+    padding: 8px 10px;
+  }
+
+  .cron-time-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .cron-time-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .cron-time-summary::after {
+    content: '+';
+    flex: 0 0 auto;
+    color: var(--accent);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.2;
+  }
+
+  .cron-time-details[open] .cron-time-summary::after {
+    content: '-';
+  }
+
+  .cron-time-primary {
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  .cron-time-toggle {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.4;
+  }
+
+  .cron-time-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed rgba(255,255,255,0.08);
+  }
+
+  .cron-time-item {
+    display: grid;
+    grid-template-columns: 30px 1fr;
+    gap: 8px;
+    align-items: start;
+  }
+
+  .cron-time-name {
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.5;
+  }
+
+  .cron-time-text {
+    color: var(--text);
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .cron-exp-details {
+    display: inline-block;
+    min-width: 0;
+  }
+
+  .cron-exp-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    list-style: none;
+    color: var(--accent);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.4;
+  }
+
+  .cron-exp-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .cron-exp-summary::after {
+    content: '+';
+    color: var(--muted);
+  }
+
+  .cron-exp-details[open] .cron-exp-summary::after {
+    content: '-';
+  }
+
+  .cron-exp-text {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px dashed rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02);
+    color: var(--text);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .cron-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .cron-tag {
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
