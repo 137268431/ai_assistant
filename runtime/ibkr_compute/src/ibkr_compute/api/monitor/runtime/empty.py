@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ibkr_compute.api.monitor.host import _api_app
+from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_symbols
 
 
 def _resolve_total_subscription_limit(runtime_environment: str) -> int:
@@ -23,8 +24,16 @@ def _resolve_trade_subscription_limit(runtime_environment: str) -> int:
         0,
         int(api_app.cfg.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 80) or 0),
     )
-    if trade_limit > 0:
-        return trade_limit
+    total_limit = max(
+        0,
+        int(api_app.cfg.get_int_for_environment("ibkr_total_subscription_limit", runtime_environment, 80) or 0),
+    )
+    resolved_trade_limit: int | None = trade_limit if trade_limit > 0 else None
+    if total_limit > 0:
+        remaining_budget = max(0, total_limit - len(get_market_monitor_symbols(runtime_environment)))
+        resolved_trade_limit = remaining_budget if resolved_trade_limit is None else min(resolved_trade_limit, remaining_budget)
+    if resolved_trade_limit is not None:
+        return int(resolved_trade_limit)
     return _resolve_total_subscription_limit(runtime_environment)
 
 
