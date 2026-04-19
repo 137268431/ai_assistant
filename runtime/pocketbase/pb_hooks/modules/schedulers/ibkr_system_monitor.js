@@ -1232,6 +1232,14 @@ cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
     }
 })
 
+cronAdd("ibkr_weekly_reauth_reminder", "20 1 * * 1", () => {
+    try {
+        require(`${__hooks}/lib/system_auth_edge_guard.js`).runIbkrWeeklyReauthReminder()
+    } catch (err) {
+        console.log(`[IBKRWeekly2FA] fatal error: ${err.message || err}`)
+    }
+})
+
 cronAdd("system_daily_report", "*/5 * * * *", () => {
     try {
         require(`${__hooks}/lib/system_notify_scheduler.js`).runDailyCloseSummaryTick("[SystemDailyReport]", "system_daily_report")

@@ -9,7 +9,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let hasLoadedRuntimeData = false;
         const CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000;
         const MANUAL_AUTH_REASON_LABELS = {
-            weekly_reauth: '每周重登验证',
+            weekly_reauth: '每周重登提醒',
             manual_start: '启动验证',
             startup: '启动验证',
             manual_reauth: '手动重登验证',
@@ -214,8 +214,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ? '手动启动=重启 Gateway + 新卡片 + 人工 2FA'
                 : '手动启动=直接恢复 Runtime';
             const weeklyReauth = strategy.weekly_reauth_mode === 'fresh_cycle'
-                ? '每周重验=fresh cycle'
-                : '每周重验=resume only';
+                ? '每周提醒=fresh cycle'
+                : '每周提醒=resume only';
             const serverBoot = strategy.server_boot_mode === 'fresh_cycle'
                 ? 'server_boot=fresh cycle'
                 : 'server_boot=resume only';
@@ -935,6 +935,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Response Received', formatTimeLabel(twoFactor?.response_received_at)],
                 ['Response Submitted', formatTimeLabel(twoFactor?.response_submitted_at)],
                 ['Response Rejected', formatTimeLabel(twoFactor?.response_rejected_at)],
+                ['Weekly Deadline', twoFactor?.business_deadline_cn ? `${String(twoFactor.business_deadline_cn)} CN / ${String(twoFactor.business_deadline_at || '--')} US` : '--'],
+                ['Cycle Deadline', twoFactor?.confirm_deadline_cn ? `${String(twoFactor.confirm_deadline_cn)} CN / ${String(twoFactor.confirm_deadline_at || '--')} US` : '--'],
                 ['Reset Recommended', twoFactor?.reset_recommended ? 'YES' : 'NO'],
                 ['Reset Reason', String(twoFactor?.reset_reason || '--')],
                 ['Operator Action', String(twoFactor?.operator_action || '--')],

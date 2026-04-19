@@ -4,6 +4,7 @@ var feishuStartup = require(`${__hooks}/lib/feishu/feishu_startup.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
 var timeUtils = require(`${__hooks}/lib/time_utils.js`)
 var systemEvents = require(`${__hooks}/lib/system_events.js`)
+var deadlineUtils = require(`${__hooks}/lib/runtime/ibkr_2fa_deadlines.js`)
 
 var IBKR_2FA_STATE_KEY = "ibkr_2fa"
 var IBKR_2FA_STATE_DATE = "global"
@@ -17,7 +18,7 @@ var ACTIVE_STATUSES = ["requested", "triggered", "waiting_confirm", "waiting_res
 var TERMINAL_STATUSES = ["success", "timeout", "failed"]
 var MANUAL_AUTH_REASON_LABELS = {
     auto_restore: "静默恢复",
-    weekly_reauth: "每周重登验证",
+    weekly_reauth: "每周重登提醒",
     manual_start: "启动验证",
     startup: "启动验证",
     manual_reauth: "手动重登验证",
@@ -440,6 +441,15 @@ function derive2faActionState(stateData, options) {
     state.reset_reason = resetReason
     state.response_submitted_age_sec = submittedAgeMs > 0 ? Math.round(submittedAgeMs / 1000) : 0
     state.response_rejected_age_sec = rejectedAgeMs > 0 ? Math.round(rejectedAgeMs / 1000) : 0
+    var deadlines = deadlineUtils.deriveTwoFactorDeadlines(state, { nowMs: nowMs })
+    state.business_deadline_at = deadlines.business_deadline_at || ""
+    state.business_deadline_cn = deadlines.business_deadline_cn || ""
+    state.business_deadline_label = deadlines.business_deadline_label || ""
+    state.business_deadline_overdue = deadlines.business_deadline_overdue === true
+    state.confirm_window_seconds = toNumber(deadlines.confirm_window_seconds, deadlineUtils.DEFAULT_CONFIRM_TIMEOUT_SECONDS)
+    state.confirm_deadline_at = deadlines.confirm_deadline_at || ""
+    state.confirm_deadline_cn = deadlines.confirm_deadline_cn || ""
+    state.confirm_deadline_overdue = deadlines.confirm_deadline_overdue === true
     return state
 }
 
@@ -490,6 +500,51 @@ function buildWaitingResponsePrompt(stateData) {
     return "**操作提示**: 这一步不是点手机推送。请在 IBKR App 的 Two-Factor Authentication 输入当前 Challenge，拿到 Response Code 后打开 Runtime 页面提交。当前已有 active 轮次，请不要重复触发。"
 }
 
+function buildRequestedSummary(stateData, fallbackSummary) {
+    var state = derive2faActionState(stateData)
+    if (String(state.reason || "").trim().toLowerCase() !== "weekly_reauth") {
+        return state.message || fallbackSummary
+    }
+    var confirmSeconds = toNumber(state.confirm_window_seconds, deadlineUtils.DEFAULT_CONFIRM_TIMEOUT_SECONDS)
+    if (state.business_deadline_overdue) {
+        return "本周重登提醒仍待手动开始，当前已晚于周一盘前建议完成时间。你仍可从当前卡片开始验证；点击开始后需在 " + confirmSeconds + " 秒内完成当前 2FA。"
+    }
+    return "本周重登提醒已发出。你有空时可直接在当前卡片点击“开始 2FA 验证”；最晚请于周一盘前前完成。点击开始后需在 " + confirmSeconds + " 秒内完成当前 2FA。"
+}
+
+function buildCardSummary(stateData, fallbackSummary) {
+    var state = derive2faActionState(stateData)
+    if (state.status === "waiting_response") {
+        return buildWaitingResponseSummary(state)
+    }
+    if (state.status === "requested") {
+        return buildRequestedSummary(state, fallbackSummary)
+    }
+    return state.message || fallbackSummary
+}
+
+function buildWeeklyReminderDeadlineNote(stateData) {
+    var state = derive2faActionState(stateData)
+    if (String(state.reason || "").trim().toLowerCase() !== "weekly_reauth" || !state.business_deadline_cn) {
+        return ""
+    }
+    var confirmSeconds = toNumber(state.confirm_window_seconds, deadlineUtils.DEFAULT_CONFIRM_TIMEOUT_SECONDS)
+    if (state.business_deadline_overdue) {
+        return "**周验证提醒**: 已晚于周一盘前建议完成时间（北京时间 " + state.business_deadline_cn + " / 美东 " + (state.business_deadline_at || "-") + "）。你仍可从当前卡片开始验证，但请尽快完成恢复。"
+    }
+    return "**周验证提醒**: 你有空时可从当前卡片开始验证；最晚请于周一盘前前完成（北京时间 " + state.business_deadline_cn + " / 美东 " + (state.business_deadline_at || "-") + "）。点击开始后，本轮 2FA 需在 " + confirmSeconds + " 秒内完成。"
+}
+
+function buildConfirmDeadlineNote(stateData) {
+    var state = derive2faActionState(stateData)
+    if (!state.confirm_deadline_cn) return ""
+    var confirmSeconds = toNumber(state.confirm_window_seconds, deadlineUtils.DEFAULT_CONFIRM_TIMEOUT_SECONDS)
+    if (state.confirm_deadline_overdue) {
+        return "**本轮时限**: 当前轮次已超过 " + confirmSeconds + " 秒等待窗口（北京时间 " + state.confirm_deadline_cn + " / 美东 " + (state.confirm_deadline_at || "-") + "）。若 Gateway 仍未恢复，请准备重新开始本轮。"
+    }
+    return "**本轮时限**: 点击开始后，本轮 2FA 需在 " + confirmSeconds + " 秒内完成；当前预计截止为北京时间 " + state.confirm_deadline_cn + " / 美东 " + (state.confirm_deadline_at || "-") + "。"
+}
+
 function getActiveCyclePrimaryLabel(stateData) {
     var state = derive2faActionState(stateData)
     if (state.status === "waiting_response") {
@@ -524,6 +579,13 @@ function buildDeliveryFingerprint(stateData) {
         requested_at: derived.requested_at || "",
         triggered_at: derived.triggered_at || "",
         result_at: derived.result_at || "",
+        business_deadline_at: derived.business_deadline_at || "",
+        business_deadline_cn: derived.business_deadline_cn || "",
+        business_deadline_overdue: derived.business_deadline_overdue ? "yes" : "no",
+        confirm_deadline_at: derived.confirm_deadline_at || "",
+        confirm_deadline_cn: derived.confirm_deadline_cn || "",
+        confirm_deadline_overdue: derived.confirm_deadline_overdue ? "yes" : "no",
+        confirm_window_seconds: derived.confirm_window_seconds || 0,
         restarted_from_active_cycle: derived.restarted_from_active_cycle ? "yes" : "no",
         previous_cycle: {
             status: derived.previous_cycle && derived.previous_cycle.status || "",
@@ -853,9 +915,7 @@ function build2faCard(stateData, environment) {
     var runtimeEnvironment = envUtils.normalizeRuntimeEnvironment(environment || effectiveState.environment || "", envUtils.LIVE_ENVIRONMENT)
     var cfg = getStatusConfig(effectiveState.status)
     var reasonLabel = getManualAuthReasonLabel(effectiveState.reason || effectiveState.recovery_reason)
-    var summary = effectiveState.status === "waiting_response"
-        ? buildWaitingResponseSummary(effectiveState)
-        : (effectiveState.message || cfg.summary)
+    var summary = buildCardSummary(effectiveState, cfg.summary)
     var detailMarkdown = buildDetailMarkdown(effectiveState.detail)
     var previousCycle = effectiveState.previous_cycle && typeof effectiveState.previous_cycle === "object" ? effectiveState.previous_cycle : null
     var currentCycleActive = isCurrentCycleActiveStatus(effectiveState.status)
@@ -871,6 +931,11 @@ function build2faCard(stateData, environment) {
     if (effectiveState.triggered_at) metaLines.push("**触发时间**: " + effectiveState.triggered_at)
     if (effectiveState.result_at) metaLines.push("**结果时间**: " + effectiveState.result_at)
     if (effectiveState.reason) metaLines.push("**触发原因**: " + effectiveState.reason)
+    if (effectiveState.business_deadline_cn) metaLines.push("**周验证截止**: " + effectiveState.business_deadline_cn + " CN / " + (effectiveState.business_deadline_at || "-") + " US")
+    if (effectiveState.confirm_deadline_cn) metaLines.push("**本轮截止**: " + effectiveState.confirm_deadline_cn + " CN / " + (effectiveState.confirm_deadline_at || "-") + " US")
+    if (effectiveState.confirm_deadline_cn || String(effectiveState.reason || "").trim().toLowerCase() === "weekly_reauth") {
+        metaLines.push("**本轮时限**: " + toNumber(effectiveState.confirm_window_seconds, deadlineUtils.DEFAULT_CONFIRM_TIMEOUT_SECONDS) + " 秒")
+    }
     if (effectiveState.recovery_phase) metaLines.push("**恢复阶段**: " + effectiveState.recovery_phase)
     if (effectiveState.interruption_kind) metaLines.push("**中断类型**: " + effectiveState.interruption_kind)
     if (effectiveState.mode) metaLines.push("**验证模式**: " + getModeLabel(effectiveState.mode))
@@ -914,6 +979,15 @@ function build2faCard(stateData, environment) {
         })
     }
 
+    var weeklyReminderDeadlineNote = buildWeeklyReminderDeadlineNote(effectiveState)
+    if (weeklyReminderDeadlineNote) {
+        elements.push({ tag: "hr" })
+        elements.push({
+            tag: "markdown",
+            content: weeklyReminderDeadlineNote
+        })
+    }
+
     if (previousCycle && previousCycle.superseded_at) {
         var supersededLines = [
             "**上一轮已被替换**: " + previousCycle.superseded_at,
@@ -949,6 +1023,15 @@ function build2faCard(stateData, environment) {
         elements.push({
             tag: "markdown",
             content: buildWaitingResponsePrompt(effectiveState)
+        })
+    }
+
+    var confirmDeadlineNote = buildConfirmDeadlineNote(effectiveState)
+    if (confirmDeadlineNote) {
+        elements.push({ tag: "hr" })
+        elements.push({
+            tag: "markdown",
+            content: confirmDeadlineNote
         })
     }
 

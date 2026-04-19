@@ -1,5 +1,59 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+
+SESSION_UNAUTHENTICATED_GRACE_SECONDS = 300
+
+
+def _parse_monitor_timestamp(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _should_suppress_session_unauthenticated(runtime_status: dict) -> bool:
+    auth_recovery = runtime_status.get("auth_recovery") or {}
+    if not auth_recovery:
+        return False
+
+    phase = str(auth_recovery.get("recovery_phase") or "").strip().lower()
+    recovery_class = str(auth_recovery.get("recovery_class") or "").strip().lower()
+    probe_result = str(auth_recovery.get("probe_result") or "").strip().lower()
+    interruption_kind = str(auth_recovery.get("interruption_kind") or "").strip().lower()
+    auto_restart_scheduled = bool(auth_recovery.get("auto_restart_scheduled"))
+    started_at = _parse_monitor_timestamp(
+        auth_recovery.get("probe_started_at")
+        or auth_recovery.get("probe_last_checked_at")
+        or auth_recovery.get("updated_at")
+    )
+    if started_at is None:
+        return False
+
+    age_seconds = max(0.0, (datetime.now(timezone.utc) - started_at).total_seconds())
+    if age_seconds > SESSION_UNAUTHENTICATED_GRACE_SECONDS:
+        return False
+    if recovery_class == "manual_auth_required" or phase in {"requested", "manual_takeover"}:
+        return False
+    if auto_restart_scheduled and recovery_class in {"scheduled_restart", "stale_broker"}:
+        return True
+    if recovery_class == "stale_broker" and probe_result == "stale_broker_restart_scheduled":
+        return True
+    if phase != "silent_probe":
+        return False
+    if probe_result in {"pending", "self_heal", "self_heal_pending"} and (
+        recovery_class == "scheduled_restart" or interruption_kind in {"session_expired", "gateway_down"}
+    ):
+        return True
+    return False
+
 
 def _append_monitor_flag(flags: list[dict], severity: str, code: str, title: str, detail: str) -> None:
     flags.append(
@@ -29,7 +83,7 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             "Gateway 既不在运行也不可达，IBKR 链路当前不可用。",
         )
 
-    if gateway_active and not bool(session.get("authenticated")):
+    if gateway_active and not bool(session.get("authenticated")) and not _should_suppress_session_unauthenticated(runtime_status):
         _append_monitor_flag(
             flags,
             "warning",

@@ -18,6 +18,11 @@ mkdir -p "$tws_settings" "$log_dir"
 
 if [[ -n "$gateway_tz" ]]; then
   export TZ="$gateway_tz"
+  timezone_flag="-Duser.timezone=$gateway_tz"
+  existing_java_tool_options="${JAVA_TOOL_OPTIONS:-}"
+  if [[ " ${existing_java_tool_options} " != *" ${timezone_flag} "* ]]; then
+    export JAVA_TOOL_OPTIONS="${existing_java_tool_options:+$existing_java_tool_options }$timezone_flag"
+  fi
 fi
 
 if [[ -n "$java_path" && ! -x "$java_path/java" && -x "$java_path/bin/java" ]]; then

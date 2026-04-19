@@ -82,6 +82,11 @@ PREFERRED_CONTRACT_SEC_TYPE_SCORE = {
     "ETF": 75,
     "IND": 70,
 }
+FRESH_PROBE_CLIENT_ID_START = max(DEFAULT_CLIENT_ID + 100, 9000)
+FRESH_PROBE_RETRIES = max(1, int(os.environ.get("IBGW_FRESH_PROBE_RETRIES", "3")))
+
+_fresh_probe_client_id_lock = threading.Lock()
+_fresh_probe_client_id_seq = FRESH_PROBE_CLIENT_ID_START
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -116,6 +121,17 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _iso_now() -> str:
     return datetime.now(ET).isoformat()
+
+
+def _next_fresh_probe_client_id(exclude: int = 0) -> int:
+    global _fresh_probe_client_id_seq
+    with _fresh_probe_client_id_lock:
+        _fresh_probe_client_id_seq = max(
+            int(_fresh_probe_client_id_seq or FRESH_PROBE_CLIENT_ID_START) + 1,
+            FRESH_PROBE_CLIENT_ID_START,
+            int(exclude or 0) + 1,
+        )
+        return int(_fresh_probe_client_id_seq)
 
 
 def _run_command(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str] | None:
@@ -267,6 +283,27 @@ class _IBGatewayApp(EWrapper, EClient):
         self._thread = None
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=5)
+
+    def _broker_not_ready_error(self, action: str, status: dict | None = None) -> RuntimeError:
+        snapshot = status or self.status()
+        parts = [str(action or "broker_request").strip() or "broker_request", "broker_not_ready"]
+        status_code = int(snapshot.get("status_code", 0) or 0)
+        last_error_code = int(snapshot.get("last_error_code", 0) or 0)
+        last_error = str(snapshot.get("last_error") or "").strip().replace("\n", " ")
+        if status_code:
+            parts.append(f"status_code={status_code}")
+        if last_error_code:
+            parts.append(f"last_error_code={last_error_code}")
+        if last_error:
+            parts.append(last_error)
+        return RuntimeError(":".join(parts))
+
+    def _ensure_ready(self, timeout: int, action: str) -> dict:
+        ready = self.connect_and_start(timeout=timeout)
+        status = self.status()
+        if ready:
+            return status
+        raise self._broker_not_ready_error(action, status=status)
 
     def connect_and_start(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> bool:
         if not IBAPI_AVAILABLE:
@@ -770,7 +807,7 @@ class _IBGatewayApp(EWrapper, EClient):
         sec_type: str = "STK",
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> List[dict]:
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "request_contract_details")
         req_id, ctx = self._next_request("contract_details")
         contract = Contract()
         if int(conid or 0) > 0:
@@ -790,7 +827,7 @@ class _IBGatewayApp(EWrapper, EClient):
         return self._await(req_id, ctx, timeout)
 
     def request_matching_symbols(self, query: str, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "request_matching_symbols")
         req_id, ctx = self._next_request("matching_symbols")
         self.reqMatchingSymbols(req_id, str(query or "").strip())
         return self._await(req_id, ctx, timeout)
@@ -808,7 +845,7 @@ class _IBGatewayApp(EWrapper, EClient):
         use_rth: bool = False,
         timeout: int = 30,
     ) -> List[dict]:
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "request_historical_bars")
         details = self.request_contract_details(conid=conid, timeout=timeout)
         if not details and symbol:
             details = self.request_contract_details(
@@ -846,7 +883,7 @@ class _IBGatewayApp(EWrapper, EClient):
         *,
         include_all: bool = False,
     ) -> List[dict]:
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "request_open_orders")
         req_id, ctx = self._next_request("open_orders_all" if include_all else "open_orders")
         if include_all:
             self.reqAllOpenOrders()
@@ -855,14 +892,14 @@ class _IBGatewayApp(EWrapper, EClient):
         return self._await(req_id, ctx, timeout)
 
     def request_positions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "request_positions")
         req_id, ctx = self._next_request("positions")
         self._positions = {}
         self.reqPositions()
         return self._await(req_id, ctx, timeout)
 
     def request_account_summary(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> Dict[str, dict]:
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "request_account_summary")
         req_id, ctx = self._next_request("account_summary")
         self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
         items = self._await(req_id, ctx, timeout)
@@ -878,7 +915,7 @@ class _IBGatewayApp(EWrapper, EClient):
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
         with self._account_updates_request_lock:
-            self.connect_and_start(timeout=timeout)
+            self._ensure_ready(timeout, "request_account_updates")
             requested_account = str(account or "").strip()
             if not requested_account and self._managed_accounts:
                 requested_account = self._managed_accounts.split(",", 1)[0].strip()
@@ -907,17 +944,17 @@ class _IBGatewayApp(EWrapper, EClient):
                         self._account_updates_capture = None
 
     def request_executions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "request_executions")
         req_id, ctx = self._next_request("executions")
         self.reqExecutions(req_id, ExecutionFilter())
         return self._await(req_id, ctx, timeout)
 
     def place_order(self, contract: Any, order: Any, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS):
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "place_order")
         self.placeOrder(int(order.orderId), contract, order)
 
     def cancel_open_order(self, order_id: str, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS):
-        self.connect_and_start(timeout=timeout)
+        self._ensure_ready(timeout, "cancel_open_order")
         self.cancelOrder(int(order_id))
 
     def get_order_snapshot(self, order_id: str) -> dict:
@@ -1154,6 +1191,48 @@ class BrokerAdapter:
             "authenticated": bool(ready),
             **self.status(),
         }
+
+    def fresh_health_probe(self, reason: str = "", retries: int = FRESH_PROBE_RETRIES) -> dict:
+        attempts = max(1, int(retries or FRESH_PROBE_RETRIES))
+        last_payload: dict[str, Any] = {
+            "ok": False,
+            "ready": False,
+            "authenticated": False,
+            "status_code": 0,
+            "last_error_code": 0,
+            "last_error": "",
+            "probe_client_id": 0,
+        }
+        for _ in range(attempts):
+            probe_client_id = _next_fresh_probe_client_id(self.client_id)
+            if reason:
+                logger.info(
+                    "Running fresh IB Gateway health probe: base_client_id=%s probe_client_id=%s reason=%s",
+                    self.client_id,
+                    probe_client_id,
+                    reason,
+                )
+            probe = type(self)(
+                host=self.host,
+                port=self.port,
+                client_id=probe_client_id,
+                connect_timeout=self.connect_timeout,
+            )
+            try:
+                payload = probe.health()
+            finally:
+                try:
+                    probe.disconnect()
+                except Exception:
+                    logger.debug("Failed to stop fresh IB Gateway probe client_id=%s", probe_client_id, exc_info=True)
+            payload = dict(payload or {})
+            payload["probe_client_id"] = probe_client_id
+            last_payload = payload
+            if bool(payload.get("authenticated") or payload.get("ready")):
+                return payload
+            if int(payload.get("last_error_code", 0) or 0) != 326:
+                return payload
+        return last_payload
 
     def force_reconnect(self, reason: str = "", settle_seconds: float = 1.0) -> dict:
         if reason:
@@ -1918,6 +1997,125 @@ class AuthController:
             logger.exception("2FA status reporting failed")
             return {}
 
+    @staticmethod
+    def _is_authenticated_payload(payload: Optional[dict]) -> bool:
+        data = payload if isinstance(payload, dict) else {}
+        return bool(data.get("authenticated") or data.get("ready"))
+
+    def _current_auth_health(self) -> dict[str, Any]:
+        if self.session_keeper:
+            return self.session_keeper.check_auth_status()
+        if self.broker:
+            return self.broker.health()
+        return {}
+
+    def _mark_login_success(
+        self,
+        *,
+        detail: dict,
+        reason: str,
+        source: str,
+        message: str,
+        last_result: str,
+    ) -> bool:
+        self._report_2fa_status(
+            "success",
+            detail,
+            reason=reason,
+            source=source,
+            message=message,
+            last_result=last_result,
+        )
+        return True
+
+    def _attempt_post_approval_self_heal(
+        self,
+        *,
+        detail: dict,
+        reason: str,
+        source: str,
+    ) -> bool:
+        if not self.broker:
+            return False
+
+        try:
+            health = self._current_auth_health()
+        except Exception as exc:
+            logger.debug("Final auth refresh before self-heal failed: %s", exc)
+            health = {}
+        if self._is_authenticated_payload(health):
+            return self._mark_login_success(
+                detail=detail,
+                reason=reason,
+                source=source,
+                message="IB Gateway 已完成认证。",
+                last_result="authenticated",
+            )
+
+        reconnect_reason = f"{reason or 'manual_auth'}_timeout"
+        try:
+            reconnect_payload = self.broker.force_reconnect(reason=reconnect_reason)
+        except Exception as exc:
+            logger.warning("Post-approval broker reconnect failed: %s", exc)
+            reconnect_payload = {}
+        if self._is_authenticated_payload(reconnect_payload):
+            return self._mark_login_success(
+                detail=detail,
+                reason=reason,
+                source=source,
+                message="IB Gateway 已完成认证，运行态连接已自动刷新。",
+                last_result="authenticated_after_broker_reconnect",
+            )
+
+        fresh_probe_payload: dict[str, Any] = {}
+        try:
+            fresh_probe_payload = self.broker.fresh_health_probe(reason=reconnect_reason)
+        except Exception as exc:
+            logger.warning("Fresh broker health probe after manual 2FA timeout failed: %s", exc)
+            fresh_probe_payload = {}
+        if not self._is_authenticated_payload(fresh_probe_payload):
+            return False
+
+        logger.warning(
+            "Fresh broker probe authenticated after manual 2FA timeout; attempting in-process self-heal: "
+            "reason=%s source=%s probe_client_id=%s",
+            reason or "-",
+            source or "-",
+            int(fresh_probe_payload.get("probe_client_id", 0) or 0),
+        )
+        for settle_seconds in (0.5, 1.0, float(self.login_poll_interval_seconds)):
+            try:
+                reconnect_payload = self.broker.force_reconnect(
+                    reason=f"{reconnect_reason}_fresh_probe_authenticated",
+                    settle_seconds=settle_seconds,
+                )
+            except Exception as exc:
+                logger.warning("In-process broker self-heal reconnect failed: %s", exc)
+                reconnect_payload = {}
+            if self._is_authenticated_payload(reconnect_payload):
+                return self._mark_login_success(
+                    detail=detail,
+                    reason=reason,
+                    source=source,
+                    message="IB Gateway 已完成认证，系统已自动修复运行态连接。",
+                    last_result="fresh_probe_authenticated_self_healed",
+                )
+            try:
+                health = self._current_auth_health()
+            except Exception as exc:
+                logger.debug("Post self-heal auth refresh failed: %s", exc)
+                health = {}
+            if self._is_authenticated_payload(health):
+                return self._mark_login_success(
+                    detail=detail,
+                    reason=reason,
+                    source=source,
+                    message="IB Gateway 已完成认证，系统已自动修复运行态连接。",
+                    last_result="fresh_probe_authenticated_self_healed",
+                )
+
+        return False
+
     def login(
         self,
         *,
@@ -1974,34 +2172,26 @@ class AuthController:
 
             health: dict[str, Any] = {}
             try:
-                if self.session_keeper:
-                    health = self.session_keeper.check_auth_status()
-                    if bool(health.get("authenticated")):
-                        self._report_2fa_status(
-                            "success",
-                            detail,
-                            reason=reason,
-                            source=source,
-                            message="IB Gateway 已完成认证。",
-                            last_result="authenticated",
-                        )
-                        return True
-                elif self.broker:
-                    health = self.broker.health()
-                    if bool(health.get("ready")):
-                        self._report_2fa_status(
-                            "success",
-                            detail,
-                            reason=reason,
-                            source=source,
-                            message="IB Gateway 已完成认证。",
-                            last_result="authenticated",
-                        )
-                        return True
+                health = self._current_auth_health()
+                if self._is_authenticated_payload(health):
+                    return self._mark_login_success(
+                        detail=detail,
+                        reason=reason,
+                        source=source,
+                        message="IB Gateway 已完成认证。",
+                        last_result="authenticated",
+                    )
             except Exception as exc:
                 logger.debug("IB Gateway auth poll failed: %s", exc)
 
             time.sleep(self.login_poll_interval_seconds)
+
+        if self._attempt_post_approval_self_heal(
+            detail=detail,
+            reason=reason,
+            source=source,
+        ):
+            return True
 
         self._report_2fa_status(
             "failed",

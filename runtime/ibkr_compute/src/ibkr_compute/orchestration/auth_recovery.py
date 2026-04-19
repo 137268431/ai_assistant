@@ -17,6 +17,7 @@ class TradingServiceAuthRecoveryMixin:
         return {
             "cycle_id": "",
             "recovery_phase": "idle",
+            "recovery_class": "",
             "recovery_reason": "",
             "interruption_kind": "",
             "manual_takeover_active": False,
@@ -38,6 +39,43 @@ class TradingServiceAuthRecoveryMixin:
     def _copy_auth_recovery_state(self, source: dict | None = None) -> dict:
         payload = source if source is not None else self._auth_recovery_state
         return dict(payload or {})
+
+    @staticmethod
+    def _normalize_recovery_value(value: str) -> str:
+        return str(value or "").strip().lower()
+
+    def _derive_auth_recovery_class(self, state: dict | None = None) -> str:
+        payload = self._copy_auth_recovery_state(state)
+        phase = self._normalize_recovery_value(payload.get("recovery_phase"))
+        reason = self._normalize_recovery_value(payload.get("recovery_reason"))
+        interruption_kind = self._normalize_recovery_value(payload.get("interruption_kind"))
+        probe_result = self._normalize_recovery_value(payload.get("probe_result"))
+        source = self._normalize_recovery_value(payload.get("last_recovery_source"))
+        auto_restart_scheduled = bool(payload.get("auto_restart_scheduled"))
+
+        if (
+            probe_result in {
+                "fresh_probe_authenticated",
+                "stale_broker_detected",
+                "stale_broker_restart_failed",
+                "stale_broker_restart_scheduled",
+            }
+            or reason == "stale_inprocess_broker"
+        ):
+            return "stale_broker"
+        if phase == "requested" or probe_result in {
+            "manual_trigger_required",
+            "resume_probe_timeout",
+            "timeout_after_self_heal",
+        }:
+            return "manual_auth_required"
+        if interruption_kind in {"session_expired", "gateway_down"}:
+            return "scheduled_restart"
+        if reason in {"session_expired", "gateway_down"} and source in {"session_keeper", "gateway_down"}:
+            return "scheduled_restart"
+        if phase in {"idle", "recovered", "runtime_stopped"} and not auto_restart_scheduled:
+            return ""
+        return ""
 
     def _parse_iso_timestamp(self, value: str) -> datetime | None:
         service_mod = _service_mod()
@@ -106,6 +144,8 @@ class TradingServiceAuthRecoveryMixin:
         with self._auth_recovery_lock:
             next_state = self._copy_auth_recovery_state()
             next_state.update(updates)
+            if "recovery_class" not in updates or updates.get("recovery_class") is None:
+                next_state["recovery_class"] = self._derive_auth_recovery_class(next_state)
             next_state["updated_at"] = self._now_iso()
             if not next_state.get("manual_takeover_active"):
                 next_state["manual_takeover_started_at"] = ""
@@ -272,6 +312,70 @@ class TradingServiceAuthRecoveryMixin:
                     last_recovery_source=restart_source or "server_boot",
                 )
 
+    def _fresh_broker_auth_probe(self, reason: str) -> dict:
+        service_mod = _service_mod()
+        try:
+            payload = self.broker.fresh_health_probe(reason=reason)
+            return dict(payload or {})
+        except Exception as exc:
+            service_mod.logger.warning("Fresh broker auth probe failed: %s", exc)
+            return {}
+
+    def _handle_stale_broker_detected(
+        self,
+        *,
+        cycle_id: str,
+        interruption_kind: str,
+        recovery_reason: str,
+        current: dict,
+        gateway_status_code: int,
+        attempts: int,
+        fresh_probe_payload: dict | None,
+    ) -> tuple[bool, int]:
+        service_mod = _service_mod()
+        payload = dict(fresh_probe_payload or {})
+        probe_client_id = int(payload.get("probe_client_id", 0) or 0)
+        gateway_status_code = int(payload.get("status_code", 0) or gateway_status_code or 0)
+        service_mod.logger.warning(
+            "Fresh broker probe authenticated while runtime broker remained stale; scheduling runtime restart: "
+            "cycle=%s probe_client_id=%s reason=%s",
+            cycle_id,
+            probe_client_id or 0,
+            recovery_reason or "-",
+        )
+        scheduled = False
+        try:
+            scheduled = self._schedule_auth_restart(
+                reason="stale_inprocess_broker",
+                source="auth_probe_fresh_broker",
+                trigger_login=False,
+            )
+        except Exception as exc:
+            service_mod.logger.error("Failed to schedule stale broker runtime restart: %s", exc)
+        self._auth_required_reason = ""
+        self._set_auth_recovery_state(
+            cycle_id=cycle_id,
+            recovery_phase="silent_probe" if scheduled else "failed",
+            recovery_class="stale_broker",
+            interruption_kind=interruption_kind,
+            recovery_reason="stale_inprocess_broker",
+            probe_started_at=current.get("probe_started_at") or self._now_iso(),
+            probe_last_checked_at=self._now_iso(),
+            probe_attempts=attempts,
+            probe_result="stale_broker_restart_scheduled" if scheduled else "stale_broker_restart_failed",
+            auto_restart_scheduled=bool(scheduled),
+            last_gateway_status_code=gateway_status_code,
+            last_recovery_source="auth_probe_fresh_broker",
+            lock_owner="auth_probe" if scheduled else "",
+            lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS) if scheduled else "",
+            manual_takeover_active=False,
+        )
+        if not scheduled:
+            service_mod.logger.error(
+                "Fresh broker probe authenticated but runtime restart could not be scheduled; manual 2FA suppressed"
+            )
+        return True, attempts
+
     def _attempt_auth_probe_self_heal(
         self,
         cycle_id: str,
@@ -349,6 +453,19 @@ class TradingServiceAuthRecoveryMixin:
             self._mark_auth_recovered(source="auth_probe_self_heal", reason=recovery_reason or source)
             return True, attempts
 
+        fresh_probe_payload = self._fresh_broker_auth_probe("auth_probe_timeout")
+        if bool(fresh_probe_payload.get("authenticated") or fresh_probe_payload.get("ready")):
+            attempts += 1
+            return self._handle_stale_broker_detected(
+                cycle_id=cycle_id,
+                interruption_kind=interruption_kind,
+                recovery_reason=recovery_reason,
+                current=current,
+                gateway_status_code=gateway_status_code,
+                attempts=attempts,
+                fresh_probe_payload=fresh_probe_payload,
+            )
+
         grace_deadline = time.time() + service_mod.AUTH_PROBE_SELF_HEAL_GRACE_SECONDS
         while not self._auth_probe_stop.is_set() and time.time() < grace_deadline:
             current = self._copy_auth_recovery_state()
@@ -387,6 +504,19 @@ class TradingServiceAuthRecoveryMixin:
                 break
             if self._auth_probe_stop.wait(timeout=min(service_mod.AUTH_PROBE_INTERVAL_SECONDS, remaining)):
                 return False, attempts
+        fresh_probe_payload = self._fresh_broker_auth_probe("auth_probe_grace_exhausted")
+        if bool(fresh_probe_payload.get("authenticated") or fresh_probe_payload.get("ready")):
+            attempts += 1
+            current = self._copy_auth_recovery_state()
+            return self._handle_stale_broker_detected(
+                cycle_id=cycle_id,
+                interruption_kind=interruption_kind,
+                recovery_reason=recovery_reason,
+                current=current,
+                gateway_status_code=gateway_status_code,
+                attempts=attempts,
+                fresh_probe_payload=fresh_probe_payload,
+            )
         return False, attempts
 
     def _ensure_auth_probe(self, cycle_id: str, interruption_kind: str, recovery_reason: str, source: str):

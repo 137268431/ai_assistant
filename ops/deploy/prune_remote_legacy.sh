@@ -81,6 +81,27 @@ remove_recursive_dirs() {
   done < <(find "$root" -type d -name "$pattern" -print0 2>/dev/null)
 }
 
+remove_crontab_pattern() {
+  local pattern="$1"
+  local current=""
+  if ! current="$(crontab -l 2>/dev/null)"; then
+    return 0
+  fi
+  if ! grep -Fq "$pattern" <<<"$current"; then
+    return 0
+  fi
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    echo "REMOVE CRONTAB PATTERN $pattern"
+    grep -F "$pattern" <<<"$current"
+    return 0
+  fi
+
+  local next
+  next="$(grep -Fv "$pattern" <<<"$current" || true)"
+  printf '%s\n' "$next" | crontab -
+  echo "REMOVED CRONTAB PATTERN $pattern"
+}
+
 remove_path /opt/pocketbase/data
 remove_path /opt/pocketbase/deploy.sh
 remove_path /opt/pocketbase/pb_hooks_backup
@@ -110,6 +131,8 @@ remove_path /opt/ibkr_compute/signal_generator.py
 remove_path /opt/ibkr_compute/ibkr_login.py
 remove_path /opt/ibkr_compute/ibkr_weekly_reauth.py
 remove_path /opt/ibkr_compute/ibkr_keepalive.py
+remove_path /opt/ibkr_compute/deploy/ibkr_weekly_reauth.py
+remove_path /opt/ibkr_compute/deploy/ibkr_keepalive.py
 remove_path /opt/ibkr_compute/e2e_test.py
 remove_path /opt/ibkr/clientportal.gw
 remove_recursive_files /opt/ibkr_compute/src '*.bak.*'
@@ -120,4 +143,6 @@ remove_recursive_files /opt/ibkr_compute/ops '*.bak.*'
 remove_recursive_files /opt/ibkr_compute/ops '._*'
 remove_recursive_files /opt/ibkr_compute/ops '*.pyc'
 remove_recursive_dirs /opt/ibkr_compute/ops '__pycache__'
+remove_crontab_pattern /opt/ibkr_compute/deploy/ibkr_weekly_reauth.py
+remove_crontab_pattern /opt/ibkr_compute/deploy/ibkr_keepalive.py
 SH

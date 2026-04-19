@@ -6206,6 +6206,7 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
         const source = String(d.source || "").trim() || "ibkr_compute"
         const messageText = String(d.message || "").trim()
         const detail = d.detail && typeof d.detail === "object" ? d.detail : {}
+        const weeklyReminderRequested = !triggerNow && reason === "weekly_reauth"
         const result = triggerNow
             ? trigger2faFlow({
                 environment: environment,
@@ -6257,19 +6258,31 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
                 ? "已强制开启新一轮 2FA，并刷新卡片。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
                 : "已重新触发 2FA。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
         } else if (result.skipped_reason === "active_card_reused") {
-            const remainingMs = Number(result.renotify_remaining_ms || 0) || 0
-            const remainingMin = remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0
-            message = remainingMin > 0
-                ? `已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证（约 ${remainingMin} 分钟内不会再新发提醒）。`
-                : "已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证。"
+            if (weeklyReminderRequested) {
+                message = state.business_deadline_overdue
+                    ? "已复用现有本周重登提醒卡片；当前已晚于周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
+                    : "已复用现有本周重登提醒卡片；你有空时直接去飞书点击开始验证，最晚请于周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
+            } else {
+                const remainingMs = Number(result.renotify_remaining_ms || 0) || 0
+                const remainingMin = remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0
+                message = remainingMin > 0
+                    ? `已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证（约 ${remainingMin} 分钟内不会再新发提醒）。`
+                    : "已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证。"
+            }
         } else if (result.skipped_reason === "cooldown") {
             message = "2FA 卡片刚更新过，请直接使用飞书中的当前卡片。"
         } else if (result.skipped_reason === "delivery_locked") {
             message = "2FA 卡片发送仍在处理中，请直接查看飞书中的当前卡片。"
         } else if (result.ok) {
-            message = forceNew
-                ? "已强制发送新的 2FA 卡片，请在飞书点击按钮触发验证。"
-                : "已请求 2FA 卡片，请在飞书点击按钮触发验证。"
+            if (weeklyReminderRequested) {
+                message = state.business_deadline_overdue
+                    ? "已发送本周重登提醒卡片；当前已晚于周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
+                    : "已发送本周重登提醒卡片；你有空时可在飞书点击开始验证，最晚请于周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
+            } else {
+                message = forceNew
+                    ? "已强制发送新的 2FA 卡片，请在飞书点击按钮触发验证。"
+                    : "已请求 2FA 卡片，请在飞书点击按钮触发验证。"
+            }
         } else {
             message = result.error ? `2FA 请求失败：${result.error}` : "2FA 请求失败。"
         }

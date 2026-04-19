@@ -946,7 +946,7 @@ function getIbkrRuntimeAuthGuidanceModel({
             tone: safeReason === 'weekly_reauth' ? 'warn' : 'info',
             badge: safeReasonLabel,
             stepLabel: '去飞书开始',
-            title: safeReason === 'weekly_reauth' ? '开始本周重登验证' : '去飞书开始 2FA 验证',
+            title: safeReason === 'weekly_reauth' ? '本周重登提醒已发出' : '去飞书开始 2FA 验证',
             copy: startup?.operator_action || '这一步还没有真正开始验证。请去飞书点击“开始 2FA 验证”，点完后回到这里刷新状态。',
             meta: [safeStartupStepLabel, startup?.current_blocker || '当前停在待手动触发'],
             buttonLabel: '请求 / 刷新 2FA 卡片',
@@ -988,7 +988,7 @@ function getIbkrRuntimeAuthGuidanceModel({
             tone: safeReason === 'weekly_reauth' ? 'warn' : 'info',
             badge: safeReasonLabel,
             stepLabel: safeStartupStepLabel,
-            title: safeReason === 'weekly_reauth' ? '开始本周重登验证' : '继续手动验证',
+            title: safeReason === 'weekly_reauth' ? '继续本周重登提醒' : '继续手动验证',
             copy: startup?.operator_action || startup?.current_blocker || '请先把同一张 2FA 卡片刷到飞书，然后去飞书点击开始验证。',
             meta: [startup?.summary || '按顶部入口一步一步推进', '只有人工确认后才继续'],
             buttonLabel: '请求 / 刷新 2FA 卡片',
@@ -1164,7 +1164,7 @@ function getIbkrRuntimePrimaryBlockerCardModel({
         blocker.copy = runtimeMismatch?.message || '环境错配';
     } else if (blockerPhase === 'startup_manual_trigger') {
         blocker.tone = startup?.reason === 'weekly_reauth' ? 'warn' : 'info';
-        blocker.title = startup?.reason === 'weekly_reauth' ? '本周重登等待手动触发' : '启动流程等待手动触发';
+        blocker.title = startup?.reason === 'weekly_reauth' ? '本周重登提醒待手动开始' : '启动流程等待手动触发';
         blocker.copy = startup?.operator_action || '现在只需要去飞书点击“开始 2FA 验证”，系统不会自动往下继续。';
     } else if (blockerPhase === 'startup_manual_confirm') {
         blocker.tone = 'warn';

@@ -92,6 +92,7 @@ AUTH_RECOVERY_LOCK_TTL_SECONDS = max(30, int(os.environ.get("IBKR_AUTH_RECOVERY_
 AUTH_RECOVERY_PB_FIELDS = (
     "cycle_id",
     "recovery_phase",
+    "recovery_class",
     "recovery_reason",
     "interruption_kind",
     "manual_takeover_active",

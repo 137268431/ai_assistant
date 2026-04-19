@@ -715,12 +715,19 @@ function runIbkr2faHourlyCheck() {
                 reason: String(state.reason || "scheduled_2fa_check"),
                 source: "pb_scheduler",
                 message: reason === "weekly_reauth"
-                    ? "本周重登仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证。"
+                    ? (
+                        state.business_deadline_overdue
+                            ? "本周重登已晚于周一盘前建议完成时间，请尽快只去当前飞书卡片点击开始验证。"
+                            : "本周重登仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证；最晚请于周一盘前前完成。"
+                    )
                     : reason === "manual_gateway_restart"
                         ? "网关重启后的新轮次仍停在待手动触发阶段，请只去当前启动卡片点击开始验证。"
-                    : "启动验证仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证。",
+                        : "启动验证仍停在待手动触发阶段，请只去当前飞书卡片点击开始验证。",
                 detail: {
                     "当前状态": status || "requested",
+                    "周验证截止": state.business_deadline_cn
+                        ? `${state.business_deadline_cn} 北京时间 / ${String(state.business_deadline_at || "-")} 美东`
+                        : "n/a",
                     "Runtime已启动": auth.runtime_started ? "yes" : "no",
                     "Session认证": auth.runtime_authenticated ? "yes" : "no",
                     "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
@@ -737,8 +744,63 @@ function runIbkr2faHourlyCheck() {
     }
 }
 
+function runIbkrWeeklyReauthReminder() {
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment, getTradingEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getStatePayload, normalizeStateWithRuntime, request2faApproval } = require(`${__hooks}/lib/feishu_2fa.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
+    const environments = getActiveRuntimeEnvironments(RUNTIME_KEYS)
+
+    console.log(`[IBKRWeekly2FA] tick: environments=${environments.join(",") || "-"}`)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        try {
+            const cronState = getPbCronToggleState("ibkr_weekly_reauth_reminder", environment)
+            if (!cronState.effective_enabled) {
+                console.log(`[IBKRWeekly2FA] ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+                continue
+            }
+            if (!getComputeEnabledForEnvironment(environment, RUNTIME_KEYS) && !getTradingEnabledForEnvironment(environment, RUNTIME_KEYS)) {
+                continue
+            }
+
+            const runtimeStatus = loadRuntimeSnapshot(environment)
+            const auth = loadAuthAttentionSummary(environment, runtimeStatus)
+            if (auth.runtime_authenticated && auth.gateway_reachable && auth.gateway_status_code !== 401) {
+                continue
+            }
+
+            const statePayload = getStatePayload(environment)
+            const state = normalizeStateWithRuntime(statePayload.data || {}, runtimeStatus || {})
+            request2faApproval({
+                environment: environment,
+                reason: "weekly_reauth",
+                source: "pb_scheduler",
+                message: "本周重登提醒已发出。你有空时再去当前飞书卡片点击开始验证；最晚请于周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。",
+                detail: {
+                    "提醒类型": "weekly_reauth",
+                    "最晚完成": state.business_deadline_cn
+                        ? `${state.business_deadline_cn} 北京时间 / ${String(state.business_deadline_at || "-")} 美东`
+                        : "周一盘前前",
+                    "点击后时限": "180 秒",
+                    "当前状态": String(state.status || "requested"),
+                    "Runtime已启动": auth.runtime_started ? "yes" : "no",
+                    "Session认证": auth.runtime_authenticated ? "yes" : "no",
+                    "Gateway状态码": auth.gateway_status_code ? String(auth.gateway_status_code) : "n/a",
+                },
+                forceReset: false,
+                forceNew: false,
+            })
+            console.log(`[IBKRWeekly2FA] ${environment}: reminder requested`)
+        } catch (err) {
+            console.log(`[IBKRWeekly2FA] ${environment}: ${err.message || err}`)
+        }
+    }
+}
+
 module.exports = {
     runIbkrAuthEdgeGuard,
     runIbkrAuthPendingGuard,
+    runIbkrWeeklyReauthReminder,
     runIbkr2faHourlyCheck,
 }
