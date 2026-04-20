@@ -828,6 +828,7 @@ function renderPageContextBar(title, options = {}) {
   const allowGlobal = Boolean(options.allowGlobal);
   const description = options.description || '';
   const subtitle = options.subtitle || '';
+  const actionsHtml = options.actionsHtml || '';
   const safeTitle = title ? escapePageUiText(title) : '';
   const safeDescription = description ? escapePageUiText(description) : '';
   const safeSubtitle = subtitle ? escapePageUiText(subtitle) : '';
@@ -841,7 +842,10 @@ function renderPageContextBar(title, options = {}) {
         </div>
         ${safeSubtitle ? `<div class="page-context-subtitle">${safeSubtitle}</div>` : ''}
       </div>
-      ${renderEnvironmentSwitcher({ allowGlobal })}
+      <div class="page-context-tools">
+        ${actionsHtml ? `<div class="page-context-actions">${actionsHtml}</div>` : ''}
+        ${renderEnvironmentSwitcher({ allowGlobal })}
+      </div>
     </div>
   `;
 }

@@ -24,11 +24,6 @@
                         <div class="home-panel-copy">不再铺满多层卡片，先看最关键的交易状态，再决定跳哪一页。</div>
                     </div>
                     <div class="home-overview-side">
-                        <div class="home-overview-actions">
-                            <button id="homeRefreshBtn" type="button" class="refresh-btn page-refresh-trigger is-compact" onclick="refreshHomePage(true)">↻ 刷新首页</button>
-                            <a id="configLink" href="/ibkr_config.html" class="home-ghost-btn">⚙️ 设置</a>
-                            <button class="home-ghost-btn home-ghost-btn-danger" onclick="handleLogout(event)">🚪 退出</button>
-                        </div>
                         <div class="home-panel-meta" id="overviewMeta">加载中...</div>
                     </div>
                 </div>
@@ -339,7 +334,6 @@
 
         function bindEnvironmentLinks() {
             const links = {
-                configLink: buildPageUrl('/ibkr_config.html', { environment: currentEnvironment }, { allowGlobal: true }),
                 signalsLink: buildPageUrl('/ibkr_signals.html'),
                 reverseSignalsLink: buildPageUrl('/ibkr_reverse_signals.html'),
                 ordersLink: buildPageUrl('/orders.html'),
@@ -1052,8 +1046,10 @@
             syncHomeLayoutState();
             bindResponsiveState();
             await initAuth();
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🏠 Trading Flight 首页', { subtitle: '执行 / 分析 / 筛选 / 运维 / 系统入口' });
-            document.getElementById('pageBridge').innerHTML = renderHomeBridge();
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🏠 Trading Flight 首页', {
+                subtitle: '执行 / 分析 / 筛选 / 运维 / 系统一体视图',
+                actionsHtml: '<button type="button" class="page-context-action page-context-action-danger" onclick="handleLogout(event)">退出</button>'
+            });
             syncQuickLinksMeta();
             bindEnvironmentLinks();
             document.getElementById('nav').innerHTML = renderNav('/index.html');

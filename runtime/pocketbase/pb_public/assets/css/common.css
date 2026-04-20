@@ -1,15 +1,15 @@
 :root {
-        --bg:        #080B10;
-        --surface:   #0E1420;
-        --surface2:  #141C2E;
-        --border:    rgba(99,179,237,0.1);
-        --text:      #E2EAF4;
-        --muted:     #8BA4C4;
-        --accent:    #63B3ED;
+        --bg:        #08131A;
+        --surface:   #0B1821;
+        --surface2:  #10222D;
+        --border:    rgba(147,197,253,0.14);
+        --text:      #E8F1F8;
+        --muted:     #90A7B8;
+        --accent:    #4FD1C5;
         --long:      #48BB78;
         --short:     #FC8181;
         --pending:   #F6AD55;
-        --confirmed: #63B3ED;
+        --confirmed: #4FD1C5;
         --executed:  #68D391;
         --rejected:  #718096;
         --failed:    #FC8181;
@@ -28,7 +28,10 @@
       }
 
       body {
-        background: var(--bg);
+        background:
+          radial-gradient(circle at top right, rgba(246,173,85,0.14), transparent 30%),
+          radial-gradient(circle at top left, rgba(79,209,197,0.12), transparent 26%),
+          linear-gradient(180deg, #071018 0%, #08131a 48%, #071018 100%);
         color: var(--text);
         font-family: 'Sora', sans-serif;
         min-height: 100vh;
@@ -41,8 +44,8 @@
         position: fixed;
         inset: 0;
         background-image:
-          linear-gradient(rgba(99,179,237,0.03) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(99,179,237,0.03) 1px, transparent 1px);
+          linear-gradient(rgba(79,209,197,0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(79,209,197,0.025) 1px, transparent 1px);
         background-size: 32px 32px;
         pointer-events: none;
         z-index: 0;
@@ -116,7 +119,7 @@
         padding: 10px 12px;
         border: 1px solid var(--border);
         border-radius: 12px;
-        background: rgba(20,28,46,0.9);
+        background: rgba(8,22,31,0.9);
         position: relative;
         z-index: 1;
       }
@@ -159,11 +162,12 @@
         gap: 16px;
         padding: 14px 16px;
         border-radius: 16px;
-        border-color: rgba(99,179,237,0.16);
+        border-color: rgba(147,197,253,0.14);
         background:
-          radial-gradient(circle at right top, rgba(99,179,237,0.14), transparent 34%),
-          linear-gradient(145deg, rgba(14,20,32,0.98), rgba(10,16,26,0.98));
-        box-shadow: 0 18px 36px rgba(2, 8, 23, 0.18);
+          radial-gradient(circle at right top, rgba(246,173,85,0.12), transparent 34%),
+          radial-gradient(circle at left center, rgba(79,209,197,0.10), transparent 30%),
+          linear-gradient(145deg, rgba(8,22,31,0.98), rgba(7,16,24,0.98));
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.24);
       }
 
       .page-context-bar.has-subtitle .page-context-main {
@@ -188,6 +192,69 @@
         max-width: 720px;
       }
 
+      .page-context-tools {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0;
+        flex-wrap: wrap;
+        flex: 0 0 auto;
+        padding: 4px;
+        border-radius: 14px;
+        border: 1px solid rgba(147,197,253,0.12);
+        background: linear-gradient(180deg, rgba(10,24,34,0.88), rgba(8,18,28,0.92));
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+      }
+
+      .page-context-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-right: 4px;
+        padding-right: 4px;
+        border-right: 1px solid rgba(147,197,253,0.12);
+      }
+
+      .page-context-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 10px;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 11px;
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: transform 0.18s ease, color 0.18s ease, background 0.18s ease;
+      }
+
+      .page-context-action:hover,
+      .page-context-action:active {
+        transform: translateY(-1px);
+        color: var(--text);
+        background: rgba(79,209,197,0.10);
+      }
+
+      .page-context-action-danger {
+        color: #D7E6FA;
+      }
+
+      .page-context-action-danger:hover,
+      .page-context-action-danger:active {
+        background: rgba(252,129,129,0.10);
+      }
+
+      .page-context-bar.has-subtitle .page-context-tools,
       .page-context-bar.has-subtitle .env-switcher {
         align-self: flex-start;
       }
@@ -213,7 +280,7 @@
         padding: 12px 14px;
         border-radius: 14px;
         border: 1px solid var(--border);
-        background: rgba(14,20,32,0.88);
+        background: rgba(8,22,31,0.88);
         text-decoration: none;
         color: var(--text);
         transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
@@ -221,13 +288,13 @@
 
       .page-bridge-link:hover {
         transform: translateY(-1px);
-        border-color: rgba(99,179,237,0.28);
-        background: rgba(20,28,46,0.96);
+        border-color: rgba(79,209,197,0.24);
+        background: rgba(14,30,41,0.96);
       }
 
       .page-bridge-link.active {
-        border-color: rgba(99,179,237,0.34);
-        background: linear-gradient(180deg, rgba(99,179,237,0.16), rgba(20,28,46,0.94));
+        border-color: rgba(79,209,197,0.26);
+        background: linear-gradient(180deg, rgba(79,209,197,0.14), rgba(14,30,41,0.94));
         box-shadow: 0 12px 28px rgba(2, 8, 23, 0.24);
       }
 
@@ -259,6 +326,16 @@
         margin-right: auto;
       }
 
+      body > #contextBar > .page-context-bar,
+      body > #configEnvironmentBar > .page-context-bar {
+        margin-top: 16px;
+      }
+
+      .page-shell > #contextBar > .page-context-bar,
+      .page-shell > #configEnvironmentBar > .page-context-bar {
+        margin-top: 16px;
+      }
+
       .page-shell > #contextBar > .page-context-bar,
       .page-shell > #pageBridge > .page-bridge,
       .page-shell > #configEnvironmentBar > .page-context-bar,
@@ -282,8 +359,8 @@
         justify-content: center;
         padding: 4px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(99,179,237,0.24);
-        background: rgba(99,179,237,0.12);
+        border: 1px solid rgba(79,209,197,0.22);
+        background: rgba(79,209,197,0.10);
         color: var(--accent);
         font-size: 11px;
         font-family: 'JetBrains Mono', monospace;
@@ -304,8 +381,8 @@
       }
 
       .env-badge.env-backtest {
-        border-color: rgba(99,179,237,0.28);
-        background: rgba(99,179,237,0.14);
+        border-color: rgba(79,209,197,0.26);
+        background: rgba(79,209,197,0.12);
         color: var(--accent);
       }
 
@@ -319,10 +396,11 @@
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        padding: 6px 10px;
+        min-height: 40px;
+        padding: 0 10px;
         border-radius: 10px;
-        border: 1px solid var(--border);
-        background: var(--surface2);
+        border: none;
+        background: transparent;
         min-width: 0;
       }
 
@@ -359,7 +437,7 @@
         position: fixed;
         bottom: 0;
         left: 0; right: 0;
-        background: rgba(8,11,16,0.96);
+        background: rgba(7,16,24,0.96);
         backdrop-filter: blur(16px);
         border-top: 1px solid var(--border);
         display: grid;
@@ -394,16 +472,16 @@
 
       .nav-item.active {
         color: var(--accent);
-        background: linear-gradient(180deg, rgba(99,179,237,0.2), rgba(20,28,46,0.92));
-        border-color: rgba(99,179,237,0.28);
+        background: linear-gradient(180deg, rgba(79,209,197,0.18), rgba(14,30,41,0.92));
+        border-color: rgba(79,209,197,0.24);
         box-shadow:
-          inset 0 0 0 1px rgba(99,179,237,0.12),
+          inset 0 0 0 1px rgba(79,209,197,0.12),
           0 10px 22px rgba(2,8,23,0.2);
       }
 
       .nav-item.active .nav-icon {
         transform: translateY(-1px);
-        text-shadow: 0 0 12px rgba(99,179,237,0.28);
+        text-shadow: 0 0 12px rgba(79,209,197,0.26);
       }
 
       .nav-icon { font-size: 18px; line-height: 1; }
@@ -571,9 +649,34 @@
           font-size: 18px;
         }
 
+        .page-context-tools {
+          width: 100%;
+          gap: 8px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          box-shadow: none;
+        }
+
+        .page-context-actions {
+          width: 100%;
+          margin-right: 0;
+          padding-right: 0;
+          border-right: none;
+        }
+
+        .page-context-action {
+          flex: 1 1 auto;
+          min-height: 38px;
+          border: 1px solid rgba(147,197,253,0.12);
+          background: rgba(10,24,34,0.72);
+        }
+
         .page-context-bar.has-subtitle .env-switcher {
           width: 100%;
           justify-content: space-between;
+          border: 1px solid var(--border);
+          background: var(--surface2);
         }
 
         .env-switcher {
@@ -843,7 +946,7 @@
       }
 
       .badge-div {
-        background: rgba(99,179,237,0.2);
+        background: rgba(79,209,197,0.16);
         color: var(--accent);
       }
 
@@ -860,8 +963,8 @@
       .view-details-btn {
         margin-top: 10px;
         padding: 8px;
-        background: rgba(99,179,237,0.1);
-        border: 1px solid rgba(99,179,237,0.2);
+        background: rgba(79,209,197,0.08);
+        border: 1px solid rgba(79,209,197,0.18);
         border-radius: 8px;
         color: var(--accent);
         font-size: 11px;
@@ -872,7 +975,7 @@
       }
 
       .view-details-btn:active {
-        background: rgba(99,179,237,0.2);
+        background: rgba(79,209,197,0.16);
       }
 
       /* ── 浮层样式 ── */

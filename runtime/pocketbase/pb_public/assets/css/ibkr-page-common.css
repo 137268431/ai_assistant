@@ -1,14 +1,14 @@
 :root {
     --page-card-radius: 20px;
-    --page-card-border: 1px solid rgba(99, 179, 237, 0.14);
-    --page-card-bg: linear-gradient(180deg, rgba(14, 20, 32, 0.98), rgba(10, 16, 26, 0.96));
-    --page-card-shadow: 0 22px 48px rgba(2, 8, 23, 0.22);
+    --page-card-border: 1px solid rgba(147, 197, 253, 0.14);
+    --page-card-bg: linear-gradient(180deg, rgba(8, 22, 31, 0.98), rgba(7, 16, 24, 0.96));
+    --page-card-shadow: 0 22px 48px rgba(0, 0, 0, 0.28);
     --page-card-shadow-strong: 0 30px 72px rgba(2, 8, 23, 0.32);
     --page-chip-bg: rgba(255, 255, 255, 0.04);
     --page-chip-border: 1px solid rgba(255, 255, 255, 0.08);
-    --page-input-bg: rgba(20, 28, 46, 0.92);
+    --page-input-bg: rgba(14, 30, 41, 0.94);
     --page-button-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03));
-    --page-button-bg-active: linear-gradient(180deg, rgba(99, 179, 237, 0.18), rgba(255, 255, 255, 0.04));
+    --page-button-bg-active: linear-gradient(180deg, rgba(79, 209, 197, 0.18), rgba(255, 255, 255, 0.04));
     --page-button-border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -41,9 +41,9 @@ body.rules-detail-open {
     top: 0;
     z-index: 48;
     padding: 14px var(--page-gutter) 10px;
-    background: linear-gradient(180deg, rgba(8, 11, 16, 0.97), rgba(8, 11, 16, 0.92) 72%, rgba(8, 11, 16, 0.72));
+    background: linear-gradient(180deg, rgba(7, 16, 24, 0.97), rgba(7, 16, 24, 0.92) 72%, rgba(7, 16, 24, 0.72));
     backdrop-filter: blur(18px);
-    border-bottom: 1px solid rgba(99, 179, 237, 0.12);
+    border-bottom: 1px solid rgba(147, 197, 253, 0.12);
 }
 
 .header-top {
@@ -73,11 +73,11 @@ body.rules-detail-open {
     margin: 12px 0 16px;
     padding: 20px 18px;
     border-radius: 22px;
-    border: 1px solid rgba(99, 179, 237, 0.16);
+    border: 1px solid rgba(147, 197, 253, 0.14);
     background:
-        radial-gradient(circle at top left, rgba(99, 179, 237, 0.14), transparent 32%),
-        radial-gradient(circle at bottom right, rgba(72, 187, 120, 0.1), transparent 34%),
-        linear-gradient(155deg, rgba(14, 20, 32, 0.98), rgba(9, 15, 24, 0.98));
+        radial-gradient(circle at top left, rgba(79, 209, 197, 0.12), transparent 30%),
+        radial-gradient(circle at bottom right, rgba(246, 173, 85, 0.10), transparent 34%),
+        linear-gradient(155deg, rgba(8, 22, 31, 0.98), rgba(7, 16, 24, 0.98));
     box-shadow: var(--page-card-shadow-strong);
 }
 
@@ -89,7 +89,7 @@ body.rules-detail-open {
     width: 220px;
     height: 220px;
     border-radius: 50%;
-    background: radial-gradient(circle, rgba(99, 179, 237, 0.14), transparent 68%);
+    background: radial-gradient(circle, rgba(79, 209, 197, 0.14), transparent 68%);
     pointer-events: none;
 }
 
@@ -188,18 +188,19 @@ body.rules-detail-open {
     margin: 8px 0 14px;
     padding: 16px 18px;
     border-radius: 18px;
-    border: 1px solid rgba(99, 179, 237, 0.12);
+    border: 1px solid rgba(147, 197, 253, 0.12);
     background:
-        radial-gradient(circle at right center, rgba(99, 179, 237, 0.1), transparent 34%),
-        linear-gradient(145deg, rgba(14, 20, 32, 0.98), rgba(10, 16, 26, 0.98));
-    box-shadow: 0 14px 30px rgba(2, 8, 23, 0.18);
+        radial-gradient(circle at right center, rgba(246, 173, 85, 0.10), transparent 34%),
+        radial-gradient(circle at left center, rgba(79, 209, 197, 0.08), transparent 28%),
+        linear-gradient(145deg, rgba(8, 22, 31, 0.98), rgba(7, 16, 24, 0.98));
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
 }
 
 .page-top-section[data-page-top-section="compact"]::after {
     inset: auto -56px -80px auto;
     width: 160px;
     height: 160px;
-    background: radial-gradient(circle, rgba(99, 179, 237, 0.1), transparent 70%);
+    background: radial-gradient(circle, rgba(79, 209, 197, 0.1), transparent 70%);
 }
 
 .page-top-section-row {
@@ -784,7 +785,7 @@ body.rules-detail-open {
 .panel-scroll-body,
 .card-scroll-body {
     scrollbar-width: thin;
-    scrollbar-color: rgba(99, 179, 237, 0.24) transparent;
+    scrollbar-color: rgba(79, 209, 197, 0.24) transparent;
 }
 
 .page-loading-overlay {
@@ -795,7 +796,7 @@ body.rules-detail-open {
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(8, 11, 16, 0.78);
+    background: rgba(7, 16, 24, 0.78);
     backdrop-filter: blur(10px);
     transition: opacity 0.24s ease, visibility 0.24s ease;
 }
@@ -810,11 +811,12 @@ body.rules-detail-open {
     width: min(440px, 100%);
     padding: 20px 18px;
     border-radius: 18px;
-    border: 1px solid rgba(99,179,237,0.16);
+    border: 1px solid rgba(147,197,253,0.14);
     background:
-        radial-gradient(circle at top right, rgba(99,179,237,0.16), transparent 36%),
-        linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.94));
-    box-shadow: 0 24px 56px rgba(2, 8, 23, 0.28);
+        radial-gradient(circle at top right, rgba(246,173,85,0.14), transparent 36%),
+        radial-gradient(circle at left center, rgba(79,209,197,0.10), transparent 28%),
+        linear-gradient(180deg, rgba(8,22,31,0.98), rgba(14,30,41,0.94));
+    box-shadow: 0 24px 56px rgba(0, 0, 0, 0.28);
 }
 
 .page-loading-title {
@@ -849,7 +851,7 @@ body.rules-detail-open {
     position: absolute;
     inset: 0;
     transform: translateX(-100%);
-    background: linear-gradient(90deg, transparent, rgba(99,179,237,0.42), transparent);
+    background: linear-gradient(90deg, transparent, rgba(79,209,197,0.42), transparent);
     animation: ibkrPageLoadingShimmer 1.35s infinite;
 }
 
