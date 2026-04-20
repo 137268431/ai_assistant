@@ -15,46 +15,43 @@
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
-    <section class="hero">
-        <div class="hero-card">
-            <div class="hero-top">
-                <div>
-                    <div class="hero-title" id="heroTitle">IBKR 图表工作台</div>
-                    <div class="hero-copy">做成类似 TradingView 的全屏分析页：主图展示 K 线 / EMA / VWAP / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。图表指标与信号统一基于当前环境的 <code>ibkr_bars</code> 实时重算，也可以手动切换标的和周期。</div>
-                </div>
-                <div class="hero-status" id="heroStatus"></div>
-            </div>
-            <div class="toolbar">
-                <div class="symbol-form">
-                    <input id="chartSymbolInput" class="symbol-input" type="text" placeholder="AAPL" maxlength="12">
-                    <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
-                    <button class="toolbar-btn" id="compareBtn" type="button" onclick="runIbkrCompare()">IBKR 对比</button>
-                    <button class="toolbar-btn" id="clearCompareBtn" type="button" onclick="clearIbkrCompare()">清空对比</button>
-                    <button class="toolbar-btn page-refresh-trigger" type="button" onclick="reloadChartPage()">刷新图表</button>
-                </div>
-                <div class="toolbar-filters">
-                    <div class="filter-block">
-                        <div class="toolbar-label">周期</div>
-                        <div class="tf-group" id="timeframeGroup"></div>
-                    </div>
-                    <div class="filter-block">
-                        <div class="toolbar-label">时间范围</div>
-                        <div class="range-group" id="rangeGroup"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="summary-strip" id="summaryStrip"></div>
-            <div class="layer-strip" id="layerStrip"></div>
-            <div class="cursor-strip" id="cursorStrip"></div>
-        </div>
-    </section>
-
     <section class="workspace">
         <div class="panel chart-panel">
+            <div class="workspace-head">
+                <div class="workspace-head-top">
+                    <div class="workspace-title-group">
+                        <div class="hero-title" id="heroTitle">当前图表工作区</div>
+                        <div class="workspace-copy">主图展示 K 线 / EMA / VWAP / 标准差通道 / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。眉头负责页面身份，这里只保留当前标的、周期和分析操作本身。</div>
+                    </div>
+                    <div class="hero-status" id="heroStatus"></div>
+                </div>
+                <div class="toolbar">
+                    <div class="symbol-form">
+                        <input id="chartSymbolInput" class="symbol-input" type="text" placeholder="AAPL" maxlength="12">
+                        <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
+                        <button class="toolbar-btn" id="compareBtn" type="button" onclick="runIbkrCompare()">IBKR 对比</button>
+                        <button class="toolbar-btn" id="clearCompareBtn" type="button" onclick="clearIbkrCompare()">清空对比</button>
+                        <button class="toolbar-btn page-refresh-trigger" type="button" onclick="reloadChartPage()">刷新图表</button>
+                    </div>
+                    <div class="toolbar-filters">
+                        <div class="filter-block">
+                            <div class="toolbar-label">周期</div>
+                            <div class="tf-group" id="timeframeGroup"></div>
+                        </div>
+                        <div class="filter-block">
+                            <div class="toolbar-label">时间范围</div>
+                            <div class="range-group" id="rangeGroup"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="summary-strip" id="summaryStrip"></div>
+                <div class="layer-strip" id="layerStrip"></div>
+                <div class="cursor-strip" id="cursorStrip"></div>
+            </div>
             <div class="panel-header">
                 <div>
                     <div class="panel-title" id="chartPanelTitle">图表加载中</div>
-                    <div class="panel-copy">主图的指标与信号点按当前 bars 实时重算；5m 之外通常不展示信号点，只保留价格与指标轨迹。</div>
+                    <div class="panel-copy">当前工作区只保留一套控制与状态条，数据缺失时会使用占位骨架，避免页面高度跳变。</div>
                 </div>
                 <div class="panel-meta" id="chartMeta">--</div>
             </div>

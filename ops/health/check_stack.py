@@ -18,6 +18,7 @@ DEFAULT_PB_LOCAL_URL = os.environ.get("PB_LOCAL_URL", "http://127.0.0.1:8090")
 DEFAULT_COMPUTE_LOCAL_URL = os.environ.get("IBKR_COMPUTE_LOCAL_URL", "http://127.0.0.1:5100")
 DEFAULT_PB_BASE_URL = os.environ.get("PB_BASE_URL", "https://pb.lzw-glory.top")
 DEFAULT_COMPUTE_PUBLIC_URL = os.environ.get("IBKR_COMPUTE_PUBLIC_URL", "http://206.119.171.136:5100")
+DEFAULT_INDICATOR_MISSING_GRACE_SEC = int(os.environ.get("IBKR_INDICATOR_MISSING_GRACE_SEC", "90"))
 
 REMOTE_SCRIPT = r'''
 import base64
@@ -39,6 +40,7 @@ COMPUTE = cfg["compute_local_url"].rstrip("/")
 ENVIRONMENT = cfg["environment"]
 BAR_STALE_MIN = int(cfg["bar_stale_min"])
 INDICATOR_STALE_MIN = int(cfg["indicator_stale_min"])
+INDICATOR_MISSING_GRACE_SEC = int(cfg.get("indicator_missing_grace_sec") or 90)
 STRICT_RUNTIME = bool(cfg["strict_runtime"])
 
 
@@ -62,6 +64,8 @@ def parse_iso_ms(text):
     value = str(text or "").strip()
     if not value:
         return 0
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
     try:
         return int(datetime.fromisoformat(value).timestamp() * 1000)
     except Exception:
@@ -338,6 +342,21 @@ def classify_data_freshness_window(latest_bar_5m: dict | None, targets: dict | N
     }
 
 
+def latest_indicator_missing_grace(latest_bar_5m: dict | None, latest_indicator_5m: dict | None, required: bool) -> dict:
+    if not required or latest_indicator_5m is not None or latest_bar_5m is None:
+        return {"active": False, "elapsed_sec": 0, "remaining_sec": 0}
+    created_ms = parse_iso_ms(latest_bar_5m.get("created") or latest_bar_5m.get("updated"))
+    if created_ms <= 0:
+        return {"active": False, "elapsed_sec": 0, "remaining_sec": 0}
+    elapsed_ms = max(0, now_ms() - created_ms)
+    remaining_ms = max(0, INDICATOR_MISSING_GRACE_SEC * 1000 - elapsed_ms)
+    return {
+        "active": remaining_ms > 0,
+        "elapsed_sec": round(elapsed_ms / 1000.0, 2),
+        "remaining_sec": round(remaining_ms / 1000.0, 2),
+    }
+
+
 services = {
     name: systemd_status(name)
     for name in ("ibkr-gateway", "ibkr-compute", "pocketbase")
@@ -368,6 +387,11 @@ for item in (latest_bar_5m, latest_indicator_5m, latest_signal):
         item["bar_time_us"] = format_us(item["bar_time_ms"])
 
 data_freshness_window = classify_data_freshness_window(latest_bar_5m, targets)
+indicator_missing_grace = latest_indicator_missing_grace(
+    latest_bar_5m,
+    latest_indicator_5m,
+    bool(data_freshness_window.get("required")),
+)
 
 failures = []
 warnings = []
@@ -399,7 +423,10 @@ elif (
     failures.append(f"db:latest_bar_5m_stale:{latest_bar_5m['age_min']}")
 
 if latest_indicator_5m is None and data_freshness_window.get("required"):
-    failures.append("db:latest_indicator_5m_missing")
+    if indicator_missing_grace.get("active"):
+        warnings.append(f"db:latest_indicator_5m_pending:{indicator_missing_grace.get('remaining_sec')}s")
+    else:
+        failures.append("db:latest_indicator_5m_missing")
 elif (
     data_freshness_window.get("required")
     and latest_indicator_5m.get("age_min") is not None
@@ -487,6 +514,7 @@ report = {
     "thresholds": {
         "bar_stale_min": BAR_STALE_MIN,
         "indicator_stale_min": INDICATOR_STALE_MIN,
+        "indicator_missing_grace_sec": INDICATOR_MISSING_GRACE_SEC,
     },
     "failures": failures,
     "warnings": warnings,
@@ -499,6 +527,7 @@ report = {
             "latest_signal": latest_signal,
             "targets": targets,
             "data_freshness_window": data_freshness_window,
+            "indicator_missing_grace": indicator_missing_grace,
             "bars_by_interval": bars_by_interval,
             "indicators_by_interval": indicators_by_interval,
         },
@@ -528,6 +557,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--environment", default="live")
     parser.add_argument("--bar-stale-min", type=int, default=30)
     parser.add_argument("--indicator-stale-min", type=int, default=30)
+    parser.add_argument("--indicator-missing-grace-sec", type=int, default=DEFAULT_INDICATOR_MISSING_GRACE_SEC)
     parser.add_argument("--strict-runtime", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
@@ -555,6 +585,7 @@ def run_remote(args: argparse.Namespace) -> dict:
         "environment": args.environment,
         "bar_stale_min": args.bar_stale_min,
         "indicator_stale_min": args.indicator_stale_min,
+        "indicator_missing_grace_sec": args.indicator_missing_grace_sec,
         "strict_runtime": args.strict_runtime,
     }
     env_blob = base64.b64encode(json.dumps(config).encode("utf-8")).decode("ascii")

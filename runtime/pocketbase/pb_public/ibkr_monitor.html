@@ -1062,9 +1062,17 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initMonitorAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_monitor.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📊 IBKR 监控大盘', { description: '请求 / 订阅 / 主机健康' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📊 IBKR 监控大盘', {
+                subtitle: '请求 / 订阅 / 主机健康',
+            });
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_monitor.html');
-            await loadMonitorData(false);
+            await withPageLoading(
+                () => loadMonitorData(false),
+                {
+                    title: '监控页加载中',
+                    copy: '正在同步请求利用率、订阅状态、服务性能和主机健康快照。',
+                }
+            );
             startPolling();
         });
 

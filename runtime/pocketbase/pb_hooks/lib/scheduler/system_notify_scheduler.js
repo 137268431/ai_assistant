@@ -8,6 +8,7 @@ const DAILY_REMINDER_STATE_KEY = "system_notify_daily"
 const HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const BAR_STALE_WARN_MIN = 10
 const INDICATOR_STALE_WARN_MIN = 10
+const INDICATOR_MISSING_GRACE_MS = 90 * 1000
 const COMPUTE_STARTUP_GRACE_MS = 3 * 60 * 1000
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
 const SCAN_SUMMARY_STATE_KEY = "system_notify_scan_summary"
@@ -76,6 +77,13 @@ function parseStateValue(raw) {
 
 function parseUsTimeMs(value) {
     return usEasternTime.parseUsEasternTimeMs(value)
+}
+
+function parseTimeMs(value) {
+    const text = String(value || "").trim()
+    if (!text) return 0
+    const ms = Date.parse(text)
+    return Number.isFinite(ms) ? ms : 0
 }
 
 function getStateRecord(stateKey, environment, dateToken) {
@@ -150,10 +158,13 @@ function loadLatestBar(environment) {
         if (!rows.length) return { bar_time_ms: 0, symbol: "", us_time: "", age_min: 0 }
         const row = rows[0]
         const barTimeMs = toNumber(row.get("bar_time_ms"), 0)
+        const created = String(row.get("created") || "")
         return {
             bar_time_ms: barTimeMs,
             symbol: String(row.get("symbol") || ""),
             us_time: String(row.get("us_time") || ""),
+            created: created,
+            created_ms: parseTimeMs(created),
             age_min: barTimeMs > 0 ? Math.max(0, Math.round((Date.now() - barTimeMs) / 60000)) : 0,
         }
     } catch (_) {
@@ -173,10 +184,13 @@ function loadLatestIndicator(environment) {
         ) || []
         if (!rows.length) return { bar_time_ms: 0, symbol: "", us_time: "" }
         const row = rows[0]
+        const created = String(row.get("created") || "")
         return {
             bar_time_ms: toNumber(row.get("bar_time_ms"), 0),
             symbol: String(row.get("symbol") || ""),
             us_time: String(row.get("us_time") || ""),
+            created: created,
+            created_ms: parseTimeMs(created),
         }
     } catch (_) {
         return { bar_time_ms: 0, symbol: "", us_time: "" }
@@ -345,6 +359,53 @@ function buildStatusSnapshot(environment, times) {
         trading_enabled: runtimeModes.getTradingEnabledForEnvironment(environment, RUNTIME_KEYS),
         auth: auth,
     }
+}
+
+function getIndicatorMissingGraceState(snapshot, freshnessWindow) {
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
+    const latestBar = snapshot && snapshot.latest_bar && typeof snapshot.latest_bar === "object" ? snapshot.latest_bar : {}
+    const latestIndicator = snapshot && snapshot.latest_indicator && typeof snapshot.latest_indicator === "object" ? snapshot.latest_indicator : {}
+    const latestBarMs = toNumber(latestBar.bar_time_ms, 0)
+    const latestBarCreatedMs = toNumber(latestBar.created_ms, 0)
+    const latestIndicatorMs = toNumber(latestIndicator.bar_time_ms, 0)
+    if (!enforceFreshness || latestBarMs <= 0 || latestIndicatorMs > 0 || latestBarCreatedMs <= 0) {
+        return { active: false, elapsed_ms: 0, remaining_ms: 0 }
+    }
+    const elapsedMs = Math.max(0, Date.now() - latestBarCreatedMs)
+    const remainingMs = Math.max(0, INDICATOR_MISSING_GRACE_MS - elapsedMs)
+    return {
+        active: remainingMs > 0,
+        elapsed_ms: elapsedMs,
+        remaining_ms: remainingMs,
+    }
+}
+
+function hasMissingLatestIndicator(snapshot, freshnessWindow) {
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
+    if (!enforceFreshness) return false
+    const latestIndicator = snapshot && snapshot.latest_indicator && typeof snapshot.latest_indicator === "object" ? snapshot.latest_indicator : {}
+    if (toNumber(latestIndicator.bar_time_ms, 0) > 0) return false
+    return !getIndicatorMissingGraceState(snapshot, freshnessWindow).active
+}
+
+function hasIndicatorFreshnessIssue(snapshot, freshnessWindow) {
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
+    if (!enforceFreshness) return false
+    const latestIndicator = snapshot && snapshot.latest_indicator && typeof snapshot.latest_indicator === "object" ? snapshot.latest_indicator : {}
+    return hasMissingLatestIndicator(snapshot, freshnessWindow)
+        || toNumber(latestIndicator.lag_min, 0) > INDICATOR_STALE_WARN_MIN
+}
+
+function getIndicatorStatusLabel(snapshot, freshnessWindow) {
+    const latestIndicator = snapshot && snapshot.latest_indicator && typeof snapshot.latest_indicator === "object" ? snapshot.latest_indicator : {}
+    if (toNumber(latestIndicator.bar_time_ms, 0) > 0) {
+        return latestIndicator.label || "ok"
+    }
+    const grace = getIndicatorMissingGraceState(snapshot, freshnessWindow)
+    if (!grace.active) {
+        return latestIndicator.label || "missing"
+    }
+    return `pending / grace ${Math.ceil(grace.remaining_ms / 1000)}s`
 }
 
 function getUsClock() {
@@ -604,7 +665,7 @@ function buildWarmupProgressLabel(snapshot) {
     return parts.join(" · ")
 }
 
-function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times, eventCounts) {
+function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, freshnessWindow, times, eventCounts) {
     const detail = {
         "日程判断": marketSession.open_summary,
         "今日模式": marketSession.label,
@@ -618,7 +679,7 @@ function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times
         "盘前预热": buildWarmupProgressLabel(snapshot),
         "最新5m": snapshot.latest_bar.label,
         "当前Bar桶": snapshot.bar_bucket.label,
-        "指标状态": snapshot.latest_indicator.label,
+        "指标状态": getIndicatorStatusLabel(snapshot, freshnessWindow),
         "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
         "目标池": `${snapshot.today.targets} targets / active ${snapshot.active_target_count || 0}`,
         "系统事件": `${eventCounts.events} / error ${eventCounts.error_events}`,
@@ -635,7 +696,7 @@ function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, times
     return detail
 }
 
-function buildDailyCloseSummaryDetail(snapshot, assessment, marketSession, times, eventCounts) {
+function buildDailyCloseSummaryDetail(snapshot, assessment, marketSession, freshnessWindow, times, eventCounts) {
     const detail = {
         "日期": times.date,
         "收盘结论": marketSession.close_summary,
@@ -651,7 +712,7 @@ function buildDailyCloseSummaryDetail(snapshot, assessment, marketSession, times
         "2FA状态": snapshot.auth.label,
         "最新5m": snapshot.latest_bar.label,
         "当前Bar桶": snapshot.bar_bucket.label,
-        "指标状态": snapshot.latest_indicator.label,
+        "指标状态": getIndicatorStatusLabel(snapshot, freshnessWindow),
         "交易开关": snapshot.trading_enabled ? "true" : "false",
         "汇总时间": times.us,
     }
@@ -682,7 +743,7 @@ function hasHeartbeatIssue(snapshot, freshnessWindow) {
             freshnessWindow && freshnessWindow.required
             && (
                 snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
-                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+                || hasIndicatorFreshnessIssue(snapshot, freshnessWindow)
                 || hasBarBucketIssue(snapshot, freshnessWindow)
             )
         )
@@ -783,7 +844,7 @@ function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
         }
     }
 
-    if (enforceFreshness && snapshot.latest_indicator.bar_time_ms <= 0) {
+    if (hasMissingLatestIndicator(snapshot, freshnessWindow)) {
         if (startupGraceActive) {
             watchItems.push("指标流尚未建立")
         } else {
@@ -857,7 +918,7 @@ function listDataHealthProblems(snapshot, freshnessWindow) {
         problems.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
     }
 
-    if (enforceFreshness && snapshot.latest_indicator.bar_time_ms <= 0) {
+    if (hasMissingLatestIndicator(snapshot, freshnessWindow)) {
         problems.push("缺少最新指标")
     } else if (enforceFreshness && snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
         problems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
@@ -901,8 +962,7 @@ function buildDataHealthRecommendation(snapshot, freshnessWindow) {
             enforceFreshness && (
                 snapshot.latest_bar.bar_time_ms <= 0
                 || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
-                || snapshot.latest_indicator.bar_time_ms <= 0
-                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+                || hasIndicatorFreshnessIssue(snapshot, freshnessWindow)
             )
         )
     ) {
@@ -925,7 +985,7 @@ function buildRecoveryTitle(state) {
     return "IBKR 系统状态已恢复"
 }
 
-function buildRecoveryDetail(snapshot, times, state, assessment) {
+function buildRecoveryDetail(snapshot, times, state, assessment, freshnessWindow) {
     const summary = assessment && assessment.kind === "healthy_paused"
         ? "先前异常已恢复，当前系统状态正确；交易开关关闭，属于只观察模式。"
         : "先前异常已恢复，当前系统状态正确，核心链路已恢复正常。"
@@ -938,7 +998,7 @@ function buildRecoveryDetail(snapshot, times, state, assessment) {
         "WebSocket": snapshot.websocket.label,
         "最新5m": snapshot.latest_bar.label,
         "当前Bar桶": snapshot.bar_bucket.label,
-        "指标状态": snapshot.latest_indicator.label,
+        "指标状态": getIndicatorStatusLabel(snapshot, freshnessWindow),
         "交易开关": snapshot.trading_enabled ? "true" : "false",
     }
 }
@@ -1041,7 +1101,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
             if (
                 freshnessWindow.required && (
                 snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
-                || snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN
+                || hasIndicatorFreshnessIssue(snapshot, freshnessWindow)
                 || hasBarBucketIssue(snapshot, freshnessWindow)
                 )
             ) {
@@ -1089,7 +1149,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
                             "认证": snapshot.session.authenticated ? "ok" : "pending",
                             "最新5m": snapshot.latest_bar.label,
                             "当前Bar桶": snapshot.bar_bucket.label,
-                            "指标状态": snapshot.latest_indicator.label,
+                            "指标状态": getIndicatorStatusLabel(snapshot, freshnessWindow),
                             "WebSocket": snapshot.websocket.label,
                             "建议": buildDataHealthRecommendation(snapshot, freshnessWindow),
                         }
@@ -1106,7 +1166,7 @@ function runSystemHeartbeatTick(logPrefix, cronId) {
             } else {
                 if (hadOutstandingIssue && isHealthyState) {
                     const title = buildRecoveryTitle(state)
-                    const detail = buildRecoveryDetail(snapshot, times, state, assessment)
+                    const detail = buildRecoveryDetail(snapshot, times, state, assessment, freshnessWindow)
                     const notified = feishuSystem.notifySystemEvent("alert", "info", "pb", title, detail, environment)
                     writeSystemEvent("alert", "info", "pb", title, detail, environment, notified)
                     console.log(`${prefix} heartbeat ${environment}: recovery notified=${notified}`)
@@ -1189,7 +1249,7 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
                 "盘前预热": buildWarmupProgressLabel(snapshot),
                 "最新5m": snapshot.latest_bar.label,
                 "当前Bar桶": snapshot.bar_bucket.label,
-                "指标状态": snapshot.latest_indicator.label,
+                "指标状态": getIndicatorStatusLabel(snapshot, freshnessWindow),
                 "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
                 "实时账户": snapshot.account.ok
                     ? `pos ${snapshot.account.positions} / open ${snapshot.account.open_orders} / netliq ${snapshot.account.net_liquidation.toFixed(2)}`
@@ -1412,6 +1472,7 @@ function runDailyOpenReminderTick(logPrefix, cronId) {
                 snapshot,
                 assessment,
                 marketSession,
+                freshnessWindow,
                 times,
                 loadTodayEventCounts(environment, times)
             )
@@ -1472,6 +1533,7 @@ function runDailyCloseSummaryTick(logPrefix, cronId) {
                 snapshot,
                 assessment,
                 marketSession,
+                freshnessWindow,
                 times,
                 loadTodayEventCounts(environment, times)
             )

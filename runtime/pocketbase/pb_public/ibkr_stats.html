@@ -14,114 +14,117 @@
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
-    <div class="header">
-        <h1>📈 IBKR 统计</h1>
-        <div class="header-controls">
-            <div class="date-range-selector">
-                <button class="date-range-btn" data-range="7days">近7天</button>
-                <button class="date-range-btn active" data-range="30days">近30天</button>
-                <button class="date-range-btn" data-range="90days">近90天</button>
-                <button class="date-range-btn" data-range="all">全部</button>
+    <div class="content">
+        <div class="stats-toolbar">
+            <div class="page-toolbar-row">
+                <div class="date-range-selector">
+                    <button class="date-range-btn" data-range="7days">近7天</button>
+                    <button class="date-range-btn active" data-range="30days">近30天</button>
+                    <button class="date-range-btn" data-range="90days">近90天</button>
+                    <button class="date-range-btn" data-range="all">全部</button>
+                </div>
+                <div class="date-inputs">
+                    <input type="date" class="date-input" id="startDate" title="开始日期">
+                    <span style="color: #94a3b8;">至</span>
+                    <input type="date" class="date-input" id="endDate" title="结束日期">
+                    <button class="apply-date-btn" onclick="applyCustomDate()">应用</button>
+                </div>
+                <div id="statsRefreshControl"></div>
             </div>
-            <div class="date-inputs">
-                <input type="date" class="date-input" id="startDate" title="开始日期">
-                <span style="color: #94a3b8;">至</span>
-                <input type="date" class="date-input" id="endDate" title="结束日期">
-                <button class="apply-date-btn" onclick="applyCustomDate()">应用</button>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">总订单数</div>
+                <div class="stat-value" id="totalOrders">-</div>
             </div>
-            <button class="refresh-btn page-refresh-trigger" onclick="loadStats()">↻ 刷新</button>
-        </div>
-    </div>
-
-    <div class="stats-grid">
-        <div class="stat-card">
-            <div class="stat-label">总订单数</div>
-            <div class="stat-value" id="totalOrders">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">平仓次数</div>
-            <div class="stat-value" id="totalTrades">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">总盈亏</div>
-            <div class="stat-value" id="totalPnL">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">总手续费</div>
-            <div class="stat-value" id="totalCommission">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">胜率</div>
-            <div class="stat-value" id="winRate">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">平均盈亏比</div>
-            <div class="stat-value" id="avgRR">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">盈利次数</div>
-            <div class="stat-value positive" id="wins">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">亏损次数</div>
-            <div class="stat-value negative" id="losses">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">总信号数</div>
-            <div class="stat-value" id="totalSignals">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">多头信号</div>
-            <div class="stat-value positive" id="signalsLong">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">空头信号</div>
-            <div class="stat-value negative" id="signalsShort">-</div>
-        </div>
-    </div>
-
-    <div class="chart-grid">
-        <div class="chart-container">
-            <div class="chart-title">📈 收益曲线</div>
-            <div class="chart-canvas-wrap"><canvas id="pnlChart"></canvas></div>
+            <div class="stat-card">
+                <div class="stat-label">平仓次数</div>
+                <div class="stat-value" id="totalTrades">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">总盈亏</div>
+                <div class="stat-value" id="totalPnL">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">总手续费</div>
+                <div class="stat-value" id="totalCommission">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">胜率</div>
+                <div class="stat-value" id="winRate">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">平均盈亏比</div>
+                <div class="stat-value" id="avgRR">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">盈利次数</div>
+                <div class="stat-value positive" id="wins">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">亏损次数</div>
+                <div class="stat-value negative" id="losses">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">总信号数</div>
+                <div class="stat-value" id="totalSignals">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">多头信号</div>
+                <div class="stat-value positive" id="signalsLong">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">空头信号</div>
+                <div class="stat-value negative" id="signalsShort">-</div>
+            </div>
         </div>
 
-        <div class="chart-container">
-            <div class="chart-title">📊 每日盈亏明细</div>
-            <div class="chart-canvas-wrap"><canvas id="dailyChart"></canvas></div>
+        <div class="chart-grid">
+            <div class="chart-container">
+                <div class="chart-title">📈 收益曲线</div>
+                <div class="chart-canvas-wrap"><canvas id="pnlChart"></canvas></div>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-title">📊 每日盈亏明细</div>
+                <div class="chart-canvas-wrap"><canvas id="dailyChart"></canvas></div>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-title">🎯 信号曲线 (累计信号数)</div>
+                <div class="chart-canvas-wrap"><canvas id="signalChart"></canvas></div>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-title">📦 订单曲线 (累计订单数)</div>
+                <div class="chart-canvas-wrap"><canvas id="orderChart"></canvas></div>
+            </div>
         </div>
 
-        <div class="chart-container">
-            <div class="chart-title">🎯 信号曲线 (累计信号数)</div>
-            <div class="chart-canvas-wrap"><canvas id="signalChart"></canvas></div>
+        <div class="detail-section">
+            <div class="section-title">📋 平仓订单明细</div>
+            <div class="data-table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>日期</th>
+                            <th>标的</th>
+                            <th>方向</th>
+                            <th>类型</th>
+                            <th>入场价</th>
+                            <th>平仓价</th>
+                            <th>数量</th>
+                            <th>盈亏</th>
+                            <th>盈亏比</th>
+                            <th>手续费</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tradesTable"></tbody>
+                </table>
+            </div>
+            <div class="pagination" id="pagination"></div>
         </div>
-
-        <div class="chart-container">
-            <div class="chart-title">📦 订单曲线 (累计订单数)</div>
-            <div class="chart-canvas-wrap"><canvas id="orderChart"></canvas></div>
-        </div>
-    </div>
-
-    <div class="detail-section">
-        <div class="section-title">📋 平仓订单明细</div>
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>日期</th>
-                    <th>标的</th>
-                    <th>方向</th>
-                    <th>类型</th>
-                    <th>入场价</th>
-                    <th>平仓价</th>
-                    <th>数量</th>
-                    <th>盈亏</th>
-                    <th>盈亏比</th>
-                    <th>手续费</th>
-                </tr>
-            </thead>
-            <tbody id="tradesTable"></tbody>
-        </table>
-        <div class="pagination" id="pagination"></div>
     </div>
 
     <div id="nav"></div>
@@ -717,13 +720,33 @@
             });
         });
 
+        function manualRefresh() {
+            spinPageRefreshButton('statsRefreshBtn');
+            loadStats();
+        }
+
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 统计', { description: '收益 / 信号 / 订单 / 平仓明细' });
+            document.getElementById('statsRefreshControl').innerHTML = renderPageRefreshControl({
+                mode: 'manual',
+                buttonId: 'statsRefreshBtn',
+                buttonLabel: '↻ 刷新',
+                buttonTitle: '刷新统计',
+                onClick: 'manualRefresh()',
+            });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 统计', {
+                subtitle: '收益 / 信号 / 订单 / 平仓明细',
+            });
             document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_stats.html');
             document.getElementById('nav').innerHTML = renderNav('/ibkr_stats.html');
             setChartHeights();
-            loadStats();
+            await withPageLoading(
+                () => loadStats(),
+                {
+                    title: '统计页加载中',
+                    copy: '正在同步收益、信号、订单和平仓统计图表。',
+                }
+            );
 
             // iOS Safari scroll can trigger resize when the address bar shows/hides.
             // Only redraw charts when width changes (orientation / desktop resize).

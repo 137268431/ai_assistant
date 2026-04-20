@@ -148,6 +148,10 @@ body.rules-detail-open {
     min-width: min(100%, 180px);
 }
 
+[id="environmentHeader"] {
+    display: none !important;
+}
+
 .header-side,
 .hero-actions {
     justify-items: end;
@@ -174,6 +178,141 @@ body.rules-detail-open {
     flex-wrap: wrap;
     align-items: stretch;
     gap: 10px;
+}
+
+.page-top-section {
+    margin-bottom: 16px;
+}
+
+.page-top-section[data-page-top-section="compact"] {
+    margin: 8px 0 14px;
+    padding: 16px 18px;
+    border-radius: 18px;
+    border: 1px solid rgba(99, 179, 237, 0.12);
+    background:
+        radial-gradient(circle at right center, rgba(99, 179, 237, 0.1), transparent 34%),
+        linear-gradient(145deg, rgba(14, 20, 32, 0.98), rgba(10, 16, 26, 0.98));
+    box-shadow: 0 14px 30px rgba(2, 8, 23, 0.18);
+}
+
+.page-top-section[data-page-top-section="compact"]::after {
+    inset: auto -56px -80px auto;
+    width: 160px;
+    height: 160px;
+    background: radial-gradient(circle, rgba(99, 179, 237, 0.1), transparent 70%);
+}
+
+.page-top-section-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.page-top-section-main {
+    min-width: 0;
+    flex: 1 1 420px;
+}
+
+.page-top-section-side {
+    display: grid;
+    gap: 10px;
+    min-width: min(100%, 220px);
+    justify-items: end;
+}
+
+.page-top-section-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+    width: 100%;
+}
+
+.page-top-section-meta {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.6;
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.page-top-section-status {
+    margin-top: 14px;
+}
+
+.page-top-section[data-page-top-section="compact"] .page-top-section-row {
+    gap: 12px;
+}
+
+.page-top-section[data-page-top-section="compact"] .page-top-section-main {
+    flex: 1 1 360px;
+}
+
+.page-top-section[data-page-top-section="compact"] .page-kicker {
+    font-size: 10px;
+    letter-spacing: 2px;
+}
+
+.page-top-section[data-page-top-section="compact"] .page-title {
+    font-size: clamp(20px, 2vw, 24px);
+    line-height: 1.12;
+}
+
+.page-top-section[data-page-top-section="compact"] .page-copy {
+    margin-top: 6px;
+    max-width: 640px;
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.page-toolbar-row,
+.search-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+}
+
+.page-toolbar-row > *,
+.search-toolbar > * {
+    min-width: 0;
+}
+
+.page-toolbar-row #datePicker,
+.search-toolbar #datePicker {
+    flex: 1 1 280px;
+    min-width: 0;
+}
+
+.page-toolbar-row .date-picker,
+.search-toolbar .date-picker {
+    width: 100%;
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+.page-toolbar-row .refresh-control,
+.search-toolbar .refresh-control {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.page-toolbar-row .refresh-select,
+.search-toolbar .refresh-select {
+    flex: 1 1 96px;
+    min-width: 0;
+    width: auto;
+}
+
+.page-toolbar-row .interval-filter,
+.search-toolbar .interval-filter {
+    flex: 0 1 88px;
+    min-width: 72px;
 }
 
 .ops-row,
@@ -728,10 +867,28 @@ body.rules-detail-open {
         padding: 18px 16px;
     }
 
+    .page-top-section[data-page-top-section="compact"] {
+        padding: 14px 16px;
+        border-radius: 16px;
+    }
+
+    .page-top-section[data-page-top-section="compact"] .page-title {
+        font-size: 20px;
+    }
+
     .header-side,
-    .hero-actions {
+    .hero-actions,
+    .page-top-section-side {
         width: 100%;
         justify-items: start;
+    }
+
+    .page-top-section-actions {
+        justify-content: flex-start;
+    }
+
+    .page-top-section-meta {
+        text-align: left;
     }
 
     .panel-header,
@@ -791,13 +948,42 @@ body.rules-detail-open {
     .action-section,
     .ops-row,
     .toolbar,
-    .search-toolbar {
+    .search-toolbar,
+    .page-toolbar-row {
         width: 100%;
+    }
+
+    .page-toolbar-row #datePicker,
+    .search-toolbar #datePicker,
+    .page-toolbar-row .refresh-control,
+    .search-toolbar .refresh-control {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+
+    .page-toolbar-row .refresh-control,
+    .search-toolbar .refresh-control {
+        justify-content: stretch;
+    }
+
+    .refresh-control > .refresh-btn,
+    .refresh-control > .refresh-btn.page-refresh-trigger {
+        width: auto;
+        flex: 0 0 auto;
+    }
+
+    .page-toolbar-row .refresh-select,
+    .search-toolbar .refresh-select,
+    .page-toolbar-row .interval-filter,
+    .search-toolbar .interval-filter {
+        flex: 1 1 0;
+        width: auto;
     }
 
     .hero-meta,
     .panel-meta,
-    .section-meta {
+    .section-meta,
+    .page-top-section-meta {
         text-align: left;
     }
 }

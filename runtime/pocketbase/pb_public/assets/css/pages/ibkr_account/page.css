@@ -6,33 +6,12 @@
             padding-bottom: 96px;
         }
 
-        .page-header {
+        .account-meta-row {
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 14px;
-            margin: 18px 16px 12px;
-        }
-
-        .page-title {
-            font-size: 24px;
-            font-weight: 700;
-            letter-spacing: -0.04em;
-        }
-
-        .page-copy {
-            margin-top: 8px;
-            max-width: 720px;
-            color: var(--muted);
-            font-size: 13px;
-            line-height: 1.6;
-        }
-
-        .header-side {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            gap: 8px;
+            justify-content: flex-end;
+            align-items: center;
+            min-height: 18px;
+            margin: 4px 16px 12px;
         }
 
         .refresh-info {
@@ -794,13 +773,6 @@
         }
 
         @media (max-width: 760px) {
-            .page-header {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            .header-side {
-                align-items: flex-start;
-            }
             .ops-row,
             .summary-grid,
             .meta-grid,
@@ -837,13 +809,10 @@
         }
 
         @media (max-width: 480px) {
-            .page-title {
-                font-size: 22px;
-            }
             .metric-grid {
                 grid-template-columns: 1fr;
             }
-            .section, .page-header, .ops-row, .summary-grid, .meta-grid, .blocker {
+            .section, .account-meta-row, .ops-row, .summary-grid, .meta-grid, .blocker {
                 margin-left: 12px;
                 margin-right: 12px;
             }

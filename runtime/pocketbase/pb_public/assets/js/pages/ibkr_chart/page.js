@@ -13,13 +13,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let currentInterval = '5m';
         let currentRangeKey = '1d';
         let currentAnchorMs = 0;
+        let pendingFocusBarTimeMs = 0;
         let currentIndicatorId = '';
         let chartInstance = null;
         let lastPayload = null;
         let chartDisplayPayload = null;
+        let chartWorkspaceState = 'idle';
         let realtimeQuoteSnapshot = null;
         let formingBarSnapshot = null;
         let chartRealtimeQuoteError = '';
+        let chartRealtimeQuoteFailureCount = 0;
         let chartRealtimePreviewError = '';
         let chartRealtimePollTimer = 0;
         let comparePayload = null;
@@ -38,6 +41,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let inspectorDrawerOpen = false;
         let chartLegendCollapsed = false;
         let chartMarkerDensityTier = '';
+        let chartTooltipSyncRaf = 0;
+        let chartFocusMarkerSyncRaf = 0;
         let mobileGestureHintSeen = false;
         let suppressNextChartClick = false;
         let chartTouchSession = {
@@ -326,14 +331,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         function getChartLayerDefs() {
             return [
-                { key: 'ema', label: 'EMA', shortLabel: 'EMA', disabled: false },
-                { key: 'vwap', label: 'VWAP', shortLabel: 'VWAP', disabled: false },
-                { key: 'sdChannel', label: 'SD Channel', shortLabel: 'SD', disabled: false },
-                { key: 'fractal', label: 'Fractal', shortLabel: 'Frac', disabled: false },
-                { key: 'emaTouch', label: 'EMA Touch', shortLabel: 'Touch', disabled: false },
-                { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false },
-                { key: 'tradeSignals', label: 'Trade Signals', shortLabel: 'Signal', disabled: !isTradeSignalInterval() },
-                { key: 'volume', label: 'Volume', shortLabel: 'Vol', disabled: false },
+                { key: 'ema', label: 'EMA', shortLabel: 'EMA', disabled: false, swatches: ['#38BDF8', '#F59E0B', '#A78BFA'], description: 'EMA20 / EMA50 / EMA100' },
+                { key: 'vwap', label: 'VWAP', shortLabel: 'VWAP', disabled: false, swatches: ['#34D399'], description: 'VWAP 主线' },
+                { key: 'sdChannel', label: 'SD Channel', shortLabel: 'SD', disabled: false, swatches: ['#7DD3FC', '#F87171', '#4ADE80'], description: '标准差回归线与上下轨' },
+                { key: 'fractal', label: 'Fractal', shortLabel: 'Frac', disabled: false, swatches: ['#14B8A6', '#F44336'], description: '上下分形标记' },
+                { key: 'emaTouch', label: 'EMA Touch', shortLabel: 'Touch', disabled: false, swatches: ['#00C853', '#D50000'], description: 'EMA touch 多空提示' },
+                { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false, swatches: ['#2196F3', '#9C27B0'], description: '背离提示标记' },
+                { key: 'tradeSignals', label: 'Trade Signals', shortLabel: 'Signal', disabled: !isTradeSignalInterval(), swatches: ['#48BB78', '#FC8181'], description: '多空交易信号' },
+                { key: 'volume', label: 'Volume', shortLabel: 'Vol', disabled: false, swatches: ['#38BDF8'], description: '成交量柱体' },
             ];
         }
 
@@ -356,6 +361,20 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return formatPercent(value, digits);
         }
 
+        function formatCompactAxisNumber(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            const abs = Math.abs(num);
+            const formatScaled = (scaled, suffix) => {
+                const precision = Math.abs(scaled) >= 100 ? 0 : (Math.abs(scaled) >= 10 ? 1 : 2);
+                return `${scaled.toFixed(precision).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')}${suffix}`;
+            };
+            if (abs >= 1e9) return formatScaled(num / 1e9, 'B');
+            if (abs >= 1e6) return formatScaled(num / 1e6, 'M');
+            if (abs >= 1e3) return formatScaled(num / 1e3, 'K');
+            return `${Math.round(num)}`;
+        }
+
         function signedColor(value) {
             const num = Number(value);
             if (!Number.isFinite(num) || num === 0) return 'var(--text)';
@@ -369,20 +388,22 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         function getTrendText(value) {
             const num = Number(value || 0);
-            if (num > 0) return '📈 多头';
-            if (num < 0) return '📉 空头';
-            return '➡️ 中性';
+            if (num > 0) return '多头';
+            if (num < 0) return '空头';
+            return '中性';
         }
 
         function getSdZoneText(value) {
-            const num = Number(value || 0);
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
             if (num === 1) return '超买';
             if (num === -1) return '超卖';
             return '正常';
         }
 
         function getSdTrendText(value) {
-            const num = Number(value || 0);
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
             if (num > 0) return '上升';
             if (num < 0) return '下降';
             return '平坦';
@@ -402,6 +423,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (indicator.fractal_bull) tags.push('分形多');
             if (indicator.fractal_bear) tags.push('分形空');
             return tags.length ? tags.join(' / ') : '无';
+        }
+
+        function getEmaStructureText(indicator) {
+            if (!indicator) return '--';
+            if (indicator.ema_bullish) return '多头';
+            if (indicator.ema_bearish) return '空头';
+            return '中性';
         }
 
         function getTouchSummary(indicator) {
@@ -447,6 +475,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function getDivergenceSummary(indicator, maxItems = 4) {
+            if (!indicator) return '--';
             const tokens = getIndicatorDivergenceTokens(indicator);
             if (!tokens.length) return '无';
             if (tokens.length <= maxItems) return tokens.join(' / ');
@@ -454,6 +483,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function getDivergenceDetailText(indicator) {
+            if (!indicator) return '--';
             const tokens = getIndicatorDivergenceTokens(indicator);
             return tokens.length ? tokens.join(' / ') : '无';
         }
@@ -562,7 +592,6 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 symbol: currentSymbol,
                 interval: currentInterval,
                 range: currentRangeKey,
-                bar_time_ms: currentAnchorMs || '',
             }, { environment: currentEnvironment });
             window.history.replaceState({}, '', url);
         }
@@ -701,12 +730,37 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         async function refreshChartRealtimeState({ render = false } = {}) {
             if (!currentSymbol) return;
+            const previousQuote = realtimeQuoteSnapshot && Number.isFinite(Number(realtimeQuoteSnapshot?.last_price))
+                ? { ...realtimeQuoteSnapshot }
+                : null;
             try {
                 await fetchRealtimeQuotes([currentSymbol], { reset: false });
-                realtimeQuoteSnapshot = getRealtimeQuote(currentSymbol);
-                chartRealtimeQuoteError = '';
+                let nextQuote = getRealtimeQuote(currentSymbol);
+                if (!(Number.isFinite(Number(nextQuote?.last_price)) && Number(nextQuote.last_price) > 0)) {
+                    await fetchRealtimeQuotes([currentSymbol], { reset: true });
+                    nextQuote = getRealtimeQuote(currentSymbol);
+                }
+                if (Number.isFinite(Number(nextQuote?.last_price)) && Number(nextQuote.last_price) > 0) {
+                    realtimeQuoteSnapshot = nextQuote;
+                    chartRealtimeQuoteError = '';
+                    chartRealtimeQuoteFailureCount = 0;
+                } else if (previousQuote) {
+                    realtimeQuoteSnapshot = previousQuote;
+                    chartRealtimeQuoteError = `quotes response missing ${currentSymbol}`;
+                    chartRealtimeQuoteFailureCount += 1;
+                    warnChartRealtimeOnce('quote', '当前 symbol 未返回实时报价，沿用上次快照', chartRealtimeQuoteError);
+                } else {
+                    realtimeQuoteSnapshot = null;
+                    chartRealtimeQuoteError = `quotes response missing ${currentSymbol}`;
+                    chartRealtimeQuoteFailureCount += 1;
+                    warnChartRealtimeOnce('quote', '当前 symbol 未返回实时报价', chartRealtimeQuoteError);
+                }
             } catch (error) {
+                if (previousQuote) {
+                    realtimeQuoteSnapshot = previousQuote;
+                }
                 chartRealtimeQuoteError = String(error?.message || error || 'unknown error');
+                chartRealtimeQuoteFailureCount += 1;
                 warnChartRealtimeOnce('quote', '加载实时价格失败', error);
             }
 
@@ -962,7 +1016,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             currentSymbol = query.symbol;
             currentInterval = query.interval;
             currentRangeKey = normalizeRangeKey(query.range, currentInterval);
-            currentAnchorMs = query.barTimeMs;
+            currentAnchorMs = 0;
+            pendingFocusBarTimeMs = query.barTimeMs;
 
             if (currentIndicatorId) {
                 try {
@@ -975,7 +1030,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         currentSymbol = String(indicator.symbol || currentSymbol).trim().toUpperCase();
                         currentInterval = normalizeInterval(indicator.interval || currentInterval, currentInterval || '5m');
                         if (!hasExplicitRange) currentRangeKey = getDefaultRangeKey(currentInterval);
-                        currentAnchorMs = Number(indicator.bar_time_ms || currentAnchorMs) || currentAnchorMs;
+                        pendingFocusBarTimeMs = Number(indicator.bar_time_ms || pendingFocusBarTimeMs) || pendingFocusBarTimeMs;
                         return;
                     }
                 } catch (_) {}
@@ -995,31 +1050,184 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             currentAnchorMs = Number(latestBar?.bar_time_ms || 0) || 0;
         }
 
+        function buildStripChip(baseClass, text, extraClass = '', title = '') {
+            const classes = [baseClass, extraClass].filter(Boolean).join(' ');
+            const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+            return `<span class="${classes}"${titleAttr}>${escapeHtml(text || '--')}</span>`;
+        }
+
+        function getWorkspaceStateBadge() {
+            if (chartWorkspaceState === 'loading') return { text: '工作区 加载中', className: 'loading' };
+            if (chartWorkspaceState === 'error') return { text: '工作区 加载失败', className: 'error' };
+            if (chartWorkspaceState === 'ready') return { text: '工作区 已就绪', className: '' };
+            return { text: '工作区 等待数据', className: 'placeholder' };
+        }
+
+        function summarizeCompareStatusLine(statusMap) {
+            const defs = [
+                { key: 'bar', label: 'Bars' },
+                { key: 'indicator', label: 'Ind' },
+                { key: 'signal', label: 'Sig' },
+            ];
+            return defs.map((item) => `${item.label} ${getCompareStatusLabel(statusMap?.[item.key])}`).join(' · ');
+        }
+
+        function getChartFallbackClose(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const fallbackClose = Number(payload?.latestIndicator?.close ?? bars[bars.length - 1]?.close ?? NaN);
+            return Number.isFinite(fallbackClose) && fallbackClose > 0 ? fallbackClose : null;
+        }
+
+        function getRealtimeChipState(payload) {
+            const livePrice = Number(realtimeQuoteSnapshot?.last_price);
+            if (Number.isFinite(livePrice) && livePrice > 0) {
+                const age = Number(realtimeQuoteSnapshot?.quote_age_s);
+                const ageText = Number.isFinite(age) ? `，行情延迟约 ${age.toFixed(age >= 10 ? 0 : 1)} 秒` : '';
+                const isDelayed = Number.isFinite(age) && age > 15;
+                return {
+                    text: isDelayed
+                        ? `实时价 ${formatPrice(livePrice)} · 延迟 ${age.toFixed(age >= 60 ? 0 : 1)}s`
+                        : `实时价 ${formatPrice(livePrice)} · 日涨跌 ${formatSignedPercent(realtimeQuoteSnapshot.day_change_pct)}`,
+                    className: isDelayed ? 'placeholder' : '',
+                    title: chartRealtimeQuoteError
+                        ? `当前显示的是最近一次成功拿到的 live quote${ageText}。最近一次 /quotes 刷新异常：${chartRealtimeQuoteError}`
+                        : `来自实时行情快照${ageText}。`,
+                };
+            }
+            const fallbackClose = getChartFallbackClose(payload);
+            if (Number.isFinite(fallbackClose)) {
+                const errorText = chartRealtimeQuoteError ? `最近一次报价请求失败：${chartRealtimeQuoteError}。` : '当前没有拿到可用实时报价。';
+                return {
+                    text: `实时价 暂缺 · 回退 ${formatPrice(fallbackClose)}`,
+                    className: 'placeholder',
+                    title: `${errorText} 页面先用最近已收盘 K 线 close ${formatPrice(fallbackClose)} 兜底展示。`,
+                };
+            }
+            return {
+                text: '实时价 --',
+                className: 'placeholder',
+                title: '当前还没有拿到实时价，也没有可回退的收盘价。',
+            };
+        }
+
+        function getPreviewChipState() {
+            if (currentInterval !== '5m') {
+                return {
+                    text: '未收盘预览 仅 5m',
+                    className: 'placeholder',
+                    title: '只有 5m 周期会叠加当前未收盘 bar 的预览。',
+                };
+            }
+            if (formingBarSnapshot?.bar_time_ms) {
+                return {
+                    text: `未收盘预览 ${formatChartLabel(formingBarSnapshot)}`,
+                    className: '',
+                    title: '这是当前 5m 尚未收盘 bar 的临时预览，不会直接写回历史 bars。',
+                };
+            }
+            if (chartRealtimePreviewError) {
+                return {
+                    text: '未收盘预览 暂缺',
+                    className: 'placeholder',
+                    title: `当前未收盘 5m 预览暂时不可用。最近错误：${chartRealtimePreviewError}`,
+                };
+            }
+            return {
+                text: '未收盘预览 --',
+                className: 'placeholder',
+                title: '等待当前 5m bar 的未收盘预览数据。',
+            };
+        }
+
+        function getCompareChipState(compareSummary, { compact = false } = {}) {
+            if (compareLoading) {
+                return {
+                    text: compact ? 'IBKR 对比 运行中' : 'IBKR 对比 正在运行',
+                    className: 'loading',
+                    title: '正在把当前 stored bars 链路与 IBKR API 临时拉取结果做逐 bar 对比。',
+                };
+            }
+            if (comparePayload) {
+                return {
+                    text: compact
+                        ? `IBKR 对比 Stored ${compareSummary.stored_visible_bars || 0} · IBKR ${compareSummary.ibkr_visible_bars || 0} · 差异 ${compareSummary.bar_mismatch_count || 0}/${compareSummary.indicator_mismatch_count || 0}/${compareSummary.signal_mismatch_count || 0}`
+                        : `IBKR 对比 bars ${compareSummary.bar_mismatch_count || 0} · ind ${compareSummary.indicator_mismatch_count || 0} · sig ${compareSummary.signal_mismatch_count || 0}`,
+                    className: '',
+                    title: '差异顺序为 bars / indicators / signals，用于核对 stored 链路和 IBKR API 临时回放是否一致。',
+                };
+            }
+            if (compareError) {
+                return {
+                    text: 'IBKR 对比 失败',
+                    className: 'error',
+                    title: `最近一次 IBKR 对比失败：${compareError}`,
+                };
+            }
+            return {
+                text: 'IBKR 对比 未运行',
+                className: 'placeholder',
+                title: '点击“IBKR 对比”后，会把当前图表窗口的 stored 数据链路和 IBKR API 回放结果进行逐 bar 对照。',
+            };
+        }
+
+        function buildCursorCard(label, primary, secondary, { valueClass = '', meta = '' } = {}) {
+            return `
+                <div class="cursor-card">
+                    <div class="cursor-label">${escapeHtml(label || '--')}</div>
+                    <div class="cursor-value ${escapeHtml(valueClass)}">
+                        <span class="cursor-main">${escapeHtml(primary || '--')}</span>
+                        <span class="cursor-sub">${escapeHtml(secondary || '--')}</span>
+                    </div>
+                    <div class="cursor-meta">${meta || '&nbsp;'}</div>
+                </div>
+            `;
+        }
+
+        function formatInlineOHLC(bar) {
+            return {
+                primary: `O ${formatPrice(bar?.open)} · H ${formatPrice(bar?.high)}`,
+                secondary: `L ${formatPrice(bar?.low)} · C ${formatPrice(bar?.close)}`,
+            };
+        }
+
+        function formatInlineChain(indicator) {
+            return {
+                primary: `20 ${formatPrice(indicator?.ema_fast)} · 50 ${formatPrice(indicator?.ema_slow)}`,
+                secondary: `100 ${formatPrice(indicator?.ema_trend)} · VWAP ${formatPrice(indicator?.vwap)}`,
+            };
+        }
+
+        function formatInlineCompareChain(indicator) {
+            return {
+                primary: `EMA20 ${formatPrice(indicator?.ema_fast)} · EMA50 ${formatPrice(indicator?.ema_slow)}`,
+                secondary: `VWAP ${formatPrice(indicator?.vwap)} · CRSI ${formatNumber(indicator?.crsi)}`,
+            };
+        }
+
+        function formatInlineCompareDiff(compareRow) {
+            return {
+                primary: `Bars ${summarizeCompareFields(compareRow?.diff?.bar, '一致')}`,
+                secondary: `Ind ${summarizeCompareFields(compareRow?.diff?.indicator, '一致')} · Sig ${summarizeCompareFields(compareRow?.diff?.signal, '一致')}`,
+            };
+        }
+
         function renderHeroStatus(payload) {
             const latest = payload?.latestIndicator || null;
+            const stateBadge = getWorkspaceStateBadge();
+            const compareSummary = comparePayload?.comparison?.summary || {};
+            const lastBarTime = latest?.us_time || (payload?.bars?.length ? payload.bars[payload.bars.length - 1]?.us_time || '--' : '--');
+            const realtimeState = getRealtimeChipState(payload);
+            const previewState = getPreviewChipState();
+            const compareState = getCompareChipState(compareSummary, { compact: false });
             const chips = [
-                `<span class="hero-chip">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>`,
-                `<span class="hero-chip">${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>`,
-                `<span class="hero-chip">最后bar ${escapeHtml(latest?.us_time || (payload?.bars?.length ? payload.bars[payload.bars.length - 1]?.us_time || '--' : '--'))}</span>`
+                buildStripChip('hero-chip', `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`, currentSymbol ? '' : 'placeholder', '当前查看的标的与周期。'),
+                buildStripChip('hero-chip', getEnvironmentLabel(currentEnvironment), currentEnvironment ? '' : 'placeholder', '当前运行环境。'),
+                buildStripChip('hero-chip', stateBadge.text, stateBadge.className, '图表工作区当前加载状态。'),
+                buildStripChip('hero-chip', `最后收盘 bar ${lastBarTime}`, lastBarTime === '--' ? 'placeholder' : '', '当前窗口最后一根已收盘 bar 的时间。'),
+                buildStripChip('hero-chip', realtimeState.text, realtimeState.className, realtimeState.title),
+                buildStripChip('hero-chip', previewState.text, previewState.className, previewState.title),
+                buildStripChip('hero-chip', compareState.text, compareState.className, compareState.title),
             ];
-            if (realtimeQuoteSnapshot?.last_price != null) {
-                chips.push(
-                    `<span class="hero-chip">实时 ${escapeHtml(formatPrice(realtimeQuoteSnapshot.last_price))} · ${escapeHtml(formatSignedPercent(realtimeQuoteSnapshot.day_change_pct))}</span>`
-                );
-            } else if (chartRealtimeQuoteError) {
-                chips.push('<span class="hero-chip">实时价连接异常</span>');
-            }
-            if (currentInterval === '5m' && chartRealtimePreviewError) {
-                chips.push('<span class="hero-chip">预览bar连接异常</span>');
-            }
-            if (compareLoading) {
-                chips.push('<span class="hero-chip">IBKR 对比中</span>');
-            } else if (comparePayload) {
-                const summary = comparePayload?.comparison?.summary || {};
-                chips.push(`<span class="hero-chip">IBKR 对比 bar ${escapeHtml(String(summary.bar_mismatch_count || 0))} · ind ${escapeHtml(String(summary.indicator_mismatch_count || 0))} · sig ${escapeHtml(String(summary.signal_mismatch_count || 0))}</span>`);
-            } else if (compareError) {
-                chips.push('<span class="hero-chip">IBKR 对比失败</span>');
-            }
             document.getElementById('heroStatus').innerHTML = chips.join('');
         }
 
@@ -1040,43 +1248,79 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
             const latest = payload?.latestIndicator || null;
+            const compareSummary = comparePayload?.comparison?.summary || {};
+            const realtimeState = getRealtimeChipState(payload);
+            const previewState = getPreviewChipState();
+            const compareState = getCompareChipState(compareSummary, { compact: true });
             const chips = [
-                `bars ${bars.length}`,
-                `ind ${indicators.length}`,
-                `signals ${signals.length}`,
-                `range ${getRangeLabel(currentRangeKey)}`,
-                `trend ${latest ? getTrendText(latest.trend_dir) : '--'}`,
-                `EMA ${latest?.ema_bullish ? 'bull' : latest?.ema_bearish ? 'bear' : 'neutral'}`,
-                `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`,
-                `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`,
-                `SD ${latest ? getSdZoneText(latest.sd_zone) : '--'}/${latest ? getSdTrendText(latest.sd_trend) : '--'}`,
-                `Frac ${latest ? getFractalSummary(latest) : '--'}`
+                { text: `K 线 ${bars.length}`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的 bars 数量。' },
+                { text: `指标 ${indicators.length}`, className: '', title: '当前窗口成功匹配到的指标快照数量。' },
+                { text: `信号 ${signals.length}`, className: '', title: '当前窗口内的交易信号数量。' },
+                { text: `范围 ${getRangeLabel(currentRangeKey)}`, className: '', title: '当前图表时间窗口。' },
+                { text: `趋势 ${latest ? getTrendText(latest.trend_dir) : '--'}`, className: latest ? '' : 'placeholder', title: '趋势方向来自当前 bar 对应的 trend_dir。' },
+                { text: `EMA 结构 ${latest ? getEmaStructureText(latest) : '--'}`, className: latest ? '' : 'placeholder', title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
+                { text: `VWAP 偏离 ${latest ? formatPercent(latest.vwap_dist) : '--'}`, className: latest ? '' : 'placeholder', title: '当前收盘价相对 VWAP 的偏离百分比。' },
+                { text: `ATR 波动 ${latest ? formatPercent(latest.atr_pct) : '--'}`, className: latest ? '' : 'placeholder', title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
+                { text: `SD 通道 ${latest ? getSdZoneText(latest.sd_zone) : '--'} / ${latest ? getSdTrendText(latest.sd_trend) : '--'}`, className: latest ? '' : 'placeholder', title: 'SD 通道分为所在区间和通道斜率两部分。' },
+                { text: `分形 ${latest ? getFractalStateText(latest) : '--'}`, className: latest ? '' : 'placeholder', title: '当前 bar 是否命中了上分形或下分形。' },
+                { text: realtimeState.text, className: realtimeState.className, title: realtimeState.title },
+                { text: previewState.text, className: previewState.className, title: previewState.title },
+                { text: compareState.text, className: compareState.className, title: compareState.title },
             ];
-            if (realtimeQuoteSnapshot?.last_price != null) {
-                chips.push(`live ${formatPrice(realtimeQuoteSnapshot.last_price)}`);
-                chips.push(`day ${formatSignedPercent(realtimeQuoteSnapshot.day_change_pct)}`);
-            } else if (chartRealtimeQuoteError) {
-                chips.push('live unavailable');
-            }
-            if (formingBarSnapshot?.bar_time_ms) {
-                chips.push(`preview ${formatChartLabel(formingBarSnapshot)}`);
-            } else if (currentInterval === '5m' && chartRealtimePreviewError) {
-                chips.push('preview unavailable');
-            }
-            if (compareLoading) {
-                chips.push('IBKR compare loading');
-            } else if (comparePayload) {
-                const summary = comparePayload?.comparison?.summary || {};
-                chips.push(`stored ${summary.stored_visible_bars || 0}`);
-                chips.push(`ibkr ${summary.ibkr_visible_bars || 0}`);
-                chips.push(`bar diff ${summary.bar_mismatch_count || 0}`);
-                chips.push(`ind diff ${summary.indicator_mismatch_count || 0}`);
-                chips.push(`signal diff ${summary.signal_mismatch_count || 0}`);
-                chips.push(`missing ${Number(summary.missing_stored_bar_count || 0) + Number(summary.missing_ibkr_bar_count || 0)}`);
-            } else if (compareError) {
-                chips.push('IBKR compare error');
-            }
-            document.getElementById('summaryStrip').innerHTML = chips.map((item) => `<span class="summary-chip">${escapeHtml(item)}</span>`).join('');
+            document.getElementById('summaryStrip').innerHTML = chips.map((item) => buildStripChip('summary-chip', item.text, item.className, item.title)).join('');
+        }
+
+        function buildFloatingLegendChip(text, title = '', className = '') {
+            const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+            const classAttr = ['tv-floating-pill', className].filter(Boolean).join(' ');
+            return `<span class="${classAttr}"${titleAttr}>${escapeHtml(text || '--')}</span>`;
+        }
+
+        function getFloatingOverviewItems(payload, { compact = false } = {}) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
+            const signals = Array.isArray(payload?.signals) ? payload.signals : [];
+            const latest = payload?.latestIndicator || null;
+            const compareSummary = comparePayload?.comparison?.summary || {};
+            const realtimeState = getRealtimeChipState(payload);
+            const previewState = getPreviewChipState();
+            const compareState = getCompareChipState(compareSummary, { compact: true });
+            const items = [
+                { text: `K线 ${bars.length}`, title: '当前图表窗口实际绘制的 bars 数量。' },
+                { text: `指标 ${indicators.length}`, title: '当前窗口成功匹配到的指标快照数量。' },
+                { text: `信号 ${signals.length}`, title: '当前窗口内的交易信号数量。' },
+                { text: `范围 ${getRangePreset(currentRangeKey)?.shortLabel || currentRangeKey}`, title: '当前图表时间窗口。' },
+                { text: `趋势 ${latest ? getTrendText(latest.trend_dir) : '--'}`, title: '趋势方向来自当前 bar 对应的 trend_dir。' },
+                { text: `EMA ${latest ? getEmaStructureText(latest) : '--'}`, title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
+                { text: `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`, title: '当前收盘价相对 VWAP 的偏离百分比。' },
+                { text: `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`, title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
+                { text: `SD ${latest ? getSdZoneText(latest.sd_zone) : '--'} / ${latest ? getSdTrendText(latest.sd_trend) : '--'}`, title: 'SD 通道分为所在区间和通道斜率两部分。' },
+                { text: realtimeState.text, title: realtimeState.title, className: realtimeState.className === 'placeholder' ? 'muted' : '' },
+                { text: previewState.text, title: previewState.title, className: previewState.className === 'placeholder' ? 'muted' : '' },
+                { text: compareState.text, title: compareState.title, className: compareState.className === 'placeholder' ? 'muted' : (compareState.className || '') },
+            ];
+            return compact ? items.filter((_, index) => index !== 1 && index !== 7 && index !== 11) : items;
+        }
+
+        function buildFloatingLayerButton(item) {
+            const swatches = Array.isArray(item?.swatches) ? item.swatches : [];
+            const title = item?.description
+                ? `${item.description}${item.disabled ? '，当前仅 5m 周期可用。' : ''}`
+                : (item.disabled ? '当前仅 5m 周期可用。' : '');
+            return `
+                <button
+                    class="tv-layer-chip ${chartLayerState[item.key] ? 'active' : ''} ${item.disabled ? 'disabled' : ''}"
+                    type="button"
+                    onclick="toggleChartLayer('${item.key}')"
+                    ${item.disabled ? 'disabled' : ''}
+                    title="${escapeHtml(title)}"
+                >
+                    <span class="tv-layer-swatches">
+                        ${swatches.map((color) => `<span class="tv-layer-swatch" style="--swatch:${escapeHtml(color)};"></span>`).join('')}
+                    </span>
+                    <span class="tv-layer-label">${escapeHtml(item.label)}${item.disabled ? ' · 5m' : ''}</span>
+                </button>
+            `;
         }
 
         function buildContext(payload, index, signalId = '') {
@@ -1096,6 +1340,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return {
                 index: safeIndex,
                 bar,
+                isPreviewBar,
                 indicator: exactIndicator || (isPreviewBar ? null : payload?.latestIndicator || null),
                 signalMatches,
                 activeSignal,
@@ -1232,6 +1477,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const context = buildContext(payload, activeIndex, selectedSignalId);
             const bar = context?.bar || null;
             const indicator = context?.indicator || null;
+            const isPreviewBar = Boolean(context?.isPreviewBar);
             const signal = context?.activeSignal || null;
             const compareRow = getCompareRowByBarTime(bar?.bar_time_ms);
             const previousClose = Number(activeIndex > 0 ? bars[activeIndex - 1]?.close : bar?.open);
@@ -1245,12 +1491,32 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const signalLabel = signal ? buildTradeSignalLabel(signal) : (isTradeSignalInterval() ? 'No trade signal' : 'Labels 仅 5m');
             const summaryTime = compact ? String(bar?.us_time || '--').slice(5) : (bar?.us_time || '--');
             const summaryPills = [
-                `<span class="tv-floating-pill brand">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}</span>`,
-                `<span class="tv-floating-pill">${escapeHtml(focusLabel)} ${escapeHtml(summaryTime)}</span>`,
-                chartPointerLocked ? '<span class="tv-floating-pill brand">Locked</span>' : '',
-                `<span class="tv-floating-pill ${deltaClass}">${escapeHtml(formatPrice(bar?.close))} · ${escapeHtml(compact ? formatPercent(deltaPercent) : formatSignedPriceDelta(deltaValue))}${compact ? '' : ` · ${escapeHtml(formatPercent(deltaPercent))}`}</span>`,
-                compareRow ? `<span class="tv-floating-pill ${getCompareStatusClass(compareRow?.status?.bar)}">${escapeHtml(getCompareStatusLabel(compareRow?.status?.bar))}</span>` : '',
+                buildFloatingLegendChip(`${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`, '当前查看的标的与周期。', 'brand'),
+                buildFloatingLegendChip(`${focusLabel} ${summaryTime}`, '当前浮层焦点时间。'),
+                chartPointerLocked ? buildFloatingLegendChip('Locked', '当前光标已锁定。', 'brand') : '',
+                buildFloatingLegendChip(
+                    `${formatPrice(bar?.close)} · ${compact ? formatPercent(deltaPercent) : formatSignedPriceDelta(deltaValue)}${compact ? '' : ` · ${formatPercent(deltaPercent)}`}`,
+                    '当前焦点 K 线收盘价与相对上一根 K 线的变化。',
+                    deltaClass
+                ),
+                compareRow ? buildFloatingLegendChip(getCompareStatusLabel(compareRow?.status?.bar), '当前焦点 bar 的 IBKR 对比状态。', getCompareStatusClass(compareRow?.status?.bar)) : '',
             ].filter(Boolean).join('');
+            const overviewItems = getFloatingOverviewItems(payload, { compact });
+            const overviewRow = `
+                <div class="tv-floating-section">
+                    <div class="tv-floating-kicker">Overview</div>
+                    <div class="tv-floating-row">
+                        ${overviewItems.map((item) => buildFloatingLegendChip(item.text, item.title, item.className || '')).join('')}
+                    </div>
+                </div>
+            `;
+            const layerButtons = getChartLayerDefs().map((item) => buildFloatingLayerButton(item)).join('');
+            const layerRow = `
+                <div class="tv-floating-section">
+                    <div class="tv-floating-kicker">Layers</div>
+                    <div class="tv-layer-row">${layerButtons}</div>
+                </div>
+            `;
             const detailRows = compact ? [
                 `
                     <div class="tv-floating-row">
@@ -1263,18 +1529,18 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 `,
                 phone ? '' : `
                     <div class="tv-floating-row">
-                        <span class="tv-floating-pill">EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}</span>
-                        <span class="tv-floating-pill">EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}</span>
-                        <span class="tv-floating-pill">VWAP ${escapeHtml(formatPrice(indicator?.vwap))}</span>
-                        <span class="tv-floating-pill">ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'EMA20 待收盘' : `EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'EMA50 待收盘' : `EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'VWAP 待收盘' : `VWAP ${escapeHtml(formatPrice(indicator?.vwap))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'ATR 待收盘' : `ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</span>
                     </div>
                 `,
                 `
                     <div class="tv-floating-row">
-                        <span class="tv-floating-pill">SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}</span>
-                        <span class="tv-floating-pill">Frac ${escapeHtml(getFractalSummary(indicator))}</span>
-                        <span class="tv-floating-pill">Touch ${escapeHtml(getTouchSummary(indicator))}</span>
-                        <span class="tv-floating-pill">Div ${escapeHtml(getDivergenceSummary(indicator, phone ? 2 : 3))}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? '预览 bar · 指标待收盘' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Frac 待收盘' : `Frac ${escapeHtml(getFractalSummary(indicator))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Touch 待确认' : `Touch ${escapeHtml(getTouchSummary(indicator))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Div 待确认' : `Div ${escapeHtml(getDivergenceSummary(indicator, phone ? 2 : 3))}`}</span>
                     </div>
                 `
             ] : [
@@ -1293,13 +1559,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 `,
                 `
                     <div class="tv-floating-row">
-                        <span class="tv-floating-pill">CRSI ${escapeHtml(formatNumber(indicator?.crsi))}</span>
-                        <span class="tv-floating-pill">OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))}</span>
-                        <span class="tv-floating-pill">ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}</span>
-                        <span class="tv-floating-pill">SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}</span>
-                        <span class="tv-floating-pill">Frac ${escapeHtml(getFractalSummary(indicator))}</span>
-                        <span class="tv-floating-pill">Touch ${escapeHtml(getTouchSummary(indicator))}</span>
-                        <span class="tv-floating-pill">Div ${escapeHtml(getDivergenceSummary(indicator, 6))}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'CRSI 待收盘' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'OBV 待收盘' : `OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'ATR 待收盘' : `ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'SD 待收盘' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Frac 待收盘' : `Frac ${escapeHtml(getFractalSummary(indicator))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Touch 待确认' : `Touch ${escapeHtml(getTouchSummary(indicator))}`}</span>
+                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Div 待确认' : `Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</span>
                     </div>
                 `,
                 `
@@ -1314,7 +1580,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         <div class="tv-floating-summary">${summaryPills}</div>
                         <button class="tv-floating-toggle" type="button" onclick="toggleChartLegendCollapsed()">${chartLegendCollapsed ? 'Expand' : 'Collapse'}</button>
                     </div>
-                    ${chartLegendCollapsed ? '' : `<div class="tv-floating-body">${detailRows.filter(Boolean).join('')}</div>`}
+                    ${chartLegendCollapsed ? '' : `<div class="tv-floating-body">${overviewRow}${layerRow}${detailRows.filter(Boolean).join('')}</div>`}
                 </div>
             `;
         }
@@ -1683,7 +1949,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function renderCursorStrip(payload) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!bars.length) {
-                document.getElementById('cursorStrip').innerHTML = '';
+                document.getElementById('cursorStrip').innerHTML = [
+                    buildCursorCard('Cursor Time', '--', chartWorkspaceState === 'loading' ? '等待 bars / indicators' : '暂无游标上下文'),
+                    buildCursorCard('OHLC', '--', '--'),
+                    buildCursorCard('EMA / VWAP', '--', '--'),
+                    buildCursorCard('SD / Fractal', '--', '--'),
+                    buildCursorCard('Touch / Divergence', '--', '--'),
+                    buildCursorCard('Signal / Osc', chartWorkspaceState === 'error' ? '加载失败' : '--', chartWorkspaceState === 'error' ? '请检查 ibkr_bars / 网络状态' : '--'),
+                ].join('');
                 renderChartWorkspaceChrome(payload);
                 return;
             }
@@ -1692,65 +1965,43 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const context = buildContext(payload, activeIndex, selectedSignalId);
             const bar = context?.bar || null;
             const indicator = context?.indicator || null;
+            const isPreviewBar = Boolean(context?.isPreviewBar);
             const signal = context?.activeSignal || null;
             const compareRow = getCompareRowByBarTime(bar?.bar_time_ms);
             if (comparePayload && compareRow) {
-                document.getElementById('cursorStrip').innerHTML = `
-                    <div class="cursor-card">
-                        <div class="cursor-label">Cursor Time</div>
-                        <div class="cursor-value">${escapeHtml(bar?.us_time || '--')}</div>
-                        <div class="compare-status-row">${buildCompareStatusPills(compareRow.status)}</div>
-                    </div>
-                    <div class="cursor-card">
-                        <div class="cursor-label">Stored Bars</div>
-                        <div class="cursor-value compact">${formatCompareBarSummary(compareRow?.stored?.bar)}</div>
-                    </div>
-                    <div class="cursor-card">
-                        <div class="cursor-label">IBKR API Bars</div>
-                        <div class="cursor-value compact">${formatCompareBarSummary(compareRow?.ibkr?.bar)}</div>
-                    </div>
-                    <div class="cursor-card">
-                        <div class="cursor-label">Stored Chain</div>
-                        <div class="cursor-value compact">${formatCompareChainSummary(compareRow?.stored?.indicator, compareRow?.stored?.signal)}</div>
-                    </div>
-                    <div class="cursor-card">
-                        <div class="cursor-label">IBKR API Chain</div>
-                        <div class="cursor-value compact">${formatCompareChainSummary(compareRow?.ibkr?.indicator, compareRow?.ibkr?.signal)}</div>
-                    </div>
-                    <div class="cursor-card">
-                        <div class="cursor-label">Diff</div>
-                        <div class="cursor-value compact">${buildCompareDiffCopy(compareRow)}</div>
-                    </div>
-                `;
+                const storedBar = formatInlineOHLC(compareRow?.stored?.bar);
+                const ibkrBar = formatInlineOHLC(compareRow?.ibkr?.bar);
+                const storedChain = formatInlineCompareChain(compareRow?.stored?.indicator);
+                const ibkrChain = formatInlineCompareChain(compareRow?.ibkr?.indicator);
+                const diff = formatInlineCompareDiff(compareRow);
+                document.getElementById('cursorStrip').innerHTML = [
+                    buildCursorCard('Cursor Time', bar?.us_time || '--', summarizeCompareStatusLine(compareRow?.status)),
+                    buildCursorCard('Stored Bars', storedBar.primary, storedBar.secondary, { valueClass: 'compact' }),
+                    buildCursorCard('IBKR API Bars', ibkrBar.primary, ibkrBar.secondary, { valueClass: 'compact' }),
+                    buildCursorCard('Stored Chain', storedChain.primary, storedChain.secondary, { valueClass: 'compact' }),
+                    buildCursorCard('IBKR API Chain', ibkrChain.primary, ibkrChain.secondary, { valueClass: 'compact' }),
+                    buildCursorCard('Diff', diff.primary, diff.secondary, { valueClass: 'compact' }),
+                ].join('');
                 renderChartWorkspaceChrome(payload);
                 return;
             }
-            document.getElementById('cursorStrip').innerHTML = `
-                <div class="cursor-card">
-                    <div class="cursor-label">Cursor Time</div>
-                    <div class="cursor-value">${escapeHtml(bar?.us_time || '--')}</div>
-                </div>
-                <div class="cursor-card">
-                    <div class="cursor-label">OHLC</div>
-                    <div class="cursor-value">${bar ? `${escapeHtml(formatPrice(bar.open))} / ${escapeHtml(formatPrice(bar.high))} / ${escapeHtml(formatPrice(bar.low))} / ${escapeHtml(formatPrice(bar.close))}` : '--'}</div>
-                </div>
-                <div class="cursor-card">
-                    <div class="cursor-label">EMA / VWAP</div>
-                    <div class="cursor-value">${indicator ? `20 ${escapeHtml(formatPrice(indicator.ema_fast))} · 50 ${escapeHtml(formatPrice(indicator.ema_slow))}<br>100 ${escapeHtml(formatPrice(indicator.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator.vwap))}` : '--'}</div>
-                </div>
-                <div class="cursor-card">
-                    <div class="cursor-label">SD / Fractal</div>
-                    <div class="cursor-value">${indicator ? `Zone ${escapeHtml(getSdZoneText(indicator.sd_zone))} · ${escapeHtml(getSdTrendText(indicator.sd_trend))}<br>${escapeHtml(getFractalStateText(indicator))}` : '--'}</div>
-                </div>
-                <div class="cursor-card">
-                    <div class="cursor-label">Touch / Divergence</div>
-                    <div class="cursor-value">${indicator ? `${escapeHtml(getTouchDetailText(indicator))}<br>${escapeHtml(getDivergenceDetailText(indicator))}` : '--'}</div>
-                </div>
-                <div class="cursor-card">
-                    <div class="cursor-label">Signal / Osc</div>
-                    <div class="cursor-value">${signal ? `${escapeHtml(buildTradeSignalLabel(signal))}<br>${escapeHtml(String(signal.direction || '--').toUpperCase())}` : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m')}${indicator ? `<br>CRSI ${escapeHtml(formatNumber(indicator.crsi))} · OBV ${escapeHtml(formatNumber(indicator.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator.atr_pct))}` : ''}</div>
-                </div>
-            `;
+            const ohlc = formatInlineOHLC(bar);
+            const chain = formatInlineChain(indicator);
+            const cursorState = chartPointerLocked ? 'Locked cursor' : (hoverBarIndex >= 0 ? 'Hover cursor' : 'Latest focus');
+            const signalPrimary = signal
+                ? buildTradeSignalLabel(signal)
+                : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m');
+            const signalSecondary = indicator
+                ? `CRSI ${formatNumber(indicator.crsi)} · OBV ${formatNumber(indicator.obv_rsi)} · ATR ${formatPercent(indicator.atr_pct)}`
+                : (isPreviewBar ? '预览 bar 收盘后生成 Osc 指标' : '--');
+            document.getElementById('cursorStrip').innerHTML = [
+                buildCursorCard('Cursor Time', bar?.us_time || '--', cursorState),
+                buildCursorCard('OHLC', ohlc.primary, ohlc.secondary),
+                buildCursorCard('EMA / VWAP', isPreviewBar && !indicator ? '预览 bar 暂无正式均线' : chain.primary, isPreviewBar && !indicator ? '收盘后生成 EMA / VWAP' : chain.secondary),
+                buildCursorCard('SD / Fractal', isPreviewBar && !indicator ? '预览 bar 暂无正式指标' : `Zone ${getSdZoneText(indicator?.sd_zone)} · ${getSdTrendText(indicator?.sd_trend)}`, isPreviewBar && !indicator ? '收盘后计算 SD / Fractal' : `Frac ${getFractalSummary(indicator)}`),
+                buildCursorCard('Touch / Divergence', isPreviewBar && !indicator ? '预览中' : getTouchDetailText(indicator), isPreviewBar && !indicator ? 'Touch / Div 待收盘确认' : getDivergenceDetailText(indicator)),
+                buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, signalSecondary),
+            ].join('');
             renderChartWorkspaceChrome(payload);
         }
 
@@ -1781,6 +2032,37 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             chartInstance.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: index });
         }
 
+        function scheduleChartTooltipSync(index) {
+            if (!Number.isInteger(index) || index < 0) return;
+            if (chartTooltipSyncRaf) {
+                window.cancelAnimationFrame(chartTooltipSyncRaf);
+                chartTooltipSyncRaf = 0;
+            }
+            chartTooltipSyncRaf = window.requestAnimationFrame(() => {
+                chartTooltipSyncRaf = 0;
+                syncChartTooltip(index);
+                window.setTimeout(() => syncChartTooltip(index), 60);
+            });
+        }
+
+        function scheduleChartFocusMarkerSync(index, payload = getChartDisplayPayload()) {
+            if (!chartInstance || !Number.isInteger(index) || index < 0) return;
+            if (chartFocusMarkerSyncRaf) {
+                window.cancelAnimationFrame(chartFocusMarkerSyncRaf);
+                chartFocusMarkerSyncRaf = 0;
+            }
+            chartFocusMarkerSyncRaf = window.requestAnimationFrame(() => {
+                chartFocusMarkerSyncRaf = 0;
+                const markPoint = buildFocusMarkPointConfig(index, payload);
+                chartInstance.setOption({
+                    series: [{
+                        id: 'price-main',
+                        markPoint: markPoint || { data: [] },
+                    }]
+                });
+            });
+        }
+
         function syncCursorIndex(index) {
             const payload = getChartDisplayPayload();
             if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
@@ -1788,6 +2070,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const safeIndex = Math.min(Math.max(Number(index) || 0, 0), payload.bars.length - 1);
             hoverBarIndex = safeIndex;
             renderCursorStrip(payload);
+            scheduleChartFocusMarkerSync(safeIndex, payload);
         }
 
         function clearChartTouchTimer() {
@@ -1992,6 +2275,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 else closeSignalDrawer();
             }
             syncChartTooltip(safeIndex);
+            scheduleChartFocusMarkerSync(safeIndex, payload);
         }
 
         function setChartZoomWindow(zoom, payload = getChartDisplayPayload()) {
@@ -2029,6 +2313,20 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 start: indexToPercent(startIndex, bars.length),
                 end: indexToPercent(endIndex, bars.length),
             }, payload);
+        }
+
+        function shouldKeepViewportFollowingFocus(index, payload = getChartDisplayPayload()) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) return false;
+            if (chartPointerLocked) return true;
+            const targetIndex = clampIndex(index, bars.length);
+            const viewport = chartViewportState.totalBars === bars.length
+                ? chartViewportState
+                : getCurrentZoomWindow(bars.length);
+            const tailSlack = Math.max(1, Math.min(3, Math.floor(Math.max(1, viewport.visibleBars || 1) * 0.04)));
+            const focusIsLatest = targetIndex >= bars.length - 1 - tailSlack;
+            const viewportNearLatest = viewport.endIndex >= bars.length - 1 - tailSlack;
+            return focusIsLatest && viewportNearLatest;
         }
 
         function zoomChartAroundFocus(factor, payload = getChartDisplayPayload()) {
@@ -2335,6 +2633,172 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return `${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
         }
 
+        function supportsSessionDividers(interval = currentInterval) {
+            return ['5m', '15m', '30m'].includes(normalizeInterval(interval || currentInterval));
+        }
+
+        function getBarEtParts(item) {
+            const source = String(item?.us_time || '').trim()
+                || formatBarTimeMsToET(Number(item?.bar_time_ms || 0));
+            const match = source.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+            if (!match) return null;
+            return {
+                date: `${match[1]}-${match[2]}-${match[3]}`,
+                hour: Number(match[4]),
+                minute: Number(match[5]),
+            };
+        }
+
+        function getUsSessionKey(item) {
+            const parts = getBarEtParts(item);
+            if (!parts) return '';
+            const minuteOfDay = parts.hour * 60 + parts.minute;
+            if (minuteOfDay >= 4 * 60 && minuteOfDay < 9 * 60 + 30) return 'pre';
+            if (minuteOfDay >= 9 * 60 + 30 && minuteOfDay < 16 * 60) return 'regular';
+            if (minuteOfDay >= 16 * 60 && minuteOfDay < 20 * 60) return 'post';
+            return '';
+        }
+
+        function getUsSessionMeta(sessionKey) {
+            const map = {
+                pre: {
+                    label: '盘前',
+                    color: '#38BDF8',
+                    borderColor: 'rgba(56, 189, 248, 0.56)',
+                    dash: 'dashed',
+                    opacity: 0.74,
+                },
+                regular: {
+                    label: '盘中',
+                    color: '#F59E0B',
+                    borderColor: 'rgba(245, 158, 11, 0.60)',
+                    dash: 'solid',
+                    opacity: 0.82,
+                },
+                post: {
+                    label: '盘后',
+                    color: '#FB7185',
+                    borderColor: 'rgba(251, 113, 133, 0.58)',
+                    dash: 'dashed',
+                    opacity: 0.78,
+                },
+            };
+            return map[sessionKey] || null;
+        }
+
+        function buildSessionDividerMarkLineItems(bars, options = {}) {
+            if (!supportsSessionDividers() || !Array.isArray(bars) || !bars.length) return [];
+            const showLabels = Boolean(options.showLabels);
+            const items = [];
+            let previousSessionKey = '';
+            let previousDate = '';
+            bars.forEach((bar, index) => {
+                const parts = getBarEtParts(bar);
+                const sessionKey = getUsSessionKey(bar);
+                if (!parts || !sessionKey) return;
+                const dateChanged = parts.date !== previousDate;
+                const sessionChanged = sessionKey !== previousSessionKey;
+                if (!dateChanged && !sessionChanged) {
+                    previousDate = parts.date;
+                    previousSessionKey = sessionKey;
+                    return;
+                }
+                const meta = getUsSessionMeta(sessionKey);
+                if (!meta) {
+                    previousDate = parts.date;
+                    previousSessionKey = sessionKey;
+                    return;
+                }
+                items.push({
+                    xAxis: index,
+                    name: meta.label,
+                    lineStyle: {
+                        color: meta.color,
+                        type: meta.dash,
+                        width: sessionKey === 'regular' ? 1.2 : 1,
+                        opacity: dateChanged ? meta.opacity : Math.max(meta.opacity - 0.1, 0.45),
+                    },
+                    label: showLabels ? {
+                        show: true,
+                        formatter: meta.label,
+                        position: 'insideEndTop',
+                        distance: 8,
+                        color: meta.color,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        fontFamily: 'JetBrains Mono, monospace',
+                        backgroundColor: 'rgba(7,12,20,0.88)',
+                        borderColor: meta.borderColor,
+                        borderWidth: 1,
+                        borderRadius: 6,
+                        padding: [3, 6],
+                    } : { show: false },
+                });
+                previousDate = parts.date;
+                previousSessionKey = sessionKey;
+            });
+            return items;
+        }
+
+        function buildLatestPriceMarkLineItem(latestClose, latestLineColor) {
+            if (!(Number.isFinite(latestClose) && latestClose > 0)) return null;
+            return {
+                yAxis: latestClose,
+                lineStyle: {
+                    color: latestLineColor,
+                    type: 'dashed',
+                    opacity: 0.78,
+                    width: 1,
+                },
+                label: {
+                    show: true,
+                    position: 'insideEndTop',
+                    distance: 8,
+                    formatter: ` 最新 ${formatPrice(latestClose)} `,
+                    color: latestLineColor,
+                    backgroundColor: 'rgba(7,12,20,0.88)',
+                    borderRadius: 6,
+                    padding: [4, 6],
+                },
+            };
+        }
+
+        function buildMarkLineConfig(items) {
+            if (!Array.isArray(items) || !items.length) return undefined;
+            return {
+                symbol: ['none', 'none'],
+                silent: true,
+                animation: false,
+                emphasis: { disabled: true },
+                data: items,
+            };
+        }
+
+        function buildFocusMarkPointConfig(index, payload = getChartDisplayPayload()) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length || !Number.isInteger(index) || index < 0) return undefined;
+            const context = buildContext(payload, index, selectedSignalId);
+            const closeValue = Number(context?.bar?.close || 0);
+            if (!context?.bar || !Number.isFinite(closeValue) || closeValue <= 0) return undefined;
+            return {
+                symbol: 'circle',
+                symbolSize: 13,
+                silent: true,
+                label: { show: false },
+                itemStyle: {
+                    color: '#7DD3FC',
+                    borderColor: 'rgba(8,12,20,0.96)',
+                    borderWidth: 2,
+                    shadowBlur: 12,
+                    shadowColor: 'rgba(125,211,252,0.38)'
+                },
+                data: [{
+                    coord: [context.index, closeValue],
+                    value: 'focus'
+                }],
+            };
+        }
+
         function buildSignalScatter(signals, bars, priceResolver, color, labelBuilder = null) {
             const indexByMs = new Map(bars.map((bar, index) => [Number(bar.bar_time_ms || 0), index]));
             return signals.map((signal) => {
@@ -2369,6 +2833,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function buildMarkerScatterSeries(name, data, options = {}) {
             const color = options.color || '#7DD3FC';
             const showLabel = Boolean(options.showLabel);
+            const densityTier = chartMarkerDensityTier || '';
+            const defaultLabelDistance = densityTier === 'mid' ? 3 : 4;
+            const defaultLabelFontSize = densityTier === 'mid' ? 9 : 10;
+            const defaultLabelPadding = densityTier === 'mid' ? [1, 3] : [2, 4];
             return {
                 name,
                 type: 'scatter',
@@ -2387,16 +2855,20 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         return params?.data?.labelText || '';
                     },
                     position: options.labelPosition || 'top',
-                    distance: Number(options.labelDistance || 4),
+                    distance: Number(options.labelDistance ?? defaultLabelDistance),
                     color: options.labelColor || color,
-                    fontSize: Number(options.labelFontSize || 10),
+                    fontSize: Number(options.labelFontSize ?? defaultLabelFontSize),
                     fontWeight: 700,
                     fontFamily: 'JetBrains Mono, monospace',
-                    backgroundColor: showLabel ? 'rgba(8,12,20,0.92)' : 'transparent',
+                    backgroundColor: showLabel ? (densityTier === 'mid' ? 'rgba(8,12,20,0.82)' : 'rgba(8,12,20,0.92)') : 'transparent',
                     borderColor: color,
                     borderWidth: showLabel ? 1 : 0,
                     borderRadius: 6,
-                    padding: showLabel ? [2, 4] : 0,
+                    padding: showLabel ? (options.labelPadding || defaultLabelPadding) : 0,
+                },
+                labelLayout: {
+                    hideOverlap: true,
+                    moveOverlap: 'shiftY',
                 },
                 itemStyle: {
                     color,
@@ -2416,6 +2888,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bar = context?.bar || null;
             if (!bar) return '';
             const indicator = context?.indicator || null;
+            const isPreviewBar = Boolean(context?.isPreviewBar);
             const signal = context?.activeSignal || null;
             const direction = String(signal?.direction || '').toLowerCase();
             const signalColor = direction === 'short' ? '#FC8181' : '#48BB78';
@@ -2430,11 +2903,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div>O ${escapeHtml(formatPrice(bar.open))} · H ${escapeHtml(formatPrice(bar.high))}</div>
                     <div>L ${escapeHtml(formatPrice(bar.low))} · C ${escapeHtml(formatPrice(bar.close))}</div>
                     <div>Vol ${escapeHtml(formatNumber(bar.volume || 0, 0))}</div>
-                    <div style="margin-top:6px;color:#8BA4C4;">EMA20 ${indicator ? escapeHtml(formatPrice(indicator.ema_fast)) : '--'} · EMA50 ${indicator ? escapeHtml(formatPrice(indicator.ema_slow)) : '--'}</div>
-                    <div style="color:#8BA4C4;">EMA100 ${indicator ? escapeHtml(formatPrice(indicator.ema_trend)) : '--'} · VWAP ${indicator ? escapeHtml(formatPrice(indicator.vwap)) : '--'}</div>
-                    <div style="color:#8BA4C4;">CRSI ${indicator ? escapeHtml(formatNumber(indicator.crsi)) : '--'} · OBV ${indicator ? escapeHtml(formatNumber(indicator.obv_rsi)) : '--'} · ATR ${indicator ? escapeHtml(formatPercent(indicator.atr_pct)) : '--'}</div>
-                    <div style="margin-top:6px;color:#8BA4C4;">SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}</div>
-                    <div style="color:#8BA4C4;">Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}</div>
+                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? 'EMA / VWAP 待当前 5m 收盘后生成正式指标' : `EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))} · EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Osc / SD / Fractal / Touch / Div 待收盘确认' : `EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator?.vwap))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '当前预览 bar 只有 OHLC / Volume，没有正式指标快照' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))} · OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</div>
+                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? '正式收盘写库后，图表会补齐 EMA / VWAP / CRSI / ATR / SD 等指标' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Preview bar 仅用于盘中参考' : `Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</div>
                     <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
                 </div>
             `;
@@ -2453,15 +2926,17 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return [Math.max(padding, viewWidth - contentWidth - padding), padding];
             }
             const anchorX = Number(point[0] || 0);
-            const anchorY = Number(point[1] || 0);
             let left = anchorX + padding;
-            let top = anchorY + padding;
             if (left + contentWidth > viewWidth - padding) {
                 left = Math.max(padding, anchorX - contentWidth - padding);
             }
-            if (top + contentHeight > viewHeight - padding) {
-                top = Math.max(padding, viewHeight - contentHeight - padding);
-            }
+            const top = Math.max(
+                padding,
+                Math.min(
+                    viewHeight - contentHeight - padding,
+                    Math.round(viewHeight * 0.5)
+                )
+            );
             return [left, top];
         }
 
@@ -2505,6 +2980,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const sdSignalLower = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_signal_lower));
             const sdFilterUpper = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_filter_upper));
             const sdFilterLower = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_filter_lower));
+            const sdChannelSpan = sortedBars.map((bar) => {
+                const indicator = indicatorMap.get(Number(bar.bar_time_ms || 0));
+                const upper = Number(indicator?.sd_signal_upper);
+                const lower = Number(indicator?.sd_signal_lower);
+                if (!Number.isFinite(upper) || !Number.isFinite(lower)) return null;
+                return Math.max(upper - lower, 0);
+            });
             const crsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi));
             const obvRsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.obv_rsi));
             const atrPct = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.atr_pct));
@@ -2518,8 +3000,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const densityTier = getChartMarkerDensityTier(sortedBars.length);
             chartMarkerDensityTier = densityTier;
             const showContextMarkers = densityTier !== 'wide';
-            const showMarkerLabels = densityTier === 'tight';
-            const showTradeLabels = densityTier === 'tight';
+            const showMarkerLabels = densityTier !== 'wide';
+            const showTradeLabels = densityTier !== 'wide';
+            const sessionDividerItemsMain = buildSessionDividerMarkLineItems(sortedBars, { showLabels: densityTier !== 'wide' });
+            const sessionDividerItemsSub = buildSessionDividerMarkLineItems(sortedBars, { showLabels: false });
             const longSignals = buildSignalScatter(
                 signals.filter((item) => String(item.direction || '').toLowerCase() === 'long'),
                 sortedFormalBars,
@@ -2606,16 +3090,32 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const crsiWideHidBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.crsi_wide_hid_bear), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 3.1), () => 'cWH↓');
             const obvRegHidBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_reg_hid_bear), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 3.4), () => 'oH↓');
             const obvWideHidBearMarkers = buildIndicatorMarkerPoints(sortedBars, indicatorMap, (indicator) => Boolean(indicator?.obv_wide_hid_bear), (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 3.7), () => 'oWH↓');
-            const focus = getFocusContext(displayPayload) || buildContext(displayPayload, sortedBars.length - 1, selectedSignalId);
+            const preserveCursorIndex = hoverBarIndex >= 0;
+            const preferredFocusIndex = getEffectiveCursorIndex(displayPayload);
+            const focus = Number.isInteger(preferredFocusIndex) && preferredFocusIndex >= 0
+                ? buildContext(displayPayload, preferredFocusIndex, selectedSignalId)
+                : buildContext(displayPayload, sortedBars.length - 1, selectedSignalId);
             const latestClose = Number(realtimeQuoteSnapshot?.last_price ?? previewBar?.close ?? latest?.close ?? sortedBars[sortedBars.length - 1]?.close ?? 0);
             const previousClose = Number(sortedBars.length > 1 ? sortedBars[sortedBars.length - 2]?.close : latestClose);
             const latestLineColor = latestClose >= previousClose ? '#4ADE80' : '#FB7185';
-            const focusMarker = focus?.bar
-                ? [{
-                    coord: [focus.index, Number(focus.bar.close || 0)],
-                    value: 'focus'
-                }]
-                : [];
+            const latestPriceLineItem = buildLatestPriceMarkLineItem(latestClose, latestLineColor);
+            const gridLeft = isCompactViewport() ? 66 : 78;
+            const gridRight = isCompactViewport() ? 96 : 116;
+            const subplotTitles = [
+                {
+                    text: 'CRSI / OBV RSI',
+                    subtext: '80 / 20 为超买超卖参考线',
+                    left: gridLeft,
+                    top: '59.3%',
+                },
+                {
+                    text: chartLayerState.volume ? '成交量 / ATR%' : 'ATR%',
+                    subtext: chartLayerState.volume ? '柱体=成交量，折线=ATR%' : '当前只显示 ATR% 折线',
+                    left: gridLeft,
+                    top: '77.2%',
+                }
+            ];
+            const focusMarkPoint = buildFocusMarkPointConfig(focus?.index ?? -1, displayPayload);
             const zoomWindow = getCurrentZoomWindow(sortedBars.length);
 
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)} 图表页`;
@@ -2640,6 +3140,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             } else if (compareError) {
                 note.textContent += ' 最近一次 IBKR 对比失败，可查看右侧错误卡。';
             }
+            if (supportsSessionDividers()) {
+                note.textContent += ' 竖线按美股 ET 时段分隔盘前 / 盘中 / 盘后。';
+            }
             note.textContent += isCompactViewport()
                 ? ' 手机端会把状态卡和信息卡改成横向滑动区；支持长按锁定光标、轻扫切换 bar、双击回到最新。'
                 : ' 支持滚轮缩放、拖拽平移、双击回到最新，以及 ←/→ 与 N/P 键快速导航。';
@@ -2651,11 +3154,45 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             chartInstance = echarts.init(canvas);
             const overlaySeries = [
                 ...(chartLayerState.sdChannel ? [
-                    { name: 'SD Reg', type: 'line', data: sdReg, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.05, color: 'rgba(125,211,252,0.48)', type: 'dashed' } },
-                    { name: 'SD Signal Upper', type: 'line', data: sdSignalUpper, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.15, color: 'rgba(248,113,113,0.70)' } },
-                    { name: 'SD Signal Lower', type: 'line', data: sdSignalLower, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.15, color: 'rgba(74,222,128,0.70)' } },
-                    { name: 'SD Filter Upper', type: 'line', data: sdFilterUpper, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.0, color: 'rgba(248,113,113,0.34)', type: 'dotted' } },
-                    { name: 'SD Filter Lower', type: 'line', data: sdFilterLower, symbol: 'none', connectNulls: true, smooth: false, lineStyle: { width: 1.0, color: 'rgba(74,222,128,0.34)', type: 'dotted' } },
+                    {
+                        name: 'SD Channel Base',
+                        type: 'line',
+                        data: sdSignalLower,
+                        stack: 'sd-channel',
+                        symbol: 'none',
+                        connectNulls: true,
+                        smooth: false,
+                        silent: true,
+                        tooltip: { show: false },
+                        z: 1,
+                        lineStyle: { width: 0, opacity: 0 },
+                        areaStyle: { opacity: 0 },
+                        emphasis: { disabled: true },
+                    },
+                    {
+                        name: 'SD Channel Fill',
+                        type: 'line',
+                        data: sdChannelSpan,
+                        stack: 'sd-channel',
+                        symbol: 'none',
+                        connectNulls: true,
+                        smooth: false,
+                        silent: true,
+                        tooltip: { show: false },
+                        z: 1,
+                        lineStyle: { width: 0, opacity: 0 },
+                        areaStyle: {
+                            color: 'rgba(56, 189, 248, 0.12)',
+                            shadowBlur: 18,
+                            shadowColor: 'rgba(56, 189, 248, 0.08)',
+                        },
+                        emphasis: { disabled: true },
+                    },
+                    { name: 'SD Reg', type: 'line', data: sdReg, symbol: 'none', connectNulls: true, smooth: false, z: 4, lineStyle: { width: 1.25, color: 'rgba(125,211,252,0.68)', type: 'dashed' } },
+                    { name: 'SD Signal Upper', type: 'line', data: sdSignalUpper, symbol: 'none', connectNulls: true, smooth: false, z: 5, lineStyle: { width: 1.55, color: 'rgba(248,113,113,0.84)' } },
+                    { name: 'SD Signal Lower', type: 'line', data: sdSignalLower, symbol: 'none', connectNulls: true, smooth: false, z: 5, lineStyle: { width: 1.55, color: 'rgba(74,222,128,0.84)' } },
+                    { name: 'SD Filter Upper', type: 'line', data: sdFilterUpper, symbol: 'none', connectNulls: true, smooth: false, z: 4, lineStyle: { width: 1.15, color: 'rgba(248,113,113,0.46)', type: 'dashed' } },
+                    { name: 'SD Filter Lower', type: 'line', data: sdFilterLower, symbol: 'none', connectNulls: true, smooth: false, z: 4, lineStyle: { width: 1.15, color: 'rgba(74,222,128,0.46)', type: 'dashed' } },
                     buildMarkerScatterSeries('SD MR Bull', sdLowerMarkers, { color: '#4CAF50', symbol: 'triangle', symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(76,175,80,0.24)' }),
                     buildMarkerScatterSeries('SD MR Bear', sdUpperMarkers, { color: '#FF8A00', symbol: 'triangle', symbolRotate: 180, symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'top', shadowBlur: 10, shadowColor: 'rgba(255,138,0,0.24)' }),
                 ] : []),
@@ -2694,6 +3231,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             ];
             const series = [
                 {
+                    id: 'price-main',
                     name: 'Price',
                     type: 'candlestick',
                     data: candle,
@@ -2710,40 +3248,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             borderWidth: 1.4
                         }
                     },
-                    markLine: Number.isFinite(latestClose) && latestClose > 0 ? {
-                        symbol: ['none', 'none'],
-                        silent: true,
-                        label: {
-                            show: true,
-                            position: 'end',
-                            formatter: ` Last ${formatPrice(latestClose)} `,
-                            color: latestLineColor,
-                            backgroundColor: 'rgba(7,12,20,0.88)',
-                            borderRadius: 6,
-                            padding: [4, 6],
-                        },
-                        lineStyle: {
-                            color: latestLineColor,
-                            type: 'dashed',
-                            opacity: 0.78,
-                            width: 1,
-                        },
-                        data: [{ yAxis: latestClose }]
-                    } : undefined,
-                    markPoint: focusMarker.length ? {
-                        symbol: 'circle',
-                        symbolSize: 13,
-                        silent: true,
-                        label: { show: false },
-                        itemStyle: {
-                            color: '#7DD3FC',
-                            borderColor: 'rgba(8,12,20,0.96)',
-                            borderWidth: 2,
-                            shadowBlur: 12,
-                            shadowColor: 'rgba(125,211,252,0.38)'
-                        },
-                        data: focusMarker,
-                    } : undefined,
+                    markLine: buildMarkLineConfig([
+                        ...(latestPriceLineItem ? [latestPriceLineItem] : []),
+                        ...sessionDividerItemsMain,
+                    ]),
+                    markPoint: focusMarkPoint,
                 },
                 ...(chartLayerState.ema ? [
                     { name: 'EMA 20', type: 'line', data: emaFast, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.35, color: '#38BDF8' } },
@@ -2754,19 +3263,43 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.15, color: '#34D399' } },
                 ] : []),
                 ...overlaySeries,
-                { name: 'CRSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: crsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#22C55E' }, markLine: { symbol: 'none', lineStyle: { color: 'rgba(245,158,11,0.42)' }, data: [{ yAxis: 80 }, { yAxis: 20 }] } },
+                {
+                    name: 'CRSI',
+                    type: 'line',
+                    xAxisIndex: 1,
+                    yAxisIndex: 1,
+                    data: crsi,
+                    symbol: 'none',
+                    connectNulls: true,
+                    lineStyle: { width: 1.2, color: '#22C55E' },
+                    markLine: buildMarkLineConfig([
+                        { yAxis: 80, label: { show: false }, lineStyle: { color: 'rgba(245,158,11,0.42)' } },
+                        { yAxis: 20, label: { show: false }, lineStyle: { color: 'rgba(245,158,11,0.42)' } },
+                        ...sessionDividerItemsSub,
+                    ])
+                },
                 { name: 'OBV RSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: obvRsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#F59E0B' } },
                 ...(chartLayerState.volume ? [
                     { name: 'Volume', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: volume, itemStyle: { color: 'rgba(56,189,248,0.34)' } },
                 ] : []),
-                { name: 'ATR %', type: 'line', xAxisIndex: 2, yAxisIndex: 3, data: atrPct, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#FB7185' } }
+                {
+                    name: 'ATR %',
+                    type: 'line',
+                    xAxisIndex: 2,
+                    yAxisIndex: 3,
+                    data: atrPct,
+                    symbol: 'none',
+                    connectNulls: true,
+                    lineStyle: { width: 1.2, color: '#FB7185' },
+                    markLine: buildMarkLineConfig(sessionDividerItemsSub)
+                }
             ];
             chartInstance.setOption({
                 animation: false,
                 backgroundColor: 'transparent',
                 toolbox: {
-                    right: 10,
-                    top: 12,
+                    right: 14,
+                    top: 14,
                     feature: {
                         dataZoom: { yAxisIndex: 'none' },
                         restore: {},
@@ -2774,12 +3307,37 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     },
                     iconStyle: { borderColor: '#9DB6D8' }
                 },
+                title: subplotTitles.map((item) => ({
+                    text: item.text,
+                    subtext: item.subtext,
+                    left: item.left,
+                    top: item.top,
+                    padding: [4, 8, 4, 8],
+                    backgroundColor: 'rgba(7, 12, 20, 0.74)',
+                    borderColor: 'rgba(99,179,237,0.14)',
+                    borderWidth: 1,
+                    itemGap: 2,
+                    textStyle: {
+                        color: '#d7e2f0',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        fontFamily: 'JetBrains Mono',
+                    },
+                    subtextStyle: {
+                        color: '#8BA4C4',
+                        fontSize: 9,
+                        lineHeight: 12,
+                        fontFamily: 'JetBrains Mono',
+                    }
+                })),
                 legend: {
                     show: false
                 },
                 tooltip: {
                     trigger: 'axis',
                     axisPointer: { type: 'cross', snap: true },
+                    alwaysShowContent: true,
+                    transitionDuration: 0,
                     backgroundColor: 'rgba(8,12,20,0.96)',
                     borderColor: 'rgba(99,179,237,0.16)',
                     textStyle: { color: '#E2EAF4' },
@@ -2810,9 +3368,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     }
                 },
                 grid: [
-                    { left: 52, right: 66, top: 68, height: '49%' },
-                    { left: 52, right: 66, top: '59%', height: '12%' },
-                    { left: 52, right: 66, top: '77%', height: '12%' }
+                    { left: gridLeft, right: gridRight, top: 68, height: '49%' },
+                    { left: gridLeft, right: gridRight, top: '59%', height: '12%' },
+                    { left: gridLeft, right: gridRight, top: '77%', height: '12%' }
                 ],
                 dataZoom: [
                     {
@@ -2894,7 +3452,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     {
                         gridIndex: 2,
                         splitLine: { show: false },
-                        axisLabel: { color: '#8BA4C4', fontSize: 10 },
+                        axisLabel: { color: '#8BA4C4', fontSize: 10, formatter: (value) => formatCompactAxisNumber(value) },
                     },
                     {
                         gridIndex: 2,
@@ -2965,23 +3523,34 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (zr) {
                 zr.off('globalout');
                 zr.on('globalout', () => {
-                    if (chartPointerLocked) return;
-                    hoverBarIndex = -1;
-                    renderCursorStrip(getChartDisplayPayload());
+                    const payload = getChartDisplayPayload();
+                    const activeIndex = getEffectiveCursorIndex(payload);
+                    if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+                    if (Number.isInteger(activeIndex) && activeIndex >= 0) {
+                        if (!chartPointerLocked && hoverBarIndex < 0) {
+                            hoverBarIndex = activeIndex;
+                        }
+                        renderCursorStrip(payload);
+                        scheduleChartTooltipSync(activeIndex);
+                    }
                 });
             }
             registerChartTouchInteractions();
 
             if (focus) {
-                selectedBarIndex = focus.index;
-                if (!selectedSignalId && focus.activeSignal) {
+                if (!preserveCursorIndex || chartPointerLocked) {
+                    selectedBarIndex = focus.index;
+                }
+                if ((!preserveCursorIndex || chartPointerLocked) && !selectedSignalId && focus.activeSignal) {
                     selectedSignalId = String(focus.activeSignal.signal_id || focus.activeSignal.id || '');
                 }
                 renderInfoRail(displayPayload);
-                hoverBarIndex = -1;
+                hoverBarIndex = preserveCursorIndex ? focus.index : -1;
                 renderCursorStrip(displayPayload);
-                syncChartTooltip(focus.index);
-                ensureBarVisible(focus.index, displayPayload);
+                scheduleChartTooltipSync(focus.index);
+                if (shouldKeepViewportFollowingFocus(focus.index, displayPayload)) {
+                    ensureBarVisible(focus.index, displayPayload);
+                }
             }
         }
 
@@ -2990,6 +3559,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (!currentSymbol) {
                 await resolveInitialContext();
             }
+            chartWorkspaceState = 'loading';
             resetCompareState();
             closeMobileQuickPanel();
             chartPointerLocked = false;
@@ -2999,6 +3569,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             realtimeQuoteSnapshot = null;
             formingBarSnapshot = null;
             chartRealtimeQuoteError = '';
+            chartRealtimeQuoteFailureCount = 0;
             chartRealtimePreviewError = '';
             resetChartRealtimeWarnings();
             chartDisplayPayload = null;
@@ -3016,14 +3587,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 chartInstance = null;
             }
             lastPayload = null;
-            document.getElementById('cursorStrip').innerHTML = '';
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} 图表页`;
             document.getElementById('chartMeta').textContent = '数据加载中';
             document.getElementById('chartNote').textContent = '正在基于 ibkr_bars 实时重算指标 / 信号 ...';
             document.getElementById('chartCanvas').innerHTML = '<div class="chart-empty">图表数据加载中...</div>';
             document.getElementById('infoRail').innerHTML = '<div class="rail-card"><div class="rail-kicker">Loading</div><div class="rail-sub">正在基于该标的的 ibkr_bars 实时重算图表 ...</div></div>';
             renderRailNav();
-            renderChartWorkspaceChrome(null);
+            renderHeroStatus(null);
+            renderSummaryStrip(null);
+            renderCursorStrip(null);
 
             const cappedMs = currentAnchorMs || Date.now();
             const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
@@ -3046,37 +3618,53 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 const indicators = timelinePayload.indicators;
                 const signals = timelinePayload.signals;
                 const latestIndicator = timelinePayload.latestIndicator;
+                let initialFocusIndex = -1;
 
                 if (latestIndicator) {
                     currentAnchorMs = Number(latestIndicator.bar_time_ms || currentAnchorMs) || currentAnchorMs;
                 } else if (bars.length) {
                     currentAnchorMs = Number(bars[bars.length - 1]?.bar_time_ms || currentAnchorMs) || currentAnchorMs;
                 }
+                if (pendingFocusBarTimeMs > 0 && bars.length) {
+                    initialFocusIndex = findBarIndexByTime(bars, pendingFocusBarTimeMs);
+                    if (initialFocusIndex >= 0) {
+                        selectedBarIndex = initialFocusIndex;
+                        selectedSignalId = '';
+                        hoverBarIndex = -1;
+                    }
+                }
                 currentIndicatorId = '';
 
                 lastPayload = timelinePayload;
                 await refreshChartRealtimeState({ render: false });
+                chartWorkspaceState = 'ready';
                 renderHeroStatus(lastPayload);
                 renderSummaryStrip(lastPayload);
                 renderChart(lastPayload);
+                if (initialFocusIndex >= 0) {
+                    const displayPayload = getChartDisplayPayload() || lastPayload;
+                    ensureBarVisible(initialFocusIndex, displayPayload, { center: true });
+                }
+                pendingFocusBarTimeMs = 0;
                 renderCompareButtons();
                 updateQueryState();
                 startChartRealtimePolling();
             } catch (error) {
                 stopChartRealtimePolling();
+                chartWorkspaceState = 'error';
                 chartDisplayPayload = null;
                 if (chartInstance) {
                     chartInstance.dispose();
                     chartInstance = null;
                 }
-                document.getElementById('heroStatus').innerHTML = `<span class="hero-chip">加载失败</span>`;
-                document.getElementById('summaryStrip').innerHTML = '';
                 document.getElementById('chartMeta').textContent = '加载失败';
                 document.getElementById('chartCanvas').innerHTML = `<div class="chart-empty">加载失败：${escapeHtml(error.message || 'unknown error')}<br>请确认该标的在当前环境已有 <code>ibkr_bars</code> 数据。</div>`;
                 document.getElementById('chartNote').textContent = '图表页只依赖 ibkr_bars；历史指标页和信号页仅作为记录与状态流转使用。';
                 document.getElementById('infoRail').innerHTML = `<div class="rail-card"><div class="rail-kicker">Load Error</div><div class="rail-sub">${escapeHtml(error.message || 'unknown error')}</div></div>`;
                 renderRailNav();
-                renderChartWorkspaceChrome(null);
+                renderHeroStatus(null);
+                renderSummaryStrip(null);
+                renderCursorStrip(null);
                 renderCompareButtons();
             }
         }
@@ -3146,6 +3734,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             currentInterval = normalizeInterval(interval, currentInterval);
             currentRangeKey = normalizeRangeKey(currentRangeKey, currentInterval);
             currentAnchorMs = 0;
+            pendingFocusBarTimeMs = 0;
             currentIndicatorId = '';
             selectedBarIndex = -1;
             selectedSignalId = '';
@@ -3157,6 +3746,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         window.selectChartRange = async function(rangeKey) {
             currentRangeKey = normalizeRangeKey(rangeKey, currentInterval);
+            pendingFocusBarTimeMs = 0;
             selectedBarIndex = -1;
             selectedSignalId = '';
             hoverBarIndex = -1;
@@ -3199,6 +3789,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             currentSymbol = value;
             currentAnchorMs = 0;
+            pendingFocusBarTimeMs = 0;
             currentIndicatorId = '';
             selectedBarIndex = -1;
             selectedSignalId = '';
@@ -3408,6 +3999,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         window.onEnvironmentChange = async function(environment) {
             currentEnvironment = environment;
             currentAnchorMs = 0;
+            pendingFocusBarTimeMs = 0;
             currentIndicatorId = '';
             selectedBarIndex = -1;
             selectedSignalId = '';
@@ -3421,7 +4013,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_chart.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { description: '全屏分析 / 类 TradingView / bars → indicators → signals' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { subtitle: '全屏分析 / 类 TradingView / bars → indicators → signals' });
             document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_chart.html', { chartParams: { symbol: currentSymbol, interval: currentInterval } });
 
             document.getElementById('chartSymbolInput').addEventListener('keydown', async (event) => {
@@ -3435,6 +4027,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             renderLayerStrip();
             renderCompareButtons();
             applyChartFocusMode();
+            renderHeroStatus(null);
+            renderSummaryStrip(null);
+            renderCursorStrip(null);
             await resolveInitialContext();
             await loadChartWorkspace();
 

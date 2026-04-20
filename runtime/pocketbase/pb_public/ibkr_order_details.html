@@ -11,32 +11,14 @@
     <link rel="stylesheet" href="/assets/css/pages/ibkr_order_details/page.css">
 </head>
 <body>
-    <div class="header">
-        <div class="header-top">
-            <div class="logo">
-                <div class="logo-label">TRADING</div>
-                <div class="logo-title">📜 订单事件关系</div>
-            </div>
-            <div id="environmentHeader"></div>
-        </div>
-    </div>
-
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
     <div class="content">
         <div class="search-row" id="searchRow">
-            <div style="display:flex;gap:8px;align-items:center;">
+            <div class="page-toolbar-row">
                 <div id="datePicker" style="flex:1;"></div>
-                <div class="refresh-control">
-                    <button class="refresh-btn page-refresh-trigger is-compact" id="refreshBtn" onclick="manualRefresh()">↻</button>
-                    <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
-                        <option value="0">关闭</option>
-                        <option value="5">5秒</option>
-                        <option value="30" selected>30秒</option>
-                        <option value="60">1分钟</option>
-                    </select>
-                </div>
+                <div id="orderDetailsRefreshControl"></div>
             </div>
             <input class="search-input" id="searchInput" placeholder="搜索 symbol / trade_group_id / order_id / broker_order_id / signal_id" oninput="onSearchChange()">
         </div>
@@ -712,17 +694,14 @@
                     ? buildPageUrl('/orders.html', { signal_id: signalContext, date: currentDate })
                     : buildPageUrl('/orders.html', { date: currentDate });
             row.innerHTML = `
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                <div class="page-toolbar-row">
                     <a class="back-btn" href="${backUrl}">← 返回</a>
-                    <div class="refresh-control">
-                        <button class="refresh-btn page-refresh-trigger is-compact" id="refreshBtn" onclick="manualRefresh()">↻</button>
-                        <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
-                            <option value="0">关闭</option>
-                            <option value="5">5秒</option>
-                            <option value="30" selected>30秒</option>
-                            <option value="60">1分钟</option>
-                        </select>
-                    </div>
+                    ${renderPageRefreshControl({
+                        mode: 'polling',
+                        buttonId: 'refreshBtn',
+                        intervalId: 'refreshInterval',
+                        defaultSeconds: currentInterval || 30,
+                    })}
                 </div>
                 <div class="query-note">当前查询: ${escapeHtml(queryMode)} = ${escapeHtml(effectiveFilter)}</div>
             `;
@@ -783,11 +762,7 @@
         }
 
         function manualRefresh() {
-            const btn = document.getElementById('refreshBtn');
-            if (btn) {
-                btn.classList.add('spinning');
-                setTimeout(() => btn.classList.remove('spinning'), 600);
-            }
+            spinPageRefreshButton('refreshBtn');
             loadDetails();
         }
 
@@ -810,8 +785,17 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initAuth()) return;
 
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📜 订单时间线', { description: '事件关系 / detail / trade group / order replay' });
+            if (queryMode === 'list') {
+                document.getElementById('orderDetailsRefreshControl').innerHTML = renderPageRefreshControl({
+                    mode: 'polling',
+                    buttonId: 'refreshBtn',
+                    intervalId: 'refreshInterval',
+                    defaultSeconds: 30,
+                });
+            }
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📜 IBKR 订单明细', {
+                subtitle: '事件关系 / detail / trade group / order replay',
+            });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_order_details.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             const dateInput = document.getElementById('customDate');
@@ -823,7 +807,13 @@
             if (queryMode === 'order_id' && effectiveFilter) executionParams.order_id = effectiveFilter;
             document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_order_details.html', executionParams);
 
-            await loadDetails();
+            await withPageLoading(
+                () => loadDetails(),
+                {
+                    title: '订单明细页加载中',
+                    copy: '正在同步订单事件关系、trade group 关联和时间线详情。',
+                }
+            );
             changeRefreshInterval(30);
 
             let isLoadingMore = false;

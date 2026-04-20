@@ -11,32 +11,14 @@
     <link rel="stylesheet" href="/assets/css/pages/orders/page.css">
 </head>
 <body>
-    <div class="header">
-        <div class="header-top">
-            <div class="logo">
-                <div class="logo-label">TRADING</div>
-                <div class="logo-title">📋 订单关系视图</div>
-            </div>
-            <div id="environmentHeader"></div>
-        </div>
-    </div>
-
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
     <div class="content">
         <div class="search-row">
-            <div style="display:flex;gap:8px;align-items:center;">
+            <div class="page-toolbar-row">
                 <div id="datePicker" style="flex:1;"></div>
-                <div class="refresh-control">
-                    <button class="refresh-btn page-refresh-trigger is-compact" id="refreshBtn" onclick="manualRefresh()">↻</button>
-                    <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
-                        <option value="0">关闭</option>
-                        <option value="5">5秒</option>
-                        <option value="30" selected>30秒</option>
-                        <option value="60">1分钟</option>
-                    </select>
-                </div>
+                <div id="ordersRefreshControl"></div>
             </div>
             <input class="search-input" id="searchInput" placeholder="搜索 标的 / signal_id / trade_group_id / unique_id / broker_order_id" oninput="onSearchChange(this.value)">
         </div>
@@ -1234,9 +1216,7 @@
         }
 
         function manualRefresh() {
-            const btn = document.getElementById('refreshBtn');
-            btn.classList.add('spinning');
-            setTimeout(() => btn.classList.remove('spinning'), 600);
+            spinPageRefreshButton('refreshBtn');
             loadOrders({ showLoadingState: false });
         }
 
@@ -1257,8 +1237,15 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initAuth()) return;
 
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📋 IBKR 订单', { description: '交易组 / bracket / 执行状态 / 跳转明细' });
+            document.getElementById('ordersRefreshControl').innerHTML = renderPageRefreshControl({
+                mode: 'polling',
+                buttonId: 'refreshBtn',
+                intervalId: 'refreshInterval',
+                defaultSeconds: 30,
+            });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📋 IBKR 订单', {
+                subtitle: '交易组 / bracket / 执行状态 / 跳转明细',
+            });
             document.getElementById('nav').innerHTML = renderNav('/orders.html');
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();
             document.getElementById('datePicker').innerHTML = renderDatePicker();
@@ -1284,7 +1271,13 @@
             syncOrdersPageUrl();
 
             await loadSignalValidityConfig();
-            await loadOrders();
+            await withPageLoading(
+                () => loadOrders(),
+                {
+                    title: '订单页加载中',
+                    copy: '正在同步订单分组、执行状态、方向统计和关联查询结果。',
+                }
+            );
             changeRefreshInterval(30);
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden && currentInterval > 0) {

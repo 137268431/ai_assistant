@@ -17,11 +17,12 @@
         <section class="hero">
             <div class="hero-head">
                 <div>
-                    <div class="hero-kicker">Startup Warmup Snapshot</div>
-                    <div class="hero-title">Warmup 启动快照</div>
+                    <div class="hero-kicker">Startup Snapshot</div>
+                    <div class="hero-title">当前启动与预热状态</div>
                     <div class="hero-copy" id="heroCopy">加载 warmup 状态中...</div>
                 </div>
                 <div class="hero-meta">
+                    <button class="refresh-btn page-refresh-trigger is-compact" id="warmupRefreshBtn" type="button" onclick="reloadWarmupPage()">↻ 手动刷新</button>
                     <div class="hero-meta-line" id="refreshInfo">等待首次加载</div>
                     <div class="hero-meta-line" id="sourceInfo">来源 /api/custom/ibkr/statusz?warmup=1</div>
                 </div>
@@ -758,6 +759,10 @@
             updateFilterButtons();
             if (lastStatusPayload) renderSymbolTable(normalizeWarmup(lastStatusPayload));
         };
+        async function reloadWarmupPage() {
+            spinPageRefreshButton('warmupRefreshBtn');
+            await loadWarmupData();
+        }
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_warmup.html', {}, { environment: currentEnvironment });
@@ -765,13 +770,19 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initWarmupAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_warmup.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🔥 Warmup 预热', { description: '启动进度 / 修复 / symbol readiness' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🔥 Warmup 预热', { subtitle: '启动进度 / 修复 / symbol readiness' });
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_warmup.html');
             document.getElementById('symbolSearch').addEventListener('input', () => {
                 if (lastStatusPayload) renderSymbolTable(normalizeWarmup(lastStatusPayload));
             });
             updateFilterButtons();
-            await loadWarmupData();
+            await withPageLoading(
+                () => loadWarmupData(),
+                {
+                    title: '预热页加载中',
+                    copy: '正在同步 startup 进度、trade/monitor readiness 和最近修复状态。',
+                }
+            );
             refreshTimer = setInterval(() => loadWarmupData(), 15000);
         });
     </script>

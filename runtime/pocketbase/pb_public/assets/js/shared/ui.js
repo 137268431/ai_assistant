@@ -660,15 +660,186 @@ window.handleIntervalChange = function(seconds) {
   }
 };
 
+function escapePageUiText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderPageRefreshControl(options = {}) {
+  const refreshOptions = options && typeof options === 'object' ? options : {};
+  const mode = refreshOptions.mode === 'manual' ? 'manual' : 'polling';
+  const buttonId = refreshOptions.buttonId || 'refreshBtn';
+  const intervalId = refreshOptions.intervalId || 'refreshInterval';
+  const buttonLabel = refreshOptions.buttonLabel || '↻';
+  const buttonTitle = refreshOptions.buttonTitle || '刷新';
+  const buttonClass = refreshOptions.buttonClass || '';
+  const selectClass = refreshOptions.selectClass || '';
+  const compact = refreshOptions.compact !== false;
+  const onClick = refreshOptions.onClick || 'manualRefresh()';
+  const onChange = refreshOptions.onChange || 'changeRefreshInterval(this.value)';
+  const defaultSeconds = String(refreshOptions.defaultSeconds ?? '30');
+  const optionItems = Array.isArray(refreshOptions.options) && refreshOptions.options.length
+    ? refreshOptions.options
+    : [
+        { value: '0', label: '关闭' },
+        { value: '5', label: '5秒' },
+        { value: '30', label: '30秒' },
+        { value: '60', label: '1分钟' },
+      ];
+  const compactClass = compact ? ' is-compact' : '';
+  const safeButtonClass = buttonClass ? ` ${buttonClass}` : '';
+  const safeSelectClass = selectClass ? ` ${selectClass}` : '';
+
+  return `
+    <div class="refresh-control${compactClass}" data-refresh-mode="${mode}">
+      <button
+        class="refresh-btn page-refresh-trigger${compactClass}${safeButtonClass}"
+        id="${escapePageUiText(buttonId)}"
+        type="button"
+        title="${escapePageUiText(buttonTitle)}"
+        onclick="${escapePageUiText(onClick)}"
+      >${escapePageUiText(buttonLabel)}</button>
+      ${mode === 'polling' ? `
+        <select
+          class="refresh-select${safeSelectClass}"
+          id="${escapePageUiText(intervalId)}"
+          onchange="${escapePageUiText(onChange)}"
+        >
+          ${optionItems.map((item) => {
+            const value = String(item?.value ?? '');
+            const label = String(item?.label ?? value);
+            return `<option value="${escapePageUiText(value)}" ${value === defaultSeconds ? 'selected' : ''}>${escapePageUiText(label)}</option>`;
+          }).join('')}
+        </select>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderPageTopSection(options = {}) {
+  const section = options && typeof options === 'object' ? options : {};
+  const mode = section.mode === 'hero' ? 'hero' : 'compact';
+  const titleHtml = section.titleHtml ?? escapePageUiText(section.title || '');
+  const copyHtml = section.copyHtml ?? (section.copy ? escapePageUiText(section.copy) : '');
+  const kickerHtml = section.kickerHtml ?? (section.kicker ? escapePageUiText(section.kicker) : '');
+  const metaHtml = section.metaHtml || '';
+  const actionsHtml = section.actionsHtml || '';
+  const statusHtml = section.statusHtml || '';
+  const modeClass = mode === 'hero' ? 'hero' : 'page-header';
+  const titleClass = mode === 'hero' ? 'hero-title' : 'page-title';
+  const copyClass = mode === 'hero' ? 'hero-copy' : 'page-copy';
+  const kickerClass = mode === 'hero' ? 'hero-kicker' : 'page-kicker';
+  const rowClass = mode === 'hero' ? 'hero-top' : 'page-top-section-row';
+  const sideClass = mode === 'hero' ? 'hero-actions' : 'page-top-section-side';
+  const metaClass = mode === 'hero' ? 'hero-meta' : 'page-top-section-meta';
+
+  return `
+    <section class="${modeClass} page-top-section" data-page-top-section="${mode}">
+      <div class="${rowClass}">
+        <div class="page-top-section-main">
+          ${kickerHtml ? `<div class="${kickerClass}">${kickerHtml}</div>` : ''}
+          <div class="${titleClass}">${titleHtml}</div>
+          ${copyHtml ? `<div class="${copyClass}">${copyHtml}</div>` : ''}
+        </div>
+        ${(metaHtml || actionsHtml) ? `
+          <div class="${sideClass}">
+            ${actionsHtml ? `<div class="page-top-section-actions">${actionsHtml}</div>` : ''}
+            ${metaHtml ? `<div class="${metaClass}">${metaHtml}</div>` : ''}
+          </div>
+        ` : ''}
+      </div>
+      ${statusHtml ? `<div class="page-top-section-status">${statusHtml}</div>` : ''}
+    </section>
+  `;
+}
+
+function renderPageLoadingOverlay(options = {}) {
+  const overlay = options && typeof options === 'object' ? options : {};
+  const overlayId = overlay.overlayId || 'pageLoading';
+  const titleId = overlay.titleId || 'pageLoadingTitle';
+  const copyId = overlay.copyId || 'pageLoadingCopy';
+  const title = overlay.title || '页面加载中';
+  const copy = overlay.copy || '正在同步当前页面需要的数据，请稍候。';
+
+  return `
+    <div class="page-loading-overlay" id="${escapePageUiText(overlayId)}">
+      <div class="page-loading-card">
+        <div class="page-loading-title" id="${escapePageUiText(titleId)}">${escapePageUiText(title)}</div>
+        <div class="page-loading-copy" id="${escapePageUiText(copyId)}">${escapePageUiText(copy)}</div>
+        <div class="page-loading-bars">
+          <div class="page-loading-bar"></div>
+          <div class="page-loading-bar"></div>
+          <div class="page-loading-bar"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function ensurePageLoadingOverlay(options = {}) {
+  const overlay = options && typeof options === 'object' ? options : {};
+  const overlayId = overlay.overlayId || 'pageLoading';
+  let element = document.getElementById(overlayId);
+  if (element) return element;
+  document.body.insertAdjacentHTML('afterbegin', renderPageLoadingOverlay(overlay));
+  element = document.getElementById(overlayId);
+  return element;
+}
+
+function setPageLoading(active, options = {}) {
+  const overlay = options && typeof options === 'object' ? options : {};
+  const overlayId = overlay.overlayId || 'pageLoading';
+  const titleId = overlay.titleId || 'pageLoadingTitle';
+  const copyId = overlay.copyId || 'pageLoadingCopy';
+  const element = ensurePageLoadingOverlay(overlay);
+  if (!element) return;
+
+  if (overlay.title) {
+    const titleEl = document.getElementById(titleId);
+    if (titleEl) titleEl.textContent = overlay.title;
+  }
+  if (overlay.copy) {
+    const copyEl = document.getElementById(copyId);
+    if (copyEl) copyEl.textContent = overlay.copy;
+  }
+  element.classList.toggle('is-hidden', !active);
+}
+
+function withPageLoading(task, options = {}) {
+  setPageLoading(true, options);
+  const result = typeof task === 'function' ? task() : task;
+  return Promise.resolve(result).finally(() => {
+    setPageLoading(false, options);
+  });
+}
+
+function spinPageRefreshButton(buttonId = 'refreshBtn') {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+  button.classList.add('spinning');
+  setTimeout(() => button.classList.remove('spinning'), 600);
+}
+
 function renderPageContextBar(title, options = {}) {
   const allowGlobal = Boolean(options.allowGlobal);
   const description = options.description || '';
+  const subtitle = options.subtitle || '';
+  const safeTitle = title ? escapePageUiText(title) : '';
+  const safeDescription = description ? escapePageUiText(description) : '';
+  const safeSubtitle = subtitle ? escapePageUiText(subtitle) : '';
   return `
-    <div class="page-context-bar">
-      <div class="page-context-title">
-        ${title ? `<span>${title}</span>` : ''}
-        ${renderEnvironmentBadge({ allowGlobal })}
-        ${description ? `<span>${description}</span>` : ''}
+    <div class="page-context-bar${safeSubtitle ? ' has-subtitle' : ''}">
+      <div class="page-context-main">
+        <div class="page-context-title">
+          ${safeTitle ? `<span class="page-context-heading">${safeTitle}</span>` : ''}
+          ${renderEnvironmentBadge({ allowGlobal })}
+          ${safeDescription ? `<span class="page-context-description">${safeDescription}</span>` : ''}
+        </div>
+        ${safeSubtitle ? `<div class="page-context-subtitle">${safeSubtitle}</div>` : ''}
       </div>
       ${renderEnvironmentSwitcher({ allowGlobal })}
     </div>
@@ -996,6 +1167,13 @@ window.closeIndicatorModal = function() {
 
 window.showIndicatorModal = showIndicatorModal;
 window.getIndicatorModalStyles = getIndicatorModalStyles;
+window.renderPageRefreshControl = renderPageRefreshControl;
+window.renderPageTopSection = renderPageTopSection;
+window.renderPageLoadingOverlay = renderPageLoadingOverlay;
+window.ensurePageLoadingOverlay = ensurePageLoadingOverlay;
+window.setPageLoading = setPageLoading;
+window.withPageLoading = withPageLoading;
+window.spinPageRefreshButton = spinPageRefreshButton;
 window.renderSystemBridge = renderSystemBridge;
 window.renderExecutionBridge = renderExecutionBridge;
 window.renderAnalyticsBridge = renderAnalyticsBridge;

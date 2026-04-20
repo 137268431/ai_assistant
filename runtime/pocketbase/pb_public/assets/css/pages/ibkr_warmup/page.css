@@ -47,6 +47,10 @@
             gap: 10px;
             text-align: right;
         }
+        .hero-meta > .refresh-btn.page-refresh-trigger {
+            justify-self: end;
+            width: auto;
+        }
         .hero-meta-line {
             font-size: 11px;
             color: var(--muted);

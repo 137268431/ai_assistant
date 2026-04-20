@@ -13,16 +13,6 @@
     <link rel="stylesheet" href="/assets/css/pages/ibkr_indicators/page.css">
 </head>
 <body>
-    <div class="header">
-        <div class="header-top">
-            <div class="logo">
-                <div class="logo-label">INDICATORS</div>
-                <div class="logo-title">📈 技术指标</div>
-            </div>
-            <div id="environmentHeader"></div>
-        </div>
-    </div>
-
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
@@ -39,15 +29,7 @@
                     <option value="240">4H</option>
                     <option value="D">D</option>
                 </select>
-                <div class="refresh-control">
-                    <button class="refresh-btn page-refresh-trigger is-compact" id="refreshBtn" onclick="manualRefresh()">↻</button>
-                    <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
-                        <option value="0">关闭</option>
-                        <option value="5">5秒</option>
-                        <option value="30" selected>30秒</option>
-                        <option value="60">1分钟</option>
-                    </select>
-                </div>
+                <div id="indicatorsRefreshControl"></div>
             </div>
             <input type="text" class="search-input" id="searchBox" placeholder="🔍 搜索标的 / 交易所 / 脚本 / PB记录ID..." oninput="onSearchChange(this.value)">
         </div>
@@ -254,8 +236,8 @@
 
             const filter = buildIndicatorFilter();
             const response = await fetch(
-                `${PB_URL}/api/collections/ibkr_indicators/records?perPage=${itemsPerPage}&page=${page}&sort=-bar_time_ms,-created&filter=${encodeURIComponent(filter)}`,
-                { headers: { 'Authorization': token } }
+                `${PB_URL}/api/collections/ibkr_indicators/records?perPage=${itemsPerPage}&page=${page}&sort=-us_time,-created&filter=${encodeURIComponent(filter)}`,
+                { headers: { 'Authorization': `Bearer ${token}` } }
             );
 
             if (response.status === 401 || response.status === 403) {
@@ -267,6 +249,17 @@
             }
 
             return response.json();
+        }
+
+        function refreshRealtimeQuotesForIndicators() {
+            if (!allIndicators.length) return;
+            void fetchRealtimeQuotes(allIndicators.map((item) => item.symbol), { reset: true })
+                .then(() => {
+                    renderIndicators();
+                })
+                .catch((error) => {
+                    console.warn('加载实时行情失败:', error);
+                });
         }
 
         window.onDateChange = function(startDate) {
@@ -310,15 +303,13 @@
                 if (!data) return;
 
                 allIndicators = (data.items || []).map((item) => normalizeIndicatorRecord(item)).filter(Boolean);
-                await fetchRealtimeQuotes(allIndicators.map((item) => item.symbol), { reset: true }).catch((error) => {
-                    console.warn('加载实时行情失败:', error);
-                });
                 totalItems = data.totalItems || allIndicators.length;
                 hasMore = allIndicators.length < totalItems;
 
                 renderFilterNote();
                 renderIndicators();
                 updateLoadMoreButton();
+                refreshRealtimeQuotesForIndicators();
             } catch (error) {
                 console.error('加载失败:', error);
                 document.getElementById('indicatorsContainer').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${escapeHtml(error.message)}</div></div>`;
@@ -348,14 +339,12 @@
                 currentPage = nextPage;
                 const appended = (data.items || []).map((item) => normalizeIndicatorRecord(item)).filter(Boolean);
                 allIndicators = [...allIndicators, ...appended];
-                await fetchRealtimeQuotes(allIndicators.map((item) => item.symbol), { reset: true }).catch((error) => {
-                    console.warn('加载实时行情失败:', error);
-                });
                 totalItems = data.totalItems || totalItems;
                 hasMore = allIndicators.length < totalItems;
 
                 renderIndicators();
                 updateLoadMoreButton();
+                refreshRealtimeQuotesForIndicators();
             } catch (error) {
                 console.error('加载更多失败:', error);
             }
@@ -1297,9 +1286,7 @@
         };
 
         function manualRefresh() {
-            const btn = document.getElementById('refreshBtn');
-            btn.classList.add('spinning');
-            setTimeout(() => btn.classList.remove('spinning'), 600);
+            spinPageRefreshButton('refreshBtn');
             loadIndicators();
         }
 
@@ -1316,21 +1303,34 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
             const urlParams = new URLSearchParams(window.location.search);
             const urlDate = normalizeDateParam(urlParams.get('date'), '');
             const urlSearch = String(urlParams.get('search') || '').trim();
             if (urlDate) currentDate = urlDate;
             if (urlSearch) currentSearch = urlSearch;
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 指标', { description: '技术快照 / 快览 / 进入图表' });
+            document.getElementById('indicatorsRefreshControl').innerHTML = renderPageRefreshControl({
+                mode: 'polling',
+                buttonId: 'refreshBtn',
+                intervalId: 'refreshInterval',
+                defaultSeconds: 30,
+            });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 技术指标', {
+                subtitle: '技术快照 / 快览 / 进入图表',
+            });
             document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_indicators.html');
             document.getElementById('navContainer').innerHTML = renderNav('/ibkr_indicators.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             syncDatePickerUI(currentDate);
             document.getElementById('searchBox').value = currentSearch;
             renderFilterNote();
-            loadIndicators();
+            await withPageLoading(
+                () => loadIndicators(),
+                {
+                    title: '指标页加载中',
+                    copy: '正在同步技术指标快照、筛选条件和图表入口数据。',
+                }
+            );
             changeRefreshInterval(30);
 
             let isLoadingMore = false;

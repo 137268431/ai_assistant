@@ -11,26 +11,17 @@
 <link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css">
 </head>
 <body>
-
-<!-- Header -->
-<div class="header">
-  <div class="header-top">
-    <div class="logo">
-      <span class="logo-label">CONFIG MANAGER</span>
-      <span class="logo-title">配置管理</span>
-    </div>
-    <button class="refresh-btn page-refresh-trigger is-compact" onclick="load()">↻</button>
-  </div>
-  <div id="configEnvironmentBar" style="margin-top:12px;"></div>
+<div class="page-shell">
+  <div id="configEnvironmentBar"></div>
+  <div id="pageBridge"></div>
 </div>
-
-<div id="pageBridge"></div>
 
 <div class="config-action-bar">
   <div class="config-action-copy">
     当前环境配置统一在这里查看和编辑。改动会先标记本地差异，确认后再一次性保存。
   </div>
   <div class="config-action-buttons">
+    <button class="refresh-btn page-refresh-trigger" id="configRefreshBtn" type="button" onclick="manualReloadConfig()">↻ 刷新配置</button>
     <button class="reset-all-btn" id="resetAllBtn" onclick="resetAll()" disabled>重置全部</button>
     <button class="save-btn" id="saveBtn" onclick="saveAll()" disabled>保存配置</button>
   </div>
@@ -358,10 +349,10 @@ function buildConfigView(records) {
 
 function renderConfigEnvironmentBar() {
   document.getElementById('configEnvironmentBar').innerHTML = renderPageContextBar(
-    '配置作用域',
+    '⚙️ 配置管理',
     {
       allowGlobal: true,
-      description: 'global 为默认基线，live / paper / backtest 为覆盖层'
+      subtitle: '统一查看与编辑 global / live / paper / backtest 运行配置。'
     }
   )
 }
@@ -946,12 +937,20 @@ async function resetAll() {
     showToast(`⚠️ 重置完成: 成功 ${success}, 失败 ${failed}`)
   }
 
-  render()
+render()
+}
+
+function manualReloadConfig() {
+  spinPageRefreshButton('configRefreshBtn')
+  return load()
 }
 
 // ── 初始加载 ──
 renderConfigEnvironmentBar()
-load()
+withPageLoading(() => load(), {
+  title: '配置页加载中',
+  copy: '正在同步配置项、作用域覆盖关系和 PB cron 定义。',
+})
 
 window.onEnvironmentChange = function(environment) {
   configEnvironment = environment

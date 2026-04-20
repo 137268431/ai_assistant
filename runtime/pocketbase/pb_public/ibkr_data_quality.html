@@ -19,12 +19,11 @@
     <section class="hero">
       <div class="hero-top">
         <div>
-          <div class="hero-kicker">IBKR 数据质量</div>
-          <div class="hero-title">把观察池和当前交易标的的 5 分钟K线完整性、派生周期同步和修复结果统一沉淀到 PocketBase。</div>
-          <div class="hero-copy">这里会展示每个标的的缺口、重复K线、开高低收异常、15m/30m/1h/4h/1d 派生周期缺失或滞后，以及最近一次自动修复结果。页面也可以直接触发重扫和安全修复。</div>
+          <div class="hero-kicker">Quality Summary</div>
+          <div class="hero-title">当前扫描结果与修复状态</div>
+          <div class="hero-copy">观察池和当前交易标的的 5 分钟K线完整性、派生周期同步和修复回写会统一汇总在这里，便于先看问题等级，再决定是否马上重扫或安全修复。</div>
         </div>
         <div class="hero-meta">
-          <div id="environmentHeader"></div>
           <div class="meta-line" id="refreshInfo">等待加载...</div>
           <div class="meta-line" id="summaryInfo">扫描结果待加载</div>
         </div>
@@ -640,11 +639,16 @@
       setFiltersFromUrl();
       document.getElementById('nav').innerHTML = renderNav('/ibkr_data_quality.html');
       document.getElementById('contextBar').innerHTML = renderPageContextBar('🧩 数据质量', {
-        description: '5 分钟K线完整性 / 派生周期同步 / 修复回写'
+        subtitle: '5 分钟K线完整性 / 派生周期同步 / 修复回写'
       });
       document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_data_quality.html');
-      document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
-      await loadDataQuality(false);
+      await withPageLoading(
+        () => loadDataQuality(false),
+        {
+          title: '数据质量页加载中',
+          copy: '正在同步 bars 完整性、派生周期状态和最近一次修复结果。',
+        }
+      );
     });
 
     window.onEnvironmentChange = function(environment) {

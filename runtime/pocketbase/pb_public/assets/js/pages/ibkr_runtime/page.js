@@ -1519,7 +1519,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
             try {
                 const envFilter = buildEnvironmentFilter();
-                const [health, status, summary, cronResp, twoFactorResp, startupResp, runtimeConfigResp, barsResp, indicatorsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
+                const indicatorsPromise = apiFetch('ibkr_indicators', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }).catch((error) => {
+                    console.warn('加载最近 indicators 失败:', error);
+                    return { items: [] };
+                });
+                const [health, status, summary, cronResp, twoFactorResp, startupResp, runtimeConfigResp, barsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     requestIbkrEnvironmentJson('/api/custom/ibkr/healthz', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?lite=1', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/system/summaryz?lite=1', currentEnvironment, { retryAttempts: 3 }),
@@ -1528,7 +1532,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     requestIbkrEnvironmentJson('/api/custom/ibkr/startup/status', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ state: {} })),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/runtime/config', currentEnvironment, { retryAttempts: 3 }),
                     apiFetch('ibkr_bars', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
-                    apiFetch('ibkr_indicators', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
                     apiFetch('ibkr_signals', { filter: envFilter, sort: '-created', perPage: 8 }),
                     apiFetch('orders', { filter: envFilter, sort: '-created', perPage: 8 }),
                     apiFetch('system_events', { filter: envFilter, sort: '-created', perPage: 8 })
@@ -1537,13 +1540,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
                 const runtimeConfig = Array.isArray(runtimeConfigResp?.items) ? runtimeConfigResp.items : [];
                 const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
-                const todayCounts = await loadRuntimeTodayCounts(status).catch(() => null);
-                if (loadId !== latestRuntimeLoadId) return;
-                const resolvedSummary = {
+                const baseSummary = {
                     ...(summary || {}),
                     today: {
                         ...((summary && summary.today) || {}),
-                        ...(todayCounts || {})
                     }
                 };
                 latestRuntimeStatus = status || {};
@@ -1551,28 +1551,48 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 const startupState = startupResp?.state || {};
                 latestStartupState = normalizeStartupUiState(startupState);
                 const barsItems = toArray(barsResp);
-                const indicatorItems = toArray(indicatorsResp);
                 const signalItems = toArray(signalsResp);
                 const latestBar = barsItems[0] || null;
-                const latestIndicator = indicatorItems[0] || null;
                 const latestSignal = signalItems[0] || null;
-                renderHero(resolvedSummary, health, status, runtimeConfig, twoFactorState, latestStartupState, latestBar);
-                renderOpsGrid(resolvedSummary, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                renderMetricCards(resolvedSummary, health, status, twoFactorState, latestBar);
+
+                const renderRuntimeSnapshot = (resolvedSummary, indicatorItems = []) => {
+                    const latestIndicator = indicatorItems[0] || null;
+                    renderHero(resolvedSummary, health, status, runtimeConfig, twoFactorState, latestStartupState, latestBar);
+                    renderOpsGrid(resolvedSummary, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
+                    renderMetricCards(resolvedSummary, health, status, twoFactorState, latestBar);
+                    renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
+                    renderConfigDetail(resolvedSummary, runtimeConfig, cronDefinitions);
+                    renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
+                    renderIndicatorsTable(indicatorItems);
+                };
+
+                renderRuntimeSnapshot(baseSummary);
                 renderTwoFactorPanel(twoFactorState);
-                renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                renderConfigDetail(resolvedSummary, runtimeConfig, cronDefinitions);
-                renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
                 syncActionLocks();
                 renderEngineTable(status);
                 void loadEngineDetail(loadId, status);
                 renderBarsTable(barsItems);
-                renderIndicatorsTable(indicatorItems);
                 renderSignalsTable(signalItems);
                 renderOrdersTable(toArray(ordersResp));
                 renderEventsTable(toArray(eventsResp));
 
                 if (showToastOnSuccess) showToast('Runtime 数据已刷新');
+
+                void Promise.all([
+                    indicatorsPromise,
+                    loadRuntimeTodayCounts(status).catch(() => null),
+                ]).then(([indicatorsResp, todayCounts]) => {
+                    if (loadId !== latestRuntimeLoadId) return;
+                    const resolvedSummary = {
+                        ...baseSummary,
+                        today: {
+                            ...(baseSummary.today || {}),
+                            ...(todayCounts || {}),
+                        }
+                    };
+                    renderRuntimeSnapshot(resolvedSummary, toArray(indicatorsResp));
+                    syncActionLocks();
+                });
             } catch (error) {
                 console.error('Runtime 加载失败:', error);
                 document.getElementById('refreshInfo').textContent = '加载失败';
@@ -1868,9 +1888,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         document.addEventListener('DOMContentLoaded', async () => {
             if (!ensureIbkrPageAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 控制台', { description: '控制 / 调度 / 链路观察 / 跳转账户与统计' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 控制台', { subtitle: '控制 / 调度 / 链路观察 / 跳转账户与统计' });
             document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_runtime.html');
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
             await loadRuntimeData(false);
             refreshTimer = setInterval(() => loadRuntimeData(false), 60000);

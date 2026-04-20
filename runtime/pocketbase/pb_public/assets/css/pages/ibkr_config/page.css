@@ -5,7 +5,7 @@
 
   .config-action-bar {
     position: sticky;
-    top: 94px;
+    top: 16px;
     z-index: 24;
     width: min(100%, var(--page-shell-max));
     margin: 0 auto 12px;
@@ -43,7 +43,7 @@
 
   .config-toolbar {
     position: sticky;
-    top: 164px;
+    top: 96px;
     z-index: 20;
     margin-bottom: 18px;
     padding-bottom: 8px;

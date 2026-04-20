@@ -633,7 +633,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     }
 
     function updateHero() {
-      document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
       if (isWatchlistRoleTab()) {
         const visible = getFilteredWatchlistItems().length;
         const roleLabel = getWatchlistRoleLabel();
@@ -2634,7 +2633,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('dailyTargetDate').value = dailyTargetsState.selectedDate;
       document.getElementById('nav').innerHTML = renderNav('/ibkr_screener.html');
       document.getElementById('contextBar').innerHTML = renderPageContextBar('🔎 IBKR 筛选与标池', {
-        description: '筛选 / 每日标的 / 标池 / 市场监控 一体化'
+        subtitle: '筛选 / 每日标的 / 标池 / 市场监控 一体化'
       });
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();

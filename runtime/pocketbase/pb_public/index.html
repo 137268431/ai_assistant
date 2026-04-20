@@ -12,23 +12,6 @@
 </head>
 <body data-home-layout="desktop">
     <div class="home-shell">
-        <header class="home-hero">
-            <div class="home-hero-grid">
-                <div class="home-brand">
-                    <div class="home-brand-kicker">Trading Flight</div>
-                    <h1 class="home-brand-title">交易首页</h1>
-                    <div class="home-brand-copy">交易优先视图，首屏压缩展示目标池、信号、订单、持仓和关键跳转；PC 展示更多并排信息，手机端优先保留最核心入口。</div>
-                </div>
-                <div class="home-controls">
-                    <div id="environmentHeader"></div>
-                    <div class="home-action-row">
-                        <a id="configLink" href="/ibkr_config.html" class="home-ghost-btn">⚙️ 设置</a>
-                        <button class="home-ghost-btn home-ghost-btn-danger" onclick="handleLogout(event)">🚪 退出</button>
-                    </div>
-                </div>
-            </div>
-        </header>
-
         <div id="contextBar"></div>
         <div id="pageBridge"></div>
 
@@ -40,7 +23,14 @@
                         <div class="home-panel-title">今日交易总览</div>
                         <div class="home-panel-copy">不再铺满多层卡片，先看最关键的交易状态，再决定跳哪一页。</div>
                     </div>
-                    <div class="home-panel-meta" id="overviewMeta">加载中...</div>
+                    <div class="home-overview-side">
+                        <div class="home-overview-actions">
+                            <button id="homeRefreshBtn" type="button" class="refresh-btn page-refresh-trigger is-compact" onclick="refreshHomePage(true)">↻ 刷新首页</button>
+                            <a id="configLink" href="/ibkr_config.html" class="home-ghost-btn">⚙️ 设置</a>
+                            <button class="home-ghost-btn home-ghost-btn-danger" onclick="handleLogout(event)">🚪 退出</button>
+                        </div>
+                        <div class="home-panel-meta" id="overviewMeta">加载中...</div>
+                    </div>
                 </div>
                 <div class="home-overview-grid">
                     <a id="signalsLink" href="/ibkr_signals.html" class="home-stat-card" data-tone="long">
@@ -1049,19 +1039,31 @@
             }
         }
 
+        async function refreshHomePage(showSpinner = false) {
+            if (showSpinner) spinPageRefreshButton('homeRefreshBtn');
+            await Promise.all([
+                loadTodayTargets(),
+                loadDashboard(),
+                loadMarketIndex(),
+            ]);
+        }
+
         document.addEventListener('DOMContentLoaded', async () => {
             syncHomeLayoutState();
             bindResponsiveState();
             await initAuth();
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🏠 Trading Flight 首页', { description: '执行 / 分析 / 筛选 / 运维 / 系统入口' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🏠 Trading Flight 首页', { subtitle: '执行 / 分析 / 筛选 / 运维 / 系统入口' });
             document.getElementById('pageBridge').innerHTML = renderHomeBridge();
             syncQuickLinksMeta();
             bindEnvironmentLinks();
             document.getElementById('nav').innerHTML = renderNav('/index.html');
-            loadTodayTargets();
-            loadDashboard();
-            loadMarketIndex();
+            await withPageLoading(
+                () => refreshHomePage(false),
+                {
+                    title: '首页加载中',
+                    copy: '正在同步目标池、交易概览和市场脉搏。',
+                }
+            );
             setInterval(loadTodayTargets, 60000);
             setInterval(loadDashboard, 60000);
             setInterval(loadMarketIndex, 60000);
@@ -1069,7 +1071,7 @@
 
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
-            location.href = buildPageUrl('/index.html');
+            location.href = buildPageUrl('/index.html', {}, { environment: currentEnvironment });
         };
     </script>
 </body>

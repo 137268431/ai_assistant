@@ -19,14 +19,15 @@
         <section class="hero">
             <div class="hero-head">
                 <div>
-                    <div class="hero-kicker">History Rebuild</div>
-                    <div class="hero-title">全量清库后重新导入权威 5m 历史链</div>
+                    <div class="hero-kicker">Rebuild Summary</div>
+                    <div class="hero-title">当前任务与重建范围</div>
                     <div class="hero-copy">
                         这个页面会顺序执行 <span class="mono">purge → backfill_bars → rollup_intervals → materialize_indicators → run_daily_scan → verify</span>。
                         适合在确认旧 <span class="mono">bar / indicator / signal / targets</span> 不可信后，重建一份干净的 live 历史。
                     </div>
                 </div>
                 <div class="hero-meta">
+                    <button id="refreshStatusButton" class="btn page-refresh-trigger" type="button">刷新状态</button>
                     <div class="hero-meta-line" id="heroEnvironment">环境 --</div>
                     <div class="hero-meta-line" id="heroUpdatedAt">最近更新 --</div>
                     <div class="hero-meta-line">来源 /api/custom/ibkr/history/rebuild/status</div>
@@ -397,6 +398,16 @@
             }, 2000);
         }
 
+        async function refreshHistoryRebuildStatus(notify = false) {
+            spinPageRefreshButton('refreshStatusButton');
+            try {
+                await loadStatus();
+                if (notify) showToast('历史重建状态已刷新');
+            } catch (error) {
+                handleStatusLoadError(error, '状态拉取失败');
+            }
+        }
+
         window.onEnvironmentChange = function(nextEnvironment) {
             currentEnvironment = normalizeRuntimeEnvironment(nextEnvironment, 'live');
             window.location.href = buildPageUrl('/ibkr_history_rebuild.html', {}, { environment: currentEnvironment });
@@ -404,15 +415,24 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_history_rebuild.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🧱 历史重建', { description: 'purge / backfill / rollup / recompute' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🧱 历史重建', { subtitle: 'purge / backfill / rollup / recompute' });
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_history_rebuild.html');
             document.getElementById('startButton').addEventListener('click', () => startRebuild('full_reset_rebuild'));
             document.getElementById('todayButton').addEventListener('click', () => startRebuild('rebuild_today', { lookback_days: 1 }));
-            try {
-                await loadStatus();
-            } catch (error) {
-                handleStatusLoadError(error, '状态初始化失败');
-            }
+            document.getElementById('refreshStatusButton').addEventListener('click', () => refreshHistoryRebuildStatus(true));
+            await withPageLoading(
+                async () => {
+                    try {
+                        await loadStatus();
+                    } catch (error) {
+                        handleStatusLoadError(error, '状态初始化失败');
+                    }
+                },
+                {
+                    title: '历史重建页加载中',
+                    copy: '正在同步作业状态、阶段进度和最近日志。',
+                }
+            );
             startPolling();
         });
     </script>

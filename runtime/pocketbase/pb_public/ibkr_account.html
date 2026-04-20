@@ -16,16 +16,8 @@
     <div class="page-shell page-shell-wide account-shell">
         <div id="contextBar"></div>
         <div id="pageBridge"></div>
-
-        <div class="page-header">
-            <div>
-                <div class="page-title">💼 IBKR 账户实况</div>
-                <div class="page-copy">这里直接看 Gateway 返回的真实账户状态：净值、可用资金、当前持仓、实时挂单，并支持撤单、改单和单个持仓市价平仓。</div>
-            </div>
-            <div class="header-side">
-                <div id="environmentHeader"></div>
-                <div class="refresh-info" id="refreshInfo">加载中...</div>
-            </div>
+        <div class="account-meta-row">
+            <div class="refresh-info" id="refreshInfo">加载中...</div>
         </div>
 
         <div class="ops-row">
@@ -1435,12 +1427,19 @@
         document.addEventListener('DOMContentLoaded', async () => {
             if (!initAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_account.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('💼 IBKR 账户', { description: '真实账户 / 持仓 / 挂单 / 操作入口' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('💼 IBKR 账户', {
+                subtitle: '真实账户 / 持仓 / 挂单 / 操作入口',
+            });
             document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_account.html');
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             toggleEntryPriceField();
             renderTicketPreview();
-            await loadAccountSnapshot(false);
+            await withPageLoading(
+                () => loadAccountSnapshot(false),
+                {
+                    title: '账户页加载中',
+                    copy: '正在同步账户净值、持仓、实时挂单和操作入口状态。',
+                }
+            );
             refreshTimer = setInterval(() => loadAccountSnapshot(false), 20000);
         });
 

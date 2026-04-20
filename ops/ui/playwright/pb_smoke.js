@@ -137,7 +137,19 @@ async function waitForPageReady(page, url) {
     '/ibkr_runtime.html': () => page.waitForFunction(() => {
       const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
       const configText = document.getElementById('configDetail')?.innerText || '';
-      return refreshInfo && !refreshInfo.includes('加载中') && configText && !configText.includes('加载中');
+      const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          !node.classList.contains('is-hidden') &&
+          rect.width > 1 &&
+          rect.height > 1
+        );
+      });
+      return refreshInfo && !refreshInfo.includes('加载中') && configText && !configText.includes('加载中') && !overlayVisible;
     }, { timeout }),
     '/ibkr_system.html': () => page.waitForFunction(() => {
       const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
@@ -169,6 +181,21 @@ async function waitForPageReady(page, url) {
     '/ibkr_reverse_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
     '/orders.html': () => page.waitForFunction(() => !document.querySelector('#ordersContainer .loading'), { timeout }),
     '/ibkr_order_details.html': () => page.waitForFunction(() => !document.querySelector('#detailsContainer .loading'), { timeout }),
+    '/ibkr_indicators.html': () => page.waitForFunction(() => {
+      const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          !node.classList.contains('is-hidden') &&
+          rect.width > 1 &&
+          rect.height > 1
+        );
+      });
+      return !document.querySelector('#indicatorsContainer .loading') && !overlayVisible;
+    }, { timeout }),
     '/ibkr_config.html': () => page.waitForFunction(() => !/LOADING/i.test(document.getElementById('configContainer')?.innerText || ''), { timeout }),
   };
 
@@ -230,6 +257,31 @@ async function collectLayoutMetrics(page) {
     const doc = document.documentElement;
     const body = document.body;
     const scrollWidth = Math.max(doc.scrollWidth, body ? body.scrollWidth : 0);
+    const topSections = Array.from(new Set([
+      ...document.querySelectorAll('.page-top-section, .home-hero'),
+      ...document.querySelectorAll([
+        '.page-shell > .hero',
+        '.page-shell > .page-header',
+        '.content > .hero',
+        '.content > .page-header',
+        '.content-area > .page-header',
+        '.workspace > .panel > .workspace-head',
+      ].join(', ')),
+    ]));
+    const bridgeShells = Array.from(new Set(document.querySelectorAll('.page-bridge, .domain-tabs')));
+    const loadingOverlays = Array.from(document.querySelectorAll('.page-loading-overlay'));
+    const visibleLoadingOverlays = loadingOverlays.filter((node) => {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.opacity !== '0' &&
+        !node.classList.contains('is-hidden') &&
+        rect.width > 1 &&
+        rect.height > 1
+      );
+    });
     const bridgeRows = groupRowSpread('.page-bridge-link, .domain-tab');
     const panelRows = groupRowSpread([
       '.panel-grid > .panel',
@@ -247,7 +299,11 @@ async function collectLayoutMetrics(page) {
       scroll_width: scrollWidth,
       horizontal_overflow: scrollWidth > window.innerWidth + 4,
       context_count: document.querySelectorAll('.page-context-bar').length,
+      top_section_count: topSections.length,
+      bridge_shell_count: bridgeShells.length,
       bridge_count: document.querySelectorAll('.page-bridge-link, .domain-tab').length,
+      loading_overlay_count: loadingOverlays.length,
+      visible_loading_overlay_count: visibleLoadingOverlays.length,
       bridge_rows: bridgeRows,
       panel_rows: panelRows,
       tall_panel_rows: tallPanelRows,
@@ -383,16 +439,29 @@ async function inspectPage(browser, token, url, mobile) {
     scroll_issues: [{ selector: 'layout_eval_failed', index: 0, gap: 0, overflowY: 'error' }],
   }));
   const pageExpectationIssues = await collectPageExpectationIssues(page, finalUrl, mobile).catch(() => ['page_expectation_eval_failed']);
+  const path = new URL(finalUrl).pathname;
+  const allowWorkspacePanelSpread = path === '/ibkr_chart.html';
+  const allowVisibleInitialOverlay = path === '/ibkr_runtime.html' || path === '/ibkr_indicators.html';
 
   const layoutIssues = [];
   if (/\/login\.html/.test(finalUrl)) layoutIssues.push('redirected_to_login');
   if (!navTexts.length) layoutIssues.push('missing_nav');
   if (!layout.context_count) layoutIssues.push('missing_context_bar');
+  if (layout.context_count !== 1) layoutIssues.push(`context_bar_count:${layout.context_count}`);
+  if (!layout.top_section_count) layoutIssues.push('missing_top_section');
   if (!layout.bridge_count) layoutIssues.push('missing_bridge');
+  if (layout.bridge_shell_count !== 1) layoutIssues.push(`bridge_shell_count:${layout.bridge_shell_count}`);
+  if (!allowVisibleInitialOverlay && layout.visible_loading_overlay_count) {
+    layoutIssues.push(`visible_loading_overlay_count:${layout.visible_loading_overlay_count}`);
+  }
   if (layout.horizontal_overflow) layoutIssues.push('horizontal_overflow');
   if (layout.bridge_row_spread_max > BRIDGE_MAX_SPREAD_PX) layoutIssues.push(`bridge_spread:${layout.bridge_row_spread_max}`);
-  if (layout.panel_row_spread_max > PAGE_MAX_SPREAD_PX) layoutIssues.push(`panel_spread:${layout.panel_row_spread_max}`);
-  if (layout.tall_panel_rows.length) layoutIssues.push(`tall_panel_rows:${layout.tall_panel_rows.map((row) => row.max).join(',')}`);
+  if (!allowWorkspacePanelSpread && layout.panel_row_spread_max > PAGE_MAX_SPREAD_PX) {
+    layoutIssues.push(`panel_spread:${layout.panel_row_spread_max}`);
+  }
+  if (!allowWorkspacePanelSpread && layout.tall_panel_rows.length) {
+    layoutIssues.push(`tall_panel_rows:${layout.tall_panel_rows.map((row) => row.max).join(',')}`);
+  }
   if (layout.scroll_issues.length) layoutIssues.push(`uncontained_scroll:${layout.scroll_issues.length}`);
 
   let screenshot = '';
