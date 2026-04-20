@@ -99,6 +99,99 @@ class TradingServiceMarketUniverseMixin:
                 service_mod.logger.warning("Persist daily scan state failed", exc_info=True)
             return dict(next_state)
 
+    def _reset_daily_scan_alert_state(self, market_date: str = ""):
+        self._daily_scan_alert_market_date = str(market_date or "")
+        self._daily_scan_alert_error = ""
+        self._daily_scan_alert_title = ""
+        self._daily_scan_alert_at = 0.0
+        self._daily_scan_alert_active = False
+        self._daily_scan_failure_count = 0
+
+    def _notify_daily_scan_failed(self, state: dict | None = None):
+        service_mod = _service_mod()
+        market_date = str((state or {}).get("market_date") or self._current_market_date or self._market_date())
+        error_text = str((state or {}).get("last_error") or "daily_scan_failed").strip() or "daily_scan_failed"
+        reason = str((state or {}).get("reason") or "").strip() or "poll"
+        result = (state or {}).get("result")
+        if not isinstance(result, dict):
+            result = {}
+        if self._daily_scan_alert_market_date != market_date:
+            self._reset_daily_scan_alert_state(market_date)
+        self._daily_scan_failure_count += 1
+
+        now = time.time()
+        should_send = (
+            not self._daily_scan_alert_active
+            or error_text != self._daily_scan_alert_error
+            or self._daily_scan_alert_at <= 0
+            or (now - self._daily_scan_alert_at) >= service_mod.DAILY_SCAN_EVENT_ALERT_COOLDOWN_SECONDS
+        )
+        self._daily_scan_alert_market_date = market_date
+        self._daily_scan_alert_error = error_text
+        self._daily_scan_alert_title = "IBKR 盘前日筛失败"
+        if not should_send:
+            return
+
+        detail = {
+            "状态结论": "今日目标池自动筛选失败，盘中 active / candidate targets 不会按预期刷新。",
+            "检查时间": self._now_et(),
+            "交易日": market_date,
+            "Runtime阶段": self._runtime_phase_label(),
+            "触发原因": reason,
+            "错误信息": error_text,
+            "失败次数": str(self._daily_scan_failure_count),
+            "处理建议": "检查 compute / screener / targets 写入链路，并在修复后手动重跑 /scan。",
+        }
+        scanned = int(result.get("scanned", 0) or 0)
+        active = int(result.get("active", 0) or 0)
+        candidates = int(result.get("candidates", 0) or 0)
+        errors = int(result.get("errors", 0) or 0)
+        if scanned > 0 or active > 0 or candidates > 0 or errors > 0:
+            detail["扫描结果"] = (
+                f"scanned={scanned} active={active} "
+                f"candidate={candidates} errors={errors}"
+            )
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            detail["运行页"] = runtime_url
+
+        self._emit_system_event("alert", "error", self._daily_scan_alert_title, detail)
+        self._daily_scan_alert_active = True
+        self._daily_scan_alert_at = now
+
+    def _notify_daily_scan_recovered(self, state: dict | None = None):
+        if not self._daily_scan_alert_active:
+            return
+
+        market_date = str((state or {}).get("market_date") or self._daily_scan_alert_market_date or self._market_date())
+        reason = str((state or {}).get("reason") or "").strip() or "poll"
+        result = (state or {}).get("result")
+        if not isinstance(result, dict):
+            result = {}
+
+        detail = {
+            "状态结论": "今日目标池自动筛选已恢复成功，盘中 trade targets 已重新生成。",
+            "检查时间": self._now_et(),
+            "交易日": market_date,
+            "Runtime阶段": self._runtime_phase_label(),
+            "恢复来源": reason,
+            "上一条错误": self._daily_scan_alert_error or "-",
+        }
+        scanned = int(result.get("scanned", 0) or 0)
+        active = int(result.get("active", 0) or 0)
+        candidates = int(result.get("candidates", 0) or 0)
+        errors = int(result.get("errors", 0) or 0)
+        detail["恢复结果"] = (
+            f"scanned={scanned} active={active} "
+            f"candidate={candidates} errors={errors}"
+        )
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            detail["运行页"] = runtime_url
+
+        self._emit_system_event("alert", "info", "IBKR 盘前日筛已恢复", detail)
+        self._reset_daily_scan_alert_state(market_date)
+
     def _environment_watchlist_filter(self) -> str:
         service_mod = _service_mod()
         safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
@@ -383,6 +476,7 @@ class TradingServiceMarketUniverseMixin:
                     "environments": [service_mod.ENVIRONMENT],
                 },
             )
+            self._notify_daily_scan_recovered(completed_state)
             self._last_target_refresh_at = 0.0
             return {"ok": True, "ran": True, "state": completed_state}
 
@@ -408,7 +502,10 @@ class TradingServiceMarketUniverseMixin:
                 result=result,
             )
             if bool(result.get("ok", True)):
+                self._notify_daily_scan_recovered(completed_state)
                 self._last_target_refresh_at = 0.0
+            else:
+                self._notify_daily_scan_failed(completed_state)
             return {"ok": bool(result.get("ok", True)), "ran": True, "state": completed_state, "result": result}
         except Exception as exc:
             failed_state = self._set_daily_scan_state(
@@ -420,6 +517,7 @@ class TradingServiceMarketUniverseMixin:
                 result={},
             )
             service_mod.logger.error("Daily scan execution failed: %s", exc)
+            self._notify_daily_scan_failed(failed_state)
             return {"ok": False, "ran": True, "state": failed_state, "error": str(exc)}
 
     def _apply_live_subscriptions(self, target_date: str, conid_map: dict, reason: str = "", trade_symbols: list[str] | None = None):
@@ -659,6 +757,7 @@ class TradingServiceMarketUniverseMixin:
         else:
             with self._scan_state_lock:
                 self._daily_scan_state = self._load_daily_scan_state(current_date)
+        self._reset_daily_scan_alert_state(current_date)
         self._remove_stale_target_rows(current_date)
         self._apply_live_subscriptions(current_date, {}, reason="market_day_reset")
         self._active_target_date = ""

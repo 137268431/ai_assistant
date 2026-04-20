@@ -30,7 +30,7 @@
             <div style="display:flex;gap:8px;align-items:center;">
                 <div id="datePicker" style="flex:1;"></div>
                 <div class="refresh-control">
-                    <button class="refresh-btn" id="refreshBtn" onclick="manualRefresh()">🔄</button>
+                    <button class="refresh-btn page-refresh-trigger is-compact" id="refreshBtn" onclick="manualRefresh()">↻</button>
                     <select class="refresh-select" id="refreshInterval" onchange="changeRefreshInterval(this.value)">
                         <option value="0">关闭</option>
                         <option value="5">5秒</option>
@@ -2282,7 +2282,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             if (!await initAuth()) return;
-            document.getElementById('environmentHeader').innerHTML = renderEnvironmentSwitcher();
+            document.getElementById('environmentHeader').innerHTML = renderEnvironmentBadge();
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📡 IBKR 主信号', { description: '待确认 / 执行 / 订单 / 账户联动' });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_signals.html');
             document.getElementById('datePicker').innerHTML = renderDatePicker();

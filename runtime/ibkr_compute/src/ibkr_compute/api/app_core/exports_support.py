@@ -14,7 +14,14 @@ from ibkr_compute.api.support.symbols import (
     normalize_symbols,
     normalize_watchlist_symbol_role,
 )
-from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, build_runtime_timestamps
+from ibkr_compute.market.timeframe_utils import (
+    HIGHER_INTERVALS,
+    build_runtime_timestamps,
+    classify_session,
+    interval_to_chart_tf,
+    interval_to_ms,
+    ms_to_et,
+)
 
 
 SUPPORT_EXPORTS = {
@@ -26,10 +33,14 @@ SUPPORT_EXPORTS = {
     "build_legacy_pb_proxy_response": build_legacy_pb_proxy_response,
     "build_runtime_timestamps": build_runtime_timestamps,
     "build_symbol_filter": build_symbol_filter,
+    "classify_session": classify_session,
     "coerce_float": coerce_float,
     "coerce_int": coerce_int,
     "current_market_date": current_market_date,
     "get_environment_time_window": get_environment_time_window,
+    "interval_to_chart_tf": interval_to_chart_tf,
+    "interval_to_ms": interval_to_ms,
+    "ms_to_et": ms_to_et,
     "normalize_bar_environment": normalize_bar_environment,
     "normalize_symbol_csv": normalize_symbol_csv,
     "normalize_symbols": normalize_symbols,

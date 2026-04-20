@@ -38,9 +38,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       requestToken: 0,
       searchDebounceId: 0,
     };
+    let currentFiltersExpanded = false;
     let rulesLoaded = false;
     let rulesLoadingPromise = null;
     let screenerLoadKey = '';
+    let responsiveStateBound = false;
+    let lastPhoneViewport = null;
+    const expandedRulesPanels = new Set();
 
     function escapeHtml(value) {
       return String(value ?? '')
@@ -216,6 +220,48 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return value === 'universe' ? 'universe' : 'current';
     }
 
+    function isPhoneViewport() {
+      return (window.innerWidth || document.documentElement.clientWidth || 0) <= 720;
+    }
+
+    function renderMobileCardState(containerId, message) {
+      const mount = document.getElementById(containerId);
+      if (!mount) return;
+      mount.innerHTML = `<div class="mobile-card-empty">${escapeHtml(message || '--')}</div>`;
+    }
+
+    function syncCurrentAdvancedFilters() {
+      const root = document.getElementById('currentAdvancedFilters');
+      const button = document.getElementById('toggleCurrentAdvancedFiltersBtn');
+      if (!root || !button) return;
+
+      const isMobile = isPhoneViewport();
+      root.classList.toggle('is-collapsed', isMobile && !currentFiltersExpanded);
+      button.setAttribute('aria-expanded', (!root.classList.contains('is-collapsed')).toString());
+      button.textContent = currentFiltersExpanded ? '收起筛选' : '更多筛选';
+    }
+
+    function syncResponsiveState({ force = false } = {}) {
+      const phoneViewport = isPhoneViewport();
+      syncCurrentAdvancedFilters();
+      if (force || lastPhoneViewport !== phoneViewport) {
+        lastPhoneViewport = phoneViewport;
+        renderRulesBoard();
+      }
+    }
+
+    function bindResponsiveState() {
+      if (responsiveStateBound) return;
+      responsiveStateBound = true;
+      let rafId = 0;
+      const handleResize = () => {
+        window.cancelAnimationFrame(rafId);
+        rafId = window.requestAnimationFrame(() => syncResponsiveState());
+      };
+      window.addEventListener('resize', handleResize, { passive: true });
+      syncResponsiveState({ force: true });
+    }
+
     function isWatchlistRoleTab(tab = activeTab) {
       return tab === 'watchlist' || tab === 'monitor';
     }
@@ -284,19 +330,23 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       `).join('');
     }
 
-    function renderRulesCard(panel, { actionHref = '', actionLabel = '' } = {}) {
+    function renderRulesCard(panelKey, panel, { actionHref = '', actionLabel = '' } = {}) {
       const chips = Array.isArray(panel?.chips) ? panel.chips : [];
       const sections = Array.isArray(panel?.sections) ? panel.sections : [];
       const footer = rulesPayload.computed_at_us ? `更新: ${rulesPayload.computed_at_us}` : '';
+      const expanded = !isPhoneViewport() || expandedRulesPanels.has(panelKey);
       return `
-        <section class="panel rules-panel">
+        <section class="panel rules-panel" data-expanded="${expanded ? 'true' : 'false'}">
           <div class="rules-panel-head">
             <div>
               <div class="rules-panel-kicker">Rules Snapshot</div>
               <div class="rules-panel-title">${escapeHtml(panel?.title || '当前规则')}</div>
               <div class="rules-panel-subtitle">${escapeHtml(panel?.subtitle || '当前页面直接显示运行中的规则摘要。')}</div>
             </div>
-            ${actionHref && actionLabel ? `<a class="rules-panel-action" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
+            <div class="rules-panel-controls">
+              ${actionHref && actionLabel ? `<a class="rules-panel-action" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
+              <button class="rules-panel-toggle" type="button" onclick="toggleRulesPanel('${escapeHtml(panelKey)}')" aria-expanded="${expanded ? 'true' : 'false'}">${expanded ? '收起规则' : '展开规则'}</button>
+            </div>
           </div>
           ${chips.length ? `
             <div class="rules-chip-grid">
@@ -309,18 +359,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
               `).join('')}
             </div>
           ` : ''}
-          ${sections.map((section) => `
-            <article class="rules-section">
-              <div class="rules-section-label">${escapeHtml(section.title || '--')}</div>
-              ${section.copy ? `<div class="rules-section-copy">${escapeHtml(section.copy)}</div>` : ''}
-              <div class="rules-section-list">
-                ${(Array.isArray(section.lines) ? section.lines : []).map((line) => `
-                  <div class="rules-line">${escapeHtml(line)}</div>
-                `).join('')}
-              </div>
-            </article>
-          `).join('')}
-          ${footer ? `<div class="rules-footer">${escapeHtml(footer)}</div>` : ''}
+          <div class="rules-panel-collapsible">
+            ${sections.map((section) => `
+              <article class="rules-section">
+                <div class="rules-section-label">${escapeHtml(section.title || '--')}</div>
+                ${section.copy ? `<div class="rules-section-copy">${escapeHtml(section.copy)}</div>` : ''}
+                <div class="rules-section-list">
+                  ${(Array.isArray(section.lines) ? section.lines : []).map((line) => `
+                    <div class="rules-line">${escapeHtml(line)}</div>
+                  `).join('')}
+                </div>
+              </article>
+            `).join('')}
+            ${footer ? `<div class="rules-footer">${escapeHtml(footer)}</div>` : ''}
+          </div>
         </section>
       `;
     }
@@ -329,9 +381,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const mount = document.getElementById('rulesBoard');
       if (!mount) return;
       const marketDate = todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate')?.value || getUsDate();
+      const loadingExpanded = !isPhoneViewport();
       const cards = [];
       if (rulesPayload?.selection) {
-        cards.push(renderRulesCard(rulesPayload.selection, {
+        cards.push(renderRulesCard('selection', rulesPayload.selection, {
           actionHref: buildPageUrl('/ibkr_screener.html', {
             tab: 'screener',
             view: activeScreenerView,
@@ -341,7 +394,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }));
       }
       if (rulesPayload?.signals) {
-        cards.push(renderRulesCard(rulesPayload.signals, {
+        cards.push(renderRulesCard('signals', rulesPayload.signals, {
           actionHref: buildPageUrl('/ibkr_signals.html', {
             date: marketDate,
           }, { environment: currentEnvironment }),
@@ -355,13 +408,21 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
 
       mount.innerHTML = `
-        <section class="panel rules-panel">
+        <section class="panel rules-panel" data-expanded="${loadingExpanded ? 'true' : 'false'}">
           <div class="rules-panel-kicker">Rules Snapshot</div>
           <div class="rules-panel-title">规则摘要加载中</div>
           <div class="rules-empty">${escapeHtml(rulesLoadError || '正在读取当前 compute 逻辑与 runtime 配置。')}</div>
         </section>
       `;
     }
+
+    window.toggleRulesPanel = function(panelKey) {
+      const normalized = String(panelKey || '').trim();
+      if (!normalized) return;
+      if (expandedRulesPanels.has(normalized)) expandedRulesPanels.delete(normalized);
+      else expandedRulesPanels.add(normalized);
+      renderRulesBoard();
+    };
 
     async function loadRulesSummary({ force = false } = {}) {
       if (!force && rulesLoaded && !rulesLoadError) {
@@ -802,6 +863,226 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return `<div class="reason-wrap">${reasons.slice(0, 4).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
     }
 
+    function buildChartUrl(symbol) {
+      return buildPageUrl('/ibkr_chart.html', {
+        symbol: symbol || '',
+        interval: '5m',
+      }, { environment: currentEnvironment });
+    }
+
+    function buildIndicatorUrl(symbol, marketDate) {
+      return buildPageUrl('/ibkr_indicators.html', {
+        date: marketDate || '',
+        search: symbol || '',
+      }, { environment: currentEnvironment });
+    }
+
+    function buildSignalUrl(symbol, marketDate) {
+      return buildPageUrl('/ibkr_signals.html', {
+        date: marketDate || '',
+        search: symbol || '',
+      }, { environment: currentEnvironment });
+    }
+
+    function buildMobileMetricCard(label, valueHtml) {
+      return `
+        <article class="mobile-metric-card">
+          <div class="mobile-metric-label">${escapeHtml(label || '--')}</div>
+          <div class="mobile-metric-value">${valueHtml || '--'}</div>
+        </article>
+      `;
+    }
+
+    function buildMobileSection(label, bodyHtml) {
+      return `
+        <div class="mobile-section">
+          <div class="mobile-section-label">${escapeHtml(label || '--')}</div>
+          <div class="mobile-section-copy">${bodyHtml || '--'}</div>
+        </div>
+      `;
+    }
+
+    function renderCurrentTargetCards(rows, marketDate) {
+      const mount = document.getElementById('currentTargetsCards');
+      if (!mount) return;
+      if (!Array.isArray(rows) || !rows.length) {
+        renderMobileCardState('currentTargetsCards', '当前条件下没有符合的标的。');
+        return;
+      }
+
+      mount.innerHTML = rows.map((row) => {
+        const signalStateKey = formatCurrentSignalState(row);
+        const chartUrl = buildChartUrl(row.symbol || '');
+        const indicatorUrl = buildIndicatorUrl(row.symbol || '', marketDate);
+        const signalUrl = buildSignalUrl(row.symbol || '', marketDate);
+        return `
+          <article class="mobile-data-card">
+            <div class="mobile-data-head">
+              <div>
+                <a class="mobile-data-symbol" href="${chartUrl}">${escapeHtml(row.symbol || '--')}</a>
+                <div class="mobile-data-time">${escapeHtml(row.latest_us_time || '--')}</div>
+                <div class="mobile-data-subcopy">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</div>
+              </div>
+              <div>
+                <div class="mobile-data-price">${escapeHtml(formatPrice(row.display_price ?? row.price))}</div>
+                <div class="mobile-data-time">${escapeHtml(formatPct(row.display_day_change_pct ?? row.day_change_pct))}</div>
+              </div>
+            </div>
+
+            <div class="mobile-chip-row">
+              ${statusChip(row.target_status || '--', row.target_status || '')}
+              ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}
+              ${statusChip(formatCurrentStateLabel(row.technical_state), row.technical_state || 'watch')}
+              ${statusChip(formatCurrentStateLabel(signalStateKey), signalStateKey)}
+              ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
+            </div>
+
+            <div class="mobile-data-grid">
+              ${buildMobileMetricCard('目标分 / 可操作分', `${escapeHtml(formatNumber(row.target_score || 0, 1))} / ${escapeHtml(formatNumber(row.tradability_score || 0, 0))}`)}
+              ${buildMobileMetricCard('信号统计', `${escapeHtml(String(row.signal_count_today || 0))}${row.latest_signal_direction ? ` · ${escapeHtml(String(row.latest_signal_direction || '').toUpperCase())}` : ''}`)}
+            </div>
+
+            ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
+            ${buildMobileSection('当前阶段', `<strong>${escapeHtml(row.workflow_label || formatCurrentStateLabel(row.workflow_stage || row.attention_state || 'watch'))}</strong> · ${escapeHtml(row.workflow_summary || '--')}`)}
+            ${buildMobileSection('阶段阻塞', buildFlagPills(row.workflow_blockers, '当前无明显阻塞'))}
+            ${buildMobileSection('下一步', escapeHtml(row.workflow_next_action || '--'))}
+            ${buildMobileSection('可操作依据', buildReasonPills(row))}
+
+            <div class="mobile-data-actions">
+              <a class="mini-link" href="${chartUrl}">Chart</a>
+              <a class="mini-link" href="${indicatorUrl}">指标</a>
+              <a class="mini-link" href="${signalUrl}">信号</a>
+            </div>
+          </article>
+        `;
+      }).join('');
+    }
+
+    function renderScreenerCards(rows) {
+      const mount = document.getElementById('screenerCards');
+      if (!mount) return;
+      if (!Array.isArray(rows) || !rows.length) {
+        renderMobileCardState('screenerCards', '当前条件下没有符合的标的。');
+        return;
+      }
+
+      mount.innerHTML = rows.map((row) => {
+        const symbol = String(row.symbol || '').trim().toUpperCase();
+        const checked = selectedSymbols.has(symbol) ? 'checked' : '';
+        const chartUrl = buildChartUrl(row.symbol || '');
+        return `
+          <article class="mobile-data-card">
+            <div class="mobile-data-head">
+              <div>
+                <a class="mobile-data-symbol" href="${chartUrl}">${escapeHtml(row.symbol || '--')}</a>
+                <div class="mobile-data-time">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</div>
+                <div class="mobile-data-subcopy">${escapeHtml(row.display_price_source || row.price_source || '--')}</div>
+              </div>
+              <label class="mobile-select-control">
+                <input class="row-check" type="checkbox" ${checked} onchange="toggleSelection('${escapeHtml(row.symbol || '')}', this.checked)" />
+                <span>选择</span>
+              </label>
+            </div>
+
+            <div class="mobile-chip-row">
+              ${statusChip(row.target_status || 'none', row.target_status || '')}
+              ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}
+              ${buildScorePill(row)}
+              ${statusChip(row.is_operable ? '可操作' : '人工复核', row.is_operable ? 'active' : 'neutral')}
+              ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
+            </div>
+
+            <div class="mobile-data-grid">
+              ${buildMobileMetricCard('价格 / 涨跌', `${escapeHtml(formatPrice(row.display_price ?? row.price))}<br><span class="mobile-data-subcopy mono">${escapeHtml(formatPct(row.display_day_change_pct ?? row.day_change_pct))}</span>`)}
+              ${buildMobileMetricCard('ATR / 量能', `ATR ${escapeHtml(formatPct(row.atr_pct))}<br><span class="mobile-data-subcopy">10D ${escapeHtml(formatVolume(row.avg_10d_volume))} · PRE ${escapeHtml(formatVolume(row.premarket_volume))}</span>`)}
+            </div>
+
+            ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
+            ${buildMobileSection('可操作依据', buildReasonPills(row))}
+
+            <div class="mobile-data-actions">
+              <a class="mini-link" href="${chartUrl}">Chart</a>
+            </div>
+          </article>
+        `;
+      }).join('');
+    }
+
+    function renderDailyTargetCards(items) {
+      const mount = document.getElementById('dailyTargetsCards');
+      if (!mount) return;
+      if (!Array.isArray(items) || !items.length) {
+        renderMobileCardState('dailyTargetsCards', '当前日期没有目标池记录。');
+        return;
+      }
+
+      mount.innerHTML = items.map((item) => `
+        <article class="mobile-data-card">
+          <div class="mobile-data-head">
+            <div>
+              <a class="mobile-data-symbol" href="${buildChartUrl(item.symbol || '')}">${escapeHtml(item.symbol || '--')}</a>
+              <div class="mobile-data-time">${escapeHtml(item.exchange || '--')}</div>
+              <div class="mobile-data-subcopy">${escapeHtml(item.date || '--')}</div>
+            </div>
+            <div class="mobile-chip-row">
+              ${statusChip(item.status || 'candidate', item.status || 'candidate')}
+              ${statusChip(item.direction_bias || 'neutral', item.direction_bias || 'neutral')}
+            </div>
+          </div>
+
+          <div class="mobile-data-grid">
+            ${buildMobileMetricCard('分数', escapeHtml(Number(item.score || 0).toFixed(1)))}
+            ${buildMobileMetricCard('更新时间', `${escapeHtml(item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</span>`)}
+          </div>
+
+          ${buildMobileSection('理由', escapeHtml(item.scan_reason || '--'))}
+
+          <div class="mobile-data-actions">
+            <a class="mini-link" href="${buildChartUrl(item.symbol || '')}">Chart</a>
+            <button class="mini-btn" type="button" onclick="editDailyTargetItem('${escapeHtml(item.id || '')}')">编辑</button>
+            <button class="mini-btn danger" type="button" onclick="removeDailyTargetItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}')">删除</button>
+          </div>
+        </article>
+      `).join('');
+    }
+
+    function renderWatchlistCards(items) {
+      const mount = document.getElementById('watchlistCards');
+      if (!mount) return;
+      if (!Array.isArray(items) || !items.length) {
+        renderMobileCardState('watchlistCards', `当前没有符合条件的 ${getWatchlistRoleLabel()} 记录。`);
+        return;
+      }
+
+      mount.innerHTML = items.map((item) => `
+        <article class="mobile-data-card">
+          <div class="mobile-data-head">
+            <div>
+              <a class="mobile-data-symbol" href="${buildChartUrl(item.symbol || '')}">${escapeHtml(item.symbol || '--')}</a>
+              <div class="mobile-data-time">${escapeHtml(item.exchange || '--')} / ${escapeHtml(item.industry || '--')}</div>
+            </div>
+            <div class="mobile-chip-row">
+              <span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span>
+              ${statusChip(formatWatchlistRole(item.symbol_role), normalizeWatchlistRole(item.symbol_role))}
+            </div>
+          </div>
+
+          <div class="mobile-data-grid">
+            ${buildMobileMetricCard('成员属性', escapeHtml(formatWatchlistMember(item)))}
+            ${buildMobileMetricCard('更新时间', `${escapeHtml(item.updated_us || item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</span>`)}
+          </div>
+
+          ${buildMobileSection('备注', escapeHtml(item.note || '--'))}
+
+          <div class="mobile-data-actions">
+            <a class="mini-link" href="${buildChartUrl(item.symbol || '')}">Chart</a>
+            <button class="mini-btn" type="button" onclick="editItem('${escapeHtml(item.id || '')}')">编辑</button>
+            <button class="mini-btn danger" type="button" onclick="removeItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}', '${escapeHtml(formatRecordEnvironment(item.environment))}')">删除</button>
+          </div>
+        </article>
+      `).join('');
+    }
+
     function mergeTodayTargetRowWithRealtimeQuote(row) {
       const quote = getRealtimeQuote(row?.symbol);
       return {
@@ -893,6 +1174,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const filteredTotal = Math.max(0, Number(todayTargetsPayload.filtered_total || 0) || 0);
       const returnedCount = Array.isArray(filteredCurrentTargetRows) ? filteredCurrentTargetRows.length : 0;
       const pageButtons = getCurrentTargetPageButtons(page, totalPages);
+      const shouldShowPagination = totalPages > 1;
       const controls = [];
 
       controls.push(`<button class="mini-btn pagination-btn" type="button" onclick="setCurrentTargetPage(${page - 1})" ${page <= 1 ? 'disabled' : ''}>上一页</button>`);
@@ -908,7 +1190,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
       ['currentTargetsPaginationTop', 'currentTargetsPaginationBottom'].forEach((id) => {
         const mount = document.getElementById(id);
-        if (mount) mount.innerHTML = controls.join('');
+        if (!mount) return;
+        const bar = mount.closest('.pagination-bar');
+        if (bar) bar.hidden = !shouldShowPagination;
+        mount.innerHTML = shouldShowPagination ? controls.join('') : '';
       });
 
       const statusText = filteredTotal
@@ -916,7 +1201,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         : '第 1 / 1 页 · 当前没有结果';
       ['currentTargetsPaginationStatusTop', 'currentTargetsPaginationStatusBottom'].forEach((id) => {
         const mount = document.getElementById(id);
-        if (mount) mount.textContent = statusText;
+        if (mount) mount.textContent = shouldShowPagination ? statusText : '';
       });
     }
 
@@ -1006,6 +1291,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前条件下没有符合的标的。</td></tr>';
+        renderCurrentTargetCards([], marketDate);
         return;
       }
 
@@ -1080,6 +1366,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           </tr>
         `;
       }).join('');
+      renderCurrentTargetCards(rows, marketDate);
     }
 
     async function loadTodayTargets(showToastOnSuccess = false) {
@@ -1089,6 +1376,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('currentTargetsMeta').textContent = `交易日 ${marketDate} · 正在加载...`;
       document.getElementById('currentTargetsMetaSecondary').textContent = '正在计算技术状态与今日信号聚合...';
       document.getElementById('currentTargetsTable').innerHTML = '<tr><td colspan="6" class="empty-state">加载中...</td></tr>';
+      renderMobileCardState('currentTargetsCards', '正在加载当前标的...');
       renderCurrentTargetPagination();
 
       try {
@@ -1115,6 +1403,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         document.getElementById('currentTargetsMeta').textContent = `加载失败: ${error.message || error}`;
         document.getElementById('currentTargetsMetaSecondary').textContent = '当前标的榜加载失败。';
         document.getElementById('currentTargetsTable').innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        renderMobileCardState('currentTargetsCards', error.message || error);
         renderCurrentTargetPagination();
         renderRulesBoard();
         if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
@@ -1162,6 +1451,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const tbody = document.getElementById('screenerTable');
       if (!Array.isArray(filteredRows) || !filteredRows.length) {
         tbody.innerHTML = '<tr><td colspan="9" class="empty">当前条件下没有符合的标的</td></tr>';
+        renderScreenerCards([]);
         document.getElementById('tableMeta').textContent = '0 条结果';
         document.getElementById('tableMetaSecondary').textContent = '';
         return;
@@ -1221,6 +1511,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           </tr>
         `;
       }).join('');
+      renderScreenerCards(filteredRows);
 
       document.getElementById('tableMeta').textContent = `当前可见 ${filteredRows.length} 条 · 可操作 ${filteredRows.filter((row) => row.is_operable).length} 条 · 已有 live bars ${filteredRows.filter((row) => row.has_live_bar).length} 条`;
       document.getElementById('tableMetaSecondary').textContent = `可见结果中已选择 ${filteredRows.filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase())).length} 条`;
@@ -1395,6 +1686,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         screenerLoadKey = '';
         document.getElementById('refreshInfo').textContent = '加载失败';
         document.getElementById('screenerTable').innerHTML = `<tr><td colspan="9" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
+        renderMobileCardState('screenerCards', error.message || error);
         showToast(`加载失败: ${error.message || error}`);
       } finally {
         hideLoading();
@@ -1475,6 +1767,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('openUniverseViewBtn')?.addEventListener('click', async () => {
         await activateScreenerView('universe');
       });
+      document.getElementById('toggleCurrentAdvancedFiltersBtn')?.addEventListener('click', () => {
+        currentFiltersExpanded = !currentFiltersExpanded;
+        syncCurrentAdvancedFilters();
+      });
+      syncCurrentAdvancedFilters();
     }
 
     function parseSymbolList(rawValue) {
@@ -1641,6 +1938,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const table = document.getElementById('dailyTargetsTable');
       if (!items.length) {
         table.innerHTML = '<tr><td colspan="9" class="empty-state">当前日期没有目标池记录。</td></tr>';
+        renderDailyTargetCards([]);
         if (activeTab === 'targets') updateHero();
         return;
       }
@@ -1674,6 +1972,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           </td>
         </tr>
       `).join('');
+      renderDailyTargetCards(items);
 
       if (activeTab === 'targets') updateHero();
     }
@@ -1730,6 +2029,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         dailyTargetsState.loadedDate = '';
         dailyTargetsState.lastRefresh = 'ibkr_targets 加载失败';
         document.getElementById('dailyTargetsTable').innerHTML = `<tr><td colspan="9" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        renderMobileCardState('dailyTargetsCards', error.message || error);
         document.getElementById('dailyTargetListMeta').textContent = `加载失败: ${error.message || error}`;
         if (activeTab === 'targets') updateHero();
       }
@@ -2001,6 +2301,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const table = document.getElementById('watchlistTable');
       if (!items.length) {
         table.innerHTML = `<tr><td colspan="9" class="empty-state">当前没有符合条件的 ${escapeHtml(getWatchlistRoleLabel())} 记录。</td></tr>`;
+        renderWatchlistCards([]);
       } else {
         table.innerHTML = items.map((item) => `
           <tr>
@@ -2031,6 +2332,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             </td>
           </tr>
         `).join('');
+        renderWatchlistCards(items);
       }
 
       document.getElementById('listMeta').textContent = `已载入 ${watchlistState.items.length} 条原始记录 · 当前可见 ${items.length} 条`;
@@ -2084,6 +2386,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         watchlistState.loadedRole = getWatchlistRoleForTab();
         watchlistState.lastRefresh = 'watchlist 加载失败';
         document.getElementById('watchlistTable').innerHTML = `<tr><td colspan="9" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        renderMobileCardState('watchlistCards', error.message || error);
         document.getElementById('listMeta').textContent = `加载失败: ${error.message || error}`;
         if (isWatchlistRoleTab()) {
           renderSearchResults();
@@ -2336,6 +2639,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
       bindScreenerViewEvents();
+      bindResponsiveState();
       bindFilterEvents();
       bindCurrentTargetFilterEvents();
       attachDailyTargetEvents();

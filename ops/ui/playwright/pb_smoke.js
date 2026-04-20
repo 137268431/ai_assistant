@@ -258,6 +258,81 @@ async function collectLayoutMetrics(page) {
   }, PANEL_ROW_HEIGHT_MAX_PX);
 }
 
+async function collectPageExpectationIssues(page, url, mobile) {
+  const path = new URL(url).pathname;
+  if (path === '/index.html' || path === '/') {
+    return page.evaluate((isMobileViewport) => {
+      const issues = [];
+      const tip = document.getElementById('todayTargetsTimeTip');
+      const badge = document.querySelector('.home-panel-tip-badge');
+      const tipCard = document.querySelector('.home-panel-tip');
+
+      const tipText = String(tip?.textContent || '').trim();
+      const badgeText = String(badge?.textContent || '').trim();
+      const tipStyle = tipCard ? window.getComputedStyle(tipCard) : null;
+
+      if (!tip) issues.push('missing_targets_time_tip');
+      if (!badge) issues.push('missing_targets_tip_badge');
+      if (!tipCard) issues.push('missing_targets_tip_card');
+      if (tip && !tipText.includes('美东交易日')) issues.push('targets_time_tip_missing_market_date_copy');
+      if (tip && !tipText.includes('ET')) issues.push('targets_time_tip_missing_et_copy');
+      if (tip && !tipText.includes('当前标的榜')) issues.push('targets_time_tip_missing_jump_hint');
+      if (badge && badgeText !== 'Tips') issues.push(`targets_tip_badge_text:${badgeText || 'empty'}`);
+      if (tipCard && tipStyle?.display !== 'flex') issues.push(`targets_tip_display:${tipStyle?.display || 'missing'}`);
+      if (tipCard && isMobileViewport && tipStyle?.flexDirection !== 'column') {
+        issues.push(`targets_tip_mobile_direction:${tipStyle?.flexDirection || 'missing'}`);
+      }
+
+      return issues;
+    }, mobile);
+  }
+
+  if (path === '/ibkr_screener.html') {
+    return page.evaluate((isMobileViewport) => {
+      const issues = [];
+      const visible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1;
+      };
+
+      const activeTab = document.querySelector('.tab-panel.active');
+      if (!activeTab) {
+        issues.push('missing_active_tab_panel');
+        return issues;
+      }
+
+      const isScreenerTab = activeTab.id === 'screenerTab';
+      const currentViewPanel = document.getElementById('currentViewPanel');
+      const activeMobileLists = Array.from(activeTab.querySelectorAll('.mobile-card-list')).filter(visible);
+      const visibleDesktopTables = Array.from(activeTab.querySelectorAll('.desktop-table-wrap')).filter(visible);
+      const rulesPanels = Array.from(document.querySelectorAll('#rulesBoard .rules-panel'));
+      const toggleButton = document.getElementById('toggleCurrentAdvancedFiltersBtn');
+
+      if (isMobileViewport) {
+        if (!activeMobileLists.length) issues.push('missing_visible_mobile_card_list');
+        if (visibleDesktopTables.length) issues.push(`desktop_table_visible:${visibleDesktopTables.length}`);
+        if (isScreenerTab && currentViewPanel?.classList.contains('active')) {
+          const currentCards = document.getElementById('currentTargetsCards');
+          if (!visible(currentCards)) issues.push('current_targets_mobile_cards_hidden');
+          if (toggleButton && !visible(toggleButton)) issues.push('current_filter_toggle_hidden');
+        }
+        if (isScreenerTab && rulesPanels.length && !rulesPanels.some((panel) => panel.dataset.expanded === 'false')) {
+          issues.push('rules_not_collapsed_by_default');
+        }
+      } else {
+        if (activeMobileLists.length) issues.push(`mobile_card_list_visible_on_desktop:${activeMobileLists.length}`);
+        if (!visibleDesktopTables.length) issues.push('desktop_table_missing_on_desktop');
+      }
+
+      return issues;
+    }, mobile);
+  }
+
+  return [];
+}
+
 async function inspectPage(browser, token, url, mobile) {
   const context = await createContext(browser, token, mobile);
   const page = await context.newPage();
@@ -307,6 +382,7 @@ async function inspectPage(browser, token, url, mobile) {
     tall_panel_rows: [],
     scroll_issues: [{ selector: 'layout_eval_failed', index: 0, gap: 0, overflowY: 'error' }],
   }));
+  const pageExpectationIssues = await collectPageExpectationIssues(page, finalUrl, mobile).catch(() => ['page_expectation_eval_failed']);
 
   const layoutIssues = [];
   if (/\/login\.html/.test(finalUrl)) layoutIssues.push('redirected_to_login');
@@ -320,7 +396,7 @@ async function inspectPage(browser, token, url, mobile) {
   if (layout.scroll_issues.length) layoutIssues.push(`uncontained_scroll:${layout.scroll_issues.length}`);
 
   let screenshot = '';
-  if (errors.length || layoutIssues.length) {
+  if (errors.length || layoutIssues.length || pageExpectationIssues.length) {
     screenshot = `${ARTIFACT_DIR}/${sanitizeFileStem(url, mobile ? 'mobile' : 'desktop')}.png`;
     await page.screenshot({
       path: screenshot,
@@ -342,6 +418,7 @@ async function inspectPage(browser, token, url, mobile) {
     layout,
     errors,
     layout_issues: layoutIssues,
+    page_expectation_issues: pageExpectationIssues,
     screenshot,
   };
 }
@@ -362,7 +439,7 @@ async function inspectPage(browser, token, url, mobile) {
   }
   await browser.close();
 
-  const failing = results.filter((item) => item.errors.length || item.layout_issues.length);
+  const failing = results.filter((item) => item.errors.length || item.layout_issues.length || item.page_expectation_issues.length);
   console.log(JSON.stringify(results, null, 2));
   if (failing.length) {
     process.exit(1);

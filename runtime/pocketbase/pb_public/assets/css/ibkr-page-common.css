@@ -499,6 +499,60 @@ body.rules-detail-open {
     box-shadow: none;
 }
 
+.refresh-btn.page-refresh-trigger.page-refresh-trigger,
+.toolbar-btn.page-refresh-trigger.page-refresh-trigger,
+.btn.page-refresh-trigger.page-refresh-trigger {
+    border-color: rgba(99, 179, 237, 0.28);
+    background: linear-gradient(180deg, rgba(99, 179, 237, 0.18), rgba(255, 255, 255, 0.04));
+    color: #dbeafe;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        0 12px 26px rgba(2, 8, 23, 0.14);
+}
+
+.refresh-btn.page-refresh-trigger.page-refresh-trigger:hover,
+.toolbar-btn.page-refresh-trigger.page-refresh-trigger:hover,
+.btn.page-refresh-trigger.page-refresh-trigger:hover {
+    border-color: rgba(99, 179, 237, 0.42);
+    background: linear-gradient(180deg, rgba(99, 179, 237, 0.28), rgba(255, 255, 255, 0.06));
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        0 14px 30px rgba(2, 8, 23, 0.18);
+}
+
+.refresh-btn.page-refresh-trigger.page-refresh-trigger:active,
+.toolbar-btn.page-refresh-trigger.page-refresh-trigger:active,
+.btn.page-refresh-trigger.page-refresh-trigger:active {
+    transform: translateY(0);
+    border-color: rgba(125, 211, 252, 0.5);
+    background: linear-gradient(180deg, rgba(99, 179, 237, 0.24), rgba(255, 255, 255, 0.05));
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        0 8px 18px rgba(2, 8, 23, 0.14);
+}
+
+.refresh-btn.page-refresh-trigger.page-refresh-trigger:disabled,
+.toolbar-btn.page-refresh-trigger.page-refresh-trigger:disabled,
+.btn.page-refresh-trigger.page-refresh-trigger:disabled {
+    border-color: rgba(99, 179, 237, 0.16);
+    background: linear-gradient(180deg, rgba(99, 179, 237, 0.1), rgba(255, 255, 255, 0.03));
+}
+
+.refresh-btn.page-refresh-trigger.page-refresh-trigger.is-compact {
+    min-width: 42px;
+    min-height: 38px;
+    padding: 9px 12px;
+    border-radius: 12px;
+    font-size: 15px;
+    line-height: 1;
+}
+
+.refresh-control > .refresh-btn.page-refresh-trigger.page-refresh-trigger.is-compact {
+    flex: 0 0 auto;
+}
+
 :where(.btn.primary, .toolbar-btn.primary, .action-primary, .ops-btn.primary, .save-btn, .btn-login) {
     border-color: rgba(99, 179, 237, 0.34);
     background: linear-gradient(180deg, rgba(99, 179, 237, 0.24), rgba(255, 255, 255, 0.05));
