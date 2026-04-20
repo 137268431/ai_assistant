@@ -5,6 +5,7 @@ var envUtils = require(`${__hooks}/lib/environment.js`)
 var timeUtils = require(`${__hooks}/lib/time_utils.js`)
 var systemEvents = require(`${__hooks}/lib/system_events.js`)
 var deadlineUtils = require(`${__hooks}/lib/runtime/ibkr_2fa_deadlines.js`)
+var usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
 
 var IBKR_2FA_STATE_KEY = "ibkr_2fa"
 var IBKR_2FA_STATE_DATE = "global"
@@ -341,16 +342,8 @@ function toNumber(value, fallback) {
     return Number.isFinite(num) ? num : (fallback || 0)
 }
 
-function parseShiftedTimeMs(value, offsetMinutes) {
-    var text = String(value || "").trim()
-    if (!text) return 0
-    var parsed = Date.parse(text.replace(" ", "T") + "Z")
-    if (!Number.isFinite(parsed)) return 0
-    return parsed - (Number(offsetMinutes || 0) * 60000)
-}
-
 function parseUsTimeMs(value) {
-    return parseShiftedTimeMs(value, -4 * 60)
+    return usEasternTime.parseUsEasternTimeMs(value)
 }
 
 function isActiveStatus(status) {
@@ -507,9 +500,9 @@ function buildRequestedSummary(stateData, fallbackSummary) {
     }
     var confirmSeconds = toNumber(state.confirm_window_seconds, deadlineUtils.DEFAULT_CONFIRM_TIMEOUT_SECONDS)
     if (state.business_deadline_overdue) {
-        return "本周重登提醒仍待手动开始，当前已晚于周一盘前建议完成时间。你仍可从当前卡片开始验证；点击开始后需在 " + confirmSeconds + " 秒内完成当前 2FA。"
+        return "本周重登提醒仍待手动开始，当前已晚于美股周一盘前建议完成时间。你仍可从当前卡片开始验证；点击开始后需在 " + confirmSeconds + " 秒内完成当前 2FA。"
     }
-    return "本周重登提醒已发出。你有空时可直接在当前卡片点击“开始 2FA 验证”；最晚请于周一盘前前完成。点击开始后需在 " + confirmSeconds + " 秒内完成当前 2FA。"
+    return "本周重登提醒已发出。你有空时可直接在当前卡片点击“开始 2FA 验证”；最晚请于美股周一盘前前完成。点击开始后需在 " + confirmSeconds + " 秒内完成当前 2FA。"
 }
 
 function buildCardSummary(stateData, fallbackSummary) {
@@ -530,9 +523,9 @@ function buildWeeklyReminderDeadlineNote(stateData) {
     }
     var confirmSeconds = toNumber(state.confirm_window_seconds, deadlineUtils.DEFAULT_CONFIRM_TIMEOUT_SECONDS)
     if (state.business_deadline_overdue) {
-        return "**周验证提醒**: 已晚于周一盘前建议完成时间（北京时间 " + state.business_deadline_cn + " / 美东 " + (state.business_deadline_at || "-") + "）。你仍可从当前卡片开始验证，但请尽快完成恢复。"
+        return "**周验证提醒**: 已晚于美股周一盘前建议完成时间（北京时间 " + state.business_deadline_cn + " / 美东 " + (state.business_deadline_at || "-") + "）。你仍可从当前卡片开始验证，但请尽快完成恢复。"
     }
-    return "**周验证提醒**: 你有空时可从当前卡片开始验证；最晚请于周一盘前前完成（北京时间 " + state.business_deadline_cn + " / 美东 " + (state.business_deadline_at || "-") + "）。点击开始后，本轮 2FA 需在 " + confirmSeconds + " 秒内完成。"
+    return "**周验证提醒**: 你有空时可从当前卡片开始验证；最晚请于美股周一盘前前完成（北京时间 " + state.business_deadline_cn + " / 美东 " + (state.business_deadline_at || "-") + "）。点击开始后，本轮 2FA 需在 " + confirmSeconds + " 秒内完成。"
 }
 
 function buildConfirmDeadlineNote(stateData) {

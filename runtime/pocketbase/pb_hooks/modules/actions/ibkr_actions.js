@@ -6260,8 +6260,8 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
         } else if (result.skipped_reason === "active_card_reused") {
             if (weeklyReminderRequested) {
                 message = state.business_deadline_overdue
-                    ? "已复用现有本周重登提醒卡片；当前已晚于周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
-                    : "已复用现有本周重登提醒卡片；你有空时直接去飞书点击开始验证，最晚请于周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
+                    ? "已复用现有本周重登提醒卡片；当前已晚于美股周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
+                    : "已复用现有本周重登提醒卡片；你有空时直接去飞书点击开始验证，最晚请于美股周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
             } else {
                 const remainingMs = Number(result.renotify_remaining_ms || 0) || 0
                 const remainingMin = remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0
@@ -6276,8 +6276,8 @@ routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
         } else if (result.ok) {
             if (weeklyReminderRequested) {
                 message = state.business_deadline_overdue
-                    ? "已发送本周重登提醒卡片；当前已晚于周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
-                    : "已发送本周重登提醒卡片；你有空时可在飞书点击开始验证，最晚请于周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
+                    ? "已发送本周重登提醒卡片；当前已晚于美股周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
+                    : "已发送本周重登提醒卡片；你有空时可在飞书点击开始验证，最晚请于美股周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
             } else {
                 message = forceNew
                     ? "已强制发送新的 2FA 卡片，请在飞书点击按钮触发验证。"

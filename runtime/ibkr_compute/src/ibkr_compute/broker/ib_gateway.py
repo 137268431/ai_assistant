@@ -2009,6 +2009,15 @@ class AuthController:
             return self.broker.health()
         return {}
 
+    def _direct_broker_auth_health(self) -> dict[str, Any]:
+        if not self.broker:
+            return {}
+        try:
+            return self.broker.health()
+        except Exception as exc:
+            logger.debug("Direct broker auth refresh failed: %s", exc)
+            return {}
+
     def _mark_login_success(
         self,
         *,
@@ -2083,7 +2092,13 @@ class AuthController:
             source or "-",
             int(fresh_probe_payload.get("probe_client_id", 0) or 0),
         )
-        for settle_seconds in (0.5, 1.0, float(self.login_poll_interval_seconds)):
+        broker_connect_timeout = float(getattr(self.broker, "connect_timeout", DEFAULT_CONNECT_TIMEOUT_SECONDS) or DEFAULT_CONNECT_TIMEOUT_SECONDS)
+        for settle_seconds in (
+            0.5,
+            1.0,
+            float(self.login_poll_interval_seconds),
+            broker_connect_timeout,
+        ):
             try:
                 reconnect_payload = self.broker.force_reconnect(
                     reason=f"{reconnect_reason}_fresh_probe_authenticated",
@@ -2114,7 +2129,35 @@ class AuthController:
                     last_result="fresh_probe_authenticated_self_healed",
                 )
 
-        return False
+        broker_health = self._direct_broker_auth_health()
+        if self._is_authenticated_payload(broker_health):
+            logger.warning(
+                "Fresh broker probe authenticated after manual 2FA timeout; "
+                "direct broker health recovered after self-heal retries: reason=%s source=%s",
+                reason or "-",
+                source or "-",
+            )
+            return self._mark_login_success(
+                detail=detail,
+                reason=reason,
+                source=source,
+                message="IB Gateway 已完成认证，主连接已在超时后自动恢复。",
+                last_result="fresh_probe_authenticated_late_broker_recovered",
+            )
+
+        logger.warning(
+            "Fresh broker probe authenticated after manual 2FA timeout, but primary broker reconnect is still settling; "
+            "accepting login success to avoid a false manual re-trigger: reason=%s source=%s",
+            reason or "-",
+            source or "-",
+        )
+        return self._mark_login_success(
+            detail=detail,
+            reason=reason,
+            source=source,
+            message="IB Gateway 已完成认证，主连接正在延迟恢复。",
+            last_result="fresh_probe_authenticated_pending_reconnect",
+        )
 
     def login(
         self,

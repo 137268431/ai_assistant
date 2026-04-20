@@ -8,6 +8,7 @@
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
+var usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
 
 var PB_HOST = "https://pb.lzw-glory.top"
 var SYSTEM_CHAT_ID = "oc_b7b52fc28816d90e27ce50ca7922a9ac"
@@ -45,14 +46,10 @@ function normalizeTargetChat(value) {
 }
 
 function getTimeStrings() {
-    var now = new Date()
-    var usOffset = -4 * 60
-    var cnOffset = 8 * 60
-    var usTime = new Date(now.getTime() + usOffset * 60000)
-    var cnTime = new Date(now.getTime() + cnOffset * 60000)
+    var nowMs = Date.now()
     return {
-        us: usTime.toISOString().slice(0, 19).replace("T", " "),
-        cn: cnTime.toISOString().slice(0, 19).replace("T", " ")
+        us: usEasternTime.formatUsEasternTime(nowMs),
+        cn: usEasternTime.formatCnTime(nowMs)
     }
 }
 

@@ -18,6 +18,7 @@ const MARKET_OPEN_REMINDER_HOUR = 9
 const MARKET_OPEN_REMINDER_MINUTE = 20
 const MARKET_CLOSE_REMINDER_HOUR = 16
 const MARKET_CLOSE_REMINDER_MINUTE = 5
+const usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
 
 function toNumber(value, fallback) {
     const num = Number(value)
@@ -73,16 +74,8 @@ function parseStateValue(raw) {
     }
 }
 
-function parseShiftedTimeMs(value, offsetMinutes) {
-    const text = String(value || "").trim()
-    if (!text) return 0
-    const parsed = Date.parse(text.replace(" ", "T") + "Z")
-    if (!Number.isFinite(parsed)) return 0
-    return parsed - (Number(offsetMinutes || 0) * 60000)
-}
-
 function parseUsTimeMs(value) {
-    return parseShiftedTimeMs(value, -4 * 60)
+    return usEasternTime.parseUsEasternTimeMs(value)
 }
 
 function getStateRecord(stateKey, environment, dateToken) {
@@ -355,15 +348,13 @@ function buildStatusSnapshot(environment, times) {
 }
 
 function getUsClock() {
-    const now = new Date()
-    const usOffset = -4 * 60
-    const usTime = new Date(now.getTime() + usOffset * 60000)
+    const usParts = usEasternTime.getUsEasternParts(Date.now())
     return {
-        date: usTime.toISOString().slice(0, 10),
-        time: usTime.toISOString().slice(11, 16),
-        hour: usTime.getUTCHours(),
-        minute: usTime.getUTCMinutes(),
-        weekday: usTime.getUTCDay(),
+        date: `${String(usParts.year || 0).padStart(4, "0")}-${String(usParts.month || 0).padStart(2, "0")}-${String(usParts.day || 0).padStart(2, "0")}`,
+        time: `${String(usParts.hour || 0).padStart(2, "0")}:${String(usParts.minute || 0).padStart(2, "0")}`,
+        hour: usParts.hour || 0,
+        minute: usParts.minute || 0,
+        weekday: usParts.weekday || 0,
     }
 }
 

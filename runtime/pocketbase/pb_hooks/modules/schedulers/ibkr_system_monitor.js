@@ -6,6 +6,7 @@
  */
 
 console.log("[IBKRSystemMonitor] Hook 文件开始加载...")
+const usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
 
 const MONITORED_INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"]
 const BAR_INTERVAL_MS = 5 * 60 * 1000
@@ -180,16 +181,8 @@ function runHistoryRetentionCleanup(logPrefix, cronId) {
 
 const runHistoryRetentionCleanupCron = (logPrefix, cronId) => runHistoryRetentionCleanup(logPrefix, cronId)
 
-function parseShiftedTimeMs(value, offsetMinutes) {
-    const text = String(value || "").trim()
-    if (!text) return 0
-    const parsed = Date.parse(text.replace(" ", "T") + "Z")
-    if (!Number.isFinite(parsed)) return 0
-    return parsed - (Number(offsetMinutes || 0) * 60000)
-}
-
 function parseUsTimeMs(value) {
-    return parseShiftedTimeMs(value, -4 * 60)
+    return usEasternTime.parseUsEasternTimeMs(value)
 }
 
 function fetchComputeJson(path, timeoutSeconds, environment) {
@@ -1232,11 +1225,19 @@ cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
     }
 })
 
-cronAdd("ibkr_weekly_reauth_reminder", "20 1 * * 1", () => {
+cronAdd("ibkr_weekly_reauth_reminder", "0 5 * * 1", () => {
     try {
         require(`${__hooks}/lib/system_auth_edge_guard.js`).runIbkrWeeklyReauthReminder()
     } catch (err) {
         console.log(`[IBKRWeekly2FA] fatal error: ${err.message || err}`)
+    }
+})
+
+cronAdd("ibkr_weekly_reauth_followup", "30 7 * * 1", () => {
+    try {
+        require(`${__hooks}/lib/system_auth_edge_guard.js`).runIbkrWeeklyReauthFollowupReminder()
+    } catch (err) {
+        console.log(`[IBKRWeekly2FAFollowup] fatal error: ${err.message || err}`)
     }
 })
 
