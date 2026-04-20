@@ -94,6 +94,21 @@
       border: 1px solid rgba(148, 163, 184, 0.14);
     }
 
+    .summary-card.is-green {
+      border-color: rgba(104, 211, 145, 0.42);
+      background: linear-gradient(180deg, rgba(104, 211, 145, 0.12), rgba(18, 30, 53, 0.92));
+    }
+
+    .summary-card.is-yellow {
+      border-color: rgba(246, 173, 85, 0.4);
+      background: linear-gradient(180deg, rgba(246, 173, 85, 0.1), rgba(18, 30, 53, 0.92));
+    }
+
+    .summary-card.is-red {
+      border-color: rgba(252, 129, 129, 0.42);
+      background: linear-gradient(180deg, rgba(252, 129, 129, 0.1), rgba(18, 30, 53, 0.92));
+    }
+
     .summary-label {
       font-size: 11px;
       letter-spacing: 0.12em;
@@ -271,6 +286,10 @@
     .status-error, .status-repair_failed { color: var(--danger); background: rgba(252, 129, 129, 0.14); }
     .status-repairing { color: var(--warn); background: rgba(246, 173, 85, 0.16); }
     .status-repaired { color: var(--accent); background: rgba(94, 234, 212, 0.14); }
+    .status-green { color: var(--success); background: rgba(104, 211, 145, 0.14); }
+    .status-yellow, .status-unavailable { color: var(--warn); background: rgba(246, 173, 85, 0.16); }
+    .status-red { color: var(--danger); background: rgba(252, 129, 129, 0.14); }
+    .status-missing { color: var(--muted); background: rgba(148, 163, 184, 0.14); }
 
     .pill-row {
       display: flex;
@@ -342,6 +361,21 @@
     .decision-auto .decision-title { color: var(--accent); }
     .decision-warn .decision-title { color: var(--warn); }
     .decision-manual .decision-title { color: var(--danger); }
+    .decision-green {
+      border-color: rgba(104, 211, 145, 0.28);
+      background: rgba(104, 211, 145, 0.08);
+    }
+    .decision-green .decision-title { color: var(--success); }
+    .decision-yellow {
+      border-color: rgba(246, 173, 85, 0.28);
+      background: rgba(246, 173, 85, 0.08);
+    }
+    .decision-yellow .decision-title { color: var(--warn); }
+    .decision-red {
+      border-color: rgba(252, 129, 129, 0.28);
+      background: rgba(252, 129, 129, 0.08);
+    }
+    .decision-red .decision-title { color: var(--danger); }
 
     .code-copy {
       font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;

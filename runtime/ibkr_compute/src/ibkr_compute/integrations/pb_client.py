@@ -154,11 +154,22 @@ class PBClient:
             timeout=30,
         )
 
+    def upsert_bar_truth_audit_items(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return self.call_custom_api(
+            "ibkr/data_quality/truth_upsert",
+            method="POST",
+            data={"items": items},
+            timeout=30,
+        )
+
     def rescan_bar_integrity(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/data_quality/rescan", method="POST", data=data, timeout=30)
 
     def repair_bar_integrity(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/data_quality/repair", method="POST", data=data, timeout=30)
+
+    def truth_audit_bar_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.call_custom_api("ibkr/data_quality/truth_audit", method="POST", data=data, timeout=60)
 
     def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/orders/upsert", method="POST", data=data)

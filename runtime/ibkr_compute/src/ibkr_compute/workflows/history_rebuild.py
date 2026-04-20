@@ -54,6 +54,7 @@ PURGE_TABLES = (
     "ibkr_reverse_signals",
     "ibkr_targets",
     "ibkr_bar_integrity",
+    "ibkr_bar_truth_audit",
 )
 PURGE_STATE_KEYS = (
     "compute_cursors",

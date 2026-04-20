@@ -110,10 +110,14 @@ class TradingServiceIntegrityMixin:
         stale_intervals = list(derived_sync.get("stale_intervals") or [])
         repair_state = repair_state or {}
         repair_attempted = bool(repair_state.get("attempted"))
+        repair_result = repair_state.get("result") or {}
+        repair_deferred = bool(repair_result.get("deferred"))
 
         status = str(snapshot.get("integrity_status") or "ok")
         if repair_attempted:
-            if bool(snapshot.get("needs_pipeline_repair")):
+            if repair_deferred:
+                status = "repairing"
+            elif bool(snapshot.get("needs_pipeline_repair")):
                 status = "repair_failed"
             elif status == "ok":
                 status = "repaired"
@@ -290,6 +294,7 @@ class TradingServiceIntegrityMixin:
         scan_scope: str = "manual",
         persist: bool = True,
         repair: bool = False,
+        allow_repair_defer: bool = True,
     ) -> dict:
         service_mod = _service_mod()
         normalized_symbols = sorted(
@@ -345,6 +350,7 @@ class TradingServiceIntegrityMixin:
             repair_summary = self._run_bar_integrity_repairs(
                 snapshots,
                 source=f"{scan_scope}_integrity",
+                allow_defer=allow_repair_defer,
             )
             for symbol in repair_summary.get("repair_symbols") or []:
                 snapshots[symbol] = self._collect_bar_integrity_snapshot(

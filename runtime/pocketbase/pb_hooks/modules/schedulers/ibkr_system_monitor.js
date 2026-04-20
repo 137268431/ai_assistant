@@ -1217,6 +1217,121 @@ cronAdd("system_data_gap_guard", "*/10 4-20 * * 1-5", () => {
     }
 })
 
+function runDataQualitySweepCron(logPrefix, cronId) {
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
+    const parsePayload = (raw) => {
+        try {
+            return raw ? JSON.parse(raw) : {}
+        } catch (_) {
+            return { ok: false, raw: String(raw || "") }
+        }
+    }
+    const runtimeKeys = getRuntimeKeys()
+    const environments = getActiveRuntimeEnvironments(runtimeKeys)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        const cronState = getPbCronToggleState(cronId, environment)
+        if (!cronState.effective_enabled) {
+            console.log(`${logPrefix} ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+            continue
+        }
+        if (!getComputeEnabledForEnvironment(environment, runtimeKeys)) {
+            continue
+        }
+        try {
+            const resp = $http.send({
+                url: "http://127.0.0.1:8090/api/custom/ibkr/data_quality/rescan",
+                method: "POST",
+                timeout: 900,
+                body: JSON.stringify({
+                    environment: environment,
+                    scan_scope: "watchlist_full",
+                    persist: true,
+                    repair: true,
+                }),
+                headers: { "Content-Type": "application/json" },
+            })
+            const payload = parsePayload(resp.raw)
+            const summary = payload.summary || {}
+            console.log(`${logPrefix} ${environment}: scanned=${summary.scanned_symbols_total || 0}/${summary.expected_symbols_total || 0} coverage=${summary.coverage_complete === true ? "complete" : "partial"}`)
+        } catch (err) {
+            console.log(`${logPrefix} ${environment}: ${err.message || err}`)
+        }
+    }
+}
+
+function runDataQualityTruthAuditCron(logPrefix, cronId) {
+    const { getActiveRuntimeEnvironments, getComputeEnabledForEnvironment } = require(`${__hooks}/lib/runtime_modes.js`)
+    const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
+    const parsePayload = (raw) => {
+        try {
+            return raw ? JSON.parse(raw) : {}
+        } catch (_) {
+            return { ok: false, raw: String(raw || "") }
+        }
+    }
+    const runtimeKeys = getRuntimeKeys()
+    const environments = getActiveRuntimeEnvironments(runtimeKeys)
+
+    for (let i = 0; i < environments.length; i++) {
+        const environment = environments[i]
+        const cronState = getPbCronToggleState(cronId, environment)
+        if (!cronState.effective_enabled) {
+            console.log(`${logPrefix} ${environment}: ${cronState.config_key}="${cronState.cron_raw}", pb_scheduler_enabled="${cronState.scheduler_raw}", 跳过执行`)
+            continue
+        }
+        if (!getComputeEnabledForEnvironment(environment, runtimeKeys)) {
+            continue
+        }
+        try {
+            const resp = $http.send({
+                url: "http://127.0.0.1:8090/api/custom/ibkr/data_quality/truth_audit",
+                method: "POST",
+                timeout: 1500,
+                body: JSON.stringify({
+                    environment: environment,
+                    scan_scope: "watchlist_full",
+                    persist: true,
+                    include_signals: false,
+                    chunk_size: 12,
+                }),
+                headers: { "Content-Type": "application/json" },
+            })
+            const payload = parsePayload(resp.raw)
+            const summary = payload.summary || {}
+            console.log(`${logPrefix} ${environment}: audited=${summary.audited_symbols_total || 0}/${summary.expected_symbols_total || 0} coverage=${summary.coverage_complete === true ? "complete" : "partial"} errors=${summary.status_counts && summary.status_counts.error || 0}`)
+        } catch (err) {
+            console.log(`${logPrefix} ${environment}: ${err.message || err}`)
+        }
+    }
+}
+
+cronAdd("ibkr_data_quality_open_sweep", "40 9 * * 1-5", () => {
+    try {
+        runDataQualitySweepCron("[IBKRDataQualityOpenSweep]", "ibkr_data_quality_open_sweep")
+    } catch (err) {
+        console.log(`[IBKRDataQualityOpenSweep] fatal error: ${err.message || err}`)
+    }
+})
+
+cronAdd("ibkr_data_quality_close_sweep", "10 20 * * 1-5", () => {
+    try {
+        runDataQualitySweepCron("[IBKRDataQualityCloseSweep]", "ibkr_data_quality_close_sweep")
+    } catch (err) {
+        console.log(`[IBKRDataQualityCloseSweep] fatal error: ${err.message || err}`)
+    }
+})
+
+cronAdd("ibkr_data_quality_truth_audit", "20 20 * * 1-5", () => {
+    try {
+        runDataQualityTruthAuditCron("[IBKRDataQualityTruthAudit]", "ibkr_data_quality_truth_audit")
+    } catch (err) {
+        console.log(`[IBKRDataQualityTruthAudit] fatal error: ${err.message || err}`)
+    }
+})
+
 cronAdd("ibkr_2fa_hourly_check", "5 4-20 * * 1-5", () => {
     try {
         require(`${__hooks}/lib/system_auth_edge_guard.js`).runIbkr2faHourlyCheck()

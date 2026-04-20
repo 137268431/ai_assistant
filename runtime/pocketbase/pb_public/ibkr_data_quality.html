@@ -107,12 +107,16 @@
           <span>刷新概览和列表，并把当前过滤条件写入 URL。</span>
         </button>
         <button class="action-btn" onclick="runGlobalAction('rescan')">
-          <strong>手动重扫</strong>
-          <span>当前标的存在时只扫该标的；否则按当前范围扫一批。</span>
+          <strong>全观察池 Sweep</strong>
+          <span>当前标的存在时只扫该标的；否则对全观察池执行一次内部一致性 sweep。</span>
         </button>
         <button class="action-btn" onclick="runGlobalAction('repair')">
           <strong>立即安全修复</strong>
           <span>只补K线缺口、K线数量不足、派生周期缺失或滞后；重复K线和开高低收异常仍保留给人工审查。</span>
+        </button>
+        <button class="action-btn" onclick="runGlobalAction('truth_audit')">
+          <strong>IBKR 真值审计</strong>
+          <span>把库里的 5 分钟 bars 与 IBKR authoritative history 逐 bar 对比，验证是否真的一致。</span>
         </button>
         <button class="action-btn" onclick="loadDataQuality(true)">
           <strong>刷新页面</strong>
@@ -240,6 +244,14 @@
       return `status-${String(status || 'ok').replace(/[^a-z_]/gi, '')}`;
     }
 
+    function truthStatusClass(item) {
+      const truthStatus = String(item?.truth_status || '').trim().toLowerCase();
+      if (truthStatus === 'ok') return 'status-ok';
+      if (truthStatus === 'error') return 'status-error';
+      if (truthStatus === 'unavailable') return 'status-unavailable';
+      return 'status-missing';
+    }
+
     function formatList(values) {
       return Array.isArray(values) && values.length ? values.join(', ') : '无';
     }
@@ -272,6 +284,20 @@
         return { label: '修复中', copy: '后台正在跑补齐流程' };
       }
       return { label: '正常', copy: '当前未发现需要处理的数据异常' };
+    }
+
+    function formatTruthStatusMeta(item) {
+      const truthStatus = String(item?.truth_status || '').trim().toLowerCase();
+      if (truthStatus === 'ok') {
+        return { label: '真值通过', copy: 'Stored bars 已通过 IBKR 真值比对' };
+      }
+      if (truthStatus === 'error') {
+        return { label: '真值失败', copy: 'IBKR 真值比对发现缺失或字段不一致' };
+      }
+      if (truthStatus === 'unavailable') {
+        return { label: '真值不可用', copy: '本轮无法访问 IBKR 历史源完成比对' };
+      }
+      return { label: '未审计', copy: '尚未运行 IBKR 真值审计' };
     }
 
     function formatAgoFromMs(value) {
@@ -348,6 +374,14 @@
     }
 
     function getDecisionMeta(item) {
+      const proof = item?.proof && typeof item.proof === 'object' ? item.proof : null;
+      if (proof && proof.status) {
+        return {
+          tone: String(proof.status || 'yellow'),
+          title: String(proof.title || '证明未完成'),
+          copy: String(proof.copy || '当前还缺少完整证明。')
+        };
+      }
       const duplicateCount = Number(item.duplicate_count || 0) || 0;
       const badOhlcCount = Number(item.bad_ohlc_count || 0) || 0;
       if (duplicateCount > 0 || badOhlcCount > 0) {
@@ -395,23 +429,28 @@
     function renderSummary(summary) {
       const grid = document.getElementById('summaryGrid');
       const statusCounts = summary.status_counts || {};
+      const truthStatusCounts = summary.truth_status_counts || {};
+      const proofStatusCounts = summary.proof_status_counts || {};
+      const dbStatus = String(summary.database_correctness_status || 'yellow').trim().toLowerCase();
       const cards = [
-        { label: '已扫描标的', value: summary.total || 0, copy: `当前范围内标的 ${Array.isArray(summary.symbols) ? summary.symbols.length : 0} 个` },
-        { label: '正常', value: statusCounts.ok || 0, copy: '当前没有发现缺口、重复K线或派生周期异常' },
+        { label: '数据库证明', value: String(dbStatus || 'yellow').toUpperCase(), copy: summary.database_correctness_copy || '当前还不能证明整库 bar 正确。', className: `is-${dbStatus}` },
+        { label: '观察池覆盖', value: `${summary.scanned_symbols_total || 0}/${summary.expected_symbols_total || 0}`, copy: summary.coverage_complete ? '内部一致性已覆盖全观察池' : `仍缺 ${Array.isArray(summary.unscanned_symbols) ? summary.unscanned_symbols.length : 0} 个 symbol 未扫到` },
+        { label: '真值覆盖', value: `${summary.truth_audited_symbols_total || 0}/${summary.expected_symbols_total || 0}`, copy: summary.truth_coverage_complete ? 'IBKR 真值审计已覆盖全观察池' : `仍缺 ${Array.isArray(summary.unaudited_symbols) ? summary.unaudited_symbols.length : 0} 个 symbol 未审计` },
+        { label: '内部正常', value: (statusCounts.ok || 0) + (statusCounts.repaired || 0), copy: '内部一致性为 ok / repaired 的 symbol 数' },
         { label: '待补齐', value: summary.needs_repair || 0, copy: 'K线不足、缺口、派生周期缺失或滞后' },
         { label: '人工复核', value: summary.manual_review || 0, copy: '重复K线或开高低收异常，不自动删改' },
-        { label: '已修复', value: statusCounts.repaired || 0, copy: `最近修复 ${formatIsoLabel(summary.latest_repair_at)}` },
-        { label: '修复未完成', value: statusCounts.repair_failed || 0, copy: '自动修复跑过，但仍残留问题' }
+        { label: '真值通过', value: truthStatusCounts.ok || 0, copy: `最近真值审计 ${formatIsoLabel(summary.latest_truth_checked_at)}` },
+        { label: '证明绿灯', value: proofStatusCounts.green || 0, copy: `黄灯 ${proofStatusCounts.yellow || 0} · 红灯 ${proofStatusCounts.red || 0}` }
       ];
       grid.innerHTML = cards.map((item) => `
-        <div class="summary-card">
+        <div class="summary-card ${escapeHtml(item.className || '')}">
           <div class="summary-label">${escapeHtml(item.label)}</div>
           <div class="summary-value">${escapeHtml(item.value)}</div>
           <div class="summary-copy">${escapeHtml(item.copy)}</div>
         </div>
       `).join('');
-      document.getElementById('summaryInfo').textContent = `最近扫描 ${formatIsoLabel(summary.latest_scan_at)} · 最近修复 ${formatIsoLabel(summary.latest_repair_at)}`;
-      document.getElementById('summaryFootnote').textContent = '说明: “待补齐”统计的是可回补的链路类问题；它和“人工复核”可能重叠。如果同一个标的同时存在重复K线或开高低收异常，系统会停止自动修复并要求人工确认。';
+      document.getElementById('summaryInfo').textContent = `最近扫描 ${formatIsoLabel(summary.latest_scan_at)} · 最近修复 ${formatIsoLabel(summary.latest_repair_at)} · 最近真值 ${formatIsoLabel(summary.latest_truth_checked_at)}`;
+      document.getElementById('summaryFootnote').textContent = '说明: 只有当全观察池内部一致性已全量覆盖、全量完成 IBKR 真值审计、且每个 symbol 都是 green 时，数据库证明才会变成 GREEN。';
     }
 
     function renderRows(items) {
@@ -423,6 +462,11 @@
       tbody.innerHTML = items.map((item) => {
         const missingIntervals = formatList(item.missing_intervals);
         const staleIntervals = formatList(item.stale_intervals);
+        const truth = item.truth_audit && typeof item.truth_audit === 'object' ? item.truth_audit : {};
+        const truthMeta = formatTruthStatusMeta(item);
+        const truthExample = Array.isArray(truth.mismatch_examples) && truth.mismatch_examples.length
+          ? truth.mismatch_examples.slice(0, 2).map((row) => `${row.us_time || '--'} · bars ${row.bar_fields && row.bar_fields.length ? row.bar_fields.join(',') : '--'}`).join(' ; ')
+          : '无';
         const gapExamples = Array.isArray(item.gap_examples) && item.gap_examples.length
           ? item.gap_examples.map((row) => `${row.prev_us_time || '--'} → ${row.next_us_time || '--'} (${row.missing_points || 1})`).join(' ; ')
           : '无';
@@ -436,6 +480,9 @@
         if ((Number(item.bad_ohlc_count || 0) || 0) > 0) issueLines.push(`开高低收异常 ${Number(item.bad_ohlc_count || 0) || 0} 条`);
         if (Array.isArray(item.missing_intervals) && item.missing_intervals.length) issueLines.push(`派生周期缺失 ${missingIntervals}`);
         if (Array.isArray(item.stale_intervals) && item.stale_intervals.length) issueLines.push(`派生周期滞后 ${staleIntervals}`);
+        if ((Number(truth.missing_stored_bar_count || 0) || 0) > 0) issueLines.push(`真值缺失 stored ${Number(truth.missing_stored_bar_count || 0) || 0} 根`);
+        if ((Number(truth.missing_ibkr_bar_count || 0) || 0) > 0) issueLines.push(`真值缺失 IBKR ${Number(truth.missing_ibkr_bar_count || 0) || 0} 根`);
+        if ((Number(truth.bar_mismatch_count || 0) || 0) > 0) issueLines.push(`真值 bars mismatch ${Number(truth.bar_mismatch_count || 0) || 0} 根`);
         if (issueLines.length === 1) issueLines.push('未发现额外异常');
         return `
           <tr>
@@ -443,18 +490,22 @@
               <strong>${escapeHtml(item.symbol || '--')}</strong><br>
               <span class="small-copy">${escapeHtml(formatScopeLabel(item.scan_scope))} · ${escapeHtml(item.market_date || '--')} · ${escapeHtml(item.interval || '5m')}</span>
               <span class="small-copy">修复尝试 ${escapeHtml(item.repair_attempts || 0)} 次</span>
+              <span class="small-copy">证明状态 ${escapeHtml(String(item.proof && item.proof.status || 'yellow').toUpperCase())}</span>
             </td>
             <td>
               <div class="status-stack">
                 <span class="status-chip ${statusClass(item.status)}">${escapeHtml(statusMeta.label)}</span>
                 <span class="small-copy">${escapeHtml(statusMeta.copy)}</span>
-                <span class="small-copy code-copy">状态代码: ${escapeHtml(item.status || 'ok')}</span>
+                <span class="status-chip ${truthStatusClass(item)}">${escapeHtml(truthMeta.label)}</span>
+                <span class="small-copy">${escapeHtml(truthMeta.copy)}</span>
+                <span class="small-copy code-copy">状态代码: ${escapeHtml(item.status || 'ok')} · truth=${escapeHtml(item.truth_status || 'missing')}</span>
               </div>
             </td>
             <td>
               <div class="issue-list">
                 ${issueLines.map((line) => `<div class="issue-item">${escapeHtml(line)}</div>`).join('')}
                 <div class="issue-item"><strong>缺口样本</strong> ${escapeHtml(gapExamples)}</div>
+                <div class="issue-item"><strong>真值样本</strong> ${escapeHtml(truthExample)}</div>
               </div>
             </td>
             <td>
@@ -470,12 +521,14 @@
                 <div class="meta-item"><strong>最早已载入</strong> ${item.oldest_loaded_ms ? escapeHtml(formatBarTimeMsToET(item.oldest_loaded_ms)) : '--'}</div>
                 <div class="meta-item"><strong>最近扫描</strong> ${escapeHtml(formatIsoLabel(item.last_scan_at))}</div>
                 <div class="meta-item"><strong>最近修复</strong> ${escapeHtml(formatIsoLabel(item.last_repair_at))}</div>
+                <div class="meta-item"><strong>最近真值</strong> ${escapeHtml(formatIsoLabel(item.truth_checked_at))}</div>
               </div>
             </td>
             <td>
               <div class="row-actions">
                 <button class="mini-btn" onclick="runRowAction('rescan', '${escapeHtml(item.symbol || '')}')">重扫</button>
                 <button class="mini-btn" onclick="runRowAction('repair', '${escapeHtml(item.symbol || '')}')" ${canRepair ? '' : 'disabled'}>修复</button>
+                <button class="mini-btn" onclick="runRowAction('truth_audit', '${escapeHtml(item.symbol || '')}')">真值</button>
                 <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: item.interval || '5m' }, { environment: currentEnvironment })}">图表</a>
               </div>
               <span class="small-copy">${escapeHtml(summarizeRepairResult(item.last_repair_result))}</span>
@@ -524,18 +577,29 @@
       const filters = currentFilters();
       const body = {
         environment: currentEnvironment,
-        scan_scope: filters.scan_scope || 'watchlist',
+        scan_scope: filters.symbol ? (filters.scan_scope || 'manual') : 'watchlist_full',
         batch_size: filters.batch_size,
         persist: true
       };
       if (filters.symbol) body.symbols = [filters.symbol];
+      if (action === 'truth_audit') {
+        body.include_signals = false;
+        body.chunk_size = Math.max(1, Number(filters.batch_size || 8) || 8);
+      }
       const endpoint = action === 'repair'
         ? '/api/custom/ibkr/data_quality/repair'
-        : '/api/custom/ibkr/data_quality/rescan';
+        : action === 'truth_audit'
+          ? '/api/custom/ibkr/data_quality/truth_audit'
+          : '/api/custom/ibkr/data_quality/rescan';
       try {
         const payload = await requestQualityJson(endpoint, { method: 'POST', body });
         const summary = payload.summary || {};
-        showToast(`${action === 'repair' ? '修复' : '重扫'}完成: ${summary.symbols ? summary.symbols.length : 0} 个标的`);
+        const actionLabel = action === 'repair'
+          ? '修复'
+          : action === 'truth_audit'
+            ? '真值审计'
+            : '重扫';
+        showToast(`${actionLabel}完成: ${summary.symbols ? summary.symbols.length : 0} 个标的`);
         await loadDataQuality(false);
       } catch (error) {
         showToast(`${action} 失败: ${error.message || error}`);
@@ -546,18 +610,25 @@
       const filters = currentFilters();
       const endpoint = action === 'repair'
         ? '/api/custom/ibkr/data_quality/repair'
-        : '/api/custom/ibkr/data_quality/rescan';
+        : action === 'truth_audit'
+          ? '/api/custom/ibkr/data_quality/truth_audit'
+          : '/api/custom/ibkr/data_quality/rescan';
       try {
+        const body = {
+          environment: currentEnvironment,
+          scan_scope: filters.scan_scope || 'manual',
+          symbols: [String(symbol || '').trim().toUpperCase()],
+          persist: true
+        };
+        if (action === 'truth_audit') {
+          body.include_signals = false;
+          body.chunk_size = 1;
+        }
         await requestQualityJson(endpoint, {
           method: 'POST',
-          body: {
-            environment: currentEnvironment,
-            scan_scope: filters.scan_scope || 'manual',
-            symbols: [String(symbol || '').trim().toUpperCase()],
-            persist: true
-          }
+          body
         });
-        showToast(`${symbol} ${action === 'repair' ? '修复' : '重扫'}完成`);
+        showToast(`${symbol} ${action === 'repair' ? '修复' : action === 'truth_audit' ? '真值审计' : '重扫'}完成`);
         await loadDataQuality(false);
       } catch (error) {
         showToast(`${symbol} ${action} 失败: ${error.message || error}`);

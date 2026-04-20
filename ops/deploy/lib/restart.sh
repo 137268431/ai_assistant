@@ -206,6 +206,27 @@ print_status_for_units() {
   ssh_run "systemctl is-active $joined"
 }
 
+run_pocketbase_migrations_if_needed() {
+  local units=( "$@" )
+  array_contains "pb_migrations" "${units[@]}" || return 0
+  local pocketbase_root="${PB_REMOTE_ROOT%/}"
+  local pocketbase_bin="$pocketbase_root/pocketbase"
+  local data_dir="$pocketbase_root/pb_data"
+  local hooks_dir="$pocketbase_root/pb_hooks"
+  local public_dir="$pocketbase_root/pb_public"
+  local migrations_dir="$pocketbase_root/extensions/migrations"
+
+  if [[ "${RESTART_SERVICE:-1}" -eq 1 && "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
+    deploy_log "Stopping pocketbase before applying migrations..."
+    ssh_run "systemctl stop pocketbase"
+  else
+    deploy_warn "Applying PocketBase migrations without stopping pocketbase (restart disabled)."
+  fi
+
+  deploy_log "Applying PocketBase migrations from $migrations_dir..."
+  ssh_run "cd '$pocketbase_root' && '$pocketbase_bin' migrate up --dir '$data_dir' --hooksDir '$hooks_dir' --publicDir '$public_dir' --migrationsDir '$migrations_dir'"
+}
+
 perform_post_actions_for_units() {
   if [[ "${PLAN_ONLY:-0}" -eq 1 || "${DRY_RUN:-0}" -eq 1 ]]; then
     return 0
@@ -218,6 +239,7 @@ perform_post_actions_for_units() {
     ensure_remote_venv
     install_requirements
   fi
+  run_pocketbase_migrations_if_needed "${units[@]}"
   if units_need_daemon_reload "${units[@]}" && [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
     ssh_run "systemctl daemon-reload"
   fi

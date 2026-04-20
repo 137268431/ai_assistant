@@ -392,6 +392,44 @@ function buildBarIntegrityData(d, environment) {
     }
 }
 
+function buildBarTruthAuditData(d, environment) {
+    const symbol = String(d.symbol || "").trim().toUpperCase()
+    const marketDate = String(d.market_date || "").trim()
+    const interval = String(d.interval || "5m").trim() || "5m"
+
+    if (!symbol || !marketDate) {
+        return { ok: false, error: "Missing symbol or market_date" }
+    }
+
+    return {
+        ok: true,
+        symbol: symbol,
+        market_date: marketDate,
+        interval: interval,
+        filter: "environment = {:env} && market_date = {:date} && symbol = {:sym} && interval = {:tf}",
+        params: { env: environment, date: marketDate, sym: symbol, tf: interval },
+        data: {
+            environment: environment,
+            market_date: marketDate,
+            symbol: symbol,
+            interval: interval,
+            window_start_ms: Math.trunc(Number(d.window_start_ms) || 0),
+            window_end_ms: Math.trunc(Number(d.window_end_ms) || 0),
+            sampled_bar_count: Number(d.sampled_bar_count) || 0,
+            matched_bar_count: Number(d.matched_bar_count) || 0,
+            missing_stored_bar_count: Number(d.missing_stored_bar_count) || 0,
+            missing_ibkr_bar_count: Number(d.missing_ibkr_bar_count) || 0,
+            bar_mismatch_count: Number(d.bar_mismatch_count) || 0,
+            indicator_mismatch_count: Number(d.indicator_mismatch_count) || 0,
+            signal_mismatch_count: Number(d.signal_mismatch_count) || 0,
+            status: String(d.status || "unavailable").trim() || "unavailable",
+            mismatch_examples: Array.isArray(d.mismatch_examples) ? d.mismatch_examples : [],
+            source_meta: d.source_meta || {},
+            last_checked_at: String(d.last_checked_at || "").trim(),
+        },
+    }
+}
+
 function upsertConfigValue(key, value, environment, extras) {
     const runtimeEnvironment = String(environment || "live").trim().toLowerCase() || "live"
     let record = null
@@ -432,6 +470,7 @@ const exported = {
     buildIndicatorData,
     buildSignalData,
     buildBarIntegrityData,
+    buildBarTruthAuditData,
     upsertConfigValue,
 }
 

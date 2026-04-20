@@ -254,6 +254,7 @@ def delete_symbol_runtime_data(
     deleted["ibkr_indicators"] = delete_rows(conn, "ibkr_indicators", where=base_where, params=base_params)
     deleted["ibkr_reverse_signals"] = delete_rows(conn, "ibkr_reverse_signals", where=base_where, params=base_params)
     deleted["ibkr_bar_integrity"] = delete_rows(conn, "ibkr_bar_integrity", where=base_where, params=base_params)
+    deleted["ibkr_bar_truth_audit"] = delete_rows(conn, "ibkr_bar_truth_audit", where=base_where, params=base_params)
 
     signal_where = f"{base_where} AND LOWER(COALESCE(status, '')) != 'executed'"
     signal_params: list[Any] = list(base_params)

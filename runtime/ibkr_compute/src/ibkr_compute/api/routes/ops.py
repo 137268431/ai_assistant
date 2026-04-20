@@ -10,6 +10,7 @@ from ibkr_compute.api.ops.views import (
     build_history_rebuild_status_response,
     build_ibkr_data_quality_repair_response,
     build_ibkr_data_quality_scan_response,
+    build_ibkr_data_quality_truth_audit_response,
     build_health_response,
     build_retention_cleanup_response,
     build_status_response,
@@ -64,3 +65,7 @@ def register_ops_routes(app):
     @app.route("/ibkr/data-quality/repair", methods=["POST"])
     def ibkr_data_quality_repair():
         return build_ibkr_data_quality_repair_response()
+
+    @app.route("/ibkr/data-quality/truth-audit", methods=["POST"])
+    def ibkr_data_quality_truth_audit():
+        return build_ibkr_data_quality_truth_audit_response()
