@@ -19,6 +19,7 @@ if "flask" not in sys.modules:
 
 from ibkr_compute.api.compute.runtime_ops import _get_runtime_status_snapshot
 from ibkr_compute.api.ops.status_views import _build_topology_payload
+from ibkr_compute.api.runtime.common import get_ibkr_service
 from ibkr_compute.api.service_topology import build_service_topology
 
 
@@ -115,6 +116,20 @@ class RemoteRuntimeSnapshotResolverTest(unittest.TestCase):
         self.assertEqual(payload, runtime_payload)
         fake_service.status.assert_not_called()
 
+    def test_runtime_status_snapshot_does_not_fallback_to_local_service_when_remote_unavailable(self):
+        fake_app = SimpleNamespace(get_ibkr_service=mock.Mock(side_effect=AssertionError("should not instantiate local service")))
+
+        with mock.patch("ibkr_compute.api.compute.runtime_ops._api_app", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.compute.runtime_ops.is_runtime_remote_mode", return_value=True):
+                with mock.patch(
+                    "ibkr_compute.api.compute.runtime_ops.get_remote_runtime_status",
+                    return_value={},
+                ):
+                    payload = _get_runtime_status_snapshot("live")
+
+        self.assertEqual(payload, {"environment": "live"})
+        fake_app.get_ibkr_service.assert_not_called()
+
     def test_ops_topology_payload_uses_runtime_snapshot_resolver(self):
         runtime_payload = {
             "ok": True,
@@ -135,6 +150,18 @@ class RemoteRuntimeSnapshotResolverTest(unittest.TestCase):
 
         self.assertTrue(topology["services"]["ibkr-runtime"]["session_authenticated"])
         self.assertEqual(topology["services"]["ibkr-gateway"]["status"], "running")
+
+
+class RemoteRuntimeServiceInitGuardTest(unittest.TestCase):
+    def test_get_ibkr_service_returns_none_for_compute_remote_mode(self):
+        fake_app = SimpleNamespace()
+
+        with mock.patch("ibkr_compute.api.runtime.common._api_app", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.service_topology.is_runtime_remote_mode", return_value=True):
+                service = get_ibkr_service()
+
+        self.assertIsNone(service)
+        self.assertFalse(hasattr(fake_app, "_ibkr_service"))
 
 
 if __name__ == "__main__":

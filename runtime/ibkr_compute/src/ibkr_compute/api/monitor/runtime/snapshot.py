@@ -11,6 +11,7 @@ from ibkr_compute.api.monitor.runtime.empty import (
 )
 from ibkr_compute.api.monitor.runtime.uninitialized import _build_uninitialized_runtime_status
 from ibkr_compute.api.monitor.samples import _build_api_utilization_snapshot, _build_monitor_samples
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.api.service_topology import build_service_topology
 
 
@@ -22,7 +23,7 @@ def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = No
     )
     service_available = service is not None
     runtime_status = (
-        service.status()
+        get_service_status_snapshot(service)
         if service_available and hasattr(service, "status")
         else _build_uninitialized_runtime_status(runtime_environment, service_error)
     )

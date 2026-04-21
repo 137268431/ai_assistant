@@ -12,6 +12,8 @@ const DAILY_SCAN_SUMMARY_TIME_ET = "09:20"
 const MARKET_OPEN_CHECK_TIME_ET = "09:20"
 const INTRADAY_REFRESH_RULE = "5m close-driven"
 const TODAY_TARGET_PAYLOAD_CACHE_TTL_MS = 15 * 1000
+const DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
+const DAILY_SCAN_STATE_DATE = "global"
 
 const todayTargetPayloadCache = {}
 
@@ -235,6 +237,28 @@ function normalizeWatchlistRole(value) {
 
 function getCurrentMarketDate() {
     return getTimeStrings().date
+}
+
+function loadDailyScanState(environment) {
+    const runtimeEnvironment = normalizeRuntimeEnvironment(environment, LIVE_ENVIRONMENT)
+    try {
+        const record = $app.findFirstRecordByFilter(
+            "ibkr_state",
+            "state_key = {:key} && date = {:date} && environment = {:env}",
+            { key: DAILY_SCAN_STATE_KEY, date: DAILY_SCAN_STATE_DATE, env: runtimeEnvironment }
+        )
+        if (!record) return {}
+        const raw = typeof record.getString === "function"
+            ? (record.getString("data") || "")
+            : record.get("data")
+        const payload = asObject(raw)
+        return {
+            ...payload,
+            result: asObject(payload.result),
+        }
+    } catch (_) {
+        return {}
+    }
 }
 
 function getPriorityEnvironmentRank(environment, runtimeEnvironment) {
@@ -782,6 +806,7 @@ function buildTodayTargetPayload(options) {
     if (cachedPayload) {
         return cachedPayload
     }
+    const dailyScan = loadDailyScanState(runtimeEnvironment)
     const targetFilterClauses = [
         'environment = {:env}',
         'date = {:date}',
@@ -818,6 +843,7 @@ function buildTodayTargetPayload(options) {
             computed_at_us: formatEtDateTime(computedAtMs),
             computed_at_cn: formatCnDateTime(computedAtMs),
             workflow: workflowGuide,
+            daily_scan: dailyScan,
             summary: {
                 total: 0,
                 active_count: 0,
@@ -1086,6 +1112,7 @@ function buildTodayTargetPayload(options) {
         computed_at_us: formatEtDateTime(computedAtMs),
         computed_at_cn: formatCnDateTime(computedAtMs),
         workflow: workflowGuide,
+        daily_scan: dailyScan,
         summary: {
             total: items.length,
             active_count: activeCount,

@@ -7,6 +7,7 @@ from ibkr_compute.api.chart.timeline.runtime import _api_app
 from ibkr_compute.api.chart.timeline.source import (
     build_chart_source_window_from_rows,
 )
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 
 def load_chart_compare_ibkr_source_bars(
@@ -29,7 +30,7 @@ def load_chart_compare_ibkr_source_bars(
         raise RuntimeError("IBKR history fetch unavailable")
 
     api_app._maybe_restore_ibkr_service(service)
-    service_status = service.status() if hasattr(service, "status") else {}
+    service_status = get_service_status_snapshot(service)
     gateway_running = bool((service_status.get("gateway") or {}).get("running"))
     session_authenticated = bool((service_status.get("session") or {}).get("authenticated"))
     if not gateway_running:

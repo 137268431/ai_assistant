@@ -37,6 +37,65 @@ function ibkrActionsSafeParseHttpJson(rawValue) {
 }
 globalThis.ibkrActionsSafeParseHttpJson = ibkrActionsSafeParseHttpJson
 
+function ibkrActionsAsObject(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value
+    }
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value)
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                return parsed
+            }
+        } catch (_) {}
+    }
+    return {}
+}
+globalThis.ibkrActionsAsObject = ibkrActionsAsObject
+
+function ibkrActionsLoadDailyScanState(environment) {
+    const normalizedEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    try {
+        const record = $app.findFirstRecordByFilter(
+            "ibkr_state",
+            "state_key = {:key} && date = {:date} && environment = {:env}",
+            { key: "ibkr_daily_scan_state", date: "global", env: normalizedEnvironment }
+        )
+        if (!record) return {}
+        const raw = typeof record.getString === "function"
+            ? (record.getString("data") || "")
+            : record.get("data")
+        const payload = ibkrActionsAsObject(raw)
+        return {
+            ...payload,
+            result: ibkrActionsAsObject(payload.result),
+        }
+    } catch (_) {
+        return {}
+    }
+}
+globalThis.ibkrActionsLoadDailyScanState = ibkrActionsLoadDailyScanState
+
+function ibkrActionsCountActiveTodayTargets(environment, marketDate) {
+    const normalizedEnvironment = String(environment || "live").trim().toLowerCase() || "live"
+    const normalizedMarketDate = String(marketDate || "").trim()
+    if (!normalizedMarketDate) return 0
+    try {
+        const rows = $app.findRecordsByFilter(
+            "ibkr_targets",
+            "date = {:d} && environment = {:env} && (status = \"candidate\" || status = \"active\")",
+            "",
+            5000,
+            0,
+            { d: normalizedMarketDate, env: normalizedEnvironment }
+        ) || []
+        return rows.length
+    } catch (_) {
+        return 0
+    }
+}
+globalThis.ibkrActionsCountActiveTodayTargets = ibkrActionsCountActiveTodayTargets
+
 const IBKR_ACTIONS_VOLATILE_COMPARE_KEYS = {
     computed_at_ms: true,
     computed_at_us: true,
@@ -5081,7 +5140,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 snapshot_finished_at: snapshotFinishedAt,
             }
         }
-        const buildStatuszRuntimePayload = function(runtimePayload, includeWarmupDetails, liveReadiness = {}) {
+        const buildStatuszRuntimePayload = function(runtimePayload, includeWarmupDetails, liveReadiness = {}, fallbackState = {}) {
             const payload = cloneObject(runtimePayload)
             const gateway = cloneObject(payload.gateway)
             const session = cloneObject(payload.session)
@@ -5095,6 +5154,28 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const realtimeCompute = cloneObject(payload.realtime_compute)
             const realtimeResult = cloneObject(realtimeCompute.last_result)
             const marketUniverse = cloneObject(payload.market_universe)
+            const fallback = cloneObject(fallbackState)
+            const dailyScan = cloneObject(payload.daily_scan)
+            const persistedDailyScan = cloneObject(fallback.daily_scan)
+            if (!Object.keys(dailyScan).length && Object.keys(persistedDailyScan).length) {
+                Object.assign(dailyScan, persistedDailyScan)
+            }
+            if ((Number(marketUniverse.active_target_count || 0) || 0) <= 0) {
+                const fallbackActiveTargetCount = Number(fallback.active_target_count || 0) || 0
+                if (fallbackActiveTargetCount > 0) {
+                    marketUniverse.active_target_count = fallbackActiveTargetCount
+                }
+            }
+            if (!String(marketUniverse.active_target_date || "").trim()) {
+                const fallbackMarketDate = String(
+                    fallback.active_target_date
+                    || dailyScan.market_date
+                    || ""
+                ).trim()
+                if (fallbackMarketDate) {
+                    marketUniverse.active_target_date = fallbackMarketDate
+                }
+            }
             const authRecoverySummary = {
                 cycle_id: String(authRecovery.cycle_id || ""),
                 recovery_phase: String(authRecovery.recovery_phase || ""),
@@ -5446,6 +5527,15 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                     last_signals: Number(realtimeResult.signals || 0) || 0,
                     last_errors: Number(realtimeResult.errors || 0) || 0,
                 },
+                daily_scan: {
+                    market_date: String(dailyScan.market_date || ""),
+                    status: String(dailyScan.status || ""),
+                    reason: String(dailyScan.reason || ""),
+                    started_at: dailyScan.started_at || "",
+                    finished_at: dailyScan.finished_at || "",
+                    last_error: String(dailyScan.last_error || ""),
+                    result: cloneObject(dailyScan.result),
+                },
                 market_universe: {
                     market_date: String(marketUniverse.market_date || ""),
                     last_daily_reset: marketUniverse.last_daily_reset || "",
@@ -5486,6 +5576,13 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
         let computeError = ""
         let runtimeError = ""
         let runtimeSelectedUpstream = runtimeProxyUpstream
+        const persistedDailyScan = typeof globalThis.ibkrActionsLoadDailyScanState === "function"
+            ? globalThis.ibkrActionsLoadDailyScanState(environment)
+            : {}
+        const fallbackActiveTargetDate = String((persistedDailyScan && persistedDailyScan.market_date) || "").trim()
+        const fallbackActiveTargetCount = typeof globalThis.ibkrActionsCountActiveTodayTargets === "function"
+            ? globalThis.ibkrActionsCountActiveTodayTargets(environment, fallbackActiveTargetDate)
+            : 0
 
         try {
             const computeResp = $http.send({
@@ -5525,7 +5622,11 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
 
         const computeData = buildStatuszComputePayload(computePayload, includeEngines)
         const liveReadiness = buildStatuszLiveReadiness(computePayload, runtimePayload)
-        const runtimeData = buildStatuszRuntimePayload(runtimePayload, includeWarmupDetails, liveReadiness)
+        const runtimeData = buildStatuszRuntimePayload(runtimePayload, includeWarmupDetails, liveReadiness, {
+            daily_scan: persistedDailyScan,
+            active_target_date: fallbackActiveTargetDate,
+            active_target_count: fallbackActiveTargetCount,
+        })
         const serviceTopology = typeof globalThis.ibkrActionsMergeServiceTopologySafe === "function"
             ? globalThis.ibkrActionsMergeServiceTopologySafe(
                 computeData.service_topology,

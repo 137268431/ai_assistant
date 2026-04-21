@@ -19,6 +19,21 @@ Options:
   --install           Force npm install before running
   --no-install        Skip npm install even if node_modules is missing
   -h, --help          Show this help
+
+Common pb_smoke.js args:
+  -- --desktop-only
+  -- --mobile-only
+  -- --target 'https://pb.lzw-glory.top/ibkr_indicators.html?environment=live'
+  -- --target 'https://pb.lzw-glory.top/ibkr_indicators.html?environment=live' --with-indicator-trace
+  -- --skip-indicator-trace
+  -- --target 'https://pb.lzw-glory.top/ibkr_chart.html?environment=live' --with-wheel-scroll
+  -- --skip-wheel-scroll
+
+Notes:
+  - indicator trace scenario is on by default when no explicit --target is passed through
+  - indicator trace scenario is off by default with explicit --target, unless --with-indicator-trace is passed
+  - wheel scroll scenario follows the same default / override behavior as indicator trace
+  - see 'node ops/ui/playwright/pb_smoke.js --help' for the full smoke CLI
 EOF
 }
 

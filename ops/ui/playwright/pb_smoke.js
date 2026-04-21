@@ -1,6 +1,8 @@
 const fs = require('fs');
 const { chromium, devices, request } = require('playwright');
 const { waitForHomeOverviewReady, collectHomeOverviewIssues } = require('./home_overview_checks');
+const { runIndicatorTraceSurfaceCheck } = require('./indicator_trace_surface_check');
+const { runWheelScrollSurfaceCheck } = require('./wheel_scroll_surface_check');
 
 const DEFAULT_EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const DEFAULT_PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
@@ -32,6 +34,28 @@ const DEFAULT_TARGETS = [
   `${DEFAULT_BASE}/ibkr_backtests.html?environment=live`,
 ];
 const ARTIFACT_DIR = process.env.PB_SMOKE_ARTIFACT_DIR || '/tmp/ai_assistant_pb_smoke';
+const HELP_TEXT = `Usage: node pb_smoke.js [options]
+
+Options:
+  --desktop-only           Run desktop checks only
+  --mobile                 Run desktop + mobile checks
+  --mobile-only            Run mobile checks only
+  --headed                 Launch browser in headed mode
+  --target <url>           Restrict checks to one or more explicit targets
+  --with-indicator-trace   Append the indicator trace scenario even with explicit targets
+  --skip-indicator-trace   Skip the indicator trace scenario
+  --with-wheel-scroll      Append desktop wheel scroll surface checks even with explicit targets
+  --skip-wheel-scroll      Skip desktop wheel scroll surface checks
+  -h, --help               Show this help
+
+Indicator trace default:
+  - enabled when no explicit --target is provided
+  - disabled when explicit --target is provided, unless --with-indicator-trace is set
+
+Wheel scroll default:
+  - enabled when no explicit --target is provided
+  - disabled when explicit --target is provided, unless --with-wheel-scroll is set
+`;
 
 function shouldIgnoreRequestFailure(req) {
   const errorText = req.failure()?.errorText || '';
@@ -46,7 +70,11 @@ function parseArgs(argv) {
     mobileOnly: false,
     desktopOnly: false,
     headless: true,
+    help: false,
     targets: [],
+    targetsExplicit: false,
+    includeIndicatorTrace: null,
+    includeWheelScroll: null,
   };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -61,13 +89,204 @@ function parseArgs(argv) {
       opts.headless = false;
     } else if (arg.startsWith('--target=')) {
       opts.targets.push(arg.slice('--target='.length));
+      opts.targetsExplicit = true;
     } else if (arg === '--target' && argv[i + 1]) {
       opts.targets.push(argv[i + 1]);
+      opts.targetsExplicit = true;
       i += 1;
+    } else if (arg === '--with-indicator-trace') {
+      opts.includeIndicatorTrace = true;
+    } else if (arg === '--skip-indicator-trace') {
+      opts.includeIndicatorTrace = false;
+    } else if (arg === '--with-wheel-scroll') {
+      opts.includeWheelScroll = true;
+    } else if (arg === '--skip-wheel-scroll') {
+      opts.includeWheelScroll = false;
+    } else if (arg === '-h' || arg === '--help') {
+      opts.help = true;
     }
   }
   if (!opts.targets.length) opts.targets = DEFAULT_TARGETS.slice();
+  if (opts.includeIndicatorTrace === null) {
+    opts.includeIndicatorTrace = !opts.targetsExplicit;
+  }
+  if (opts.includeWheelScroll === null) {
+    opts.includeWheelScroll = !opts.targetsExplicit;
+  }
   return opts;
+}
+
+function normalizeIndicatorTraceScenario(output) {
+  const result = output?.result || {};
+  const partial = Boolean(result?.partial);
+  const scenarioStatus = result?.trace?.status || (output?.ok ? 'ready' : 'indicator_trace_surface_failed');
+  const issues = [];
+  if (partial) {
+    issues.push(`trace_status:${scenarioStatus}`);
+  }
+  return {
+    name: 'indicator_trace_surface',
+    url: `${DEFAULT_BASE}/ibkr_indicators.html?environment=live#indicator_trace_surface`,
+    final_url: result?.trace?.final_url || result?.seed?.symbol || '',
+    device: 'scenario',
+    title: 'indicator_trace_surface_check',
+    nav_count: 0,
+    bridge_count: 0,
+    layout: {
+      horizontal_overflow: false,
+      context_count: 0,
+      bridge_count: 0,
+      bridge_row_spread_max: 0,
+      panel_row_spread_max: 0,
+      bridge_rows: [],
+      panel_rows: [],
+      tall_panel_rows: [],
+      scroll_issues: [],
+    },
+    errors: output?.ok ? [] : [scenarioStatus || output?.error || 'indicator_trace_surface_failed'],
+    layout_issues: issues,
+    page_expectation_issues: [],
+    screenshot: '',
+    scenario: output,
+    scenario_status: scenarioStatus,
+    partial,
+  };
+}
+
+function buildScenarioShell(name, title, url) {
+  return {
+    name,
+    url,
+    final_url: url,
+    device: 'scenario',
+    title,
+    nav_count: 0,
+    bridge_count: 0,
+    layout: {
+      horizontal_overflow: false,
+      context_count: 0,
+      bridge_count: 0,
+      bridge_row_spread_max: 0,
+      panel_row_spread_max: 0,
+      bridge_rows: [],
+      panel_rows: [],
+      tall_panel_rows: [],
+      scroll_issues: [],
+    },
+    errors: [],
+    layout_issues: [],
+    page_expectation_issues: [],
+    screenshot: '',
+  };
+}
+
+function normalizeWheelScrollScenarios(output) {
+  const results = Array.isArray(output?.results) ? output.results : [];
+  if (!results.length) {
+    const scenario = buildScenarioShell(
+      'wheel_scroll_surface',
+      'wheel_scroll_surface_check',
+      `${DEFAULT_BASE}/ibkr_chart.html?environment=live#wheel_scroll_surface`,
+    );
+    scenario.errors = [output?.error || 'wheel_scroll_surface_failed'];
+    scenario.scenario = output;
+    scenario.scenario_status = 'scenario_crashed';
+    scenario.partial = true;
+    return [scenario];
+  }
+
+  return results.map((item) => {
+    const name = item?.scenario || 'wheel_scroll_surface';
+    const status = item?.ok ? 'ready' : 'failed';
+    const scenario = buildScenarioShell(
+      name,
+      `${name}_check`,
+      item?.url || `${DEFAULT_BASE}/ibkr_chart.html?environment=live`,
+    );
+    const issues = [];
+    if (item?.zoomChanged) issues.push('zoom_changed_on_wheel');
+    if (typeof item?.windowDelta === 'number' && item.windowDelta < 120) {
+      issues.push(`window_scroll_delta:${item.windowDelta}`);
+    }
+    if (typeof item?.modalDelta === 'number' && item.modalDelta < 80) {
+      issues.push(`modal_scroll_delta:${item.modalDelta}`);
+    }
+    scenario.final_url = item?.url || scenario.url;
+    scenario.errors = item?.ok
+      ? []
+      : (Array.isArray(item?.errors) && item.errors.length ? item.errors.slice(0, 4) : [`${name}_failed`]);
+    scenario.layout_issues = issues;
+    scenario.scenario = item;
+    scenario.scenario_status = status;
+    scenario.partial = !item?.ok;
+    return scenario;
+  });
+}
+
+function hasFailures(item) {
+  return Boolean(
+    (Array.isArray(item?.errors) && item.errors.length)
+      || (Array.isArray(item?.layout_issues) && item.layout_issues.length)
+      || (Array.isArray(item?.page_expectation_issues) && item.page_expectation_issues.length)
+  );
+}
+
+function formatTargetLabel(item) {
+  if (item?.device === 'scenario') {
+    return item?.name || item?.title || 'scenario';
+  }
+
+  try {
+    const parsed = new URL(item?.final_url || item?.url || '');
+    const suffix = parsed.search || '';
+    return `${item?.device || 'unknown'} ${parsed.pathname}${suffix}`;
+  } catch (_) {
+    return `${item?.device || 'unknown'} ${item?.url || item?.title || 'unknown'}`;
+  }
+}
+
+function collectIssuePreview(item) {
+  const entries = [
+    ...(Array.isArray(item?.errors) ? item.errors : []),
+    ...(Array.isArray(item?.layout_issues) ? item.layout_issues : []),
+    ...(Array.isArray(item?.page_expectation_issues) ? item.page_expectation_issues : []),
+  ].filter(Boolean);
+  return entries.slice(0, 3).join(', ');
+}
+
+function printRunSummary(results, opts) {
+  const scenarioResults = results.filter((item) => item?.device === 'scenario');
+  const pageResults = results.filter((item) => item?.device !== 'scenario');
+  const failing = results.filter(hasFailures);
+  const traceScenario = scenarioResults.find((item) => item?.name === 'indicator_trace_surface');
+  const wheelScenarios = scenarioResults.filter((item) => String(item?.name || '').includes('wheel'));
+  const traceState = opts.includeIndicatorTrace
+    ? (traceScenario?.scenario_status || (traceScenario ? 'missing_status' : 'not_emitted'))
+    : 'disabled';
+  const wheelState = opts.includeWheelScroll
+    ? (!wheelScenarios.length
+      ? 'not_emitted'
+      : wheelScenarios.every((item) => item?.scenario_status === 'ready')
+        ? 'ready'
+        : wheelScenarios.map((item) => `${item?.name || 'wheel'}:${item?.scenario_status || 'missing_status'}`).join(','))
+    : 'disabled';
+  const statusText = failing.length ? 'FAILED' : 'OK';
+  const lines = [
+    `[pb-smoke] ${statusText} total=${results.length} pages=${pageResults.length} scenarios=${scenarioResults.length} failed=${failing.length}`,
+    `[pb-smoke] indicator_trace=${opts.includeIndicatorTrace ? 'enabled' : 'disabled'} status=${traceState}`,
+    `[pb-smoke] wheel_scroll=${opts.includeWheelScroll ? 'enabled' : 'disabled'} status=${wheelState}`,
+  ];
+
+  failing.slice(0, 8).forEach((item) => {
+    lines.push(`[pb-smoke] issue ${formatTargetLabel(item)} -> ${collectIssuePreview(item) || 'unknown_issue'}`);
+  });
+
+  const screenshots = failing.map((item) => item?.screenshot).filter(Boolean);
+  if (screenshots.length) {
+    lines.push(`[pb-smoke] screenshots=${screenshots.length} dir=${ARTIFACT_DIR}`);
+  }
+
+  process.stderr.write(`${lines.join('\n')}\n`);
 }
 
 async function fetchToken() {
@@ -156,11 +375,27 @@ async function waitForPageReady(page, url) {
     }, { timeout }),
     '/ibkr_account.html': () => page.waitForFunction(() => {
       const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
+      const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          !node.classList.contains('is-hidden') &&
+          rect.width > 1 &&
+          rect.height > 1
+        );
+      });
+      const hasLoadedCards = document.querySelectorAll('.summary-card, .stat-card, .metric-card').length > 0;
+      const hasFailureState = refreshInfo.includes('刷新失败')
+        || document.querySelectorAll('#positionsArea .empty-state, #ordersArea .empty-state').length > 0;
       return (
         refreshInfo &&
         !refreshInfo.includes('加载中') &&
         !refreshInfo.includes('等待') &&
-        document.querySelectorAll('.summary-card, .stat-card, .metric-card').length > 0
+        (hasLoadedCards || hasFailureState) &&
+        !overlayVisible
       );
     }, { timeout }),
     '/ibkr_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
@@ -404,15 +639,32 @@ async function inspectPage(browser, token, url, mobile) {
   const pageExpectationIssues = await collectPageExpectationIssues(page, finalUrl, mobile).catch(() => ['page_expectation_eval_failed']);
   const path = new URL(finalUrl).pathname;
   const isHomePage = path === '/index.html' || path === '/';
-  const allowWorkspacePanelSpread = path === '/ibkr_chart.html';
-  const allowVisibleInitialOverlay = path === '/ibkr_runtime.html' || path === '/ibkr_indicators.html';
+  const allowWorkspacePanelSpread = new Set([
+    '/ibkr_chart.html',
+    '/ibkr_runtime.html',
+    '/ibkr_backtests.html',
+  ]).has(path);
+  const allowVisibleInitialOverlay = new Set([
+    '/ibkr_runtime.html',
+    '/ibkr_indicators.html',
+    '/ibkr_monitor.html',
+    '/ibkr_warmup.html',
+    '/ibkr_data_quality.html',
+    '/ibkr_history_rebuild.html',
+    '/ibkr_backtests.html',
+  ]).has(path);
+  const allowMissingTopSection = new Set([
+    '/ibkr_indicators.html',
+    '/ibkr_config.html',
+    '/ibkr_stats.html',
+  ]).has(path);
 
   const layoutIssues = [];
   if (/\/login\.html/.test(finalUrl)) layoutIssues.push('redirected_to_login');
   if (!navTexts.length) layoutIssues.push('missing_nav');
   if (!layout.context_count) layoutIssues.push('missing_context_bar');
   if (layout.context_count !== 1) layoutIssues.push(`context_bar_count:${layout.context_count}`);
-  if (!isHomePage && !layout.top_section_count) layoutIssues.push('missing_top_section');
+  if (!isHomePage && !allowMissingTopSection && !layout.top_section_count) layoutIssues.push('missing_top_section');
   if (!isHomePage && !layout.bridge_count) layoutIssues.push('missing_bridge');
   if (!isHomePage && layout.bridge_shell_count !== 1) layoutIssues.push(`bridge_shell_count:${layout.bridge_shell_count}`);
   if (!allowVisibleInitialOverlay && layout.visible_loading_overlay_count) {
@@ -458,6 +710,10 @@ async function inspectPage(browser, token, url, mobile) {
 
 (async () => {
   const opts = parseArgs(process.argv);
+  if (opts.help) {
+    console.log(HELP_TEXT);
+    return;
+  }
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   const token = await fetchToken();
   const browser = await chromium.launch({ headless: opts.headless });
@@ -472,7 +728,41 @@ async function inspectPage(browser, token, url, mobile) {
   }
   await browser.close();
 
+  if (opts.includeIndicatorTrace) {
+    try {
+      const scenarioOutput = await runIndicatorTraceSurfaceCheck();
+      results.push(normalizeIndicatorTraceScenario(scenarioOutput));
+    } catch (error) {
+      results.push(normalizeIndicatorTraceScenario({
+        ok: false,
+        error: error?.message || String(error),
+        checked_at: new Date().toISOString(),
+        result: {
+          partial: true,
+          trace: {
+            status: 'scenario_crashed',
+            final_url: '',
+          },
+        },
+      }));
+    }
+  }
+
+  if (opts.includeWheelScroll) {
+    try {
+      const scenarioOutput = await runWheelScrollSurfaceCheck();
+      results.push(...normalizeWheelScrollScenarios(scenarioOutput));
+    } catch (error) {
+      results.push(...normalizeWheelScrollScenarios({
+        ok: false,
+        error: error?.message || String(error),
+        checked_at: new Date().toISOString(),
+      }));
+    }
+  }
+
   const failing = results.filter((item) => item.errors.length || item.layout_issues.length || item.page_expectation_issues.length);
+  printRunSummary(results, opts);
   console.log(JSON.stringify(results, null, 2));
   if (failing.length) {
     process.exit(1);

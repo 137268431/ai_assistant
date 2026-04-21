@@ -4,6 +4,29 @@ from ibkr_compute.api.monitor.host import _api_app, _copy_active_subscription_ma
 from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_symbols
 
 
+def _build_warmup_symbol_status_map(warmup: dict) -> dict[str, dict]:
+    payload = {}
+    for item in warmup.get("symbol_status") or []:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        payload[symbol] = dict(item)
+    return payload
+
+
+def _is_recent_warmup_symbol(status_row: dict, latest_completed_bucket_ms: int, max_lag_ms: int = 15 * 60 * 1000) -> bool:
+    if not isinstance(status_row, dict):
+        return False
+    last_bar_time_ms = int(status_row.get("last_bar_time_ms", 0) or 0)
+    if last_bar_time_ms <= 0:
+        return False
+    if latest_completed_bucket_ms <= 0:
+        return True
+    return last_bar_time_ms >= max(0, latest_completed_bucket_ms - max_lag_ms)
+
+
 def _resolve_total_subscription_limit(config_source, runtime_environment: str) -> int:
     total_limit = max(
         0,
@@ -40,6 +63,7 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
     warmup = runtime_status.get("warmup") or {}
     market_universe = runtime_status.get("market_universe") or {}
     bar_aggregator = runtime_status.get("bar_aggregator") or {}
+    canonical_5m = runtime_status.get("canonical_5m") or {}
     realtime_quotes = runtime_status.get("realtime_quotes") or {}
     active_bars = bar_aggregator.get("active_bars") or {}
     quote_map = realtime_quotes.get("quotes") or {}
@@ -51,13 +75,29 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
     subscription_map = _copy_active_subscription_map(service)
     trade_symbols = set(_normalize_symbol_list(market_universe.get("active_trade_symbols") or []))
     monitor_symbols = set(_normalize_symbol_list(warmup.get("monitor_symbols") or []))
-    visible_symbols = set(_normalize_symbol_list(quote_map.keys()))
+    quote_symbols = set(_normalize_symbol_list(quote_map.keys()))
+    active_bar_symbols = set(_normalize_symbol_list(active_bars.keys()))
+    warmup_status_map = _build_warmup_symbol_status_map(warmup)
+    latest_completed_bucket_ms = int(canonical_5m.get("last_completed_bucket_ms", 0) or 0)
 
     active_subscriptions = []
     for symbol in sorted(subscription_map.keys()):
         conid = subscription_map.get(symbol)
-        bar_info = active_bars.get(symbol) or active_bars.get(symbol.upper()) or {}
-        quote_info = quote_map.get(symbol) or quote_map.get(symbol.upper()) or {}
+        normalized_symbol = str(symbol or "").strip().upper()
+        bar_info = active_bars.get(symbol) or active_bars.get(normalized_symbol) or {}
+        quote_info = quote_map.get(symbol) or quote_map.get(normalized_symbol) or {}
+        warmup_status = warmup_status_map.get(normalized_symbol) or {}
+        bar_visible = normalized_symbol in active_bar_symbols
+        quote_visible = normalized_symbol in quote_symbols
+        warmup_visible = _is_recent_warmup_symbol(warmup_status, latest_completed_bucket_ms)
+        visibility_sources = []
+        if bar_visible:
+            visibility_sources.append("bar")
+        if quote_visible:
+            visibility_sources.append("quote")
+        if warmup_visible:
+            visibility_sources.append("warmup")
+        visible = bool(visibility_sources)
         quote_age_s = (
             round(float(quote_info.get("quote_age_s")), 1)
             if isinstance(quote_info, dict) and quote_info.get("quote_age_s") is not None
@@ -65,16 +105,23 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
         )
         role = (
             api_app.WATCHLIST_SYMBOL_ROLE_TRADE
-            if symbol in trade_symbols
-            else (api_app.WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR if symbol in monitor_symbols else "subscription")
+            if normalized_symbol in trade_symbols
+            else (api_app.WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR if normalized_symbol in monitor_symbols else "subscription")
         )
         active_subscriptions.append(
             {
-                "symbol": symbol,
+                "symbol": normalized_symbol,
                 "conid": int(conid) if conid is not None else None,
                 "role": role,
-                "visible": symbol in visible_symbols,
-                "stale": symbol not in visible_symbols,
+                "visible": visible,
+                "stale": not visible,
+                "visibility_sources": visibility_sources,
+                "warmup_ready": bool(warmup_status.get("ready")),
+                "warmup_last_bar_time_ms": (
+                    int(warmup_status.get("last_bar_time_ms", 0) or 0)
+                    if isinstance(warmup_status, dict) and warmup_status.get("last_bar_time_ms") is not None
+                    else None
+                ),
                 "quote_age_s": quote_age_s,
                 "last_update_age_s": (
                     round(float(bar_info.get("last_update_age_s")), 1)

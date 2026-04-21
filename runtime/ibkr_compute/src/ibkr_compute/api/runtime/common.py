@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 import traceback
 
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+
 
 def _api_app():
     from .. import app as api_app
@@ -138,7 +140,8 @@ def _normalize_runtime_environment_name(value, default: str = "live") -> str:
 
 def _ibkr_service_environment(service) -> str:
     try:
-        return _normalize_runtime_environment_name(service.status().get("environment"), "live")
+        status_payload = get_service_status_snapshot(service, {"environment": "live"})
+        return _normalize_runtime_environment_name(status_payload.get("environment"), "live")
     except Exception:
         return "live"
 

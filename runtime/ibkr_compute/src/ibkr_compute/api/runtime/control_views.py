@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ibkr_compute.api.monitor.views import _build_ibkr_monitor_snapshot
 from ibkr_compute.api.shared.route_request import coerce_request_bool
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.api.runtime.common import (
     _api_app,
     _background_start_ibkr_service,
@@ -114,7 +115,7 @@ def _build_ibkr_status_response() -> tuple[dict, int]:
             "service_topology": build_service_topology(),
         }, 200
     _maybe_restore_ibkr_service(service)
-    status_payload = service.status()
+    status_payload = get_service_status_snapshot(service)
     status_payload["runtime_control"] = get_ibkr_runtime_control(_ibkr_service_environment(service))
     status_payload["service_profile"] = get_service_profile()
     status_payload["runtime_mode"] = get_runtime_mode()

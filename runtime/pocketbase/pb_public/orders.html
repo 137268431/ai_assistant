@@ -13,6 +13,7 @@
 <body>
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
+    <div id="pageTopSection"></div>
 
     <div class="content">
         <div class="search-row">
@@ -407,6 +408,85 @@
             if (currentUrl !== nextUrl) {
                 history.replaceState(null, '', nextUrl);
             }
+        }
+
+        function summarizeHeaderValue(value, maxLength = 28) {
+            const text = String(value || '').trim();
+            if (!text) return '';
+            if (text.length <= maxLength) return text;
+            return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+        }
+
+        function getOrdersStatusLabel(status = currentStatus) {
+            const map = {
+                all: '全部状态',
+                Init: 'Init',
+                Submitted: 'Submitted',
+                Filled: 'Filled',
+                Canceled: 'Canceled',
+                Closed: 'Closed',
+            };
+            return map[status] || status || '全部状态';
+        }
+
+        function getOrdersDirectionLabel(direction = currentDirection) {
+            const map = {
+                all: '全部方向',
+                long: '做多',
+                short: '做空',
+            };
+            return map[direction] || direction || '全部方向';
+        }
+
+        function getOrdersSourceLabel() {
+            if (currentOrdersSource === 'ibkr_order_details') return 'detail snapshot';
+            if (isOrdersDatasetPartial) return 'orders staged';
+            return 'orders live';
+        }
+
+        function getVisibleGroups() {
+            return filterGroups(allGroups);
+        }
+
+        function renderOrdersTopSection() {
+            const visibleGroups = getVisibleGroups();
+            const visibleOrderCount = visibleGroups.reduce((sum, group) => sum + group.orders.length, 0);
+            const scopeParts = [];
+            if (filterSignalId) scopeParts.push(`signal_id=${summarizeHeaderValue(filterSignalId, 18)}`);
+            if (filterTradeGroupId) scopeParts.push(`trade_group_id=${summarizeHeaderValue(filterTradeGroupId, 18)}`);
+            if (currentSearch) scopeParts.push(`search=${summarizeHeaderValue(currentSearch, 24)}`);
+            if (resolvedLegacySearch) scopeParts.push(`resolved_from=${summarizeHeaderValue(resolvedLegacySearch, 18)}`);
+            const scopeText = scopeParts.length ? scopeParts.join(' · ') : '无附加过滤';
+            const metaHtml = `
+                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
+                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
+                <div class="meta-line">范围 · ${escapeHtml(scopeText)}</div>
+                <div class="meta-line">数据源 · ${escapeHtml(getOrdersSourceLabel())}</div>
+            `;
+            const statusHtml = `
+                <div class="chip-row">
+                    <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>交易组 ${escapeHtml(formatCountValue(visibleGroups.length))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>订单 ${escapeHtml(formatCountValue(visibleOrderCount))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getOrdersDirectionLabel())}</span>
+                    <span class="status-chip"><span class="dot" style="color:#FC8181"></span>${escapeHtml(getOrdersStatusLabel())}</span>
+                </div>
+            `;
+            document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
+                kicker: 'Execution Orders',
+                title: '订单链工作台',
+                copy: '聚焦 trade group、bracket 链路和 broker / PB 对账状态，从这里继续钻取订单明细与账户动作。',
+                metaHtml,
+                statusHtml,
+            });
+        }
+
+        function renderOrdersPageChrome() {
+            const executionParams = { date: currentDate };
+            if (filterSignalId) executionParams.signal_id = filterSignalId;
+            if (filterTradeGroupId) executionParams.trade_group_id = filterTradeGroupId;
+            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/orders.html', executionParams);
+            renderOrdersTopSection();
+            renderFilterNote();
         }
 
         function resolveLegacySearchContext(orders, keyword) {
@@ -892,7 +972,7 @@
             }
 
             resetPagination();
-            renderFilterNote();
+            renderOrdersPageChrome();
             updateSummaryBar();
             updateStatusTabCounts();
             updateDirectionTabCounts();
@@ -1009,7 +1089,7 @@
             reconcileSearchAndFilters();
             syncOrdersPageUrl();
             resetPagination();
-            renderFilterNote();
+            renderOrdersPageChrome();
             updateSummaryBar();
             renderGroups();
             updateLoadMoreButton();
@@ -1020,6 +1100,7 @@
             button.classList.add('active');
             currentStatus = status;
             resetPagination();
+            renderOrdersTopSection();
             updateSummaryBar();
             renderGroups();
             updateLoadMoreButton();
@@ -1028,6 +1109,7 @@
         window.onDirectionChange = function(direction) {
             currentDirection = direction;
             resetPagination();
+            renderOrdersTopSection();
             updateSummaryBar();
             renderGroups();
             updateLoadMoreButton();
@@ -1036,6 +1118,7 @@
         window.onDateChange = function(startDate) {
             currentDate = startDate;
             syncOrdersPageUrl();
+            renderOrdersPageChrome();
             loadOrders();
         };
 
@@ -1260,15 +1343,12 @@
             }
             reconcileSearchAndFilters();
             pendingLegacySearchResolution = Boolean(currentSearch) && !filterSignalId && !filterTradeGroupId;
-            const executionParams = { date: currentDate };
-            if (filterSignalId) executionParams.signal_id = filterSignalId;
-            if (filterTradeGroupId) executionParams.trade_group_id = filterTradeGroupId;
-            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/orders.html', executionParams);
 
             document.getElementById('searchInput').value = currentSearch;
             const dateInput = document.getElementById('customDate');
             if (dateInput) dateInput.value = currentDate;
             syncOrdersPageUrl();
+            renderOrdersPageChrome();
 
             await loadSignalValidityConfig();
             await withPageLoading(

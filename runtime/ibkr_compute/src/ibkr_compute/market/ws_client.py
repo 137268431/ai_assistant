@@ -121,6 +121,7 @@ class IBKRWebSocketClient:
     def _send_subscription(self, conid: int):
         with self._state_lock:
             if conid in self._subscribed_conids:
+                self._pending_subscriptions.discard(conid)
                 return
         try:
             self.broker.subscribe_market_data(conid=conid, symbol="")
@@ -129,6 +130,7 @@ class IBKRWebSocketClient:
             return
         with self._state_lock:
             self._subscribed_conids.add(conid)
+            self._pending_subscriptions.discard(conid)
 
     def status(self) -> dict:
         now_ts = time.time()

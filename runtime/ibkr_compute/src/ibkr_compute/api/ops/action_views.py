@@ -22,6 +22,7 @@ from ibkr_compute.api.route_runtime import (
     get_requested_environment,
     require_ibkr_service,
 )
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.market.data_retention import DataRetention
 
 
@@ -198,7 +199,7 @@ def build_ibkr_data_quality_truth_audit_response():
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc), "market_date": market_date}), 400
 
-    status_payload = service.status() if hasattr(service, "status") else {}
+    status_payload = get_service_status_snapshot(service)
     gateway_running = bool((status_payload.get("gateway") or {}).get("running"))
     session_authenticated = bool((status_payload.get("session") or {}).get("authenticated"))
     if not gateway_running:

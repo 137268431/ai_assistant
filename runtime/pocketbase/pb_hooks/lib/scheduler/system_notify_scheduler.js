@@ -19,8 +19,9 @@ const MARKET_OPEN_REMINDER_HOUR = 9
 const MARKET_OPEN_REMINDER_MINUTE = 20
 const MARKET_CLOSE_REMINDER_HOUR = 16
 const MARKET_CLOSE_REMINDER_MINUTE = 5
-const path = require("node:path")
-const HOOKS_ROOT = typeof __hooks !== "undefined" ? __hooks : path.resolve(__dirname, "../..")
+const HOOKS_ROOT = typeof __hooks !== "undefined"
+    ? __hooks
+    : String(__dirname || "").replace(/[\\/]lib[\\/]scheduler$/, "")
 const usEasternTime = require(`${HOOKS_ROOT}/lib/runtime/us_eastern_time.js`)
 
 function toNumber(value, fallback) {
@@ -86,6 +87,21 @@ function parseTimeMs(value) {
     if (!text) return 0
     const ms = Date.parse(text)
     return Number.isFinite(ms) ? ms : 0
+}
+
+function asObject(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value
+    }
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value)
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                return parsed
+            }
+        } catch (_) {}
+    }
+    return {}
 }
 
 function getStateRecord(stateKey, environment, dateToken) {
@@ -205,7 +221,24 @@ function loadTodayCounts(environment, times) {
         indicators: countCollectionRows("ibkr_indicators", "created >= {:t} && environment = {:env}", { t: times.todayStart, env: environment }),
         signals: countCollectionRows("ibkr_signals", "created >= {:t} && environment = {:env}", { t: times.todayStart, env: environment }),
         orders: countCollectionRows("orders", "created >= {:t} && environment = {:env}", { t: times.todayStart, env: environment }),
-        targets: countCollectionRows("ibkr_targets", "date = {:d} && environment = {:env}", { d: times.date, env: environment }),
+        targets: countCollectionRows(
+            "ibkr_targets",
+            'date = {:d} && environment = {:env} && (status = "candidate" || status = "active")',
+            { d: times.date, env: environment }
+        ),
+    }
+}
+
+function loadDailyScanState(environment) {
+    const record = getStateRecord("ibkr_daily_scan_state", environment, "global")
+    if (!record) return {}
+    const raw = typeof record.getString === "function"
+        ? (record.getString("data") || "")
+        : record.get("data")
+    const payload = asObject(raw)
+    return {
+        ...payload,
+        result: asObject(payload.result),
     }
 }
 
@@ -300,6 +333,9 @@ function buildStatusSnapshot(environment, times) {
     const websocketConnected = Boolean(runtime.websocket && runtime.websocket.connected === true)
     const websocketReady = Boolean(runtime.websocket && runtime.websocket.ready === true)
     const warmup = runtime.warmup && typeof runtime.warmup === "object" ? runtime.warmup : {}
+    const runtimeDailyScan = runtime.daily_scan && typeof runtime.daily_scan === "object" ? runtime.daily_scan : {}
+    const stateDailyScan = loadDailyScanState(environment)
+    const dailyScan = Object.keys(stateDailyScan).length ? stateDailyScan : runtimeDailyScan
     const warmupPendingSymbols = Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols : []
     const barBucket = buildBarBucketSnapshot(runtime)
 
@@ -323,6 +359,15 @@ function buildStatusSnapshot(environment, times) {
             warmup_symbols_total: toNumber(warmup.symbols_total, 0),
             warmup_ready_trade_symbols: toNumber(warmup.ready_trade_symbols, 0),
             warmup_trade_symbols_total: toNumber(warmup.trade_symbols_total, 0),
+        },
+        daily_scan: {
+            market_date: String(dailyScan.market_date || ""),
+            status: String(dailyScan.status || ""),
+            reason: String(dailyScan.reason || ""),
+            started_at: String(dailyScan.started_at || ""),
+            finished_at: String(dailyScan.finished_at || ""),
+            last_error: String(dailyScan.last_error || ""),
+            result: asObject(dailyScan.result),
         },
         market_session: {
             kind: String(runtime.market_session && runtime.market_session.kind || ""),
@@ -439,11 +484,104 @@ function matchesUsDate(value, dateToken) {
     return String(value || "").slice(0, 10) === String(dateToken || "")
 }
 
+function normalizeDailyScanState(snapshot, times) {
+    const raw = snapshot && snapshot.daily_scan && typeof snapshot.daily_scan === "object"
+        ? snapshot.daily_scan
+        : snapshot
+    const data = raw && typeof raw === "object" ? raw : {}
+    const result = asObject(data.result)
+    const marketDate = String(data.market_date || "").trim()
+    const currentDate = String(times && times.date || "").trim()
+    return {
+        market_date: marketDate,
+        status: String(data.status || "").trim().toLowerCase(),
+        reason: String(data.reason || "").trim(),
+        started_at: String(data.started_at || "").trim(),
+        finished_at: String(data.finished_at || "").trim(),
+        last_error: String(data.last_error || "").trim(),
+        active_count: toNumber(result.active, 0),
+        candidate_count: toNumber(result.candidates, 0),
+        scanned: toNumber(result.scanned, 0),
+        errors: toNumber(result.errors, 0),
+        rejection_summary: asObject(result.rejection_summary),
+        rejection_examples: Array.isArray(result.rejection_examples) ? result.rejection_examples : [],
+        result: result,
+        is_current_date: !!marketDate && !!currentDate && marketDate === currentDate,
+    }
+}
+
+function buildDailyScanStatusLabel(snapshot, times) {
+    const dailyScan = normalizeDailyScanState(snapshot, times)
+    const status = dailyScan.status || "idle"
+    const parts = [status]
+    if (dailyScan.market_date) parts.push(dailyScan.market_date)
+    if (dailyScan.scanned > 0 || dailyScan.active_count > 0 || dailyScan.candidate_count > 0 || dailyScan.errors > 0) {
+        parts.push(
+            `scanned ${dailyScan.scanned}`,
+            `active ${dailyScan.active_count}`,
+            `candidate ${dailyScan.candidate_count}`,
+            `errors ${dailyScan.errors}`
+        )
+    }
+    if (dailyScan.finished_at) {
+        parts.push(`finished ${dailyScan.finished_at}`)
+    } else if (dailyScan.started_at) {
+        parts.push(`started ${dailyScan.started_at}`)
+    }
+    return parts.join(" / ")
+}
+
+function buildDailyScanRejectionSummary(snapshot, times, limit = 4) {
+    const dailyScan = normalizeDailyScanState(snapshot, times)
+    const entries = Object.entries(dailyScan.rejection_summary || {})
+        .filter(([, count]) => toNumber(count, 0) > 0)
+        .sort((left, right) => {
+            const countDiff = toNumber(right[1], 0) - toNumber(left[1], 0)
+            if (countDiff !== 0) return countDiff
+            return String(left[0] || "").localeCompare(String(right[0] || ""))
+        })
+        .slice(0, Math.max(1, limit))
+    if (!entries.length) {
+        if (dailyScan.scanned <= 0) return "watchlist 为空或日筛尚未装载可评估标的"
+        return "所有标的都被技术投票或质量门过滤"
+    }
+    return entries.map(([bucket, count]) => `${bucket}:${toNumber(count, 0)}`).join(", ")
+}
+
+function buildDailyScanRejectionExamples(snapshot, times, limit = 3) {
+    const dailyScan = normalizeDailyScanState(snapshot, times)
+    const examples = Array.isArray(dailyScan.rejection_examples) ? dailyScan.rejection_examples : []
+    if (!examples.length) return ""
+    return examples.slice(0, Math.max(1, limit)).map((item) => {
+        const bucket = String(item && item.bucket || "").trim()
+        const symbol = String(item && item.symbol || "").trim().toUpperCase()
+        const actual = String(item && item.actual || "").trim()
+        const threshold = String(item && item.threshold || "").trim()
+        const note = String(item && item.note || "").trim()
+        const parts = [symbol || bucket || "example"]
+        if (bucket) parts.push(bucket)
+        if (actual && threshold) {
+            parts.push(`${actual} <=> ${threshold}`)
+        } else if (actual) {
+            parts.push(actual)
+        } else if (threshold) {
+            parts.push(threshold)
+        } else if (note) {
+            parts.push(note)
+        }
+        return parts.join(" / ")
+    }).join(" ; ")
+}
+
 function classifyMarketSession(snapshot, times, clock) {
     const weekday = Number(clock && clock.weekday)
     const isWeekend = weekday === 0 || weekday === 6
+    const dailyScan = normalizeDailyScanState(snapshot, times)
+    const dailyScanTargetCount = dailyScan.active_count + dailyScan.candidate_count
+    const currentDailyScanTargetCount = dailyScan.is_current_date ? dailyScanTargetCount : 0
     const hasTargets = toNumber(snapshot && snapshot.today && snapshot.today.targets, 0) > 0
         || toNumber(snapshot && snapshot.active_target_count, 0) > 0
+        || currentDailyScanTargetCount > 0
     const hasIntradayActivity = (
         toNumber(snapshot && snapshot.today && snapshot.today.bars, 0) > 0
         || toNumber(snapshot && snapshot.today && snapshot.today.indicators, 0) > 0
@@ -464,6 +602,41 @@ function classifyMarketSession(snapshot, times, clock) {
         }
     }
 
+    if (dailyScan.is_current_date && dailyScan.status === "failed") {
+        return {
+            kind: "trading",
+            label: "交易日",
+            open_title: "IBKR 开盘前系统检查（筛选失败）",
+            open_summary: "今日为交易日，但盘前日筛失败，目标池未正常生成。",
+            close_title: "IBKR 收盘汇总",
+            close_summary: "今日交易已收盘，已生成当日系统汇总。",
+            reason: "daily_scan_failed",
+        }
+    }
+
+    if (dailyScan.is_current_date && dailyScan.status === "completed") {
+        if (currentDailyScanTargetCount > 0 || hasTargets || hasIntradayActivity) {
+            return {
+                kind: "trading",
+                label: "交易日",
+                open_title: "IBKR 开盘前系统检查",
+                open_summary: "今日为交易日，09:20 开盘前系统状态检查已完成。",
+                close_title: "IBKR 收盘汇总",
+                close_summary: "今日交易已收盘，已生成当日系统汇总。",
+                reason: "targets_ready",
+            }
+        }
+        return {
+            kind: "trading",
+            label: "交易日",
+            open_title: "IBKR 开盘前系统检查（未筛出标的）",
+            open_summary: "今日为交易日，盘前日筛已执行完成，但未筛出 active / candidate 标的。",
+            close_title: "IBKR 收盘汇总",
+            close_summary: "今日交易已收盘，已生成当日系统汇总。",
+            reason: "daily_scan_zero_targets",
+        }
+    }
+
     if (hasTargets || hasIntradayActivity) {
         return {
             kind: "trading",
@@ -477,13 +650,13 @@ function classifyMarketSession(snapshot, times, clock) {
     }
 
     return {
-        kind: "closed_uncertain",
-        label: "未检测到交易计划",
-        open_title: "IBKR 非交易日提醒",
-        open_summary: "当前未检测到今日目标池或盘中活动，可能为休市日，或盘前计划尚未生成；先按闭市提醒处理。",
+        kind: "trading_pending",
+        label: "交易日待确认",
+        open_title: "IBKR 开盘前系统检查（待日筛）",
+        open_summary: "当前未检测到当日可用目标池；09:20 状态检查时盘前日筛尚未完成，先按待扫描处理。",
         close_title: "IBKR 非交易日汇总",
         close_summary: "当前未检测到今日交易活动，按闭市日生成系统汇总。",
-        reason: "no_targets_or_intraday_activity",
+        reason: "daily_scan_pending",
     }
 }
 
@@ -776,6 +949,7 @@ function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, fresh
         "指标状态": getIndicatorStatusLabel(snapshot, freshnessWindow),
         "今日概况": `bars ${snapshot.today.bars} / ind ${snapshot.today.indicators} / sig ${snapshot.today.signals} / ord ${snapshot.today.orders}`,
         "目标池": `${snapshot.today.targets} targets / active ${snapshot.active_target_count || 0}`,
+        "日筛状态": buildDailyScanStatusLabel(snapshot, times),
         "系统事件": `${eventCounts.events} / error ${eventCounts.error_events}`,
         "交易开关": snapshot.trading_enabled ? "true" : "false",
     }
@@ -787,6 +961,16 @@ function buildDailyOpenReminderDetail(snapshot, assessment, marketSession, fresh
     if (snapshot.auth.mode) detail["验证模式"] = snapshot.auth.mode
     if (snapshot.auth.last_result) detail["2FA反馈"] = snapshot.auth.last_result
     if (snapshot.auth.last_error) detail["2FA异常"] = snapshot.auth.last_error
+    if (marketSession.reason === "daily_scan_failed") {
+        const dailyScan = normalizeDailyScanState(snapshot, times)
+        detail["日筛错误"] = dailyScan.last_error || "daily_scan_failed"
+    } else if (marketSession.reason === "daily_scan_zero_targets") {
+        detail["未筛出原因"] = buildDailyScanRejectionSummary(snapshot, times)
+        const examples = buildDailyScanRejectionExamples(snapshot, times)
+        if (examples) detail["原因样例"] = examples
+    } else if (marketSession.reason === "daily_scan_pending") {
+        detail["待扫说明"] = "09:20 检查时 runtime 仍在等待本轮盘前日筛完成，目标池会在日筛结束后刷新。"
+    }
     return detail
 }
 
@@ -1393,7 +1577,18 @@ function buildScanSummaryUrl(environment, marketDate) {
 function buildScanSummaryLines(payload) {
     const items = Array.isArray(payload && payload.items) ? payload.items.slice(0, 5) : []
     if (!items.length) {
-        return "今日未筛出 candidate / active 标的。"
+        const dailyScan = normalizeDailyScanState(payload && payload.daily_scan, { date: payload && payload.market_date })
+        const lines = ["今日未筛出 candidate / active 标的。"]
+        if (dailyScan.status === "failed") {
+            lines.push(`日筛失败: ${dailyScan.last_error || "daily_scan_failed"}`)
+        } else if (dailyScan.status === "completed") {
+            lines.push(`原因汇总: ${buildDailyScanRejectionSummary(payload && payload.daily_scan, { date: payload && payload.market_date })}`)
+            const examples = buildDailyScanRejectionExamples(payload && payload.daily_scan, { date: payload && payload.market_date })
+            if (examples) {
+                lines.push(`样例: ${examples}`)
+            }
+        }
+        return lines.join("\n")
     }
     return items.map((row, index) => {
         const support = Array.isArray(row && row.operable_reasons) && row.operable_reasons.length
@@ -1449,7 +1644,7 @@ function buildScanSummaryCard(payload, environment) {
 function buildScanSummaryEventDetail(payload) {
     const summary = payload && payload.summary ? payload.summary : {}
     const items = Array.isArray(payload && payload.items) ? payload.items.slice(0, 5) : []
-    return {
+    const detail = {
         "交易日": String(payload && payload.market_date || ""),
         "总标的": String(toNumber(summary.total, 0)),
         "Active": String(toNumber(summary.active_count, 0)),
@@ -1459,6 +1654,14 @@ function buildScanSummaryEventDetail(payload) {
             ? items.map((row) => `${row.symbol}(${row.status}/${toNumber(row.score, 0).toFixed(1)})`).join(", ")
             : "none",
     }
+    const dailyScan = normalizeDailyScanState(payload && payload.daily_scan, { date: payload && payload.market_date })
+    detail["日筛状态"] = buildDailyScanStatusLabel(payload && payload.daily_scan, { date: payload && payload.market_date })
+    if (!items.length && dailyScan.status === "failed") {
+        detail["未筛出原因"] = dailyScan.last_error || "daily_scan_failed"
+    } else if (!items.length && dailyScan.status === "completed") {
+        detail["未筛出原因"] = buildDailyScanRejectionSummary(payload && payload.daily_scan, { date: payload && payload.market_date })
+    }
+    return detail
 }
 
 function runDailyScanSummaryTick(logPrefix, cronId) {
@@ -1580,10 +1783,10 @@ function runDailyOpenReminderTick(logPrefix, cronId) {
             if (startupGraceActive) {
                 detail["启动保护"] = buildStartupGraceLabel(snapshot)
             }
-            const title = marketSession.kind === "trading"
-                ? "IBKR 开盘前状态检查"
-                : marketSession.open_title
-            const level = marketSession.kind === "trading" ? assessment.level : "info"
+            const title = marketSession.open_title
+            const level = marketSession.kind === "closed"
+                ? "info"
+                : (marketSession.reason === "daily_scan_failed" ? "warning" : assessment.level)
             const notified = feishuSystem.notifySystemEvent("status_change", level, "pb", title, detail, environment, {
                 target_chat: "system",
                 template_level_override: "info",
@@ -1657,8 +1860,14 @@ function runDailyCloseSummaryTick(logPrefix, cronId) {
 module.exports = {
     buildDataFreshnessWindow,
     buildStatusAssessment,
+    buildDailyOpenReminderDetail,
+    buildDailyScanRejectionExamples,
+    buildDailyScanRejectionSummary,
+    buildDailyScanStatusLabel,
+    classifyMarketSession,
     hasHeartbeatIssue,
     listDataHealthProblems,
+    normalizeDailyScanState,
     runSystemHeartbeatTick,
     runSystemStatusReminderTick,
     runDailyScanSummaryTick,

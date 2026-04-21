@@ -7,6 +7,7 @@ from datetime import datetime
 
 from ibkr_compute.api.route_request import coerce_request_int
 from ibkr_compute.api.route_runtime import get_app_module
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 
 def _build_runtime_summary(app_mod) -> dict:
@@ -43,7 +44,7 @@ def _resolve_data_quality_symbols(service, payload: dict) -> list[str]:
     batch_size = coerce_request_int(payload.get("batch_size"), 8, minimum=1)
     if scan_scope == "active_target":
         try:
-            status_payload = service.status()
+            status_payload = get_service_status_snapshot(service)
             return app_mod.normalize_symbols(((status_payload.get("market_universe") or {}).get("active_target_symbols") or []))
         except Exception:
             return []

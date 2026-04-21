@@ -7,6 +7,7 @@ from flask import jsonify
 
 from ibkr_compute.api.compute.request import build_compute_disabled_payload, get_requested_environments
 from ibkr_compute.api.runtime_status_client import get_remote_runtime_status, is_runtime_status_payload
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.api.service_topology import is_runtime_remote_mode
 from ibkr_compute.workflows.daily_scanner import DailyScanner
 
@@ -102,16 +103,13 @@ def _get_runtime_status_snapshot(environment: str) -> dict:
         remote_payload = get_remote_runtime_status()
         if is_runtime_status_payload(remote_payload):
             return remote_payload
+        return {"environment": environment}
 
     service = api_app.get_ibkr_service()
     if not service or not hasattr(service, "status"):
         return {"environment": environment}
     try:
-        return service.status() or {"environment": environment}
+        return get_service_status_snapshot(service, {"environment": environment})
     except Exception:
         traceback.print_exc()
-        if is_runtime_remote_mode():
-            remote_payload = get_remote_runtime_status(force_refresh=True)
-            if is_runtime_status_payload(remote_payload):
-                return remote_payload
         return {"environment": environment}

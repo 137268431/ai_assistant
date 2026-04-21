@@ -7,6 +7,8 @@ const REMOTE_BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 const STATIC_ROOT = path.resolve(__dirname, '../../../runtime/pocketbase/pb_public');
+const MAIN_TRACE_ROW_SELECTOR = '#tracePanelShell [data-trace-bar-ms]';
+const MAIN_TRACE_ACTIVE_ROW_SELECTOR = '#tracePanelShell [data-trace-bar-ms].active';
 
 const CONTENT_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -317,15 +319,15 @@ async function openTracePage(page, seed) {
 }
 
 async function waitForTraceRows(page, timeoutMs = 15000) {
-  await page.waitForFunction(() => document.querySelectorAll('[data-trace-bar-ms]').length > 0, null, {
+  await page.waitForFunction((selector) => document.querySelectorAll(selector).length > 0, MAIN_TRACE_ROW_SELECTOR, {
     timeout: timeoutMs,
   });
 }
 
 async function focusAnotherTraceRow(page) {
-  const rows = page.locator('[data-trace-bar-ms]');
+  const rows = page.locator(MAIN_TRACE_ROW_SELECTOR);
   const count = await rows.count();
-  const activeBefore = await page.locator('[data-trace-bar-ms].active').first().getAttribute('data-trace-bar-ms').catch(() => '');
+  const activeBefore = await page.locator(MAIN_TRACE_ACTIVE_ROW_SELECTOR).first().getAttribute('data-trace-bar-ms').catch(() => '');
   let targetBarMs = '';
 
   for (let index = 0; index < count; index += 1) {
@@ -340,13 +342,13 @@ async function focusAnotherTraceRow(page) {
     return { active_before: activeBefore, active_after: activeBefore, clicked: false };
   }
 
-  const target = page.locator(`[data-trace-bar-ms="${targetBarMs}"]`).first();
+  const target = page.locator(`${MAIN_TRACE_ROW_SELECTOR}[data-trace-bar-ms="${targetBarMs}"]`).first();
   await target.scrollIntoViewIfNeeded().catch(() => {});
   await target.click();
-  await page.waitForFunction((barMs) => {
-    const node = document.querySelector(`[data-trace-bar-ms="${barMs}"]`);
+  await page.waitForFunction(({ activeSelector, barMs }) => {
+    const node = document.querySelector(`${activeSelector}[data-trace-bar-ms="${barMs}"]`);
     return !!node && node.classList.contains('active');
-  }, targetBarMs, { timeout: 15000 });
+  }, { activeSelector: MAIN_TRACE_ROW_SELECTOR, barMs: targetBarMs }, { timeout: 15000 });
 
   return {
     active_before: activeBefore,
@@ -390,10 +392,10 @@ async function inspectIndicatorTraceFlow(page, origin, seed, proxyState) {
 
   await openTracePage(page, seed);
   const traceBackend = summarizeTraceBackend(proxyState);
-  let traceRowCount = await page.locator('[data-trace-bar-ms]').count().catch(() => 0);
+  let traceRowCount = await page.locator(MAIN_TRACE_ROW_SELECTOR).count().catch(() => 0);
   if (traceBackend.ready && traceRowCount < 1) {
     await waitForTraceRows(page, 20000).catch(() => {});
-    traceRowCount = await page.locator('[data-trace-bar-ms]').count().catch(() => 0);
+    traceRowCount = await page.locator(MAIN_TRACE_ROW_SELECTOR).count().catch(() => 0);
   }
   const focusShift = traceRowCount > 0 ? await focusAnotherTraceRow(page) : { active_before: '', active_after: '', clicked: false };
   result.trace = {
@@ -435,7 +437,7 @@ async function inspectIndicatorTraceFlow(page, origin, seed, proxyState) {
   return result;
 }
 
-(async () => {
+async function runIndicatorTraceSurfaceCheck() {
   const token = await auth();
   const seed = await resolveSeedIndicator(token);
   if (!seed) throw new Error('no_indicator_seed_found');
@@ -457,13 +459,25 @@ async function inspectIndicatorTraceFlow(page, origin, seed, proxyState) {
     result,
   };
 
-  console.log(JSON.stringify(output, null, 2));
-  if (!output.ok) process.exitCode = 1;
-})().catch((error) => {
-  console.error(JSON.stringify({
-    ok: false,
-    error: error?.message || String(error),
-    checked_at: new Date().toISOString(),
-  }, null, 2));
-  process.exit(1);
-});
+  return output;
+}
+
+module.exports = {
+  runIndicatorTraceSurfaceCheck,
+};
+
+if (require.main === module) {
+  runIndicatorTraceSurfaceCheck()
+    .then((output) => {
+      console.log(JSON.stringify(output, null, 2));
+      if (!output.ok) process.exitCode = 1;
+    })
+    .catch((error) => {
+      console.error(JSON.stringify({
+        ok: false,
+        error: error?.message || String(error),
+        checked_at: new Date().toISOString(),
+      }, null, 2));
+      process.exit(1);
+    });
+}

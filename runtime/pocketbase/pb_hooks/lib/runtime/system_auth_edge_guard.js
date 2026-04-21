@@ -4,8 +4,9 @@ const AUTH_PENDING_ALERT_TRIGGER_MS = 15 * 60 * 1000
 const AUTH_PENDING_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const AUTH_MONITOR_STATE_KEY = "system_auth_monitor"
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
-const path = require("node:path")
-const HOOKS_ROOT = typeof __hooks !== "undefined" ? __hooks : path.resolve(__dirname, "../..")
+const HOOKS_ROOT = typeof __hooks !== "undefined"
+    ? __hooks
+    : String(__dirname || "").replace(/[\\/]lib[\\/]runtime$/, "")
 const usEasternTime = require(`${HOOKS_ROOT}/lib/runtime/us_eastern_time.js`)
 
 function toNumber(value, fallback) {

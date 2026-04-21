@@ -14,6 +14,26 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let replayChart = null;
         let refreshTimer = null;
         let actionPending = false;
+        const BACKTEST_TABLE_PREVIEW_LIMITS = Object.freeze({
+            leaderboard: 50,
+            trades: 20,
+            replay: 40,
+        });
+        const backtestTableExpandedState = {
+            leaderboard: false,
+            trades: false,
+            replay: false,
+        };
+        const BACKTEST_TEXT_PREVIEW_LIMITS = Object.freeze({
+            batchVariants: 1800,
+            strategyParams: 1800,
+            runtimeExtra: 2200,
+        });
+        const backtestTextExpandedState = {
+            batchVariants: false,
+            strategyParams: false,
+            runtimeExtra: false,
+        };
 
         function initAuth() {
             try {
@@ -197,6 +217,91 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function formatNumber(value, digits = 2) {
             const num = Number(value || 0);
             return Number.isFinite(num) ? num.toFixed(digits) : '--';
+        }
+
+        function getBacktestTablePreview(key, rows) {
+            const items = Array.isArray(rows) ? rows : [];
+            const limit = Number(BACKTEST_TABLE_PREVIEW_LIMITS[key] || 0);
+            const expanded = Boolean(backtestTableExpandedState[key]);
+            if (!limit || items.length <= limit || expanded) {
+                return {
+                    rows: items,
+                    total: items.length,
+                    visible: items.length,
+                    hidden: 0,
+                    expanded,
+                    truncated: Boolean(limit && items.length > limit),
+                };
+            }
+            return {
+                rows: items.slice(0, limit),
+                total: items.length,
+                visible: limit,
+                hidden: Math.max(0, items.length - limit),
+                expanded,
+                truncated: true,
+            };
+        }
+
+        function renderBacktestTablePreviewBar(key, preview, noun = '条记录') {
+            if (!preview?.truncated) return '';
+            const actionLabel = preview.expanded ? '收起预览' : '展开全部';
+            const previewCopy = preview.expanded
+                ? `当前显示全部 ${formatNumber(preview.total, 0)} ${noun}。`
+                : `当前先展示 ${formatNumber(preview.visible, 0)} / ${formatNumber(preview.total, 0)} ${noun}，还有 ${formatNumber(preview.hidden, 0)} ${noun} 未展开。`;
+            return `
+                <div class="table-preview-bar">
+                    <div class="table-preview-copy">${escapeHtml(previewCopy)}</div>
+                    <button class="btn ghost" type="button" onclick="toggleBacktestTableExpansion('${escapeHtml(key)}')">${escapeHtml(actionLabel)}</button>
+                </div>
+            `;
+        }
+
+        function getBacktestTextPreview(key, text) {
+            const raw = String(text ?? '');
+            const limit = Number(BACKTEST_TEXT_PREVIEW_LIMITS[key] || 0);
+            const expanded = Boolean(backtestTextExpandedState[key]);
+            if (!limit || raw.length <= limit || expanded) {
+                return {
+                    text: raw,
+                    total: raw.length,
+                    visible: raw.length,
+                    hidden: 0,
+                    expanded,
+                    truncated: Boolean(limit && raw.length > limit),
+                };
+            }
+            return {
+                text: `${raw.slice(0, limit).trimEnd()}\n…`,
+                total: raw.length,
+                visible: limit,
+                hidden: Math.max(0, raw.length - limit),
+                expanded,
+                truncated: true,
+            };
+        }
+
+        function renderBacktestTextPreviewBar(key, preview, section) {
+            if (!preview?.truncated) return '';
+            const actionLabel = preview.expanded ? '收起预览' : '展开全部';
+            const previewCopy = preview.expanded
+                ? `当前显示全部 ${formatNumber(preview.total, 0)} 个字符。`
+                : `当前先展示 ${formatNumber(preview.visible, 0)} / ${formatNumber(preview.total, 0)} 个字符，剩余 ${formatNumber(preview.hidden, 0)} 个字符已折叠。`;
+            return `
+                <div class="table-preview-bar">
+                    <div class="table-preview-copy">${escapeHtml(previewCopy)}</div>
+                    <button class="btn ghost" type="button" onclick="toggleBacktestTextExpansion('${escapeHtml(key)}', '${escapeHtml(section)}')">${escapeHtml(actionLabel)}</button>
+                </div>
+            `;
+        }
+
+        function renderBacktestTextPreviewBox(key, text, section, extraClass = 'mono') {
+            const preview = getBacktestTextPreview(key, text);
+            const className = extraClass ? `note-box ${extraClass}` : 'note-box';
+            return `
+                ${renderBacktestTextPreviewBar(key, preview, section)}
+                <div class="${className}">${escapeHtml(preview.text)}</div>
+            `;
         }
 
         function formatRunDate(run) {
@@ -716,6 +821,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return;
             }
             const leaderboard = Array.isArray(selectedBatch.leaderboard) ? selectedBatch.leaderboard : [];
+            const leaderboardPreview = getBacktestTablePreview('leaderboard', leaderboard);
             document.getElementById('batchDetail').innerHTML = `
                 <div class="detail-card">
                     <div class="subhead">Experiment Meta</div>
@@ -730,12 +836,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 </div>
                 <div class="detail-card">
                     <div class="subhead">Variants JSON</div>
-                    <div class="note-box mono">${escapeHtml(getBatchVariantsText(selectedBatch))}</div>
+                    ${renderBacktestTextPreviewBox('batchVariants', getBatchVariantsText(selectedBatch), 'batchDetail')}
                 </div>
                 ${buildExperimentAnalysisCard(selectedBatch)}
                 <div class="detail-card">
                     <div class="subhead">Leaderboard</div>
                     ${leaderboard.length ? `
+                        ${renderBacktestTablePreviewBar('leaderboard', leaderboardPreview, '个变体')}
                         <div class="table-wrap">
                             <table class="data-table">
                                 <thead>
@@ -751,7 +858,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${leaderboard.map((item, index) => `
+                                    ${leaderboardPreview.rows.map((item, index) => `
                                         <tr>
                                             <td class="mono">${index + 1}</td>
                                             <td>${escapeHtml(item.variant_label || item.name || '--')}</td>
@@ -931,7 +1038,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 </div>
                 <div class="detail-card">
                     <div class="subhead">Strategy Params</div>
-                    <div class="note-box mono">${escapeHtml(getStrategyParamsText(selectedRun))}</div>
+                    ${renderBacktestTextPreviewBox('strategyParams', getStrategyParamsText(selectedRun), 'runDetail')}
                 </div>
                 <div class="detail-card">
                     <div class="subhead">Data Quality</div>
@@ -981,7 +1088,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ${buildTvParityCard(selectedRun)}
                 <div class="detail-card">
                     <div class="subhead">Runtime Extra</div>
-                    <div class="note-box mono">${escapeHtml(JSON.stringify({
+                    ${renderBacktestTextPreviewBox('runtimeExtra', JSON.stringify({
                         strategy_tag: extra.strategy_tag || '',
                         resolved_symbols: extra.resolved_symbols || [],
                         force_flat_eod: extra.force_flat_eod,
@@ -991,7 +1098,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         backtest_reverse_capture: extra.backtest_reverse_capture || {},
                         historical_targeting: extra.historical_targeting || {},
                         analysis_report: extra.analysis_report || {},
-                    }, null, 2))}</div>
+                    }, null, 2), 'runDetail')}
                 </div>
             `;
             document.getElementById('runDetail').innerHTML = detailHtml;
@@ -1029,7 +1136,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 document.getElementById('tradesPanel').innerHTML = '<div class="empty-state">这个 run 还没有成交记录，可能数据不足或策略条件未触发。</div>';
                 return;
             }
+            const tradePreview = getBacktestTablePreview('trades', selectedTrades);
             document.getElementById('tradesPanel').innerHTML = `
+                ${renderBacktestTablePreviewBar('trades', tradePreview, '笔交易')}
                 <div class="table-wrap">
                     <table class="data-table">
                         <thead>
@@ -1046,7 +1155,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                             </tr>
                         </thead>
                         <tbody>
-                            ${selectedTrades.map((trade) => `
+                            ${tradePreview.rows.map((trade) => `
                                 <tr>
                                     <td class="mono">${trade.trade_index}</td>
                                     <td>${escapeHtml(trade.symbol || '--')}</td>
@@ -1084,6 +1193,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ctx.fillText('No replay loaded', 16, 28);
                 return;
             }
+            const replayPreview = getBacktestTablePreview('replay', rows);
             const labels = rows.map((row) => (row.us_time || '').slice(11, 16));
             const closes = rows.map((row) => Number(row.close || 0));
             const signalPoints = rows.map((row) => row.signal ? Number(row.close || 0) : null);
@@ -1132,6 +1242,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 },
             });
             panel.innerHTML = `
+                ${renderBacktestTablePreviewBar('replay', replayPreview, '根K线')}
                 <div class="table-wrap">
                     <table class="data-table">
                         <thead>
@@ -1146,7 +1257,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                             </tr>
                         </thead>
                         <tbody>
-                            ${rows.map((row) => {
+                            ${replayPreview.rows.map((row) => {
                                 const signal = row.signal || null;
                                 return `
                                     <tr>
@@ -1219,6 +1330,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         async function loadRunTrades(runId) {
             if (!runId) {
                 selectedTrades = [];
+                backtestTableExpandedState.trades = false;
                 renderTrades();
                 return;
             }
@@ -1234,6 +1346,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return;
             }
             selectedTrades = items.map(normalizeTradeRecord);
+            backtestTableExpandedState.trades = false;
             renderTrades();
         }
 
@@ -1500,6 +1613,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         async function selectBatch(batchId) {
             selectedBatchId = batchId;
             selectedBatch = batchList.find((batch) => batch.id === batchId) || null;
+            backtestTableExpandedState.leaderboard = false;
+            backtestTextExpandedState.batchVariants = false;
             renderBatches();
             renderBatchDetail();
         }
@@ -1514,6 +1629,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             selectedRun = runList.find((run) => run.id === runId) || null;
             selectedTargets = [];
             selectedTargetsLoading = Boolean(selectedRun);
+            backtestTextExpandedState.strategyParams = false;
+            backtestTextExpandedState.runtimeExtra = false;
             renderRuns();
             renderMetrics();
             renderRunDetail();
@@ -1547,9 +1664,38 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             try {
                 const payload = await requestBacktestJson(`/api/custom/ibkr/backtest/replay?environment=${encodeURIComponent(currentEnvironment)}&run_id=${encodeURIComponent(selectedRunId)}&symbol=${encodeURIComponent(symbol)}&center_bar_ms=${encodeURIComponent(centerBarMs || 0)}&window=${encodeURIComponent(windowSize || 80)}`);
                 selectedReplayRows = Array.isArray(payload.rows) ? payload.rows : [];
+                backtestTableExpandedState.replay = false;
                 renderReplay(selectedReplayRows);
             } catch (error) {
                 showToast(`Replay 失败: ${error.message || error}`);
+            }
+        }
+
+        function toggleBacktestTableExpansion(key) {
+            if (!Object.prototype.hasOwnProperty.call(backtestTableExpandedState, key)) return;
+            backtestTableExpandedState[key] = !backtestTableExpandedState[key];
+            if (key === 'leaderboard') {
+                renderBatchDetail();
+                return;
+            }
+            if (key === 'trades') {
+                renderTrades();
+                return;
+            }
+            if (key === 'replay') {
+                renderReplay(selectedReplayRows);
+            }
+        }
+
+        function toggleBacktestTextExpansion(key, section) {
+            if (!Object.prototype.hasOwnProperty.call(backtestTextExpandedState, key)) return;
+            backtestTextExpandedState[key] = !backtestTextExpandedState[key];
+            if (section === 'batchDetail') {
+                renderBatchDetail();
+                return;
+            }
+            if (section === 'runDetail') {
+                renderRunDetail();
             }
         }
 
@@ -1576,6 +1722,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         window.selectBatch = selectBatch;
         window.openRunFromBatch = openRunFromBatch;
         window.selectRun = selectRun;
+        window.toggleBacktestTableExpansion = toggleBacktestTableExpansion;
+        window.toggleBacktestTextExpansion = toggleBacktestTextExpansion;
         window.refreshDashboard = refreshDashboard;
         window.refreshSelectedRun = refreshSelectedRun;
         window.refreshSelectedBatch = refreshSelectedBatch;

@@ -5,12 +5,13 @@ from datetime import datetime
 from ibkr_compute.api.account.history_builder.normalize import _normalize_broker_history_order
 from ibkr_compute.api.account.history_builder.reconcile import _build_broker_order_reconciliation
 from ibkr_compute.api.account.live import _api_app, _canonical_order_status
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 
 def _build_ibkr_order_history(service, requested_days: int = 1) -> dict:
     api_app = _api_app()
     runtime_environment = api_app._ibkr_service_environment(service)
-    service_status = service.status() if hasattr(service, "status") else {}
+    service_status = get_service_status_snapshot(service)
     use_paper = api_app._ibkr_service_uses_paper_account(service)
     account_id = ""
     if hasattr(service, "order_placer"):

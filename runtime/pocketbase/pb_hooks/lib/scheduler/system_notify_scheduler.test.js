@@ -2,8 +2,10 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 
 const {
+    buildDailyOpenReminderDetail,
     buildDataFreshnessWindow,
     buildStatusAssessment,
+    classifyMarketSession,
     hasHeartbeatIssue,
     listDataHealthProblems,
 } = require("./system_notify_scheduler.js")
@@ -56,7 +58,7 @@ function buildSnapshot(overrides = {}) {
             last_completed_bucket_us: "2026-04-20 15:55:00",
             label: "fresh / due 2026-04-20 15:55:00 / done 2026-04-20 15:55:00",
         },
-        account: { ok: true },
+        account: { ok: true, positions: 0, open_orders: 0, net_liquidation: 0 },
         trading_enabled: true,
         today: {
             bars: 10,
@@ -67,6 +69,22 @@ function buildSnapshot(overrides = {}) {
         },
         active_target_count: 10,
         auth: { label: "ok" },
+        daily_scan: {
+            market_date: "2026-04-20",
+            status: "completed",
+            reason: "poll",
+            started_at: "2026-04-20 09:20:00",
+            finished_at: "2026-04-20 09:21:00",
+            last_error: "",
+            result: {
+                scanned: 117,
+                active: 10,
+                candidates: 0,
+                errors: 0,
+                rejection_summary: {},
+                rejection_examples: [],
+            },
+        },
     }
     return {
         ...base,
@@ -83,6 +101,7 @@ function buildSnapshot(overrides = {}) {
         account: { ...base.account, ...overrides.account },
         today: { ...base.today, ...overrides.today },
         auth: { ...base.auth, ...overrides.auth },
+        daily_scan: { ...base.daily_scan, ...overrides.daily_scan, result: { ...base.daily_scan.result, ...(overrides.daily_scan && overrides.daily_scan.result) } },
     }
 }
 
@@ -159,4 +178,129 @@ test("silent auth recovery is watch-only instead of a broken unauthenticated sta
     assert.match(assessment.summary, /静默恢复/)
     assert.ok(problems.includes("IBKR 会话正在静默恢复"))
     assert.ok(!problems.includes("IBKR 会话未认证"))
+})
+
+test("completed daily scan with zero targets is not treated as a non-trading day", () => {
+    const snapshot = buildSnapshot({
+        today: {
+            bars: 0,
+            indicators: 0,
+            signals: 0,
+            orders: 0,
+            targets: 0,
+        },
+        active_target_count: 0,
+        daily_scan: {
+            market_date: "2026-04-21",
+            status: "completed",
+            finished_at: "2026-04-21 09:22:14",
+            result: {
+                scanned: 117,
+                active: 0,
+                candidates: 0,
+                errors: 0,
+                rejection_summary: {
+                    vote_tie: 22,
+                    premarket_volume_below_threshold: 57,
+                },
+                rejection_examples: [
+                    {
+                        bucket: "vote_tie",
+                        symbol: "AAPL",
+                        actual: "long_votes=2, short_votes=2",
+                        threshold: "long_votes != short_votes",
+                    },
+                ],
+            },
+        },
+    })
+    const times = { date: "2026-04-21", us: "2026-04-21 09:20:00" }
+    const clock = { weekday: 2, hour: 9, minute: 20 }
+    const assessment = buildStatusAssessment(snapshot, false, buildDataFreshnessWindow(snapshot, times, clock))
+    const marketSession = classifyMarketSession(snapshot, times, clock)
+    const detail = buildDailyOpenReminderDetail(snapshot, assessment, marketSession, buildDataFreshnessWindow(snapshot, times, clock), times, { events: 0, error_events: 0 })
+
+    assert.equal(marketSession.kind, "trading")
+    assert.equal(marketSession.reason, "daily_scan_zero_targets")
+    assert.match(marketSession.open_title, /未筛出标的/)
+    assert.match(detail["未筛出原因"], /premarket_volume_below_threshold:57/)
+    assert.match(detail["日筛状态"], /scanned 117/)
+})
+
+test("failed daily scan is surfaced as a trading-day scan failure", () => {
+    const snapshot = buildSnapshot({
+        today: {
+            bars: 0,
+            indicators: 0,
+            signals: 0,
+            orders: 0,
+            targets: 0,
+        },
+        active_target_count: 0,
+        daily_scan: {
+            market_date: "2026-04-21",
+            status: "failed",
+            last_error: "daily_scan_failed:write_timeout",
+            result: {
+                scanned: 35,
+                active: 0,
+                candidates: 0,
+                errors: 1,
+            },
+        },
+    })
+    const times = { date: "2026-04-21", us: "2026-04-21 09:20:00" }
+    const clock = { weekday: 2, hour: 9, minute: 20 }
+    const marketSession = classifyMarketSession(snapshot, times, clock)
+    const detail = buildDailyOpenReminderDetail(
+        snapshot,
+        buildStatusAssessment(snapshot, false, buildDataFreshnessWindow(snapshot, times, clock)),
+        marketSession,
+        buildDataFreshnessWindow(snapshot, times, clock),
+        times,
+        { events: 0, error_events: 0 }
+    )
+
+    assert.equal(marketSession.reason, "daily_scan_failed")
+    assert.match(marketSession.open_title, /筛选失败/)
+    assert.equal(detail["日筛错误"], "daily_scan_failed:write_timeout")
+})
+
+test("previous-day daily scan results do not make 09:20 look ready", () => {
+    const snapshot = buildSnapshot({
+        today: {
+            bars: 0,
+            indicators: 0,
+            signals: 0,
+            orders: 0,
+            targets: 0,
+        },
+        active_target_count: 0,
+        daily_scan: {
+            market_date: "2026-04-20",
+            status: "completed",
+            finished_at: "2026-04-20 09:21:00",
+            result: {
+                scanned: 117,
+                active: 6,
+                candidates: 0,
+                errors: 0,
+            },
+        },
+    })
+    const times = { date: "2026-04-21", us: "2026-04-21 09:20:00" }
+    const clock = { weekday: 2, hour: 9, minute: 20 }
+    const marketSession = classifyMarketSession(snapshot, times, clock)
+    const detail = buildDailyOpenReminderDetail(
+        snapshot,
+        buildStatusAssessment(snapshot, false, buildDataFreshnessWindow(snapshot, times, clock)),
+        marketSession,
+        buildDataFreshnessWindow(snapshot, times, clock),
+        times,
+        { events: 0, error_events: 0 }
+    )
+
+    assert.equal(marketSession.reason, "daily_scan_pending")
+    assert.match(marketSession.open_title, /待日筛/)
+    assert.equal(detail["待扫说明"], "09:20 检查时 runtime 仍在等待本轮盘前日筛完成，目标池会在日筛结束后刷新。")
 })

@@ -471,8 +471,13 @@ class TradingServiceMarketUniverseMixin:
                     "ok": True,
                     "date": market_date,
                     "scanned": 0,
+                    "eligible": 0,
+                    "active": 0,
                     "candidates": 0,
+                    "removed": 0,
                     "errors": 0,
+                    "rejection_summary": {},
+                    "rejection_examples": [],
                     "environments": [service_mod.ENVIRONMENT],
                 },
             )

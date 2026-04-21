@@ -111,6 +111,7 @@ body {
             grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 14px;
             margin-bottom: 14px;
+            align-items: start;
         }
         .panel {
             position: relative;
@@ -464,6 +465,24 @@ body {
             overflow: auto;
             background: rgba(255,255,255,0.03);
         }
+        .table-preview-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.03);
+        }
+        .table-preview-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', monospace;
+        }
         .data-table {
             width: 100%;
             border-collapse: collapse;
@@ -593,6 +612,7 @@ body {
         @media (hover: hover) and (pointer: fine) {
             .run-list,
             .backtest-scroll-region {
+                /* Let desktop trackpad scroll stay page-owned instead of being trapped inside the panel. */
                 max-height: none;
                 overflow: visible;
                 overscroll-behavior: auto;

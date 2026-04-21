@@ -7,6 +7,7 @@ from ibkr_compute.api.runtime_status_client import (
     get_runtime_internal_url as get_remote_runtime_internal_url,
     is_runtime_status_payload,
 )
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 DEFAULT_COMPUTE_INTERNAL_URL = "http://127.0.0.1:5100"
 
@@ -89,10 +90,7 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
 
     payload = service_status if isinstance(service_status, dict) else {}
     if not payload and service is not None and hasattr(service, "status"):
-        try:
-            payload = service.status() or {}
-        except Exception:
-            payload = {}
+        payload = get_service_status_snapshot(service)
 
     topology_payload = _select_topology_status_payload(runtime_mode, service_profile, payload)
     gateway = topology_payload.get("gateway") or {}

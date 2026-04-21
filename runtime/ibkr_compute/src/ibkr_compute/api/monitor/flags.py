@@ -220,7 +220,7 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             "warning",
             "stale_active_symbols",
             "Stale active symbols",
-            f"当前有 {len(stale_symbols)} 个已订阅 symbol 没有出现在活跃 bar 列表。",
+            f"当前有 {len(stale_symbols)} 个已订阅 symbol 没有出现在实时样本（quote / active bar / warmup ready）中。",
         )
 
     memory_used_pct = (host_snapshot.get("memory") or {}).get("used_pct")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import jsonify
 
 from ibkr_compute.api.shared.route_request import get_query_arg_text
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 
 def _app_mod():
@@ -21,9 +22,7 @@ def get_requested_environment(default: str = "live") -> str:
 
 
 def get_service_status(service) -> dict:
-    if service and hasattr(service, "status"):
-        return service.status() or {}
-    return {}
+    return get_service_status_snapshot(service)
 
 
 def require_ibkr_service(*, restore: bool = False):

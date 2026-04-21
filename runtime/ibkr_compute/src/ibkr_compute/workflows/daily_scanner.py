@@ -40,6 +40,13 @@ MANUAL_TARGET_SOURCES = {
     "screener_targets_tab",
 }
 
+REJECTION_BUCKET_NO_SNAPSHOT = "no_snapshot"
+REJECTION_BUCKET_VOTE_TIE = "vote_tie"
+REJECTION_BUCKET_AVG_10D = "avg_10d_volume_below_threshold"
+REJECTION_BUCKET_PREMARKET = "premarket_volume_below_threshold"
+REJECTION_BUCKET_ATR = "atr_pct_below_threshold"
+REJECTION_BUCKET_DAY_CHANGE = "day_change_below_threshold"
+
 DAILY_SCAN_LONG_PRIMARY_RULES = (
     ("trend_dir", 1, "trend_dir=1"),
     ("dtp_dir", 1, "dtp_dir=1"),
@@ -123,6 +130,51 @@ def _format_threshold(value: float | int) -> str:
     if number.is_integer():
         return str(int(number))
     return f"{number:.3f}".rstrip("0").rstrip(".")
+
+
+def _format_metric_value(value: float | int) -> str:
+    return _format_threshold(value)
+
+
+def _new_rejection_trackers() -> tuple[dict[str, int], dict[str, list[dict[str, str]]]]:
+    return {}, {}
+
+
+def _record_rejection(
+    summary: dict[str, int],
+    examples: dict[str, list[dict[str, str]]],
+    *,
+    bucket: str,
+    symbol: str,
+    actual: str = "",
+    threshold: str = "",
+    note: str = "",
+    limit: int = 3,
+) -> None:
+    normalized_bucket = str(bucket or "").strip()
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_bucket or not normalized_symbol:
+        return
+    summary[normalized_bucket] = int(summary.get(normalized_bucket, 0) or 0) + 1
+    bucket_examples = examples.setdefault(normalized_bucket, [])
+    if len(bucket_examples) >= max(1, int(limit or 0)):
+        return
+    bucket_examples.append(
+        {
+            "bucket": normalized_bucket,
+            "symbol": normalized_symbol,
+            "actual": str(actual or "").strip(),
+            "threshold": str(threshold or "").strip(),
+            "note": str(note or "").strip(),
+        }
+    )
+
+
+def _flatten_rejection_examples(examples: dict[str, list[dict[str, str]]]) -> list[dict[str, str]]:
+    rows = []
+    for bucket in sorted(examples.keys()):
+        rows.extend(examples.get(bucket) or [])
+    return rows
 
 
 def _metric_rank_bonus(row: dict) -> int:
@@ -295,6 +347,9 @@ class DailyScanner:
         removed = 0
         errors = 0
         environment_results = []
+        eligible = 0
+        rejection_summary: dict[str, int] = {}
+        rejection_examples: list[dict[str, str]] = []
 
         runtime_environments = environments or ["live", "paper"]
 
@@ -302,17 +357,44 @@ class DailyScanner:
             result = self._run_environment_scan(date, environment)
             environment_results.append(result)
             scanned += int(result.get("scanned", 0) or 0)
+            eligible += int(result.get("eligible", 0) or 0)
             candidates += int(result.get("candidates", 0) or 0)
             active += int(result.get("active", 0) or 0)
             removed += int(result.get("removed", 0) or 0)
             errors += int(result.get("errors", 0) or 0)
+            for bucket, count in (result.get("rejection_summary") or {}).items():
+                normalized_bucket = str(bucket or "").strip()
+                if not normalized_bucket:
+                    continue
+                rejection_summary[normalized_bucket] = (
+                    int(rejection_summary.get(normalized_bucket, 0) or 0)
+                    + int(count or 0)
+                )
+            for example in result.get("rejection_examples") or []:
+                if len(rejection_examples) >= 12:
+                    break
+                normalized = {
+                    "bucket": str((example or {}).get("bucket") or "").strip(),
+                    "symbol": str((example or {}).get("symbol") or "").strip().upper(),
+                    "actual": str((example or {}).get("actual") or "").strip(),
+                    "threshold": str((example or {}).get("threshold") or "").strip(),
+                    "note": str((example or {}).get("note") or "").strip(),
+                }
+                if not normalized["bucket"] or not normalized["symbol"]:
+                    continue
+                if environment and len(runtime_environments) > 1:
+                    normalized["environment"] = str(environment).strip().lower()
+                rejection_examples.append(normalized)
 
         return {
             "scanned": scanned,
+            "eligible": eligible,
             "candidates": candidates,
             "active": active,
             "removed": removed,
             "errors": errors,
+            "rejection_summary": rejection_summary,
+            "rejection_examples": rejection_examples,
             "environment_results": environment_results,
         }
 
@@ -343,6 +425,7 @@ class DailyScanner:
 
         eligible = []
         errors = 0
+        rejection_summary, rejection_examples_by_bucket = _new_rejection_trackers()
         for item in watchlist:
             symbol = str(item.get("symbol", "")).strip().upper()
             if not symbol:
@@ -358,6 +441,17 @@ class DailyScanner:
                 if result and bool(result.get("quality_gate_passed")):
                     result["exchange"] = str(item.get("exchange", "") or result.get("exchange", "")).strip().upper()
                     eligible.append(result)
+                else:
+                    for example in (result or {}).get("rejection_examples") or []:
+                        _record_rejection(
+                            rejection_summary,
+                            rejection_examples_by_bucket,
+                            bucket=str((example or {}).get("bucket") or ""),
+                            symbol=str((example or {}).get("symbol") or symbol),
+                            actual=str((example or {}).get("actual") or ""),
+                            threshold=str((example or {}).get("threshold") or ""),
+                            note=str((example or {}).get("note") or ""),
+                        )
             except Exception as exc:
                 errors += 1
                 print(f"[Scanner] {runtime_environment}/{symbol} error: {exc}")
@@ -452,6 +546,8 @@ class DailyScanner:
             "trade_subscription_budget": trade_budget,
             "manual_active_count": manual_active_count,
             "manual_retained_count": len(manual_retained_symbols),
+            "rejection_summary": rejection_summary,
+            "rejection_examples": _flatten_rejection_examples(rejection_examples_by_bucket),
         }
 
     def evaluate_symbol(
@@ -476,7 +572,29 @@ class DailyScanner:
                 snapshots[tf] = engine.get_snapshot()
 
         if not snapshots:
-            return None
+            return {
+                "symbol": symbol,
+                "score": 0,
+                "technical_score": 0,
+                "direction_bias": "neutral",
+                "reason": "no_snapshot",
+                "quality_gate_passed": False,
+                "rejection_examples": [
+                    {
+                        "bucket": REJECTION_BUCKET_NO_SNAPSHOT,
+                        "symbol": symbol,
+                        "actual": "ready_timeframes=0",
+                        "threshold": ">=1 ready timeframe",
+                        "note": "缺少可用技术快照",
+                    }
+                ],
+                "extra": {
+                    "environment": runtime_environment,
+                    "timeframes_ready": [],
+                    "long_votes": 0,
+                    "short_votes": 0,
+                },
+            }
 
         technical_score = 0
         long_votes = 0
@@ -520,6 +638,15 @@ class DailyScanner:
                 "direction_bias": direction_bias,
                 "reason": "vote_tie",
                 "quality_gate_passed": False,
+                "rejection_examples": [
+                    {
+                        "bucket": REJECTION_BUCKET_VOTE_TIE,
+                        "symbol": symbol,
+                        "actual": f"long_votes={long_votes}, short_votes={short_votes}",
+                        "threshold": "long_votes != short_votes",
+                        "note": "技术投票平票",
+                    }
+                ],
                 "extra": {
                     "environment": runtime_environment,
                     "timeframes_ready": sorted(snapshots.keys()),
@@ -550,6 +677,50 @@ class DailyScanner:
             f"atr>={_format_threshold(settings['min_atr_pct'])}",
             f"|day|>={_format_threshold(settings['min_abs_day_change_pct'])}",
         ]
+        rejection_examples = []
+        if avg_10d_volume < _safe_float(settings.get("min_avg_10d_volume"), DEFAULT_MIN_AVG_10D_VOLUME):
+            rejection_examples.append(
+                {
+                    "bucket": REJECTION_BUCKET_AVG_10D,
+                    "symbol": symbol,
+                    "actual": _format_metric_value(avg_10d_volume),
+                    "threshold": _format_threshold(settings["min_avg_10d_volume"]),
+                    "note": "10 日均量不足",
+                }
+            )
+        if premarket_volume < _safe_float(settings.get("min_premarket_volume"), DEFAULT_MIN_PREMARKET_VOLUME):
+            rejection_examples.append(
+                {
+                    "bucket": REJECTION_BUCKET_PREMARKET,
+                    "symbol": symbol,
+                    "actual": _format_metric_value(premarket_volume),
+                    "threshold": _format_threshold(settings["min_premarket_volume"]),
+                    "note": "盘前量不足",
+                }
+            )
+        if atr_pct < _safe_float(settings.get("min_atr_pct"), DEFAULT_MIN_ATR_PCT):
+            rejection_examples.append(
+                {
+                    "bucket": REJECTION_BUCKET_ATR,
+                    "symbol": symbol,
+                    "actual": _format_metric_value(atr_pct),
+                    "threshold": _format_threshold(settings["min_atr_pct"]),
+                    "note": "ATR 不足",
+                }
+            )
+        if abs(day_change_pct) < _safe_float(
+            settings.get("min_abs_day_change_pct"),
+            DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
+        ):
+            rejection_examples.append(
+                {
+                    "bucket": REJECTION_BUCKET_DAY_CHANGE,
+                    "symbol": symbol,
+                    "actual": _format_metric_value(abs(day_change_pct)),
+                    "threshold": _format_threshold(settings["min_abs_day_change_pct"]),
+                    "note": "日内涨跌幅不足",
+                }
+            )
         final_score = technical_score + _metric_rank_bonus(metric_row)
         reason_items = list(dict.fromkeys(technical_reasons[:4] + gate_reasons))
         reason_text = ", ".join(reason_items[:8]).strip()
@@ -566,6 +737,7 @@ class DailyScanner:
             "direction_bias": direction_bias,
             "reason": reason_text,
             "quality_gate_passed": quality_gate_passed,
+            "rejection_examples": rejection_examples,
             "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
             "avg_10d_volume": round(avg_10d_volume, 2),
             "premarket_volume": round(premarket_volume, 2),

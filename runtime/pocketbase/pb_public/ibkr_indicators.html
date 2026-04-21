@@ -1202,6 +1202,7 @@
             cleanupIndicatorChartDomInteractions();
             const container = document.getElementById('indicatorChartCanvas');
             if (!container) return;
+            const scrollOwner = container.closest('.chart-modal-content');
 
             const handleHoverPoint = (point) => {
                 const index = point ? resolveIndicatorChartBarIndexFromPixel(point) : -1;
@@ -1234,17 +1235,33 @@
                 if (index < 0) return;
                 focusIndicatorChartBarIndex(index);
             };
+            const onWheel = (event) => {
+                if (!isIndicatorDesktopFinePointer() || !scrollOwner) return;
+                const deltaY = Number(event.deltaY || 0);
+                const deltaX = Number(event.deltaX || 0);
+                if (!Number.isFinite(deltaY) || Math.abs(deltaY) <= Math.abs(deltaX)) return;
+                const maxScrollTop = Math.max(0, scrollOwner.scrollHeight - scrollOwner.clientHeight);
+                if (maxScrollTop <= 0) return;
+                const nextScrollTop = Math.min(maxScrollTop, Math.max(0, scrollOwner.scrollTop + deltaY));
+                if (Math.abs(nextScrollTop - scrollOwner.scrollTop) < 0.5) return;
+                scrollOwner.scrollTop = nextScrollTop;
+                event.preventDefault();
+                event.stopImmediatePropagation?.();
+                event.stopPropagation();
+            };
 
             container.addEventListener('mousemove', onMouseMove);
             container.addEventListener('mouseleave', onMouseLeave);
             container.addEventListener('click', onClick);
             container.addEventListener('touchstart', onTouchStart, { passive: true });
+            container.addEventListener('wheel', onWheel, { passive: false, capture: true });
 
             indicatorChartDomCleanup = () => {
                 container.removeEventListener('mousemove', onMouseMove);
                 container.removeEventListener('mouseleave', onMouseLeave);
                 container.removeEventListener('click', onClick);
                 container.removeEventListener('touchstart', onTouchStart);
+                container.removeEventListener('wheel', onWheel, true);
             };
         }
 

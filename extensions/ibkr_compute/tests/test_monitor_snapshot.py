@@ -204,6 +204,66 @@ class MonitorSnapshotTest(unittest.TestCase):
         self.assertIn("pending_subscriptions", flag_codes)
         self.assertIn("history_throttle_detected", flag_codes)
 
+    def test_build_monitor_snapshot_keeps_recent_warmup_symbol_out_of_stale_list(self):
+        fake_service = FakeService(subscription_limit=10)
+        fake_service._active_subscription_map["VIX"] = 13455763
+        status_payload = fake_service.status()
+        status_payload["canonical_5m"] = {
+            "last_completed_bucket_ms": 1773700500000,
+        }
+        status_payload["warmup"]["monitor_symbols"] = ["MSFT", "VIX"]
+        status_payload["warmup"]["symbol_status"] = [
+            {
+                "symbol": "VIX",
+                "role": "monitor",
+                "ready": False,
+                "bar_count": 271,
+                "last_bar_time_ms": 1773700500000,
+                "integrity_ready": False,
+                "integrity_reason": "today_regular_incomplete=1",
+            }
+        ]
+        status_payload["market_universe"]["active_subscription_count"] = 3
+        host_snapshot = {
+            "hostname": "compute-1",
+            "platform": "Linux-6.8.0",
+            "cpu_count": 8,
+            "loadavg": {"1": 1.4, "5": 1.1, "15": 0.9, "per_cpu_1": 0.18},
+            "memory": {
+                "total_bytes": 1024,
+                "available_bytes": 256,
+                "used_bytes": 768,
+                "used_pct": 75.0,
+                "source": "/proc/meminfo",
+            },
+            "disk": {
+                "path": "/",
+                "total_bytes": 2048,
+                "free_bytes": 1024,
+                "used_bytes": 1024,
+                "used_pct": 50.0,
+            },
+            "process": {
+                "pid": 123,
+                "uptime_s": 42.0,
+                "rss_bytes": 4096,
+                "threads": 6,
+                "fd_count": 14,
+            },
+        }
+
+        with mock.patch.object(fake_service, "status", return_value=status_payload):
+            with mock.patch.object(server, "_collect_host_snapshot", return_value=host_snapshot):
+                with mock.patch.object(server, "get_ibkr_runtime_control", return_value={"environment": "live", "desired_running": True}):
+                    payload = server._build_ibkr_monitor_snapshot(fake_service)
+
+        self.assertEqual(payload["samples"]["stale_symbols"], ["MSFT"])
+        subscriptions = {item["symbol"]: item for item in payload["samples"]["active_subscriptions"]}
+        self.assertTrue(subscriptions["VIX"]["visible"])
+        self.assertFalse(subscriptions["VIX"]["stale"])
+        self.assertFalse(subscriptions["VIX"]["warmup_ready"])
+        self.assertIn("warmup", subscriptions["VIX"]["visibility_sources"])
+
     def test_monitor_route_returns_payload(self):
         fake_service = FakeService(subscription_limit=60)
         host_snapshot = {

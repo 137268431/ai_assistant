@@ -13,6 +13,7 @@
 <body>
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
+    <div id="pageTopSection"></div>
 
     <div class="content">
         <div class="search-row">
@@ -132,6 +133,93 @@
             return url.toString();
         }
 
+        function summarizeHeaderValue(value, maxLength = 28) {
+            const text = String(value || '').trim();
+            if (!text) return '';
+            if (text.length <= maxLength) return text;
+            return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+        }
+
+        function getReverseStatusLabel(status = currentStatus) {
+            const map = {
+                all: '全部状态',
+                pending: '待处理',
+                confirmed: '已确认',
+                cancelled: '已取消',
+            };
+            return map[status] || status || '全部状态';
+        }
+
+        function getReverseDirectionLabel(direction = currentDirection) {
+            const map = {
+                all: '全部方向',
+                long: '做多',
+                short: '做空',
+            };
+            return map[direction] || direction || '全部方向';
+        }
+
+        function getReverseActionLabel(action = currentAction) {
+            const map = {
+                all: '全部动作',
+                close: '平仓',
+                cancel: '取消',
+                adjust: '调整',
+            };
+            return map[action] || action || '全部动作';
+        }
+
+        function parseExactSearchFilter(value = currentSearch) {
+            const match = String(value || '').trim().match(/^([a-z_]+)\s*=\s*(.+)$/i);
+            if (!match) return null;
+            return {
+                field: match[1].toLowerCase(),
+                value: match[2].trim(),
+            };
+        }
+
+        function buildReverseExecutionParams() {
+            const params = { date: currentDate };
+            const exact = parseExactSearchFilter();
+            if (!exact) return params;
+            if (exact.field === 'signal_id') params.signal_id = exact.value;
+            if (exact.field === 'trade_group_id') params.trade_group_id = exact.value;
+            if (exact.field === 'order_id') params.order_id = exact.value;
+            return params;
+        }
+
+        function renderReverseTopSection() {
+            const scopeText = currentSearch
+                ? `search=${summarizeHeaderValue(currentSearch, 26)}`
+                : '无附加过滤';
+            const metaHtml = `
+                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
+                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
+                <div class="meta-line">范围 · ${escapeHtml(scopeText)}</div>
+            `;
+            const statusHtml = `
+                <div class="chip-row">
+                    <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>结果 ${escapeHtml(String(getFilteredSignals().length))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>${escapeHtml(getReverseDirectionLabel())}</span>
+                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getReverseStatusLabel())}</span>
+                    <span class="status-chip"><span class="dot" style="color:#FC8181"></span>${escapeHtml(getReverseActionLabel())}</span>
+                </div>
+            `;
+            document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
+                kicker: 'Execution Reverse',
+                title: '反向信号队列',
+                copy: '聚焦平仓、取消和调整流转，快速串起主信号、trade group 与订单回查。',
+                metaHtml,
+                statusHtml,
+            });
+        }
+
+        function renderReversePageChrome() {
+            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_reverse_signals.html', buildReverseExecutionParams());
+            renderReverseTopSection();
+            renderFilterNote();
+        }
+
         function renderFilterNote() {
             const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
             if (currentSearch) notes.push(`search=${currentSearch}`);
@@ -231,7 +319,7 @@
                 resetPagination();
                 updateStats();
                 updateDirectionCounts();
-                renderFilterNote();
+                renderReversePageChrome();
                 renderSignals();
                 updateLoadMoreButton();
             } catch (error) {
@@ -338,7 +426,7 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
-            renderFilterNote();
+            renderReversePageChrome();
             renderSignals();
             updateLoadMoreButton();
         }
@@ -350,6 +438,7 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            renderReverseTopSection();
             renderSignals();
             updateLoadMoreButton();
         };
@@ -361,6 +450,7 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            renderReverseTopSection();
             renderSignals();
             updateLoadMoreButton();
         };
@@ -694,6 +784,7 @@
 
         window.onDateChange = function(startDate) {
             currentDate = startDate;
+            renderReversePageChrome();
             loadSignals();
         };
 
@@ -702,6 +793,7 @@
             resetPagination();
             updateStats();
             updateDirectionCounts();
+            renderReverseTopSection();
             renderSignals();
             updateLoadMoreButton();
         };
@@ -746,12 +838,6 @@
             if (urlDate) {
                 currentDate = urlDate;
             }
-            const executionParams = { date: currentDate };
-            if (signalId) executionParams.signal_id = signalId;
-            if (tradeGroupId) executionParams.trade_group_id = tradeGroupId;
-            else if (orderId) executionParams.order_id = orderId;
-            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_reverse_signals.html', executionParams);
-
             document.getElementById('datePicker').innerHTML = renderDatePicker();
             if (urlDate) {
                 const dateInput = document.getElementById('customDate');
@@ -766,6 +852,7 @@
             if (currentSearch) {
                 document.getElementById('searchInput').value = currentSearch;
             }
+            renderReversePageChrome();
 
             await withPageLoading(
                 () => loadSignals(),

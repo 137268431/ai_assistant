@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from ibkr_compute.api.account.live import _api_app
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 
 def _resolve_snapshot_account_id(api_app, service) -> str:
@@ -21,7 +22,7 @@ def _resolve_snapshot_account_id(api_app, service) -> str:
 def build_snapshot_context(service) -> dict:
     api_app = _api_app()
     runtime_environment = api_app._ibkr_service_environment(service)
-    service_status = service.status() if hasattr(service, "status") else {}
+    service_status = get_service_status_snapshot(service)
     account_id = _resolve_snapshot_account_id(api_app, service)
     return {
         "api_app": api_app,

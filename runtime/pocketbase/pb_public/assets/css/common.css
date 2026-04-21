@@ -835,6 +835,17 @@
 
       @media (hover: hover) and (pointer: fine) {
         /* Hand desktop trackpad scroll to the page instead of nested panels. */
+        .panel-grid > .panel .panel-body.data-table-wrap,
+        .table-grid > .panel .panel-body.data-table-wrap,
+        .dual-grid > .panel .panel-body.data-table-wrap {
+          overflow-x: auto;
+          overflow-y: visible;
+          max-height: none;
+          overscroll-behavior-x: contain;
+          overscroll-behavior-y: auto;
+          scrollbar-gutter: auto;
+        }
+
         .panel-grid > .panel .panel-body:not(.data-table-wrap),
         .table-grid > .panel .panel-body:not(.data-table-wrap),
         .dual-grid > .panel .panel-body:not(.data-table-wrap),

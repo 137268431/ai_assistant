@@ -13,6 +13,7 @@
 <body>
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
+    <div id="pageTopSection"></div>
 
     <div class="content">
         <div class="search-row" id="searchRow">
@@ -77,6 +78,13 @@
             return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
         }
 
+        function summarizeHeaderValue(value, maxLength = 28) {
+            const text = String(value || '').trim();
+            if (!text) return '';
+            if (text.length <= maxLength) return text;
+            return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+        }
+
         let currentDate = normalizeDateParam(params.get('date'), new Date().toISOString().split('T')[0]);
         let refreshTimer = null;
         let currentInterval = 30;
@@ -87,6 +95,67 @@
         let allDetails = [];
         let searchDebounceTimer = null;
         let currentEnvironment = getCurrentRuntimeEnvironment();
+
+        function getOrderDetailsModeLabel() {
+            if (queryMode === 'list') return '列表模式';
+            if (queryMode === 'trade_group_id') return '聚焦交易组';
+            if (queryMode === 'order_id') return '聚焦订单';
+            if (queryMode === 'signal_id') return '聚焦信号';
+            if (queryMode === 'id') return '聚焦明细';
+            return '订单轨迹';
+        }
+
+        function getOrderDetailsResultCount() {
+            if (queryMode === 'list') return totalItems || allDetails.length || 0;
+            return allDetails.length || 0;
+        }
+
+        function buildOrderDetailsExecutionParams() {
+            const executionParams = { date: currentDate };
+            if (contextSignalId) executionParams.signal_id = contextSignalId;
+            if (queryMode === 'trade_group_id' && effectiveFilter) executionParams.trade_group_id = effectiveFilter;
+            if (queryMode === 'order_id' && effectiveFilter) executionParams.order_id = effectiveFilter;
+            return executionParams;
+        }
+
+        function renderOrderDetailsTopSection() {
+            const searchTerm = getSearchTerm();
+            const scopeLines = [];
+            if (queryMode !== 'list' && effectiveFilter) {
+                scopeLines.push(`${queryMode}=${summarizeHeaderValue(effectiveFilter, 22)}`);
+            } else if (searchTerm) {
+                scopeLines.push(`search=${summarizeHeaderValue(searchTerm, 24)}`);
+            } else {
+                scopeLines.push('按日浏览');
+            }
+            if (contextSignalId) {
+                scopeLines.push(`signal_id=${summarizeHeaderValue(contextSignalId, 18)}`);
+            }
+            const metaHtml = `
+                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
+                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
+                <div class="meta-line">上下文 · ${escapeHtml(scopeLines.join(' · '))}</div>
+            `;
+            const statusHtml = `
+                <div class="chip-row">
+                    <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>事件 ${escapeHtml(String(getOrderDetailsResultCount()))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>${escapeHtml(getOrderDetailsModeLabel())}</span>
+                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(queryMode === 'list' ? (searchTerm ? '搜索已生效' : '当天全量') : '上下文锁定')}</span>
+                </div>
+            `;
+            document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
+                kicker: 'Execution Timeline',
+                title: '订单事件时间线',
+                copy: '聚焦订单事件、关系链和 trade group 演进，从这里回看单笔订单如何进入、成交、保护和退出。',
+                metaHtml,
+                statusHtml,
+            });
+        }
+
+        function renderOrderDetailsPageChrome() {
+            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_order_details.html', buildOrderDetailsExecutionParams());
+            renderOrderDetailsTopSection();
+        }
 
         function parseJsonLike(value) {
             if (!value) return {};
@@ -307,6 +376,7 @@
                 allDetails = (result.items || []).map(normalizeDetail);
                 totalItems = result.totalItems || allDetails.length;
                 hasMore = queryMode === 'list' && allDetails.length < totalItems;
+                renderOrderDetailsPageChrome();
                 renderContent();
                 updateLoadMoreButton();
             } catch (error) {
@@ -337,6 +407,7 @@
                 totalItems = result.totalItems || allDetails.length;
                 currentPage = nextPage;
                 hasMore = allDetails.length < totalItems;
+                renderOrderDetailsTopSection();
                 renderContent();
                 updateLoadMoreButton();
             } catch (error) {
@@ -680,6 +751,7 @@
 
         function onSearchChange() {
             if (queryMode !== 'list') return;
+            renderOrderDetailsTopSection();
             if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(loadDetails, 180);
         }
@@ -779,6 +851,7 @@
 
         window.onDateChange = function(startDate) {
             currentDate = startDate;
+            renderOrderDetailsPageChrome();
             loadDetails();
         };
 
@@ -801,11 +874,7 @@
             const dateInput = document.getElementById('customDate');
             if (dateInput) dateInput.value = currentDate;
             if (queryMode !== 'list') renderModeHeader();
-            const executionParams = { date: currentDate };
-            if (contextSignalId) executionParams.signal_id = contextSignalId;
-            if (queryMode === 'trade_group_id' && effectiveFilter) executionParams.trade_group_id = effectiveFilter;
-            if (queryMode === 'order_id' && effectiveFilter) executionParams.order_id = effectiveFilter;
-            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_order_details.html', executionParams);
+            renderOrderDetailsPageChrome();
 
             await withPageLoading(
                 () => loadDetails(),

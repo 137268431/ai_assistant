@@ -5,6 +5,7 @@ import time
 from ibkr_compute.api.account.action_builders.common import _build_snapshot_action_response
 from ibkr_compute.api.account.live import _api_app, _app_coerce_float
 from ibkr_compute.api.account.snapshot import _build_ibkr_account_snapshot
+from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 
 def _build_ibkr_cancel_order_response(service, payload: dict) -> tuple[dict, int]:
@@ -74,7 +75,7 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
     if runtime_environment == "backtest":
         return {"ok": False, "error": "Backtest environment does not support live order placement"}, 400
 
-    service_status = service.status() if hasattr(service, "status") else {}
+    service_status = get_service_status_snapshot(service)
     session_authenticated = bool((service_status.get("session") or {}).get("authenticated"))
     service_running = bool(getattr(service, "is_running", False) or getattr(service, "is_starting", False))
     if not service_running:
