@@ -6,6 +6,7 @@ let latestSystemLoadId = 0;
 
 function buildSystemComputeSummary(healthPayload = {}, statusPayload = {}, fallbackPayload = {}) {
     const statusCompute = statusPayload?.compute || {};
+    const healthCompute = healthPayload?.compute || {};
     const runtimeCompute = statusPayload?.runtime?.realtime_compute || {};
     const fallbackCompute = fallbackPayload || {};
     return {
@@ -25,7 +26,114 @@ function buildSystemComputeSummary(healthPayload = {}, statusPayload = {}, fallb
         last_realtime_processed: Number(runtimeCompute.last_processed || fallbackCompute.last_realtime_processed || 0) || 0,
         last_realtime_signals: Number(runtimeCompute.last_signals || fallbackCompute.last_realtime_signals || 0) || 0,
         last_realtime_errors: Number(runtimeCompute.last_errors || fallbackCompute.last_realtime_errors || 0) || 0,
+        startup_preload: statusCompute.compute_startup_preload
+            || statusPayload.compute_startup_preload
+            || healthCompute.compute_startup_preload
+            || healthPayload.compute_startup_preload
+            || fallbackCompute.compute_startup_preload
+            || null,
     };
+}
+
+function normalizeStartupPreloadState(payload = {}) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const status = String(source.status || '').trim().toLowerCase()
+        || (source.running ? 'running' : (source.finished_at ? 'completed' : (source.scheduled ? 'scheduled' : 'idle')));
+    const environments = Array.isArray(source.environments)
+        ? source.environments.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+    const results = source.results && typeof source.results === 'object' ? source.results : {};
+    const envTotal = Math.max(Number(source.env_total || 0) || 0, environments.length);
+    const envCompleted = Number(source.env_completed || 0) || 0;
+    const symbolTotal = Number(source.symbol_total || 0) || 0;
+    const symbolCompleted = Number(source.symbol_completed || 0) || 0;
+    const readyCount = Number(source.ready_count || 0) || 0;
+
+    return {
+        enabled: source.enabled !== false,
+        should_schedule: source.should_schedule !== false,
+        scheduled: source.scheduled === true,
+        running: source.running === true,
+        status,
+        environments,
+        env_total: envTotal,
+        env_completed: envCompleted,
+        symbol_total: symbolTotal,
+        symbol_completed: symbolCompleted,
+        ready_count: readyCount,
+        started_at: source.started_at || null,
+        finished_at: source.finished_at || null,
+        elapsed_s: Number(source.elapsed_s || 0) || 0,
+        reason: String(source.reason || '').trim(),
+        error: String(source.error || '').trim(),
+        results,
+    };
+}
+
+function buildStartupPreloadStatusLabel(preload) {
+    const state = normalizeStartupPreloadState(preload);
+    if (!state.enabled) return '';
+    if (state.status === 'running') return `preload RUNNING ${state.symbol_completed}/${state.symbol_total || '--'}`;
+    if (state.status === 'scheduled') return `preload SCHEDULED ${state.env_total || 0} env`;
+    if (state.status === 'completed') return `preload DONE ${state.ready_count}/${state.symbol_total || 0}`;
+    if (state.status === 'failed') return 'preload FAILED';
+    if (state.status === 'skipped') return 'preload SKIPPED';
+    if (state.status === 'disabled') return 'preload DISABLED';
+    return '';
+}
+
+function formatStartupPreloadTimestamp(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '--';
+    const formatted = formatTimeLabel(raw);
+    if (formatted && formatted !== '--' && formatted !== '-') return formatted;
+    return raw.replace('T', ' ').slice(0, 19);
+}
+
+function buildStartupPreloadSummary(preload) {
+    const state = normalizeStartupPreloadState(preload);
+    if (!state.enabled) return '';
+    const meta = [];
+    if (state.env_total > 0) meta.push(`env ${state.env_completed}/${state.env_total}`);
+    if (state.symbol_total > 0) meta.push(`symbols ${state.symbol_completed}/${state.symbol_total}`);
+    if (state.ready_count > 0 || state.status === 'completed') meta.push(`ready ${state.ready_count}/${state.symbol_total || 0}`);
+    if (state.elapsed_s > 0) meta.push(`elapsed ${formatIbkrSecondsLabel(state.elapsed_s)}`);
+    const metaText = meta.join(' · ');
+    if (state.status === 'running') return `startup preload 正在恢复${metaText ? ` · ${metaText}` : ''}`;
+    if (state.status === 'scheduled') return `startup preload 已排队 · ${state.environments.join(', ') || '--'}`;
+    if (state.status === 'completed') {
+        const finishedLabel = state.finished_at ? formatStartupPreloadTimestamp(state.finished_at) : '--';
+        const parts = [];
+        if (metaText) parts.push(metaText);
+        if (finishedLabel && finishedLabel !== '--') parts.push(`finish ${finishedLabel}`);
+        return `startup preload 已完成${parts.length ? ` · ${parts.join(' · ')}` : ''}`;
+    }
+    if (state.status === 'failed') return `startup preload 失败 · ${state.error || state.reason || 'unknown'}`;
+    if (state.status === 'skipped') return `startup preload 已跳过 · ${state.reason || 'no_preload_environments'}`;
+    if (state.status === 'disabled') return `startup preload 已禁用 · ${state.reason || 'schedule_guard_blocked'}`;
+    return '';
+}
+
+function buildStartupPreloadDetail(preload) {
+    const state = normalizeStartupPreloadState(preload);
+    if (!state.enabled) return '';
+    const orderedEnvNames = state.environments.length
+        ? state.environments
+        : Object.keys(state.results || {});
+    const envLines = orderedEnvNames.map((environment) => {
+        const item = state.results?.[environment] || {};
+        const symbolTotal = Number(item.symbol_total || 0) || 0;
+        const symbolCompleted = Number(item.symbol_completed || 0) || 0;
+        const readyCount = Number(item.ready_count || 0) || 0;
+        const cursorCount = Number(item.cursor_count || 0) || 0;
+        const envStatus = String(item.status || 'pending').trim().toLowerCase();
+        const meta = [];
+        if (cursorCount > 0) meta.push(`cursor ${cursorCount}`);
+        if (symbolTotal > 0) meta.push(`symbols ${symbolCompleted}/${symbolTotal}`);
+        if (readyCount > 0 || envStatus === 'completed') meta.push(`ready ${readyCount}/${symbolTotal || 0}`);
+        return `${String(environment || '--').toUpperCase()} ${envStatus.toUpperCase()}${meta.length ? ` · ${meta.join(' · ')}` : ''}`;
+    });
+    return envLines.join(' | ');
 }
 
 function normalizeFreshnessItems(freshnessPayload = []) {
@@ -175,6 +283,7 @@ function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, fresh
         ibkr_data: dataHealth,
         ibkr_compute: compute,
         runtime: runtime,
+        service_topology: statusPayload?.service_topology || healthPayload?.service_topology || {},
     };
 }
 
@@ -257,6 +366,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         renderFreshness(coreFreshnessItems);
         renderEngines(coreCompute);
         renderConfig(summaryLite || {}, cronDefinitions);
+        renderServiceTopology(computeStatus?.service_topology || summaryLite?.service_topology || {});
 
         if (isInitialLoad) {
             hasLoadedSystemData = true;
@@ -325,6 +435,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         renderFreshness(freshnessItems);
         renderEngines(buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {}));
         renderConfig(summaryLite || {}, cronDefinitions);
+        renderServiceTopology(computeStatus?.service_topology || summaryLite?.service_topology || {});
         renderBacktests(
             Array.isArray(backtestBatchResp?.items) ? backtestBatchResp.items : [],
             Array.isArray(backtestRunsResp?.items) ? backtestRunsResp.items : []
@@ -390,6 +501,57 @@ function renderStatus(health) {
     const runtimeEl = document.getElementById('runtimeStatus');
     const runtimeStatusModel = getIbkrRuntimeStatusCardModel(health.runtime || {});
     runtimeEl.innerHTML = buildStatusCardMarkup(runtimeStatusModel.dotClass, runtimeStatusModel.mainText, runtimeStatusModel.subText);
+}
+
+function renderServiceTopology(topologyPayload = {}) {
+    const el = document.getElementById('serviceTopologyArea');
+    const topology = topologyPayload?.services && typeof topologyPayload.services === 'object'
+        ? topologyPayload.services
+        : {};
+    const services = Object.values(topology);
+    if (!services.length) {
+        el.innerHTML = '<div class="loading-text">暂无服务拓扑</div>';
+        return;
+    }
+
+    el.innerHTML = `<div class="engine-grid">${services.map((service) => {
+        const status = String(service?.status || '--').trim().toUpperCase() || '--';
+        const owner = String(service?.owner || '--').trim() || '--';
+        const mode = String(service?.runtime_mode || '--').trim() || '--';
+        const internalUrl = String(service?.internal_url || '--').trim() || '--';
+        const upstream = String(service?.upstream || '').trim() || '--';
+        const title = String(service?.service_name || service?.kind || '--').trim() || '--';
+        const subtitle = String(service?.kind || '--').trim() || '--';
+        return `
+            <div class="engine-card">
+                <div class="engine-card-head">
+                    <div class="engine-card-title">
+                        <div class="engine-card-name">${escapeHtml(title)}</div>
+                        <div class="engine-card-sub">${escapeHtml(subtitle)}</div>
+                    </div>
+                    <span class="engine-state ${String(status).toLowerCase() === 'running' ? 'ready' : 'warming'}">${escapeHtml(status)}</span>
+                </div>
+                <div class="engine-meta-grid">
+                    <div class="engine-meta-item">
+                        <span class="engine-meta-label">Owner</span>
+                        <span class="engine-meta-value">${escapeHtml(owner)}</span>
+                    </div>
+                    <div class="engine-meta-item">
+                        <span class="engine-meta-label">Mode</span>
+                        <span class="engine-meta-value">${escapeHtml(mode)}</span>
+                    </div>
+                    <div class="engine-meta-item">
+                        <span class="engine-meta-label">Internal</span>
+                        <span class="engine-meta-value">${escapeHtml(internalUrl)}</span>
+                    </div>
+                    <div class="engine-meta-item">
+                        <span class="engine-meta-label">Upstream</span>
+                        <span class="engine-meta-value">${escapeHtml(upstream)}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('')}</div>`;
 }
 
 function renderTodayStats(today) {
@@ -473,10 +635,15 @@ function renderFreshness(data) {
 function renderEngines(computeData) {
     const el = document.getElementById('engineArea');
     const countEl = document.getElementById('engineCount');
+    const preloadStatusLabel = buildStartupPreloadStatusLabel(computeData?.startup_preload);
+    const preloadSummary = buildStartupPreloadSummary(computeData?.startup_preload);
+    const preloadDetail = buildStartupPreloadDetail(computeData?.startup_preload);
 
     if (!computeData || !computeData.engines || typeof computeData.engines !== 'object') {
-        el.innerHTML = '<div class="loading-text">无引擎数据</div>';
-        countEl.textContent = '0 engines';
+        const messages = ['无引擎数据'];
+        if (preloadSummary) messages.push(preloadSummary);
+        el.innerHTML = messages.map((item) => `<div class="loading-text">${escapeHtml(item)}</div>`).join('');
+        countEl.textContent = preloadStatusLabel || '0 engines';
         return;
     }
 
@@ -485,14 +652,27 @@ function renderEngines(computeData) {
     if (Number(computeData.last_realtime_elapsed_s || 0) > 0) computeMeta.push(`last ${Number(computeData.last_realtime_elapsed_s || 0).toFixed(2)}s`);
     if (Number(computeData.last_realtime_signals || 0) > 0) computeMeta.push(`sig ${Number(computeData.last_realtime_signals || 0)}`);
     if (Number(computeData.queue_size || 0) > 0) computeMeta.push(`queue ${Number(computeData.queue_size || 0)}`);
-    countEl.textContent = `${computeData.ready_engines || 0}/${computeData.total_engines || engines.length} ready · ${computeMeta.join(' · ') || 'top 12'}`;
+    const countParts = [`${computeData.ready_engines || 0}/${computeData.total_engines || engines.length} ready`];
+    if (preloadStatusLabel) countParts.push(preloadStatusLabel);
+    if (computeMeta.length) countParts.push(computeMeta.join(' · '));
+    else if (!preloadStatusLabel) countParts.push('top 12');
+    countEl.textContent = countParts.join(' · ');
 
     if (!engines.length) {
-        el.innerHTML = '<div class="loading-text">无引擎数据</div>';
+        const messages = ['无引擎数据'];
+        if (preloadSummary) messages.push(preloadSummary);
+        if (preloadDetail) messages.push(preloadDetail);
+        el.innerHTML = messages.map((item) => `<div class="loading-text">${escapeHtml(item)}</div>`).join('');
         return;
     }
 
     let html = '<div class="engine-summary">总览页只保留最关键的 12 条引擎概况；完整排查与动作控制请切到控制台。</div>';
+    if (preloadSummary) {
+        html += `<div class="engine-summary">${escapeHtml(preloadSummary)}</div>`;
+    }
+    if (preloadDetail) {
+        html += `<div class="engine-summary">${escapeHtml(preloadDetail)}</div>`;
+    }
     html += '<div class="engine-grid">';
     engines.slice(0, 12).forEach(([key, engine]) => {
         const model = getIbkrEngineViewModel(key, engine, currentEnvironment);

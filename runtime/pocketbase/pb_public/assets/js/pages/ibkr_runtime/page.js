@@ -225,6 +225,77 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return `${manualStart}；${weeklyReauth}；${serverBoot}；${startupCard}`;
         }
 
+        function normalizeComputeStartupPreload(payload = {}) {
+            const source = payload && typeof payload === 'object' ? payload : {};
+            const status = String(source.status || '').trim().toLowerCase()
+                || (source.running ? 'running' : (source.finished_at ? 'completed' : (source.scheduled ? 'scheduled' : 'idle')));
+            return {
+                enabled: source.enabled !== false,
+                shouldSchedule: source.should_schedule !== false,
+                scheduled: source.scheduled === true,
+                running: source.running === true,
+                status,
+                environments: Array.isArray(source.environments)
+                    ? source.environments.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+                    : [],
+                envTotal: Number(source.env_total || 0) || 0,
+                envCompleted: Number(source.env_completed || 0) || 0,
+                symbolTotal: Number(source.symbol_total || 0) || 0,
+                symbolCompleted: Number(source.symbol_completed || 0) || 0,
+                readyCount: Number(source.ready_count || 0) || 0,
+                startedAt: source.started_at || null,
+                finishedAt: source.finished_at || null,
+                elapsedS: Number(source.elapsed_s || 0) || 0,
+                reason: String(source.reason || '').trim(),
+                error: String(source.error || '').trim(),
+            };
+        }
+
+        function getComputeStartupPreload(status, health, summary) {
+            return normalizeComputeStartupPreload(
+                status?.compute_startup_preload
+                || status?.compute?.compute_startup_preload
+                || health?.compute?.compute_startup_preload
+                || summary?.ibkr_compute?.compute_startup_preload
+                || {}
+            );
+        }
+
+        function formatComputeStartupPreloadSummary(preload) {
+            if (
+                preload.status === 'idle'
+                && !preload.scheduled
+                && !preload.startedAt
+                && !preload.finishedAt
+                && preload.envTotal <= 0
+                && preload.symbolTotal <= 0
+            ) {
+                return '--';
+            }
+            if (!preload.enabled) return 'DISABLED';
+            const parts = [];
+            if (preload.envTotal > 0) parts.push(`env ${preload.envCompleted}/${preload.envTotal}`);
+            if (preload.symbolTotal > 0) parts.push(`symbols ${preload.symbolCompleted}/${preload.symbolTotal}`);
+            if (preload.readyCount > 0 || preload.status === 'completed') parts.push(`ready ${preload.readyCount}/${preload.symbolTotal || 0}`);
+            if (preload.elapsedS > 0) parts.push(`elapsed ${formatSecondsLabel(preload.elapsedS)}`);
+            if (preload.status === 'failed') {
+                return `FAILED${parts.length ? ` · ${parts.join(' · ')}` : ''}${preload.error ? ` · ${preload.error}` : ''}`;
+            }
+            if (preload.status === 'completed') return `DONE${parts.length ? ` · ${parts.join(' · ')}` : ''}`;
+            if (preload.status === 'running') return `RUNNING${parts.length ? ` · ${parts.join(' · ')}` : ''}`;
+            if (preload.status === 'scheduled') return `SCHEDULED${preload.environments.length ? ` · ${preload.environments.join(', ')}` : ''}`;
+            if (preload.status === 'skipped') return `SKIPPED${preload.reason ? ` · ${preload.reason}` : ''}`;
+            return String(preload.status || '--').toUpperCase();
+        }
+
+        function formatComputeStartupPreloadTimestamp(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return '--';
+            const formatted = formatTimeLabel(raw);
+            if (formatted && formatted !== '--' && formatted !== '-') return formatted;
+            return raw.replace('T', ' ').slice(0, 19);
+        }
+
         function deriveDataHealth(latestBar) {
             return buildIbkrDataHealth(latestBar?.bar_time_ms, {
                 symbol: latestBar?.symbol || '',
@@ -816,7 +887,30 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 environment: currentEnvironment,
             });
 
-            const cards = [blocker, dataChain, shortcuts];
+            const topologyServices = getOrderedTopologyServices(status?.service_topology || {});
+            const topologyReadyCount = topologyServices.filter((service) => {
+                const serviceStatus = String(service?.status || '').trim().toLowerCase();
+                return ['running', 'peer', 'external', 'online'].includes(serviceStatus);
+            }).length;
+            const topologyCard = {
+                tone: topologyServices.length && topologyReadyCount >= topologyServices.length ? 'ok' : 'info',
+                kicker: 'SERVICE TOPOLOGY',
+                title: topologyServices.length
+                    ? `split ${topologyReadyCount}/${topologyServices.length} visible`
+                    : 'runtime topology pending',
+                copy: topologyServices.length
+                    ? topologyServices.map((service) => {
+                        const serviceName = String(service?.service_name || service?.kind || '--').trim() || '--';
+                        const serviceStatus = String(service?.status || '--').trim().toLowerCase() || '--';
+                        return `${serviceName} ${serviceStatus}`;
+                    }).join(' · ')
+                    : '等待 service_topology 返回 runtime / compute / gateway / pocketbase',
+                links: [
+                    { label: '查看系统总览', path: '/ibkr_system.html' },
+                ],
+            };
+
+            const cards = [blocker, dataChain, shortcuts, topologyCard];
             document.getElementById('opsGrid').innerHTML = cards.map((card) => `
                 <div class="ops-card ${escapeHtml(card.tone || 'info')}">
                     <div class="ops-kicker">${escapeHtml(card.kicker || '--')}</div>
@@ -831,6 +925,103 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     ` : ''}
                 </div>
             `).join('');
+        }
+
+        function getOrderedTopologyServices(topologyPayload = {}) {
+            const topology = topologyPayload?.services && typeof topologyPayload.services === 'object'
+                ? topologyPayload.services
+                : {};
+            const ordered = [];
+            const seen = new Set();
+            ['ibkr-runtime', 'ibkr-compute', 'ibkr-gateway', 'pocketbase'].forEach((name) => {
+                if (!topology[name]) return;
+                ordered.push({
+                    ...topology[name],
+                    service_name: String(topology[name]?.service_name || name).trim() || name,
+                });
+                seen.add(name);
+            });
+            Object.keys(topology).sort().forEach((name) => {
+                if (seen.has(name)) return;
+                ordered.push({
+                    ...topology[name],
+                    service_name: String(topology[name]?.service_name || name).trim() || name,
+                });
+            });
+            return ordered;
+        }
+
+        function renderServiceTopology(status = {}) {
+            const el = document.getElementById('serviceTopologyArea');
+            if (!el) return;
+            const topologyPayload = status?.service_topology || {};
+            const services = getOrderedTopologyServices(topologyPayload);
+            if (!services.length) {
+                el.innerHTML = '<div class="table-empty">暂无服务拓扑</div>';
+                return;
+            }
+
+            const runtimeMode = String(topologyPayload?.runtime_mode || '--').trim().toUpperCase() || '--';
+            const serviceProfile = String(topologyPayload?.service_profile || '--').trim().toUpperCase() || '--';
+            const restartIndependent = topologyPayload?.restart_independent ? 'YES' : 'NO';
+            const summaryTags = [
+                ['Mode', runtimeMode],
+                ['Profile', serviceProfile],
+                ['Restart', restartIndependent],
+                ['Services', String(services.length)],
+            ];
+
+            el.innerHTML = `
+                <div class="service-topology-shell">
+                    <div class="tag-row">
+                        ${summaryTags.map(([label, value]) => `
+                            <span class="mini-tag">
+                                <span class="mini-label">${escapeHtml(label)}</span>
+                                <span>${escapeHtml(value)}</span>
+                            </span>
+                        `).join('')}
+                    </div>
+                    <div class="service-topology-grid">
+                        ${services.map((service) => {
+                            const serviceName = String(service?.service_name || service?.kind || '--').trim() || '--';
+                            const serviceKind = String(service?.kind || '--').trim() || '--';
+                            const serviceStatus = String(service?.status || '--').trim() || '--';
+                            const owner = String(service?.owner || '--').trim() || '--';
+                            const mode = String(service?.runtime_mode || topologyPayload?.runtime_mode || '--').trim() || '--';
+                            const endpoint = String(service?.internal_url || service?.upstream || '--').trim() || '--';
+                            const endpointLabel = service?.internal_url ? 'Internal' : 'Endpoint';
+                            const pillState = serviceStatus.toLowerCase() === 'peer'
+                                ? 'ready'
+                                : (serviceStatus.toLowerCase() === 'external' ? 'online' : serviceStatus);
+                            return `
+                                <div class="service-topology-card">
+                                    <div class="service-topology-head">
+                                        <div class="service-topology-title">
+                                            <div class="service-topology-name">${escapeHtml(serviceName)}</div>
+                                            <div class="service-topology-kind">${escapeHtml(serviceKind)}</div>
+                                        </div>
+                                        <span class="pill ${statusClass(pillState)}">${escapeHtml(serviceStatus.toUpperCase())}</span>
+                                    </div>
+                                    <div class="service-topology-meta">
+                                        <div class="service-topology-row">
+                                            <span class="service-topology-label">Owner</span>
+                                            <span class="service-topology-value">${escapeHtml(owner)}</span>
+                                        </div>
+                                        <div class="service-topology-row">
+                                            <span class="service-topology-label">Mode</span>
+                                            <span class="service-topology-value">${escapeHtml(String(mode).toUpperCase())}</span>
+                                        </div>
+                                        <div class="service-topology-row">
+                                            <span class="service-topology-label">${escapeHtml(endpointLabel)}</span>
+                                            <span class="service-topology-value mono">${escapeHtml(endpoint)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
         }
 
         function renderHero(summary, health, status, runtimeConfig, twoFactorState, startupState, latestBar) {
@@ -857,6 +1048,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ...(startup.active ? [{ label: `Flow ${getManualAuthReasonLabel(startup.reason)}`, tone: chipTone(startup.status || 'active') }] : []),
                 { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
+                { label: `Runtime ${String(status?.service_topology?.runtime_mode || '--').toUpperCase()}`, tone: 'chip-muted' },
                 { label: `Active Env ${String(currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
             ];
             document.getElementById('heroBadges').innerHTML = chips.map((chip) => `
@@ -866,7 +1058,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const computeBase = runtimeConfig.find((item) => item.key === 'ibkr_compute_public_url')?.value
                 || summary?.config?.ibkr_compute_public_url
                 || 'https://qc.lzw-glory.top';
-            document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase}`;
+            const runtimeService = status?.service_topology?.services?.['ibkr-runtime'] || {};
+            document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase} · runtime ${String(runtimeService.runtime_mode || '--')} · ${String(runtimeService.internal_url || '--')}`;
             const effectiveReasonLabel = getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactorState, startup));
             const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
             const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
@@ -907,12 +1100,21 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const startup = normalizeStartupUiState(startupState);
             const startupStrategy = getStartupStrategy(status);
+            const computeStartupPreload = getComputeStartupPreload(status, health, summary);
             const autoRestoreGuard = status?.auto_restore_guard || {};
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
+            const runtimeService = status?.service_topology?.services?.['ibkr-runtime'] || {};
+            const computeService = status?.service_topology?.services?.['ibkr-compute'] || {};
             const latestBarWrite = latestBar ? String(getComputedTimeLabel(latestBar)).slice(0, 19) : '--';
             const latestIndicatorCalc = latestIndicator ? String(getComputedTimeLabel(latestIndicator)).slice(0, 19) : '--';
             const latestSignalTime = latestSignal ? String((latestSignal.us_time || latestSignal.created || '--')).slice(0, 19) : '--';
             const rows = [
+                ['Runtime Service', String(runtimeService.status || '--').toUpperCase()],
+                ['Runtime Owner', String(runtimeService.owner || '--')],
+                ['Runtime Mode', String(runtimeService.runtime_mode || '--').toUpperCase()],
+                ['Runtime Internal URL', String(runtimeService.internal_url || '--')],
+                ['Compute Upstream', String(computeService.upstream || '--')],
+                ['Restart Independent', runtimeService.restart_independent ? 'YES' : 'NO'],
                 ['Gateway', status?.gateway?.running || status?.gateway?.reachable ? 'ACTIVE' : 'OFFLINE'],
                 ['Gateway Reachable', status?.gateway?.reachable ? 'YES' : 'NO'],
                 ['Gateway Manager', String(status?.gateway?.managed_by || '--').toUpperCase()],
@@ -964,6 +1166,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Last Scan', formatTimeLabel(computeHealth.last_scan)],
                 ['Compute Count', String(status?.compute_count || 0)],
                 ['Error Count', String(computeHealth.error_count || 0)],
+                ['Compute Preload', formatComputeStartupPreloadSummary(computeStartupPreload)],
+                ['Preload Envs', computeStartupPreload.environments.length ? computeStartupPreload.environments.join(', ') : '--'],
+                ['Preload Start', formatComputeStartupPreloadTimestamp(computeStartupPreload.startedAt)],
+                ['Preload Finish', formatComputeStartupPreloadTimestamp(computeStartupPreload.finishedAt)],
                 ['Uptime', `${Math.round(Number(computeHealth.uptime_s || 0) / 60)} min`],
                 ['Backfill Written', String(status?.data_backfill?.total_backfilled || 0)],
                 ['Canonical Due Bucket', String(canonical?.last_due_bucket_us || '--')],
@@ -1519,11 +1725,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
             try {
                 const envFilter = buildEnvironmentFilter();
-                const indicatorsPromise = apiFetch('ibkr_indicators', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }).catch((error) => {
-                    console.warn('加载最近 indicators 失败:', error);
-                    return { items: [] };
-                });
-                const [health, status, summary, cronResp, twoFactorResp, startupResp, runtimeConfigResp, barsResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
+                const [health, status, summary, cronResp, twoFactorResp, startupResp, runtimeConfigResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     requestIbkrEnvironmentJson('/api/custom/ibkr/healthz', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?lite=1', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/system/summaryz?lite=1', currentEnvironment, { retryAttempts: 3 }),
@@ -1531,7 +1733,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     requestIbkrEnvironmentJson('/api/custom/ibkr/2fa/status', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/startup/status', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ state: {} })),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/runtime/config', currentEnvironment, { retryAttempts: 3 }),
-                    apiFetch('ibkr_bars', { filter: envFilter, sort: '-bar_time_ms', perPage: 8 }),
                     apiFetch('ibkr_signals', { filter: envFilter, sort: '-created', perPage: 8 }),
                     apiFetch('orders', { filter: envFilter, sort: '-created', perPage: 8 }),
                     apiFetch('system_events', { filter: envFilter, sort: '-created', perPage: 8 })
@@ -1550,9 +1751,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 const twoFactorState = twoFactorResp?.state || {};
                 const startupState = startupResp?.state || {};
                 latestStartupState = normalizeStartupUiState(startupState);
-                const barsItems = toArray(barsResp);
                 const signalItems = toArray(signalsResp);
-                const latestBar = barsItems[0] || null;
+                let latestBar = null;
                 const latestSignal = signalItems[0] || null;
 
                 const renderRuntimeSnapshot = (resolvedSummary, indicatorItems = []) => {
@@ -1570,19 +1770,42 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 renderTwoFactorPanel(twoFactorState);
                 syncActionLocks();
                 renderEngineTable(status);
+                renderServiceTopology(status);
                 void loadEngineDetail(loadId, status);
-                renderBarsTable(barsItems);
+                renderBarsTable([]);
                 renderSignalsTable(signalItems);
                 renderOrdersTable(toArray(ordersResp));
                 renderEventsTable(toArray(eventsResp));
 
                 if (showToastOnSuccess) showToast('Runtime 数据已刷新');
 
+                const recentMarketDate = resolveRuntimeMarketDate(status);
+                const recentRecordFilter = `created >= "${escapeQueryValue(`${recentMarketDate} 00:00:00`)}" && ${envFilter}`;
+                const barsPromise = apiFetch('ibkr_bars', {
+                    filter: recentRecordFilter,
+                    sort: '-bar_time_ms',
+                    perPage: 8,
+                }).catch((error) => {
+                    console.warn('加载最近 bars 失败:', error);
+                    return { items: [] };
+                });
+                const indicatorsPromise = apiFetch('ibkr_indicators', {
+                    filter: recentRecordFilter,
+                    sort: '-bar_time_ms',
+                    perPage: 8,
+                }).catch((error) => {
+                    console.warn('加载最近 indicators 失败:', error);
+                    return { items: [] };
+                });
+
                 void Promise.all([
+                    barsPromise,
                     indicatorsPromise,
                     loadRuntimeTodayCounts(status).catch(() => null),
-                ]).then(([indicatorsResp, todayCounts]) => {
+                ]).then(([barsResp, indicatorsResp, todayCounts]) => {
                     if (loadId !== latestRuntimeLoadId) return;
+                    const barsItems = toArray(barsResp);
+                    latestBar = barsItems[0] || null;
                     const resolvedSummary = {
                         ...baseSummary,
                         today: {
@@ -1591,6 +1814,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         }
                     };
                     renderRuntimeSnapshot(resolvedSummary, toArray(indicatorsResp));
+                    renderBarsTable(barsItems);
                     syncActionLocks();
                 });
             } catch (error) {

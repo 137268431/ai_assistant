@@ -31,6 +31,15 @@
         </section>
         <div class="error-banner is-hidden" id="errorBanner"></div>
         <section class="metric-grid" id="metricGrid"></section>
+        <section class="section service-topology-section">
+            <div class="section-head">
+                <div class="section-title">服务拓扑</div>
+                <div class="section-copy">split runtime + compute + gateway + pocketbase</div>
+            </div>
+            <div class="section-body" id="serviceTopologyBody">
+                <div class="empty-state">等待加载服务拓扑...</div>
+            </div>
+        </section>
         <section class="section">
             <div class="section-head">
                 <div class="section-title">启动状态与 Live Readiness</div>
@@ -317,6 +326,10 @@
             return {
                 available: Boolean(live.available),
                 engine_snapshot_available: Boolean(live.engine_snapshot_available),
+                source: String(live.source || '').trim()
+                    || (Boolean(live.engine_snapshot_available)
+                        ? 'compute_engines'
+                        : (Boolean(live.available) ? 'runtime_warmup_snapshot' : 'unavailable')),
                 phase: String(live.phase || 'idle').trim().toLowerCase() || 'idle',
                 gate_open: Boolean(live.gate_open),
                 gate_reason: String(live.gate_reason || '').trim() || '--',
@@ -336,13 +349,129 @@
                 computed_at: live.computed_at || ''
             };
         }
+        function getOrderedTopologyServices(topologyPayload) {
+            const topology = topologyPayload?.services && typeof topologyPayload.services === 'object'
+                ? topologyPayload.services
+                : {};
+            const ordered = [];
+            const seen = new Set();
+            ['ibkr-runtime', 'ibkr-compute', 'ibkr-gateway', 'pocketbase'].forEach((name) => {
+                if (!topology[name]) return;
+                ordered.push({
+                    ...topology[name],
+                    service_name: String(topology[name]?.service_name || name).trim() || name
+                });
+                seen.add(name);
+            });
+            Object.keys(topology).sort().forEach((name) => {
+                if (seen.has(name)) return;
+                ordered.push({
+                    ...topology[name],
+                    service_name: String(topology[name]?.service_name || name).trim() || name
+                });
+            });
+            return ordered;
+        }
+        function getServiceTopologyTone(status) {
+            const text = String(status || '').trim().toLowerCase();
+            if (['running', 'peer', 'external', 'online'].includes(text)) return 'ok';
+            if (['starting', 'warming', 'pending'].includes(text)) return 'warn';
+            if (['error', 'failed', 'offline', 'stopped'].includes(text)) return 'error';
+            return 'info';
+        }
+        function renderServiceTopology(status) {
+            const body = document.getElementById('serviceTopologyBody');
+            const topologyPayload = status?.service_topology || status?.runtime?.service_topology || {};
+            const services = getOrderedTopologyServices(topologyPayload);
+            if (!services.length) {
+                body.innerHTML = '<div class="empty-state">当前没有可展示的服务拓扑</div>';
+                return;
+            }
+            const runtimeMode = String(topologyPayload?.runtime_mode || '--').trim().toUpperCase() || '--';
+            const serviceProfile = String(topologyPayload?.service_profile || '--').trim().toUpperCase() || '--';
+            const restartIndependent = topologyPayload?.restart_independent ? 'YES' : 'NO';
+            const summaryTags = [
+                ['Mode', runtimeMode],
+                ['Profile', serviceProfile],
+                ['Restart', restartIndependent],
+                ['Services', String(services.length)]
+            ];
+            body.innerHTML = `
+                <div class="service-topology-shell">
+                    <div class="chip-list">
+                        ${summaryTags.map(([label, value]) => `
+                            <span class="list-chip info">
+                                ${escapeHtml(`${label} ${value}`)}
+                            </span>
+                        `).join('')}
+                    </div>
+                    <div class="service-topology-grid">
+                        ${services.map((service) => {
+                            const serviceName = String(service?.service_name || service?.kind || '--').trim() || '--';
+                            const serviceKind = String(service?.kind || '--').trim() || '--';
+                            const serviceStatus = String(service?.status || '--').trim() || '--';
+                            const owner = String(service?.owner || '--').trim() || '--';
+                            const mode = String(service?.runtime_mode || topologyPayload?.runtime_mode || '--').trim() || '--';
+                            const endpoint = String(service?.internal_url || service?.upstream || '--').trim() || '--';
+                            const endpointLabel = service?.internal_url ? 'Internal' : 'Endpoint';
+                            const tone = getServiceTopologyTone(serviceStatus);
+                            return `
+                                <div class="service-topology-card">
+                                    <div class="service-topology-head">
+                                        <div class="service-topology-title">
+                                            <div class="service-topology-name">${escapeHtml(serviceName)}</div>
+                                            <div class="service-topology-kind">${escapeHtml(serviceKind)}</div>
+                                        </div>
+                                        ${renderBadge(serviceStatus.toUpperCase(), tone)}
+                                    </div>
+                                    <div class="reason-list">
+                                        <div class="reason-row">
+                                            <div class="reason-key">Owner</div>
+                                            <div class="reason-value">${escapeHtml(owner)}</div>
+                                        </div>
+                                        <div class="reason-row">
+                                            <div class="reason-key">Mode</div>
+                                            <div class="reason-value">${escapeHtml(String(mode).toUpperCase())}</div>
+                                        </div>
+                                        <div class="reason-row">
+                                            <div class="reason-key">${escapeHtml(endpointLabel)}</div>
+                                            <div class="reason-value mono">${escapeHtml(endpoint)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        function describeLiveReadinessSource(live) {
+            const source = String(live?.source || '').trim().toLowerCase();
+            if (source === 'compute_engines') return 'from compute engines';
+            if (source === 'runtime_warmup_snapshot') return 'from runtime warmup snapshot';
+            if (source) return `from ${source}`;
+            return 'unavailable';
+        }
+        function isExpectedClosedGate(gateReason, tradeSymbolsTotal) {
+            return String(gateReason || '').trim().toLowerCase() === 'no_trade_symbols'
+                || (Number(tradeSymbolsTotal || 0) || 0) <= 0;
+        }
         function renderHero(status, warmup, live) {
             const runtimePhase = String(status?.runtime_phase || 'unknown').trim().toLowerCase() || 'unknown';
             const runtimeTone = getRuntimeTone(status);
             const warmupTone = warmup.last_error ? 'error' : getToneByPhase(warmup.phase);
             const liveTone = live.available ? getToneByPhase(live.phase) : 'muted';
             const gateOpen = live.available ? live.gate_open : warmup.gate_open;
-            const gateTone = gateOpen ? 'ok' : ((live.available ? live.phase : warmup.phase) === 'idle' ? 'muted' : 'warn');
+            const gateReason = live.available ? live.gate_reason : warmup.gate_reason;
+            const gateExpectedClosed = isExpectedClosedGate(
+                gateReason,
+                live.available ? live.trade_symbols_total : warmup.trade_symbols_total
+            );
+            const gateTone = gateOpen
+                ? 'ok'
+                : (gateExpectedClosed
+                    ? 'info'
+                    : ((live.available ? live.phase : warmup.phase) === 'idle' ? 'muted' : 'warn'));
             const liveTradeLabel = live.available
                 ? `${live.ready_trade_symbols}/${live.trade_symbols_total}`
                 : (live.engine_snapshot_available ? 'WAITING' : 'N/A');
@@ -364,6 +493,10 @@
             if (live.available && live.snapshot_differs) {
                 document.getElementById('heroCopy').textContent =
                     `当前 live 与 startup snapshot 存在差异：trade ${live.ready_trade_symbols}/${live.trade_symbols_total} vs ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}，monitor ${live.ready_monitor_symbols}/${live.monitor_symbols_total} vs ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。Monitor 单独展示，不参与交易门判定。`;
+            } else if (live.available && live.source === 'runtime_warmup_snapshot') {
+                document.getElementById('heroCopy').textContent = gateExpectedClosed
+                    ? '当前无 trade symbols，Trading Gate 保持 closed 属于预期；live readiness 直接回退到 runtime warmup snapshot。'
+                    : 'split 架构下 compute 不持有 live engines 时，live readiness 会回退到 runtime warmup snapshot。';
             } else if (warmup.last_error) {
                 document.getElementById('heroCopy').textContent = `Warmup 最近一次失败原因：${warmup.last_error}`;
             } else if (live.available) {
@@ -375,7 +508,7 @@
             }
             document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
             document.getElementById('sourceInfo').textContent =
-                `来源 /api/custom/ibkr/statusz?warmup=1 · ${status?.warmup_details_included ? 'warmup full' : 'warmup lite'} · live readiness derived`;
+                `来源 /api/custom/ibkr/statusz?warmup=1 · ${status?.warmup_details_included ? 'warmup full' : 'warmup lite'} · live readiness ${describeLiveReadinessSource(live)}`;
         }
         function renderMetricCard(card) {
             return `
@@ -389,6 +522,11 @@
         }
         function renderMetrics(status, warmup, live) {
             const cards = [];
+            const gateReason = live.available ? live.gate_reason : warmup.gate_reason;
+            const gateExpectedClosed = isExpectedClosedGate(
+                gateReason,
+                live.available ? live.trade_symbols_total : warmup.trade_symbols_total
+            );
             cards.push({
                 label: live.available ? 'Live Trade Warmup' : 'Snapshot Trade Warmup',
                 value: live.available
@@ -412,7 +550,7 @@
                 copy: live.available
                     ? `gate ${live.gate_open ? 'OPEN' : 'CLOSED'} · ${live.gate_reason}`
                     : `gate ${warmup.gate_open ? 'OPEN' : 'CLOSED'} · ${warmup.gate_reason}`,
-                tone: (live.available ? live.gate_open : warmup.gate_open) ? 'ok' : 'warn'
+                tone: (live.available ? live.gate_open : warmup.gate_open) ? 'ok' : (gateExpectedClosed ? 'info' : 'warn')
             });
             cards.push({
                 label: live.available ? 'Live Monitor Coverage' : 'Snapshot Monitor Coverage',
@@ -436,7 +574,7 @@
                     live.available ? live.monitor_symbols_total : warmup.monitor_symbols_total
                 ),
                 copy: live.available
-                    ? `trade blocking ${live.blocking_pending_symbols_total} · derived from compute engines`
+                    ? `trade blocking ${live.blocking_pending_symbols_total} · ${describeLiveReadinessSource(live)}`
                     : `trade blocking ${warmup.blocking_pending_symbols_total} · startup snapshot`,
                 tone: (live.available ? live.monitor_pending_symbols_total : warmup.monitor_pending_symbols_total) > 0 ? 'info' : 'ok'
             });
@@ -463,6 +601,7 @@
             document.getElementById('metricGrid').innerHTML = cards.map(renderMetricCard).join('');
         }
         function renderStartupGrid(status, warmup, live) {
+            const liveGateExpectedClosed = isExpectedClosedGate(live.gate_reason, live.trade_symbols_total);
             const items = [
                 ['Runtime Phase', String(status?.runtime_phase || 'unknown').toUpperCase(), `requested env ${String(currentEnvironment).toUpperCase()}`, getRuntimeTone(status)],
                 ['Starting', status?.starting ? 'YES' : 'NO', 'runtime start flag', status?.starting ? 'warn' : 'info'],
@@ -480,7 +619,7 @@
                     'Live Gate',
                     live.available ? (live.gate_open ? 'OPEN' : 'CLOSED') : '--',
                     live.available ? live.gate_reason : 'waiting for live engine readiness',
-                    live.available ? (live.gate_open ? 'ok' : 'warn') : 'muted'
+                    live.available ? (live.gate_open ? 'ok' : (liveGateExpectedClosed ? 'info' : 'warn')) : 'muted'
                 ],
                 [
                     'Monitor Coverage',
@@ -710,6 +849,7 @@
             lastStatusPayload = status;
             renderHero(status, warmup, live);
             renderMetrics(status, warmup, live);
+            renderServiceTopology(status);
             renderStartupGrid(status, warmup, live);
             renderRepairSection(warmup);
             renderIntegritySection(warmup);

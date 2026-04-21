@@ -14,6 +14,7 @@ from ibkr_compute.api.account.views import (
 from ibkr_compute.api.route_request import get_query_arg_int
 from ibkr_compute.api.route_response import build_json_request_response, json_response
 from ibkr_compute.api.route_runtime import require_ibkr_service
+from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
 
 
 def _resolve_account_service():
@@ -31,6 +32,18 @@ def _build_account_action_response(builder):
 
 
 def register_account_routes(app):
+    if should_proxy_runtime_requests():
+        register_runtime_proxy_route(app, "ibkr_account", "/ibkr/account", ["GET"])
+        register_runtime_proxy_route(app, "ibkr_positions", "/ibkr/positions", ["GET"])
+        register_runtime_proxy_route(app, "ibkr_live_orders", "/ibkr/orders/live", ["GET"])
+        register_runtime_proxy_route(app, "ibkr_order_history", "/ibkr/orders/history", ["GET"])
+        register_runtime_proxy_route(app, "ibkr_cancel_order", "/ibkr/orders/cancel", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_cancel_all_orders", "/ibkr/orders/cancel_all", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_modify_order", "/ibkr/orders/modify", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_place_order", "/ibkr/orders/place", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_close_position", "/ibkr/positions/close", ["POST"])
+        return
+
     @app.route("/ibkr/account", methods=["GET"])
     def ibkr_account():
         service, unavailable = _resolve_account_service()

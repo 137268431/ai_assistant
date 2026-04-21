@@ -4,6 +4,7 @@ from flask import redirect
 
 from ibkr_compute.api.route_response import build_json_pair_response, build_json_request_response
 from ibkr_compute.api.route_runtime import get_app_module, get_requested_environment
+from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
 from ibkr_compute.api.runtime.views import (
     _build_ibkr_2fa_probe_response,
     _build_ibkr_2fa_takeover_response,
@@ -20,6 +21,26 @@ from ibkr_compute.api.runtime.views import (
 
 
 def register_runtime_routes(app):
+    if should_proxy_runtime_requests():
+        register_runtime_proxy_route(app, "ibkr_start", "/ibkr/start", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_stop", "/ibkr/stop", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_gateway_start", "/ibkr/gateway/start", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_gateway_stop", "/ibkr/gateway/stop", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_gateway_restart", "/ibkr/gateway/restart", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_status", "/ibkr/status", ["GET"])
+        register_runtime_proxy_route(app, "ibkr_monitor", "/ibkr/monitor", ["GET"])
+        register_runtime_proxy_route(app, "ibkr_universe_reconcile", "/ibkr/universe/reconcile", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_2fa_takeover", "/ibkr/2fa/takeover", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_2fa_probe", "/ibkr/2fa/probe", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_panic_reset", "/ibkr/panic-reset", ["POST"])
+
+        @app.route("/ibkr/dashboard", methods=["GET"])
+        def ibkr_dashboard():
+            app_mod = get_app_module()
+            return redirect(f"{app_mod.PB_PUBLIC_URL.rstrip('/')}/ibkr_runtime.html", code=302)
+
+        return
+
     @app.route("/ibkr/start", methods=["POST"])
     def ibkr_start():
         return build_json_request_response(_build_ibkr_start_response)

@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=-/opt/ibkr_compute/.env
+EnvironmentFile=-/opt/ibkr_runtime/.env
 ExecStart=/bin/bash -lc 'set -euo pipefail; XVFB_BIN="$(command -v Xvfb)"; exec "$XVFB_BIN" "${IBKR_DISPLAY:-:1}" -screen 0 "${IBKR_DISPLAY_SCREEN:-1280x800x24}" -nolisten tcp -ac'
 Restart=always
 RestartSec=5

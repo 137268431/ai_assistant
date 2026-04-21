@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AI_ASSISTANT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB_ROOT="$SCRIPT_DIR/lib"
 POCKETBASE_SCRIPT="$SCRIPT_DIR/deploy_pocketbase_runtime.sh"
-IBKR_SCRIPT="$SCRIPT_DIR/deploy_ibkr_compute_runtime.sh"
+COMPUTE_SCRIPT="$SCRIPT_DIR/deploy_ibkr_compute_runtime.sh"
+RUNTIME_SCRIPT="$SCRIPT_DIR/deploy_ibkr_runtime_service.sh"
 
 REMOTE_HOST=""
 WITH_MIGRATIONS=0
@@ -29,6 +30,7 @@ SKIP_SYSTEMD=0
 SKIP_REQUIREMENTS=0
 PB_REMOTE_ROOT="${PB_REMOTE_ROOT:-${IBKR_DEPLOY_PB_ROOT:-/opt/pocketbase}}"
 IBKR_REMOTE_ROOT="${IBKR_REMOTE_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
+IBKR_RUNTIME_REMOTE_ROOT="${IBKR_RUNTIME_REMOTE_ROOT:-${IBKR_DEPLOY_RUNTIME_ROOT:-/opt/ibkr_runtime}}"
 SYSTEMD_DIR="/etc/systemd/system"
 OPS_REMOTE_ROOT="$IBKR_REMOTE_ROOT/ops"
 VENV_DIR="$IBKR_REMOTE_ROOT/venv"
@@ -58,11 +60,11 @@ Options:
   --package-name <n>  Override generated package name for package mode
   --migrations        Deploy PocketBase extension migrations
   --ops-tools         Deprecated legacy flag, kept only for CLI compatibility
-  --gateway-service   Install ibkr-display and ibkr-gateway systemd units
+  --gateway-service   Deprecated compatibility flag; gateway units now belong to ibkr-runtime
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote syntax validation
   --no-restart        Skip service restarts
-  --status-only       Show pocketbase / ibkr-compute / ibkr-display / ibkr-gateway status and exit
+  --status-only       Show pocketbase / ibkr-runtime / ibkr-compute / ibkr-display / ibkr-gateway status and exit
   -h, --help          Show this help
 EOF
 }
@@ -144,17 +146,17 @@ else
 fi
 
 declare -a pb_args=()
-declare -a ibkr_args=()
+declare -a compute_args=()
+declare -a runtime_args=()
 
-[[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && ibkr_args+=(--host "$REMOTE_HOST")
+[[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && compute_args+=(--host "$REMOTE_HOST") && runtime_args+=(--host "$REMOTE_HOST")
 [[ "$WITH_MIGRATIONS" -eq 1 ]] && pb_args+=(--migrations)
-[[ "$WITH_OPS_TOOLS" -eq 1 ]] && ibkr_args+=(--ops-tools)
-[[ "$WITH_GATEWAY_SERVICE" -eq 1 ]] && ibkr_args+=(--gateway-service)
-[[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && ibkr_args+=(--dry-run)
-[[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && ibkr_args+=(--skip-checks)
-[[ "$NO_RESTART" -eq 1 ]] && pb_args+=(--no-restart) && ibkr_args+=(--no-restart)
-[[ "$PLAN_ONLY" -eq 1 ]] && pb_args+=(--plan-only) && ibkr_args+=(--plan-only)
-[[ -n "$PACKAGE_NAME" ]] && pb_args+=(--package-name "$PACKAGE_NAME") && ibkr_args+=(--package-name "$PACKAGE_NAME")
+[[ "$WITH_OPS_TOOLS" -eq 1 ]] && compute_args+=(--ops-tools)
+[[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && compute_args+=(--dry-run) && runtime_args+=(--dry-run)
+[[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && compute_args+=(--skip-checks) && runtime_args+=(--skip-checks)
+[[ "$NO_RESTART" -eq 1 ]] && pb_args+=(--no-restart) && compute_args+=(--no-restart) && runtime_args+=(--no-restart)
+[[ "$PLAN_ONLY" -eq 1 ]] && pb_args+=(--plan-only) && compute_args+=(--plan-only) && runtime_args+=(--plan-only)
+[[ -n "$PACKAGE_NAME" ]] && pb_args+=(--package-name "$PACKAGE_NAME") && compute_args+=(--package-name "$PACKAGE_NAME") && runtime_args+=(--package-name "$PACKAGE_NAME")
 
 run_pb() {
   if [[ ${#pb_args[@]} -gt 0 ]]; then
@@ -164,12 +166,57 @@ run_pb() {
   fi
 }
 
-run_ibkr() {
-  if [[ ${#ibkr_args[@]} -gt 0 ]]; then
-    bash "$IBKR_SCRIPT" "${ibkr_args[@]}" "$@"
+run_compute() {
+  if [[ ${#compute_args[@]} -gt 0 ]]; then
+    bash "$COMPUTE_SCRIPT" "${compute_args[@]}" "$@"
   else
-    bash "$IBKR_SCRIPT" "$@"
+    bash "$COMPUTE_SCRIPT" "$@"
   fi
+}
+
+run_runtime() {
+  if [[ ${#runtime_args[@]} -gt 0 ]]; then
+    bash "$RUNTIME_SCRIPT" "${runtime_args[@]}" "$@"
+  else
+    bash "$RUNTIME_SCRIPT" "$@"
+  fi
+}
+
+collect_target_file_args() {
+  local array_name="$1"
+  local target="$2"
+  local source_kind="$3"
+  eval "$array_name=()"
+  local candidate_paths=()
+  local rel_path
+  local selected_unit
+  local matched
+
+  case "$source_kind" in
+    deployable)
+      candidate_paths=( "${INPUT_DEPLOYABLE_FILES[@]-}" )
+      ;;
+    touched)
+      candidate_paths=( "${INPUT_TOUCHED_PATHS[@]-}" )
+      ;;
+    *)
+      deploy_die "Unsupported target file arg source: $source_kind"
+      ;;
+  esac
+
+  for rel_path in "${candidate_paths[@]-}"; do
+    [[ -n "$rel_path" ]] || continue
+    matched=0
+    while IFS= read -r selected_unit; do
+      [[ -n "$selected_unit" ]] || continue
+      if unit_matches_path "$selected_unit" "$rel_path"; then
+        matched=1
+        break
+      fi
+    done < <(list_selected_units_for_target "$target")
+    [[ "$matched" -eq 1 ]] || continue
+    eval "$array_name+=(--file \"\$rel_path\")"
+  done
 }
 
 wait_for_full_stack_health() {
@@ -206,7 +253,8 @@ prepare_target_plan all
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
   run_pb --status-only
-  run_ibkr --status-only
+  run_runtime --status-only
+  run_compute --status-only
   exit 0
 fi
 
@@ -216,19 +264,24 @@ if [[ "$NO_MANAGED_CHANGES" -eq 1 ]]; then
 fi
 
 if [[ "$REQUESTED_MODE" != "scope" || "$HAS_CHANGE_SOURCE" -eq 1 ]]; then
+  local_file_source="deployable"
+  if [[ "$FINAL_MODE" == "package" ]]; then
+    local_file_source="touched"
+  fi
+
+  target_pb_file_args=()
+  target_compute_file_args=()
+  target_runtime_file_args=()
+  collect_target_file_args target_pb_file_args pocketbase "$local_file_source"
+  collect_target_file_args target_compute_file_args ibkr_compute "$local_file_source"
+  collect_target_file_args target_runtime_file_args ibkr_runtime "$local_file_source"
+
   pb_args+=(--mode "$FINAL_MODE")
-  ibkr_args+=(--mode "$FINAL_MODE")
-  if [[ -n "$DIFF_RANGE" ]]; then
-    pb_args+=(--diff "$DIFF_RANGE")
-    ibkr_args+=(--diff "$DIFF_RANGE")
-  fi
-  if [[ ${#FILE_ARGS[@]} -gt 0 ]]; then
-    local_file=""
-    for local_file in "${FILE_ARGS[@]}"; do
-      pb_args+=(--file "$local_file")
-      ibkr_args+=(--file "$local_file")
-    done
-  fi
+  compute_args+=(--mode "$FINAL_MODE")
+  runtime_args+=(--mode "$FINAL_MODE")
+  pb_args+=( "${target_pb_file_args[@]-}" )
+  compute_args+=( "${target_compute_file_args[@]-}" )
+  runtime_args+=( "${target_runtime_file_args[@]-}" )
 fi
 
 families=()
@@ -237,14 +290,18 @@ for plan_unit in "${PLAN_UNITS[@]}"; do
 done
 
 if [[ "$REQUESTED_MODE" == "scope" && "$HAS_CHANGE_SOURCE" -eq 0 ]]; then
-  run_ibkr
+  run_runtime
+  run_compute
   run_pb
   wait_for_full_stack_health
   exit 0
 fi
 
-if array_contains "ibkr" "${families[@]}"; then
-  DEPLOY_IGNORE_UNMANAGED=1 run_ibkr
+if array_contains "ibkr_runtime" "${families[@]}"; then
+  DEPLOY_IGNORE_UNMANAGED=1 run_runtime
+fi
+if array_contains "ibkr_compute" "${families[@]}"; then
+  DEPLOY_IGNORE_UNMANAGED=1 run_compute
 fi
 if array_contains "pocketbase" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_pb

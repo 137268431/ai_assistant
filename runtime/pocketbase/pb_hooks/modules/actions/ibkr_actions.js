@@ -223,6 +223,28 @@ function ibkrActionsBuildProxyMeta(payload, route, upstream) {
 }
 globalThis.ibkrActionsBuildProxyMeta = ibkrActionsBuildProxyMeta
 
+function ibkrActionsCloneObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return {}
+    }
+    return { ...value }
+}
+globalThis.ibkrActionsCloneObject = ibkrActionsCloneObject
+
+function ibkrActionsMergeServiceTopology(primaryValue, secondaryValue) {
+    const primary = ibkrActionsCloneObject(primaryValue)
+    const secondary = ibkrActionsCloneObject(secondaryValue)
+    const primaryServices = ibkrActionsCloneObject(primary.services)
+    const secondaryServices = ibkrActionsCloneObject(secondary.services)
+    const services = { ...primaryServices, ...secondaryServices }
+    return {
+        ...primary,
+        ...secondary,
+        services,
+    }
+}
+globalThis.ibkrActionsMergeServiceTopology = ibkrActionsMergeServiceTopology
+
 function ibkrActionsInspectRequestedRuntimeEnvironment(environment) {
     const { getIbkrComputeInternalUrl } = require(`${__hooks}/lib/environment.js`)
     const requestedEnvironment = String(environment || "live").trim().toLowerCase() || "live"
@@ -1184,6 +1206,25 @@ function ibkrActionsBuildStatuszComputePayload(computePayload, includeEngines) {
 }
 globalThis.ibkrActionsBuildStatuszComputePayload = ibkrActionsBuildStatuszComputePayload
 
+function ibkrActionsMergeServiceTopologySafe(primaryValue, secondaryValue) {
+    const mergeFn = typeof globalThis.ibkrActionsMergeServiceTopology === "function"
+        ? globalThis.ibkrActionsMergeServiceTopology
+        : function(primaryInput, secondaryInput) {
+            const primary = ibkrActionsCloneObject(primaryInput)
+            const secondary = ibkrActionsCloneObject(secondaryInput)
+            return {
+                ...primary,
+                ...secondary,
+                services: {
+                    ...ibkrActionsCloneObject(primary.services),
+                    ...ibkrActionsCloneObject(secondary.services),
+                },
+            }
+        }
+    return mergeFn(primaryValue, secondaryValue)
+}
+globalThis.ibkrActionsMergeServiceTopologySafe = ibkrActionsMergeServiceTopologySafe
+
 function ibkrActionsTrimArray(values, limit) {
     if (!Array.isArray(values)) return []
     const maxItems = Math.max(0, Number(limit) || 0)
@@ -1324,6 +1365,61 @@ function ibkrActionsBuildStatuszLiveReadiness(computePayload, runtimePayload) {
         || snapshotReadyTradeSymbols !== readyTradeSymbols
         || snapshotReadyMonitorSymbols !== readyMonitorSymbols
     )
+    const snapshotPhase = String(warmup.phase || "").trim().toLowerCase() || "idle"
+    const snapshotFinishedAt = warmup.finished_at || ""
+    const snapshotTradeSymbolsTotal = Number(warmup.trade_symbols_total || 0) || tradeSymbols.length
+    const snapshotMonitorSymbolsTotal = Number(warmup.monitor_symbols_total || 0) || monitorSymbols.length
+    const snapshotPendingSymbolsTotal = Array.isArray(warmup.pending_symbols)
+        ? warmup.pending_symbols.length
+        : (Number(warmup.pending_symbols_total || 0) || 0)
+    const snapshotMonitorPendingTotal = Number(warmup.monitor_pending_symbols_total || 0)
+        || Math.max(0, snapshotMonitorSymbolsTotal - snapshotReadyMonitorSymbols)
+    const snapshotBlockingPendingTotal = Number(warmup.blocking_pending_symbols_total || 0)
+        || Math.max(0, snapshotPendingSymbolsTotal - snapshotMonitorPendingTotal)
+    const snapshotGateOpen = Boolean(warmup.trading_gate_open)
+    const snapshotGateReason = String(warmup.trading_gate_reason || "").trim().toLowerCase()
+        || (snapshotTradeSymbolsTotal > 0 ? (snapshotGateOpen ? "ready" : "warmup_incomplete") : "no_trade_symbols")
+    const runtimeMode = String(
+        runtime.runtime_mode
+        || compute.runtime_mode
+        || ((runtime.service_topology && runtime.service_topology.runtime_mode) || "")
+    ).trim().toLowerCase()
+    const preferRuntimeSnapshot = runtimeMode === "remote"
+    const runtimeSnapshotAvailable = snapshotPresent && (
+        snapshotSymbolsTotal > 0
+        || snapshotReadySymbols > 0
+        || snapshotTradeSymbolsTotal > 0
+        || snapshotMonitorSymbolsTotal > 0
+        || snapshotPhase !== "idle"
+        || Boolean(snapshotFinishedAt)
+    )
+
+    if ((preferRuntimeSnapshot || !Object.keys(engineMap).length) && runtimeSnapshotAvailable) {
+        return {
+            available: true,
+            engine_snapshot_available: Object.keys(engineMap).length > 0,
+            source: "runtime_warmup_snapshot",
+            environment: environment,
+            required_interval: requiredInterval,
+            computed_at: new Date().toISOString(),
+            phase: snapshotPhase,
+            gate_open: snapshotGateOpen,
+            gate_reason: snapshotGateReason,
+            symbols_total: snapshotSymbolsTotal || allSymbols.length,
+            trade_symbols_total: snapshotTradeSymbolsTotal,
+            monitor_symbols_total: snapshotMonitorSymbolsTotal,
+            ready_symbols: snapshotReadySymbols,
+            ready_trade_symbols: snapshotReadyTradeSymbols,
+            ready_monitor_symbols: snapshotReadyMonitorSymbols,
+            pending_symbols_total: snapshotPendingSymbolsTotal,
+            non_monitor_pending_symbols_total: snapshotBlockingPendingTotal,
+            blocking_pending_symbols_total: snapshotBlockingPendingTotal,
+            monitor_pending_symbols_total: snapshotMonitorPendingTotal,
+            snapshot_differs: false,
+            snapshot_phase: snapshotPhase,
+            snapshot_finished_at: snapshotFinishedAt,
+        }
+    }
 
     return {
         available: allSymbols.length > 0 && Object.keys(engineMap).length > 0,
@@ -1346,8 +1442,8 @@ function ibkrActionsBuildStatuszLiveReadiness(computePayload, runtimePayload) {
         blocking_pending_symbols_total: nonMonitorPendingTotal,
         monitor_pending_symbols_total: monitorPendingTotal,
         snapshot_differs: Boolean(snapshotDiffers),
-        snapshot_phase: String(warmup.phase || "").trim().toLowerCase() || "idle",
-        snapshot_finished_at: warmup.finished_at || "",
+        snapshot_phase: snapshotPhase,
+        snapshot_finished_at: snapshotFinishedAt,
     }
 }
 globalThis.ibkrActionsBuildStatuszLiveReadiness = ibkrActionsBuildStatuszLiveReadiness
@@ -4904,6 +5000,61 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 || snapshotReadyTradeSymbols !== readyTradeSymbols
                 || snapshotReadyMonitorSymbols !== readyMonitorSymbols
             )
+            const snapshotPhase = String(warmup.phase || "").trim().toLowerCase() || "idle"
+            const snapshotFinishedAt = warmup.finished_at || ""
+            const snapshotTradeSymbolsTotal = Number(warmup.trade_symbols_total || 0) || tradeSymbols.length
+            const snapshotMonitorSymbolsTotal = Number(warmup.monitor_symbols_total || 0) || monitorSymbols.length
+            const snapshotPendingSymbolsTotal = Array.isArray(warmup.pending_symbols)
+                ? warmup.pending_symbols.length
+                : (Number(warmup.pending_symbols_total || 0) || 0)
+            const snapshotMonitorPendingTotal = Number(warmup.monitor_pending_symbols_total || 0)
+                || Math.max(0, snapshotMonitorSymbolsTotal - snapshotReadyMonitorSymbols)
+            const snapshotBlockingPendingTotal = Number(warmup.blocking_pending_symbols_total || 0)
+                || Math.max(0, snapshotPendingSymbolsTotal - snapshotMonitorPendingTotal)
+            const snapshotGateOpen = Boolean(warmup.trading_gate_open)
+            const snapshotGateReason = String(warmup.trading_gate_reason || "").trim().toLowerCase()
+                || (snapshotTradeSymbolsTotal > 0 ? (snapshotGateOpen ? "ready" : "warmup_incomplete") : "no_trade_symbols")
+            const runtimeMode = String(
+                runtime.runtime_mode
+                || compute.runtime_mode
+                || ((runtime.service_topology && runtime.service_topology.runtime_mode) || "")
+            ).trim().toLowerCase()
+            const preferRuntimeSnapshot = runtimeMode === "remote"
+            const runtimeSnapshotAvailable = snapshotPresent && (
+                snapshotSymbolsTotal > 0
+                || snapshotReadySymbols > 0
+                || snapshotTradeSymbolsTotal > 0
+                || snapshotMonitorSymbolsTotal > 0
+                || snapshotPhase !== "idle"
+                || Boolean(snapshotFinishedAt)
+            )
+
+            if ((preferRuntimeSnapshot || !Object.keys(engineMap).length) && runtimeSnapshotAvailable) {
+                return {
+                    available: true,
+                    engine_snapshot_available: Object.keys(engineMap).length > 0,
+                    source: "runtime_warmup_snapshot",
+                    environment: environment,
+                    required_interval: requiredInterval,
+                    computed_at: new Date().toISOString(),
+                    phase: snapshotPhase,
+                    gate_open: snapshotGateOpen,
+                    gate_reason: snapshotGateReason,
+                    symbols_total: snapshotSymbolsTotal || allSymbols.length,
+                    trade_symbols_total: snapshotTradeSymbolsTotal,
+                    monitor_symbols_total: snapshotMonitorSymbolsTotal,
+                    ready_symbols: snapshotReadySymbols,
+                    ready_trade_symbols: snapshotReadyTradeSymbols,
+                    ready_monitor_symbols: snapshotReadyMonitorSymbols,
+                    pending_symbols_total: snapshotPendingSymbolsTotal,
+                    non_monitor_pending_symbols_total: snapshotBlockingPendingTotal,
+                    blocking_pending_symbols_total: snapshotBlockingPendingTotal,
+                    monitor_pending_symbols_total: snapshotMonitorPendingTotal,
+                    snapshot_differs: false,
+                    snapshot_phase: snapshotPhase,
+                    snapshot_finished_at: snapshotFinishedAt,
+                }
+            }
 
             return {
                 available: allSymbols.length > 0 && Object.keys(engineMap).length > 0,
@@ -4926,8 +5077,8 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 blocking_pending_symbols_total: nonMonitorPendingTotal,
                 monitor_pending_symbols_total: monitorPendingTotal,
                 snapshot_differs: Boolean(snapshotDiffers),
-                snapshot_phase: String(warmup.phase || "").trim().toLowerCase() || "idle",
-                snapshot_finished_at: warmup.finished_at || "",
+                snapshot_phase: snapshotPhase,
+                snapshot_finished_at: snapshotFinishedAt,
             }
         }
         const buildStatuszRuntimePayload = function(runtimePayload, includeWarmupDetails, liveReadiness = {}) {
@@ -5177,6 +5328,9 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 startup_complete: Boolean(payload.startup_complete),
                 runtime_phase: String(payload.runtime_phase || ""),
                 environment: String(payload.environment || ""),
+                service_profile: String(payload.service_profile || ""),
+                runtime_mode: String(payload.runtime_mode || ""),
+                service_topology: cloneObject(payload.service_topology),
                 market_session: cloneObject(payload.market_session),
                 warmup_details_included: Boolean(includeWarmupDetails),
                 live_readiness: cloneObject(liveReadiness),
@@ -5313,7 +5467,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             }
         }
 
-        const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, getIbkrRuntimeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
         const query = c.request.url.query()
         const includeEngines = parseBoolean(query.get("full"), false)
@@ -5323,12 +5477,15 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             || includeEngines
         const computeBase = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
         const computeUpstream = `${computeBase}/status`
-        const runtimeUpstream = `${computeBase}/ibkr/status`
+        const runtimeProxyUpstream = `${computeBase}/ibkr/status`
+        const runtimeDirectBase = getIbkrRuntimeInternalUrl(environment, "http://127.0.0.1:5101")
+        const runtimeDirectUpstream = `${runtimeDirectBase}/ibkr/status`
 
         let computePayload = {}
         let runtimePayload = {}
         let computeError = ""
         let runtimeError = ""
+        let runtimeSelectedUpstream = runtimeProxyUpstream
 
         try {
             const computeResp = $http.send({
@@ -5343,7 +5500,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
 
         try {
             const runtimeResp = $http.send({
-                url: runtimeUpstream,
+                url: runtimeProxyUpstream,
                 method: "GET",
                 timeout: 10,
             })
@@ -5351,16 +5508,44 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
         } catch (err) {
             runtimeError = err.message || String(err)
         }
+        if ((runtimeError || runtimePayload.ok === false) && runtimeDirectUpstream) {
+            try {
+                const runtimeResp = $http.send({
+                    url: runtimeDirectUpstream,
+                    method: "GET",
+                    timeout: 10,
+                })
+                runtimePayload = parseHttpJson(runtimeResp.raw)
+                runtimeError = ""
+                runtimeSelectedUpstream = runtimeDirectUpstream
+            } catch (err) {
+                runtimeError = runtimeError || err.message || String(err)
+            }
+        }
 
         const computeData = buildStatuszComputePayload(computePayload, includeEngines)
         const liveReadiness = buildStatuszLiveReadiness(computePayload, runtimePayload)
         const runtimeData = buildStatuszRuntimePayload(runtimePayload, includeWarmupDetails, liveReadiness)
+        const serviceTopology = typeof globalThis.ibkrActionsMergeServiceTopologySafe === "function"
+            ? globalThis.ibkrActionsMergeServiceTopologySafe(
+                computeData.service_topology,
+                runtimeData.service_topology
+            )
+            : {
+                ...(computeData.service_topology && typeof computeData.service_topology === "object" ? computeData.service_topology : {}),
+                ...(runtimeData.service_topology && typeof runtimeData.service_topology === "object" ? runtimeData.service_topology : {}),
+                services: {
+                    ...((computeData.service_topology && computeData.service_topology.services) || {}),
+                    ...((runtimeData.service_topology && runtimeData.service_topology.services) || {}),
+                },
+            }
         const actualRuntimeEnvironment = String(runtimeData.environment || computeData.environment || environment).trim().toLowerCase() || environment
         const response = {
             ...computeData,
             ...(runtimeData && runtimeData.ok !== false ? runtimeData : {}),
             compute: computeData,
             runtime: runtimeData,
+            service_topology: serviceTopology,
             warmup_details_included: Boolean(includeWarmupDetails),
             requested_environment: environment,
             actual_runtime_environment: actualRuntimeEnvironment,
@@ -5373,7 +5558,9 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             proxy_hook: "ibkr_actions.pb.js",
             proxy_route: "/api/custom/ibkr/statusz",
             proxy_upstream_compute: computeUpstream,
-            proxy_upstream_runtime: runtimeUpstream,
+            proxy_upstream_runtime: runtimeSelectedUpstream,
+            proxy_upstream_runtime_proxy: runtimeProxyUpstream,
+            proxy_upstream_runtime_direct: runtimeDirectUpstream,
         }
 
         if (computeError || runtimeError) {
@@ -5400,21 +5587,64 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
 })
 
 routerAdd("GET", "/api/custom/ibkr/healthz", (c) => {
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, getIbkrRuntimeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
     try {
+        const computeUpstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/health`
+        const runtimeUpstream = `${getIbkrRuntimeInternalUrl(environment, "http://127.0.0.1:5101")}/health`
         const resp = $http.send({
-            url: `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/health`,
+            url: computeUpstream,
             method: "GET",
             timeout: 5,
         })
-        let payload = {}
+        let computePayload = {}
         try {
-            payload = JSON.parse(resp.raw || "{}")
+            computePayload = JSON.parse(resp.raw || "{}")
         } catch (_) {
-            payload = {}
+            computePayload = {}
         }
-        return c.json(200, payload)
+        let runtimePayload = {}
+        let runtimeError = ""
+        try {
+            const runtimeResp = $http.send({
+                url: runtimeUpstream,
+                method: "GET",
+                timeout: 5,
+            })
+            runtimePayload = JSON.parse(runtimeResp.raw || "{}")
+        } catch (err) {
+            runtimeError = err.message || String(err)
+        }
+        const serviceTopology = typeof globalThis.ibkrActionsMergeServiceTopologySafe === "function"
+            ? globalThis.ibkrActionsMergeServiceTopologySafe(
+                computePayload.service_topology,
+                runtimePayload.service_topology
+            )
+            : {
+                ...(computePayload.service_topology && typeof computePayload.service_topology === "object" ? computePayload.service_topology : {}),
+                ...(runtimePayload.service_topology && typeof runtimePayload.service_topology === "object" ? runtimePayload.service_topology : {}),
+                services: {
+                    ...((computePayload.service_topology && computePayload.service_topology.services) || {}),
+                    ...((runtimePayload.service_topology && runtimePayload.service_topology.services) || {}),
+                },
+            }
+        const runtimeExpected = String(serviceTopology.runtime_mode || "").trim().toLowerCase() === "remote"
+        return c.json(200, {
+            ok: computePayload.ok !== false && (!runtimeExpected || runtimePayload.ok !== false),
+            status: computePayload.ok !== false && (!runtimeExpected || runtimePayload.ok !== false)
+                ? String(computePayload.status || runtimePayload.status || "running").trim().toLowerCase() || "running"
+                : (computePayload.ok !== false || runtimePayload.ok !== false ? "degraded" : "offline"),
+            environment,
+            compute: computePayload,
+            runtime: runtimePayload,
+            service_topology: serviceTopology,
+            proxy_source: "pocketbase_ibkr_hook",
+            proxy_hook: "ibkr_actions.pb.js",
+            proxy_route: "/api/custom/ibkr/healthz",
+            proxy_upstream_compute: computeUpstream,
+            proxy_upstream_runtime: runtimeUpstream,
+            error: runtimeError || "",
+        })
     } catch (err) {
         return c.json(200, { ok: false, status: "offline", error: err.message || String(err) })
     }

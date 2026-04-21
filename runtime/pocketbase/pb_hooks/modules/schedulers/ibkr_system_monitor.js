@@ -857,6 +857,7 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
             ok: monitorPayload.ok !== false,
             environment: environment,
             status: String(monitorPayload.status || (monitorPayload.ok === false ? "offline" : "ok")).trim().toLowerCase() || "ok",
+            service_topology: monitorPayload.service_topology || {},
             proxy_source: "pocketbase_ibkr_hook",
             proxy_hook: "ibkr_system_monitor.pb.js",
             proxy_route: "/api/custom/system/healthz",
@@ -877,7 +878,7 @@ routerAdd("GET", "/api/custom/system/healthz", (c) => {
 
 routerAdd("GET", "/api/custom/system/summaryz", (c) => {
     try {
-        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputeInternalUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputeInternalUrl, getIbkrRuntimeInternalUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
         const times = getTimeStrings()
         const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
@@ -900,12 +901,20 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             last_compute: null,
             last_scan: null,
         }
+        let runtimeSummary = {
+            ok: false,
+            status: "offline",
+            environment: environment,
+            service_topology: {},
+        }
         try {
             const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
             const healthResp = $http.send({ url: `${computeBaseUrl}/health`, method: "GET", timeout: 5 })
             const healthData = JSON.parse(healthResp.raw || "{}")
             const statusResp = $http.send({ url: `${computeBaseUrl}/status`, method: "GET", timeout: 5 })
             const statusData = JSON.parse(statusResp.raw || "{}")
+            const runtimeProxyUpstream = `${computeBaseUrl}/ibkr/status`
+            const runtimeDirectUpstream = `${getIbkrRuntimeInternalUrl(environment, "http://127.0.0.1:5101")}/ibkr/status`
             computeSummary = {
                 ok: healthData.ok !== false || statusData.ok !== false,
                 status: healthData.status || statusData.status || "unknown",
@@ -917,6 +926,32 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
                 uptime_s: Number(healthData.uptime_s || 0) || 0,
                 last_compute: healthData.last_compute || statusData.last_compute || null,
                 last_scan: healthData.last_scan || statusData.last_scan || null,
+                service_topology: statusData.service_topology || healthData.service_topology || {},
+            }
+            try {
+                const runtimeResp = $http.send({ url: runtimeProxyUpstream, method: "GET", timeout: 5 })
+                const runtimeData = JSON.parse(runtimeResp.raw || "{}")
+                runtimeSummary = {
+                    ok: runtimeData.ok !== false,
+                    status: String(runtimeData.status || (runtimeData.ok === false ? "offline" : "running")).trim().toLowerCase() || "running",
+                    environment: String(runtimeData.environment || environment).trim().toLowerCase() || environment,
+                    service_topology: runtimeData.service_topology || computeSummary.service_topology || {},
+                    proxy_upstream: runtimeProxyUpstream,
+                }
+            } catch (_) {
+                try {
+                    const runtimeResp = $http.send({ url: runtimeDirectUpstream, method: "GET", timeout: 5 })
+                    const runtimeData = JSON.parse(runtimeResp.raw || "{}")
+                    runtimeSummary = {
+                        ok: runtimeData.ok !== false,
+                        status: String(runtimeData.status || (runtimeData.ok === false ? "offline" : "running")).trim().toLowerCase() || "running",
+                        environment: String(runtimeData.environment || environment).trim().toLowerCase() || environment,
+                        service_topology: runtimeData.service_topology || computeSummary.service_topology || {},
+                        proxy_upstream: runtimeDirectUpstream,
+                    }
+                } catch (runtimeErr) {
+                    runtimeSummary.error = runtimeErr.message || String(runtimeErr)
+                }
             }
         } catch (err) {
             computeSummary.error = err.message || String(err)
@@ -931,6 +966,8 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             config: {},
             today: { ibkr_signals: 0, ibkr_indicators: 0, orders: 0, ibkr_bars: 0, ibkr_targets: 0, events: 0 },
             ibkr_compute: computeSummary,
+            ibkr_runtime: runtimeSummary,
+            service_topology: runtimeSummary.service_topology || computeSummary.service_topology || {},
             recent_events: [],
             data_freshness: dataFreshness,
             lite_mode: liteMode,

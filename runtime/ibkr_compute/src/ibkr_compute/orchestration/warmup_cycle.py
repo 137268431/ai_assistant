@@ -276,6 +276,7 @@ class TradingServiceWarmupCycleMixin:
     def _run_warmup_cycle(self):
         service_mod = _service_mod()
         snapshot = self._warmup_snapshot_from_subscriptions()
+        previous_warmup_state = self._copy_warmup_state()
         if snapshot["symbols_total"] == 0:
             self._set_warmup_state(
                 phase="idle",
@@ -649,37 +650,32 @@ class TradingServiceWarmupCycleMixin:
                     retry_delay_s,
                     exc,
                 )
-                self._set_warmup_state(
-                    phase="pending",
+                retry_state = self._build_transient_warmup_retry_state(
+                    snapshot,
+                    previous_warmup_state,
                     reason="pb_unavailable_retry",
                     requested_at=self._now_iso(),
                     started_at=started_at,
-                    finished_at=None,
-                    last_error=last_error,
-                    trading_gate_open=False,
-                    trading_gate_reason="pb_unavailable_retry",
-                    target_date=snapshot["target_date"],
-                    symbols_total=snapshot["symbols_total"],
-                    trade_symbols_total=snapshot["trade_symbols_total"],
-                    monitor_symbols_total=snapshot["monitor_symbols_total"],
-                    symbols=snapshot["symbols"],
-                    trade_symbols=snapshot["trade_symbols"],
-                    monitor_symbols=snapshot["monitor_symbols"],
-                    ready_symbols=0,
-                    ready_trade_symbols=0,
-                    ready_monitor_symbols=0,
-                    ready_symbols_list=[],
-                    pending_symbols=snapshot["symbols"],
-                    symbol_status=[],
-                    integrity_pending_symbols=[],
-                    integrity_repair_reasons={},
-                    preflight_repair={},
-                    backfill_written=backfill_written,
-                    backfill_result=backfill_result,
-                    compute_result=compute_result,
-                    timings=warmup_timings,
-                    last_duration_s=round(time.perf_counter() - warmup_started_perf, 3),
                 )
+                if str(retry_state.get("phase") or "").strip().lower() == "ready":
+                    retry_state.update(
+                        preflight_repair=dict(previous_warmup_state.get("preflight_repair") or {}),
+                        backfill_written=int(previous_warmup_state.get("backfill_written", 0) or 0),
+                        backfill_result=dict(previous_warmup_state.get("backfill_result") or {}),
+                        compute_result=dict(previous_warmup_state.get("compute_result") or {}),
+                        timings=dict(previous_warmup_state.get("timings") or {}),
+                        last_duration_s=float(previous_warmup_state.get("last_duration_s", 0.0) or 0.0),
+                    )
+                else:
+                    retry_state.update(
+                        preflight_repair={},
+                        backfill_written=backfill_written,
+                        backfill_result=backfill_result,
+                        compute_result=compute_result,
+                        timings=warmup_timings,
+                        last_duration_s=round(time.perf_counter() - warmup_started_perf, 3),
+                    )
+                self._set_warmup_state(**retry_state)
                 self._sync_startup_progress(
                     action="update",
                     title="IBKR Runtime 启动中",

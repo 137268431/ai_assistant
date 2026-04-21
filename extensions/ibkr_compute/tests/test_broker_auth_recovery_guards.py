@@ -44,6 +44,21 @@ class BrokerReadyGuardTest(unittest.TestCase):
 
                 getattr(app, request_attr).assert_not_called()
 
+    def test_reconnect_uses_stored_host_and_port_after_disconnect_reset(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app.host = None
+        app.port = None
+        app.isConnected = mock.Mock(return_value=False)
+        app._start_network_thread_locked = mock.Mock()
+
+        with mock.patch("ibkr_compute.broker.ib_gateway.IBAPI_AVAILABLE", True):
+            with mock.patch("ibkr_compute.broker.ib_gateway.EClient.connect", create=True) as connect_mock:
+                with mock.patch.object(app._ready_event, "wait", return_value=True):
+                    ready = app.connect_and_start(timeout=3)
+
+        self.assertTrue(ready)
+        connect_mock.assert_called_once_with("127.0.0.1", 4001, 31)
+
 
 class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):
     def __init__(self):

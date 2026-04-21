@@ -11,6 +11,7 @@ from ibkr_compute.api.runtime.common import (
     set_ibkr_runtime_control,
 )
 from ibkr_compute.api.runtime.restore import _maybe_restore_ibkr_service
+from ibkr_compute.api.service_topology import build_service_topology, get_runtime_mode, get_service_profile
 
 
 def _coerce_symbol_list(value) -> list[str]:
@@ -105,26 +106,40 @@ def _build_ibkr_stop_response() -> tuple[dict, int]:
 def _build_ibkr_status_response() -> tuple[dict, int]:
     service = get_ibkr_service()
     if not service:
-        return {"ok": False, "error": "IBKR service not initialized"}, 200
+        return {
+            "ok": False,
+            "error": "IBKR service not initialized",
+            "service_profile": get_service_profile(),
+            "runtime_mode": get_runtime_mode(),
+            "service_topology": build_service_topology(),
+        }, 200
     _maybe_restore_ibkr_service(service)
     status_payload = service.status()
     status_payload["runtime_control"] = get_ibkr_runtime_control(_ibkr_service_environment(service))
+    status_payload["service_profile"] = get_service_profile()
+    status_payload["runtime_mode"] = get_runtime_mode()
+    status_payload["service_topology"] = build_service_topology(service=service, service_status=status_payload)
     return {"ok": True, **status_payload}, 200
 
 
 def _build_ibkr_monitor_response(requested_environment: str) -> tuple[dict, int]:
     service = get_ibkr_service()
     if not service:
-        return (
-            _build_ibkr_monitor_snapshot(
-                None,
-                requested_environment=requested_environment,
-                service_error="IBKR service not initialized",
-            ),
-            200,
+        payload = _build_ibkr_monitor_snapshot(
+            None,
+            requested_environment=requested_environment,
+            service_error="IBKR service not initialized",
         )
+        payload["service_profile"] = get_service_profile()
+        payload["runtime_mode"] = get_runtime_mode()
+        payload["service_topology"] = build_service_topology()
+        return payload, 200
     _maybe_restore_ibkr_service(service)
-    return _build_ibkr_monitor_snapshot(service, requested_environment=requested_environment), 200
+    payload = _build_ibkr_monitor_snapshot(service, requested_environment=requested_environment)
+    payload["service_profile"] = get_service_profile()
+    payload["runtime_mode"] = get_runtime_mode()
+    payload["service_topology"] = build_service_topology(service=service, service_status=payload.get("runtime") or {})
+    return payload, 200
 
 
 def _build_ibkr_universe_reconcile_response(payload: dict | None = None) -> tuple[dict, int]:

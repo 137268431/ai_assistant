@@ -702,7 +702,14 @@ class TradingServiceAuthRecoveryMixin:
             self._auth_probe_thread.start()
             return True
 
-    def _schedule_auth_restart(self, reason: str, source: str, trigger_login: bool = False):
+    def _schedule_auth_restart(
+        self,
+        reason: str,
+        source: str,
+        trigger_login: bool = False,
+        *,
+        allow_panic_reset: bool = False,
+    ):
         service_mod = _service_mod()
         with self._auth_recovery_lock:
             thread = self._auth_restart_thread
@@ -717,7 +724,12 @@ class TradingServiceAuthRecoveryMixin:
             if self._manual_takeover_active(current):
                 service_mod.logger.info("Skip auth recovery restart during manual takeover")
                 return False
-            if current_phase in {"panic_resetting", "starting_runtime"} or current_lock_owner in {"panic_reset", "runtime_start"}:
+            blocked_phases = {"starting_runtime"}
+            blocked_lock_owners = {"runtime_start"}
+            if not allow_panic_reset:
+                blocked_phases.add("panic_resetting")
+                blocked_lock_owners.add("panic_reset")
+            if current_phase in blocked_phases or current_lock_owner in blocked_lock_owners:
                 service_mod.logger.info(
                     "Skip auth recovery restart while phase=%s lock_owner=%s",
                     current_phase or "-",
@@ -956,6 +968,7 @@ class TradingServiceAuthRecoveryMixin:
                 reason=reason or "panic_reset_2fa",
                 source=source or "panic_reset",
                 trigger_login=bool(trigger_login),
+                allow_panic_reset=True,
             )
         return {
             "cycle_id": cycle_id,

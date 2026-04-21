@@ -217,8 +217,10 @@ class _IBGatewayApp(EWrapper, EClient):
     def __init__(self, host: str, port: int, client_id: int):
         EWrapper.__init__(self)
         EClient.__init__(self, wrapper=self)
-        self.host = host
-        self.port = int(port)
+        # ibapi EClient.reset() clears self.host/self.port on disconnect, so keep
+        # a stable copy for later reconnects after auth or gateway churn.
+        self._gateway_host = str(host or DEFAULT_HOST)
+        self._gateway_port = int(port or DEFAULT_PORT)
         self.client_id = int(client_id)
 
         self._connect_lock = threading.RLock()
@@ -322,7 +324,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 self._status_code = 0
                 self._last_error_code = 0
                 self._last_error_message = ""
-                super().connect(self.host, self.port, self.client_id)
+                super().connect(self._gateway_host, self._gateway_port, self.client_id)
                 self._start_network_thread_locked()
                 self._last_connect_at = time.time()
             ready = self._ready_event.wait(timeout=max(1, int(timeout)))

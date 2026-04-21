@@ -16,6 +16,7 @@ DEFAULT_REMOTE_PYTHON = os.environ.get("IBKR_REMOTE_PYTHON", f"{DEFAULT_IBKR_REM
 DEFAULT_DB_PATH = os.environ.get("PB_DB_PATH", f"{DEFAULT_PB_REMOTE_ROOT}/pb_data/data.db")
 DEFAULT_PB_LOCAL_URL = os.environ.get("PB_LOCAL_URL", "http://127.0.0.1:8090")
 DEFAULT_COMPUTE_LOCAL_URL = os.environ.get("IBKR_COMPUTE_LOCAL_URL", "http://127.0.0.1:5100")
+DEFAULT_RUNTIME_LOCAL_URL = os.environ.get("IBKR_RUNTIME_LOCAL_URL", "http://127.0.0.1:5101")
 DEFAULT_PB_BASE_URL = os.environ.get("PB_BASE_URL", "https://pb.lzw-glory.top")
 DEFAULT_COMPUTE_PUBLIC_URL = os.environ.get("IBKR_COMPUTE_PUBLIC_URL", "http://206.119.171.136:5100")
 DEFAULT_INDICATOR_MISSING_GRACE_SEC = int(os.environ.get("IBKR_INDICATOR_MISSING_GRACE_SEC", "90"))
@@ -37,6 +38,7 @@ cfg = json.loads(base64.b64decode(os.environ["HEALTH_CHECK_CONFIG_B64"]).decode(
 DB = cfg["db_path"]
 PB = cfg["pb_local_url"].rstrip("/")
 COMPUTE = cfg["compute_local_url"].rstrip("/")
+RUNTIME = cfg["runtime_local_url"].rstrip("/")
 ENVIRONMENT = cfg["environment"]
 BAR_STALE_MIN = int(cfg["bar_stale_min"])
 INDICATOR_STALE_MIN = int(cfg["indicator_stale_min"])
@@ -193,14 +195,21 @@ def apply_interval_label(row):
     return item
 
 
-def latest_row(conn, table: str, environment: str, where_sql: str = "", params=()):
-    sql = f"select * from {table} where environment=?"
+def latest_row(conn, table: str, environment: str, where_sql: str = "", params=(), indexed_by: str | None = None):
+    table_ref = table if not indexed_by else f"{table} indexed by {indexed_by}"
+    sql = f"select * from {table_ref} where environment=?"
     sql_params = [environment]
     if where_sql:
         sql += f" and {where_sql}"
         sql_params.extend(params)
     sql += " order by bar_time_ms desc, created desc limit 1"
-    return apply_interval_label(conn.execute(sql, tuple(sql_params)).fetchone())
+    try:
+        row = conn.execute(sql, tuple(sql_params)).fetchone()
+    except sqlite3.OperationalError as exc:
+        if indexed_by and "no such index" in str(exc).lower():
+            return latest_row(conn, table, environment, where_sql, params)
+        raise
+    return apply_interval_label(row)
 
 
 def latest_signal_row(conn, environment: str):
@@ -359,12 +368,14 @@ def latest_indicator_missing_grace(latest_bar_5m: dict | None, latest_indicator_
 
 services = {
     name: systemd_status(name)
-    for name in ("ibkr-gateway", "ibkr-compute", "pocketbase")
+    for name in ("ibkr-runtime", "ibkr-gateway", "ibkr-compute", "pocketbase")
 }
 local_http = {
     "compute_health": http_json(f"{COMPUTE}/health"),
     "compute_status": http_json(f"{COMPUTE}/status"),
     "compute_ibkr_status": http_json(f"{COMPUTE}/ibkr/status"),
+    "runtime_health": http_json(f"{RUNTIME}/health"),
+    "runtime_status": http_json(f"{RUNTIME}/ibkr/status"),
     "pb_health": http_json(f"{PB}/api/health"),
     "pb_ibkr_healthz": http_json(f"{PB}/api/custom/ibkr/healthz?environment={ENVIRONMENT}"),
     "pb_ibkr_statusz": http_json(f"{PB}/api/custom/ibkr/statusz?environment={ENVIRONMENT}"),
@@ -374,7 +385,14 @@ local_http = {
 
 conn = open_db()
 latest_bar_5m = latest_row(conn, "ibkr_bars", ENVIRONMENT, "interval=?", ("5m",))
-latest_indicator_5m = latest_row(conn, "ibkr_indicators", ENVIRONMENT, "interval in (?, ?)", ("5", "5m"))
+latest_indicator_5m = latest_row(
+    conn,
+    "ibkr_indicators",
+    ENVIRONMENT,
+    "interval in (?, ?)",
+    ("5", "5m"),
+    indexed_by="idx_ibkr_indicators_bartimems",
+)
 latest_signal = latest_signal_row(conn, ENVIRONMENT)
 targets = latest_targets(conn, ENVIRONMENT)
 bars_by_interval = interval_freshness(conn, "ibkr_bars", ENVIRONMENT)
@@ -404,6 +422,8 @@ for name in (
     "compute_health",
     "compute_status",
     "compute_ibkr_status",
+    "runtime_health",
+    "runtime_status",
     "pb_health",
     "pb_ibkr_healthz",
     "pb_ibkr_statusz",
@@ -434,7 +454,15 @@ elif (
 ):
     failures.append(f"db:latest_indicator_5m_stale:{latest_indicator_5m['age_min']}")
 
-runtime_payload = local_http.get("compute_ibkr_status", {}).get("json") or {}
+runtime_payload = (
+    local_http.get("runtime_status", {}).get("json")
+    or local_http.get("compute_ibkr_status", {}).get("json")
+    or {}
+)
+compute_status_payload = local_http.get("compute_status", {}).get("json") or {}
+pb_statusz_payload = local_http.get("pb_ibkr_statusz", {}).get("json") or {}
+pb_healthz_payload = local_http.get("pb_ibkr_healthz", {}).get("json") or {}
+pb_system_healthz_payload = local_http.get("pb_system_healthz", {}).get("json") or {}
 gateway = runtime_payload.get("gateway") or {}
 session = runtime_payload.get("session") or {}
 websocket = runtime_payload.get("websocket") or {}
@@ -442,6 +470,16 @@ realtime = runtime_payload.get("realtime_compute") or {}
 market_universe = runtime_payload.get("market_universe") or {}
 canonical_5m = runtime_payload.get("canonical_5m") or {}
 bar_freshness = market_universe.get("bar_freshness") or {}
+runtime_service_profile = str(runtime_payload.get("service_profile") or "").strip().lower()
+runtime_topology = (
+    runtime_payload.get("service_topology")
+    or pb_statusz_payload.get("service_topology")
+    or pb_healthz_payload.get("service_topology")
+    or pb_system_healthz_payload.get("service_topology")
+    or compute_status_payload.get("service_topology")
+    or {}
+)
+runtime_topology_services = runtime_topology.get("services") or {}
 
 canonical_pending_total = int(canonical_5m.get("pending_symbols_total") or bar_freshness.get("pending_symbols_total") or 0)
 canonical_due_ms = int(canonical_5m.get("last_due_bucket_ms") or 0)
@@ -472,6 +510,14 @@ if latest_signal is None:
 
 if gateway and (gateway.get("running") is False or gateway.get("reachable") is False):
     failures.append("runtime:gateway_unhealthy")
+
+if local_http.get("runtime_status", {}).get("ok") and runtime_service_profile != "runtime":
+    warnings.append(f"runtime:unexpected_service_profile:{runtime_service_profile or 'missing'}")
+
+if "ibkr-runtime" not in runtime_topology_services:
+    failures.append("topology:ibkr_runtime_missing")
+if "ibkr-compute" not in runtime_topology_services:
+    failures.append("topology:ibkr_compute_missing")
 
 if session.get("authenticated") is False:
     bucket = failures if STRICT_RUNTIME else warnings
@@ -532,6 +578,8 @@ report = {
             "indicators_by_interval": indicators_by_interval,
         },
         "runtime_summary": {
+            "service_profile": runtime_service_profile,
+            "service_topology": runtime_topology,
             "gateway": gateway,
             "session": session,
             "websocket": websocket,
@@ -552,6 +600,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--pb-local-url", default=DEFAULT_PB_LOCAL_URL)
     parser.add_argument("--compute-local-url", default=DEFAULT_COMPUTE_LOCAL_URL)
+    parser.add_argument("--runtime-local-url", default=DEFAULT_RUNTIME_LOCAL_URL)
     parser.add_argument("--pb-base-url", default=DEFAULT_PB_BASE_URL)
     parser.add_argument("--compute-public-url", default=DEFAULT_COMPUTE_PUBLIC_URL)
     parser.add_argument("--environment", default="live")
@@ -582,6 +631,7 @@ def run_remote(args: argparse.Namespace) -> dict:
         "db_path": args.db_path,
         "pb_local_url": args.pb_local_url,
         "compute_local_url": args.compute_local_url,
+        "runtime_local_url": args.runtime_local_url,
         "environment": args.environment,
         "bar_stale_min": args.bar_stale_min,
         "indicator_stale_min": args.indicator_stale_min,
@@ -591,13 +641,17 @@ def run_remote(args: argparse.Namespace) -> dict:
     env_blob = base64.b64encode(json.dumps(config).encode("utf-8")).decode("ascii")
     cmd = [
         "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
         args.host,
         "env",
         f"HEALTH_CHECK_CONFIG_B64={env_blob}",
         args.remote_python,
         "-",
     ]
-    proc = subprocess.run(cmd, input=REMOTE_SCRIPT, text=True, capture_output=True)
+    proc = subprocess.run(cmd, input=REMOTE_SCRIPT, text=True, capture_output=True, timeout=90)
     if proc.returncode != 0 and not proc.stdout.strip():
         raise RuntimeError(proc.stderr.strip() or f"remote command failed with code {proc.returncode}")
     try:
@@ -658,6 +712,10 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
             f"{args.pb_base_url.rstrip('/')}/api/custom/ibkr/statusz?environment={args.environment}",
             expect_json=True,
         ),
+        "pb_system_summaryz": fetch_url(
+            f"{args.pb_base_url.rstrip('/')}/api/custom/system/summaryz?lite=1&environment={args.environment}",
+            expect_json=True,
+        ),
         "pb_runtime_page": fetch_url(
             f"{args.pb_base_url.rstrip('/')}/ibkr_runtime.html?environment={args.environment}"
         ),
@@ -671,7 +729,7 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     failures = payload.setdefault("failures", [])
     warnings = payload.setdefault("warnings", [])
 
-    for name in ("pb_api_health", "pb_ibkr_healthz", "pb_ibkr_statusz", "compute_public_health"):
+    for name in ("pb_api_health", "pb_ibkr_healthz", "pb_ibkr_statusz", "pb_system_summaryz", "compute_public_health"):
         if not public[name].get("ok"):
             failures.append(f"public:{name}")
 
@@ -680,6 +738,17 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
             failures.append(f"public:{name}")
         elif "html" in (public[name].get("body_snippet") or "").lower() and "ibkr" not in (public[name].get("body_snippet") or "").lower():
             warnings.append(f"public:{name}:marker_weak")
+
+    topology_payload = (
+        (public.get("pb_system_summaryz", {}).get("json") or {}).get("service_topology")
+        or (public.get("pb_ibkr_statusz", {}).get("json") or {}).get("service_topology")
+        or {}
+    )
+    services = topology_payload.get("services") or {}
+    if "ibkr-runtime" not in services:
+        failures.append("public:topology:ibkr_runtime_missing")
+    if "ibkr-compute" not in services:
+        failures.append("public:topology:ibkr_compute_missing")
 
     payload["ok"] = len(failures) == 0
     return payload

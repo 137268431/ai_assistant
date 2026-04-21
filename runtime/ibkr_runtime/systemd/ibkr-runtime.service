@@ -1,0 +1,21 @@
+[Unit]
+Description=IBKR Runtime Service
+After=network.target ibkr-gateway.service
+Wants=ibkr-gateway.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ibkr_runtime
+ExecStart=/opt/ibkr_runtime/venv/bin/python -m ibkr_compute.api.server
+EnvironmentFile=-/opt/ibkr_runtime/.env
+Environment=PYTHONPATH=/opt/ibkr_runtime/src
+Environment=PORT=5101
+Environment=IBKR_SERVICE_PROFILE=runtime
+Environment=IBKR_RUNTIME_MODE=remote
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

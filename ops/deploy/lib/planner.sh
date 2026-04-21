@@ -94,26 +94,47 @@ register_path_for_target() {
   local include_file_path="$3"
   local known_unit
   local flag
-  if ! known_unit="$(find_known_unit_for_target "$target" "$rel_path" 2>/dev/null)"; then
-    if [[ "${DEPLOY_IGNORE_UNMANAGED:-0}" -eq 1 ]]; then
-      return 0
+  local matched=0
+  local selected_match=0
+  local disabled_matches=()
+  while IFS= read -r known_unit; do
+    [[ -n "$known_unit" ]] || continue
+    if ! unit_matches_path "$known_unit" "$rel_path"; then
+      continue
     fi
-    append_unique UNMANAGED_PATHS "$rel_path"
+    matched=1
+    if ! is_unit_selected_for_target "$target" "$known_unit"; then
+      flag="$(unit_optional_flag "$known_unit")"
+      if [[ -n "$flag" ]]; then
+        append_unique disabled_matches "$rel_path -> $known_unit (requires --$flag)"
+      else
+        append_unique disabled_matches "$rel_path -> $known_unit"
+      fi
+      continue
+    fi
+    selected_match=1
+    append_unique CANDIDATE_UNITS "$known_unit"
+    if [[ "$include_file_path" -eq 1 ]]; then
+      append_unique PLAN_FILES "$rel_path"
+    fi
+  done < <(list_all_units_for_target "$target")
+
+  if [[ "$matched" -eq 1 && "$selected_match" -eq 1 ]]; then
     return 0
   fi
-  if ! is_unit_selected_for_target "$target" "$known_unit"; then
-    flag="$(unit_optional_flag "$known_unit")"
-    if [[ -n "$flag" ]]; then
-      append_unique DISABLED_SCOPE_PATHS "$rel_path -> $known_unit (requires --$flag)"
-    else
-      append_unique DISABLED_SCOPE_PATHS "$rel_path -> $known_unit"
-    fi
+
+  if [[ "$matched" -eq 1 && "$selected_match" -eq 0 ]]; then
+    local disabled_entry
+    for disabled_entry in "${disabled_matches[@]-}"; do
+      append_unique DISABLED_SCOPE_PATHS "$disabled_entry"
+    done
     return 0
   fi
-  append_unique CANDIDATE_UNITS "$known_unit"
-  if [[ "$include_file_path" -eq 1 ]]; then
-    append_unique PLAN_FILES "$rel_path"
+
+  if [[ "${DEPLOY_IGNORE_UNMANAGED:-0}" -eq 1 ]]; then
+    return 0
   fi
+  append_unique UNMANAGED_PATHS "$rel_path"
 }
 
 assert_path_mapping_clean() {
@@ -182,10 +203,10 @@ auto_mode_for_target() {
   for unit in "${CANDIDATE_UNITS[@]}"; do
     append_unique families "$(unit_family "$unit")"
     case "$unit" in
-      ibkr_requirements)
+      ibkr_requirements|ibkr_runtime_requirements)
         append_unique AUTO_REASONS "requirements changed"
         ;;
-      ibkr_systemd|gateway_display_systemd|gateway_systemd)
+      ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
         append_unique AUTO_REASONS "systemd changed"
         ;;
       pb_migrations)
@@ -236,6 +257,20 @@ print_deploy_plan() {
   print_list_block "  post actions:" "${actions[@]-}"
 }
 
+expand_implicit_package_units() {
+  local target="$1"
+  if is_unit_selected_for_target "$target" "ibkr_requirements"; then
+    if array_contains "ibkr_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_systemd" "${PLAN_UNITS[@]-}"; then
+      append_unique PLAN_UNITS "ibkr_requirements"
+    fi
+  fi
+  if is_unit_selected_for_target "$target" "ibkr_runtime_requirements"; then
+    if array_contains "ibkr_runtime_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_runtime_systemd" "${PLAN_UNITS[@]-}"; then
+      append_unique PLAN_UNITS "ibkr_runtime_requirements"
+    fi
+  fi
+}
+
 prepare_target_plan() {
   local target="$1"
   init_plan_state
@@ -268,6 +303,7 @@ prepare_target_plan() {
       if [[ "$HAS_CHANGE_SOURCE" -eq 1 ]]; then
         collect_touched_plan_for_target "$target"
         PLAN_UNITS=( "${CANDIDATE_UNITS[@]}" )
+        expand_implicit_package_units "$target"
         if [[ ${#PLAN_UNITS[@]} -eq 0 ]]; then
           NO_MANAGED_CHANGES=1
         fi
@@ -293,6 +329,7 @@ prepare_target_plan() {
       else
         collect_touched_plan_for_target "$target"
         PLAN_UNITS=( "${CANDIDATE_UNITS[@]}" )
+        expand_implicit_package_units "$target"
       fi
       return 0
       ;;

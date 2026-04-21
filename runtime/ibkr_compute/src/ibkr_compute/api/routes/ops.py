@@ -15,6 +15,7 @@ from ibkr_compute.api.ops.views import (
     build_retention_cleanup_response,
     build_status_response,
 )
+from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
 
 
 def register_ops_routes(app):
@@ -58,14 +59,19 @@ def register_ops_routes(app):
     def status():
         return build_status_response()
 
-    @app.route("/ibkr/data-quality/scan", methods=["POST"])
-    def ibkr_data_quality_scan():
-        return build_ibkr_data_quality_scan_response()
+    if should_proxy_runtime_requests():
+        register_runtime_proxy_route(app, "ibkr_data_quality_scan", "/ibkr/data-quality/scan", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_data_quality_repair", "/ibkr/data-quality/repair", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_data_quality_truth_audit", "/ibkr/data-quality/truth-audit", ["POST"])
+    else:
+        @app.route("/ibkr/data-quality/scan", methods=["POST"])
+        def ibkr_data_quality_scan():
+            return build_ibkr_data_quality_scan_response()
 
-    @app.route("/ibkr/data-quality/repair", methods=["POST"])
-    def ibkr_data_quality_repair():
-        return build_ibkr_data_quality_repair_response()
+        @app.route("/ibkr/data-quality/repair", methods=["POST"])
+        def ibkr_data_quality_repair():
+            return build_ibkr_data_quality_repair_response()
 
-    @app.route("/ibkr/data-quality/truth-audit", methods=["POST"])
-    def ibkr_data_quality_truth_audit():
-        return build_ibkr_data_quality_truth_audit_response()
+        @app.route("/ibkr/data-quality/truth-audit", methods=["POST"])
+        def ibkr_data_quality_truth_audit():
+            return build_ibkr_data_quality_truth_audit_response()

@@ -1,7 +1,7 @@
 [Unit]
 Description=IBKR Compute Service
-After=network.target ibkr-gateway.service
-Wants=ibkr-gateway.service
+After=network.target ibkr-runtime.service
+Wants=ibkr-runtime.service
 
 [Service]
 Type=simple
@@ -9,6 +9,8 @@ WorkingDirectory=/opt/ibkr_compute
 ExecStart=/opt/ibkr_compute/venv/bin/python -m ibkr_compute.api.server
 EnvironmentFile=/opt/ibkr_compute/.env
 Environment=PYTHONPATH=/opt/ibkr_compute/src
+Environment=IBKR_RUNTIME_MODE=remote
+Environment=IBKR_RUNTIME_INTERNAL_URL=http://127.0.0.1:5101
 Restart=on-failure
 RestartSec=15
 StandardOutput=journal

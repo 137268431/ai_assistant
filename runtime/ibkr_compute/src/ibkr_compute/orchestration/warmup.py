@@ -115,6 +115,115 @@ class TradingServiceWarmupMixin:
             "monitor_symbols": list(snapshot.get("monitor_symbols") or []),
         }
 
+    def _build_transient_warmup_retry_state(
+        self,
+        snapshot: dict,
+        previous_state: dict | None = None,
+        *,
+        reason: str,
+        requested_at: str | None = None,
+        started_at: str | None = None,
+    ) -> dict:
+        previous = self._copy_warmup_state(previous_state)
+        symbols = self._normalize_symbol_list(snapshot.get("symbols") or previous.get("symbols") or [])
+        trade_symbols = self._normalize_symbol_list(
+            snapshot.get("trade_symbols") or previous.get("trade_symbols") or []
+        )
+        monitor_symbols = self._normalize_symbol_list(
+            snapshot.get("monitor_symbols") or previous.get("monitor_symbols") or []
+        )
+        scan_symbols = self._normalize_symbol_list(
+            snapshot.get("scan_symbols") or previous.get("scan_symbols") or []
+        )
+        ready_set = set(self._normalize_symbol_list(previous.get("ready_symbols_list") or []))
+        ready_symbols_list = [symbol for symbol in symbols if symbol in ready_set]
+        pending_symbols = [symbol for symbol in symbols if symbol not in ready_set]
+        integrity_pending_symbols = [
+            symbol
+            for symbol in self._normalize_symbol_list(previous.get("integrity_pending_symbols") or [])
+            if symbol in symbols
+        ]
+        integrity_repair_reasons = {
+            symbol: str(reason_text or "")
+            for symbol, reason_text in dict(previous.get("integrity_repair_reasons") or {}).items()
+            if symbol in integrity_pending_symbols
+        }
+
+        status_by_symbol = {}
+        for row in list(previous.get("symbol_status") or []):
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol:
+                status_by_symbol[symbol] = dict(row)
+
+        scan_set = set(scan_symbols)
+        trade_set = set(trade_symbols)
+        monitor_set = set(monitor_symbols)
+        symbol_status = []
+        for symbol in symbols:
+            existing = dict(status_by_symbol.get(symbol) or {})
+            if symbol in trade_set:
+                role = "trade"
+            elif symbol in monitor_set:
+                role = "monitor"
+            elif symbol in scan_set:
+                role = "scan"
+            else:
+                role = "data"
+            if existing or symbol in ready_set:
+                existing["symbol"] = symbol
+                existing["role"] = str(existing.get("role") or role)
+                if symbol in ready_set:
+                    existing["ready"] = True
+                    existing["integrity_ready"] = bool(
+                        existing.get("integrity_ready", symbol not in integrity_repair_reasons)
+                    )
+                    existing["integrity_reason"] = str(existing.get("integrity_reason") or "")
+                symbol_status.append(existing)
+
+        blocking_pending_symbols = self._non_monitor_pending_symbols(pending_symbols, monitor_symbols)
+        blocking_integrity_pending_symbols = self._non_monitor_pending_symbols(
+            integrity_pending_symbols,
+            monitor_symbols,
+        )
+        if not blocking_pending_symbols and not blocking_integrity_pending_symbols:
+            phase = "ready"
+        elif ready_symbols_list:
+            phase = "running"
+        else:
+            phase = "pending"
+
+        ready_trade_symbols = len([symbol for symbol in trade_symbols if symbol in ready_set])
+        trading_gate_open = bool(trade_symbols) and ready_trade_symbols >= len(trade_symbols)
+        if not trade_symbols:
+            trading_gate_reason = "no_trade_symbols"
+        elif trading_gate_open:
+            trading_gate_reason = "ready"
+        else:
+            trading_gate_reason = reason
+
+        preserve_finished = phase == "ready"
+        previous_finished_at = str(previous.get("finished_at") or "").strip()
+        previous_last_success_at = str(previous.get("last_success_at") or "").strip()
+        return {
+            "phase": phase,
+            "reason": reason,
+            "requested_at": requested_at or self._now_iso(),
+            "started_at": previous.get("started_at") if preserve_finished else started_at,
+            "finished_at": (previous_finished_at or None) if preserve_finished else None,
+            "last_success_at": previous_last_success_at or (previous_finished_at or None),
+            "last_error": "",
+            "trading_gate_open": trading_gate_open,
+            "trading_gate_reason": trading_gate_reason,
+            "ready_symbols_list": ready_symbols_list,
+            "pending_symbols": pending_symbols,
+            "symbol_status": symbol_status,
+            "integrity_pending_symbols": integrity_pending_symbols,
+            "integrity_repair_reasons": integrity_repair_reasons,
+            **self._warmup_scope_fields(snapshot),
+        }
+
     def _set_warmup_state(self, **updates) -> dict:
         with self._warmup_lock:
             next_state = self._copy_warmup_state()
@@ -132,8 +241,23 @@ class TradingServiceWarmupMixin:
             subscription_symbols = self._normalize_symbol_list(
                 next_state.get("subscription_symbols") or (trade_symbols + monitor_symbols)
             )
-            ready_symbols_list = self._normalize_symbol_list(next_state.get("ready_symbols_list") or [])
+            symbol_set = set(symbols)
+            ready_symbols_list = [
+                symbol
+                for symbol in self._normalize_symbol_list(next_state.get("ready_symbols_list") or [])
+                if symbol in symbol_set
+            ]
             ready_set = set(ready_symbols_list)
+            pending_symbols = [
+                symbol
+                for symbol in self._normalize_symbol_list(next_state.get("pending_symbols") or [])
+                if symbol in symbol_set and symbol not in ready_set
+            ]
+            integrity_pending_symbols = [
+                symbol
+                for symbol in self._normalize_symbol_list(next_state.get("integrity_pending_symbols") or [])
+                if symbol in symbol_set
+            ]
             next_state["symbols"] = symbols
             next_state["scan_symbols"] = scan_symbols
             next_state["subscription_symbols"] = subscription_symbols
@@ -145,6 +269,8 @@ class TradingServiceWarmupMixin:
             next_state["trade_symbols_total"] = len(trade_symbols)
             next_state["monitor_symbols_total"] = len(monitor_symbols)
             next_state["ready_symbols_list"] = ready_symbols_list
+            next_state["pending_symbols"] = pending_symbols
+            next_state["integrity_pending_symbols"] = integrity_pending_symbols
             next_state["ready_symbols"] = len(ready_symbols_list)
             next_state["ready_scan_symbols"] = len([symbol for symbol in scan_symbols if symbol in ready_set])
             next_state["ready_subscription_symbols"] = len([symbol for symbol in subscription_symbols if symbol in ready_set])

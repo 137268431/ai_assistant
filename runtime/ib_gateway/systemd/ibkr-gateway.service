@@ -5,9 +5,9 @@ Wants=network-online.target ibkr-display.service
 
 [Service]
 Type=simple
-EnvironmentFile=-/opt/ibkr_compute/.env
-WorkingDirectory=/opt/ibkr_compute
-ExecStart=/opt/ibkr_compute/src/ibkr_compute/broker/launch_ib_gateway.sh
+EnvironmentFile=-/opt/ibkr_runtime/.env
+WorkingDirectory=/opt/ibkr_runtime
+ExecStart=/opt/ibkr_runtime/src/ibkr_compute/broker/launch_ib_gateway.sh
 Restart=always
 RestartSec=20
 TimeoutStartSec=180

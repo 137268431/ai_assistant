@@ -5,12 +5,16 @@ list_all_units_for_target() {
     pocketbase)
       printf '%s\n' pb_public pb_hooks pb_migrations
       ;;
-    ibkr)
+    ibkr|ibkr_compute)
       printf '%s\n' ibkr_src ibkr_requirements ibkr_systemd gateway_display_systemd gateway_systemd
+      ;;
+    runtime|ibkr_runtime)
+      printf '%s\n' ibkr_runtime_src ibkr_runtime_requirements ibkr_runtime_systemd gateway_display_systemd gateway_systemd
       ;;
     all)
       list_all_units_for_target pocketbase
-      list_all_units_for_target ibkr
+      list_all_units_for_target ibkr_compute
+      list_all_units_for_target ibkr_runtime
       ;;
     *)
       deploy_die "Unknown unit target: $1"
@@ -26,7 +30,7 @@ list_selected_units_for_target() {
       [[ "${DEPLOY_MIGRATIONS:-0}" -eq 1 ]] && printf '%s\n' pb_migrations
       return 0
       ;;
-    ibkr)
+    ibkr|ibkr_compute)
       printf '%s\n' ibkr_src
       printf '%s\n' ibkr_requirements
       if [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
@@ -38,9 +42,20 @@ list_selected_units_for_target() {
       fi
       return 0
       ;;
+    runtime|ibkr_runtime)
+      printf '%s\n' ibkr_runtime_src
+      printf '%s\n' ibkr_runtime_requirements
+      if [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
+        printf '%s\n' ibkr_runtime_systemd
+        printf '%s\n' gateway_display_systemd
+        printf '%s\n' gateway_systemd
+      fi
+      return 0
+      ;;
     all)
       list_selected_units_for_target pocketbase
-      list_selected_units_for_target ibkr
+      list_selected_units_for_target ibkr_compute
+      list_selected_units_for_target ibkr_runtime
       return 0
       ;;
     *)
@@ -57,6 +72,9 @@ unit_local_rel() {
     ibkr_src) printf '%s\n' runtime/ibkr_compute/src ;;
     ibkr_requirements) printf '%s\n' runtime/ibkr_compute/requirements.txt ;;
     ibkr_systemd) printf '%s\n' runtime/ibkr_compute/systemd/ibkr-compute.service ;;
+    ibkr_runtime_src) printf '%s\n' runtime/ibkr_compute/src ;;
+    ibkr_runtime_requirements) printf '%s\n' runtime/ibkr_compute/requirements.txt ;;
+    ibkr_runtime_systemd) printf '%s\n' runtime/ibkr_runtime/systemd/ibkr-runtime.service ;;
     gateway_display_systemd) printf '%s\n' runtime/ib_gateway/systemd/ibkr-display.service ;;
     gateway_systemd) printf '%s\n' runtime/ib_gateway/systemd/ibkr-gateway.service ;;
     *)
@@ -73,6 +91,9 @@ unit_remote_path() {
     ibkr_src) printf '%s\n' "$IBKR_REMOTE_ROOT/src" ;;
     ibkr_requirements) printf '%s\n' "$IBKR_REMOTE_ROOT/requirements.txt" ;;
     ibkr_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-compute.service" ;;
+    ibkr_runtime_src) printf '%s\n' "${IBKR_RUNTIME_REMOTE_ROOT:-/opt/ibkr_runtime}/src" ;;
+    ibkr_runtime_requirements) printf '%s\n' "${IBKR_RUNTIME_REMOTE_ROOT:-/opt/ibkr_runtime}/requirements.txt" ;;
+    ibkr_runtime_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-runtime.service" ;;
     gateway_display_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-display.service" ;;
     gateway_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-gateway.service" ;;
     *)
@@ -83,10 +104,10 @@ unit_remote_path() {
 
 unit_type() {
   case "$1" in
-    pb_public|pb_hooks|pb_migrations|ibkr_src)
+    pb_public|pb_hooks|pb_migrations|ibkr_src|ibkr_runtime_src)
       printf '%s\n' dir
       ;;
-    ibkr_requirements|ibkr_systemd|gateway_display_systemd|gateway_systemd)
+    ibkr_requirements|ibkr_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' file
       ;;
     *)
@@ -100,10 +121,10 @@ unit_validator() {
     pb_public|pb_hooks|pb_migrations)
       printf '%s\n' js_tree
       ;;
-    ibkr_src)
+    ibkr_src|ibkr_runtime_src)
       printf '%s\n' python_tree
       ;;
-    ibkr_requirements|ibkr_systemd|gateway_display_systemd|gateway_systemd)
+    ibkr_requirements|ibkr_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' none
       ;;
     *)
@@ -117,8 +138,11 @@ unit_family() {
     pb_public|pb_hooks|pb_migrations)
       printf '%s\n' pocketbase
       ;;
-    ibkr_src|ibkr_requirements|ibkr_systemd|gateway_display_systemd|gateway_systemd)
-      printf '%s\n' ibkr
+    ibkr_src|ibkr_requirements|ibkr_systemd)
+      printf '%s\n' ibkr_compute
+      ;;
+    ibkr_runtime_src|ibkr_runtime_requirements|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+      printf '%s\n' ibkr_runtime
       ;;
     *)
       deploy_die "Unknown unit family: $1"
@@ -128,10 +152,10 @@ unit_family() {
 
 unit_category() {
   case "$1" in
-    pb_public|pb_hooks|ibkr_src|ibkr_requirements)
+    pb_public|pb_hooks|ibkr_src|ibkr_requirements|ibkr_runtime_src|ibkr_runtime_requirements)
       printf '%s\n' runtime
       ;;
-    ibkr_systemd|gateway_display_systemd|gateway_systemd)
+    ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' systemd
       ;;
     pb_migrations)
@@ -151,6 +175,9 @@ unit_restart_group() {
     ibkr_src|ibkr_requirements|ibkr_systemd)
       printf '%s\n' ibkr-compute
       ;;
+    ibkr_runtime_src|ibkr_runtime_requirements|ibkr_runtime_systemd)
+      printf '%s\n' ibkr-runtime
+      ;;
     gateway_display_systemd)
       printf '%s\n' ibkr-display
       ;;
@@ -168,6 +195,9 @@ unit_enable_service() {
     ibkr_systemd)
       printf '%s\n' ibkr-compute
       ;;
+    ibkr_runtime_systemd)
+      printf '%s\n' ibkr-runtime
+      ;;
     gateway_display_systemd)
       printf '%s\n' ibkr-display
       ;;
@@ -181,13 +211,13 @@ unit_enable_service() {
 }
 
 unit_needs_pip_install() {
-  [[ "$1" == "ibkr_requirements" ]] && return 0
+  [[ "$1" == "ibkr_requirements" || "$1" == "ibkr_runtime_requirements" ]] && return 0
   return 1
 }
 
 unit_needs_daemon_reload() {
   case "$1" in
-    ibkr_systemd|gateway_display_systemd|gateway_systemd)
+    ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
       return 0
       ;;
     *)
