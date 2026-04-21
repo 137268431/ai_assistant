@@ -19,7 +19,9 @@ const MARKET_OPEN_REMINDER_HOUR = 9
 const MARKET_OPEN_REMINDER_MINUTE = 20
 const MARKET_CLOSE_REMINDER_HOUR = 16
 const MARKET_CLOSE_REMINDER_MINUTE = 5
-const usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
+const path = require("node:path")
+const HOOKS_ROOT = typeof __hooks !== "undefined" ? __hooks : path.resolve(__dirname, "../..")
+const usEasternTime = require(`${HOOKS_ROOT}/lib/runtime/us_eastern_time.js`)
 
 function toNumber(value, fallback) {
     const num = Number(value)
@@ -322,8 +324,22 @@ function buildStatusSnapshot(environment, times) {
             warmup_ready_trade_symbols: toNumber(warmup.ready_trade_symbols, 0),
             warmup_trade_symbols_total: toNumber(warmup.trade_symbols_total, 0),
         },
+        market_session: {
+            kind: String(runtime.market_session && runtime.market_session.kind || ""),
+            label: String(runtime.market_session && runtime.market_session.label || ""),
+            requires_live_5m: Boolean(runtime.market_session && runtime.market_session.requires_live_5m === true),
+        },
         session: {
             authenticated: Boolean(runtime.session && runtime.session.authenticated === true),
+        },
+        auth_recovery: {
+            recovery_phase: String(runtime.auth_recovery && runtime.auth_recovery.recovery_phase || ""),
+            recovery_class: String(runtime.auth_recovery && runtime.auth_recovery.recovery_class || ""),
+            recovery_reason: String(runtime.auth_recovery && runtime.auth_recovery.recovery_reason || ""),
+            interruption_kind: String(runtime.auth_recovery && runtime.auth_recovery.interruption_kind || ""),
+            probe_result: String(runtime.auth_recovery && runtime.auth_recovery.probe_result || ""),
+            auto_restart_scheduled: Boolean(runtime.auth_recovery && runtime.auth_recovery.auto_restart_scheduled === true),
+            last_recovery_source: String(runtime.auth_recovery && runtime.auth_recovery.last_recovery_source || ""),
         },
         websocket: {
             connected: websocketConnected,
@@ -471,35 +487,113 @@ function classifyMarketSession(snapshot, times, clock) {
     }
 }
 
+function resolveDataFreshnessSessionKind(snapshot, clock) {
+    const runtimeSessionKind = String(snapshot && snapshot.market_session && snapshot.market_session.kind || "").trim().toLowerCase()
+    if (runtimeSessionKind) {
+        return runtimeSessionKind
+    }
+    const weekday = Number(clock && clock.weekday)
+    if (weekday === 0 || weekday === 6) {
+        return "closed"
+    }
+    const minuteOfDay = toNumber(clock && clock.hour, 0) * 60 + toNumber(clock && clock.minute, 0)
+    if (minuteOfDay < (9 * 60 + 40)) {
+        return "closed"
+    }
+    if (minuteOfDay < (16 * 60)) {
+        return "regular"
+    }
+    if (minuteOfDay < (16 * 60 + 10)) {
+        return "close_transition"
+    }
+    if (minuteOfDay < (20 * 60)) {
+        return "afterhours"
+    }
+    return "closed"
+}
+
+function isAuthRecoveryInProgress(snapshot) {
+    const authRecovery = snapshot && snapshot.auth_recovery && typeof snapshot.auth_recovery === "object"
+        ? snapshot.auth_recovery
+        : {}
+    const recoveryPhase = String(authRecovery.recovery_phase || "").trim().toLowerCase()
+    const recoveryClass = String(authRecovery.recovery_class || "").trim().toLowerCase()
+    const probeResult = String(authRecovery.probe_result || "").trim().toLowerCase()
+    if (!snapshot || !snapshot.session || snapshot.session.authenticated) {
+        return false
+    }
+    if (recoveryClass === "manual_auth_required" || recoveryPhase === "requested") {
+        return false
+    }
+    return (
+        recoveryPhase === "silent_probe"
+        || recoveryPhase === "resume_waiting_manual"
+        || authRecovery.auto_restart_scheduled === true
+        || recoveryClass === "scheduled_restart"
+        || recoveryClass === "stale_broker"
+        || ["pending", "self_heal", "self_heal_pending", "stale_broker_restart_scheduled", "resume_probe_timeout"].indexOf(probeResult) !== -1
+    )
+}
+
 function buildDataFreshnessWindow(snapshot, times, clock) {
     const marketSession = classifyMarketSession(snapshot, times, clock)
-    const minuteOfDay = toNumber(clock && clock.hour, 0) * 60 + toNumber(clock && clock.minute, 0)
     if (marketSession.kind !== "trading") {
         return {
             required: false,
             reason: marketSession.reason || "market_closed",
             label: marketSession.label || "closed",
+            session_kind: "closed",
+            enforce_latest_bar_age: false,
         }
     }
-    if (minuteOfDay < (9 * 60 + 40)) {
+    const sessionKind = resolveDataFreshnessSessionKind(snapshot, clock)
+    if (sessionKind === "regular") {
         return {
-            required: false,
-            reason: "pre_open",
-            label: "盘前宽限期",
+            required: true,
+            reason: "regular_session",
+            label: "盘中新鲜度检查",
+            session_kind: sessionKind,
+            enforce_latest_bar_age: true,
         }
     }
-    if (minuteOfDay > (16 * 60 + 15)) {
+    if (sessionKind === "close_transition") {
         return {
-            required: false,
-            reason: "post_close",
-            label: "收盘后宽限期",
+            required: true,
+            reason: "close_transition",
+            label: "收盘过渡期",
+            session_kind: sessionKind,
+            enforce_latest_bar_age: false,
+        }
+    }
+    if (sessionKind === "afterhours") {
+        return {
+            required: true,
+            reason: "afterhours",
+            label: "盘后 5m 连续性检查",
+            session_kind: sessionKind,
+            enforce_latest_bar_age: true,
         }
     }
     return {
-        required: true,
-        reason: "regular_session",
-        label: "盘中新鲜度检查",
+        required: false,
+        reason: sessionKind === "closed" ? "market_closed" : "pre_open",
+        label: sessionKind === "closed" ? "非交易时段" : "盘前宽限期",
+        session_kind: sessionKind || "closed",
+        enforce_latest_bar_age: false,
     }
+}
+
+function hasLatestBarAgeIssue(snapshot, freshnessWindow) {
+    const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
+    const enforceLatestBarAge = !freshnessWindow || freshnessWindow.enforce_latest_bar_age !== false
+    if (!enforceFreshness || !enforceLatestBarAge) {
+        return false
+    }
+    const latestBar = snapshot && snapshot.latest_bar && typeof snapshot.latest_bar === "object" ? snapshot.latest_bar : {}
+    if (toNumber(latestBar.bar_time_ms, 0) <= 0) {
+        return false
+    }
+    return toNumber(latestBar.age_min, 0) > BAR_STALE_WARN_MIN
 }
 
 function buildBarBucketLabel(bucket) {
@@ -742,7 +836,7 @@ function hasHeartbeatIssue(snapshot, freshnessWindow) {
         || (
             freshnessWindow && freshnessWindow.required
             && (
-                snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+                hasLatestBarAgeIssue(snapshot, freshnessWindow)
                 || hasIndicatorFreshnessIssue(snapshot, freshnessWindow)
                 || hasBarBucketIssue(snapshot, freshnessWindow)
             )
@@ -799,6 +893,7 @@ function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
     const blockingIssues = []
     const watchItems = []
     const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
+    const authRecoveryInProgress = isAuthRecoveryInProgress(snapshot)
 
     if (!snapshot || !snapshot.compute) {
         return {
@@ -815,6 +910,8 @@ function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
     if (!snapshot.session.authenticated) {
         if (startupGraceActive) {
             watchItems.push("IBKR 会话尚未完成认证")
+        } else if (authRecoveryInProgress) {
+            watchItems.push("IBKR 会话正在静默恢复")
         } else {
             blockingIssues.push("IBKR 会话未认证")
         }
@@ -836,7 +933,7 @@ function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
         } else {
             blockingIssues.push("缺少最新 5m bars")
         }
-    } else if (enforceFreshness && snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
+    } else if (hasLatestBarAgeIssue(snapshot, freshnessWindow)) {
         if (startupGraceActive) {
             watchItems.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
         } else {
@@ -914,7 +1011,7 @@ function listDataHealthProblems(snapshot, freshnessWindow) {
 
     if (enforceFreshness && snapshot.latest_bar.bar_time_ms <= 0) {
         problems.push("缺少最新 5m bars")
-    } else if (enforceFreshness && snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN) {
+    } else if (hasLatestBarAgeIssue(snapshot, freshnessWindow)) {
         problems.push(`最新 5m bars 偏旧 ${snapshot.latest_bar.age_min}m`)
     }
 
@@ -929,7 +1026,9 @@ function listDataHealthProblems(snapshot, freshnessWindow) {
         problems.push(barBucketProblems[i])
     }
 
-    if (!snapshot.session.authenticated) {
+    if (!snapshot.session.authenticated && isAuthRecoveryInProgress(snapshot)) {
+        problems.push("IBKR 会话正在静默恢复")
+    } else if (!snapshot.session.authenticated) {
         problems.push("IBKR 会话未认证")
     }
 
@@ -948,7 +1047,9 @@ function buildDataHealthRecommendation(snapshot, freshnessWindow) {
     const enforceFreshness = Boolean(freshnessWindow && freshnessWindow.required)
     const bucketIssue = hasBarBucketIssue(snapshot, freshnessWindow)
 
-    if (!snapshot.session.authenticated) {
+    if (!snapshot.session.authenticated && isAuthRecoveryInProgress(snapshot)) {
+        actions.push("观察静默恢复窗口；若超时再人工触发 2FA")
+    } else if (!snapshot.session.authenticated) {
         actions.push("检查 IBKR 会话认证状态")
     }
     if (!snapshot.websocket.connected || !snapshot.websocket.ready) {
@@ -961,7 +1062,7 @@ function buildDataHealthRecommendation(snapshot, freshnessWindow) {
         bucketIssue || (
             enforceFreshness && (
                 snapshot.latest_bar.bar_time_ms <= 0
-                || snapshot.latest_bar.age_min > BAR_STALE_WARN_MIN
+                || hasLatestBarAgeIssue(snapshot, freshnessWindow)
                 || hasIndicatorFreshnessIssue(snapshot, freshnessWindow)
             )
         )
@@ -1554,6 +1655,10 @@ function runDailyCloseSummaryTick(logPrefix, cronId) {
 }
 
 module.exports = {
+    buildDataFreshnessWindow,
+    buildStatusAssessment,
+    hasHeartbeatIssue,
+    listDataHealthProblems,
     runSystemHeartbeatTick,
     runSystemStatusReminderTick,
     runDailyScanSummaryTick,

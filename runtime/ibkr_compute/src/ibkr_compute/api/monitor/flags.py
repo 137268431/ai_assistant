@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 
 SESSION_UNAUTHENTICATED_GRACE_SECONDS = 300
+SESSION_UNAUTHENTICATED_LATE_SESSION_GRACE_SECONDS = 480
 
 
 def _parse_monitor_timestamp(value: str) -> datetime | None:
@@ -37,8 +38,17 @@ def _should_suppress_session_unauthenticated(runtime_status: dict) -> bool:
     if started_at is None:
         return False
 
+    market_session = runtime_status.get("market_session") or {}
+    market_session_kind = str(market_session.get("kind") or "").strip().lower()
+    grace_seconds = SESSION_UNAUTHENTICATED_GRACE_SECONDS
+    if market_session_kind in {"close_transition", "afterhours"}:
+        grace_seconds = max(
+            grace_seconds,
+            SESSION_UNAUTHENTICATED_LATE_SESSION_GRACE_SECONDS,
+        )
+
     age_seconds = max(0.0, (datetime.now(timezone.utc) - started_at).total_seconds())
-    if age_seconds > SESSION_UNAUTHENTICATED_GRACE_SECONDS:
+    if age_seconds > grace_seconds:
         return False
     if recovery_class == "manual_auth_required" or phase in {"requested", "manual_takeover"}:
         return False

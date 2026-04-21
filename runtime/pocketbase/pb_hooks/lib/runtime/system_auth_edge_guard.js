@@ -4,7 +4,9 @@ const AUTH_PENDING_ALERT_TRIGGER_MS = 15 * 60 * 1000
 const AUTH_PENDING_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 const AUTH_MONITOR_STATE_KEY = "system_auth_monitor"
 const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_scheduler_enabled"]
-const usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
+const path = require("node:path")
+const HOOKS_ROOT = typeof __hooks !== "undefined" ? __hooks : path.resolve(__dirname, "../..")
+const usEasternTime = require(`${HOOKS_ROOT}/lib/runtime/us_eastern_time.js`)
 
 function toNumber(value, fallback) {
     const num = Number(value)
@@ -130,8 +132,11 @@ function loadAuthAttentionSummary(environment, runtimeStatus) {
         pending_too_long: pendingTooLong,
         cycle_id: String(state.cycle_id || ""),
         recovery_phase: String(state.recovery_phase || ""),
+        recovery_class: String(state.recovery_class || ""),
         recovery_reason: String(state.recovery_reason || ""),
         interruption_kind: String(state.interruption_kind || ""),
+        probe_result: String(state.probe_result || ""),
+        auto_restart_scheduled: state.auto_restart_scheduled === true,
         last_runtime_authenticated_at: String(state.last_runtime_authenticated_at || ""),
         last_gateway_status_code: toNumber(state.last_gateway_status_code, 0),
         last_recovery_source: String(state.last_recovery_source || ""),
@@ -191,6 +196,56 @@ function isServerBootResumeRecovery(auth) {
         || recoveryPhase === "resume_waiting_manual"
         || (recoveryReason === "auto_restore" && lastRecoverySource === "server_boot")
     )
+}
+
+function isSilentRecoveryIssue(auth) {
+    if (!auth || typeof auth !== "object") return false
+    const status = String(auth.status || "").trim().toLowerCase()
+    const recoveryPhase = String(auth.recovery_phase || "").trim().toLowerCase()
+    const recoveryClass = String(auth.recovery_class || "").trim().toLowerCase()
+    const probeResult = String(auth.probe_result || "").trim().toLowerCase()
+    if (isServerBootResumeRecovery(auth)) {
+        return true
+    }
+    if (status === "recovering") {
+        return true
+    }
+    if (recoveryPhase !== "silent_probe") {
+        return false
+    }
+    return (
+        recoveryClass === "scheduled_restart"
+        || recoveryClass === "stale_broker"
+        || auth.auto_restart_scheduled === true
+        || ["pending", "self_heal", "self_heal_pending", "stale_broker_restart_scheduled", "stale_broker_restart_failed"].indexOf(probeResult) !== -1
+    )
+}
+
+function buildSilentRecoveryIssue(auth) {
+    const recoveryClass = String(auth && auth.recovery_class || "").trim().toLowerCase()
+    const probeResult = String(auth && auth.probe_result || "").trim().toLowerCase()
+    const interruptionKind = String(auth && auth.interruption_kind || "").trim().toLowerCase()
+    if (recoveryClass === "stale_broker" || probeResult.indexOf("stale_broker") === 0) {
+        return {
+            kind: "stale_broker_recovering",
+            title: "IBKR 主连接恢复中，暂不需要重新 2FA",
+            summary: auth && auth.auto_restart_scheduled === true
+                ? "检测到 fresh probe 已认证、但主运行时 broker 连接仍失配；系统已安排自动重启 Runtime 恢复主连接，暂不需要立即重新触发 2FA。"
+                : "检测到主运行时 broker 连接仍失配；系统正在继续静默恢复主连接，暂不需要立即重新触发 2FA。",
+        }
+    }
+    if (interruptionKind === "gateway_down") {
+        return {
+            kind: "session_recovering",
+            title: "IBKR Gateway 恢复中，暂不需要重新 2FA",
+            summary: "Gateway 刚经历中断或重启，系统正在静默探测并恢复当前会话；只有静默恢复窗口耗尽后，才会升级为手动 2FA。",
+        }
+    }
+    return {
+        kind: "session_recovering",
+        title: "IBKR 会话静默恢复中，暂不需要重新 2FA",
+        summary: "检测到会话认证中断，系统正在静默探测与本地重连；只有静默恢复窗口耗尽后，才会升级为手动 2FA。",
+    }
 }
 
 function buildWaitingResponseAdvice(auth) {
@@ -305,6 +360,10 @@ function buildAuthImmediateIssue(auth) {
         }
     }
 
+    if (!runtimeAuthenticated && isSilentRecoveryIssue(auth)) {
+        return buildSilentRecoveryIssue(auth)
+    }
+
     if (gatewayStatusCode === 401 && !runtimeAuthenticated) {
         if (isGatewayDownAuthIssue(auth)) {
             return {
@@ -337,6 +396,8 @@ function isOperational2faIssue(issue) {
         kind === "requested"
         || kind === "waiting_confirm"
         || kind === "server_boot_resume_pending"
+        || kind === "session_recovering"
+        || kind === "stale_broker_recovering"
         || isWaitingResponseIssueKind(kind)
     )
 }
@@ -349,8 +410,11 @@ function buildAuthImmediateFingerprint(auth, issue) {
         requested_at: auth && auth.requested_at || "",
         triggered_at: auth && auth.triggered_at || "",
         gateway_status_code: auth && auth.gateway_status_code || 0,
+        recovery_class: auth && auth.recovery_class || "",
         recovery_reason: auth && auth.recovery_reason || "",
         interruption_kind: auth && auth.interruption_kind || "",
+        probe_result: auth && auth.probe_result || "",
+        auto_restart_scheduled: auth && auth.auto_restart_scheduled ? "yes" : "no",
         runtime_started: auth && auth.runtime_started ? "yes" : "no",
         runtime_authenticated: auth && auth.runtime_authenticated ? "yes" : "no",
         challenge_code: auth && auth.challenge_code || "",
@@ -488,6 +552,8 @@ function runIbkrAuthEdgeGuard() {
                 "Gateway运行时长(s)": auth.gateway_uptime_s > 0 ? String(auth.gateway_uptime_s) : "n/a",
                 "处理建议": isWaitingResponseIssueKind(issue.kind)
                     ? buildWaitingResponseAdvice(auth)
+                    : (issue.kind === "session_recovering" || issue.kind === "stale_broker_recovering")
+                        ? "先观察当前静默恢复窗口，不要重复触发 2FA；若长时间未恢复，再去 Runtime 页面人工接管或手动重开。"
                     : issue.kind === "gateway_restart_reauth_required"
                         ? "本次是 Gateway 重启后的新轮次。优先处理当前 2FA，不要把它当成旧 Session 自然失效后反复重触发。"
                     : "优先打开 Runtime 页面确认当前状态；如果仍是 waiting_confirm，只在 IBKR App 点一次确认。",
@@ -857,6 +923,9 @@ function runIbkrWeeklyReauthReminder() {
 }
 
 module.exports = {
+    buildAuthImmediateIssue,
+    isOperational2faIssue,
+    loadAuthAttentionSummary,
     runIbkrAuthEdgeGuard,
     runIbkrAuthPendingGuard,
     runIbkrWeeklyReauthReminder,

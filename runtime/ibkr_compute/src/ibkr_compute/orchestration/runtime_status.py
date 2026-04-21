@@ -67,6 +67,8 @@ class TradingServiceRuntimeStatusMixin:
                 stalled = True
                 stall_reason = "lagging"
 
+        market_session = service_mod.build_market_session_snapshot()
+        auth_recovery = self._copy_auth_recovery_state()
         official_5m = self._copy_official_5m_state()
         due_bucket_ms = int(official_5m.get("last_due_bucket_ms", 0) or 0)
         completed_bucket_ms = int(official_5m.get("last_completed_bucket_ms", 0) or 0)
@@ -121,8 +123,9 @@ class TradingServiceRuntimeStatusMixin:
             "startup_strategy": self.startup_strategy(),
             "auto_restore_guard": self.auto_restore_guard(),
             "environment": service_mod.ENVIRONMENT,
+            "market_session": market_session,
             "gateway": self.gateway_manager.status(),
-            "auth_recovery": self._copy_auth_recovery_state(),
+            "auth_recovery": auth_recovery,
             "session": session_status,
             "websocket": self.ws_client.status(),
             "bar_aggregator": self.bar_aggregator.status(),

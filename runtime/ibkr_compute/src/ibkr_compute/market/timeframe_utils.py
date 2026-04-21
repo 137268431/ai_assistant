@@ -38,6 +38,13 @@ SIGNAL_SUFFIX_MAP = {
     "trend_sdLower": "_trend_L",
 }
 
+MARKET_SESSION_LABELS = {
+    "closed": "closed",
+    "regular": "regular",
+    "close_transition": "close_transition",
+    "afterhours": "afterhours",
+}
+
 
 def normalize_interval(value: str) -> str:
     text = str(value or "").strip()
@@ -126,6 +133,62 @@ def classify_session(us_time: str = "", bar_time_ms: int | None = None) -> str:
     if minutes >= regular_close:
         return "afterhours"
     return "regular"
+
+
+def _coerce_et_datetime(
+    now: datetime | None = None,
+    *,
+    us_time: str = "",
+    bar_time_ms: int | None = None,
+) -> datetime:
+    if us_time:
+        return datetime.strptime(us_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET)
+    if bar_time_ms is not None:
+        return ms_to_et(bar_time_ms)
+    return now.astimezone(ET) if now else datetime.now(ET)
+
+
+def classify_market_session_kind(
+    now: datetime | None = None,
+    *,
+    us_time: str = "",
+    bar_time_ms: int | None = None,
+) -> str:
+    dt = _coerce_et_datetime(now, us_time=us_time, bar_time_ms=bar_time_ms)
+    if dt.weekday() >= 5:
+        return "closed"
+
+    minutes = dt.hour * 60 + dt.minute
+    if minutes < (9 * 60 + 40):
+        return "closed"
+    if minutes < (16 * 60):
+        return "regular"
+    if minutes < (16 * 60 + 10):
+        return "close_transition"
+    if minutes < (20 * 60):
+        return "afterhours"
+    return "closed"
+
+
+def build_market_session_snapshot(
+    now: datetime | None = None,
+    *,
+    us_time: str = "",
+    bar_time_ms: int | None = None,
+) -> Dict[str, object]:
+    dt = _coerce_et_datetime(now, us_time=us_time, bar_time_ms=bar_time_ms)
+    kind = classify_market_session_kind(dt)
+    return {
+        "kind": kind,
+        "label": MARKET_SESSION_LABELS.get(kind, kind or "closed"),
+        "us_time": dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "cn_time": dt.astimezone(CN).strftime("%Y-%m-%d %H:%M:%S"),
+        "weekday": dt.weekday(),
+        "minutes": dt.hour * 60 + dt.minute,
+        "is_open": kind in {"regular", "close_transition", "afterhours"},
+        "is_late_session": kind in {"close_transition", "afterhours"},
+        "requires_live_5m": kind in {"regular", "close_transition", "afterhours"},
+    }
 
 
 def bucket_start_ms(bar_time_ms: int, interval: str) -> int:

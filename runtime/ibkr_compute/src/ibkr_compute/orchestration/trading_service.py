@@ -30,7 +30,12 @@ from ibkr_compute.market.realtime_quote_book import RealtimeQuoteBook
 from ibkr_compute.market.data_writer import DataWriter
 from ibkr_compute.market.data_backfill import DataBackfill, _regular_session_gap_summary
 from ibkr_compute.market.data_retention import DataRetention
-from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms
+from ibkr_compute.market.timeframe_utils import (
+    build_market_session_snapshot,
+    bucket_start_ms,
+    classify_market_session_kind,
+    interval_to_ms,
+)
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
 from ibkr_compute.order.order_placer import OrderPlacer
@@ -84,9 +89,17 @@ SESSION_EVENT_ALERT_COOLDOWN_SECONDS = int(os.environ.get("IBKR_SESSION_EVENT_AL
 DAILY_SCAN_EVENT_ALERT_COOLDOWN_SECONDS = int(os.environ.get("IBKR_DAILY_SCAN_EVENT_ALERT_COOLDOWN", "1800"))
 AUTH_PROBE_INTERVAL_SECONDS = max(2, int(os.environ.get("IBKR_AUTH_PROBE_INTERVAL_SECONDS", "5")))
 AUTH_PROBE_WINDOW_SECONDS = max(AUTH_PROBE_INTERVAL_SECONDS, int(os.environ.get("IBKR_AUTH_PROBE_WINDOW_SECONDS", "45")))
+AUTH_PROBE_LATE_SESSION_WINDOW_SECONDS = max(
+    AUTH_PROBE_WINDOW_SECONDS,
+    int(os.environ.get("IBKR_AUTH_PROBE_LATE_SESSION_WINDOW_SECONDS", "180")),
+)
 AUTH_PROBE_SELF_HEAL_GRACE_SECONDS = max(
     AUTH_PROBE_INTERVAL_SECONDS,
     int(os.environ.get("IBKR_AUTH_PROBE_SELF_HEAL_GRACE_SECONDS", "90")),
+)
+AUTH_PROBE_LATE_SESSION_SELF_HEAL_GRACE_SECONDS = max(
+    AUTH_PROBE_SELF_HEAL_GRACE_SECONDS,
+    int(os.environ.get("IBKR_AUTH_PROBE_LATE_SESSION_SELF_HEAL_GRACE_SECONDS", "300")),
 )
 AUTH_MANUAL_TAKEOVER_TTL_SECONDS = max(60, int(os.environ.get("IBKR_AUTH_MANUAL_TAKEOVER_TTL_SECONDS", "600")))
 AUTH_RECOVERY_LOCK_TTL_SECONDS = max(30, int(os.environ.get("IBKR_AUTH_RECOVERY_LOCK_TTL_SECONDS", "120")))

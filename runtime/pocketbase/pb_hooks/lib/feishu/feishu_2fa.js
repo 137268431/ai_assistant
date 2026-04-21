@@ -29,6 +29,7 @@ var MANUAL_AUTH_REASON_LABELS = {
 var RECOVERY_FIELDS = [
     "cycle_id",
     "recovery_phase",
+    "recovery_class",
     "recovery_reason",
     "interruption_kind",
     "manual_takeover_active",
@@ -85,6 +86,13 @@ var STATUS_CONFIG = {
         title: "IBKR Session 静默恢复中",
         template: "blue",
         summary: "当前正在尝试复用已有 Gateway Session，不会自动触发新的 2FA。",
+        button: "查看恢复状态"
+    },
+    recovering: {
+        emoji: "♻️",
+        title: "IBKR 会话静默恢复中",
+        template: "blue",
+        summary: "系统正在尝试自动恢复当前会话或重启运行态，暂不需要立即重新 2FA。",
         button: "查看恢复状态"
     },
     success: {
@@ -372,6 +380,68 @@ function isServerBootResumeRecoveryState(stateData) {
     )
 }
 
+function isManualAuthRequiredRecoveryState(stateData) {
+    var state = stateData && typeof stateData === "object" ? stateData : {}
+    var recoveryClass = String(state.recovery_class || "").trim().toLowerCase()
+    var recoveryPhase = String(state.recovery_phase || "").trim().toLowerCase()
+    var probeResult = String(state.probe_result || "").trim().toLowerCase()
+    return (
+        recoveryClass === "manual_auth_required"
+        || recoveryPhase === "requested"
+        || probeResult === "manual_trigger_required"
+        || probeResult === "timeout_after_self_heal"
+    )
+}
+
+function isSilentRecoveryState(stateData) {
+    var state = stateData && typeof stateData === "object" ? stateData : {}
+    if (isManualAuthRequiredRecoveryState(state)) {
+        return false
+    }
+    if (isServerBootResumeRecoveryState(state)) {
+        return true
+    }
+    var recoveryPhase = String(state.recovery_phase || "").trim().toLowerCase()
+    var recoveryClass = String(state.recovery_class || "").trim().toLowerCase()
+    var probeResult = String(state.probe_result || "").trim().toLowerCase()
+    return (
+        recoveryPhase === "silent_probe"
+        && (
+            recoveryClass === "scheduled_restart"
+            || recoveryClass === "stale_broker"
+            || state.auto_restart_scheduled === true
+            || ["pending", "self_heal", "self_heal_pending", "stale_broker_restart_scheduled", "stale_broker_restart_failed"].indexOf(probeResult) !== -1
+        )
+    )
+}
+
+function buildSilentRecoveryMessage(stateData) {
+    var state = stateData && typeof stateData === "object" ? stateData : {}
+    var recoveryClass = String(state.recovery_class || "").trim().toLowerCase()
+    var interruptionKind = String(state.interruption_kind || "").trim().toLowerCase()
+    var probeResult = String(state.probe_result || "").trim().toLowerCase()
+    if (recoveryClass === "stale_broker" || probeResult.indexOf("stale_broker") === 0) {
+        return {
+            message: state.auto_restart_scheduled === true
+                ? "检测到运行态内 broker 连接失配，系统已安排自动重启 Runtime 以恢复主连接；暂不需要立即重新 2FA。"
+                : "检测到运行态内 broker 连接失配，系统正在尝试本地恢复主连接；暂不需要立即重新 2FA。",
+            last_result: state.auto_restart_scheduled === true
+                ? "已识别 stale in-process broker，正在等待自动重启恢复主连接。"
+                : "已识别 stale in-process broker，正在继续静默恢复。",
+        }
+    }
+    if (interruptionKind === "gateway_down") {
+        return {
+            message: "Gateway 刚经历中断或重启，系统正在静默探测并恢复当前会话；暂不需要立即重新 2FA。",
+            last_result: "已进入 Gateway 中断后的静默恢复窗口。",
+        }
+    }
+    return {
+        message: "检测到会话认证中断，系统正在静默探测与本地重连；暂不需要立即重新 2FA。",
+        last_result: "已进入静默恢复窗口，等待会话自动恢复。",
+    }
+}
+
 function derive2faActionState(stateData, options) {
     var nowMs = toNumber(options && options.now_ms, Date.now())
     var state = { ...(stateData || {}) }
@@ -418,7 +488,7 @@ function derive2faActionState(stateData, options) {
         operatorAction = "confirm_push"
     } else if (status === "triggered") {
         operatorAction = "wait_for_mode"
-    } else if (status === "resume_pending") {
+    } else if (status === "resume_pending" || status === "recovering") {
         operatorAction = recoveryPhase === "resume_waiting_manual" ? "check_runtime_status" : "wait_auth_restore"
     } else if (status === "success") {
         operatorAction = "none"
@@ -729,6 +799,34 @@ function normalizeStateWithRuntime(stateData, runtimeStatus) {
             state.page_title = ""
             state.page_url = ""
             state.gateway_trace = ""
+        } else if (
+            isSilentRecoveryState(state)
+            && ["triggered", "waiting_confirm", "waiting_response"].indexOf(normalizedStatus) === -1
+        ) {
+            var silentRecovery = buildSilentRecoveryMessage(state)
+            state.status = "recovering"
+            state.message = silentRecovery.message
+            state.last_result = silentRecovery.last_result
+            state.last_error = ""
+            state.mode = ""
+            state.challenge_code = ""
+            state.challenge_detected_at = ""
+            state.response_code = ""
+            state.response_status = ""
+            state.response_received_at = ""
+            state.response_submitted_at = ""
+            state.response_rejected_at = ""
+            state.challenge_feedback = ""
+            state.page_title = ""
+            state.page_url = ""
+            state.gateway_trace = ""
+        } else if (
+            isManualAuthRequiredRecoveryState(state)
+            && ["triggered", "waiting_confirm", "waiting_response"].indexOf(normalizedStatus) === -1
+        ) {
+            state.status = "requested"
+            state.message = "静默恢复窗口已结束，当前需要手动触发 2FA。"
+            state.last_result = "静默恢复未完成，等待手动触发新的 2FA 轮次。"
         } else if (normalizedStatus === "success") {
             state.status = "requested"
             state.message = "旧 Gateway 认证已失效，请重新触发 2FA。"

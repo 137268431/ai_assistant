@@ -59,6 +59,56 @@ class MonitorFlagGraceTest(unittest.TestCase):
         flag_codes = {item["code"] for item in flags}
         self.assertIn("session_unauthenticated", flag_codes)
 
+    def test_session_unauthenticated_stays_suppressed_longer_after_close(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "market_session": {"kind": "afterhours"},
+                "session": {"authenticated": False},
+                "websocket": {"connected": True, "ready": True},
+                "auth_recovery": {
+                    "recovery_phase": "silent_probe",
+                    "recovery_class": "scheduled_restart",
+                    "recovery_reason": "session_expired",
+                    "interruption_kind": "session_expired",
+                    "probe_result": "pending",
+                    "probe_started_at": (datetime.now(timezone.utc) - timedelta(minutes=7)).isoformat(),
+                    "auto_restart_scheduled": False,
+                },
+            },
+            {},
+            {},
+            {},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertNotIn("session_unauthenticated", flag_codes)
+
+    def test_session_unauthenticated_returns_after_late_session_grace_expires(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "market_session": {"kind": "afterhours"},
+                "session": {"authenticated": False},
+                "websocket": {"connected": True, "ready": True},
+                "auth_recovery": {
+                    "recovery_phase": "silent_probe",
+                    "recovery_class": "scheduled_restart",
+                    "recovery_reason": "session_expired",
+                    "interruption_kind": "session_expired",
+                    "probe_result": "pending",
+                    "probe_started_at": (datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat(),
+                    "auto_restart_scheduled": False,
+                },
+            },
+            {},
+            {},
+            {},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertIn("session_unauthenticated", flag_codes)
+
 
 if __name__ == "__main__":
     unittest.main()

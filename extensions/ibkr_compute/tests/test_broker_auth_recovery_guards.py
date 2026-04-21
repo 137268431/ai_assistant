@@ -125,7 +125,7 @@ class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):
 
 
 class StaleBrokerRecoveryTest(unittest.TestCase):
-    def _service_mod(self):
+    def _service_mod(self, market_session_kind: str = "regular"):
         logger = SimpleNamespace(
             info=lambda *args, **kwargs: None,
             debug=lambda *args, **kwargs: None,
@@ -136,9 +136,13 @@ class StaleBrokerRecoveryTest(unittest.TestCase):
             logger=logger,
             ET=None,
             AUTH_RECOVERY_LOCK_TTL_SECONDS=120,
-            AUTH_PROBE_SELF_HEAL_GRACE_SECONDS=0,
+            AUTH_PROBE_WINDOW_SECONDS=45,
+            AUTH_PROBE_LATE_SESSION_WINDOW_SECONDS=180,
+            AUTH_PROBE_SELF_HEAL_GRACE_SECONDS=90,
+            AUTH_PROBE_LATE_SESSION_SELF_HEAL_GRACE_SECONDS=300,
             AUTH_PROBE_INTERVAL_SECONDS=1,
             AUTH_RECOVERY_PB_FIELDS=(),
+            classify_market_session_kind=lambda: market_session_kind,
         )
 
     def test_fresh_probe_authentication_schedules_runtime_restart(self):
@@ -164,6 +168,26 @@ class StaleBrokerRecoveryTest(unittest.TestCase):
         self.assertTrue(service._auth_recovery_state["auto_restart_scheduled"])
         self.assertEqual(service._auth_recovery_state["recovery_class"], "stale_broker")
         self.assertEqual(service._auth_recovery_state["probe_result"], "stale_broker_restart_scheduled")
+
+    def test_late_session_extends_probe_window_and_self_heal_grace(self):
+        service = _DummyStaleBrokerService()
+
+        with mock.patch(
+            "ibkr_compute.orchestration.auth_recovery._service_mod",
+            return_value=self._service_mod(market_session_kind="afterhours"),
+        ):
+            self.assertEqual(service._auth_probe_window_seconds("session_expired"), 180)
+            self.assertEqual(service._auth_probe_self_heal_grace_seconds("session_expired"), 300)
+
+    def test_regular_session_keeps_default_probe_window(self):
+        service = _DummyStaleBrokerService()
+
+        with mock.patch(
+            "ibkr_compute.orchestration.auth_recovery._service_mod",
+            return_value=self._service_mod(market_session_kind="regular"),
+        ):
+            self.assertEqual(service._auth_probe_window_seconds("session_expired"), 45)
+            self.assertEqual(service._auth_probe_self_heal_grace_seconds("session_expired"), 90)
 
 
 if __name__ == "__main__":

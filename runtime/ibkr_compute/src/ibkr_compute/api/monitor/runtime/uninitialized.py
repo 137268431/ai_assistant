@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ibkr_compute.api.monitor.host import _api_app
+from ibkr_compute.market.timeframe_utils import build_market_session_snapshot
 
 
 def _build_uninitialized_runtime_status(runtime_environment: str, error: str | None = None) -> dict:
@@ -26,6 +27,7 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
         "environment": api_app._normalize_runtime_environment_name(runtime_environment, "live"),
         "error": detail,
         "gateway_control_available": True,
+        "market_session": build_market_session_snapshot(),
         "startup_strategy": {
             "manual_start_mode": "fresh_cycle" if manual_start_restart_gateway else "resume_only",
             "weekly_reauth_mode": "fresh_cycle" if weekly_reauth_restart_gateway else "resume_only",
@@ -63,6 +65,18 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "last_check": "",
             "last_tickle": "",
             "running": False,
+        },
+        "auth_recovery": {
+            "cycle_id": "",
+            "recovery_phase": "idle",
+            "recovery_class": "",
+            "recovery_reason": "",
+            "interruption_kind": "",
+            "probe_result": "",
+            "auto_restart_scheduled": False,
+            "last_runtime_authenticated_at": "",
+            "last_gateway_status_code": 0,
+            "last_recovery_source": "",
         },
         "websocket": {
             "connected": False,

@@ -191,9 +191,39 @@ class TradingServiceAuthRecoveryMixin:
     def _auth_probe_window_seconds(self, interruption_kind: str) -> int:
         service_mod = _service_mod()
         default_window = max(service_mod.AUTH_PROBE_INTERVAL_SECONDS, int(service_mod.AUTH_PROBE_WINDOW_SECONDS or 0))
+        if self._auth_probe_in_late_session():
+            default_window = max(
+                default_window,
+                int(service_mod.AUTH_PROBE_LATE_SESSION_WINDOW_SECONDS or 0),
+            )
         if self._is_server_boot_resume_recovery(interruption_kind=interruption_kind):
             return max(default_window, 300)
         return default_window
+
+    def _auth_probe_self_heal_grace_seconds(self, interruption_kind: str) -> int:
+        service_mod = _service_mod()
+        grace_seconds = max(
+            service_mod.AUTH_PROBE_INTERVAL_SECONDS,
+            int(service_mod.AUTH_PROBE_SELF_HEAL_GRACE_SECONDS or 0),
+        )
+        if self._auth_probe_in_late_session():
+            grace_seconds = max(
+                grace_seconds,
+                int(service_mod.AUTH_PROBE_LATE_SESSION_SELF_HEAL_GRACE_SECONDS or 0),
+            )
+        if self._is_server_boot_resume_recovery(interruption_kind=interruption_kind):
+            grace_seconds = max(grace_seconds, 300)
+        return grace_seconds
+
+    def _auth_probe_market_session_kind(self) -> str:
+        service_mod = _service_mod()
+        try:
+            return str(service_mod.classify_market_session_kind()).strip().lower()
+        except Exception:
+            return ""
+
+    def _auth_probe_in_late_session(self) -> bool:
+        return self._auth_probe_market_session_kind() in {"close_transition", "afterhours"}
 
     def _wait_for_server_boot_resume_auth(
         self,
@@ -466,7 +496,7 @@ class TradingServiceAuthRecoveryMixin:
                 fresh_probe_payload=fresh_probe_payload,
             )
 
-        grace_deadline = time.time() + service_mod.AUTH_PROBE_SELF_HEAL_GRACE_SECONDS
+        grace_deadline = time.time() + self._auth_probe_self_heal_grace_seconds(interruption_kind)
         while not self._auth_probe_stop.is_set() and time.time() < grace_deadline:
             current = self._copy_auth_recovery_state()
             if str(current.get("cycle_id") or "") != cycle_id:

@@ -4947,6 +4947,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
             const authRecoverySummary = {
                 cycle_id: String(authRecovery.cycle_id || ""),
                 recovery_phase: String(authRecovery.recovery_phase || ""),
+                recovery_class: String(authRecovery.recovery_class || ""),
                 recovery_reason: String(authRecovery.recovery_reason || ""),
                 interruption_kind: String(authRecovery.interruption_kind || ""),
                 last_runtime_authenticated_at: authRecovery.last_runtime_authenticated_at || "",
@@ -5176,6 +5177,7 @@ routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
                 startup_complete: Boolean(payload.startup_complete),
                 runtime_phase: String(payload.runtime_phase || ""),
                 environment: String(payload.environment || ""),
+                market_session: cloneObject(payload.market_session),
                 warmup_details_included: Boolean(includeWarmupDetails),
                 live_readiness: cloneObject(liveReadiness),
                 gateway: {
