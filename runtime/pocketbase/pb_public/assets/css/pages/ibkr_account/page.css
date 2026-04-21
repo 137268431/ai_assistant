@@ -7,11 +7,7 @@
         }
 
         .account-meta-row {
-            display: flex;
-            justify-content: flex-end;
-            align-items: center;
-            min-height: 18px;
-            margin: 4px 16px 12px;
+            display: none;
         }
 
         .refresh-info {

@@ -31,6 +31,10 @@
       padding: 18px 18px 120px;
     }
 
+    .page-shell > #contextBar > .page-context-bar {
+      margin-top: 0;
+    }
+
     .hero,
     .panel {
       background: var(--screen-surface);

@@ -3,11 +3,7 @@
     z-index: 1;
 }
 .system-meta-row {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    min-height: 18px;
-    padding: 4px 16px 12px;
+    display: none;
 }
 .refresh-info {
     font-size: 10px;
