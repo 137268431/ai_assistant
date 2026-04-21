@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask import jsonify
 
-from ibkr_compute.api.ops.common import _build_engine_status_map, _build_runtime_summary
+from ibkr_compute.api.ops.common import _build_engine_status_map, _build_runtime_summary, _snapshot_engine_items
 from ibkr_compute.api.route_runtime import get_app_module, get_requested_environment
 from ibkr_compute.api.service_topology import build_service_topology, get_runtime_mode, get_service_profile
 from ibkr_compute.api.startup_preload import get_compute_startup_preload_state
@@ -42,7 +42,8 @@ def build_health_response():
 def build_status_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
-    engine_status = _build_engine_status_map(app_mod)
+    engine_items = _snapshot_engine_items(app_mod)
+    engine_status = _build_engine_status_map(engine_items)
     return jsonify(
         {
             "ok": True,
@@ -55,8 +56,8 @@ def build_status_response():
             },
             "supported_environments": app_mod.SUPPORTED_COMPUTE_ENVIRONMENTS,
             "default_environments": app_mod.DEFAULT_COMPUTE_ENVIRONMENTS,
-            "total_engines": len(app_mod.engines),
-            "ready_engines": sum(1 for engine in app_mod.engines.values() if engine.is_ready()),
+            "total_engines": len(engine_items),
+            "ready_engines": sum(1 for _, engine in engine_items if engine.is_ready()),
             "engines": engine_status,
             "persisted_cursor_envs_loaded": sorted(app_mod.persistent_cursor_envs_loaded),
             "tracked_cursors": len(app_mod.last_processed_ms),

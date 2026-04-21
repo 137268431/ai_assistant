@@ -80,7 +80,7 @@ function buildStartupPreloadStatusLabel(preload) {
     if (!state.enabled) return '';
     if (state.status === 'running') return `preload RUNNING ${state.symbol_completed}/${state.symbol_total || '--'}`;
     if (state.status === 'scheduled') return `preload SCHEDULED ${state.env_total || 0} env`;
-    if (state.status === 'completed') return `preload DONE ${state.ready_count}/${state.symbol_total || 0}`;
+    if (state.status === 'completed') return 'preload DONE';
     if (state.status === 'failed') return 'preload FAILED';
     if (state.status === 'skipped') return 'preload SKIPPED';
     if (state.status === 'disabled') return 'preload DISABLED';
@@ -101,7 +101,8 @@ function buildStartupPreloadSummary(preload) {
     const meta = [];
     if (state.env_total > 0) meta.push(`env ${state.env_completed}/${state.env_total}`);
     if (state.symbol_total > 0) meta.push(`symbols ${state.symbol_completed}/${state.symbol_total}`);
-    if (state.ready_count > 0 || state.status === 'completed') meta.push(`ready ${state.ready_count}/${state.symbol_total || 0}`);
+    if (state.status === 'completed') meta.push(`startup ready ${state.ready_count}/${state.symbol_total || 0}`);
+    else if (state.ready_count > 0) meta.push(`ready ${state.ready_count}/${state.symbol_total || 0}`);
     if (state.elapsed_s > 0) meta.push(`elapsed ${formatIbkrSecondsLabel(state.elapsed_s)}`);
     const metaText = meta.join(' · ');
     if (state.status === 'running') return `startup preload 正在恢复${metaText ? ` · ${metaText}` : ''}`;
@@ -135,7 +136,8 @@ function buildStartupPreloadDetail(preload) {
         const meta = [];
         if (cursorCount > 0) meta.push(`cursor ${cursorCount}`);
         if (symbolTotal > 0) meta.push(`symbols ${symbolCompleted}/${symbolTotal}`);
-        if (readyCount > 0 || envStatus === 'completed') meta.push(`ready ${readyCount}/${symbolTotal || 0}`);
+        if (envStatus === 'completed') meta.push(`startup ready ${readyCount}/${symbolTotal || 0}`);
+        else if (readyCount > 0) meta.push(`ready ${readyCount}/${symbolTotal || 0}`);
         return `${String(environment || '--').toUpperCase()} ${envStatus.toUpperCase()}${meta.length ? ` · ${meta.join(' · ')}` : ''}`;
     });
     return envLines.join(' | ');
@@ -643,6 +645,9 @@ function renderEngines(computeData) {
     const preloadStatusLabel = buildStartupPreloadStatusLabel(computeData?.startup_preload);
     const preloadSummary = buildStartupPreloadSummary(computeData?.startup_preload);
     const preloadDetail = buildStartupPreloadDetail(computeData?.startup_preload);
+    const environmentReadySummary = buildIbkrEngineEnvironmentReadySummary(computeData?.engines, {
+        preferredOrder: [currentEnvironment],
+    });
 
     if (!computeData || !computeData.engines || typeof computeData.engines !== 'object') {
         const messages = ['无引擎数据'];
@@ -658,6 +663,7 @@ function renderEngines(computeData) {
     if (Number(computeData.last_realtime_signals || 0) > 0) computeMeta.push(`sig ${Number(computeData.last_realtime_signals || 0)}`);
     if (Number(computeData.queue_size || 0) > 0) computeMeta.push(`queue ${Number(computeData.queue_size || 0)}`);
     const countParts = [`${computeData.ready_engines || 0}/${computeData.total_engines || engines.length} ready`];
+    if (environmentReadySummary) countParts.push(environmentReadySummary);
     if (preloadStatusLabel) countParts.push(preloadStatusLabel);
     if (computeMeta.length) countParts.push(computeMeta.join(' · '));
     else if (!preloadStatusLabel) countParts.push('top 12');
@@ -672,6 +678,9 @@ function renderEngines(computeData) {
     }
 
     let html = '<div class="engine-summary">总览页只保留最关键的 12 条引擎概况；完整排查与动作控制请切到控制台。</div>';
+    if (environmentReadySummary) {
+        html += `<div class="engine-summary">环境 ready：${escapeHtml(environmentReadySummary)}</div>`;
+    }
     if (preloadSummary) {
         html += `<div class="engine-summary">${escapeHtml(preloadSummary)}</div>`;
     }

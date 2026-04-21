@@ -148,7 +148,6 @@ routerAdd("POST", "/webhook/tv", (c) => {
         }
 
         const dedupKey = `${Math.trunc(barTimeMs)}_${symbol}_${interval}`
-        console.log(`[Webhook TV] 接收指标数据: symbol=${symbol}, interval=${interval}, bar_time_ms=${Math.trunc(barTimeMs)}, fields=${Object.keys(extra).sort().join(",")}`)
 
         try {
             $app.findFirstRecordByFilter(
@@ -181,7 +180,9 @@ routerAdd("POST", "/webhook/tv", (c) => {
     // 信号表（type = "signal"）
     // ══════════════════════════════════════
     // ── 打印接收到的信号数据日志 ──
-    console.log("[Webhook TV] 接收信号数据:", JSON.stringify(d, null, 2))
+    console.log(
+        `[Webhook TV] 接收信号数据: signal_id=${String(d.signal_id || "").trim()}, symbol=${String(d.symbol || "").trim()}, direction=${String(d.direction || "").trim()}, us_time=${String(d.us_time || "").trim()}`
+    )
 
     // 必需字段验证
     const requiredFields = ['symbol', 'direction', 'entry', 'stop_loss', 'take_profit', 'signal_id'];

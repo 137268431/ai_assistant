@@ -451,24 +451,84 @@
             const source = payload && typeof payload === 'object' ? payload : {};
             const status = String(source.status || '').trim().toLowerCase()
                 || (source.running ? 'running' : (source.finished_at ? 'completed' : (source.scheduled ? 'scheduled' : 'idle')));
+            const environments = Array.isArray(source.environments)
+                ? source.environments.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+                : [];
             return {
                 enabled: source.enabled !== false,
                 status,
+                environments,
                 envTotal: Number(source.env_total || 0) || 0,
                 envCompleted: Number(source.env_completed || 0) || 0,
                 symbolTotal: Number(source.symbol_total || 0) || 0,
                 symbolCompleted: Number(source.symbol_completed || 0) || 0,
                 readyCount: Number(source.ready_count || 0) || 0,
                 elapsedS: Number(source.elapsed_s || 0) || 0,
-                error: String(source.error || source.reason || '').trim()
+                error: String(source.error || source.reason || '').trim(),
+                results: source.results && typeof source.results === 'object' ? source.results : {}
             };
+        }
+
+        function buildHomeEngineEnvironmentSummary(computeSummary = {}) {
+            const engines = computeSummary?.engines || {};
+            if (!engines || typeof engines !== 'object') return '';
+            const counts = new Map();
+            Object.entries(engines).forEach(([key, engine]) => {
+                const fallbackEnvironment = String(key || '').split(/[/:]/)[0] || '';
+                const environment = String(engine?.environment || fallbackEnvironment).trim().toLowerCase();
+                if (!environment) return;
+                const item = counts.get(environment) || { environment, ready: 0, total: 0 };
+                item.total += 1;
+                if (engine?.is_ready) item.ready += 1;
+                counts.set(environment, item);
+            });
+            const order = ['live', 'paper', 'backtest', ...Array.from(counts.keys()).sort()];
+            const seen = new Set();
+            const parts = [];
+            order.forEach((environment) => {
+                const normalized = String(environment || '').trim().toLowerCase();
+                if (!normalized || seen.has(normalized) || !counts.has(normalized)) return;
+                seen.add(normalized);
+                const item = counts.get(normalized);
+                parts.push(`${normalized.toUpperCase()} ${item.ready}/${item.total}`);
+            });
+            return parts.length > 1 ? parts.join(' · ') : '';
+        }
+
+        function buildHomePreloadEnvironmentSummary(state) {
+            if (!state || !state.results || typeof state.results !== 'object') return '';
+            const order = [
+                ...(Array.isArray(state.environments) ? state.environments : []),
+                'live',
+                'paper',
+                'backtest',
+                ...Object.keys(state.results || {}).sort(),
+            ];
+            const seen = new Set();
+            const parts = [];
+            order.forEach((environment) => {
+                const normalized = String(environment || '').trim().toLowerCase();
+                if (!normalized || seen.has(normalized)) return;
+                seen.add(normalized);
+                const item = state.results?.[normalized] || {};
+                const total = Number(item.symbol_total || 0) || 0;
+                if (total <= 0) return;
+                const ready = Number(item.ready_count || 0) || 0;
+                parts.push(`${normalized.toUpperCase()} 启动时 ${ready}/${total}`);
+            });
+            return parts.length > 1 ? parts.join(' · ') : '';
         }
 
         function buildHomePreloadSummary(state) {
             if (!state || !state.enabled) return 'startup preload 未启用';
             if (state.status === 'running') return `startup preload ${state.symbolCompleted}/${state.symbolTotal || '--'} · ${formatCompactSeconds(state.elapsedS)}`;
             if (state.status === 'scheduled') return `startup preload 排队中 · env ${state.envCompleted}/${state.envTotal || '--'}`;
-            if (state.status === 'completed') return `startup preload 完成 · ready ${state.readyCount}/${state.symbolTotal || 0}`;
+            if (state.status === 'completed') {
+                const environmentSummary = buildHomePreloadEnvironmentSummary(state);
+                return environmentSummary
+                    ? `startup preload 完成 · ${environmentSummary}`
+                    : `startup preload 完成 · 启动时 ready ${state.readyCount}/${state.symbolTotal || 0}`;
+            }
             if (state.status === 'failed') return 'startup preload 失败';
             if (state.status === 'skipped') return 'startup preload 已跳过';
             if (state.status === 'disabled') return 'startup preload 已禁用';
@@ -497,22 +557,33 @@
             return normalized.toUpperCase();
         }
 
-        function buildHomeStackSummary(topology = {}, preloadState = null) {
+        function buildHomeStackSummary(topology = {}, preloadState = null, computeSummary = {}) {
             const services = topology?.services || {};
             const hasRuntime = Boolean(services['ibkr-runtime']);
             const hasCompute = Boolean(services['ibkr-compute']);
             const splitActive = hasRuntime && hasCompute;
             const parts = [splitActive ? 'Runtime / Compute 已拆分' : 'Split stack 信息不完整'];
+            const readyEngines = Number(computeSummary?.ready_engines || 0) || 0;
+            const totalEngines = Number(computeSummary?.total_engines || 0) || 0;
+            const environmentReadySummary = buildHomeEngineEnvironmentSummary(computeSummary);
             if (splitActive) {
                 parts.push(topology?.restart_independent === false
                     ? '重启仍可能互相影响'
                     : 'compute 重启不影响 session / bars');
             }
+            if (totalEngines > 0) {
+                parts.push(`engines ready ${readyEngines}/${totalEngines}`);
+            }
+            if (environmentReadySummary) {
+                parts.push(environmentReadySummary);
+            }
             if (preloadState && preloadState.enabled) {
-                if (preloadState.status === 'completed') {
-                    parts.push(`preload ready ${preloadState.readyCount}/${preloadState.symbolTotal || 0}`);
-                } else if (preloadState.status === 'running') {
+                if (preloadState.status === 'running') {
                     parts.push(`preload ${preloadState.symbolCompleted}/${preloadState.symbolTotal || '--'}`);
+                } else if (preloadState.status === 'completed') {
+                    parts.push('preload 已完成');
+                } else if (preloadState.status === 'scheduled') {
+                    parts.push('preload 排队中');
                 } else if (preloadState.status === 'failed') {
                     parts.push('preload failed');
                 }
@@ -536,12 +607,15 @@
             const preloadState = normalizeHomePreloadState(computeSummary.compute_startup_preload || {});
             const readyEngines = Number(computeSummary.ready_engines || 0) || 0;
             const totalEngines = Number(computeSummary.total_engines || 0) || 0;
+            const environmentReadySummary = buildHomeEngineEnvironmentSummary(computeSummary);
             const runtimeRunning = normalizeHomeServiceStatus(runtimeService.status) === 'running';
             const gatewayRunning = normalizeHomeServiceStatus(gatewayService.status) === 'running';
             const runtimeAuthenticated = runtimeService.session_authenticated === true;
             const computeRunning = normalizeHomeServiceStatus(computeService.status || computeSummary.status) === 'running';
+            const computeFullyReady = computeRunning && totalEngines > 0 && readyEngines >= totalEngines;
+            const computeWarming = computeRunning && totalEngines > 0 && readyEngines < totalEngines;
 
-            summaryEl.textContent = buildHomeStackSummary(topology, preloadState);
+            summaryEl.textContent = buildHomeStackSummary(topology, preloadState, computeSummary);
 
             const rows = [
                 {
@@ -563,15 +637,18 @@
                 {
                     name: 'Compute',
                     status: computeService.status || computeSummary.status || 'unknown',
-                    label: computeRunning && preloadState.status === 'completed'
+                    label: preloadState.status === 'failed'
+                        ? 'FAILED'
+                        : computeFullyReady
                         ? 'READY'
-                        : (preloadState.status === 'failed' ? 'FAILED' : getHomeServiceLabel(computeService.status || computeSummary.status || 'unknown')),
+                        : (computeWarming ? 'WARMING' : getHomeServiceLabel(computeService.status || computeSummary.status || 'unknown')),
                     tone: preloadState.status === 'failed'
                         ? 'warning'
-                        : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown'),
+                        : (computeWarming ? 'warning' : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown')),
                     copy: 'scan / engines / signals',
                     meta: [
                         totalEngines > 0 ? `engines ${readyEngines}/${totalEngines}` : 'engines --',
+                        environmentReadySummary,
                         buildHomePreloadSummary(preloadState),
                         preloadState.status === 'failed' ? summarizeHomeErrorMessage(preloadState.error) : '',
                         'owner ibkr-compute'

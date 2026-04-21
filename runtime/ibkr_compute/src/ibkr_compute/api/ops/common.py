@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from datetime import datetime
 
 from ibkr_compute.api.route_request import coerce_request_int
@@ -20,9 +21,15 @@ def _build_runtime_summary(app_mod) -> dict:
     }
 
 
-def _build_engine_status_map(app_mod) -> dict:
+def _snapshot_engine_items(app_mod) -> list[tuple[tuple[str, str, str], object]]:
+    lock = getattr(app_mod, "compute_lock", None) or nullcontext()
+    with lock:
+        return list(app_mod.engines.items())
+
+
+def _build_engine_status_map(engine_items) -> dict:
     engine_status = {}
-    for (environment, symbol, interval), engine in app_mod.engines.items():
+    for (environment, symbol, interval), engine in engine_items:
         key = f"{environment}/{symbol}/{interval}"
         engine_status[key] = {
             "environment": environment,

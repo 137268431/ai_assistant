@@ -79,6 +79,7 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
     active_bar_symbols = set(_normalize_symbol_list(active_bars.keys()))
     warmup_status_map = _build_warmup_symbol_status_map(warmup)
     latest_completed_bucket_ms = int(canonical_5m.get("last_completed_bucket_ms", 0) or 0)
+    canonical_written_symbols = set(_normalize_symbol_list(canonical_5m.get("written_symbols") or []))
 
     active_subscriptions = []
     for symbol in sorted(subscription_map.keys()):
@@ -90,6 +91,7 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
         bar_visible = normalized_symbol in active_bar_symbols
         quote_visible = normalized_symbol in quote_symbols
         warmup_visible = _is_recent_warmup_symbol(warmup_status, latest_completed_bucket_ms)
+        canonical_visible = latest_completed_bucket_ms > 0 and normalized_symbol in canonical_written_symbols
         visibility_sources = []
         if bar_visible:
             visibility_sources.append("bar")
@@ -97,6 +99,8 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
             visibility_sources.append("quote")
         if warmup_visible:
             visibility_sources.append("warmup")
+        if canonical_visible:
+            visibility_sources.append("canonical_5m")
         visible = bool(visibility_sources)
         quote_age_s = (
             round(float(quote_info.get("quote_age_s")), 1)

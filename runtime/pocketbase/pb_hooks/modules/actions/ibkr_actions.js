@@ -2085,7 +2085,9 @@ routerAdd("POST", "/api/custom/ibkr/bars", (c) => {
             }
         }
 
-        console.log(`[IBKRActions] bars: received=${bars.length}, created=${created}, updated=${updated}, skipped=${skipped}, errors=${errors}`)
+        if (errors > 0 || skipped > 0 || bars.length >= 100) {
+            console.log(`[IBKRActions] bars: received=${bars.length}, created=${created}, updated=${updated}, skipped=${skipped}, errors=${errors}`)
+        }
         return c.json(200, { ok: true, received: bars.length, created, updated, skipped, errors })
     } catch (err) {
         console.error(`[IBKRActions] bars route fatal: ${err.stack || err.message || err}`)

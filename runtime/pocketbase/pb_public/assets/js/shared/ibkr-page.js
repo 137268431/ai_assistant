@@ -226,6 +226,50 @@ function getSortedEngineEntries(engines) {
     });
 }
 
+function getIbkrEngineEnvironmentReadyStats(engines, preferredOrder = []) {
+    if (!engines || typeof engines !== 'object') return [];
+    const stats = new Map();
+    Object.entries(engines).forEach(([key, engine]) => {
+        const fallbackEnvironment = String(key || '').split(/[/:]/)[0] || '';
+        const environment = String(engine?.environment || fallbackEnvironment).trim().toLowerCase();
+        if (!environment) return;
+        const current = stats.get(environment) || {
+            environment,
+            ready: 0,
+            total: 0,
+        };
+        current.total += 1;
+        if (engine?.is_ready) current.ready += 1;
+        stats.set(environment, current);
+    });
+
+    const ordered = [];
+    const seen = new Set();
+    [
+        ...(Array.isArray(preferredOrder) ? preferredOrder : []),
+        'live',
+        'paper',
+        'backtest',
+        ...Array.from(stats.keys()).sort(),
+    ].forEach((environment) => {
+        const normalized = String(environment || '').trim().toLowerCase();
+        if (!normalized || seen.has(normalized) || !stats.has(normalized)) return;
+        seen.add(normalized);
+        ordered.push(stats.get(normalized));
+    });
+    return ordered;
+}
+
+function buildIbkrEngineEnvironmentReadySummary(engines, options = {}) {
+    const { preferredOrder = [], maxItems = 3 } = options || {};
+    const stats = getIbkrEngineEnvironmentReadyStats(engines, preferredOrder);
+    if (stats.length <= 1) return '';
+    return stats
+        .slice(0, Math.max(1, Number(maxItems || 3) || 3))
+        .map((item) => `${getEnvironmentLabel(item.environment)} ${item.ready}/${item.total}`)
+        .join(' · ');
+}
+
 function getIbkrDataHealthStatus(ageMin, { noDataStatus = 'no_data' } = {}) {
     const numericAge = Number(ageMin);
     if (!Number.isFinite(numericAge) || numericAge < 0) return noDataStatus;
@@ -375,7 +419,7 @@ function getIbkrComputeStartupPreloadMeta(compute = {}) {
 
     if (status === 'running') return `preload ${symbolCompleted}/${symbolTotal || '--'}`;
     if (status === 'scheduled') return `preload queued ${envCompleted}/${envTotal || '--'}`;
-    if (status === 'completed') return `preload done ${readyCount}/${symbolTotal || 0}`;
+    if (status === 'completed') return 'preload done';
     if (status === 'failed') return 'preload failed';
     if (status === 'skipped') return 'preload skipped';
     return '';

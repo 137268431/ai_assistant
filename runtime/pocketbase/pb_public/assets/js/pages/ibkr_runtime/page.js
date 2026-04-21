@@ -276,7 +276,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const parts = [];
             if (preload.envTotal > 0) parts.push(`env ${preload.envCompleted}/${preload.envTotal}`);
             if (preload.symbolTotal > 0) parts.push(`symbols ${preload.symbolCompleted}/${preload.symbolTotal}`);
-            if (preload.readyCount > 0 || preload.status === 'completed') parts.push(`ready ${preload.readyCount}/${preload.symbolTotal || 0}`);
+            if (preload.status === 'completed') parts.push(`startup ready ${preload.readyCount}/${preload.symbolTotal || 0}`);
+            else if (preload.readyCount > 0) parts.push(`ready ${preload.readyCount}/${preload.symbolTotal || 0}`);
             if (preload.elapsedS > 0) parts.push(`elapsed ${formatSecondsLabel(preload.elapsedS)}`);
             if (preload.status === 'failed') {
                 return `FAILED${parts.length ? ` · ${parts.join(' · ')}` : ''}${preload.error ? ` · ${preload.error}` : ''}`;
@@ -1519,10 +1520,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function renderEngineTable(status) {
             const engines = getSortedEngineEntries(status?.engines);
             const readySummary = `${status?.ready_engines || 0}/${status?.total_engines || 0} ready`;
+            const environmentReadySummary = buildIbkrEngineEnvironmentReadySummary(status?.engines, {
+                preferredOrder: [currentEnvironment],
+            });
             const hasEngineSummaryOnly = Boolean(status?.engines_available) && !Boolean(status?.engines_included);
             document.getElementById('engineHint').textContent = hasEngineSummaryOnly
-                ? `${readySummary} · loading detail`
-                : readySummary;
+                ? `${readySummary}${environmentReadySummary ? ` · ${environmentReadySummary}` : ''} · loading detail`
+                : `${readySummary}${environmentReadySummary ? ` · ${environmentReadySummary}` : ''}`;
             if (!engines.length) {
                 const message = status?.engine_detail_error
                     ? `引擎明细加载失败：${status.engine_detail_error}`

@@ -4,14 +4,16 @@ import time
 from datetime import datetime, timezone
 
 from ibkr_compute.api.monitor.host import _api_app
+from ibkr_compute.api.ops.common import _snapshot_engine_items
 
 
 def _build_compute_summary() -> dict:
     api_app = _api_app()
+    engine_items = _snapshot_engine_items(api_app)
     return {
         "status": "running",
-        "total_engines": len(api_app.engines),
-        "ready_engines": sum(1 for engine in api_app.engines.values() if engine.is_ready()),
+        "total_engines": len(engine_items),
+        "ready_engines": sum(1 for _, engine in engine_items if engine.is_ready()),
         "tracked_cursors": len(api_app.last_processed_ms),
         "compute_count": api_app.compute_count,
         "error_count": api_app.error_count,
