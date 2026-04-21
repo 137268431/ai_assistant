@@ -21,6 +21,8 @@ def _normalize_bar(bar: dict[str, Any]) -> dict[str, Any]:
         "cn_time": str((bar or {}).get("cn_time", "") or ""),
         "session_type": str((bar or {}).get("session_type", "regular") or "regular"),
         "exchange": str((bar or {}).get("exchange", "") or "").upper(),
+        "preview": bool((bar or {}).get("preview") or (bar or {}).get("is_preview")),
+        "is_preview": bool((bar or {}).get("preview") or (bar or {}).get("is_preview")),
     }
 
 
@@ -31,6 +33,7 @@ def build_runtime_timeline(
     *,
     params: dict[str, Any] | None = None,
     include_signals: bool = False,
+    include_trace: bool = False,
     visible_start_ms: int = 0,
     visible_end_ms: int = 0,
 ) -> dict[str, Any]:
@@ -92,6 +95,8 @@ def build_runtime_timeline(
             "us_time": bar.get("us_time", ""),
             "cn_time": bar.get("cn_time", ""),
             "session_type": bar.get("session_type", "regular"),
+            "preview": bool(bar.get("preview") or bar.get("is_preview")),
+            "is_preview": bool(bar.get("preview") or bar.get("is_preview")),
             "open": round(float(bar.get("open", 0) or 0), 4),
             "high": round(float(bar.get("high", 0) or 0), 4),
             "low": round(float(bar.get("low", 0) or 0), 4),
@@ -100,8 +105,44 @@ def build_runtime_timeline(
             "indicator_ready": bool(engine.is_ready()),
             **snapshot,
         }
-        if signal:
+        trace = None
+        if signal_gen and include_trace:
+            trace = signal_gen.get_trace_snapshot()
+            if row["preview"] and trace.get("signal_state", {}).get("stage") == "confirmed":
+                trace_signal_state = dict(trace.get("signal_state") or {})
+                trace_signal_state["stage"] = "candidate"
+                trace_signal_state["label"] = signal_gen._build_signal_state_label(  # type: ignore[attr-defined]
+                    trace_signal_state.get("signal_payload"),
+                    "candidate",
+                )
+                trace = {
+                    **trace,
+                    "signal_state": trace_signal_state,
+                }
+        if signal and not row["preview"]:
             row["signal"] = signal
+        elif signal and row["preview"]:
+            row["signal_preview"] = signal
+        if include_trace:
+            row["trace"] = trace or {
+                "signal_state": {
+                    "stage": "none",
+                    "direction": "",
+                    "signal": "",
+                    "label": "无信号",
+                    "reason": "",
+                    "filter_reason": "",
+                    "signal_window": "",
+                    "signal_mode": "",
+                    "ema_touch_line": "",
+                    "div_source": "",
+                    "signal_payload": row.get("signal_preview"),
+                },
+                "events": [],
+                "filters": [],
+                "window_flags": {},
+                "component_flags": {},
+            }
         rows.append(row)
 
     return {

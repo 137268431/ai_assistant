@@ -8,6 +8,7 @@ from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_int
 
 def load_chart_request_payload() -> dict:
     payload = get_json_payload()
+    preview_bar = payload.get("preview_bar")
     return {
         "environment": str(payload.get("environment") or "live").strip().lower() or "live",
         "symbol": str(payload.get("symbol") or "").strip().upper(),
@@ -15,6 +16,8 @@ def load_chart_request_payload() -> dict:
         "start_ms": coerce_request_int(payload.get("start_ms"), 0, minimum=0),
         "end_ms": coerce_request_int(payload.get("end_ms"), 0, minimum=0),
         "include_signals": coerce_request_bool(payload.get("include_signals"), True),
+        "include_trace": coerce_request_bool(payload.get("include_trace"), False),
+        "preview_bar": preview_bar if isinstance(preview_bar, dict) else None,
     }
 
 

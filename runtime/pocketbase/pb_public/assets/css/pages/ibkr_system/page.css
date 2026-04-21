@@ -127,6 +127,18 @@
     max-height: 548px;
 }
 
+@media (hover: hover) and (pointer: fine) {
+    .section-scroll {
+        overflow: visible;
+        overscroll-behavior: auto;
+    }
+
+    .engine-scroll,
+    .event-scroll {
+        max-height: none;
+    }
+}
+
 .stats-mini {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));

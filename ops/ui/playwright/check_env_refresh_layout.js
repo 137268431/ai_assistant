@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { chromium, devices, request } = require('playwright');
+const { waitForHomeOverviewReady, collectHomeOverviewIssues } = require('./home_overview_checks');
 
 const BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const PAGE_BASE = process.env.PB_PAGE_BASE_URL || BASE;
@@ -12,42 +13,42 @@ const TARGETS = [
   {
     name: 'index',
     url: `${PAGE_BASE}/index.html?environment=live`,
-    expectHeaderBadge: true,
+    expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '',
   },
   {
     name: 'signals',
     url: `${PAGE_BASE}/ibkr_signals.html?environment=live`,
-    expectHeaderBadge: true,
+    expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '#refreshBtn.page-refresh-trigger.is-compact',
   },
   {
     name: 'orders',
     url: `${PAGE_BASE}/orders.html?environment=live`,
-    expectHeaderBadge: true,
+    expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '#refreshBtn.page-refresh-trigger.is-compact',
   },
   {
     name: 'reverse',
     url: `${PAGE_BASE}/ibkr_reverse_signals.html?environment=live`,
-    expectHeaderBadge: true,
+    expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '#refreshBtn.page-refresh-trigger.is-compact',
   },
   {
     name: 'order_details',
     url: `${PAGE_BASE}/ibkr_order_details.html?environment=live`,
-    expectHeaderBadge: true,
+    expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '#refreshBtn.page-refresh-trigger.is-compact',
   },
   {
     name: 'indicators',
     url: `${PAGE_BASE}/ibkr_indicators.html?environment=live`,
-    expectHeaderBadge: true,
+    expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '#refreshBtn.page-refresh-trigger.is-compact',
   },
@@ -68,7 +69,7 @@ const TARGETS = [
   {
     name: 'backtests',
     url: `${PAGE_BASE}/ibkr_backtests.html?environment=live`,
-    expectHeaderBadge: true,
+    expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '.btn.page-refresh-trigger',
   },
@@ -84,7 +85,7 @@ const TARGETS = [
     url: `${PAGE_BASE}/ibkr_config.html?environment=global`,
     expectHeaderBadge: false,
     contextSwitcherSelector: '#configEnvironmentBar .env-switcher-select',
-    refreshSelector: '.refresh-btn.page-refresh-trigger.is-compact',
+    refreshSelector: '#configRefreshBtn.refresh-btn.page-refresh-trigger',
   },
 ];
 
@@ -128,20 +129,7 @@ async function createContext(browser, token, mobile) {
 async function waitForReady(page, targetName) {
   switch (targetName) {
     case 'index':
-      await page.waitForFunction(() => {
-        const readyStates = {
-          overview: document.getElementById('homeOverview')?.dataset.ready || '',
-          targets: document.getElementById('homeTargets')?.dataset.ready || '',
-          market: document.getElementById('homeMarket')?.dataset.ready || '',
-          activity: document.getElementById('homeActivity')?.dataset.ready || '',
-        };
-        return (
-          readyStates.overview === 'ready' &&
-          ['ready', 'empty'].includes(readyStates.targets) &&
-          ['ready', 'empty'].includes(readyStates.market) &&
-          ['ready', 'empty'].includes(readyStates.activity)
-        );
-      }, { timeout: TIMEOUT_MS });
+      await waitForHomeOverviewReady(page, TIMEOUT_MS);
       return;
     case 'signals':
       await page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout: TIMEOUT_MS });
@@ -177,7 +165,7 @@ async function waitForReady(page, targetName) {
       await page.waitForSelector('#contextBar .env-switcher-select', { timeout: TIMEOUT_MS });
       return;
     case 'config':
-      await page.waitForSelector('.refresh-btn.page-refresh-trigger.is-compact', { timeout: TIMEOUT_MS });
+      await page.waitForSelector('#configRefreshBtn.refresh-btn.page-refresh-trigger', { timeout: TIMEOUT_MS });
       await page.waitForSelector('#configEnvironmentBar .env-switcher-select', { timeout: TIMEOUT_MS });
       return;
     default:
@@ -245,6 +233,16 @@ async function inspectTarget(browser, token, target, mobile = false) {
     if (target.refreshSelector && !checks.refreshSelectorMatched) {
       errors.push(`missing_refresh_selector:${target.refreshSelector}`);
     }
+  }
+
+  if (target.name === 'index') {
+    const homeIssues = await collectHomeOverviewIssues(page, mobile).catch((err) => {
+      errors.push(`home_eval:${err.message}`);
+      return [];
+    });
+    homeIssues.forEach((issue) => {
+      errors.push(`home_issue:${issue}`);
+    });
   }
 
   let screenshot = '';

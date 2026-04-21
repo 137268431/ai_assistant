@@ -28,6 +28,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let comparePayload = null;
         let compareLoading = false;
         let compareError = '';
+        let realtimeComputedPayload = null;
         let selectedBarIndex = -1;
         let selectedSignalId = '';
         let hoverBarIndex = -1;
@@ -39,6 +40,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let chartFocusMode = false;
         let chartPointerLocked = false;
         let inspectorDrawerOpen = false;
+        let chartTracePanelOpen = false;
         let chartLegendCollapsed = false;
         let chartMarkerDensityTier = '';
         let chartTooltipSyncRaf = 0;
@@ -148,11 +150,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return map[normalized] || [normalized];
         }
 
+        function quoteFilterValue(value) {
+            return `'${String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+        }
+
         function buildIntervalFilterExpression(interval, fields = ['interval']) {
             const conditions = [];
             buildIntervalAliases(interval).forEach((alias) => {
                 fields.forEach((field) => {
-                    conditions.push(`${field} = "${escapeQueryValue(alias)}"`);
+                    conditions.push(`${field} = ${quoteFilterValue(alias)}`);
                 });
             });
             return `(${conditions.join(' || ')})`;
@@ -252,6 +258,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return Number(window.innerWidth || 0) <= 520;
         }
 
+        function isDesktopFinePointer() {
+            return typeof window.matchMedia === 'function'
+                && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+        }
+
         function loadChartUiPrefs() {
             try {
                 const raw = localStorage.getItem(CHART_UI_PREFS_KEY);
@@ -272,6 +283,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     if (typeof prefs.legendCollapsed === 'boolean') {
                         chartLegendCollapsed = prefs.legendCollapsed;
                     }
+                    if (typeof prefs.tracePanelOpen === 'boolean') {
+                        chartTracePanelOpen = prefs.tracePanelOpen;
+                    }
                 }
             } catch (_) {}
         }
@@ -282,6 +296,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     layerState: chartLayerState,
                     focusMode: chartFocusMode,
                     legendCollapsed: chartLegendCollapsed,
+                    tracePanelOpen: chartTracePanelOpen,
                 }));
             } catch (_) {}
         }
@@ -500,21 +515,58 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const signalWindow = String(extra.signal_window || '').trim().toLowerCase();
             const signalMode = String(extra.signal_mode || '').trim().toLowerCase();
             const touchLine = String(extra.ema_touch_line || '').trim().toLowerCase();
-            const prefix = signalWindow === 'sd_lower' ? 'SDL' : 'SDU';
             const touchSuffix = touchLine === 'fast'
-                ? (direction === 'long' ? '+E↑F' : '+E↓F')
+                ? ' · 快线触及'
                 : touchLine === 'slow'
-                ? (direction === 'long' ? '+E↑S' : '+E↓S')
+                ? ' · 慢线触及'
                 : '';
             if (direction === 'long') {
-                if (signalMode === 'trend' && signalWindow === 'sd_upper') return `${prefix}·顺势做多${touchSuffix}`;
-                if (signalMode === 'mr' && signalWindow === 'sd_lower') return `${prefix}·均值回归做多`;
+                if (signalMode === 'trend' && signalWindow === 'sd_upper') return `顺势多${touchSuffix}`;
+                if (signalMode === 'mr' && signalWindow === 'sd_lower') return '回归多';
             }
             if (direction === 'short') {
-                if (signalMode === 'trend' && signalWindow === 'sd_lower') return `${prefix}·顺势做空${touchSuffix}`;
-                if (signalMode === 'mr' && signalWindow === 'sd_upper') return `${prefix}·均值回归做空`;
+                if (signalMode === 'trend' && signalWindow === 'sd_lower') return `顺势空${touchSuffix}`;
+                if (signalMode === 'mr' && signalWindow === 'sd_upper') return '回归空';
             }
             return String(signal.signal || signal.direction || 'Signal');
+        }
+
+        function getTraceSignalState(trace) {
+            return trace && typeof trace === 'object' && trace.signal_state && typeof trace.signal_state === 'object'
+                ? trace.signal_state
+                : {};
+        }
+
+        function getTraceSignalPayload(trace) {
+            const signalState = getTraceSignalState(trace);
+            return signalState && typeof signalState.signal_payload === 'object' ? signalState.signal_payload : null;
+        }
+
+        function getDecisionSignalContext(context) {
+            if (!context) return { signal: null, traceSignal: null, signalState: {} };
+            const signalState = getTraceSignalState(context.trace);
+            const traceSignal = getTraceSignalPayload(context.trace);
+            return {
+                signal: context.activeSignal || null,
+                traceSignal,
+                signalState,
+            };
+        }
+
+        function buildTraceDecisionLabel(trace, fallbackSignal = null) {
+            const signalState = getTraceSignalState(trace);
+            const label = String(signalState.label || '').trim();
+            if (label) return label;
+            if (fallbackSignal) return buildTradeSignalLabel(fallbackSignal);
+            return '无信号';
+        }
+
+        function getTraceStageBadgeClass(stage) {
+            const key = String(stage || '').trim().toLowerCase();
+            if (key === 'confirmed') return 'positive';
+            if (key === 'blocked') return 'negative';
+            if (key === 'candidate') return 'warning';
+            return '';
         }
 
         function getChartMarkerDensityTier(barsCount) {
@@ -584,15 +636,19 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 range: String(params.get('range') || '').trim().toLowerCase(),
                 barTimeMs: Number(params.get('bar_time_ms') || 0) || 0,
                 indicatorId: String(params.get('indicator_id') || '').trim(),
+                traceOpen: ['1', 'true', 'yes'].includes(String(params.get('trace') || '').trim().toLowerCase()),
             };
         }
 
         function updateQueryState() {
-            const url = buildPageUrl('/ibkr_chart.html', {
+            const params = {
                 symbol: currentSymbol,
                 interval: currentInterval,
                 range: currentRangeKey,
-            }, { environment: currentEnvironment });
+            };
+            if (chartTracePanelOpen) params.trace = 1;
+            if (currentIndicatorId) params.indicator_id = currentIndicatorId;
+            const url = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
             window.history.replaceState({}, '', url);
         }
 
@@ -696,6 +752,72 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             throw lastError || new Error(`Failed to request ${path}`);
         }
 
+        function buildPreviewBarForTimeline() {
+            if (currentInterval !== '5m' || !formingBarSnapshot?.bar_time_ms) return null;
+            const previewBar = {
+                ...formingBarSnapshot,
+                symbol: formingBarSnapshot?.symbol || currentSymbol || '',
+                preview: true,
+                is_preview: true,
+            };
+            const livePrice = Number(realtimeQuoteSnapshot?.last_price);
+            const previewOpen = Number(previewBar.open || 0);
+            const previewHigh = Number(previewBar.high || 0);
+            const previewLow = Number(previewBar.low || 0);
+            const previewClose = Number.isFinite(livePrice) && livePrice > 0
+                ? livePrice
+                : Number(previewBar.close || 0);
+            if (!Number.isFinite(previewClose) || previewClose <= 0) {
+                return null;
+            }
+            previewBar.close = previewClose;
+            if (previewOpen > 0) {
+                previewBar.high = Math.max(previewHigh || previewOpen, previewOpen, previewClose);
+                previewBar.low = Math.min(previewLow || previewOpen || previewClose, previewOpen, previewClose);
+            }
+            previewBar.volume = Number(previewBar.volume || 0);
+            return previewBar;
+        }
+
+        async function fetchChartTimelinePayload({ previewBar = null } = {}) {
+            const previewBarMs = Number(previewBar?.bar_time_ms || 0) || 0;
+            const cappedMs = Math.max(Number(currentAnchorMs || 0), previewBarMs, Date.now());
+            const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
+            const response = await requestChartJson('/api/custom/ibkr/proxy', {
+                method: 'POST',
+                body: {
+                    action: 'chart/timeline',
+                    environment: currentEnvironment,
+                    symbol: currentSymbol,
+                    interval: currentInterval,
+                    start_ms: rangeStartMs,
+                    end_ms: cappedMs,
+                    include_signals: currentInterval === '5m',
+                    include_trace: true,
+                    preview_bar: previewBar || undefined,
+                }
+            }, 2);
+            return buildTimelinePayloadFromResponse(response);
+        }
+
+        async function refreshComputedDisplayPayload() {
+            if (!lastPayload) {
+                realtimeComputedPayload = null;
+                return;
+            }
+            const previewBar = buildPreviewBarForTimeline();
+            if (!previewBar) {
+                realtimeComputedPayload = null;
+                return;
+            }
+            try {
+                realtimeComputedPayload = await fetchChartTimelinePayload({ previewBar });
+            } catch (error) {
+                realtimeComputedPayload = null;
+                warnChartRealtimeOnce('preview', '重算实时 preview 指标失败', error);
+            }
+        }
+
         function stopChartRealtimePolling() {
             if (chartRealtimePollTimer) {
                 clearInterval(chartRealtimePollTimer);
@@ -779,10 +901,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 }
             }
 
+            await refreshComputedDisplayPayload();
+
             if (render && lastPayload) {
-                renderHeroStatus(lastPayload);
-                renderSummaryStrip(lastPayload);
                 renderChart(lastPayload);
+                const activePayload = getChartDisplayPayload() || lastPayload;
+                renderHeroStatus(activePayload);
+                renderSummaryStrip(activePayload);
             }
         }
 
@@ -806,12 +931,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const signals = Array.isArray(response?.signals)
                 ? response.signals.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
                 : [];
+            const traceTimeline = Array.isArray(response?.trace_timeline)
+                ? response.trace_timeline.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
             const latestIndicator = normalizeIndicatorRecord(response?.latest_indicator || null) || (indicators.length ? indicators[indicators.length - 1] : null);
             return {
                 latestIndicator,
                 bars,
                 indicators,
                 signals,
+                traceTimeline,
                 meta: response?.meta && typeof response.meta === 'object' ? response.meta : {}
             };
         }
@@ -822,6 +951,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         function buildChartDisplayPayload(payload) {
             if (!payload || typeof payload !== 'object') return null;
+            if (realtimeComputedPayload && Array.isArray(realtimeComputedPayload?.bars) && realtimeComputedPayload.bars.length) {
+                return realtimeComputedPayload;
+            }
             const baseBars = Array.isArray(payload?.bars) ? payload.bars.slice() : [];
             if (!baseBars.length || currentInterval !== '5m' || !formingBarSnapshot?.bar_time_ms) {
                 return payload;
@@ -1018,11 +1150,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             currentRangeKey = normalizeRangeKey(query.range, currentInterval);
             currentAnchorMs = 0;
             pendingFocusBarTimeMs = query.barTimeMs;
+            if (query.traceOpen) {
+                chartTracePanelOpen = true;
+            }
 
             if (currentIndicatorId) {
                 try {
                     const indicatorResp = await fetchWithRetry('ibkr_indicators', {
-                        filter: `id = "${escapeQueryValue(currentIndicatorId)}" && environment = "${escapeQueryValue(currentEnvironment)}"`,
+                        filter: `id = ${quoteFilterValue(currentIndicatorId)} && environment = ${quoteFilterValue(currentEnvironment)}`,
                         perPage: 1
                     });
                     const indicator = normalizeIndicatorRecord(Array.isArray(indicatorResp?.items) ? indicatorResp.items[0] : null);
@@ -1039,7 +1174,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (currentSymbol) return;
 
             const latestBarResp = await fetchWithRetry('ibkr_bars', {
-                filter: `environment = "${escapeQueryValue(currentEnvironment)}" && ${buildIntervalFilterExpression('5m', ['interval'])}`,
+                filter: `environment = ${quoteFilterValue(currentEnvironment)} && ${buildIntervalFilterExpression('5m', ['interval'])}`,
                 sort: '-bar_time_ms',
                 perPage: 1
             }).catch(() => ({ items: [] }));
@@ -1212,10 +1347,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function renderHeroStatus(payload) {
-            const latest = payload?.latestIndicator || null;
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const stateBadge = getWorkspaceStateBadge();
             const compareSummary = comparePayload?.comparison?.summary || {};
-            const lastBarTime = latest?.us_time || (payload?.bars?.length ? payload.bars[payload.bars.length - 1]?.us_time || '--' : '--');
+            const focusTime = focus?.bar?.us_time || '--';
+            const lastBarTime = bars.length ? bars[bars.length - 1]?.us_time || '--' : '--';
             const realtimeState = getRealtimeChipState(payload);
             const previewState = getPreviewChipState();
             const compareState = getCompareChipState(compareSummary, { compact: false });
@@ -1223,6 +1360,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 buildStripChip('hero-chip', `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`, currentSymbol ? '' : 'placeholder', '当前查看的标的与周期。'),
                 buildStripChip('hero-chip', getEnvironmentLabel(currentEnvironment), currentEnvironment ? '' : 'placeholder', '当前运行环境。'),
                 buildStripChip('hero-chip', stateBadge.text, stateBadge.className, '图表工作区当前加载状态。'),
+                buildStripChip('hero-chip', `焦点 bar ${focusTime}`, focusTime === '--' ? 'placeholder' : '', '当前决策上下文使用的 focus bar 时间。'),
                 buildStripChip('hero-chip', `最后收盘 bar ${lastBarTime}`, lastBarTime === '--' ? 'placeholder' : '', '当前窗口最后一根已收盘 bar 的时间。'),
                 buildStripChip('hero-chip', realtimeState.text, realtimeState.className, realtimeState.title),
                 buildStripChip('hero-chip', previewState.text, previewState.className, previewState.title),
@@ -1247,7 +1385,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
-            const latest = payload?.latestIndicator || null;
+            const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
+            const focusIndicator = focus?.indicator || null;
+            const focusBar = focus?.bar || null;
             const compareSummary = comparePayload?.comparison?.summary || {};
             const realtimeState = getRealtimeChipState(payload);
             const previewState = getPreviewChipState();
@@ -1257,12 +1397,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { text: `指标 ${indicators.length}`, className: '', title: '当前窗口成功匹配到的指标快照数量。' },
                 { text: `信号 ${signals.length}`, className: '', title: '当前窗口内的交易信号数量。' },
                 { text: `范围 ${getRangeLabel(currentRangeKey)}`, className: '', title: '当前图表时间窗口。' },
-                { text: `趋势 ${latest ? getTrendText(latest.trend_dir) : '--'}`, className: latest ? '' : 'placeholder', title: '趋势方向来自当前 bar 对应的 trend_dir。' },
-                { text: `EMA 结构 ${latest ? getEmaStructureText(latest) : '--'}`, className: latest ? '' : 'placeholder', title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
-                { text: `VWAP 偏离 ${latest ? formatPercent(latest.vwap_dist) : '--'}`, className: latest ? '' : 'placeholder', title: '当前收盘价相对 VWAP 的偏离百分比。' },
-                { text: `ATR 波动 ${latest ? formatPercent(latest.atr_pct) : '--'}`, className: latest ? '' : 'placeholder', title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
-                { text: `SD 通道 ${latest ? getSdZoneText(latest.sd_zone) : '--'} / ${latest ? getSdTrendText(latest.sd_trend) : '--'}`, className: latest ? '' : 'placeholder', title: 'SD 通道分为所在区间和通道斜率两部分。' },
-                { text: `分形 ${latest ? getFractalStateText(latest) : '--'}`, className: latest ? '' : 'placeholder', title: '当前 bar 是否命中了上分形或下分形。' },
+                { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, className: focusBar ? '' : 'placeholder', title: '当前 focus bar 的时间。' },
+                { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '趋势方向来自当前 focus bar 对应的 trend_dir。' },
+                { text: `EMA 结构 ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
+                { text: `VWAP 偏离 ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '当前收盘价相对 VWAP 的偏离百分比。' },
+                { text: `ATR 波动 ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
+                { text: `SD 通道 ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'SD 通道分为所在区间和通道斜率两部分。' },
+                { text: `分形 ${focusIndicator ? getFractalStateText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '当前 focus bar 是否命中了上分形或下分形。' },
                 { text: realtimeState.text, className: realtimeState.className, title: realtimeState.title },
                 { text: previewState.text, className: previewState.className, title: previewState.title },
                 { text: compareState.text, className: compareState.className, title: compareState.title },
@@ -1280,7 +1421,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
-            const latest = payload?.latestIndicator || null;
+            const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
+            const focusIndicator = focus?.indicator || null;
+            const focusBar = focus?.bar || null;
             const compareSummary = comparePayload?.comparison?.summary || {};
             const realtimeState = getRealtimeChipState(payload);
             const previewState = getPreviewChipState();
@@ -1290,11 +1433,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { text: `指标 ${indicators.length}`, title: '当前窗口成功匹配到的指标快照数量。' },
                 { text: `信号 ${signals.length}`, title: '当前窗口内的交易信号数量。' },
                 { text: `范围 ${getRangePreset(currentRangeKey)?.shortLabel || currentRangeKey}`, title: '当前图表时间窗口。' },
-                { text: `趋势 ${latest ? getTrendText(latest.trend_dir) : '--'}`, title: '趋势方向来自当前 bar 对应的 trend_dir。' },
-                { text: `EMA ${latest ? getEmaStructureText(latest) : '--'}`, title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
-                { text: `VWAP ${latest ? formatPercent(latest.vwap_dist) : '--'}`, title: '当前收盘价相对 VWAP 的偏离百分比。' },
-                { text: `ATR ${latest ? formatPercent(latest.atr_pct) : '--'}`, title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
-                { text: `SD ${latest ? getSdZoneText(latest.sd_zone) : '--'} / ${latest ? getSdTrendText(latest.sd_trend) : '--'}`, title: 'SD 通道分为所在区间和通道斜率两部分。' },
+                { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, title: '当前 focus bar 时间。' },
+                { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, title: '趋势方向来自当前 focus bar 对应的 trend_dir。' },
+                { text: `EMA ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
+                { text: `VWAP ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, title: '当前收盘价相对 VWAP 的偏离百分比。' },
+                { text: `ATR ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
+                { text: `SD ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, title: 'SD 通道分为所在区间和通道斜率两部分。' },
                 { text: realtimeState.text, title: realtimeState.title, className: realtimeState.className === 'placeholder' ? 'muted' : '' },
                 { text: previewState.text, title: previewState.title, className: previewState.className === 'placeholder' ? 'muted' : '' },
                 { text: compareState.text, title: compareState.title, className: compareState.className === 'placeholder' ? 'muted' : (compareState.className || '') },
@@ -1328,6 +1472,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (!bars.length) return null;
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const indicatorMap = new Map(indicators.map((item) => [Number(item?.bar_time_ms || 0), item]));
+            const traceTimeline = Array.isArray(payload?.traceTimeline) ? payload.traceTimeline : [];
+            const traceMap = new Map(traceTimeline.map((item) => [Number(item?.bar_time_ms || 0), item]));
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
             const safeIndex = Math.min(Math.max(Number(index) || 0, 0), bars.length - 1);
             const bar = bars[safeIndex] || null;
@@ -1336,6 +1482,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 || signalMatches[0]
                 || null;
             const exactIndicator = indicatorMap.get(Number(bar?.bar_time_ms || 0)) || null;
+            const exactTrace = traceMap.get(Number(bar?.bar_time_ms || 0)) || null;
             const isPreviewBar = Boolean(bar?.preview || bar?.is_preview);
             return {
                 index: safeIndex,
@@ -1344,6 +1491,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 indicator: exactIndicator || (isPreviewBar ? null : payload?.latestIndicator || null),
                 signalMatches,
                 activeSignal,
+                trace: exactTrace,
             };
         }
 
@@ -1407,6 +1555,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 latest: phone ? 'Now' : 'Latest',
                 focus: chartFocusMode ? 'Exit' : 'Focus',
                 inspect: 'Info',
+                trace: 'Trace',
                 center: 'Center',
                 zoomOut: '−',
                 zoomIn: '+',
@@ -1419,6 +1568,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 latest: 'Latest',
                 focus: chartFocusMode ? 'Exit Focus' : 'Focus',
                 inspect: 'Inspector',
+                trace: chartTracePanelOpen ? 'Hide Trace' : 'Show Trace',
                 center: 'Center',
                 zoomOut: '− Zoom',
                 zoomIn: '＋ Zoom',
@@ -1452,6 +1602,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <button class="tv-tool-btn accent" type="button" onclick="focusLatestChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.latest)}</button>
                     <button class="tv-tool-btn" type="button" onclick="toggleChartFocusMode()">${escapeHtml(labels.focus)}</button>
                     <button class="tv-tool-btn ${inspectorDrawerOpen ? 'accent' : ''}" type="button" onclick="toggleInspectorDrawer()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.inspect)}</button>
+                    <button class="tv-tool-btn ${chartTracePanelOpen ? 'accent' : ''}" type="button" onclick="toggleChartTracePanel()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.trace)}</button>
                     <button class="tv-tool-btn" type="button" onclick="centerChartOnFocusBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.center)}</button>
                     <button class="tv-tool-btn" type="button" onclick="zoomOutChartView()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.zoomOut)}</button>
                     <button class="tv-tool-btn" type="button" onclick="zoomInChartView()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.zoomIn)}</button>
@@ -1774,7 +1925,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ? '焦点模式'
                 : '工作台模式';
             sub.innerHTML = `${escapeHtml(focus?.bar?.us_time || '等待图表数据')}<br>${escapeHtml(stateText)}`;
-            body.innerHTML = rail?.innerHTML || '<div class="rail-card"><div class="rail-kicker">Inspector</div><div class="rail-sub">等待图表数据...</div></div>';
+            const traceBody = buildTracePanelBody(payload, { embedded: true });
+            const traceCard = chartTracePanelOpen ? `
+                <div class="rail-card">
+                    <div class="rail-kicker">Trace</div>
+                    <div class="rail-sub">Inspector 内联 Trace 仅保留当前窗口简版，桌面完整表格请看图表下方。</div>
+                    <div class="trace-panel-summary">${traceBody.chips.join('')}</div>
+                    ${traceBody.tableHtml}
+                </div>
+            ` : '';
+            body.innerHTML = `${rail?.innerHTML || '<div class="rail-card"><div class="rail-kicker">Inspector</div><div class="rail-sub">等待图表数据...</div></div>'}${traceCard}`;
             drawer.classList.toggle('show', inspectorDrawerOpen);
             drawer.setAttribute('aria-hidden', inspectorDrawerOpen ? 'false' : 'true');
         }
@@ -1929,6 +2089,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 <button class="mobile-dock-btn" type="button" onclick="toggleChartFocusMode()">${escapeHtml(focusLabel)}</button>
                 <button class="mobile-dock-btn" type="button" onclick="openMobileQuickPanel()">Tools</button>
                 <button class="mobile-dock-btn ${inspectorDrawerOpen ? 'accent' : ''}" type="button" onclick="toggleInspectorDrawer()">Info</button>
+                <button class="mobile-dock-btn ${chartTracePanelOpen ? 'accent' : ''}" type="button" onclick="toggleChartTracePanel()">Trace</button>
                 <button class="mobile-dock-btn" type="button" onclick="${lockAction}">${escapeHtml(lockLabel)}</button>
                 <button class="mobile-dock-btn" type="button" onclick="centerChartOnFocusBar()">Center</button>
                 <button class="mobile-dock-btn" type="button" onclick="${focusSignal ? 'openFocusedSignalDrawer()' : 'focusNextChartSignal()'}">${focusSignal ? 'Signal' : 'Next Sig'}</button>
@@ -1944,7 +2105,174 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             renderMobileQuickPanel(payload);
             renderInspectorDrawer(payload);
             renderMobileGestureHint(payload);
+            renderTracePanel(payload);
         }
+
+        function buildTraceToken(text, className = '') {
+            return `<span class="trace-token ${escapeHtml(className)}">${escapeHtml(text || '--')}</span>`;
+        }
+
+        function getTraceRows(payload) {
+            return Array.isArray(payload?.traceTimeline) ? payload.traceTimeline : [];
+        }
+
+        function buildTracePanelBody(payload, { embedded = false } = {}) {
+            const traceRows = getTraceRows(payload);
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
+            const activeBarMs = Number(focus?.bar?.bar_time_ms || 0) || 0;
+            if (!traceRows.length) {
+                return {
+                    chips: [
+                        buildTraceToken(`Trace ${chartTracePanelOpen ? 'On' : 'Off'}`),
+                    ],
+                    tableHtml: '<div class="trace-empty">当前窗口暂无可展示的 trace 记录。</div>',
+                };
+            }
+            const candidateCount = traceRows.filter((item) => String(item?.signal_state?.stage || '') === 'candidate').length;
+            const blockedCount = traceRows.filter((item) => String(item?.signal_state?.stage || '') === 'blocked').length;
+            const confirmedCount = traceRows.filter((item) => String(item?.signal_state?.stage || '') === 'confirmed').length;
+            const chips = [
+                buildTraceToken(`${traceRows.length} bars`),
+                buildTraceToken(`${confirmedCount} confirmed`, confirmedCount ? 'positive' : ''),
+                buildTraceToken(`${candidateCount} candidate`, candidateCount ? 'warning' : ''),
+                buildTraceToken(`${blockedCount} blocked`, blockedCount ? 'negative' : ''),
+                focus?.trace?.is_preview || focus?.isPreviewBar ? buildTraceToken('当前焦点含预估 bar', 'preview') : '',
+            ].filter(Boolean);
+            const rowsHtml = traceRows.map((item) => {
+                const barTimeMs = Number(item?.bar_time_ms || 0) || 0;
+                const stage = String(item?.signal_state?.stage || '').trim().toLowerCase();
+                const active = activeBarMs > 0 && activeBarMs === barTimeMs;
+                const isPreview = Boolean(item?.is_preview);
+                const structure = [
+                    item?.structure?.ema_bullish ? 'EMA 多头' : item?.structure?.ema_bearish ? 'EMA 空头' : 'EMA 中性',
+                    item?.structure?.dtp_phase ? `DTP ${item.structure.dtp_phase}` : '',
+                    ...(Array.isArray(item?.structure?.fractal_tokens) ? item.structure.fractal_tokens : []),
+                ].filter(Boolean);
+                const position = [
+                    `VWAP ${formatPercent(item?.position?.vwap_dist)}`,
+                    `SD ${getSdZoneText(item?.position?.sd_zone)}`,
+                    `Trend ${getSdTrendText(item?.position?.sd_trend)}`,
+                ];
+                const volatility = [
+                    `ATR ${formatPrice(item?.volatility?.atr)}`,
+                    `ATR% ${formatPercent(item?.volatility?.atr_pct)}`,
+                ];
+                const momentum = [
+                    `CRSI ${formatNumber(item?.momentum?.crsi)}`,
+                    `OBV ${formatNumber(item?.momentum?.obv_rsi)}`,
+                    ...((item?.momentum?.divergence_tokens || []).slice(0, 3)),
+                ].filter(Boolean);
+                const events = Array.isArray(item?.event_chain) && item.event_chain.length
+                    ? item.event_chain.slice(0, embedded ? 2 : 3)
+                    : ['无新增事件'];
+                const filters = Array.isArray(item?.filters) && item.filters.length
+                    ? item.filters.slice(0, embedded ? 2 : 3)
+                    : ['未触发过滤'];
+                const signalLabel = buildTraceDecisionLabel(item, null);
+                return `
+                    <tr class="${active ? 'active ' : ''}${isPreview ? 'preview' : ''}" data-trace-bar-ms="${barTimeMs}" onclick="focusTraceBar('${barTimeMs}')">
+                        <td>
+                            <div class="trace-cell-main">${escapeHtml(item?.us_time || '--')}</div>
+                            <div class="trace-cell-sub">${escapeHtml(item?.cn_time || '--')}${isPreview ? ' · 预估' : ''}</div>
+                        </td>
+                        <td>
+                            <div class="trace-cell-main">${escapeHtml(formatPrice(item?.close))}</div>
+                            <div class="trace-cell-sub">bar #${escapeHtml(String(item?.bar_index || '--'))}</div>
+                        </td>
+                        <td><div class="trace-stack"><div class="trace-token-row">${structure.map((text) => buildTraceToken(text)).join('')}</div><div class="trace-token-row">${(item?.structure?.touch_tokens || []).map((text) => buildTraceToken(text, 'warning')).join('') || buildTraceToken('无触及')}</div></div></td>
+                        <td><div class="trace-stack"><div class="trace-token-row">${position.map((text) => buildTraceToken(text)).join('')}</div></div></td>
+                        <td><div class="trace-stack"><div class="trace-token-row">${volatility.map((text) => buildTraceToken(text)).join('')}</div></div></td>
+                        <td><div class="trace-stack"><div class="trace-token-row">${momentum.map((text) => buildTraceToken(text)).join('')}</div></div></td>
+                        <td><div class="trace-stack"><div class="trace-token-row">${events.map((text) => buildTraceToken(text, 'warning')).join('')}</div></div></td>
+                        <td><div class="trace-stack"><div class="trace-token-row">${filters.map((text) => buildTraceToken(text, filters[0] === '未触发过滤' ? '' : 'negative')).join('')}</div></div></td>
+                        <td><div class="trace-stack"><div class="trace-token-row">${buildTraceToken(signalLabel, getTraceStageBadgeClass(stage))}${isPreview ? buildTraceToken('预估', 'preview') : ''}</div><div class="trace-cell-sub">${escapeHtml(item?.signal_state?.reason || item?.signal_state?.filter_reason || 'bars 实时推演')}</div></div></td>
+                    </tr>
+                `;
+            }).join('');
+            return {
+                chips,
+                tableHtml: `
+                    <div class="trace-panel-table-wrap">
+                        <table class="trace-panel-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Close</th>
+                                    <th>Structure</th>
+                                    <th>Position</th>
+                                    <th>Volatility</th>
+                                    <th>Momentum</th>
+                                    <th>Events</th>
+                                    <th>Filters</th>
+                                    <th>Signal</th>
+                                </tr>
+                            </thead>
+                            <tbody>${rowsHtml}</tbody>
+                        </table>
+                    </div>
+                `,
+            };
+        }
+
+        function scrollTraceRowIntoView(barTimeMs) {
+            const shell = document.getElementById('tracePanelShell');
+            const target = shell?.querySelector?.(`[data-trace-bar-ms="${Number(barTimeMs || 0)}"]`);
+            if (!target || typeof target.scrollIntoView !== 'function') return;
+            window.requestAnimationFrame(() => {
+                target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            });
+        }
+
+        function renderTracePanel(payload = getChartDisplayPayload()) {
+            const shell = document.getElementById('tracePanelShell');
+            if (!shell) return;
+            const body = buildTracePanelBody(payload);
+            const hidden = !chartTracePanelOpen;
+            shell.classList.toggle('hidden', hidden);
+            if (hidden) {
+                shell.innerHTML = '';
+                return;
+            }
+            shell.innerHTML = `
+                <div class="trace-panel-head">
+                    <div>
+                        <div class="trace-panel-title">Bar Trace</div>
+                        <div class="trace-panel-copy">每根 bar 一行，串起结构、位置、动量、过滤与信号状态；预估 bar 只显示候选/过滤，不并入确认信号。</div>
+                    </div>
+                    <div class="trace-panel-actions">
+                        <button class="tv-tool-btn" type="button" onclick="toggleChartTracePanel()">隐藏 Trace</button>
+                        <button class="tv-tool-btn" type="button" onclick="focusLatestChartBar()">回到最新</button>
+                    </div>
+                </div>
+                <div class="trace-panel-summary">${body.chips.join('')}</div>
+                ${body.tableHtml}
+            `;
+            const focus = payload ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
+            if (focus?.bar?.bar_time_ms) {
+                scrollTraceRowIntoView(focus.bar.bar_time_ms);
+            }
+        }
+
+        window.toggleChartTracePanel = function() {
+            chartTracePanelOpen = !chartTracePanelOpen;
+            saveChartUiPrefs();
+            renderTracePanel(getChartDisplayPayload());
+            renderChartToolbar(getChartDisplayPayload());
+            renderMobileDock(getChartDisplayPayload());
+            updateQueryState();
+        };
+
+        window.focusTraceBar = function(barTimeMs) {
+            const payload = getChartDisplayPayload();
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const targetIndex = findBarIndexByTime(bars, Number(barTimeMs || 0));
+            if (targetIndex < 0) return;
+            focusBarIndex(targetIndex);
+            if (chartTracePanelOpen) {
+                scrollTraceRowIntoView(barTimeMs);
+            }
+        };
 
         function renderCursorStrip(payload) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
@@ -1966,7 +2294,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bar = context?.bar || null;
             const indicator = context?.indicator || null;
             const isPreviewBar = Boolean(context?.isPreviewBar);
-            const signal = context?.activeSignal || null;
+            const decisionSignal = getDecisionSignalContext(context);
+            const signal = decisionSignal.signal || decisionSignal.traceSignal || null;
+            const traceLabel = buildTraceDecisionLabel(context?.trace, signal);
+            const traceStage = String(decisionSignal.signalState?.stage || '').trim().toLowerCase();
             const compareRow = getCompareRowByBarTime(bar?.bar_time_ms);
             if (comparePayload && compareRow) {
                 const storedBar = formatInlineOHLC(compareRow?.stored?.bar);
@@ -1989,7 +2320,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const chain = formatInlineChain(indicator);
             const cursorState = chartPointerLocked ? 'Locked cursor' : (hoverBarIndex >= 0 ? 'Hover cursor' : 'Latest focus');
             const signalPrimary = signal
-                ? buildTradeSignalLabel(signal)
+                ? traceLabel
                 : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m');
             const signalSecondary = indicator
                 ? `CRSI ${formatNumber(indicator.crsi)} · OBV ${formatNumber(indicator.obv_rsi)} · ATR ${formatPercent(indicator.atr_pct)}`
@@ -2000,7 +2331,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 buildCursorCard('EMA / VWAP', isPreviewBar && !indicator ? '预览 bar 暂无正式均线' : chain.primary, isPreviewBar && !indicator ? '收盘后生成 EMA / VWAP' : chain.secondary),
                 buildCursorCard('SD / Fractal', isPreviewBar && !indicator ? '预览 bar 暂无正式指标' : `Zone ${getSdZoneText(indicator?.sd_zone)} · ${getSdTrendText(indicator?.sd_trend)}`, isPreviewBar && !indicator ? '收盘后计算 SD / Fractal' : `Frac ${getFractalSummary(indicator)}`),
                 buildCursorCard('Touch / Divergence', isPreviewBar && !indicator ? '预览中' : getTouchDetailText(indicator), isPreviewBar && !indicator ? 'Touch / Div 待收盘确认' : getDivergenceDetailText(indicator)),
-                buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, signalSecondary),
+                buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, `${traceStage ? `Stage ${traceStage} · ` : ''}${signalSecondary}`),
             ].join('');
             renderChartWorkspaceChrome(payload);
         }
@@ -2409,7 +2740,6 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function renderInfoRail(payload) {
-            const latest = payload?.latestIndicator || null;
             const signals = Array.isArray(payload?.signals) ? payload.signals.slice().sort((a, b) => Number(b.bar_time_ms || 0) - Number(a.bar_time_ms || 0)) : [];
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const longCount = signals.filter((item) => String(item.direction || '').toLowerCase() === 'long').length;
@@ -2419,16 +2749,19 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const latestSignal = signals[0] || null;
             const focus = getFocusContext(payload);
             const focusBar = focus?.bar || latestBar || null;
-            const focusIndicator = focus?.indicator || latest || null;
-            const focusSignal = focus?.activeSignal || null;
+            const focusIndicator = focus?.indicator || null;
+            const decisionSignal = getDecisionSignalContext(focus);
+            const focusSignal = decisionSignal.signal || null;
+            const focusTraceSignal = decisionSignal.traceSignal || null;
             const focusSignalMatches = focus?.signalMatches || [];
-            const activeSignalKey = String(focusSignal?.signal_id || focusSignal?.id || '');
+            const activeSignalKey = String(focusSignal?.signal_id || focusSignal?.id || focusTraceSignal?.signal_id || focusTraceSignal?.id || '');
             const focusDate = deriveItemDate(focusSignal || focusBar || latestBar);
             const signalUrl = buildPageUrl('/ibkr_signals.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
             const ordersUrl = buildPageUrl('/orders.html', { search: currentSymbol, date: focusDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(focusSignal, focusDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
             const compareRow = getCompareRowByBarTime(focusBar?.bar_time_ms);
+            const focusTraceLabel = buildTraceDecisionLabel(focus?.trace, focusSignal || focusTraceSignal);
 
             if (comparePayload) {
                 const compareSummary = comparePayload?.comparison?.summary || {};
@@ -2462,7 +2795,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             <div class="metric-item"><div class="metric-label">Open / High</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.open))} / ${escapeHtml(formatPrice(focusBar.high))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">Low / Close</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.low))} / ${escapeHtml(formatPrice(focusBar.close))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">Volume</div><div class="metric-value">${focusBar ? escapeHtml(formatNumber(focusBar.volume || 0, 0)) : '--'}</div></div>
-                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(buildTradeSignalLabel(focusSignal)) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
+                            <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${escapeHtml(focusTraceLabel || (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--'))}</div></div>
                         </div>
                         <div class="focus-actions">
                             ${focusSignal ? `<button class="mini-link mini-link-btn" type="button" onclick="openFocusedSignalDrawer()">信号详情</button>` : ''}
@@ -2566,8 +2899,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 </div>
                 <div class="rail-card">
                     <div class="rail-kicker">Snapshot</div>
-                    <div class="rail-value">${latest ? formatPrice(latest.close) : '--'}</div>
-                    <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}<br>${escapeHtml(latest?.us_time || latestBar?.us_time || '--')}</div>
+                    <div class="rail-value">${focusBar ? formatPrice(focusBar.close) : '--'}</div>
+                    <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}<br>${escapeHtml(focusBar?.us_time || latestBar?.us_time || '--')}</div>
                     <div class="link-row">
                         <a class="mini-link" href="${buildPageUrl('/ibkr_indicators.html', { date: new Date().toISOString().slice(0, 10) }, { environment: currentEnvironment })}">历史指标页</a>
                         <a class="mini-link" href="${buildPageUrl('/ibkr_signals.html', {}, { environment: currentEnvironment })}">历史信号页</a>
@@ -2576,16 +2909,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 <div class="rail-card">
                     <div class="rail-kicker">Structure</div>
                     <div class="metric-grid">
-                        <div class="metric-item"><div class="metric-label">趋势</div><div class="metric-value">${latest ? escapeHtml(getTrendText(latest.trend_dir)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">EMA 状态</div><div class="metric-value">${latest?.ema_bullish ? '📈 多头' : latest?.ema_bearish ? '📉 空头' : '➡️ 中性'}</div></div>
-                        <div class="metric-item"><div class="metric-label">SD</div><div class="metric-value">${latest ? `${escapeHtml(getSdZoneText(latest.sd_zone))}<br>${escapeHtml(getSdTrendText(latest.sd_trend))}` : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">Fractal</div><div class="metric-value">${latest ? escapeHtml(getFractalStateText(latest)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">VWAP 偏离</div><div class="metric-value" style="color:${signedColor(latest?.vwap_dist)}">${latest ? escapeHtml(formatPercent(latest.vwap_dist)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">ATR %</div><div class="metric-value">${latest ? escapeHtml(formatPercent(latest.atr_pct)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">CRSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.crsi)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">OBV RSI</div><div class="metric-value">${latest ? escapeHtml(formatNumber(latest.obv_rsi)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">Touch</div><div class="metric-value">${latest ? escapeHtml(getTouchSummary(latest)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">Div</div><div class="metric-value">${latest ? escapeHtml(getDivergenceSummary(latest, 3)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">趋势</div><div class="metric-value">${focusIndicator ? escapeHtml(getTrendText(focusIndicator.trend_dir)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">EMA 状态</div><div class="metric-value">${focusIndicator?.ema_bullish ? '📈 多头' : focusIndicator?.ema_bearish ? '📉 空头' : '➡️ 中性'}</div></div>
+                        <div class="metric-item"><div class="metric-label">SD</div><div class="metric-value">${focusIndicator ? `${escapeHtml(getSdZoneText(focusIndicator.sd_zone))}<br>${escapeHtml(getSdTrendText(focusIndicator.sd_trend))}` : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Fractal</div><div class="metric-value">${focusIndicator ? escapeHtml(getFractalStateText(focusIndicator)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">VWAP 偏离</div><div class="metric-value" style="color:${signedColor(focusIndicator?.vwap_dist)}">${focusIndicator ? escapeHtml(formatPercent(focusIndicator.vwap_dist)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">ATR %</div><div class="metric-value">${focusIndicator ? escapeHtml(formatPercent(focusIndicator.atr_pct)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">CRSI</div><div class="metric-value">${focusIndicator ? escapeHtml(formatNumber(focusIndicator.crsi)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">OBV RSI</div><div class="metric-value">${focusIndicator ? escapeHtml(formatNumber(focusIndicator.obv_rsi)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Touch</div><div class="metric-value">${focusIndicator ? escapeHtml(getTouchSummary(focusIndicator)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">Div</div><div class="metric-value">${focusIndicator ? escapeHtml(getDivergenceSummary(focusIndicator, 3)) : '--'}</div></div>
                     </div>
                     <div class="rail-sub">时间范围: ${escapeHtml(getRangeLabel(currentRangeKey))}<br>${escapeHtml(timeRange)}</div>
                 </div>
@@ -2988,6 +3321,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return Math.max(upper - lower, 0);
             });
             const crsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi));
+            const crsiUpperBand = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi_ub));
+            const crsiLowerBand = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.crsi_db));
             const obvRsi = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.obv_rsi));
             const atrPct = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.atr_pct));
             const volume = sortedBars.map((bar) => Number(bar.volume || 0));
@@ -3017,6 +3352,22 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 (signal) => signal.entry || signal.limit_price || barMap.get(Number(signal.bar_time_ms || 0))?.close,
                 '#FC8181',
                 buildTradeSignalLabel
+            );
+            const traceTimeline = Array.isArray(displayPayload?.traceTimeline) ? displayPayload.traceTimeline : [];
+            const previewCandidateSignals = buildSignalScatter(
+                traceTimeline
+                    .filter((item) => Boolean(item?.is_preview) && ['candidate', 'blocked'].includes(String(item?.signal_state?.stage || '').trim().toLowerCase()))
+                    .map((item) => ({
+                        ...(item?.signal_state?.signal_payload || {}),
+                        bar_time_ms: item?.bar_time_ms,
+                        direction: item?.signal_state?.direction || item?.signal_state?.signal_payload?.direction || '',
+                        signal: item?.signal_state?.signal || item?.signal_state?.signal_payload?.signal || '',
+                        trace_stage: item?.signal_state?.stage || '',
+                    })),
+                sortedBars,
+                (signal) => signal.entry || signal.limit_price || signal.close || sortedBars[sortedBars.length - 1]?.close,
+                '#FBBF24',
+                () => '候选'
             );
             const fractalBullMarkers = buildIndicatorMarkerPoints(
                 sortedBars,
@@ -3104,7 +3455,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const subplotTitles = [
                 {
                     text: 'CRSI / OBV RSI',
-                    subtext: '80 / 20 为超买超卖参考线',
+                    subtext: '优先展示 cRSI 动态带，80 / 20 仅作弱参考',
                     left: gridLeft,
                     top: '59.3%',
                 },
@@ -3227,6 +3578,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ...(isTradeSignalInterval() && chartLayerState.tradeSignals ? [
                     buildMarkerScatterSeries('LONG Signal', longSignals, { color: '#48BB78', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(72,187,120,0.28)' }),
                     buildMarkerScatterSeries('SHORT Signal', shortSignals, { color: '#FC8181', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' }),
+                    buildMarkerScatterSeries('Preview Signal', previewCandidateSignals, { color: '#FBBF24', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(251,191,36,0.26)' }),
                 ] : []),
             ];
             const series = [
@@ -3264,6 +3616,26 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ] : []),
                 ...overlaySeries,
                 {
+                    name: 'cRSI Upper Band',
+                    type: 'line',
+                    xAxisIndex: 1,
+                    yAxisIndex: 1,
+                    data: crsiUpperBand,
+                    symbol: 'none',
+                    connectNulls: true,
+                    lineStyle: { width: 1, color: 'rgba(251,191,36,0.72)', type: 'dashed' },
+                },
+                {
+                    name: 'cRSI Lower Band',
+                    type: 'line',
+                    xAxisIndex: 1,
+                    yAxisIndex: 1,
+                    data: crsiLowerBand,
+                    symbol: 'none',
+                    connectNulls: true,
+                    lineStyle: { width: 1, color: 'rgba(251,191,36,0.72)', type: 'dashed' },
+                },
+                {
                     name: 'CRSI',
                     type: 'line',
                     xAxisIndex: 1,
@@ -3273,8 +3645,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     connectNulls: true,
                     lineStyle: { width: 1.2, color: '#22C55E' },
                     markLine: buildMarkLineConfig([
-                        { yAxis: 80, label: { show: false }, lineStyle: { color: 'rgba(245,158,11,0.42)' } },
-                        { yAxis: 20, label: { show: false }, lineStyle: { color: 'rgba(245,158,11,0.42)' } },
+                        { yAxis: 80, label: { show: false }, lineStyle: { color: 'rgba(245,158,11,0.24)', type: 'dashed' } },
+                        { yAxis: 20, label: { show: false }, lineStyle: { color: 'rgba(245,158,11,0.24)', type: 'dashed' } },
                         ...sessionDividerItemsSub,
                     ])
                 },
@@ -3378,7 +3750,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         xAxisIndex: [0, 1, 2],
                         start: zoomWindow.start,
                         end: zoomWindow.end,
-                        zoomOnMouseWheel: true,
+                        // Let desktop trackpad two-finger scroll move the page instead of hijacking it for zoom.
+                        zoomOnMouseWheel: !isDesktopFinePointer(),
                         moveOnMouseMove: true,
                         moveOnMouseWheel: false,
                     },
@@ -3573,6 +3946,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             chartRealtimePreviewError = '';
             resetChartRealtimeWarnings();
             chartDisplayPayload = null;
+            realtimeComputedPayload = null;
             chartMarkerDensityTier = '';
 
             const input = document.getElementById('chartSymbolInput');
@@ -3610,7 +3984,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         interval: currentInterval,
                         start_ms: rangeStartMs,
                         end_ms: cappedMs,
-                        include_signals: currentInterval === '5m'
+                        include_signals: currentInterval === '5m',
+                        include_trace: true,
                     }
                 }, 2);
                 const timelinePayload = buildTimelinePayloadFromResponse(timelineResp);
@@ -3638,9 +4013,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 lastPayload = timelinePayload;
                 await refreshChartRealtimeState({ render: false });
                 chartWorkspaceState = 'ready';
-                renderHeroStatus(lastPayload);
-                renderSummaryStrip(lastPayload);
                 renderChart(lastPayload);
+                const activePayload = getChartDisplayPayload() || lastPayload;
+                renderHeroStatus(activePayload);
+                renderSummaryStrip(activePayload);
                 if (initialFocusIndex >= 0) {
                     const displayPayload = getChartDisplayPayload() || lastPayload;
                     ensureBarVisible(initialFocusIndex, displayPayload, { center: true });
@@ -3682,10 +4058,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             compareError = '';
             comparePayload = null;
             renderCompareButtons();
-            renderHeroStatus(lastPayload);
-            renderSummaryStrip(lastPayload);
-            renderInfoRail(getChartDisplayPayload());
-            renderCursorStrip(getChartDisplayPayload());
+            const initialPayload = getChartDisplayPayload() || lastPayload;
+            renderHeroStatus(initialPayload);
+            renderSummaryStrip(initialPayload);
+            renderInfoRail(initialPayload);
+            renderCursorStrip(initialPayload);
 
             const cappedMs = currentAnchorMs || Number(lastPayload.bars[lastPayload.bars.length - 1]?.bar_time_ms || Date.now()) || Date.now();
             const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
@@ -3706,26 +4083,34 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 comparePayload = buildComparePayloadFromResponse(response);
                 compareError = '';
                 if (comparePayload?.storedTimeline?.bars?.length) {
-                    lastPayload = comparePayload.storedTimeline;
+                    lastPayload = {
+                        ...comparePayload.storedTimeline,
+                        traceTimeline: Array.isArray(comparePayload.storedTimeline?.traceTimeline) && comparePayload.storedTimeline.traceTimeline.length
+                            ? comparePayload.storedTimeline.traceTimeline
+                            : (Array.isArray(lastPayload?.traceTimeline) ? lastPayload.traceTimeline : []),
+                    };
                 }
-                renderHeroStatus(lastPayload);
-                renderSummaryStrip(lastPayload);
                 renderChart(lastPayload);
+                const activePayload = getChartDisplayPayload() || lastPayload;
+                renderHeroStatus(activePayload);
+                renderSummaryStrip(activePayload);
                 renderCompareButtons();
             } catch (error) {
                 compareError = error?.message || 'IBKR compare failed';
                 comparePayload = null;
-                renderHeroStatus(lastPayload);
-                renderSummaryStrip(lastPayload);
-                renderInfoRail(getChartDisplayPayload());
-                renderCursorStrip(getChartDisplayPayload());
+                const activePayload = getChartDisplayPayload() || lastPayload;
+                renderHeroStatus(activePayload);
+                renderSummaryStrip(activePayload);
+                renderInfoRail(activePayload);
+                renderCursorStrip(activePayload);
                 renderCompareButtons();
             } finally {
                 compareLoading = false;
-                renderHeroStatus(lastPayload);
-                renderSummaryStrip(lastPayload);
-                renderInfoRail(getChartDisplayPayload());
-                renderCursorStrip(getChartDisplayPayload());
+                const activePayload = getChartDisplayPayload() || lastPayload;
+                renderHeroStatus(activePayload);
+                renderSummaryStrip(activePayload);
+                renderInfoRail(activePayload);
+                renderCursorStrip(activePayload);
                 renderCompareButtons();
             }
         }
@@ -3810,9 +4195,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         window.clearIbkrCompare = function() {
             resetCompareState();
             if (lastPayload) {
-                renderHeroStatus(lastPayload);
-                renderSummaryStrip(lastPayload);
                 renderChart(lastPayload);
+                const activePayload = getChartDisplayPayload() || lastPayload;
+                renderHeroStatus(activePayload);
+                renderSummaryStrip(activePayload);
             }
         };
 

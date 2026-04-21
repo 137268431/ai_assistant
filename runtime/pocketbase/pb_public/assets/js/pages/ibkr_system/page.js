@@ -35,6 +35,11 @@ function buildSystemComputeSummary(healthPayload = {}, statusPayload = {}, fallb
     };
 }
 
+function ensureSystemPageTopSection() {
+    const statusBar = document.getElementById('statusBar');
+    if (statusBar) statusBar.classList.add('page-top-section');
+}
+
 function normalizeStartupPreloadState(payload = {}) {
     const source = payload && typeof payload === 'object' ? payload : {};
     const status = String(source.status || '').trim().toLowerCase()
@@ -919,6 +924,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         subtitle: '健康 / freshness / 配置总览',
     });
     document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_system.html');
+    ensureSystemPageTopSection();
     document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
     await loadSystemData(false);
     applyFocusTarget();

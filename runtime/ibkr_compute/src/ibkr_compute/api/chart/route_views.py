@@ -38,6 +38,8 @@ def build_chart_timeline_response():
         start_ms=params["start_ms"],
         end_ms=params["end_ms"],
         include_signals=params["include_signals"],
+        include_trace=params["include_trace"],
+        preview_bar=params["preview_bar"],
     )
     return jsonify(result), 200
 

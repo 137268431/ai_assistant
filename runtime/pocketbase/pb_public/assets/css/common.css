@@ -833,6 +833,21 @@
         padding-right: 4px;
       }
 
+      @media (hover: hover) and (pointer: fine) {
+        /* Hand desktop trackpad scroll to the page instead of nested panels. */
+        .panel-grid > .panel .panel-body:not(.data-table-wrap),
+        .table-grid > .panel .panel-body:not(.data-table-wrap),
+        .dual-grid > .panel .panel-body:not(.data-table-wrap),
+        .panel-scroll-body,
+        .section-scroll-body,
+        .card-scroll-body {
+          overflow: visible;
+          max-height: none;
+          overscroll-behavior: auto;
+          scrollbar-gutter: auto;
+        }
+      }
+
       .panel-body.data-table-wrap > .data-table {
         min-width: 100%;
       }

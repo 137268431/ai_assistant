@@ -20,6 +20,8 @@ DEFAULT_RUNTIME_LOCAL_URL = os.environ.get("IBKR_RUNTIME_LOCAL_URL", "http://127
 DEFAULT_PB_BASE_URL = os.environ.get("PB_BASE_URL", "https://pb.lzw-glory.top")
 DEFAULT_COMPUTE_PUBLIC_URL = os.environ.get("IBKR_COMPUTE_PUBLIC_URL", "http://206.119.171.136:5100")
 DEFAULT_INDICATOR_MISSING_GRACE_SEC = int(os.environ.get("IBKR_INDICATOR_MISSING_GRACE_SEC", "90"))
+DEFAULT_PRELOAD_WARN_SEC = int(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_WARN_SEC", "300"))
+DEFAULT_PRELOAD_FAIL_SEC = int(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_FAIL_SEC", "900"))
 
 REMOTE_SCRIPT = r'''
 import base64
@@ -44,6 +46,8 @@ BAR_STALE_MIN = int(cfg["bar_stale_min"])
 INDICATOR_STALE_MIN = int(cfg["indicator_stale_min"])
 INDICATOR_MISSING_GRACE_SEC = int(cfg.get("indicator_missing_grace_sec") or 90)
 STRICT_RUNTIME = bool(cfg["strict_runtime"])
+PRELOAD_WARN_SEC = int(cfg.get("preload_warn_sec") or 0)
+PRELOAD_FAIL_SEC = int(cfg.get("preload_fail_sec") or 0)
 
 
 def now_ms() -> int:
@@ -120,6 +124,85 @@ def normalize_bar_bucket_lag_seconds(lag_value, due_bucket_ms, completed_bucket_
     if raw_lag > 1000000000:
         return round(max(0, now_ms() / 1000.0 - raw_lag), 2)
     return round(raw_lag, 2)
+
+
+def extract_compute_startup_preload(*payloads):
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        preload = payload.get("compute_startup_preload")
+        if isinstance(preload, dict) and preload:
+            return preload
+        nested_compute = payload.get("compute")
+        if isinstance(nested_compute, dict):
+            preload = nested_compute.get("compute_startup_preload")
+            if isinstance(preload, dict) and preload:
+                return preload
+    return {}
+
+
+def compact_compute_startup_preload(payload):
+    source = payload if isinstance(payload, dict) else {}
+    return {
+        "status": str(source.get("status") or "").strip().lower() or "idle",
+        "running": bool(source.get("running")),
+        "env_completed": int(source.get("env_completed") or 0),
+        "env_total": int(source.get("env_total") or 0),
+        "symbol_completed": int(source.get("symbol_completed") or 0),
+        "symbol_total": int(source.get("symbol_total") or 0),
+        "ready_count": int(source.get("ready_count") or 0),
+        "elapsed_s": round(float(source.get("elapsed_s") or 0.0), 3),
+        "started_at": source.get("started_at"),
+        "finished_at": source.get("finished_at"),
+        "environments": list(source.get("environments") or []),
+    }
+
+
+def evaluate_compute_startup_preload_sla(preload_payload, warn_sec, fail_sec):
+    preload = compact_compute_startup_preload(preload_payload)
+    status = str(preload.get("status") or "").strip().lower() or "idle"
+    elapsed_s = round(float(preload.get("elapsed_s") or 0.0), 3)
+    warn_sec = max(0, int(warn_sec or 0))
+    fail_sec = max(0, int(fail_sec or 0))
+    level = "ok"
+    reason = "none"
+    if status == "failed":
+        level = "fail"
+        reason = "failed"
+    elif status in {"running", "scheduled"}:
+        level = "info"
+        reason = "in_progress"
+        if fail_sec > 0 and elapsed_s >= fail_sec:
+            level = "fail"
+            reason = "timeout"
+        elif warn_sec > 0 and elapsed_s >= warn_sec:
+            level = "warn"
+            reason = "slow"
+    return {
+        "level": level,
+        "reason": reason,
+        "status": status,
+        "elapsed_s": elapsed_s,
+        "warn_sec": warn_sec,
+        "fail_sec": fail_sec,
+    }
+
+
+def format_compute_startup_preload_issue(prefix, preload_payload, sla_payload):
+    preload = compact_compute_startup_preload(preload_payload)
+    sla = sla_payload if isinstance(sla_payload, dict) else {}
+    parts = [
+        prefix,
+        f"status={preload.get('status') or 'idle'}",
+        f"symbols={int(preload.get('symbol_completed') or 0)}/{int(preload.get('symbol_total') or 0)}",
+        f"elapsed_s={round(float(preload.get('elapsed_s') or 0.0), 2)}",
+    ]
+    reason = str(sla.get("reason") or "").strip().lower()
+    if reason == "slow" and int(sla.get("warn_sec") or 0) > 0:
+        parts.append(f"warn_sec={int(sla.get('warn_sec') or 0)}")
+    elif reason == "timeout" and int(sla.get("fail_sec") or 0) > 0:
+        parts.append(f"fail_sec={int(sla.get('fail_sec') or 0)}")
+    return ":".join(parts)
 
 
 def open_db():
@@ -463,6 +546,7 @@ compute_status_payload = local_http.get("compute_status", {}).get("json") or {}
 pb_statusz_payload = local_http.get("pb_ibkr_statusz", {}).get("json") or {}
 pb_healthz_payload = local_http.get("pb_ibkr_healthz", {}).get("json") or {}
 pb_system_healthz_payload = local_http.get("pb_system_healthz", {}).get("json") or {}
+compute_health_payload = local_http.get("compute_health", {}).get("json") or {}
 gateway = runtime_payload.get("gateway") or {}
 session = runtime_payload.get("session") or {}
 websocket = runtime_payload.get("websocket") or {}
@@ -480,6 +564,19 @@ runtime_topology = (
     or {}
 )
 runtime_topology_services = runtime_topology.get("services") or {}
+compute_startup_preload = compact_compute_startup_preload(
+    extract_compute_startup_preload(
+        compute_status_payload,
+        compute_health_payload,
+        pb_statusz_payload,
+        pb_healthz_payload,
+    )
+)
+compute_startup_preload_sla = evaluate_compute_startup_preload_sla(
+    compute_startup_preload,
+    PRELOAD_WARN_SEC,
+    PRELOAD_FAIL_SEC,
+)
 
 canonical_pending_total = int(canonical_5m.get("pending_symbols_total") or bar_freshness.get("pending_symbols_total") or 0)
 canonical_due_ms = int(canonical_5m.get("last_due_bucket_ms") or 0)
@@ -549,6 +646,26 @@ if targets.get("total_count", 0) == 0:
 elif targets.get("eligible_count", 0) == 0:
     warnings.append("db:targets_no_eligible_rows")
 
+preload_reason = str(compute_startup_preload_sla.get("reason") or "").strip().lower()
+if preload_reason == "failed":
+    failures.append("compute:startup_preload_failed")
+elif preload_reason == "timeout":
+    failures.append(
+        format_compute_startup_preload_issue(
+            "compute:startup_preload_timeout",
+            compute_startup_preload,
+            compute_startup_preload_sla,
+        )
+    )
+elif preload_reason == "slow":
+    warnings.append(
+        format_compute_startup_preload_issue(
+            "compute:startup_preload_slow",
+            compute_startup_preload,
+            compute_startup_preload_sla,
+        )
+    )
+
 active_target_count = int(market_universe.get("active_target_count") or 0)
 if targets.get("eligible_count", 0) > 0 and active_target_count == 0:
     warnings.append("runtime:active_subscription_symbols_empty")
@@ -561,6 +678,8 @@ report = {
         "bar_stale_min": BAR_STALE_MIN,
         "indicator_stale_min": INDICATOR_STALE_MIN,
         "indicator_missing_grace_sec": INDICATOR_MISSING_GRACE_SEC,
+        "preload_warn_sec": PRELOAD_WARN_SEC,
+        "preload_fail_sec": PRELOAD_FAIL_SEC,
     },
     "failures": failures,
     "warnings": warnings,
@@ -580,6 +699,8 @@ report = {
         "runtime_summary": {
             "service_profile": runtime_service_profile,
             "service_topology": runtime_topology,
+            "compute_startup_preload": compute_startup_preload,
+            "compute_startup_preload_sla": compute_startup_preload_sla,
             "gateway": gateway,
             "session": session,
             "websocket": websocket,
@@ -591,6 +712,85 @@ report = {
 }
 print(json.dumps(report, ensure_ascii=False, indent=2))
 '''
+
+
+def extract_compute_startup_preload(*payloads) -> dict:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        preload = payload.get("compute_startup_preload")
+        if isinstance(preload, dict) and preload:
+            return preload
+        nested_compute = payload.get("compute")
+        if isinstance(nested_compute, dict):
+            preload = nested_compute.get("compute_startup_preload")
+            if isinstance(preload, dict) and preload:
+                return preload
+    return {}
+
+
+def compact_compute_startup_preload(payload) -> dict:
+    source = payload if isinstance(payload, dict) else {}
+    return {
+        "status": str(source.get("status") or "").strip().lower() or "idle",
+        "running": bool(source.get("running")),
+        "env_completed": int(source.get("env_completed") or 0),
+        "env_total": int(source.get("env_total") or 0),
+        "symbol_completed": int(source.get("symbol_completed") or 0),
+        "symbol_total": int(source.get("symbol_total") or 0),
+        "ready_count": int(source.get("ready_count") or 0),
+        "elapsed_s": round(float(source.get("elapsed_s") or 0.0), 3),
+        "started_at": source.get("started_at"),
+        "finished_at": source.get("finished_at"),
+        "environments": list(source.get("environments") or []),
+    }
+
+
+def evaluate_compute_startup_preload_sla(preload_payload, warn_sec, fail_sec) -> dict:
+    preload = compact_compute_startup_preload(preload_payload)
+    status = str(preload.get("status") or "").strip().lower() or "idle"
+    elapsed_s = round(float(preload.get("elapsed_s") or 0.0), 3)
+    warn_sec = max(0, int(warn_sec or 0))
+    fail_sec = max(0, int(fail_sec or 0))
+    level = "ok"
+    reason = "none"
+    if status == "failed":
+        level = "fail"
+        reason = "failed"
+    elif status in {"running", "scheduled"}:
+        level = "info"
+        reason = "in_progress"
+        if fail_sec > 0 and elapsed_s >= fail_sec:
+            level = "fail"
+            reason = "timeout"
+        elif warn_sec > 0 and elapsed_s >= warn_sec:
+            level = "warn"
+            reason = "slow"
+    return {
+        "level": level,
+        "reason": reason,
+        "status": status,
+        "elapsed_s": elapsed_s,
+        "warn_sec": warn_sec,
+        "fail_sec": fail_sec,
+    }
+
+
+def format_compute_startup_preload_issue(prefix: str, preload_payload, sla_payload) -> str:
+    preload = compact_compute_startup_preload(preload_payload)
+    sla = sla_payload if isinstance(sla_payload, dict) else {}
+    parts = [
+        prefix,
+        f"status={preload.get('status') or 'idle'}",
+        f"symbols={int(preload.get('symbol_completed') or 0)}/{int(preload.get('symbol_total') or 0)}",
+        f"elapsed_s={round(float(preload.get('elapsed_s') or 0.0), 2)}",
+    ]
+    reason = str(sla.get("reason") or "").strip().lower()
+    if reason == "slow" and int(sla.get("warn_sec") or 0) > 0:
+        parts.append(f"warn_sec={int(sla.get('warn_sec') or 0)}")
+    elif reason == "timeout" and int(sla.get("fail_sec") or 0) > 0:
+        parts.append(f"fail_sec={int(sla.get('fail_sec') or 0)}")
+    return ":".join(parts)
 
 
 def parse_args() -> argparse.Namespace:
@@ -607,9 +807,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bar-stale-min", type=int, default=30)
     parser.add_argument("--indicator-stale-min", type=int, default=30)
     parser.add_argument("--indicator-missing-grace-sec", type=int, default=DEFAULT_INDICATOR_MISSING_GRACE_SEC)
+    parser.add_argument("--preload-warn-sec", type=int, default=DEFAULT_PRELOAD_WARN_SEC)
+    parser.add_argument("--preload-fail-sec", type=int, default=DEFAULT_PRELOAD_FAIL_SEC)
     parser.add_argument("--strict-runtime", action="store_true")
     parser.add_argument("--json", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.preload_warn_sec < 0:
+        parser.error("--preload-warn-sec must be >= 0")
+    if args.preload_fail_sec < 0:
+        parser.error("--preload-fail-sec must be >= 0")
+    if args.preload_warn_sec and args.preload_fail_sec and args.preload_fail_sec < args.preload_warn_sec:
+        parser.error("--preload-fail-sec must be >= --preload-warn-sec when both are set")
+    return args
 
 
 def _decode_json_payload(raw: str) -> dict:
@@ -636,6 +845,8 @@ def run_remote(args: argparse.Namespace) -> dict:
         "bar_stale_min": args.bar_stale_min,
         "indicator_stale_min": args.indicator_stale_min,
         "indicator_missing_grace_sec": args.indicator_missing_grace_sec,
+        "preload_warn_sec": args.preload_warn_sec,
+        "preload_fail_sec": args.preload_fail_sec,
         "strict_runtime": args.strict_runtime,
     }
     env_blob = base64.b64encode(json.dumps(config).encode("utf-8")).decode("ascii")
@@ -744,14 +955,181 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
         or (public.get("pb_ibkr_statusz", {}).get("json") or {}).get("service_topology")
         or {}
     )
+    public_compute_startup_preload = extract_compute_startup_preload(
+        (public.get("pb_system_summaryz", {}).get("json") or {}).get("ibkr_compute") or {},
+        public.get("pb_ibkr_statusz", {}).get("json") or {},
+        public.get("pb_ibkr_healthz", {}).get("json") or {},
+        public.get("compute_public_health", {}).get("json") or {},
+    )
+    public_compute_startup_preload_sla = evaluate_compute_startup_preload_sla(
+        public_compute_startup_preload,
+        args.preload_warn_sec,
+        args.preload_fail_sec,
+    )
+    payload.setdefault("public_summary", {})
+    payload["public_summary"]["compute_startup_preload"] = compact_compute_startup_preload(public_compute_startup_preload)
+    payload["public_summary"]["compute_startup_preload_sla"] = public_compute_startup_preload_sla
     services = topology_payload.get("services") or {}
     if "ibkr-runtime" not in services:
         failures.append("public:topology:ibkr_runtime_missing")
     if "ibkr-compute" not in services:
         failures.append("public:topology:ibkr_compute_missing")
 
+    public_preload_reason = str(public_compute_startup_preload_sla.get("reason") or "").strip().lower()
+    if public_preload_reason == "failed":
+        failures.append("public:compute:startup_preload_failed")
+    elif public_preload_reason in {"slow", "timeout"}:
+        warnings.append(
+            format_compute_startup_preload_issue(
+                f"public:compute:startup_preload_{public_preload_reason}",
+                public_compute_startup_preload,
+                public_compute_startup_preload_sla,
+            )
+        )
+
     payload["ok"] = len(failures) == 0
     return payload
+
+
+def _status_text(ok_value) -> str:
+    return "OK" if ok_value else "FAIL"
+
+
+def _safe_dict(payload) -> dict:
+    return payload if isinstance(payload, dict) else {}
+
+
+def _service_summary_line(name: str, payload) -> str:
+    service = _safe_dict(payload)
+    state = service.get("active_state") or service.get("status") or "unknown"
+    pid = service.get("main_pid") or service.get("pid") or "-"
+    return f"{name}={state} pid={pid}"
+
+
+def _build_preload_summary_line(preload_payload, sla_payload=None) -> str:
+    preload = compact_compute_startup_preload(preload_payload)
+    status = str(preload.get("status") or "idle").upper()
+    symbol_total = int(preload.get("symbol_total") or 0)
+    symbol_completed = int(preload.get("symbol_completed") or 0)
+    ready_count = int(preload.get("ready_count") or 0)
+    env_total = int(preload.get("env_total") or 0)
+    env_completed = int(preload.get("env_completed") or 0)
+    parts = [status]
+    if env_total > 0:
+        parts.append(f"env {env_completed}/{env_total}")
+    if symbol_total > 0:
+        parts.append(f"symbols {symbol_completed}/{symbol_total}")
+    if ready_count > 0 or status == "COMPLETED":
+        parts.append(f"ready {ready_count}/{symbol_total or 0}")
+    elapsed_s = float(preload.get("elapsed_s") or 0.0)
+    if elapsed_s > 0:
+        parts.append(f"elapsed {round(elapsed_s, 1)}s")
+    sla = _safe_dict(sla_payload)
+    reason = str(sla.get("reason") or "").strip().lower()
+    if reason == "in_progress":
+        parts.append("in_sla")
+    elif reason == "slow":
+        warn_sec = int(sla.get("warn_sec") or 0)
+        parts.append(f"slow>{warn_sec}s" if warn_sec > 0 else "slow")
+    elif reason == "timeout":
+        fail_sec = int(sla.get("fail_sec") or 0)
+        parts.append(f"timeout>{fail_sec}s" if fail_sec > 0 else "timeout")
+    return " · ".join(parts)
+
+
+def _build_runtime_summary_line(payload: dict) -> str:
+    runtime_summary = _safe_dict((_safe_dict(payload.get("remote")).get("runtime_summary")))
+    gateway = _safe_dict(runtime_summary.get("gateway"))
+    session = _safe_dict(runtime_summary.get("session"))
+    websocket = _safe_dict(runtime_summary.get("websocket"))
+    parts = [
+        f"gateway={'up' if gateway.get('running') and gateway.get('reachable') else 'down'}",
+        f"session={'auth' if session.get('authenticated') else 'wait'}",
+        f"websocket={'ready' if websocket.get('ready') else 'not_ready'}",
+    ]
+    return " · ".join(parts)
+
+
+def _build_data_summary_line(payload: dict) -> str:
+    remote_db = _safe_dict((_safe_dict(payload.get("remote")).get("db")))
+    latest_bar = _safe_dict(remote_db.get("latest_bar_5m"))
+    latest_indicator = _safe_dict(remote_db.get("latest_indicator_5m"))
+    latest_signal = _safe_dict(remote_db.get("latest_signal"))
+    parts = []
+    if latest_bar:
+        parts.append(
+            f"bar5m {latest_bar.get('symbol') or '--'} age={latest_bar.get('age_min') if latest_bar.get('age_min') is not None else '--'}m"
+        )
+    if latest_indicator:
+        parts.append(
+            f"ind5m {latest_indicator.get('symbol') or '--'} age={latest_indicator.get('age_min') if latest_indicator.get('age_min') is not None else '--'}m"
+        )
+    if latest_signal:
+        parts.append(f"signal {latest_signal.get('symbol') or '--'}")
+    return " · ".join(parts) if parts else "--"
+
+
+def _build_public_summary_line(payload: dict) -> str:
+    public = _safe_dict(payload.get("public"))
+    statusz = _safe_dict(public.get("pb_ibkr_statusz"))
+    summaryz = _safe_dict(public.get("pb_system_summaryz"))
+    runtime_page = _safe_dict(public.get("pb_runtime_page"))
+    system_page = _safe_dict(public.get("pb_system_page"))
+    return " · ".join(
+        [
+            f"statusz={_status_text(statusz.get('ok'))}",
+            f"summaryz={_status_text(summaryz.get('ok'))}",
+            f"runtime_page={_status_text(runtime_page.get('ok'))}",
+            f"system_page={_status_text(system_page.get('ok'))}",
+        ]
+    )
+
+
+def _build_thresholds_summary_line(payload: dict) -> str:
+    thresholds = _safe_dict(payload.get("thresholds"))
+    return " · ".join(
+        [
+            f"bar<={thresholds.get('bar_stale_min') or '--'}m",
+            f"indicator<={thresholds.get('indicator_stale_min') or '--'}m",
+            f"indicator_grace={thresholds.get('indicator_missing_grace_sec') or '--'}s",
+            f"preload warn={thresholds.get('preload_warn_sec') or 0}s",
+            f"fail={thresholds.get('preload_fail_sec') or 0}s",
+        ]
+    )
+
+
+def print_human_summary(payload: dict) -> None:
+    services = _safe_dict((_safe_dict(payload.get("remote")).get("services")))
+    runtime_summary = _safe_dict((_safe_dict(payload.get("remote")).get("runtime_summary")))
+    public_summary = _safe_dict(payload.get("public_summary"))
+    lines = [
+        "IBKR Stack Health",
+        f"- Result: {_status_text(payload.get('ok'))}",
+        f"- Environment: {payload.get('environment') or '--'}",
+        "- Services: "
+        + " | ".join(
+            [
+                _service_summary_line("runtime", services.get("ibkr-runtime")),
+                _service_summary_line("gateway", services.get("ibkr-gateway")),
+                _service_summary_line("compute", services.get("ibkr-compute")),
+                _service_summary_line("pocketbase", services.get("pocketbase")),
+            ]
+        ),
+        f"- Thresholds: {_build_thresholds_summary_line(payload)}",
+        f"- Runtime: {_build_runtime_summary_line(payload)}",
+        f"- Compute Preload: {_build_preload_summary_line(runtime_summary.get('compute_startup_preload'), runtime_summary.get('compute_startup_preload_sla'))}",
+        f"- Public Preload: {_build_preload_summary_line(public_summary.get('compute_startup_preload'), public_summary.get('compute_startup_preload_sla'))}",
+        f"- Data: {_build_data_summary_line(payload)}",
+        f"- Public: {_build_public_summary_line(payload)}",
+    ]
+
+    warnings = list(payload.get("warnings") or [])
+    failures = list(payload.get("failures") or [])
+    if warnings:
+        lines.append(f"- Warnings: {'; '.join(str(item) for item in warnings)}")
+    if failures:
+        lines.append(f"- Failures: {'; '.join(str(item) for item in failures)}")
+    print("\n".join(lines))
 
 
 def main() -> int:
@@ -767,7 +1145,7 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return 0 if payload.get("ok") else 1
 
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print_human_summary(payload)
     if payload.get("ok"):
         print("\nHealth Check OK: core services, endpoints, and freshness checks passed.")
         return 0

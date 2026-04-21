@@ -68,6 +68,66 @@
             z-index: 10;
         }
 
+        .indicator-view-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .view-toggle-group,
+        .chart-compare-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .view-toggle-btn,
+        .chart-compare-btn {
+            padding: 9px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(8, 12, 20, 0.92);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+
+        .view-toggle-btn.active,
+        .chart-compare-btn.active {
+            border-color: rgba(72,187,120,0.42);
+            background: rgba(72,187,120,0.14);
+            color: #bbf7d0;
+            transform: translateY(-1px);
+        }
+
+        .sort-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .sort-label {
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .sort-select {
+            min-width: 140px;
+            padding: 9px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
         .indicator-card {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -129,6 +189,10 @@
             gap: 12px;
         }
 
+        .indicator-grid.compact {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
         .indicator-section {
             background: var(--surface2);
             padding: 12px;
@@ -164,6 +228,52 @@
             flex-wrap: wrap;
             gap: 6px;
             margin: 0 0 12px;
+        }
+
+        .indicator-focus-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 0 0 12px;
+        }
+
+        .indicator-focus-chip,
+        .table-state-chip {
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(99,179,237,0.14);
+            background: rgba(8, 12, 20, 0.76);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .indicator-focus-chip.long,
+        .table-state-chip.long {
+            color: #bbf7d0;
+            border-color: rgba(72,187,120,0.3);
+            background: rgba(72,187,120,0.14);
+        }
+
+        .indicator-focus-chip.short,
+        .table-state-chip.short {
+            color: #fecaca;
+            border-color: rgba(252,129,129,0.26);
+            background: rgba(252,129,129,0.14);
+        }
+
+        .indicator-focus-chip.warn,
+        .table-state-chip.warn {
+            color: #fde68a;
+            border-color: rgba(246,173,85,0.24);
+            background: rgba(246,173,85,0.14);
+        }
+
+        .indicator-focus-chip.accent,
+        .table-state-chip.accent {
+            color: #dbeafe;
+            border-color: rgba(99,179,237,0.26);
+            background: rgba(99,179,237,0.14);
         }
 
         .indicator-interval {
@@ -341,6 +451,140 @@
             background: rgba(99,179,237,0.16);
             color: var(--accent);
             border: 1px solid rgba(99,179,237,0.24);
+        }
+
+        .btn-secondary {
+            background: rgba(246,173,85,0.14);
+            color: #fbd38d;
+            border: 1px solid rgba(246,173,85,0.24);
+        }
+
+        .indicator-evolution-container {
+            margin-top: 12px;
+        }
+
+        .indicator-evolution-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+            gap: 8px;
+        }
+
+        .indicator-evolution-empty {
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px dashed rgba(99,179,237,0.16);
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .evolution-pill {
+            padding: 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(99,179,237,0.12);
+            background: rgba(8, 12, 20, 0.76);
+        }
+
+        .evolution-pill.long {
+            border-color: rgba(72,187,120,0.28);
+        }
+
+        .evolution-pill.short {
+            border-color: rgba(252,129,129,0.28);
+        }
+
+        .evolution-pill.warn {
+            border-color: rgba(246,173,85,0.28);
+        }
+
+        .evolution-time,
+        .evolution-close {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .evolution-meta {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1.5;
+        }
+
+        .indicator-table-wrap {
+            overflow: auto;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: var(--surface);
+        }
+
+        .indicator-table {
+            width: 100%;
+            min-width: 1080px;
+            border-collapse: collapse;
+        }
+
+        .indicator-table th,
+        .indicator-table td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            text-align: left;
+            vertical-align: top;
+            font-size: 12px;
+        }
+
+        .indicator-table th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: rgba(8, 12, 20, 0.96);
+            color: var(--muted);
+            font-size: 10px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .indicator-table tbody tr {
+            cursor: pointer;
+            transition: background 0.16s ease;
+        }
+
+        .indicator-table tbody tr:hover {
+            background: rgba(99,179,237,0.06);
+        }
+
+        .table-main {
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .table-sub {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1.5;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .table-action-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .table-action-btn {
+            padding: 7px 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(99,179,237,0.18);
+            background: rgba(8, 12, 20, 0.82);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+        }
+
+        .table-inline {
+            min-width: 220px;
         }
 
         .chart-modal-overlay {
@@ -567,6 +811,21 @@
                 align-items: stretch;
             }
 
+            .indicator-view-toolbar,
+            .sort-group {
+                align-items: stretch;
+            }
+
+            .view-toggle-group {
+                width: 100%;
+            }
+
+            .view-toggle-btn,
+            .chart-compare-btn {
+                flex: 1 1 0;
+                justify-content: center;
+            }
+
             .search-toolbar #datePicker,
             .search-toolbar .refresh-control {
                 flex: 1 1 100%;
@@ -579,6 +838,9 @@
 
             .chart-canvas {
                 height: 560px;
+            }
+            .indicator-grid.compact {
+                grid-template-columns: 1fr;
             }
             .indicator-actions {
                 flex-direction: column;

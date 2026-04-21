@@ -245,6 +245,18 @@
             scrollbar-gutter: stable both-edges;
         }
 
+        @media (hover: hover) and (pointer: fine) {
+            .dual-grid {
+                align-items: start;
+            }
+
+            .summary-list, .log-list {
+                flex: 0 0 auto;
+                overflow: visible;
+                scrollbar-gutter: auto;
+            }
+        }
+
         .dual-grid > .panel {
             display: flex;
             flex-direction: column;

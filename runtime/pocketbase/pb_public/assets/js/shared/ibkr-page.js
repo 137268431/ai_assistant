@@ -353,8 +353,32 @@ function normalizeIbkrComputeHealth(health = {}) {
         last_compute: health?.ibkr_compute?.last_compute || health?.last_compute || null,
         last_scan: health?.ibkr_compute?.last_scan || health?.last_scan || null,
         error_count: health?.ibkr_compute?.error_count ?? health?.error_count ?? 0,
-        uptime_s: health?.ibkr_compute?.uptime_s ?? health?.uptime_s ?? 0
+        uptime_s: health?.ibkr_compute?.uptime_s ?? health?.uptime_s ?? 0,
+        startup_preload: health?.ibkr_compute?.startup_preload
+            || health?.ibkr_compute?.compute_startup_preload
+            || health?.startup_preload
+            || health?.compute_startup_preload
+            || null
     };
+}
+
+function getIbkrComputeStartupPreloadMeta(compute = {}) {
+    const preload = compute?.startup_preload || compute?.compute_startup_preload || {};
+    if (!preload || typeof preload !== 'object') return '';
+
+    const status = String(preload.status || '').trim().toLowerCase();
+    const symbolTotal = Number(preload.symbol_total || 0) || 0;
+    const symbolCompleted = Number(preload.symbol_completed || 0) || 0;
+    const readyCount = Number(preload.ready_count || 0) || 0;
+    const envCompleted = Number(preload.env_completed || 0) || 0;
+    const envTotal = Number(preload.env_total || 0) || 0;
+
+    if (status === 'running') return `preload ${symbolCompleted}/${symbolTotal || '--'}`;
+    if (status === 'scheduled') return `preload queued ${envCompleted}/${envTotal || '--'}`;
+    if (status === 'completed') return `preload done ${readyCount}/${symbolTotal || 0}`;
+    if (status === 'failed') return 'preload failed';
+    if (status === 'skipped') return 'preload skipped';
+    return '';
 }
 
 function getIbkrDataStatusCardModel(dataHealth = {}) {
@@ -407,6 +431,8 @@ function getIbkrComputeStatusCardModel(compute = {}) {
     if (Number(compute?.total_engines || 0) > 0) {
         metaParts.push(`${Number(compute.ready_engines || 0)}/${Number(compute.total_engines || 0)} ready`);
     }
+    const preloadMeta = getIbkrComputeStartupPreloadMeta(compute);
+    if (preloadMeta) metaParts.push(preloadMeta);
     if (Number(compute?.last_realtime_elapsed_s || 0) > 0) metaParts.push(`${Number(compute.last_realtime_elapsed_s || 0).toFixed(2)}s`);
     if (Number(compute?.last_realtime_signals || 0) > 0) metaParts.push(`sig ${Number(compute.last_realtime_signals || 0)}`);
     if (Number(compute?.last_realtime_errors || 0) > 0) metaParts.push(`err ${Number(compute.last_realtime_errors || 0)}`);

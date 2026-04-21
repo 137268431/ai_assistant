@@ -11,6 +11,7 @@
 """
 
 import logging
+from copy import deepcopy
 
 from .position_sizing import calc_long_position, calc_short_position
 
@@ -65,6 +66,7 @@ class SignalGenerator:
         # 前一根信号状态 (去重)
         self._prev_buy_signal = False
         self._prev_sell_signal = False
+        self.last_trace = self._empty_trace()
 
     def set_params(self, params: dict = None) -> None:
         self.params = params or {}
@@ -94,18 +96,27 @@ class SignalGenerator:
         返回 None (无信号) 或 signal dict。
         """
         if not snapshot:
+            self.last_trace = self._empty_trace()
             return None
         if self.symbol_is_market_monitor:
+            self.last_trace = self._build_trace_payload(
+                snapshot,
+                stage="none",
+                filters=["市场监控标的不生成信号"],
+            )
             return None
 
         sd_lower = snapshot.get("sd_lower", False)
         sd_upper = snapshot.get("sd_upper", False)
+        events: list[str] = []
 
         # ── 1. SD 窗口激活 (新触及边缘检测) ──
         if sd_lower and not self._prev_sd_lower:
             self._activate_window("lower")
+            events.append("SD下轨触发，开启下轨窗口")
         if sd_upper and not self._prev_sd_upper:
             self._activate_window("upper")
+            events.append("SD上轨触发，开启上轨窗口")
         self._prev_sd_lower = sd_lower
         self._prev_sd_upper = sd_upper
 
@@ -127,30 +138,40 @@ class SignalGenerator:
         if sd_upper_valid and ema_bull_touch:
             self.sd_upper_bull_touch_seen = True
             self.sd_upper_bull_touch_line = self._resolve_touch_line(snapshot, "bull")
+            events.append(f"上轨窗口记录 EMA 多头触及[{self.sd_upper_bull_touch_line}]")
         if sd_lower_valid and ema_bear_touch:
             self.sd_lower_bear_touch_seen = True
             self.sd_lower_bear_touch_line = self._resolve_touch_line(snapshot, "bear")
+            events.append(f"下轨窗口记录 EMA 空头触及[{self.sd_lower_bear_touch_line}]")
 
         # Fractal 收集
         if sd_upper_valid and fractal_bull:
             self.sd_upper_bull_fractal_seen = True
+            events.append("上轨窗口记录多头分形")
         if sd_lower_valid and fractal_bull:
             self.sd_lower_bull_fractal_seen = True
+            events.append("下轨窗口记录多头分形")
         if sd_upper_valid and fractal_bear:
             self.sd_upper_bear_fractal_seen = True
+            events.append("上轨窗口记录空头分形")
         if sd_lower_valid and fractal_bear:
             self.sd_lower_bear_fractal_seen = True
+            events.append("下轨窗口记录空头分形")
 
         # 背离收集 (任一窗口有效时)
         if sd_upper_valid or sd_lower_valid:
             if crsi_bull_div:
                 self.bull_crsi_div_seen = True
+                events.append("记录 cRSI 多头背离")
             if crsi_bear_div:
                 self.bear_crsi_div_seen = True
+                events.append("记录 cRSI 空头背离")
             if obv_bull_div:
                 self.bull_obv_div_seen = True
+                events.append("记录 OBV 多头背离")
             if obv_bear_div:
                 self.bear_obv_div_seen = True
+                events.append("记录 OBV 空头背离")
 
         # ── 3. 反向信号重置 ──
         bull_components_exist = (
@@ -166,8 +187,10 @@ class SignalGenerator:
 
         if bull_components_exist and (fractal_bear or crsi_bear_div or obv_bear_div):
             self._clear_bull_components()
+            events.append("出现反向空头组件，清空多头窗口组件")
         if bear_components_exist and (fractal_bull or crsi_bull_div or obv_bull_div):
             self._clear_bear_components()
+            events.append("出现反向多头组件，清空空头窗口组件")
 
         # ── 4. 信号组装 ──
         bull_div_seen = self.bull_crsi_div_seen or self.bull_obv_div_seen
@@ -211,6 +234,15 @@ class SignalGenerator:
         self._prev_buy_signal = buy_raw
         self._prev_sell_signal = sell_raw
 
+        filters = self._build_filter_labels(
+            block_mr_long=block_mr_long,
+            block_mr_short=block_mr_short,
+            block_ema_trend=block_ema_trend,
+            block_all=block_all,
+            filter_reason_buy=filter_reason_buy,
+            filter_reason_sell=filter_reason_sell,
+        )
+
         # ── 6. 窗口消费 ──
         if buy_once:
             if sd_upper_valid and self.sd_upper_bull_touch_seen and self.sd_upper_bull_fractal_seen and bull_div_seen:
@@ -226,21 +258,70 @@ class SignalGenerator:
         # ── 7. 组件清除 ──
         if buy_raw and should_filter_buy:
             self._clear_bull_components()
+            events.append(f"多头候选被过滤: {filter_reason_buy or '未知原因'}")
         if sell_raw and should_filter_sell:
             self._clear_bear_components()
+            events.append(f"空头候选被过滤: {filter_reason_sell or '未知原因'}")
         if buy_once:
             self.buy_consumed = True
             self._clear_bull_components()
+            events.append("多头信号确认并消费窗口")
         if sell_once:
             self.sell_consumed = True
             self._clear_bear_components()
+            events.append("空头信号确认并消费窗口")
 
         # ── 8. 生成信号 ──
         signal = None
+        stage = "none"
+        preview_signal = None
         if buy_once:
             signal = self._build_signal("long", snapshot, sd_upper_valid, sd_lower_valid)
+            preview_signal = signal
+            stage = "confirmed"
         elif sell_once:
             signal = self._build_signal("short", snapshot, sd_upper_valid, sd_lower_valid)
+            preview_signal = signal
+            stage = "confirmed"
+        elif buy_raw:
+            preview_signal = self._build_signal("long", snapshot, sd_upper_valid, sd_lower_valid)
+            stage = "blocked" if should_filter_buy else "candidate"
+        elif sell_raw:
+            preview_signal = self._build_signal("short", snapshot, sd_upper_valid, sd_lower_valid)
+            stage = "blocked" if should_filter_sell else "candidate"
+
+        self.last_trace = self._build_trace_payload(
+            snapshot,
+            stage=stage,
+            signal=preview_signal,
+            filter_reason=filter_reason_buy if stage == "blocked" and preview_signal and preview_signal.get("direction") == "long" else (
+                filter_reason_sell if stage == "blocked" and preview_signal and preview_signal.get("direction") == "short" else ""
+            ),
+            events=events,
+            filters=filters,
+            window_flags={
+                "sd_upper_valid": sd_upper_valid,
+                "sd_lower_valid": sd_lower_valid,
+                "sd_upper_active": self.sd_upper_mr_active,
+                "sd_lower_active": self.sd_lower_mr_active,
+                "sd_upper_used": self.sd_upper_mr_used,
+                "sd_lower_used": self.sd_lower_mr_used,
+            },
+            component_flags={
+                "sd_upper_bull_touch_seen": self.sd_upper_bull_touch_seen,
+                "sd_upper_bull_fractal_seen": self.sd_upper_bull_fractal_seen,
+                "sd_upper_bear_fractal_seen": self.sd_upper_bear_fractal_seen,
+                "sd_lower_bull_fractal_seen": self.sd_lower_bull_fractal_seen,
+                "sd_lower_bear_touch_seen": self.sd_lower_bear_touch_seen,
+                "sd_lower_bear_fractal_seen": self.sd_lower_bear_fractal_seen,
+                "bull_crsi_div_seen": self.bull_crsi_div_seen,
+                "bear_crsi_div_seen": self.bear_crsi_div_seen,
+                "bull_obv_div_seen": self.bull_obv_div_seen,
+                "bear_obv_div_seen": self.bear_obv_div_seen,
+                "buy_raw": buy_raw,
+                "sell_raw": sell_raw,
+            },
+        )
 
         return signal
 
@@ -420,6 +501,109 @@ class SignalGenerator:
             },
         }
 
+    def _empty_trace(self) -> dict:
+        return {
+            "signal_state": {
+                "stage": "none",
+                "direction": "",
+                "signal": "",
+                "label": "无信号",
+                "reason": "",
+                "filter_reason": "",
+                "signal_window": "",
+                "signal_mode": "",
+                "ema_touch_line": "",
+                "div_source": "",
+            },
+            "events": [],
+            "filters": [],
+            "window_flags": {},
+            "component_flags": {},
+        }
+
+    def _build_filter_labels(
+        self,
+        *,
+        block_mr_long: bool,
+        block_mr_short: bool,
+        block_ema_trend: bool,
+        block_all: bool,
+        filter_reason_buy: str = "",
+        filter_reason_sell: str = "",
+    ) -> list[str]:
+        labels: list[str] = []
+        if block_all:
+            labels.append("震荡市过滤")
+        if block_ema_trend:
+            labels.append("EMA 趋势过滤")
+        if block_mr_long:
+            labels.append("MR Long 过滤")
+        if block_mr_short:
+            labels.append("MR Short 过滤")
+        if filter_reason_buy:
+            labels.append(f"多头过滤: {filter_reason_buy}")
+        if filter_reason_sell:
+            labels.append(f"空头过滤: {filter_reason_sell}")
+        return labels
+
+    def _build_signal_state_label(self, signal: dict | None, stage: str) -> str:
+        if not signal:
+            return "无信号"
+        extra = dict(signal.get("extra") or {})
+        direction = str(signal.get("direction", "") or "").strip().lower()
+        signal_window = str(extra.get("signal_window", "") or "").strip().lower()
+        signal_mode = str(extra.get("signal_mode", "") or "").strip().lower()
+        if direction == "long":
+            base = "顺势多" if signal_mode == "trend" and signal_window == "sd_upper" else "回归多"
+        elif direction == "short":
+            base = "顺势空" if signal_mode == "trend" and signal_window == "sd_lower" else "回归空"
+        else:
+            base = str(signal.get("signal") or "信号")
+        suffix_map = {
+            "confirmed": "已确认",
+            "candidate": "候选",
+            "blocked": "已过滤",
+        }
+        suffix = suffix_map.get(str(stage or "").strip().lower())
+        return f"{base}{suffix}" if suffix else base
+
+    def _build_trace_payload(
+        self,
+        snapshot: dict,
+        *,
+        stage: str,
+        signal: dict | None = None,
+        filter_reason: str = "",
+        events: list[str] | None = None,
+        filters: list[str] | None = None,
+        window_flags: dict | None = None,
+        component_flags: dict | None = None,
+    ) -> dict:
+        signal_copy = deepcopy(signal) if signal else None
+        signal_extra = dict((signal_copy or {}).get("extra") or {})
+        return {
+            "signal_state": {
+                "stage": str(stage or "none"),
+                "direction": str((signal_copy or {}).get("direction", "") or ""),
+                "signal": str((signal_copy or {}).get("signal", "") or ""),
+                "label": self._build_signal_state_label(signal_copy, stage),
+                "reason": str((signal_copy or {}).get("reason", "") or ""),
+                "filter_reason": str(filter_reason or ""),
+                "signal_window": str(signal_extra.get("signal_window", "") or ""),
+                "signal_mode": str(signal_extra.get("signal_mode", "") or ""),
+                "ema_touch_line": str(signal_extra.get("ema_touch_line", "") or ""),
+                "div_source": str(signal_extra.get("div_source", "") or ""),
+                "signal_payload": signal_copy,
+            },
+            "events": list(events or []),
+            "filters": list(filters or []),
+            "window_flags": dict(window_flags or {}),
+            "component_flags": dict(component_flags or {}),
+        }
+
+    def get_trace_snapshot(self) -> dict:
+        return deepcopy(self.last_trace or self._empty_trace())
+
     def _get_div_source(self, direction: str) -> str:
         if direction == "long":
             crsi = self.bull_crsi_div_seen
@@ -465,3 +649,4 @@ class SignalGenerator:
         self._prev_sd_upper = False
         self._prev_buy_signal = False
         self._prev_sell_signal = False
+        self.last_trace = self._empty_trace()

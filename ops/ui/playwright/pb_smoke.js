@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { chromium, devices, request } = require('playwright');
+const { waitForHomeOverviewReady, collectHomeOverviewIssues } = require('./home_overview_checks');
 
 const DEFAULT_EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const DEFAULT_PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
@@ -118,22 +119,7 @@ async function waitForPageReady(page, url) {
   const path = new URL(url).pathname;
 
   const waiters = {
-    '/index.html': () => page.waitForFunction(() => {
-      const readyStates = {
-        overview: document.getElementById('homeOverview')?.dataset.ready || '',
-        targets: document.getElementById('homeTargets')?.dataset.ready || '',
-        market: document.getElementById('homeMarket')?.dataset.ready || '',
-        activity: document.getElementById('homeActivity')?.dataset.ready || '',
-      };
-      return (
-        readyStates.overview === 'ready' &&
-        ['ready', 'empty'].includes(readyStates.targets) &&
-        ['ready', 'empty'].includes(readyStates.market) &&
-        ['ready', 'empty'].includes(readyStates.activity) &&
-        document.querySelectorAll('#homeOverview .home-stat-card').length >= 6 &&
-        document.querySelectorAll('#homeQuickLinks .home-quick-link').length >= 6
-      );
-    }, { timeout }),
+    '/index.html': () => waitForHomeOverviewReady(page, timeout),
     '/ibkr_runtime.html': () => page.waitForFunction(() => {
       const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
       const configText = document.getElementById('configDetail')?.innerText || '';
@@ -317,30 +303,7 @@ async function collectLayoutMetrics(page) {
 async function collectPageExpectationIssues(page, url, mobile) {
   const path = new URL(url).pathname;
   if (path === '/index.html' || path === '/') {
-    return page.evaluate((isMobileViewport) => {
-      const issues = [];
-      const tip = document.getElementById('todayTargetsTimeTip');
-      const badge = document.querySelector('.home-panel-tip-badge');
-      const tipCard = document.querySelector('.home-panel-tip');
-
-      const tipText = String(tip?.textContent || '').trim();
-      const badgeText = String(badge?.textContent || '').trim();
-      const tipStyle = tipCard ? window.getComputedStyle(tipCard) : null;
-
-      if (!tip) issues.push('missing_targets_time_tip');
-      if (!badge) issues.push('missing_targets_tip_badge');
-      if (!tipCard) issues.push('missing_targets_tip_card');
-      if (tip && !tipText.includes('美东交易日')) issues.push('targets_time_tip_missing_market_date_copy');
-      if (tip && !tipText.includes('ET')) issues.push('targets_time_tip_missing_et_copy');
-      if (tip && !tipText.includes('当前标的榜')) issues.push('targets_time_tip_missing_jump_hint');
-      if (badge && badgeText !== 'Tips') issues.push(`targets_tip_badge_text:${badgeText || 'empty'}`);
-      if (tipCard && tipStyle?.display !== 'flex') issues.push(`targets_tip_display:${tipStyle?.display || 'missing'}`);
-      if (tipCard && isMobileViewport && tipStyle?.flexDirection !== 'column') {
-        issues.push(`targets_tip_mobile_direction:${tipStyle?.flexDirection || 'missing'}`);
-      }
-
-      return issues;
-    }, mobile);
+    return collectHomeOverviewIssues(page, mobile);
   }
 
   if (path === '/ibkr_screener.html') {
@@ -440,6 +403,7 @@ async function inspectPage(browser, token, url, mobile) {
   }));
   const pageExpectationIssues = await collectPageExpectationIssues(page, finalUrl, mobile).catch(() => ['page_expectation_eval_failed']);
   const path = new URL(finalUrl).pathname;
+  const isHomePage = path === '/index.html' || path === '/';
   const allowWorkspacePanelSpread = path === '/ibkr_chart.html';
   const allowVisibleInitialOverlay = path === '/ibkr_runtime.html' || path === '/ibkr_indicators.html';
 
@@ -448,9 +412,9 @@ async function inspectPage(browser, token, url, mobile) {
   if (!navTexts.length) layoutIssues.push('missing_nav');
   if (!layout.context_count) layoutIssues.push('missing_context_bar');
   if (layout.context_count !== 1) layoutIssues.push(`context_bar_count:${layout.context_count}`);
-  if (!layout.top_section_count) layoutIssues.push('missing_top_section');
-  if (!layout.bridge_count) layoutIssues.push('missing_bridge');
-  if (layout.bridge_shell_count !== 1) layoutIssues.push(`bridge_shell_count:${layout.bridge_shell_count}`);
+  if (!isHomePage && !layout.top_section_count) layoutIssues.push('missing_top_section');
+  if (!isHomePage && !layout.bridge_count) layoutIssues.push('missing_bridge');
+  if (!isHomePage && layout.bridge_shell_count !== 1) layoutIssues.push(`bridge_shell_count:${layout.bridge_shell_count}`);
   if (!allowVisibleInitialOverlay && layout.visible_loading_overlay_count) {
     layoutIssues.push(`visible_loading_overlay_count:${layout.visible_loading_overlay_count}`);
   }

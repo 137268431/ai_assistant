@@ -17,83 +17,101 @@
 
         <main class="home-main">
             <section id="homeOverview" class="home-panel" data-ready="loading">
-                <div class="home-panel-head">
-                    <div>
-                        <div class="home-panel-kicker">Session</div>
-                        <div class="home-panel-title">今日交易总览</div>
-                        <div class="home-panel-copy">不再铺满多层卡片，先看最关键的交易状态，再决定跳哪一页。</div>
+                <div class="home-overview-layout">
+                    <div class="home-panel-head home-panel-head-overview">
+                        <div>
+                            <div class="home-panel-kicker">Session</div>
+                            <div class="home-panel-title">今日交易总览</div>
+                            <div class="home-panel-copy">不再铺满多层卡片，先看最关键的交易状态，再决定跳哪一页。</div>
+                        </div>
                     </div>
                     <div class="home-overview-side">
                         <div class="home-panel-meta" id="overviewMeta">加载中...</div>
+                        <div id="overviewStackCard" class="home-stack-card" data-ready="loading">
+                            <div class="home-stack-head">
+                                <div class="home-stack-title">Split Stack</div>
+                                <a id="overviewStackLink" href="/ibkr_system.html" class="home-stack-link">系统总览</a>
+                            </div>
+                            <div class="home-stack-summary" id="overviewStackSummary">正在读取 runtime / compute / pocketbase 拆分状态...</div>
+                            <div class="home-stack-services" id="overviewServiceRows">
+                                <div class="home-stack-service" data-tone="neutral">
+                                    <div class="home-stack-service-top">
+                                        <span class="home-stack-service-name">LOADING</span>
+                                        <span class="home-stack-service-status">WAIT</span>
+                                    </div>
+                                    <div class="home-stack-service-copy">同步服务拓扑、职责归属和 startup preload 进度。</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                </div>
-                <div class="home-overview-grid">
-                    <a id="signalsLink" href="/ibkr_signals.html" class="home-stat-card" data-tone="long">
-                        <div class="home-stat-kicker">Signals</div>
-                        <div class="home-stat-value split">
-                            <div class="home-stat-dual">
-                                <span class="long" id="todaySignalsLong">-</span>
-                                <span class="short" id="todaySignalsShort">-</span>
+                    <div class="home-overview-grid">
+                        <a id="signalsLink" href="/ibkr_signals.html" class="home-stat-card" data-tone="long">
+                            <div class="home-stat-kicker">Signals</div>
+                            <div class="home-stat-value split">
+                                <div class="home-stat-dual">
+                                    <span class="long" id="todaySignalsLong">-</span>
+                                    <span class="short" id="todaySignalsShort">-</span>
+                                </div>
                             </div>
-                        </div>
-                        <div class="home-stat-label">今日信号</div>
-                        <div class="home-stat-foot">LONG / SHORT</div>
-                    </a>
+                            <div class="home-stat-label">今日信号</div>
+                            <div class="home-stat-foot">LONG / SHORT</div>
+                        </a>
 
-                    <a id="reverseSignalsLink" href="/ibkr_reverse_signals.html" class="home-stat-card" data-tone="neutral">
-                        <div class="home-stat-kicker">Reverse</div>
-                        <div class="home-stat-value">
-                            <span id="reverseSignalsPending">-</span>
-                        </div>
-                        <div class="home-stat-label">待处理反转</div>
-                        <div class="home-stat-foot">平仓 / 取消 / 调整</div>
-                    </a>
-
-                    <a id="ordersLink" href="/orders.html" class="home-stat-card" data-tone="long">
-                        <div class="home-stat-kicker">Orders</div>
-                        <div class="home-stat-value split">
-                            <div class="home-stat-dual">
-                                <span class="long" id="todayOrdersLong">-</span>
-                                <span class="short" id="todayOrdersShort">-</span>
+                        <a id="reverseSignalsLink" href="/ibkr_reverse_signals.html" class="home-stat-card" data-tone="neutral">
+                            <div class="home-stat-kicker">Reverse</div>
+                            <div class="home-stat-value">
+                                <span id="reverseSignalsPending">-</span>
                             </div>
-                        </div>
-                        <div class="home-stat-label">今日订单</div>
-                        <div class="home-stat-foot">LONG / SHORT</div>
-                    </a>
+                            <div class="home-stat-label">待处理反转</div>
+                            <div class="home-stat-foot">平仓 / 取消 / 调整</div>
+                        </a>
 
-                    <a id="positionsLink" href="/ibkr_account.html" class="home-stat-card" data-tone="neutral">
-                        <div class="home-stat-kicker">Positions</div>
-                        <div class="home-stat-value split">
-                            <div class="home-stat-dual">
-                                <span class="long" id="activePositionsLong">-</span>
-                                <span class="short" id="activePositionsShort">-</span>
+                        <a id="ordersLink" href="/orders.html" class="home-stat-card" data-tone="long">
+                            <div class="home-stat-kicker">Orders</div>
+                            <div class="home-stat-value split">
+                                <div class="home-stat-dual">
+                                    <span class="long" id="todayOrdersLong">-</span>
+                                    <span class="short" id="todayOrdersShort">-</span>
+                                </div>
                             </div>
-                        </div>
-                        <div class="home-stat-label">当前持仓</div>
-                        <div class="home-stat-foot">已成交 Entry</div>
-                    </a>
+                            <div class="home-stat-label">今日订单</div>
+                            <div class="home-stat-foot">LONG / SHORT</div>
+                        </a>
 
-                    <a id="pnlCardLink" href="/orders.html" class="home-stat-card" data-tone="neutral">
-                        <div class="home-stat-kicker">PnL</div>
-                        <div class="home-stat-value">
-                            <span id="todayPnL">-</span>
-                        </div>
-                        <div class="home-stat-label">今日盈亏</div>
-                        <div class="home-stat-foot">已成交 TP / SL 估算</div>
-                    </a>
-
-                    <a id="targetsSummaryLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-stat-card" data-tone="candidate">
-                        <div class="home-stat-kicker">Targets</div>
-                        <div class="home-stat-value split">
-                            <div class="home-stat-dual">
-                                <span class="long" id="todayTargetsActive">-</span>
-                                <span class="candidate" id="todayTargetsCandidate">-</span>
+                        <a id="positionsLink" href="/ibkr_account.html" class="home-stat-card" data-tone="neutral">
+                            <div class="home-stat-kicker">Positions</div>
+                            <div class="home-stat-value split">
+                                <div class="home-stat-dual">
+                                    <span class="long" id="activePositionsLong">-</span>
+                                    <span class="short" id="activePositionsShort">-</span>
+                                </div>
                             </div>
-                        </div>
-                        <div class="home-stat-label">今日目标池</div>
-                        <div class="home-stat-foot">ACTIVE / CANDIDATE</div>
-                    </a>
+                            <div class="home-stat-label">当前持仓</div>
+                            <div class="home-stat-foot">已成交 Entry</div>
+                        </a>
 
+                        <a id="pnlCardLink" href="/orders.html" class="home-stat-card" data-tone="neutral">
+                            <div class="home-stat-kicker">PnL</div>
+                            <div class="home-stat-value">
+                                <span id="todayPnL">-</span>
+                            </div>
+                            <div class="home-stat-label">今日盈亏</div>
+                            <div class="home-stat-foot">已成交 TP / SL 估算</div>
+                        </a>
+
+                        <a id="targetsSummaryLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-stat-card" data-tone="candidate">
+                            <div class="home-stat-kicker">Targets</div>
+                            <div class="home-stat-value split">
+                                <div class="home-stat-dual">
+                                    <span class="long" id="todayTargetsActive">-</span>
+                                    <span class="candidate" id="todayTargetsCandidate">-</span>
+                                </div>
+                            </div>
+                            <div class="home-stat-label">今日目标池</div>
+                            <div class="home-stat-foot">ACTIVE / CANDIDATE</div>
+                        </a>
+
+                    </div>
                 </div>
             </section>
 
@@ -334,6 +352,7 @@
 
         function bindEnvironmentLinks() {
             const links = {
+                overviewStackLink: buildPageUrl('/ibkr_system.html'),
                 signalsLink: buildPageUrl('/ibkr_signals.html'),
                 reverseSignalsLink: buildPageUrl('/ibkr_reverse_signals.html'),
                 ordersLink: buildPageUrl('/orders.html'),
@@ -403,6 +422,218 @@
 
         function renderOverviewMeta(marketDate) {
             document.getElementById('overviewMeta').textContent = `${currentEnvironment.toUpperCase()} · ${marketDate} · 更新 ${formatRefreshClock()}`;
+        }
+
+        function formatCompactSeconds(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric) || numeric <= 0) return '--';
+            if (numeric < 60) return `${numeric.toFixed(1)}s`;
+            const totalSeconds = Math.round(numeric);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            if (hours > 0) return `${hours}h ${minutes}m`;
+            return `${minutes}m ${seconds}s`;
+        }
+
+        function summarizeHomeErrorMessage(value) {
+            const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+            if (!normalized) return '';
+            if (/connection refused/i.test(normalized)) return 'runtime upstream 拒绝连接';
+            if (/timed out|timeout/i.test(normalized)) return 'runtime upstream 超时';
+            if (/502|bad gateway/i.test(normalized)) return 'runtime upstream 502';
+            if (/401|403|auth/i.test(normalized)) return '鉴权失败';
+            if (/watchlist/i.test(normalized)) return 'watchlist 拉取失败';
+            return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
+        }
+
+        function normalizeHomePreloadState(payload = {}) {
+            const source = payload && typeof payload === 'object' ? payload : {};
+            const status = String(source.status || '').trim().toLowerCase()
+                || (source.running ? 'running' : (source.finished_at ? 'completed' : (source.scheduled ? 'scheduled' : 'idle')));
+            return {
+                enabled: source.enabled !== false,
+                status,
+                envTotal: Number(source.env_total || 0) || 0,
+                envCompleted: Number(source.env_completed || 0) || 0,
+                symbolTotal: Number(source.symbol_total || 0) || 0,
+                symbolCompleted: Number(source.symbol_completed || 0) || 0,
+                readyCount: Number(source.ready_count || 0) || 0,
+                elapsedS: Number(source.elapsed_s || 0) || 0,
+                error: String(source.error || source.reason || '').trim()
+            };
+        }
+
+        function buildHomePreloadSummary(state) {
+            if (!state || !state.enabled) return 'startup preload 未启用';
+            if (state.status === 'running') return `startup preload ${state.symbolCompleted}/${state.symbolTotal || '--'} · ${formatCompactSeconds(state.elapsedS)}`;
+            if (state.status === 'scheduled') return `startup preload 排队中 · env ${state.envCompleted}/${state.envTotal || '--'}`;
+            if (state.status === 'completed') return `startup preload 完成 · ready ${state.readyCount}/${state.symbolTotal || 0}`;
+            if (state.status === 'failed') return 'startup preload 失败';
+            if (state.status === 'skipped') return 'startup preload 已跳过';
+            if (state.status === 'disabled') return 'startup preload 已禁用';
+            return 'startup preload 等待状态';
+        }
+
+        function normalizeHomeServiceStatus(status) {
+            const normalized = String(status || '').trim().toLowerCase();
+            if (normalized === 'peer') return 'running';
+            return normalized;
+        }
+
+        function getHomeServiceTone(status) {
+            const normalized = normalizeHomeServiceStatus(status);
+            if (normalized === 'running') return 'running';
+            if (normalized === 'external') return 'external';
+            if (!normalized || normalized === 'unknown' || normalized === 'idle') return 'neutral';
+            return 'warning';
+        }
+
+        function getHomeServiceLabel(status) {
+            const normalized = normalizeHomeServiceStatus(status);
+            if (!normalized) return 'UNKNOWN';
+            if (normalized === 'running') return 'RUNNING';
+            if (normalized === 'external') return 'EXTERNAL';
+            return normalized.toUpperCase();
+        }
+
+        function buildHomeStackSummary(topology = {}, preloadState = null) {
+            const services = topology?.services || {};
+            const hasRuntime = Boolean(services['ibkr-runtime']);
+            const hasCompute = Boolean(services['ibkr-compute']);
+            const splitActive = hasRuntime && hasCompute;
+            const parts = [splitActive ? 'Runtime / Compute 已拆分' : 'Split stack 信息不完整'];
+            if (splitActive) {
+                parts.push(topology?.restart_independent === false
+                    ? '重启仍可能互相影响'
+                    : 'compute 重启不影响 session / bars');
+            }
+            if (preloadState && preloadState.enabled) {
+                if (preloadState.status === 'completed') {
+                    parts.push(`preload ready ${preloadState.readyCount}/${preloadState.symbolTotal || 0}`);
+                } else if (preloadState.status === 'running') {
+                    parts.push(`preload ${preloadState.symbolCompleted}/${preloadState.symbolTotal || '--'}`);
+                } else if (preloadState.status === 'failed') {
+                    parts.push('preload failed');
+                }
+            }
+            return parts.join(' · ');
+        }
+
+        function renderHomeStackOverview(summary = {}) {
+            const cardEl = document.getElementById('overviewStackCard');
+            const summaryEl = document.getElementById('overviewStackSummary');
+            const rowsEl = document.getElementById('overviewServiceRows');
+            if (!cardEl || !summaryEl || !rowsEl) return;
+
+            const topology = summary?.service_topology || {};
+            const services = topology?.services || {};
+            const runtimeService = services['ibkr-runtime'] || {};
+            const computeService = services['ibkr-compute'] || {};
+            const gatewayService = services['ibkr-gateway'] || {};
+            const pocketbaseService = services.pocketbase || {};
+            const computeSummary = summary?.ibkr_compute || {};
+            const preloadState = normalizeHomePreloadState(computeSummary.compute_startup_preload || {});
+            const readyEngines = Number(computeSummary.ready_engines || 0) || 0;
+            const totalEngines = Number(computeSummary.total_engines || 0) || 0;
+            const runtimeRunning = normalizeHomeServiceStatus(runtimeService.status) === 'running';
+            const gatewayRunning = normalizeHomeServiceStatus(gatewayService.status) === 'running';
+            const runtimeAuthenticated = runtimeService.session_authenticated === true;
+            const computeRunning = normalizeHomeServiceStatus(computeService.status || computeSummary.status) === 'running';
+
+            summaryEl.textContent = buildHomeStackSummary(topology, preloadState);
+
+            const rows = [
+                {
+                    name: 'Runtime',
+                    status: runtimeService.status || summary?.ibkr_runtime?.status || 'unknown',
+                    label: runtimeAuthenticated
+                        ? 'AUTH'
+                        : (runtimeRunning ? 'WAIT' : getHomeServiceLabel(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')),
+                    tone: runtimeRunning && runtimeAuthenticated && gatewayRunning
+                        ? 'running'
+                        : (runtimeRunning ? 'warning' : getHomeServiceTone(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')),
+                    copy: 'IBKR 建联 / gateway / live bars',
+                    meta: [
+                        runtimeService.session_authenticated ? 'session auth' : 'session wait',
+                        gatewayService.status ? `gateway ${String(gatewayService.status).toLowerCase()}` : 'gateway --',
+                        'owner ibkr-runtime'
+                    ]
+                },
+                {
+                    name: 'Compute',
+                    status: computeService.status || computeSummary.status || 'unknown',
+                    label: computeRunning && preloadState.status === 'completed'
+                        ? 'READY'
+                        : (preloadState.status === 'failed' ? 'FAILED' : getHomeServiceLabel(computeService.status || computeSummary.status || 'unknown')),
+                    tone: preloadState.status === 'failed'
+                        ? 'warning'
+                        : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown'),
+                    copy: 'scan / engines / signals',
+                    meta: [
+                        totalEngines > 0 ? `engines ${readyEngines}/${totalEngines}` : 'engines --',
+                        buildHomePreloadSummary(preloadState),
+                        preloadState.status === 'failed' ? summarizeHomeErrorMessage(preloadState.error) : '',
+                        'owner ibkr-compute'
+                    ]
+                },
+                {
+                    name: 'PocketBase',
+                    status: pocketbaseService.status || 'external',
+                    label: getHomeServiceLabel(pocketbaseService.status || 'external'),
+                    tone: getHomeServiceTone(pocketbaseService.status || 'external'),
+                    copy: 'hooks / console / summaryz',
+                    meta: [
+                        'public console',
+                        'topology aggregation',
+                        'owner pocketbase'
+                    ]
+                }
+            ];
+
+            rowsEl.innerHTML = rows.map((row) => {
+                const tone = row.tone || getHomeServiceTone(row.status);
+                const metaText = row.meta.filter(Boolean).join(' · ');
+                return `
+                    <div class="home-stack-service" data-tone="${escapeHtml(tone)}">
+                        <div class="home-stack-service-top">
+                            <span class="home-stack-service-name">${escapeHtml(row.name)}</span>
+                            <span class="home-stack-service-status">${escapeHtml(row.label || getHomeServiceLabel(row.status))}</span>
+                        </div>
+                        <div class="home-stack-service-copy">${escapeHtml(row.copy)}</div>
+                        <div class="home-stack-service-meta">${escapeHtml(metaText)}</div>
+                    </div>
+                `;
+            }).join('');
+
+            cardEl.dataset.ready = 'ready';
+        }
+
+        async function loadSystemOverview() {
+            const cardEl = document.getElementById('overviewStackCard');
+            const summaryEl = document.getElementById('overviewStackSummary');
+            const rowsEl = document.getElementById('overviewServiceRows');
+            if (!cardEl || !summaryEl || !rowsEl) return;
+
+            try {
+                cardEl.dataset.ready = 'loading';
+                const payload = await requestJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`);
+                renderHomeStackOverview(payload || {});
+            } catch (error) {
+                console.error('加载 split stack 摘要失败:', error);
+                cardEl.dataset.ready = 'error';
+                summaryEl.textContent = `系统摘要加载失败: ${error.message || error}`;
+                rowsEl.innerHTML = `
+                    <div class="home-stack-service" data-tone="warning">
+                        <div class="home-stack-service-top">
+                            <span class="home-stack-service-name">SUMMARYZ</span>
+                            <span class="home-stack-service-status">ERROR</span>
+                        </div>
+                        <div class="home-stack-service-copy">首页没有拿到 runtime / compute / pocketbase 拆分摘要。</div>
+                        <div class="home-stack-service-meta">请进入系统总览或稍后刷新重试</div>
+                    </div>
+                `;
+            }
         }
 
         function renderTargetSummary(summary = {}, marketDate = getUsDate(), targetUrl = buildPageUrl('/ibkr_screener.html', { tab: 'targets' })) {
@@ -1036,6 +1267,7 @@
         async function refreshHomePage(showSpinner = false) {
             if (showSpinner) spinPageRefreshButton('homeRefreshBtn');
             await Promise.all([
+                loadSystemOverview(),
                 loadTodayTargets(),
                 loadDashboard(),
                 loadMarketIndex(),
@@ -1057,12 +1289,13 @@
                 () => refreshHomePage(false),
                 {
                     title: '首页加载中',
-                    copy: '正在同步目标池、交易概览和市场脉搏。',
+                    copy: '正在同步目标池、交易概览、系统拓扑和市场脉搏。',
                 }
             );
             setInterval(loadTodayTargets, 60000);
             setInterval(loadDashboard, 60000);
             setInterval(loadMarketIndex, 60000);
+            setInterval(loadSystemOverview, 60000);
         });
 
         window.onEnvironmentChange = function(environment) {

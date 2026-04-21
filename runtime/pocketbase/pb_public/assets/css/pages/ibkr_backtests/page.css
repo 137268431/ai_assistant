@@ -590,6 +590,16 @@ body {
             overscroll-behavior: contain;
             scrollbar-gutter: stable both-edges;
         }
+        @media (hover: hover) and (pointer: fine) {
+            .run-list,
+            .backtest-scroll-region {
+                max-height: none;
+                overflow: visible;
+                overscroll-behavior: auto;
+                scrollbar-gutter: auto;
+                padding-right: 0;
+            }
+        }
         .foot-note {
             margin-top: 12px;
             color: var(--muted);

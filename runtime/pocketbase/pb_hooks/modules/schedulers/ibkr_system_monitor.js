@@ -900,6 +900,7 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
             uptime_s: 0,
             last_compute: null,
             last_scan: null,
+            compute_startup_preload: {},
         }
         let runtimeSummary = {
             ok: false,
@@ -926,6 +927,7 @@ routerAdd("GET", "/api/custom/system/summaryz", (c) => {
                 uptime_s: Number(healthData.uptime_s || 0) || 0,
                 last_compute: healthData.last_compute || statusData.last_compute || null,
                 last_scan: healthData.last_scan || statusData.last_scan || null,
+                compute_startup_preload: statusData.compute_startup_preload || healthData.compute_startup_preload || {},
                 service_topology: statusData.service_topology || healthData.service_topology || {},
             }
             try {
