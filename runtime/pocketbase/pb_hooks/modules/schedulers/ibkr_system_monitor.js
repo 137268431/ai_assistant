@@ -760,6 +760,10 @@ function buildMonitorConfigMap(records) {
         ibkr_history_request_spacing: true,
         ibkr_target_refresh_sec: true,
         ibkr_watchlist_backfill_interval_min: true,
+        system_monitor_ws_message_age_regular_warn_sec: true,
+        system_monitor_ws_message_age_regular_critical_sec: true,
+        system_monitor_ws_message_age_late_session_warn_sec: true,
+        system_monitor_ws_message_age_late_session_critical_sec: true,
     }
     const config = {}
     for (let i = 0; i < (records || []).length; i++) {
@@ -1031,6 +1035,10 @@ routerAdd("GET", "/api/custom/system/monitorz", (c) => {
                 ibkr_history_request_spacing: true,
                 ibkr_target_refresh_sec: true,
                 ibkr_watchlist_backfill_interval_min: true,
+                system_monitor_ws_message_age_regular_warn_sec: true,
+                system_monitor_ws_message_age_regular_critical_sec: true,
+                system_monitor_ws_message_age_late_session_warn_sec: true,
+                system_monitor_ws_message_age_late_session_critical_sec: true,
             }
             const config = {}
             try {

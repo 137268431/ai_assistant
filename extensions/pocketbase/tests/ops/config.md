@@ -132,6 +132,34 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 ---
 
+### system_monitor_ws_message_age_*
+
+WebSocket 最近一条消息静默阈值，按交易时段区分：
+
+- `regular`：默认 `warning=60s`、`critical=180s`
+- `close_transition / afterhours`：默认 `warning=600s`、`critical=1200s`
+- `closed`：不触发 `market_data_silent*`
+
+```bash
+curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "key": "system_monitor_ws_message_age_late_session_warn_sec",
+      "value": "600"
+    }'
+```
+
+| key | 默认值 | 行为 |
+|-----|--------|------|
+| `system_monitor_ws_message_age_regular_warn_sec` | `"60"` | 盘中超过多少秒触发 `market_data_silent` |
+| `system_monitor_ws_message_age_regular_critical_sec` | `"180"` | 盘中超过多少秒触发 `market_data_silent_critical` |
+| `system_monitor_ws_message_age_late_session_warn_sec` | `"600"` | 收盘过渡 / 盘后超过多少秒触发 `market_data_silent` |
+| `system_monitor_ws_message_age_late_session_critical_sec` | `"1200"` | 收盘过渡 / 盘后超过多少秒触发 `market_data_silent_critical` |
+
+> 同一时段内必须满足 `critical > warn`；若配置非法，会自动回退到默认值。
+
+---
+
 ## 飞书相关配置
 
 飞书 Webhook URL 在 `feishu.js` 中硬编码，非配置项。
@@ -204,6 +232,10 @@ curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_I
 | `signal_action_token` | `""` | 飞书按钮验证 Token |
 | `reverse_signal_threshold` | `"6"` | 逆向信号通知阈值 |
 | `system_monitor_host_load_consecutive_count` | `"2"` | Host load 连续命中告警阈值 |
+| `system_monitor_ws_message_age_regular_warn_sec` | `"60"` | WebSocket 盘中 warning 阈值（秒） |
+| `system_monitor_ws_message_age_regular_critical_sec` | `"180"` | WebSocket 盘中 critical 阈值（秒） |
+| `system_monitor_ws_message_age_late_session_warn_sec` | `"600"` | WebSocket 盘后 warning 阈值（秒） |
+| `system_monitor_ws_message_age_late_session_critical_sec` | `"1200"` | WebSocket 盘后 critical 阈值（秒） |
 
 ---
 

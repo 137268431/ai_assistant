@@ -20,8 +20,8 @@
       <div class="hero-top">
         <div>
           <div class="hero-kicker">IBKR Selection Workspace</div>
-          <div class="hero-title" id="heroTitle">把筛选和标池放进同一工作流，先筛再管。</div>
-          <div class="hero-copy" id="heroCopy">先看哪些标的有活跃 bars、量能和方向，再在同一页里维护 watchlist 与 GLOBAL 共享池，避免在两个页面来回跳。</div>
+          <div class="hero-title" id="heroTitle">盘中先看当前标的，再决定今天的动作。</div>
+          <div class="hero-copy" id="heroCopy">信号页已经收敛成信号列表；这里承接当前标的榜、规则板和全量筛选，作为盘中工作台使用。</div>
         </div>
         <div class="hero-meta">
           <div class="meta-line" id="marketDateMeta">等待加载...</div>
@@ -37,7 +37,7 @@
         <div id="rulesBoard" class="rules-board"></div>
         <section class="panel">
           <div class="panel-title">当前操作视图</div>
-          <div class="panel-copy">默认先看“当前标的榜”，盘中决定今天该盯谁、谁已经出信号；需要扩展到全标池时，再切到全量筛选。</div>
+          <div class="panel-copy">默认先看“当前标的榜”。信号页只保留信号列表与状态筛选；需要盘中盯盘、看规则和切回全标池时，在这里完成。</div>
           <div class="subview-tabs" id="screenerViewTabs">
             <button class="subview-tab active" type="button" data-view="current">
               <div class="subview-tab-kicker">Current</div>
@@ -55,7 +55,7 @@
         <div id="currentViewPanel" class="subview-panel active">
           <section class="panel">
             <div class="panel-title">当前标的榜</div>
-            <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。把技术满足、今日已出信号、以及需要继续盯的标的放在同一张榜里。</div>
+            <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。这里是从信号页跳转过来的盘中工作台：把技术满足、今日已出信号、以及需要继续盯的标的放在同一张榜里。</div>
 
             <div class="control-grid current-control-grid current-control-grid-primary">
               <div class="field span-2">
@@ -151,7 +151,7 @@
             <div class="table-header">
               <div class="leaderboard-meta" id="currentTargetsMeta">等待加载...</div>
               <div class="row-actions">
-                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的榜</a>
+                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的工作台</a>
                 <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
               </div>
             </div>

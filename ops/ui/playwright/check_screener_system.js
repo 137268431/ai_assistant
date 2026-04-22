@@ -30,6 +30,82 @@ async function login(page, targetUrl) {
   await page.waitForTimeout(1800);
 }
 
+async function gotoStable(page, url) {
+  try {
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 20000,
+    });
+  } catch (err) {
+    if (!String(err && err.message || '').includes('ERR_ABORTED')) throw err;
+    await page.waitForTimeout(800);
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 20000,
+    });
+  }
+}
+
+async function waitForCurrentTargetsView(page, deviceName) {
+  const isMobile = /iphone|android|mobile/i.test(String(deviceName || ''));
+  if (isMobile) {
+    await page.waitForSelector('#currentViewPanel.active #currentTargetsCards', { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const cards = document.getElementById('currentTargetsCards');
+      const text = cards?.textContent || '';
+      return cards && text && !text.includes('加载中');
+    }, { timeout: 20000 });
+    return;
+  }
+
+  await page.waitForSelector('#currentViewPanel.active #currentTargetsTable', { timeout: 20000 });
+}
+
+async function waitForUniverseView(page, deviceName) {
+  const isMobile = /iphone|android|mobile/i.test(String(deviceName || ''));
+  if (isMobile) {
+    await page.waitForSelector('#universeViewPanel.active #screenerCards', { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const cards = document.getElementById('screenerCards');
+      const text = cards?.textContent || '';
+      return cards && text && !text.includes('加载中');
+    }, { timeout: 20000 });
+    return;
+  }
+
+  await page.waitForSelector('#universeViewPanel.active #screenerTable', { timeout: 20000 });
+}
+
+async function waitForTargetsTab(page, deviceName) {
+  const isMobile = /iphone|android|mobile/i.test(String(deviceName || ''));
+  if (isMobile) {
+    await page.waitForSelector('#targetsTab.active #dailyTargetsCards', { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const cards = document.getElementById('dailyTargetsCards');
+      const text = cards?.textContent || '';
+      return cards && text && !text.includes('加载中');
+    }, { timeout: 20000 });
+    return;
+  }
+
+  await page.waitForSelector('#targetsTab.active #dailyTargetsTable', { timeout: 20000 });
+}
+
+async function waitForWatchlistTab(page, deviceName) {
+  const isMobile = /iphone|android|mobile/i.test(String(deviceName || ''));
+  if (isMobile) {
+    await page.waitForSelector('#watchlistTab.active #watchlistCards', { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const cards = document.getElementById('watchlistCards');
+      const text = cards?.textContent || '';
+      return cards && text && !text.includes('加载中');
+    }, { timeout: 20000 });
+    return;
+  }
+
+  await page.waitForSelector('#watchlistTab.active #watchlistTable', { timeout: 20000 });
+}
+
 async function collect(deviceName, deviceConfig) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext(deviceConfig || {});
@@ -55,14 +131,11 @@ async function collect(deviceName, deviceConfig) {
   try {
     await login(page, `${BASE}/ibkr_screener.html?environment=live`);
 
-    await page.goto(`${BASE}/ibkr_screener.html?environment=live`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 20000,
-    });
+    await gotoStable(page, `${BASE}/ibkr_screener.html?environment=live`);
     await page.waitForSelector('#pageBridge .domain-tab', { timeout: 20000 });
     await page.waitForSelector('#summaryGrid .summary-card', { timeout: 20000 });
     await page.waitForSelector('#screenerViewTabs .subview-tab', { timeout: 20000 });
-    await page.waitForSelector('#currentViewPanel.active #currentTargetsTable', { timeout: 20000 });
+    await waitForCurrentTargetsView(page, deviceName);
     await page.waitForFunction(() => {
       const text = document.getElementById('currentTargetsMeta')?.textContent || '';
       return text && !text.includes('等待加载') && !text.includes('正在加载');
@@ -74,11 +147,11 @@ async function collect(deviceName, deviceConfig) {
     result.current_targets_meta = await page.locator('#currentTargetsMeta').innerText().catch(() => '');
 
     await page.locator('#screenerViewTabs .subview-tab[data-view="universe"]').click();
-    await page.waitForSelector('#universeViewPanel.active #screenerTable', { timeout: 20000 });
+    await waitForUniverseView(page, deviceName);
     result.universe_view_active = await page.locator('#universeViewPanel.active').count().catch(() => 0);
 
     await page.locator('#pageBridge .domain-tab[data-tab="targets"]').click();
-    await page.waitForSelector('#targetsTab.active #dailyTargetsTable', { timeout: 20000 });
+    await waitForTargetsTab(page, deviceName);
     await page.waitForFunction(() => {
       const text = document.getElementById('dailyTargetListMeta')?.textContent || '';
       return text && !text.includes('尚未加载');
@@ -87,36 +160,29 @@ async function collect(deviceName, deviceConfig) {
     result.targets_list_meta = await page.locator('#dailyTargetListMeta').innerText().catch(() => '');
 
     await page.locator('#pageBridge .domain-tab[data-tab="watchlist"]').click();
-    await page.waitForSelector('#watchlistTab.active #watchlistTable', { timeout: 20000 });
+    await waitForWatchlistTab(page, deviceName);
     result.watchlist_tab_url = page.url();
     result.watchlist_meta = await page.locator('#listMeta').innerText().catch(() => '');
 
-    await page.goto(`${BASE}/ibkr_watchlist.html?environment=live`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 20000,
-    });
+    await gotoStable(page, `${BASE}/ibkr_watchlist.html?environment=live`);
     await page.waitForURL(/ibkr_screener\.html/, { timeout: 20000 });
-    await page.waitForSelector('#watchlistTab.active', { timeout: 20000 });
+    await waitForWatchlistTab(page, deviceName);
     result.watchlist_redirect_url = page.url();
 
-    await page.goto(`${BASE}/ibkr_targets.html?environment=live&date=2026-04-07`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 20000,
-    });
+    await gotoStable(page, `${BASE}/ibkr_targets.html?environment=live&date=2026-04-07`);
     await page.waitForURL(/ibkr_screener\.html/, { timeout: 20000 });
-    await page.waitForSelector('#targetsTab.active', { timeout: 20000 });
+    await waitForTargetsTab(page, deviceName);
     await page.waitForFunction(() => {
       const text = document.getElementById('dailyTargetListMeta')?.textContent || '';
       return text && !text.includes('尚未加载');
     }, { timeout: 20000 });
     result.targets_redirect_url = page.url();
 
-    await page.goto(`${BASE}/ibkr_signals.html?environment=live`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 20000,
-    });
-    await page.waitForSelector('#currentTargetShell .target-focus-panel', { timeout: 20000 });
-    result.signals_focus_panel_count = await page.locator('#currentTargetShell .target-focus-panel').count().catch(() => 0);
+    await gotoStable(page, `${BASE}/ibkr_signals.html?environment=live`);
+    await page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout: 20000 });
+    await page.waitForSelector('#latencySummary .pipeline-strip-shell', { timeout: 20000 });
+    result.signals_pipeline_metric_count = await page.locator('#latencySummary .pipeline-metric-card').count().catch(() => 0);
+    result.signals_pipeline_actions = await page.locator('#latencySummary .pipeline-link').allTextContents().catch(() => []);
 
     result.system_bridges = {};
     const bridgeTargets = {
@@ -126,7 +192,7 @@ async function collect(deviceName, deviceConfig) {
     };
 
     for (const [key, url] of Object.entries(bridgeTargets)) {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await gotoStable(page, url);
       await page.waitForSelector('#pageBridge .page-bridge-label', { timeout: 20000 });
       result.system_bridges[key] = await page.locator('#pageBridge .page-bridge-label').allTextContents();
     }

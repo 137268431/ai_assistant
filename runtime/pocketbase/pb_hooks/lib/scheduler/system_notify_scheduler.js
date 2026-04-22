@@ -327,7 +327,7 @@ function buildStatusSnapshot(environment, times) {
         ? (
             latestIndicator.bar_time_ms > 0
                 ? Math.max(0, Math.round((latestBar.bar_time_ms - latestIndicator.bar_time_ms) / 60000))
-                : 999
+                : null
         )
         : 0
     const websocketConnected = Boolean(runtime.websocket && runtime.websocket.connected === true)
@@ -455,6 +455,16 @@ function hasIndicatorFreshnessIssue(snapshot, freshnessWindow) {
     const latestIndicator = snapshot && snapshot.latest_indicator && typeof snapshot.latest_indicator === "object" ? snapshot.latest_indicator : {}
     return hasMissingLatestIndicator(snapshot, freshnessWindow)
         || toNumber(latestIndicator.lag_min, 0) > INDICATOR_STALE_WARN_MIN
+}
+
+function buildIndicatorLagIssue(snapshot) {
+    const latestIndicator = snapshot && snapshot.latest_indicator && typeof snapshot.latest_indicator === "object" ? snapshot.latest_indicator : {}
+    const lagMin = toNumber(latestIndicator.lag_min, 0)
+    if (lagMin <= INDICATOR_STALE_WARN_MIN) return ""
+    if (lagMin >= 180) {
+        return `最新指标未跟上当前 5m bars（延迟 ${lagMin}m）`
+    }
+    return `指标延迟 ${lagMin}m`
 }
 
 function getIndicatorStatusLabel(snapshot, freshnessWindow) {
@@ -1132,10 +1142,11 @@ function buildStatusAssessment(snapshot, startupGraceActive, freshnessWindow) {
             blockingIssues.push("缺少最新指标")
         }
     } else if (enforceFreshness && snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
+        const indicatorLagIssue = buildIndicatorLagIssue(snapshot)
         if (startupGraceActive) {
-            watchItems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
+            watchItems.push(indicatorLagIssue)
         } else {
-            blockingIssues.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
+            blockingIssues.push(indicatorLagIssue)
         }
     }
 
@@ -1202,7 +1213,7 @@ function listDataHealthProblems(snapshot, freshnessWindow) {
     if (hasMissingLatestIndicator(snapshot, freshnessWindow)) {
         problems.push("缺少最新指标")
     } else if (enforceFreshness && snapshot.latest_indicator.lag_min > INDICATOR_STALE_WARN_MIN) {
-        problems.push(`指标延迟 ${snapshot.latest_indicator.lag_min}m`)
+        problems.push(buildIndicatorLagIssue(snapshot))
     }
 
     const barBucketProblems = listBarBucketProblems(snapshot, freshnessWindow)

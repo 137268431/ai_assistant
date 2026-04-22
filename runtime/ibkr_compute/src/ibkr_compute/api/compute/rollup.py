@@ -3,7 +3,7 @@ from __future__ import annotations
 import traceback
 
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
-from ibkr_compute.market.timeframe_utils import interval_to_ms, normalize_interval
+from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms, normalize_interval
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.compute.runtime_state.timing import get_fetch_since_ms
@@ -61,6 +61,19 @@ def _recent_rollup_since_ms(environment: str, normalized_symbols, intervals=None
     # Rebuild two full windows so the builder can correctly close the previous bucket
     # before emitting the next higher-timeframe bar.
     return max(0, latest_5m_ms - (max_interval_ms * 2))
+
+
+def _incremental_due_intervals(latest_5m_ms: int, intervals=None) -> list[str]:
+    api_app = _api_app()
+    target_intervals = _normalize_target_intervals(api_app, intervals)
+    if latest_5m_ms <= 0:
+        return []
+
+    due_intervals = []
+    for interval in target_intervals:
+        if bucket_start_ms(latest_5m_ms, interval) == int(latest_5m_ms):
+            due_intervals.append(interval)
+    return due_intervals
 
 
 def has_interval_bars(environment: str, interval: str, symbols=None) -> bool:
@@ -173,15 +186,42 @@ def ensure_higher_timeframe_bars(
             continue
 
         if normalized_symbols:
-            since_ms = _recent_rollup_since_ms(
-                environment,
-                normalized_symbols,
-                intervals=target_intervals,
-            ) if incremental else None
+            effective_intervals = list(target_intervals)
+            if incremental:
+                latest_5m_ms = _latest_targeted_5m_bar_ms(environment, normalized_symbols)
+                if latest_5m_ms <= 0:
+                    results[environment] = {
+                        "skipped": True,
+                        "reason": "no_recent_5m",
+                        "written": 0,
+                        "errors": 0,
+                        "intervals": [],
+                    }
+                    continue
+                effective_intervals = _incremental_due_intervals(
+                    latest_5m_ms,
+                    intervals=target_intervals,
+                )
+                if not effective_intervals:
+                    results[environment] = {
+                        "skipped": True,
+                        "reason": "no_due_intervals",
+                        "written": 0,
+                        "errors": 0,
+                        "intervals": [],
+                    }
+                    continue
+                since_ms = _recent_rollup_since_ms(
+                    environment,
+                    normalized_symbols,
+                    intervals=effective_intervals,
+                )
+            else:
+                since_ms = None
             rollup_result = rebuild_higher_timeframe_bars(
                 environment,
                 symbols=normalized_symbols,
-                intervals=target_intervals,
+                intervals=effective_intervals,
                 since_ms=since_ms,
             )
             rollup_result["targeted"] = True

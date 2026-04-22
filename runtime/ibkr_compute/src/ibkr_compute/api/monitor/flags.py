@@ -5,6 +5,14 @@ from datetime import datetime, timezone
 
 SESSION_UNAUTHENTICATED_GRACE_SECONDS = 300
 SESSION_UNAUTHENTICATED_LATE_SESSION_GRACE_SECONDS = 480
+WS_SILENCE_REGULAR_WARN_SEC = 60
+WS_SILENCE_REGULAR_CRITICAL_SEC = 180
+WS_SILENCE_LATE_SESSION_WARN_SEC = 600
+WS_SILENCE_LATE_SESSION_CRITICAL_SEC = 1200
+WS_SILENCE_REGULAR_WARN_CONFIG_KEY = "system_monitor_ws_message_age_regular_warn_sec"
+WS_SILENCE_REGULAR_CRITICAL_CONFIG_KEY = "system_monitor_ws_message_age_regular_critical_sec"
+WS_SILENCE_LATE_SESSION_WARN_CONFIG_KEY = "system_monitor_ws_message_age_late_session_warn_sec"
+WS_SILENCE_LATE_SESSION_CRITICAL_CONFIG_KEY = "system_monitor_ws_message_age_late_session_critical_sec"
 
 
 def _parse_monitor_timestamp(value: str) -> datetime | None:
@@ -73,6 +81,123 @@ def _append_monitor_flag(flags: list[dict], severity: str, code: str, title: str
             "title": title,
             "detail": detail,
         }
+    )
+
+
+def _normalize_ws_silence_thresholds(
+    warn_seconds,
+    critical_seconds,
+    default_warn_seconds: int,
+    default_critical_seconds: int,
+) -> tuple[int, int]:
+    try:
+        warn_value = int(warn_seconds)
+    except (TypeError, ValueError):
+        warn_value = 0
+    try:
+        critical_value = int(critical_seconds)
+    except (TypeError, ValueError):
+        critical_value = 0
+    if warn_value <= 0 or critical_value <= warn_value:
+        return default_warn_seconds, default_critical_seconds
+    return warn_value, critical_value
+
+
+def _resolve_ws_silence_policy_kind(runtime_status: dict) -> str:
+    market_session = runtime_status.get("market_session") or {}
+    market_session_kind = str(market_session.get("kind") or "").strip().lower()
+    if market_session_kind == "closed":
+        return "disabled"
+    if market_session_kind in {"close_transition", "afterhours"}:
+        return "late_session"
+    return "regular"
+
+
+def _default_ws_silence_thresholds(policy_kind: str) -> tuple[int, int]:
+    if policy_kind == "late_session":
+        return WS_SILENCE_LATE_SESSION_WARN_SEC, WS_SILENCE_LATE_SESSION_CRITICAL_SEC
+    if policy_kind == "disabled":
+        return 0, 0
+    return WS_SILENCE_REGULAR_WARN_SEC, WS_SILENCE_REGULAR_CRITICAL_SEC
+
+
+def _build_ws_silence_policy(
+    runtime_status: dict,
+    *,
+    api_utilization: dict | None = None,
+    config_source=None,
+    runtime_environment: str = "live",
+) -> dict:
+    payload = api_utilization or {}
+    explicit_enabled = payload.get("ws_silence_enabled")
+    if explicit_enabled is False:
+        return {
+            "ws_silence_enabled": False,
+            "ws_silence_policy": "disabled",
+            "ws_silence_warn_sec": 0,
+            "ws_silence_critical_sec": 0,
+        }
+
+    policy_kind = str(payload.get("ws_silence_policy") or "").strip().lower()
+    if not policy_kind:
+        policy_kind = _resolve_ws_silence_policy_kind(runtime_status)
+    if policy_kind == "disabled":
+        return {
+            "ws_silence_enabled": False,
+            "ws_silence_policy": "disabled",
+            "ws_silence_warn_sec": 0,
+            "ws_silence_critical_sec": 0,
+        }
+
+    default_warn_seconds, default_critical_seconds = _default_ws_silence_thresholds(policy_kind)
+    warn_seconds = payload.get("ws_silence_warn_sec")
+    critical_seconds = payload.get("ws_silence_critical_sec")
+    if warn_seconds is None or critical_seconds is None:
+        if config_source is not None and hasattr(config_source, "get_int_for_environment"):
+            if policy_kind == "late_session":
+                warn_key = WS_SILENCE_LATE_SESSION_WARN_CONFIG_KEY
+                critical_key = WS_SILENCE_LATE_SESSION_CRITICAL_CONFIG_KEY
+            else:
+                warn_key = WS_SILENCE_REGULAR_WARN_CONFIG_KEY
+                critical_key = WS_SILENCE_REGULAR_CRITICAL_CONFIG_KEY
+            warn_seconds = config_source.get_int_for_environment(
+                warn_key,
+                runtime_environment,
+                default_warn_seconds,
+            )
+            critical_seconds = config_source.get_int_for_environment(
+                critical_key,
+                runtime_environment,
+                default_critical_seconds,
+            )
+        else:
+            warn_seconds = default_warn_seconds
+            critical_seconds = default_critical_seconds
+
+    warn_seconds, critical_seconds = _normalize_ws_silence_thresholds(
+        warn_seconds,
+        critical_seconds,
+        default_warn_seconds,
+        default_critical_seconds,
+    )
+    return {
+        "ws_silence_enabled": True,
+        "ws_silence_policy": policy_kind,
+        "ws_silence_warn_sec": warn_seconds,
+        "ws_silence_critical_sec": critical_seconds,
+    }
+
+
+def _format_ws_silence_detail(last_message_age_s, runtime_status: dict, ws_silence_policy: dict) -> str:
+    market_session = runtime_status.get("market_session") or {}
+    market_session_kind = str(market_session.get("kind") or "").strip().lower() or "unknown"
+    warn_seconds = int(ws_silence_policy.get("ws_silence_warn_sec", 0) or 0)
+    critical_seconds = int(ws_silence_policy.get("ws_silence_critical_sec", 0) or 0)
+    if warn_seconds <= 0 or critical_seconds <= warn_seconds:
+        return f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s。"
+    return (
+        f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s"
+        f"（session={market_session_kind}，warning={warn_seconds}s，critical={critical_seconds}s）。"
     )
 
 
@@ -174,22 +299,31 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
 
     last_message_age_s = api_utilization.get("last_message_age_s")
     active_subscription_count = int(api_utilization.get("active_subscription_count", 0) or 0)
-    if bool(session.get("authenticated")) and active_subscription_count > 0 and last_message_age_s is not None:
-        if float(last_message_age_s) > 180:
+    ws_silence_policy = _build_ws_silence_policy(runtime_status, api_utilization=api_utilization)
+    if (
+        bool(session.get("authenticated"))
+        and active_subscription_count > 0
+        and last_message_age_s is not None
+        and bool(ws_silence_policy.get("ws_silence_enabled"))
+    ):
+        critical_seconds = int(ws_silence_policy.get("ws_silence_critical_sec", 0) or 0)
+        warn_seconds = int(ws_silence_policy.get("ws_silence_warn_sec", 0) or 0)
+        detail = _format_ws_silence_detail(last_message_age_s, runtime_status, ws_silence_policy)
+        if float(last_message_age_s) > critical_seconds:
             _append_monitor_flag(
                 flags,
                 "error",
                 "market_data_silent_critical",
                 "Market data silent",
-                f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s。",
+                detail,
             )
-        elif float(last_message_age_s) > 60:
+        elif float(last_message_age_s) > warn_seconds:
             _append_monitor_flag(
                 flags,
                 "warning",
                 "market_data_silent",
                 "Market data slowed",
-                f"最近一条 WebSocket 消息已经过去 {last_message_age_s}s。",
+                detail,
             )
 
     active_bar_symbols = sample_payload.get("active_bar_symbols") or []

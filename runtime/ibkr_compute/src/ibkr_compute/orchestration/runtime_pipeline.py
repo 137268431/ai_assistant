@@ -183,14 +183,21 @@ class TradingServiceRuntimePipelineMixin:
     def _trigger_realtime_compute(self, source: str = "bar_close", symbols: list[str] | None = None) -> dict:
         service_mod = _service_mod()
         try:
-            from ibkr_compute.api import server as compute_server
-
             payload = {"source": source, "environments": [service_mod.ENVIRONMENT]}
             normalized_symbols = sorted(
                 {str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()}
             )
             if normalized_symbols:
                 payload["symbols"] = normalized_symbols
+            from ibkr_compute.api.service_topology import uses_remote_compute_service
+
+            if uses_remote_compute_service():
+                from ibkr_compute.api.compute_status_client import trigger_remote_compute
+
+                return trigger_remote_compute(payload)
+
+            from ibkr_compute.api import server as compute_server
+
             with compute_server.app.test_request_context(
                 "/compute",
                 method="POST",

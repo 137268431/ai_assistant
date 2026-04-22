@@ -35,6 +35,10 @@ def is_runtime_remote_mode() -> bool:
     return get_runtime_mode() == "remote" and not is_runtime_service_profile()
 
 
+def uses_remote_compute_service() -> bool:
+    return get_runtime_mode() == "remote" and get_service_profile() == "runtime"
+
+
 def get_compute_internal_url(default: str | None = None) -> str:
     return _normalize_base_url(
         os.environ.get("IBKR_COMPUTE_INTERNAL_URL"),

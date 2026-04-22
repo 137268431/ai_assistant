@@ -87,6 +87,10 @@ const configData = [
   cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '兜底心跳通知', '系统通知', 930, '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),
   cfg('inspection_notify_enabled', 'TRUE', 'TRUE', '巡检告警', '系统通知', 940, '孤立持仓、恢复异常、数据缺口等巡检告警'),
   cfg('system_monitor_host_load_consecutive_count', '2', '2', 'Load 连续命中次数', '系统通知', 945, '仅对 host_load_high / host_load_critical 生效；Monitor Cron 每 5 分钟检查一次，默认需连续 2 次命中才发告警'),
+  cfg('system_monitor_ws_message_age_regular_warn_sec', '60', '60', 'WS 盘中告警秒数', '系统通知', 946, 'regular session 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
+  cfg('system_monitor_ws_message_age_regular_critical_sec', '180', '180', 'WS 盘中严重秒数', '系统通知', 947, 'regular session 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘中告警秒数'),
+  cfg('system_monitor_ws_message_age_late_session_warn_sec', '600', '600', 'WS 盘后告警秒数', '系统通知', 948, 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
+  cfg('system_monitor_ws_message_age_late_session_critical_sec', '1200', '1200', 'WS 盘后严重秒数', '系统通知', 949, 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘后告警秒数'),
 
   cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址')
 ];

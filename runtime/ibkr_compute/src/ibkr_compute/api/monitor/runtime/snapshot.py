@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ibkr_compute.api.monitor.flags import _build_monitor_flags, _derive_monitor_status
+from ibkr_compute.api.monitor.flags import (
+    _build_monitor_flags,
+    _build_ws_silence_policy,
+    _derive_monitor_status,
+)
 from ibkr_compute.api.monitor.host import _api_app, _collect_host_snapshot
 from ibkr_compute.api.monitor.runtime.compute import _build_compute_summary
 from ibkr_compute.api.monitor.runtime.empty import (
@@ -22,6 +26,12 @@ def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = No
         "live",
     )
     service_available = service is not None
+    config_source = getattr(service, "config", None) or api_app.cfg
+    if not service_available and hasattr(config_source, "refresh"):
+        try:
+            config_source.refresh()
+        except Exception:
+            pass
     runtime_status = (
         get_service_status_snapshot(service)
         if service_available and hasattr(service, "status")
@@ -34,6 +44,14 @@ def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = No
         if service_available
         else _build_empty_api_utilization_snapshot(runtime_environment)
     )
+    api_utilization = {
+        **api_utilization,
+        **_build_ws_silence_policy(
+            runtime_status,
+            config_source=config_source,
+            runtime_environment=runtime_environment,
+        ),
+    }
     host_snapshot = _collect_host_snapshot()
     flags = _build_monitor_flags(runtime_status, api_utilization, host_snapshot, sample_payload)
     payload = {

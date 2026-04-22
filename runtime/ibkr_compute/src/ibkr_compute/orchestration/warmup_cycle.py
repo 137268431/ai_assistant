@@ -65,10 +65,13 @@ class TradingServiceWarmupCycleMixin:
             return False
         return True
 
-    def _collect_warmup_readiness(self, snapshot: dict) -> dict:
-        service_mod = _service_mod()
-        from ibkr_compute.api import server as compute_server
-
+    def _build_warmup_readiness(
+        self,
+        snapshot: dict,
+        status_by_symbol: dict[str, dict] | None,
+        *,
+        required_interval: str,
+    ) -> dict:
         ready_symbols = []
         pending_symbols = []
         symbol_status = []
@@ -79,10 +82,10 @@ class TradingServiceWarmupCycleMixin:
         monitor_symbol_set = set(snapshot["monitor_symbols"])
 
         for symbol in snapshot["symbols"]:
-            engine = compute_server.engines.get((service_mod.ENVIRONMENT, symbol, service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL))
-            is_ready = bool(engine and engine.is_ready())
-            bar_count = int(getattr(engine, "bar_count", 0) or 0) if engine else 0
-            last_bar_time_ms = int(getattr(engine, "last_bar_time_ms", 0) or 0) if engine else 0
+            status = dict((status_by_symbol or {}).get(symbol) or {})
+            is_ready = bool(status.get("ready"))
+            bar_count = int(status.get("bar_count", 0) or 0)
+            last_bar_time_ms = int(status.get("last_bar_time_ms", 0) or 0)
             if symbol in trade_symbol_set:
                 role = "trade"
             elif symbol in monitor_symbol_set:
@@ -93,15 +96,17 @@ class TradingServiceWarmupCycleMixin:
                 role = "subscription"
             else:
                 role = "data"
-            symbol_status.append(
-                {
-                    "symbol": symbol,
-                    "role": role,
-                    "ready": is_ready,
-                    "bar_count": bar_count,
-                    "last_bar_time_ms": last_bar_time_ms,
-                }
-            )
+            row = {
+                "symbol": symbol,
+                "role": role,
+                "ready": is_ready,
+                "bar_count": bar_count,
+                "last_bar_time_ms": last_bar_time_ms,
+            }
+            source = str(status.get("source") or "").strip()
+            if source:
+                row["source"] = source
+            symbol_status.append(row)
             if is_ready:
                 ready_symbols.append(symbol)
                 ready_set.add(symbol)
@@ -113,10 +118,13 @@ class TradingServiceWarmupCycleMixin:
         ready_trade_symbols = len([symbol for symbol in snapshot["trade_symbols"] if symbol in ready_set])
         ready_monitor_symbols = len([symbol for symbol in snapshot["monitor_symbols"] if symbol in ready_set])
         trading_gate_open = bool(snapshot["trade_symbols"]) and ready_trade_symbols == snapshot["trade_symbols_total"]
-        blocking_pending_symbols = self._non_monitor_pending_symbols(pending_symbols, snapshot["monitor_symbols"])
+        blocking_pending_symbols = self._non_monitor_pending_symbols(
+            pending_symbols,
+            snapshot["monitor_symbols"],
+        )
         return {
             "phase": "ready" if not blocking_pending_symbols else "degraded",
-            "required_interval": service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
+            "required_interval": required_interval,
             "ready_symbols": len(ready_symbols),
             "ready_scan_symbols": ready_scan_symbols,
             "ready_subscription_symbols": ready_subscription_symbols,
@@ -128,6 +136,98 @@ class TradingServiceWarmupCycleMixin:
             "trading_gate_open": trading_gate_open,
             "trading_gate_reason": "ready" if trading_gate_open else ("no_trade_symbols" if not snapshot["trade_symbols"] else "warmup_incomplete"),
         }
+
+    def _warmup_uses_remote_compute_service(self) -> bool:
+        from ibkr_compute.api.service_topology import uses_remote_compute_service
+
+        return uses_remote_compute_service()
+
+    def _load_warmup_compute_cursors(self) -> int:
+        service_mod = _service_mod()
+        if self._warmup_uses_remote_compute_service():
+            return 0
+        from ibkr_compute.api import server as compute_server
+
+        with compute_server.compute_lock:
+            return int(compute_server.load_persisted_compute_cursors(service_mod.ENVIRONMENT) or 0)
+
+    def _materialize_warmup_compute_symbols(
+        self,
+        symbols: list[str] | None,
+        *,
+        hydrate_signal_state: bool = False,
+    ) -> dict:
+        service_mod = _service_mod()
+        if self._warmup_uses_remote_compute_service():
+            return {}
+        from ibkr_compute.api import server as compute_server
+
+        return compute_server.materialize_engines_from_storage(
+            service_mod.ENVIRONMENT,
+            symbols or [],
+            service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
+            hydrate_signal_state=hydrate_signal_state,
+        )
+
+    def _collect_remote_warmup_readiness(self, snapshot: dict) -> dict:
+        service_mod = _service_mod()
+        from ibkr_compute.api.compute_status_client import (
+            get_remote_compute_status,
+            is_compute_status_payload,
+        )
+
+        required_interval = service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL
+        payload = get_remote_compute_status(force_refresh=True)
+        engines = payload.get("engines") if is_compute_status_payload(payload) else {}
+        status_by_symbol = {}
+        if isinstance(engines, dict):
+            for symbol in snapshot["symbols"]:
+                engine_state = dict(
+                    engines.get(f"{service_mod.ENVIRONMENT}/{symbol}/{required_interval}") or {}
+                )
+                status_by_symbol[symbol] = {
+                    "ready": bool(engine_state.get("is_ready")),
+                    "bar_count": int(engine_state.get("bar_count", 0) or 0),
+                    "last_bar_time_ms": int(engine_state.get("last_bar_time_ms", 0) or 0),
+                    "source": "remote_compute_status",
+                }
+        return self._build_warmup_readiness(
+            snapshot,
+            status_by_symbol,
+            required_interval=required_interval,
+        )
+
+    def _collect_warmup_readiness(self, snapshot: dict) -> dict:
+        service_mod = _service_mod()
+
+        if self._warmup_uses_remote_compute_service():
+            return self._collect_remote_warmup_readiness(snapshot)
+
+        from ibkr_compute.api import server as compute_server
+
+        status_by_symbol = {}
+        for symbol in snapshot["symbols"]:
+            engine = compute_server.engines.get(
+                (
+                    service_mod.ENVIRONMENT,
+                    symbol,
+                    service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
+                )
+            )
+            status_by_symbol[symbol] = {
+                "ready": bool(engine and engine.is_ready()),
+                "bar_count": int(getattr(engine, "bar_count", 0) or 0) if engine else 0,
+                "last_bar_time_ms": (
+                    int(getattr(engine, "last_bar_time_ms", 0) or 0) if engine else 0
+                ),
+                "source": "local_compute_state",
+            }
+
+        return self._build_warmup_readiness(
+            snapshot,
+            status_by_symbol,
+            required_interval=service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
+        )
 
     def _apply_integrity_readiness(self, readiness: dict, snapshot: dict, repair_plan: dict[str, dict] | None = None) -> dict:
         plan = repair_plan or {}
@@ -359,12 +459,10 @@ class TradingServiceWarmupCycleMixin:
         compute_result = {}
         last_error = ""
         startup_gate_open_once = False
-        from ibkr_compute.api import server as compute_server
 
         try:
             step_started = time.perf_counter()
-            with compute_server.compute_lock:
-                compute_server.load_persisted_compute_cursors(service_mod.ENVIRONMENT)
+            self._load_warmup_compute_cursors()
             warmup_timings["cursor_load_s"] = round(time.perf_counter() - step_started, 3)
 
             step_started = time.perf_counter()
@@ -390,10 +488,8 @@ class TradingServiceWarmupCycleMixin:
                 )
 
             step_started = time.perf_counter()
-            storage_bootstrap = compute_server.materialize_engines_from_storage(
-                service_mod.ENVIRONMENT,
+            storage_bootstrap = self._materialize_warmup_compute_symbols(
                 snapshot["symbols"],
-                service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
                 hydrate_signal_state=False,
             )
             warmup_timings["storage_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
@@ -404,10 +500,8 @@ class TradingServiceWarmupCycleMixin:
             readiness = self._apply_integrity_readiness(readiness, snapshot, preflight_blockers)
             if readiness["pending_symbols"]:
                 step_started = time.perf_counter()
-                pending_storage_bootstrap = compute_server.materialize_engines_from_storage(
-                    service_mod.ENVIRONMENT,
+                pending_storage_bootstrap = self._materialize_warmup_compute_symbols(
                     readiness["pending_symbols"],
-                    service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
                     hydrate_signal_state=False,
                 )
                 warmup_timings["pending_storage_bootstrap_s"] = round(
@@ -629,10 +723,8 @@ class TradingServiceWarmupCycleMixin:
                     self._last_history_repair_at = time.time()
                     self._last_history_repair_symbols = sorted(pending_map.keys())
                 step_started = time.perf_counter()
-                after_backfill_result = compute_server.materialize_engines_from_storage(
-                    service_mod.ENVIRONMENT,
+                after_backfill_result = self._materialize_warmup_compute_symbols(
                     list(pending_map.keys()),
-                    service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
                     hydrate_signal_state=False,
                 )
                 warmup_timings["after_backfill_bootstrap_s"] = round(

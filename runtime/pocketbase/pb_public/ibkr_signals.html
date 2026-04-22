@@ -25,13 +25,7 @@
             <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
         </div>
         <div id="filterNote"></div>
-        <div class="signals-top-workbench">
-            <div class="signals-top-main">
-                <div id="latencySummary" class="latency-summary"></div>
-                <div id="currentTargetShell" class="target-focus-shell"></div>
-            </div>
-            <div id="rulesSummary" class="rules-summary"></div>
-        </div>
+        <div id="latencySummary" class="pipeline-strip"></div>
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
@@ -55,12 +49,6 @@
 
     <!-- 技术指标详情浮层（由 common.js 动态注入） -->
     <div id="indicatorModalContainer"></div>
-    <div id="rulesDetailDrawer" class="rules-detail-drawer" aria-hidden="true">
-        <div class="rules-detail-backdrop" onclick="closeRulesDrawer()"></div>
-        <aside class="rules-detail-card" role="dialog" aria-modal="true" aria-labelledby="rulesDetailTitle" onclick="event.stopPropagation()">
-            <div id="rulesDetailBody"></div>
-        </aside>
-    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
     <script>
@@ -80,7 +68,6 @@
         let currentInterval = 30;
         let currentEnvironment = getCurrentRuntimeEnvironment();
         let currentSignalsRequestId = 0;
-        let currentTargetSnapshot = { items: [], summary: {}, market_date: '' };
 
         // Pagination
         let currentPage = 1;
@@ -92,9 +79,6 @@
         // Signal validity configuration (from config table, default 30 minutes)
         let signalValidityMinutes = 30;
         let realtimeLatencySnapshot = null;
-        let rulesSummarySnapshot = { signals: null, computed_at_us: '' };
-        let rulesSummaryError = '';
-        let rulesDrawerOpen = false;
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const configValueCache = {};
 
@@ -181,28 +165,6 @@
             }
             pb.authStore.save(token, null);
             return true;
-        }
-
-        async function requestCustomJson(path) {
-            const token = getToken();
-            const headers = {};
-            if (token) headers.Authorization = `Bearer ${token}`;
-            const response = await fetchWithRetry(`${BASE_URL}${path}`, {
-                method: 'GET',
-                headers,
-            }, {
-                attempts: 3,
-                retryDelayMs: 500,
-            });
-            if (response.status === 401 || response.status === 403) {
-                handleAuthError();
-                throw new Error('Authentication failed');
-            }
-            const payload = await response.json();
-            if (!response.ok || payload.ok === false) {
-                throw new Error(payload.error || payload.message || `Request failed (${response.status})`);
-            }
-            return payload;
         }
 
         function escapeHtml(value) {
@@ -400,7 +362,7 @@
             document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
                 kicker: 'Execution Signals',
                 title: '主信号池',
-                copy: '聚焦当天主信号、规则快照和当前标的概览，从这里进入反向信号、订单与账户动作。',
+                copy: '聚焦当天主信号、执行状态与订单联动；当前标的工作台和规则上下文统一放到筛选页。',
                 metaHtml,
                 statusHtml,
             });
@@ -415,9 +377,11 @@
         }
 
         function renderFilterNote() {
-            const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
+            const notes = [];
             if (filterSignalId) notes.push(`signal_id=${filterSignalId}`);
             if (currentSearch) notes.push(`search=${currentSearch}`);
+            if (currentStatus !== 'all') notes.push(`status=${currentStatus}`);
+            if (currentDirection !== 'all') notes.push(`direction=${currentDirection}`);
             document.getElementById('filterNote').innerHTML = notes.length
                 ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
                 : '';
@@ -531,562 +495,87 @@
             return symbols.length === 1 ? symbols[0] : '';
         }
 
-        function mergeCurrentTargetWithRealtimeQuote(row) {
-            const quote = getRealtimeQuote(row?.symbol);
-            return {
-                ...row,
-                display_price: quote?.last_price != null ? quote.last_price : row?.price,
-                display_day_change_pct: quote?.day_change_pct != null ? quote.day_change_pct : row?.day_change_pct,
-            };
+        function resolveSignalsWorkspaceFocusSymbol() {
+            const text = String(currentSearch || '').trim().toUpperCase();
+            if (text && /^[A-Z][A-Z0-9._-]{0,14}$/.test(text)) return text;
+            return resolveLatencyFocusSymbol();
         }
 
-        function getCurrentTargetSignalState(row) {
-            if (!row || !row.has_signal_today) return 'no_signal';
-            return String(row.latest_signal_status || 'signaled').trim().toLowerCase() || 'signaled';
-        }
-
-        function formatCurrentTargetStateLabel(value) {
-            const key = String(value || '').trim().toLowerCase();
-            const labels = {
-                ready: 'ready',
-                watch: 'watch',
-                stale: 'stale',
-                signaled: 'signaled',
-                no_signal: 'no signal',
-                awaiting_confirm: 'awaiting confirm',
-                pending: 'pending',
-                executed: 'executed',
-                closed: 'closed',
-                expired: 'expired',
-                rejected: 'rejected',
-            };
-            return labels[key] || (key ? key.replace(/_/g, ' ') : '--');
-        }
-
-        function formatRulesUpdatedLabel(value) {
-            const text = String(value || '').trim();
-            if (!text) return '';
-            const match = text.match(/(\d{2}:\d{2})(?::\d{2})?/);
-            return match ? `更新 ${match[1]}` : `更新 ${text}`;
-        }
-
-        function buildCurrentTargetFocusUrl(row = null) {
+        function buildSignalsWorkbenchUrl({ focusSymbol = '' } = {}) {
             const params = {
                 tab: 'screener',
                 view: 'current',
-                market_date: currentTargetSnapshot.market_date || currentDate,
+                market_date: currentDate,
             };
-            if (row && row.symbol) params.focus = row.symbol;
+            if (focusSymbol) params.focus = focusSymbol;
             return buildPageUrl('/ibkr_screener.html', params, { environment: currentEnvironment });
-        }
-
-        function buildCurrentTargetPills(row) {
-            const pills = [];
-            pills.push(`<span class="target-focus-pill ${escapeHtml(String(row.technical_state || 'watch'))}">${escapeHtml(formatCurrentTargetStateLabel(row.technical_state))}</span>`);
-            pills.push(`<span class="target-focus-pill ${escapeHtml(getCurrentTargetSignalState(row))}">${escapeHtml(formatCurrentTargetStateLabel(getCurrentTargetSignalState(row)))}</span>`);
-            pills.push(`<span class="target-focus-pill ${escapeHtml(String(row.direction_bias || 'neutral'))}">${escapeHtml(String(row.direction_bias || 'neutral'))}</span>`);
-            return pills.join('');
-        }
-
-        function renderCurrentTargetEmptyState(summary, screenerUrl, marketDate) {
-            const emptyPills = [];
-            emptyPills.push(`needs action ${Number((summary.awaiting_confirm_count || 0) + (summary.pending_count || 0))}`);
-            emptyPills.push(`ready ${Number(summary.technical_ready_count || 0)}`);
-            if (summary.signaled_count) emptyPills.push(`已出信号 ${Number(summary.signaled_count || 0)}`);
-            if (summary.stale_count) emptyPills.push(`stale ${Number(summary.stale_count || 0)}`);
-
-            const signalUrl = buildPageUrl('/ibkr_signals.html', {
-                date: marketDate,
-            }, { environment: currentEnvironment });
-
-            return `
-                <div class="target-focus-empty">
-                    <div class="target-focus-empty-title">当前没有需要立即盯盘的标的</div>
-                    <div class="target-focus-empty-copy">优先队列为空，说明当前没有 awaiting_confirm / pending，且没有 ready 但尚未出信号的标的。接下来更适合去看全量榜单，或者回到信号列表确认今天已出的信号。</div>
-                    <div class="target-focus-empty-pills">
-                        ${emptyPills.map((pill) => `<span class="target-focus-empty-pill">${escapeHtml(pill)}</span>`).join('')}
-                    </div>
-                    <div class="target-focus-empty-actions">
-                        <a class="target-focus-link" href="${screenerUrl}">打开当前标的榜</a>
-                        <a class="target-focus-link" href="${signalUrl}">查看今日信号</a>
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderCurrentTargetShell() {
-            const mount = document.getElementById('currentTargetShell');
-            if (!mount) return;
-
-            const marketDate = currentTargetSnapshot.market_date || currentDate;
-            const summary = currentTargetSnapshot.summary || {};
-            const items = Array.isArray(currentTargetSnapshot.items) ? currentTargetSnapshot.items : [];
-            const focusItems = items
-                .filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || '').toLowerCase()) || String(row.technical_state || '') === 'ready')
-                .slice(0, 8);
-            const screenerUrl = buildCurrentTargetFocusUrl();
-
-            const summaryCards = [
-                { label: 'Targets', value: summary.total || 0, copy: '当前交易日 candidate + active' },
-                { label: 'Ready', value: summary.technical_ready_count || 0, copy: '技术状态 ready', className: 'ready' },
-                { label: 'Signaled', value: summary.signaled_count || 0, copy: '今天已出信号' },
-                { label: 'Needs Action', value: (summary.awaiting_confirm_count || 0) + (summary.pending_count || 0), copy: 'awaiting_confirm + pending', className: 'awaiting_confirm' },
-                { label: 'Stale', value: summary.stale_count || 0, copy: '无当日 bar / freshness 过旧', className: 'stale' },
-            ];
-
-            mount.innerHTML = `
-                <section class="target-focus-panel">
-                    <div class="target-focus-head">
-                        <div>
-                            <div class="target-focus-kicker">Current Targets</div>
-                            <div class="target-focus-title">当前标的概览</div>
-                            <div class="target-focus-copy">按 ${escapeHtml(marketDate)} 的 today targets 聚合技术状态和今日信号状态。</div>
-                        </div>
-                        <a class="target-focus-link" href="${screenerUrl}">打开当前标的榜</a>
-                    </div>
-                    <div class="target-focus-summary-grid">
-                        ${summaryCards.map((card) => `
-                            <article class="target-focus-summary-card">
-                                <div class="target-focus-summary-label">${escapeHtml(card.label)}</div>
-                                <div class="target-focus-summary-value">${escapeHtml(String(card.value))}</div>
-                                <div class="target-focus-summary-copy">${escapeHtml(card.copy)}</div>
-                            </article>
-                        `).join('')}
-                    </div>
-                </section>
-                <section class="target-focus-panel">
-                    <div class="target-focus-head">
-                        <div>
-                            <div class="target-focus-kicker">Focus List</div>
-                            <div class="target-focus-title">当前标的关注列表</div>
-                            <div class="target-focus-copy">优先显示 awaiting_confirm / pending，其次显示 ready 但尚未出信号；盘中按 5m close 刷新阶段。</div>
-                        </div>
-                        <a class="target-focus-link" href="${screenerUrl}">切到榜单</a>
-                    </div>
-                    ${focusItems.length ? `
-                        <div class="target-focus-list">
-                            ${focusItems.map((row) => {
-                                const chartUrl = buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment });
-                                const signalUrl = buildPageUrl('/ibkr_signals.html', { date: marketDate, search: row.symbol }, { environment: currentEnvironment });
-                                const indicatorUrl = buildPageUrl('/ibkr_indicators.html', { date: marketDate, search: row.symbol }, { environment: currentEnvironment });
-                                return `
-                                    <article class="target-focus-card">
-                                        <div class="target-focus-card-head">
-                                            <div>
-                                                <div class="target-focus-symbol">${escapeHtml(row.symbol || '--')}</div>
-                                                <div class="target-focus-meta">${escapeHtml(row.latest_signal_time || row.latest_us_time || '--')}</div>
-                                            </div>
-                                            <div class="target-focus-meta">${escapeHtml(formatPrice(row.display_price ?? row.price))}</div>
-                                        </div>
-                                        <div class="target-focus-pill-row">
-                                            ${buildCurrentTargetPills(row)}
-                                        </div>
-                                        <div class="target-focus-meta">target ${escapeHtml(String(row.target_status || '--'))} · tradability ${escapeHtml(String(row.tradability_score || 0))} · count ${escapeHtml(String(row.signal_count_today || 0))}</div>
-                                        <div class="target-focus-meta">${escapeHtml(row.workflow_label || '观察中')} · ${escapeHtml(row.workflow_summary || row.scan_reason || row.note || '--')}</div>
-                                        <div class="target-focus-meta">下一步: ${escapeHtml(row.workflow_next_action || '继续观察')}</div>
-                                        <div class="target-focus-actions">
-                                            <a class="target-focus-link" href="${signalUrl}">信号</a>
-                                            <a class="target-focus-link" href="${indicatorUrl}">指标</a>
-                                            <a class="target-focus-link" href="${chartUrl}">图表</a>
-                                            <a class="target-focus-link" href="${buildCurrentTargetFocusUrl(row)}">榜单</a>
-                                        </div>
-                                    </article>
-                                `;
-                            }).join('')}
-                        </div>
-                    ` : renderCurrentTargetEmptyState(summary, screenerUrl, marketDate)}
-                </section>
-            `;
         }
 
         function renderLatencySummary() {
             const el = document.getElementById('latencySummary');
             if (!el) return;
 
-            const writeMetrics = averageLatency(allSignals, (signal) => getLatencyMs(getSignalCloseTimeMs(signal), getSignalCreatedMs(signal)));
             const latest = realtimeLatencySnapshot || {};
-            const scopeLabel = latest.symbol ? `${latest.symbol} 5m` : '最新 5m';
+            const focusSymbol = resolveSignalsWorkspaceFocusSymbol();
             const refreshText = currentInterval > 0 ? `${currentInterval}s 自动刷新` : '手动刷新';
+            const scopeLabel = latest.symbol ? `${latest.symbol} 5m pipeline` : '5m pipeline';
             const scopeSubtitle = latest.barCloseMs
-                ? `基于 ${formatEventTime(latest.barCloseMs)} ET 收盘 bar`
-                : '等待最新 5m 快照';
-            const pipelineCards = [
+                ? `基于 ${formatEventTime(latest.barCloseMs)} ET 收盘 bar · 当前结果 ${getSignalsResultCount()} 条`
+                : `等待最新 5m 快照 · 当前结果 ${getSignalsResultCount()} 条`;
+            const cards = [
                 {
-                    label: '实时延迟',
+                    label: '实时 freshness',
                     value: formatLatency(latest.dataFreshnessMs || 0),
                     copy: '现在距离最新 5m bar 收盘的时间差',
                     tone: resolveLatencyTone('freshness', latest.dataFreshnessMs || 0),
                 },
                 {
-                    label: '入库耗时',
+                    label: 'bar 入库',
                     value: formatLatency(latest.barIngestDelayMs || 0),
                     copy: 'bar 收盘到写入 ibkr_bars',
                     tone: resolveLatencyTone('ingest', latest.barIngestDelayMs || 0),
                 },
                 {
-                    label: '计算耗时',
+                    label: '指标计算',
                     value: formatLatency(latest.indicatorComputeDelayMs || 0),
                     copy: 'bar 收盘到最新指标计算完成',
                     tone: resolveLatencyTone('compute', latest.indicatorComputeDelayMs || 0),
                 },
             ];
-            const writeTone = resolveLatencyTone('write', writeMetrics.avgMs || 0);
-            const writeValue = formatLatency(writeMetrics.avgMs || 0);
-            const writeNote = writeMetrics.count
-                ? `${writeMetrics.count} 条信号平均从 bar close 到 signal 入库`
-                : '当前页暂无可统计的信号写入耗时';
-            const cards = [
-                ...pipelineCards,
-                {
-                    label: '信号写入',
-                    value: writeValue,
-                    copy: writeNote,
-                    tone: writeTone,
-                }
-            ];
+            const workspaceUrl = buildSignalsWorkbenchUrl();
+            const focusUrl = `${buildSignalsWorkbenchUrl({ focusSymbol })}#currentTargetsTable`;
+            const focusLabel = focusSymbol ? `查看 ${focusSymbol} 榜单` : '打开当前标的榜';
 
             el.innerHTML = `
-                <div class="latency-summary-head">
-                    <div class="latency-summary-scope">
-                        <div class="latency-summary-kicker">Pipeline Snapshot</div>
-                        <div class="latency-summary-title">${escapeHtml(scopeLabel)}</div>
-                        <div class="latency-summary-subtitle">${escapeHtml(scopeSubtitle)}</div>
-                    </div>
-                    <div class="latency-summary-meta">
-                        <span class="latency-meta-chip">${escapeHtml(refreshText)}</span>
-                        <span class="latency-meta-chip">${escapeHtml(`env=${getEnvironmentLabel(currentEnvironment)}`)}</span>
-                    </div>
-                </div>
-                <div class="latency-grid">
-                    ${cards.map((card) => `
-                        <div class="latency-card ${escapeHtml(card.tone)}">
-                            <div class="latency-card-label">${escapeHtml(card.label)}</div>
-                            <div class="latency-card-value">${escapeHtml(card.value)}</div>
-                            <div class="latency-card-copy">${escapeHtml(card.copy)}</div>
+                <section class="pipeline-strip-shell">
+                    <div class="pipeline-strip-head">
+                        <div class="pipeline-strip-scope">
+                            <div class="pipeline-strip-kicker">Pipeline Status</div>
+                            <div class="pipeline-strip-title">${escapeHtml(scopeLabel)}</div>
+                            <div class="pipeline-strip-subtitle">${escapeHtml(scopeSubtitle)}</div>
                         </div>
-                    `).join('')}
-                </div>
-            `;
-        }
-
-        function normalizeRulesTone(value, fallback = 'neutral') {
-            const tone = String(value || fallback).trim().toLowerCase();
-            return ['accent', 'warn', 'muted', 'neutral'].includes(tone) ? tone : fallback;
-        }
-
-        function getRulesSummaryAction() {
-            const marketDate = currentTargetSnapshot.market_date || currentDate;
-            return {
-                actionHref: buildPageUrl('/ibkr_screener.html', {
-                    tab: 'screener',
-                    view: 'current',
-                    market_date: marketDate,
-                }, { environment: currentEnvironment }),
-                actionLabel: '当前标的榜',
-            };
-        }
-
-        function getRulesActiveChip(panel) {
-            const chips = Array.isArray(panel?.chips) ? panel.chips : [];
-            return chips.find((chip) => String(chip?.label || '').toLowerCase().includes('active')) || null;
-        }
-
-        function hasRulesRailPayload(panel) {
-            return Array.isArray(panel?.highlights) && panel.highlights.length && Array.isArray(panel?.details) && panel.details.length;
-        }
-
-        function renderRulesPanelHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
-            const chips = Array.isArray(panel?.chips) ? panel.chips : [];
-            const sections = Array.isArray(panel?.sections) ? panel.sections : [];
-            const footer = rulesSummarySnapshot.computed_at_us ? `更新: ${rulesSummarySnapshot.computed_at_us}` : '';
-            return `
-                <section class="rules-panel">
-                    <div class="rules-panel-head">
-                        <div>
-                            <div class="rules-panel-kicker">Rules Snapshot</div>
-                            <div class="rules-panel-title">${escapeHtml(panel?.title || '当前信号规则')}</div>
-                            <div class="rules-panel-subtitle">${escapeHtml(panel?.subtitle || '页面文案直接来自当前 compute 逻辑与 runtime 配置。')}</div>
+                        <div class="pipeline-strip-meta">
+                            <span class="pipeline-meta-chip">${escapeHtml(refreshText)}</span>
+                            <span class="pipeline-meta-chip">${escapeHtml(`env=${getEnvironmentLabel(currentEnvironment)}`)}</span>
                         </div>
-                        ${actionHref && actionLabel ? `<a class="rules-panel-link" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
                     </div>
-                    ${chips.length ? `
-                        <div class="rules-chip-grid">
-                            ${chips.map((chip) => `
-                                <article class="rules-chip">
-                                    <div class="rules-chip-label">${escapeHtml(chip.label || '--')}</div>
-                                    <div class="rules-chip-value">${escapeHtml(String(chip.value || '--'))}</div>
-                                    <div class="rules-chip-copy">${escapeHtml(chip.copy || '--')}</div>
+                    <div class="pipeline-strip-body">
+                        <div class="pipeline-metric-grid">
+                            ${cards.map((card) => `
+                                <article class="pipeline-metric-card ${escapeHtml(card.tone)}">
+                                    <div class="pipeline-metric-label">${escapeHtml(card.label)}</div>
+                                    <div class="pipeline-metric-value">${escapeHtml(card.value)}</div>
+                                    <div class="pipeline-metric-copy">${escapeHtml(card.copy)}</div>
                                 </article>
                             `).join('')}
                         </div>
-                    ` : ''}
-                    ${sections.map((section) => `
-                        <article class="rules-section">
-                            <div class="rules-section-label">${escapeHtml(section.title || '--')}</div>
-                            ${section.copy ? `<div class="rules-section-copy">${escapeHtml(section.copy)}</div>` : ''}
-                            <div class="rules-section-list">
-                                ${(Array.isArray(section.lines) ? section.lines : []).map((line) => `
-                                    <div class="rules-line">${escapeHtml(line)}</div>
-                                `).join('')}
-                            </div>
-                        </article>
-                    `).join('')}
-                    ${footer ? `<div class="rules-panel-footer">${escapeHtml(footer)}</div>` : ''}
-                </section>
-            `;
-        }
-
-        function renderRulesRailHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
-            const highlights = Array.isArray(panel?.highlights) ? panel.highlights.slice(0, 4) : [];
-            const activeChip = getRulesActiveChip(panel);
-            const footer = formatRulesUpdatedLabel(rulesSummarySnapshot.computed_at_us);
-            return `
-                <section class="rules-rail">
-                    <div class="rules-rail-head">
-                        <div>
-                            <div class="rules-panel-kicker">Rules Rail</div>
-                            <div class="rules-panel-title">${escapeHtml(panel?.title || '当前信号规则')}</div>
-                            <div class="rules-panel-subtitle">盘中先看窗口、有效期、结构入口和关键阻断。</div>
+                        <div class="pipeline-strip-actions">
+                            <a class="pipeline-link primary" href="${workspaceUrl}">当前标的工作台</a>
+                            <a class="pipeline-link secondary" href="${focusUrl}">${escapeHtml(focusLabel)}</a>
                         </div>
-                        <div class="rules-rail-meta">
-                            <span class="rules-meta-pill env">ENV ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
-                            ${activeChip ? `<span class="rules-meta-pill active">${escapeHtml(activeChip.label || '当前 Active')} ${escapeHtml(String(activeChip.value || '--'))}</span>` : ''}
-                            ${footer ? `<span class="rules-meta-pill">${escapeHtml(footer)}</span>` : ''}
-                        </div>
-                    </div>
-                    <div class="rules-rail-stack">
-                        ${highlights.map((highlight) => `
-                            <article class="rules-rail-item ${escapeHtml(normalizeRulesTone(highlight?.tone))} ${['structure', 'blockers'].includes(String(highlight?.id || '')) ? 'compact' : ''}">
-                                <div class="rules-rail-label">${escapeHtml(highlight?.label || '--')}</div>
-                                <div class="rules-rail-value">${escapeHtml(String(highlight?.value || '--'))}</div>
-                                ${highlight?.note ? `<div class="rules-rail-note">${escapeHtml(highlight.note)}</div>` : ''}
-                            </article>
-                        `).join('')}
-                    </div>
-                    <div class="rules-rail-actions">
-                        <button class="rules-rail-btn primary" type="button" onclick="openRulesDrawer()">查看完整规则</button>
-                        ${actionHref && actionLabel ? `<a class="rules-rail-link secondary" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
                     </div>
                 </section>
             `;
-        }
-
-        function renderRulesRailLoadingHtml() {
-            return `
-                <section class="rules-rail">
-                    <div class="rules-panel-kicker">Rules Rail</div>
-                    <div class="rules-panel-title">规则轨加载中</div>
-                    <div class="rules-empty">${escapeHtml(rulesSummaryError || '正在读取当前 signal 结构、时间窗口和仓位参数。')}</div>
-                </section>
-            `;
-        }
-
-        function renderRulesDetailLine(line, tone = 'neutral') {
-            const text = String(line || '--');
-            const dividerIndex = text.indexOf('·');
-            if (dividerIndex > -1) {
-                const tag = text.slice(0, dividerIndex).trim();
-                const body = text.slice(dividerIndex + 1).trim();
-                return `
-                    <div class="rules-drawer-line">
-                        <span class="rules-drawer-line-tag">${escapeHtml(tag)}</span>
-                        <div class="rules-drawer-line-copy">${escapeHtml(body)}</div>
-                    </div>
-                `;
-            }
-            if (tone === 'accent') {
-                const equalsIndex = text.indexOf('=');
-                if (equalsIndex > -1) {
-                    const tag = text.slice(0, equalsIndex).trim();
-                    const body = text.slice(equalsIndex + 1).trim();
-                    return `
-                        <div class="rules-drawer-line">
-                            <span class="rules-drawer-line-tag">${escapeHtml(tag)}</span>
-                            <div class="rules-drawer-line-copy">${escapeHtml(body)}</div>
-                        </div>
-                    `;
-                }
-            }
-            return `
-                <div class="rules-drawer-line">
-                    <div class="rules-drawer-line-copy">${escapeHtml(text)}</div>
-                </div>
-            `;
-        }
-
-        function renderRulesFormulaBlocks(lines) {
-            return `
-                <div class="rules-drawer-formula-grid">
-                    ${lines.map((line, index) => {
-                        const text = String(line || '--');
-                        const dividerIndex = text.indexOf(':');
-                        const label = dividerIndex > -1 ? text.slice(0, dividerIndex).trim() : `Rule ${index + 1}`;
-                        const copy = dividerIndex > -1 ? text.slice(dividerIndex + 1).trim() : text;
-                        return `
-                            <div class="rules-drawer-formula">
-                                <div class="rules-drawer-formula-label">${escapeHtml(label)}</div>
-                                <div class="rules-drawer-formula-copy">${escapeHtml(copy)}</div>
-                            </div>
-                        `;
-                    }).join('')}
-                </div>
-            `;
-        }
-
-        function renderRulesDetailSection(detail) {
-            const tone = normalizeRulesTone(detail?.tone);
-            const lines = Array.isArray(detail?.lines) ? detail.lines : [];
-            return `
-                <article class="rules-drawer-section ${escapeHtml(tone)}">
-                    <div class="rules-drawer-section-head">
-                        <div class="rules-drawer-section-title">${escapeHtml(detail?.title || '--')}</div>
-                        ${detail?.summary ? `<div class="rules-drawer-section-summary">${escapeHtml(detail.summary)}</div>` : ''}
-                    </div>
-                    ${detail?.id === 'formula'
-                        ? renderRulesFormulaBlocks(lines)
-                        : `<div class="rules-drawer-list">${lines.map((line) => renderRulesDetailLine(line, tone)).join('')}</div>`
-                    }
-                </article>
-            `;
-        }
-
-        function renderRulesDrawerBodyHtml(panel, { actionHref = '', actionLabel = '' } = {}) {
-            const details = Array.isArray(panel?.details) ? panel.details : [];
-            const activeChip = getRulesActiveChip(panel);
-            const footer = formatRulesUpdatedLabel(rulesSummarySnapshot.computed_at_us);
-            return `
-                <div class="rules-drawer-shell">
-                    <div class="rules-drawer-head">
-                        <div>
-                            <div class="rules-drawer-kicker">Signal Rulebook</div>
-                            <div class="rules-drawer-title" id="rulesDetailTitle">${escapeHtml(panel?.title || '当前信号规则')}</div>
-                            <div class="rules-drawer-subtitle">${escapeHtml(panel?.subtitle || '结构、阻断、运行窗口和公式均直接读取当前 compute 逻辑与 runtime 配置。')}</div>
-                        </div>
-                        <button class="rules-drawer-close" type="button" onclick="closeRulesDrawer()" aria-label="关闭规则抽屉">×</button>
-                    </div>
-                    <div class="rules-drawer-meta">
-                        <span class="rules-meta-pill env">ENV ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
-                        ${activeChip ? `<span class="rules-meta-pill active">${escapeHtml(activeChip.label || '当前 Active')} ${escapeHtml(String(activeChip.value || '--'))}</span>` : ''}
-                        ${footer ? `<span class="rules-meta-pill">${escapeHtml(footer)}</span>` : ''}
-                    </div>
-                    <div class="rules-drawer-stack">
-                        ${details.map((detail) => renderRulesDetailSection(detail)).join('')}
-                    </div>
-                    <div class="rules-drawer-actions">
-                        ${actionHref && actionLabel ? `<a class="rules-rail-link secondary" href="${actionHref}">${escapeHtml(actionLabel)}</a>` : ''}
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderRulesDrawer() {
-            const body = document.getElementById('rulesDetailBody');
-            if (!body) return;
-            const panel = rulesSummarySnapshot?.signals;
-            if (panel && hasRulesRailPayload(panel)) {
-                body.innerHTML = renderRulesDrawerBodyHtml(panel, getRulesSummaryAction());
-                return;
-            }
-            body.innerHTML = `
-                <div class="rules-drawer-shell">
-                    <div class="rules-drawer-head">
-                        <div>
-                            <div class="rules-drawer-kicker">Signal Rulebook</div>
-                            <div class="rules-drawer-title" id="rulesDetailTitle">规则详情暂不可用</div>
-                            <div class="rules-drawer-subtitle">${escapeHtml(rulesSummaryError || '当前环境还没有返回可展开的规则明细。')}</div>
-                        </div>
-                        <button class="rules-drawer-close" type="button" onclick="closeRulesDrawer()" aria-label="关闭规则抽屉">×</button>
-                    </div>
-                </div>
-            `;
-        }
-
-        function openRulesDrawer() {
-            renderRulesDrawer();
-            const drawer = document.getElementById('rulesDetailDrawer');
-            if (!drawer) return;
-            drawer.classList.add('show');
-            drawer.setAttribute('aria-hidden', 'false');
-            document.body.classList.add('rules-detail-open');
-            rulesDrawerOpen = true;
-        }
-
-        function closeRulesDrawer() {
-            const drawer = document.getElementById('rulesDetailDrawer');
-            if (!drawer) return;
-            drawer.classList.remove('show');
-            drawer.setAttribute('aria-hidden', 'true');
-            document.body.classList.remove('rules-detail-open');
-            rulesDrawerOpen = false;
-        }
-
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape' && rulesDrawerOpen) {
-                closeRulesDrawer();
-            }
-        });
-
-        function renderRulesSummary() {
-            const mount = document.getElementById('rulesSummary');
-            if (!mount) return;
-            const panel = rulesSummarySnapshot?.signals;
-            if (panel && hasRulesRailPayload(panel)) {
-                mount.innerHTML = renderRulesRailHtml(panel, getRulesSummaryAction());
-            } else if (panel) {
-                mount.innerHTML = renderRulesPanelHtml(panel, getRulesSummaryAction());
-            } else {
-                mount.innerHTML = renderRulesRailLoadingHtml();
-            }
-
-            if (rulesDrawerOpen) {
-                renderRulesDrawer();
-            }
-        }
-
-        async function loadRulesSummarySnapshot() {
-            rulesSummaryError = '';
-            renderRulesSummary();
-            try {
-                rulesSummarySnapshot = await requestCustomJson(
-                    buildPageUrl('/api/custom/ibkr/rules', {}, { environment: currentEnvironment })
-                );
-            } catch (error) {
-                console.error('加载规则摘要失败:', error);
-                rulesSummarySnapshot = { signals: null, computed_at_us: '' };
-                rulesSummaryError = error.message || String(error);
-            }
-            renderRulesSummary();
-        }
-
-        async function loadCurrentTargetSnapshot(requestId = 0) {
-            const marketDate = currentDate || new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'America/New_York',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(new Date());
-            try {
-                const payload = await requestCustomJson(buildPageUrl('/api/custom/ibkr/today-targets', {
-                    market_date: marketDate,
-                }));
-                if (requestId && requestId !== currentSignalsRequestId) return;
-                const items = Array.isArray(payload?.items) ? payload.items : [];
-                if (items.length) {
-                    await fetchRealtimeQuotes(items.map((row) => row?.symbol).filter(Boolean), { reset: false }).catch((error) => {
-                        console.warn('加载当前标的实时报价失败:', error);
-                    });
-                }
-                currentTargetSnapshot = {
-                    ...(payload || { items: [], summary: {}, market_date: marketDate }),
-                    items: items.map((row) => mergeCurrentTargetWithRealtimeQuote(row)),
-                };
-            } catch (error) {
-                console.error('加载当前标的概览失败:', error);
-                currentTargetSnapshot = { items: [], summary: {}, market_date: marketDate };
-            }
-            if (requestId && requestId !== currentSignalsRequestId) return;
-            renderRulesSummary();
-            renderCurrentTargetShell();
         }
 
         async function loadRealtimeLatencySnapshot(requestId = 0) {
@@ -1180,7 +669,6 @@
             currentPage = 1;
 
             try {
-                const rulesPromise = loadRulesSummarySnapshot();
                 // Load signal validity configuration from config table
                 try {
                     const configValue = await loadConfigValue('signal_validity_minutes', '30');
@@ -1247,13 +735,8 @@
 
                 renderSignalsPageChrome();
                 renderLatencySummary();
-                await rulesPromise;
                 renderSignals();
                 updateLoadMoreButton();
-                loadCurrentTargetSnapshot(requestId)
-                    .catch((error) => {
-                        console.error('加载当前标的榜概览失败:', error);
-                    });
 
                 loadRealtimeLatencySnapshot(requestId)
                     .catch((error) => {
@@ -2366,14 +1849,13 @@
             currentSearch = urlSearch;
             document.getElementById('searchInput').value = currentSearch;
             renderSignalsPageChrome();
-            renderCurrentTargetShell();
-            renderRulesSummary();
+            renderLatencySummary();
 
             await withPageLoading(
                 () => loadSignals({ refreshCounts: true, showLoadingState: true }),
                 {
                     title: '信号页加载中',
-                    copy: '正在同步当天主信号、规则快照和当前标的聚合视图。',
+                    copy: '正在同步当天主信号与紧凑 pipeline 状态。',
                 }
             );
 
@@ -2420,7 +1902,6 @@
 
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
-            closeRulesDrawer();
             location.href = buildSignalsPageUrl();
         };
     </script>

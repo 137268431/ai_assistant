@@ -398,7 +398,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           actionHref: buildPageUrl('/ibkr_signals.html', {
             date: marketDate,
           }, { environment: currentEnvironment }),
-          actionLabel: '打开信号页'
+          actionLabel: '回到信号列表'
         }));
       }
 
@@ -680,8 +680,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const currentPage = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
         const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
         const filteredTotal = Number(todayTargetsPayload.filtered_total || visible || 0) || 0;
-        document.getElementById('heroTitle').textContent = '先看当前标的，再决定今天的盘中动作。';
-        document.getElementById('heroCopy').textContent = '当前标的榜把 today targets、技术状态和今天已出信号放到一张表里，优先定位需要确认、等待执行和 ready 但尚未触发的标的。';
+        document.getElementById('heroTitle').textContent = '当前标的工作台：先看榜单，再决定今天的盘中动作。';
+        document.getElementById('heroCopy').textContent = '信号页现在只保留列表与执行详情；这里承接 today targets、技术状态、规则上下文和盘中轻操作，优先定位需要确认、等待执行和 ready 但尚未触发的标的。';
         document.getElementById('marketDateMeta').textContent = `Market Date ${todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate').value || '--'}`;
         document.getElementById('refreshInfo').textContent = todayTargetsPayload.computed_at_us
           ? `更新: ${todayTargetsPayload.computed_at_us}`

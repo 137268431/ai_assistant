@@ -999,6 +999,30 @@ def _safe_dict(payload) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _format_health_issue(issue) -> str:
+    text = str(issue or "").strip()
+    if not text:
+        return "--"
+    if text == "db:latest_indicator_5m_missing":
+        return "latest 5m indicator missing [db:latest_indicator_5m_missing]"
+    if text.startswith("db:latest_indicator_5m_pending:"):
+        remaining = text.split(":", 2)[-1]
+        return f"latest 5m indicator pending within grace ({remaining}) [{text}]"
+    if text.startswith("db:latest_indicator_5m_stale:"):
+        age = text.split(":", 2)[-1]
+        return f"latest 5m indicator not caught up (stale {age}m) [{text}]"
+    if text == "db:latest_bar_5m_missing":
+        return "latest 5m bar missing [db:latest_bar_5m_missing]"
+    if text.startswith("db:latest_bar_5m_stale:"):
+        age = text.split(":", 2)[-1]
+        return f"latest 5m bar stale ({age}m) [{text}]"
+    return text
+
+
+def _format_health_issue_list(items) -> str:
+    return "; ".join(_format_health_issue(item) for item in (items or []))
+
+
 def _service_summary_line(name: str, payload) -> str:
     service = _safe_dict(payload)
     state = service.get("active_state") or service.get("status") or "unknown"
@@ -1064,6 +1088,8 @@ def _build_data_summary_line(payload: dict) -> str:
         parts.append(
             f"ind5m {latest_indicator.get('symbol') or '--'} age={latest_indicator.get('age_min') if latest_indicator.get('age_min') is not None else '--'}m"
         )
+    elif latest_bar:
+        parts.append("ind5m missing (latest bar present)")
     if latest_signal:
         parts.append(f"signal {latest_signal.get('symbol') or '--'}")
     return " · ".join(parts) if parts else "--"
@@ -1126,9 +1152,9 @@ def print_human_summary(payload: dict) -> None:
     warnings = list(payload.get("warnings") or [])
     failures = list(payload.get("failures") or [])
     if warnings:
-        lines.append(f"- Warnings: {'; '.join(str(item) for item in warnings)}")
+        lines.append(f"- Warnings: {_format_health_issue_list(warnings)}")
     if failures:
-        lines.append(f"- Failures: {'; '.join(str(item) for item in failures)}")
+        lines.append(f"- Failures: {_format_health_issue_list(failures)}")
     print("\n".join(lines))
 
 

@@ -100,6 +100,96 @@ class IncrementalRollupWindowTest(unittest.TestCase):
 
         self.assertEqual(since_ms, 1776278100000 - (2 * 4 * 60 * 60 * 1000))
 
+    def test_incremental_due_intervals_only_keep_closed_higher_timeframes(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app):
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    1776794700000,
+                    intervals=["15m", "30m", "1h", "4h"],
+                ),
+                [],
+            )
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    1776795300000,
+                    intervals=["15m", "30m", "1h", "4h"],
+                ),
+                ["15m"],
+            )
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    1776798000000,
+                    intervals=["15m", "30m", "1h", "4h"],
+                ),
+                ["15m", "30m", "1h"],
+            )
+
+    def test_incremental_targeted_rollup_skips_when_no_higher_interval_closes(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.normalize_symbols.return_value = ["AAPL"]
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=1776794700000), \
+                mock.patch.object(compute_rollup, "rebuild_higher_timeframe_bars") as rebuild:
+            results = compute_rollup.ensure_higher_timeframe_bars(
+                ["live"],
+                force=True,
+                symbols=["AAPL"],
+                incremental=True,
+                intervals=["15m", "30m", "1h", "4h"],
+            )
+
+        self.assertEqual(
+            results["live"],
+            {
+                "skipped": True,
+                "reason": "no_due_intervals",
+                "written": 0,
+                "errors": 0,
+                "intervals": [],
+            },
+        )
+        rebuild.assert_not_called()
+
+    def test_incremental_targeted_rollup_only_rebuilds_due_intervals(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.normalize_symbols.return_value = ["AAPL", "MSFT"]
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=1776795300000), \
+                mock.patch.object(compute_rollup, "_recent_rollup_since_ms", return_value=1776793500000) as since_mock, \
+                mock.patch.object(
+                    compute_rollup,
+                    "rebuild_higher_timeframe_bars",
+                    return_value={"processed_5m": 24, "written": 48, "errors": 0},
+                ) as rebuild:
+            results = compute_rollup.ensure_higher_timeframe_bars(
+                ["live"],
+                force=True,
+                symbols=["AAPL", "MSFT"],
+                incremental=True,
+                intervals=["15m", "30m", "1h", "4h"],
+            )
+
+        since_mock.assert_called_once_with(
+            "live",
+            ["AAPL", "MSFT"],
+            intervals=["15m"],
+        )
+        rebuild.assert_called_once_with(
+            "live",
+            symbols=["AAPL", "MSFT"],
+            intervals=["15m"],
+            since_ms=1776793500000,
+        )
+        self.assertTrue(results["live"]["targeted"])
+        self.assertTrue(results["live"]["incremental"])
+
 
 if __name__ == "__main__":
     unittest.main()

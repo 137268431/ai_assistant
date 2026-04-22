@@ -180,6 +180,26 @@ test("silent auth recovery is watch-only instead of a broken unauthenticated sta
     assert.ok(!problems.includes("IBKR 会话未认证"))
 })
 
+test("very stale indicators use a clearer chain-lag message instead of raw 999m wording", () => {
+    const snapshot = buildSnapshot({
+        latest_indicator: {
+            bar_time_ms: 1,
+            lag_min: 999,
+            label: "AAPL / lag 999m / 2026-04-20 15:55:00",
+        },
+    })
+    const times = { date: "2026-04-20" }
+    const clock = { weekday: 1, hour: 15, minute: 30 }
+
+    const freshnessWindow = buildDataFreshnessWindow(snapshot, times, clock)
+    const assessment = buildStatusAssessment(snapshot, false, freshnessWindow)
+    const problems = listDataHealthProblems(snapshot, freshnessWindow)
+
+    assert.equal(assessment.kind, "broken")
+    assert.ok(problems.includes("最新指标未跟上当前 5m bars（延迟 999m）"))
+    assert.ok(!problems.includes("指标延迟 999m"))
+})
+
 test("completed daily scan with zero targets is not treated as a non-trading day", () => {
     const snapshot = buildSnapshot({
         today: {

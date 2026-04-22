@@ -447,6 +447,16 @@
                 ? Number.NaN
                 : Number(apiUtilization.last_message_age_s);
             const pingIntervalS = Math.max(15, Number(websocket?.ping_interval_s || 0) || 45);
+            const wsSilenceEnabled = apiUtilization?.ws_silence_enabled !== false;
+            const wsSilencePolicy = String(apiUtilization?.ws_silence_policy || '').trim().toLowerCase() || 'regular';
+            const configuredWarnSec = Number(apiUtilization?.ws_silence_warn_sec);
+            const configuredCriticalSec = Number(apiUtilization?.ws_silence_critical_sec);
+            const warnSec = Number.isFinite(configuredWarnSec) && configuredWarnSec > 0
+                ? configuredWarnSec
+                : (pingIntervalS * 2);
+            const criticalSec = Number.isFinite(configuredCriticalSec) && configuredCriticalSec > warnSec
+                ? configuredCriticalSec
+                : (pingIntervalS * 4);
             const copy = [
                 `msg ${formatSeconds(apiUtilization?.last_message_age_s)}`,
                 `tic ${formatSeconds(apiUtilization?.last_tic_age_s)}`,
@@ -469,6 +479,14 @@
                     summary: 'push idle',
                 };
             }
+            if (!wsSilenceEnabled) {
+                return {
+                    tone: 'chip-muted',
+                    label: 'OFF',
+                    copy: `${copy} · session ${wsSilencePolicy === 'disabled' ? 'closed' : wsSilencePolicy}`,
+                    summary: 'push off-hours',
+                };
+            }
             if (!Number.isFinite(lastMessageAgeS)) {
                 return {
                     tone: 'chip-warn',
@@ -478,13 +496,13 @@
                 };
             }
 
-            const hasError = lastMessageAgeS > (pingIntervalS * 4);
-            const hasWarn = lastMessageAgeS > (pingIntervalS * 2);
+            const hasError = lastMessageAgeS > criticalSec;
+            const hasWarn = lastMessageAgeS > warnSec;
             return {
                 tone: hasError ? 'chip-error' : (hasWarn ? 'chip-warn' : 'chip-ok'),
                 label: hasError ? 'ERROR' : (hasWarn ? 'SLOW' : 'OK'),
-                copy,
-                summary: `msg ${formatSeconds(lastMessageAgeS)}`,
+                copy: `${copy} · threshold ${formatSeconds(warnSec)}/${formatSeconds(criticalSec)}`,
+                summary: `msg ${formatSeconds(lastMessageAgeS)} / ${formatSeconds(warnSec)}`,
             };
         }
 
