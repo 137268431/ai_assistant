@@ -241,9 +241,9 @@ const mockSnapshot = enrichAccountSnapshot(
   'live',
 );
 
-const htmlPath = path.join(repoRoot, 'runtime', 'pocketbase', 'pb_public', 'ibkr_account.html');
-const commonBasePath = path.join(repoRoot, 'runtime', 'pocketbase', 'pb_public', 'assets', 'js', 'shared', 'base.js');
-const commonUiPath = path.join(repoRoot, 'runtime', 'pocketbase', 'pb_public', 'assets', 'js', 'shared', 'ui.js');
+const htmlPath = path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'ibkr_account.html');
+const commonBasePath = path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'assets', 'js', 'shared', 'base.js');
+const commonUiPath = path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'assets', 'js', 'shared', 'ui.js');
 let html = fs.readFileSync(htmlPath, 'utf8');
 let common = `${fs.readFileSync(commonBasePath, 'utf8')}\n${fs.readFileSync(commonUiPath, 'utf8')}`;
 common = common.replace(

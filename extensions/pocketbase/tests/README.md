@@ -8,7 +8,7 @@
 
 - `quant_trading` 内部订单生命周期
 - PocketBase 的 `orders` / `order_details`
-- `runtime/pocketbase/pb_public/orders.html` 与 `runtime/pocketbase/pb_public/ibkr_order_details.html`
+- `runtime/ibkr_console/static/orders.html` 与 `runtime/ibkr_console/static/ibkr_order_details.html`
 - `ai_assistant/extensions/pocketbase/tests/flows/pb-flow.sh`
 
 ---
@@ -40,6 +40,7 @@
 - 写入 `ibkr_signals`
 - 如需人工确认，则飞书卡片先停在 `awaiting_confirm`
 - 如已存在反向持仓或反向挂单，可额外生成 `reverse_signals`
+- 这个入口目前仍是 PocketBase 兼容写入链路；`signals/pending`、`signals/ack`、`/webhook/signal/*`、`/webhook/order/*` 已优先切到 `ibkr-api` 原生处理
 
 兼容链路 `POST /webhook/tv` 仍保留给 TradingView webhook，但不再是 `flows/pb-flow.sh` 的主测试入口
 
@@ -101,6 +102,7 @@ IBKR 后续通过 `POST /api/custom/ibkr/orders/upsert` 更新同一条主单：
 
 - 只允许取消主入场单
 - 子单不能直接取消
+- 当前兼容入口仍保持不变，但请求已优先由 `ibkr-api` 原生处理，再按需做兼容兜底
 
 `/webhook/order/close`
 
@@ -108,6 +110,7 @@ IBKR 后续通过 `POST /api/custom/ibkr/orders/upsert` 更新同一条主单：
 - 会关闭整个 `trade_group_id`
 - 主单变为 `Closed`
 - 相关子单变为 `Canceled`
+- 当前兼容入口仍保持不变，但请求已优先由 `ibkr-api` 原生处理，再按需做兼容兜底
 
 ### 7. 逆向信号
 
@@ -118,6 +121,7 @@ IBKR 后续通过 `POST /api/custom/ibkr/orders/upsert` 更新同一条主单：
 - `webhook/tv` 检测到 `signal_conflict` 时自动写入 `reverse_signals`
 - `POST /api/custom/ibkr/reverse/calculate` 计算 `indicator_conflict`
 - `flows/pb-flow.sh` 的 `H` 会在保留现有交易组的前提下发送一个反向新信号，用于直接验证 `signal_conflict`
+- 以上 reverse 入口当前已优先由 `ibkr-api` 原生处理，PocketBase 只保留兼容层与存储能力
 
 两种来源都会在创建时直接补齐：
 
@@ -132,7 +136,7 @@ IBKR 后续通过 `POST /api/custom/ibkr/orders/upsert` 更新同一条主单：
 
 ### 7.2 页面调度
 
-`runtime/pocketbase/pb_public/ibkr_reverse_signals.html` 不再直接改表，而是统一走：
+`runtime/ibkr_console/static/ibkr_reverse_signals.html` 不再直接改表，而是统一走：
 
 - `POST /api/custom/ibkr/reverse/dispatch`
 
@@ -169,13 +173,13 @@ IBKR 完成后回写 `POST /api/custom/ibkr/reverse/ack`：
 
 ## 页面对应关系
 
-### `runtime/pocketbase/pb_public/orders.html`
+### `runtime/ibkr_console/static/orders.html`
 
 - 以 `trade_group_id` 聚合展示
 - 一个卡片代表一个交易组
 - 卡片内完整展示主单、TP、SL、父子关系、sibling 关系、broker id、relation status
 
-### `runtime/pocketbase/pb_public/ibkr_order_details.html`
+### `runtime/ibkr_console/static/ibkr_order_details.html`
 
 - 列表模式下展示事件卡片
 - 支持 `trade_group_id` / `order_id` / `signal_id` / `id` 查询

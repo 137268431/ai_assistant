@@ -1,0 +1,12 @@
+# ibkr-api extensions
+
+- Service-owned API validation and compatibility tests live under `extensions/ibkr_api/tests`.
+- `extensions/ibkr_api/tests` is the home for control-plane coverage across `system/*`, `startup/*`, `integrations/*`, `callbacks/*`, `tradingview/*`, `signals/*`, `orders/*`, `reverse/*`, and `webhooks/*`.
+- Split-stack compatibility coverage includes native webhook ownership plus generic `/api/custom/*` and `/webhook/*` fallback proxies exposed by `ibkr-api`.
+- Signal/order/reverse compatibility entrypoints are validated from the `ibkr-api` side; the remaining PB compatibility layer is now mostly narrowed to legacy cron wrappers and a small set of PB-owned jobs.
+- Native read coverage includes `GET /api/custom/ibkr/signals/pending`, which now assembles signal + indicator snapshots from PocketBase REST on the API side.
+- Native write coverage now includes `POST /api/custom/ibkr/signal`, `POST /api/custom/ibkr/signals`, `POST /api/custom/ibkr/signals/ack`, `POST /api/custom/ibkr/orders/upsert`, `POST /api/custom/ibkr/orders/reconcile`, `POST /api/custom/ibkr/orders/cancel_group`, `POST /api/custom/ibkr/orders/close_group`, `POST /api/custom/ibkr/reverse/dispatch`, `POST /api/custom/ibkr/reverse/ack`, and `POST /api/custom/ibkr/reverse/calculate`.
+- Native read/webhook coverage also includes `GET /api/custom/ibkr/reverse/list`, `GET /api/custom/ibkr/reverse/pending`, `GET /webhook/signal/confirm`, `GET /webhook/signal/cancel`, `GET /webhook/order/cancel`, and `GET /webhook/order/close`.
+- Module-level split coverage now also follows extracted helper files such as `system/events.py`, `system/pocketbase_disk.py`, `startup/progress.py`, `integrations/feishu.py`, `integrations/runtime_orders.py`, `callbacks/feishu.py`, `tradingview/ingest.py`, `signals/ingest.py`, `signals/ack.py`, `signals/api.py`, `signals/notifications.py`, `signals/order_cancel.py`, `signals/values.py`, `signals/webhooks.py`, `orders/upsert.py`, `orders/details.py`, `orders/group_common.py`, `orders/group_cancel.py`, `orders/group_close.py`, `orders/webhooks.py`, `orders/reconcile.py`, `orders/values.py`, `reverse/common.py`, `reverse/queries.py`, `reverse/actions.py`, `reverse/calculate.py`, and `webhooks/pages.py`, not just `api_app.py`.
+- Legacy `extensions/ibkr_compute/tests/*` wrappers remain only for compatibility.
+- Runtime session/gateway/live-bar validation should stay in `extensions/ibkr_runtime/tests`; compute/backtest/history rebuild validation should stay with `ibkr_compute`.

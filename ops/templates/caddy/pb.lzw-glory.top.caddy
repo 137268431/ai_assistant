@@ -1,0 +1,46 @@
+# Managed by ai_assistant/ops/deploy/deploy_ibkr_public_proxy.sh
+pb.lzw-glory.top {
+    route {
+        @api_control path /api/custom /api/custom/* /webhook /webhook/* /health /status
+        reverse_proxy @api_control 127.0.0.1:5102 {
+            flush_interval -1
+            header_up X-Real-IP {remote_host}
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+                dial_timeout 30s
+            }
+        }
+
+        @pb_api path /api/*
+        reverse_proxy @pb_api 127.0.0.1:8090 {
+            flush_interval -1
+            header_up X-Real-IP {remote_host}
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+                dial_timeout 30s
+            }
+        }
+
+        @chart_compat path /chart /chart/
+        rewrite @chart_compat /chart.html
+
+        reverse_proxy 127.0.0.1:5104 {
+            flush_interval -1
+            header_up X-Real-IP {remote_host}
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+                dial_timeout 30s
+            }
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+}

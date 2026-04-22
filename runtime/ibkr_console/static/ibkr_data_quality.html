@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IBKR Data Quality</title>
+  <script src="/common.js"></script>
+  <script>document.write(getCommonStyles())</script>
+  <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_data_quality/page.css">
+</head>
+<body>
+  <div id="nav"></div>
+
+  <div class="page-shell">
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
+
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="hero-kicker">Quality Summary</div>
+          <div class="hero-title">当前扫描结果与修复状态</div>
+          <div class="hero-copy">观察池和当前交易标的的 5 分钟K线完整性、派生周期同步和修复回写会统一汇总在这里，便于先看问题等级，再决定是否马上重扫或安全修复。</div>
+        </div>
+        <div class="hero-meta">
+          <div class="meta-line" id="refreshInfo">等待加载...</div>
+          <div class="meta-line" id="summaryInfo">扫描结果待加载</div>
+        </div>
+      </div>
+      <div class="summary-grid" id="summaryGrid"></div>
+      <div class="summary-footnote" id="summaryFootnote">说明待加载...</div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">怎么看这页</div>
+      <div class="panel-copy">这页先告诉你问题属于哪一类，再告诉你系统会不会自动修，不再只堆原始字段。</div>
+      <div class="legend-grid">
+        <div class="legend-card">
+          <div class="legend-title">黄色 / 可自动修复</div>
+          <div class="legend-copy">表示 5 分钟K线数量不足、存在缺口，或者 15m/30m/1h/4h/1d 派生周期缺失或滞后。这类通常可安全自动修复。</div>
+        </div>
+        <div class="legend-card">
+          <div class="legend-title">红色 / 人工复核</div>
+          <div class="legend-copy">表示发现重复K线或开高低收异常。因为涉及潜在误删，这类只会标记人工复核，不会自动清洗。</div>
+        </div>
+        <div class="legend-card">
+          <div class="legend-title">自动修复策略</div>
+          <div class="legend-copy">系统平时会在预热、当前交易标的和观察池巡检里自动补齐安全问题。这里的“安全修复”按钮只是立即再跑一轮。</div>
+        </div>
+        <div class="legend-card">
+          <div class="legend-title">你最该看什么</div>
+          <div class="legend-copy">先看“问题等级”，再看“发现的问题”和“系统动作”。如果动作写着“需人工复核”，说明当前异常不会自动处理。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">过滤与动作</div>
+      <div class="panel-copy">支持按环境、日期、范围、状态、标的过滤。没有指定标的时，手动重扫或修复会按当前范围执行；系统平时也会自动补齐安全问题。</div>
+      <div class="filters">
+        <div class="field">
+          <label for="marketDate">交易日</label>
+          <input id="marketDate" type="date" />
+        </div>
+        <div class="field">
+          <label for="scanScope">范围</label>
+          <select id="scanScope">
+            <option value="">全部</option>
+            <option value="active_target">当前交易标的（active_target）</option>
+            <option value="watchlist">观察池（watchlist）</option>
+            <option value="manual">手动（manual）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="statusFilter">状态</label>
+          <select id="statusFilter">
+            <option value="">全部</option>
+            <option value="ok">正常（ok）</option>
+            <option value="warn">可自动修复（warn）</option>
+            <option value="error">人工复核（error）</option>
+            <option value="repaired">已修复（repaired）</option>
+            <option value="repair_failed">修复未完成（repair_failed）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="symbolFilter">标的</label>
+          <input id="symbolFilter" type="text" placeholder="AAPL / SPY / VIX" />
+        </div>
+        <div class="field">
+          <label for="needsRepairFilter">待补齐</label>
+          <select id="needsRepairFilter">
+            <option value="">全部</option>
+            <option value="true">仅待修复</option>
+            <option value="false">仅正常</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="batchSize">批量数量</label>
+          <input id="batchSize" type="number" min="1" max="100" step="1" value="8" />
+        </div>
+      </div>
+      <div class="action-grid">
+        <button class="action-btn" onclick="applyFilters()">
+          <strong>应用过滤</strong>
+          <span>刷新概览和列表，并把当前过滤条件写入 URL。</span>
+        </button>
+        <button class="action-btn" onclick="runGlobalAction('rescan')">
+          <strong>全观察池 Sweep</strong>
+          <span>当前标的存在时只扫该标的；否则对全观察池执行一次内部一致性 sweep。</span>
+        </button>
+        <button class="action-btn" onclick="runGlobalAction('repair')">
+          <strong>立即安全修复</strong>
+          <span>只补K线缺口、K线数量不足、派生周期缺失或滞后；重复K线和开高低收异常仍保留给人工审查。</span>
+        </button>
+        <button class="action-btn" onclick="runGlobalAction('truth_audit')">
+          <strong>IBKR 真值审计</strong>
+          <span>把库里的 5 分钟 bars 与 IBKR authoritative history 逐 bar 对比，验证是否真的一致。</span>
+        </button>
+        <button class="action-btn" onclick="loadDataQuality(true)">
+          <strong>刷新页面</strong>
+          <span>重新读取概览和列表，校验最新自动巡检与修复回写状态。</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">巡检明细</div>
+      <div class="panel-copy">先看问题等级，再看系统动作。表里会明确告诉你是“会自动修”“已经修过”还是“只能人工复核”。</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>标的</th>
+              <th>问题等级</th>
+              <th>发现的问题</th>
+              <th>系统动作</th>
+              <th>最近状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="qualityTable">
+            <tr><td colspan="6" class="loading">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    let currentEnvironment = getCurrentRuntimeEnvironment();
+    let currentPage = 1;
+    const perPage = 50;
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function initAuth() {
+      try {
+        requireAuth(`${location.pathname}${location.search}`);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function currentFilters() {
+      return {
+        market_date: document.getElementById('marketDate').value || '',
+        scan_scope: document.getElementById('scanScope').value || '',
+        status: document.getElementById('statusFilter').value || '',
+        symbol: String(document.getElementById('symbolFilter').value || '').trim().toUpperCase(),
+        needs_repair: document.getElementById('needsRepairFilter').value || '',
+        batch_size: Number(document.getElementById('batchSize').value || 8) || 8
+      };
+    }
+
+    async function requestQualityJson(path, { method = 'GET', body = null } = {}) {
+      const token = getToken();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const response = await fetch(`${BASE_URL}${path}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : null
+      });
+      const text = await response.text();
+      let payload = {};
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch (_) {
+        payload = { ok: false, raw: text };
+      }
+      if (response.status === 401 || response.status === 403) {
+        handleAuthError();
+        throw new Error('Authentication failed');
+      }
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || `Request failed (${response.status})`);
+      }
+      return payload;
+    }
+
+    function buildQuery(params) {
+      const query = new URLSearchParams();
+      Object.entries(params || {}).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          query.set(key, String(value));
+        }
+      });
+      const text = query.toString();
+      return text ? `?${text}` : '';
+    }
+
+    function setFiltersFromUrl() {
+      const query = new URLSearchParams(window.location.search);
+      document.getElementById('marketDate').value = query.get('market_date') || '';
+      document.getElementById('scanScope').value = query.get('scan_scope') || '';
+      document.getElementById('statusFilter').value = query.get('status') || '';
+      document.getElementById('symbolFilter').value = query.get('symbol') || '';
+      document.getElementById('needsRepairFilter').value = query.get('needs_repair') || '';
+      document.getElementById('batchSize').value = query.get('batch_size') || '8';
+      currentPage = Math.max(1, Number(query.get('page') || 1) || 1);
+    }
+
+    function applyFilters() {
+      const filters = currentFilters();
+      currentPage = 1;
+      const url = buildPageUrl('/ibkr_data_quality.html', {
+        ...filters,
+        page: currentPage
+      }, { environment: currentEnvironment });
+      window.location.href = url;
+    }
+
+    function statusClass(status) {
+      return `status-${String(status || 'ok').replace(/[^a-z_]/gi, '')}`;
+    }
+
+    function truthStatusClass(item) {
+      const truthStatus = String(item?.truth_status || '').trim().toLowerCase();
+      if (truthStatus === 'ok') return 'status-ok';
+      if (truthStatus === 'error') return 'status-error';
+      if (truthStatus === 'unavailable') return 'status-unavailable';
+      return 'status-missing';
+    }
+
+    function formatList(values) {
+      return Array.isArray(values) && values.length ? values.join(', ') : '无';
+    }
+
+    function formatScopeLabel(value) {
+      const key = String(value || '').trim().toLowerCase();
+      const scopeMap = {
+        active_target: '当前交易标的',
+        watchlist: '观察池',
+        manual: '手动'
+      };
+      return scopeMap[key] || (value || '--');
+    }
+
+    function formatStatusMeta(item) {
+      const status = String(item?.status || 'ok').trim().toLowerCase();
+      if (status === 'repaired') {
+        return { label: '已修复', copy: '最近一轮自动修复后恢复正常' };
+      }
+      if (status === 'repair_failed') {
+        return { label: '修复未完成', copy: '系统试过补齐，但问题仍残留' };
+      }
+      if (status === 'error') {
+        return { label: '人工复核', copy: '存在重复K线或开高低收异常，不会自动删改' };
+      }
+      if (status === 'warn') {
+        return { label: '可自动修复', copy: '缺口 / K线不足 / 派生周期异常，可安全补齐' };
+      }
+      if (status === 'repairing') {
+        return { label: '修复中', copy: '后台正在跑补齐流程' };
+      }
+      return { label: '正常', copy: '当前未发现需要处理的数据异常' };
+    }
+
+    function formatTruthStatusMeta(item) {
+      const truthStatus = String(item?.truth_status || '').trim().toLowerCase();
+      if (truthStatus === 'ok') {
+        return { label: '真值通过', copy: 'Stored bars 已通过 IBKR 真值比对' };
+      }
+      if (truthStatus === 'error') {
+        return { label: '真值失败', copy: 'IBKR 真值比对发现缺失或字段不一致' };
+      }
+      if (truthStatus === 'unavailable') {
+        return { label: '真值不可用', copy: '本轮无法访问 IBKR 历史源完成比对' };
+      }
+      return { label: '未审计', copy: '尚未运行 IBKR 真值审计' };
+    }
+
+    function formatAgoFromMs(value) {
+      const number = Number(value || 0);
+      if (!Number.isFinite(number) || number <= 0) return '--';
+      const diffMin = Math.max(0, Math.round((Date.now() - number) / 60000));
+      if (diffMin < 1) return '刚刚';
+      if (diffMin < 60) return `${diffMin} 分钟前`;
+      if (diffMin < 1440) return `${Math.floor(diffMin / 60)} 小时前`;
+      return `${Math.floor(diffMin / 1440)} 天前`;
+    }
+
+    function normalizeIsoValue(value) {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      return text.replace(/\.(\d{3})\d+([+-]\d{2}:\d{2}|Z)$/i, '.$1$2');
+    }
+
+    function formatDateTimeInZone(date, timeZone) {
+      const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      const parts = {};
+      formatter.formatToParts(date).forEach((part) => {
+        if (part.type !== 'literal') {
+          parts[part.type] = part.value;
+        }
+      });
+      if (!parts.year || !parts.month || !parts.day || !parts.hour || !parts.minute || !parts.second) {
+        return '--';
+      }
+      return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+    }
+
+    function formatIsoLabel(value) {
+      if (!value) return '--';
+      const normalized = normalizeIsoValue(value);
+      const timestamp = Date.parse(normalized);
+      if (Number.isNaN(timestamp)) return String(value);
+      return formatDateTimeInZone(new Date(timestamp), 'Asia/Shanghai');
+    }
+
+    function summarizeRepairResult(result) {
+      if (!result || typeof result !== 'object' || !result.attempted) {
+        return '尚未执行修复';
+      }
+      const parts = [];
+      if (result.deferred) {
+        parts.push(`已延后: ${result.defer_reason || '实时链路优先'}`);
+      }
+      if (result.history_error) {
+        parts.push(`历史回补失败: ${result.history_error}`);
+      }
+      if (Number.isFinite(Number(result.history_written))) {
+        parts.push(`回补 ${Number(result.history_written || 0)} 根 5 分钟K线`);
+      }
+      if (result.history_period) {
+        parts.push(`历史窗口 ${result.history_period}`);
+      }
+      if (result.pipeline_ok === true) {
+        parts.push(`派生周期写入 ${Number(result.pipeline?.rollup_written || 0) || 0}`);
+      }
+      if (result.pipeline_ok === false) {
+        parts.push('派生周期修复失败');
+      }
+      return parts.length ? parts.join('；') : '已触发修复，等待下一轮扫描确认';
+    }
+
+    function getDecisionMeta(item) {
+      const proof = item?.proof && typeof item.proof === 'object' ? item.proof : null;
+      if (proof && proof.status) {
+        return {
+          tone: String(proof.status || 'yellow'),
+          title: String(proof.title || '证明未完成'),
+          copy: String(proof.copy || '当前还缺少完整证明。')
+        };
+      }
+      const duplicateCount = Number(item.duplicate_count || 0) || 0;
+      const badOhlcCount = Number(item.bad_ohlc_count || 0) || 0;
+      if (duplicateCount > 0 || badOhlcCount > 0) {
+        return {
+          tone: 'manual',
+          title: '需人工复核',
+          copy: '检测到重复K线或开高低收异常。系统不会自动删改这类记录，避免误修。'
+        };
+      }
+      if (String(item.status || '').toLowerCase() === 'repaired') {
+        return {
+          tone: 'auto',
+          title: '已自动修复',
+          copy: summarizeRepairResult(item.last_repair_result)
+        };
+      }
+      if (String(item.status || '').toLowerCase() === 'repair_failed') {
+        return {
+          tone: 'warn',
+          title: '自动修复后仍有残留',
+          copy: summarizeRepairResult(item.last_repair_result)
+        };
+      }
+      if (item.safe_repair && item.needs_repair) {
+        return {
+          tone: 'auto',
+          title: '会自动安全修复',
+          copy: '系统会回补 5 分钟历史K线并补齐派生周期；这里手动点按钮只是立刻再跑一轮。'
+        };
+      }
+      if (item.needs_repair) {
+        return {
+          tone: 'warn',
+          title: '待进一步确认',
+          copy: '当前仍有管道类问题，但不满足自动安全修复条件。'
+        };
+      }
+      return {
+        tone: 'ok',
+        title: '无需处理',
+        copy: '当前记录没有需要修复的问题。'
+      };
+    }
+
+    function renderSummary(summary) {
+      const grid = document.getElementById('summaryGrid');
+      const statusCounts = summary.status_counts || {};
+      const truthStatusCounts = summary.truth_status_counts || {};
+      const proofStatusCounts = summary.proof_status_counts || {};
+      const dbStatus = String(summary.database_correctness_status || 'yellow').trim().toLowerCase();
+      const cards = [
+        { label: '数据库证明', value: String(dbStatus || 'yellow').toUpperCase(), copy: summary.database_correctness_copy || '当前还不能证明整库 bar 正确。', className: `is-${dbStatus}` },
+        { label: '观察池覆盖', value: `${summary.scanned_symbols_total || 0}/${summary.expected_symbols_total || 0}`, copy: summary.coverage_complete ? '内部一致性已覆盖全观察池' : `仍缺 ${Array.isArray(summary.unscanned_symbols) ? summary.unscanned_symbols.length : 0} 个 symbol 未扫到` },
+        { label: '真值覆盖', value: `${summary.truth_audited_symbols_total || 0}/${summary.expected_symbols_total || 0}`, copy: summary.truth_coverage_complete ? 'IBKR 真值审计已覆盖全观察池' : `仍缺 ${Array.isArray(summary.unaudited_symbols) ? summary.unaudited_symbols.length : 0} 个 symbol 未审计` },
+        { label: '内部正常', value: (statusCounts.ok || 0) + (statusCounts.repaired || 0), copy: '内部一致性为 ok / repaired 的 symbol 数' },
+        { label: '待补齐', value: summary.needs_repair || 0, copy: 'K线不足、缺口、派生周期缺失或滞后' },
+        { label: '人工复核', value: summary.manual_review || 0, copy: '重复K线或开高低收异常，不自动删改' },
+        { label: '真值通过', value: truthStatusCounts.ok || 0, copy: `最近真值审计 ${formatIsoLabel(summary.latest_truth_checked_at)}` },
+        { label: '证明绿灯', value: proofStatusCounts.green || 0, copy: `黄灯 ${proofStatusCounts.yellow || 0} · 红灯 ${proofStatusCounts.red || 0}` }
+      ];
+      grid.innerHTML = cards.map((item) => `
+        <div class="summary-card ${escapeHtml(item.className || '')}">
+          <div class="summary-label">${escapeHtml(item.label)}</div>
+          <div class="summary-value">${escapeHtml(item.value)}</div>
+          <div class="summary-copy">${escapeHtml(item.copy)}</div>
+        </div>
+      `).join('');
+      document.getElementById('summaryInfo').textContent = `最近扫描 ${formatIsoLabel(summary.latest_scan_at)} · 最近修复 ${formatIsoLabel(summary.latest_repair_at)} · 最近真值 ${formatIsoLabel(summary.latest_truth_checked_at)}`;
+      document.getElementById('summaryFootnote').textContent = '说明: 只有当全观察池内部一致性已全量覆盖、全量完成 IBKR 真值审计、且每个 symbol 都是 green 时，数据库证明才会变成 GREEN。';
+    }
+
+    function renderRows(items) {
+      const tbody = document.getElementById('qualityTable');
+      if (!Array.isArray(items) || !items.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">当前过滤条件下没有记录</td></tr>';
+        return;
+      }
+      tbody.innerHTML = items.map((item) => {
+        const missingIntervals = formatList(item.missing_intervals);
+        const staleIntervals = formatList(item.stale_intervals);
+        const truth = item.truth_audit && typeof item.truth_audit === 'object' ? item.truth_audit : {};
+        const truthMeta = formatTruthStatusMeta(item);
+        const truthExample = Array.isArray(truth.mismatch_examples) && truth.mismatch_examples.length
+          ? truth.mismatch_examples.slice(0, 2).map((row) => `${row.us_time || '--'} · bars ${row.bar_fields && row.bar_fields.length ? row.bar_fields.join(',') : '--'}`).join(' ; ')
+          : '无';
+        const gapExamples = Array.isArray(item.gap_examples) && item.gap_examples.length
+          ? item.gap_examples.map((row) => `${row.prev_us_time || '--'} → ${row.next_us_time || '--'} (${row.missing_points || 1})`).join(' ; ')
+          : '无';
+        const canRepair = Boolean(item.safe_repair);
+        const statusMeta = formatStatusMeta(item);
+        const decisionMeta = getDecisionMeta(item);
+        const issueLines = [];
+        issueLines.push(`5 分钟K线 ${Number(item.bar_count || 0) || 0} 根`);
+        if ((Number(item.gap_count || 0) || 0) > 0) issueLines.push(`缺口 ${Number(item.gap_count || 0) || 0} 处`);
+        if ((Number(item.duplicate_count || 0) || 0) > 0) issueLines.push(`重复K线 ${Number(item.duplicate_count || 0) || 0} 条`);
+        if ((Number(item.bad_ohlc_count || 0) || 0) > 0) issueLines.push(`开高低收异常 ${Number(item.bad_ohlc_count || 0) || 0} 条`);
+        if (Array.isArray(item.missing_intervals) && item.missing_intervals.length) issueLines.push(`派生周期缺失 ${missingIntervals}`);
+        if (Array.isArray(item.stale_intervals) && item.stale_intervals.length) issueLines.push(`派生周期滞后 ${staleIntervals}`);
+        if ((Number(truth.missing_stored_bar_count || 0) || 0) > 0) issueLines.push(`真值缺失 stored ${Number(truth.missing_stored_bar_count || 0) || 0} 根`);
+        if ((Number(truth.missing_ibkr_bar_count || 0) || 0) > 0) issueLines.push(`真值缺失 IBKR ${Number(truth.missing_ibkr_bar_count || 0) || 0} 根`);
+        if ((Number(truth.bar_mismatch_count || 0) || 0) > 0) issueLines.push(`真值 bars mismatch ${Number(truth.bar_mismatch_count || 0) || 0} 根`);
+        if (issueLines.length === 1) issueLines.push('未发现额外异常');
+        return `
+          <tr>
+            <td>
+              <strong>${escapeHtml(item.symbol || '--')}</strong><br>
+              <span class="small-copy">${escapeHtml(formatScopeLabel(item.scan_scope))} · ${escapeHtml(item.market_date || '--')} · ${escapeHtml(item.interval || '5m')}</span>
+              <span class="small-copy">修复尝试 ${escapeHtml(item.repair_attempts || 0)} 次</span>
+              <span class="small-copy">证明状态 ${escapeHtml(String(item.proof && item.proof.status || 'yellow').toUpperCase())}</span>
+            </td>
+            <td>
+              <div class="status-stack">
+                <span class="status-chip ${statusClass(item.status)}">${escapeHtml(statusMeta.label)}</span>
+                <span class="small-copy">${escapeHtml(statusMeta.copy)}</span>
+                <span class="status-chip ${truthStatusClass(item)}">${escapeHtml(truthMeta.label)}</span>
+                <span class="small-copy">${escapeHtml(truthMeta.copy)}</span>
+                <span class="small-copy code-copy">状态代码: ${escapeHtml(item.status || 'ok')} · truth=${escapeHtml(item.truth_status || 'missing')}</span>
+              </div>
+            </td>
+            <td>
+              <div class="issue-list">
+                ${issueLines.map((line) => `<div class="issue-item">${escapeHtml(line)}</div>`).join('')}
+                <div class="issue-item"><strong>缺口样本</strong> ${escapeHtml(gapExamples)}</div>
+                <div class="issue-item"><strong>真值样本</strong> ${escapeHtml(truthExample)}</div>
+              </div>
+            </td>
+            <td>
+              <div class="decision-box decision-${escapeHtml(decisionMeta.tone)}">
+                <div class="decision-title">${escapeHtml(decisionMeta.title)}</div>
+                <div class="decision-copy">${escapeHtml(decisionMeta.copy)}</div>
+              </div>
+            </td>
+            <td>
+              <div class="meta-list">
+                <div class="meta-item"><strong>最新 5 分钟K线</strong> ${item.latest_bar_us_time ? escapeHtml(item.latest_bar_us_time) : '--'}</div>
+                <div class="meta-item"><strong>最新K线距今</strong> ${escapeHtml(item.latest_bar_time_ms ? formatAgoFromMs(item.latest_bar_time_ms) : '暂无K线')}</div>
+                <div class="meta-item"><strong>最早已载入</strong> ${item.oldest_loaded_ms ? escapeHtml(formatBarTimeMsToET(item.oldest_loaded_ms)) : '--'}</div>
+                <div class="meta-item"><strong>最近扫描</strong> ${escapeHtml(formatIsoLabel(item.last_scan_at))}</div>
+                <div class="meta-item"><strong>最近修复</strong> ${escapeHtml(formatIsoLabel(item.last_repair_at))}</div>
+                <div class="meta-item"><strong>最近真值</strong> ${escapeHtml(formatIsoLabel(item.truth_checked_at))}</div>
+              </div>
+            </td>
+            <td>
+              <div class="row-actions">
+                <button class="mini-btn" onclick="runRowAction('rescan', '${escapeHtml(item.symbol || '')}')">重扫</button>
+                <button class="mini-btn" onclick="runRowAction('repair', '${escapeHtml(item.symbol || '')}')" ${canRepair ? '' : 'disabled'}>修复</button>
+                <button class="mini-btn" onclick="runRowAction('truth_audit', '${escapeHtml(item.symbol || '')}')">真值</button>
+                <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: item.interval || '5m' }, { environment: currentEnvironment })}">图表</a>
+              </div>
+              <span class="small-copy">${escapeHtml(summarizeRepairResult(item.last_repair_result))}</span>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function loadDataQuality(showToastOnSuccess = false) {
+      if (!initAuth()) return;
+      const filters = currentFilters();
+      try {
+        const [summaryResp, listResp] = await Promise.all([
+          requestQualityJson(`/api/custom/ibkr/data_quality/summary${buildQuery({
+            environment: currentEnvironment,
+            market_date: filters.market_date,
+            scan_scope: filters.scan_scope
+          })}`),
+          requestQualityJson(`/api/custom/ibkr/data_quality/list${buildQuery({
+            environment: currentEnvironment,
+            market_date: filters.market_date,
+            scan_scope: filters.scan_scope,
+            status: filters.status,
+            symbol: filters.symbol,
+            needs_repair: filters.needs_repair,
+            page: currentPage,
+            per_page: perPage,
+            sort: '-updated'
+          })}`)
+        ]);
+
+        renderSummary(summaryResp.summary || {});
+        renderRows(Array.isArray(listResp.items) ? listResp.items : []);
+        document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()}`;
+        if (showToastOnSuccess) showToast('数据质量页面已刷新');
+      } catch (error) {
+        console.error('loadDataQuality failed:', error);
+        document.getElementById('refreshInfo').textContent = '加载失败';
+        document.getElementById('qualityTable').innerHTML = `<tr><td colspan="6" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
+        showToast(`加载失败: ${error.message || error}`);
+      }
+    }
+
+    async function runGlobalAction(action) {
+      const filters = currentFilters();
+      const body = {
+        environment: currentEnvironment,
+        scan_scope: filters.symbol ? (filters.scan_scope || 'manual') : 'watchlist_full',
+        batch_size: filters.batch_size,
+        persist: true
+      };
+      if (filters.symbol) body.symbols = [filters.symbol];
+      if (action === 'truth_audit') {
+        body.include_signals = false;
+        body.chunk_size = Math.max(1, Number(filters.batch_size || 8) || 8);
+      }
+      const endpoint = action === 'repair'
+        ? '/api/custom/ibkr/data_quality/repair'
+        : action === 'truth_audit'
+          ? '/api/custom/ibkr/data_quality/truth_audit'
+          : '/api/custom/ibkr/data_quality/rescan';
+      try {
+        const payload = await requestQualityJson(endpoint, { method: 'POST', body });
+        const summary = payload.summary || {};
+        const actionLabel = action === 'repair'
+          ? '修复'
+          : action === 'truth_audit'
+            ? '真值审计'
+            : '重扫';
+        showToast(`${actionLabel}完成: ${summary.symbols ? summary.symbols.length : 0} 个标的`);
+        await loadDataQuality(false);
+      } catch (error) {
+        showToast(`${action} 失败: ${error.message || error}`);
+      }
+    }
+
+    async function runRowAction(action, symbol) {
+      const filters = currentFilters();
+      const endpoint = action === 'repair'
+        ? '/api/custom/ibkr/data_quality/repair'
+        : action === 'truth_audit'
+          ? '/api/custom/ibkr/data_quality/truth_audit'
+          : '/api/custom/ibkr/data_quality/rescan';
+      try {
+        const body = {
+          environment: currentEnvironment,
+          scan_scope: filters.scan_scope || 'manual',
+          symbols: [String(symbol || '').trim().toUpperCase()],
+          persist: true
+        };
+        if (action === 'truth_audit') {
+          body.include_signals = false;
+          body.chunk_size = 1;
+        }
+        await requestQualityJson(endpoint, {
+          method: 'POST',
+          body
+        });
+        showToast(`${symbol} ${action === 'repair' ? '修复' : action === 'truth_audit' ? '真值审计' : '重扫'}完成`);
+        await loadDataQuality(false);
+      } catch (error) {
+        showToast(`${symbol} ${action} 失败: ${error.message || error}`);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      if (!initAuth()) return;
+      setFiltersFromUrl();
+      document.getElementById('nav').innerHTML = renderNav('/ibkr_data_quality.html');
+      document.getElementById('contextBar').innerHTML = renderPageContextBar('🧩 数据质量', {
+        subtitle: '5 分钟K线完整性 / 派生周期同步 / 修复回写'
+      });
+      document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_data_quality.html');
+      await withPageLoading(
+        () => loadDataQuality(false),
+        {
+          title: '数据质量页加载中',
+          copy: '正在同步 bars 完整性、派生周期状态和最近一次修复结果。',
+        }
+      );
+    });
+
+    window.onEnvironmentChange = function(environment) {
+      currentEnvironment = environment;
+      applyFilters();
+    };
+  </script>
+</body>
+</html>

@@ -11,6 +11,15 @@ service_wait_timeout_seconds() {
     ibkr-compute)
       printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_IBKR_COMPUTE:-180}"
       ;;
+    ibkr-api)
+      printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_IBKR_API:-120}"
+      ;;
+    ibkr-scheduler)
+      printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_IBKR_SCHEDULER:-120}"
+      ;;
+    ibkr-console)
+      printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_IBKR_CONSOLE:-90}"
+      ;;
     ibkr-display|ibkr-gateway)
       printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_GATEWAY:-90}"
       ;;
@@ -30,6 +39,15 @@ service_healthcheck_url() {
       ;;
     ibkr-compute)
       printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_COMPUTE:-http://127.0.0.1:5100/health}"
+      ;;
+    ibkr-api)
+      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_API:-http://127.0.0.1:5102/health}"
+      ;;
+    ibkr-scheduler)
+      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_SCHEDULER:-http://127.0.0.1:5103/health}"
+      ;;
+    ibkr-console)
+      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_CONSOLE:-http://127.0.0.1:5104/index.html}"
       ;;
     *)
       printf '%s\n' ""
@@ -147,6 +165,18 @@ collect_restart_groups() {
     service="$(unit_restart_group "$unit")"
     [[ -n "$service" ]] && append_unique "$array_name" "$service"
   done
+  if array_contains "ibkr_src" "$@"; then
+    append_unique "$array_name" "ibkr-api"
+    append_unique "$array_name" "ibkr-scheduler"
+    append_unique "$array_name" "ibkr-runtime"
+  fi
+  if array_contains "ibkr_requirements" "$@"; then
+    append_unique "$array_name" "ibkr-api"
+    append_unique "$array_name" "ibkr-scheduler"
+  fi
+  if array_contains "ibkr_scheduler_src" "$@"; then
+    append_unique "$array_name" "ibkr-api"
+  fi
   return 0
 }
 
@@ -278,6 +308,172 @@ PY
   "
 }
 
+prepare_api_root_if_needed() {
+  local units=( "$@" )
+  local unit
+  local needs_api_root=0
+  local api_root="${IBKR_API_REMOTE_ROOT:-/opt/ibkr_api}"
+  local legacy_compute_root="${IBKR_API_ENV_SEED_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
+
+  for unit in "${units[@]-}"; do
+    case "$unit" in
+      ibkr_api_src|ibkr_api_systemd)
+        needs_api_root=1
+        break
+        ;;
+    esac
+  done
+
+  [[ "$needs_api_root" -eq 1 ]] || return 0
+
+  ssh_run "
+    set -e
+    mkdir -p '$api_root' '$api_root/src'
+    if [ ! -f '$api_root/.env' ] && [ -f '$legacy_compute_root/.env' ]; then
+      cp '$legacy_compute_root/.env' '$api_root/.env'
+    fi
+    if [ ! -f '$api_root/.env' ]; then
+      : > '$api_root/.env'
+    fi
+    python3 - '$api_root/.env' <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8', errors='ignore') if path.exists() else ''
+updates = {
+    'PORT': '5102',
+    'IBKR_API_PORT': '5102',
+    'IBKR_RUNTIME_MODE': 'remote',
+    'IBKR_COMPUTE_INTERNAL_URL': 'http://127.0.0.1:5100',
+    'IBKR_RUNTIME_INTERNAL_URL': 'http://127.0.0.1:5101',
+    'IBKR_API_INTERNAL_URL': 'http://127.0.0.1:5102',
+    'IBKR_SCHEDULER_INTERNAL_URL': 'http://127.0.0.1:5103',
+}
+
+output_lines = []
+seen = set()
+for raw_line in text.splitlines():
+    line = raw_line.rstrip('\\n')
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#') or '=' not in line:
+        output_lines.append(line)
+        continue
+    key, _ = line.split('=', 1)
+    key = key.strip()
+    if key in updates:
+        output_lines.append(f'{key}={updates[key]}')
+        seen.add(key)
+    else:
+        output_lines.append(line)
+
+for key, value in updates.items():
+    if key not in seen:
+        output_lines.append(f'{key}={value}')
+
+path.write_text('\\n'.join(output_lines).rstrip() + '\\n', encoding='utf-8')
+PY
+  "
+}
+
+prepare_scheduler_root_if_needed() {
+  local units=( "$@" )
+  local unit
+  local needs_scheduler_root=0
+  local scheduler_root="${IBKR_SCHEDULER_REMOTE_ROOT:-/opt/ibkr_scheduler}"
+  local legacy_compute_root="${IBKR_SCHEDULER_ENV_SEED_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
+
+  for unit in "${units[@]-}"; do
+    case "$unit" in
+      ibkr_scheduler_src|ibkr_scheduler_systemd)
+        needs_scheduler_root=1
+        break
+        ;;
+    esac
+  done
+
+  [[ "$needs_scheduler_root" -eq 1 ]] || return 0
+
+  ssh_run "
+    set -e
+    mkdir -p '$scheduler_root' '$scheduler_root/src'
+    if [ ! -f '$scheduler_root/.env' ] && [ -f '$legacy_compute_root/.env' ]; then
+      cp '$legacy_compute_root/.env' '$scheduler_root/.env'
+    fi
+    if [ ! -f '$scheduler_root/.env' ]; then
+      : > '$scheduler_root/.env'
+    fi
+    python3 - '$scheduler_root/.env' <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8', errors='ignore') if path.exists() else ''
+updates = {
+    'PORT': '5103',
+    'IBKR_SCHEDULER_PORT': '5103',
+    'IBKR_RUNTIME_MODE': 'remote',
+    'IBKR_SCHEDULER_AUTOSTART': 'true',
+    'IBKR_COMPUTE_INTERNAL_URL': 'http://127.0.0.1:5100',
+    'IBKR_RUNTIME_INTERNAL_URL': 'http://127.0.0.1:5101',
+    'IBKR_API_INTERNAL_URL': 'http://127.0.0.1:5102',
+    'IBKR_SCHEDULER_INTERNAL_URL': 'http://127.0.0.1:5103',
+}
+
+output_lines = []
+seen = set()
+for raw_line in text.splitlines():
+    line = raw_line.rstrip('\\n')
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#') or '=' not in line:
+        output_lines.append(line)
+        continue
+    key, _ = line.split('=', 1)
+    key = key.strip()
+    if key in updates:
+        output_lines.append(f'{key}={updates[key]}')
+        seen.add(key)
+    else:
+        output_lines.append(line)
+
+for key, value in updates.items():
+    if key not in seen:
+        output_lines.append(f'{key}={value}')
+
+path.write_text('\\n'.join(output_lines).rstrip() + '\\n', encoding='utf-8')
+PY
+  "
+}
+
+prepare_console_root_if_needed() {
+  local units=( "$@" )
+  local unit
+  local needs_console_root=0
+  local console_root="${IBKR_CONSOLE_REMOTE_ROOT:-/opt/ibkr_console}"
+
+  for unit in "${units[@]-}"; do
+    case "$unit" in
+      ibkr_console_static|ibkr_console_systemd)
+        needs_console_root=1
+        break
+        ;;
+    esac
+  done
+
+  [[ "$needs_console_root" -eq 1 ]] || return 0
+
+  ssh_run "
+    set -e
+    mkdir -p '$console_root/static'
+    if [ ! -f '$console_root/.env' ]; then
+      cat > '$console_root/.env' <<'EOF'
+PORT=5104
+IBKR_CONSOLE_BIND=127.0.0.1
+EOF
+    fi
+  "
+}
+
 run_pocketbase_migrations_if_needed() {
   local units=( "$@" )
   array_contains "pb_migrations" "${units[@]}" || return 0
@@ -308,6 +504,9 @@ perform_post_actions_for_units() {
   local restart_groups=()
   local wait_groups=()
   prepare_runtime_root_if_needed "${units[@]}"
+  prepare_api_root_if_needed "${units[@]}"
+  prepare_scheduler_root_if_needed "${units[@]}"
+  prepare_console_root_if_needed "${units[@]}"
   if units_need_pip_install "${units[@]}" && [[ "${SKIP_REQUIREMENTS:-0}" -eq 0 ]]; then
     ensure_remote_venv
     install_requirements

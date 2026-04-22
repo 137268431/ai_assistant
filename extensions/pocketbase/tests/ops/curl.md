@@ -81,16 +81,19 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/signals/ack" \
 
 ---
 
-## 路由与 Hook 对应关系
+## 路由与当前归属
 
-| Hook 文件 | 路由 |
-|-----------|------|
-| `webhook_tv.pb.js` | `POST /webhook/tv` |
-| `ibkr_signal_actions.pb.js` | `GET /webhook/signal/*`, `GET /webhook/order/*`, `GET /api/custom/ibkr/signals/*` |
-| `signal_expiry.pb.js` | 定时任务（每分钟） |
-| `order_manage.pb.js` | `POST /api/custom/orders/*`, `GET /api/custom/orders/*` |
-| `ibkr_reverse_signals.pb.js` | `POST /api/custom/ibkr/reverse/*`, `GET /api/custom/ibkr/reverse/*` |
-| `feishu.js` | 被其他 hook 引用（通知模块） |
+| 路由族 | 当前归属 | 历史 / 兼容 Hook |
+|-----------|------|------|
+| `POST /webhook/tv` | `ibkr-api` 原生 | `webhook_tv.pb.js` |
+| `GET /webhook/signal/*` | `ibkr-api` 原生 | `ibkr_signal_actions.pb.js` |
+| `GET /webhook/order/*` | `ibkr-api` 原生 | `ibkr_signal_actions.pb.js` |
+| `GET /api/custom/ibkr/signals/pending` / `POST /api/custom/ibkr/signals/ack` | `ibkr-api` 原生 | `ibkr_signal_actions.pb.js` |
+| `POST /api/custom/ibkr/signal` / `POST /api/custom/ibkr/signals` | PocketBase 兼容写入链路 | `ibkr_actions.js` |
+| `POST /api/custom/ibkr/reverse/*` / `GET /api/custom/ibkr/reverse/*` | `ibkr-api` 原生 | `ibkr_reverse_signals.pb.js` |
+| 定时信号过期任务 | `ibkr-scheduler` / 兼容过渡层 | `signal_expiry.pb.js` |
+| `POST /api/custom/orders/*` / `GET /api/custom/orders/*` | 兼容链路 | `order_manage.pb.js` |
+| 飞书通知模块 | `ibkr-api` / PocketBase 兼容混合阶段 | `feishu.js` |
 
 ---
 

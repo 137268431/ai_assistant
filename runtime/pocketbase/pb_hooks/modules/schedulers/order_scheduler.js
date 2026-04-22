@@ -2,25 +2,9 @@
 
 /**
  * order_scheduler.pb.js
- * 定时检查订单有效期，超时自动标记为 Canceled
- * 读取 config 表中 order_validity_minutes 配置（默认 30 分钟）
+ * `order_expiry_check` 仍在 PB 侧兼容运行；
+ * `order_detail_integrity_guard` 已迁到 ibkr-scheduler，这里只保留兼容转发。
  */
-
-function collectResultSamples(results, status, limit) {
-    const list = Array.isArray(results) ? results : []
-    const maxItems = Math.max(1, Number(limit) || 5)
-    const samples = []
-    for (let i = 0; i < list.length; i++) {
-        const item = list[i]
-        if (!item || item.status !== status) continue
-        const uniqueId = String(item.unique_id || "").trim()
-        const symbol = String(item.symbol || "").trim()
-        if (!uniqueId && !symbol) continue
-        samples.push(symbol ? `${symbol}:${uniqueId || "-"}` : uniqueId)
-        if (samples.length >= maxItems) break
-    }
-    return samples
-}
 
 cronAdd("order_expiry_check", "*/5 * * * *", () => {
     const { appendOrderDetail, getOrderExtra, mergeOrderExtra, applyOrderStatusMeta, applyOrderRelationship } = require(`${__hooks}/lib/order_events.js`)
@@ -140,12 +124,16 @@ cronAdd("order_expiry_check", "*/5 * * * *", () => {
 cronAdd("order_detail_integrity_guard", "*/10 * * * *", () => {
     const { getRuntimeEnvironments } = require(`${__hooks}/lib/runtime_modes.js`)
     const { getPbCronToggleState } = require(`${__hooks}/lib/pb_cron_registry.js`)
-    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-    const orderDetailReconcile = require(`${__hooks}/lib/order_detail_reconcile.js`)
-
-    let totalScanned = 0
-    let totalRepaired = 0
-    let totalFailed = 0
+    const { forwardIbkrSchedulerRequest } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const schedulerSlotToken = () => {
+        const now = new Date()
+        const year = now.getUTCFullYear()
+        const month = String(now.getUTCMonth() + 1).padStart(2, "0")
+        const day = String(now.getUTCDate()).padStart(2, "0")
+        const hour = String(now.getUTCHours()).padStart(2, "0")
+        const minute = String(now.getUTCMinutes()).padStart(2, "0")
+        return `${year}-${month}-${day}T${hour}:${minute}Z`
+    }
 
     for (const environment of getRuntimeEnvironments()) {
         const cronState = getPbCronToggleState("order_detail_integrity_guard", environment)
@@ -154,71 +142,23 @@ cronAdd("order_detail_integrity_guard", "*/10 * * * *", () => {
             continue
         }
 
-        let result
         try {
-            result = orderDetailReconcile.reconcileOrderDetails({
-                app: $app,
+            const result = forwardIbkrSchedulerRequest("/jobs/run/order_detail_integrity_guard", {
+                method: "POST",
                 environment: environment,
-                limit: 100,
-                pageSize: 100,
-                maxScan: 500,
-                scanAll: true,
-                onlyMissing: true,
-                dryRun: false,
-                suppressNotification: true,
-                source: "order_detail_integrity_guard",
-                repairSource: "order_detail_integrity_guard",
+                timeout: 120,
+                body: {
+                    environment: environment,
+                    trigger_source: "pb_compat",
+                    scheduled_slot: schedulerSlotToken(),
+                },
             })
+            const payload = result.payload && typeof result.payload === "object" ? result.payload : {}
+            console.log(
+                `[OrderDetailIntegrity] ${environment}: scheduler_proxy ok=${payload.ok === true} skipped=${payload.skipped === true} reason=${payload.reason || "-"} upstream=${result.upstream}`
+            )
         } catch (err) {
-            console.error(`[OrderDetailIntegrity] ${environment}: 巡检失败:`, err)
-            writeSystemEvent(
-                "alert",
-                "error",
-                "orders",
-                "订单明细完整性巡检失败",
-                {
-                    "环境": environment,
-                    "错误": err && err.message ? err.message : String(err),
-                },
-                environment,
-                false
-            )
-            totalFailed += 1
-            continue
+            console.error(`[OrderDetailIntegrity] ${environment}: scheduler proxy failed:`, err)
         }
-
-        totalScanned += Number(result && result.summary && result.summary.scanned || 0)
-        totalRepaired += Number(result && result.summary && result.summary.repaired || 0)
-        totalFailed += Number(result && result.summary && result.summary.failed || 0)
-
-        console.log(
-            `[OrderDetailIntegrity] ${environment}: scanned=${result.summary.scanned}, repaired=${result.summary.repaired}, skipped=${result.summary.skipped}, failed=${result.summary.failed}`
-        )
-
-        if (result.summary.repaired > 0 || result.summary.failed > 0) {
-            const repairedSamples = collectResultSamples(result.results, "repaired_detail", 8)
-            const failedSamples = collectResultSamples(result.results, "failed_exception", 5)
-            writeSystemEvent(
-                "alert",
-                result.summary.failed > 0 ? "error" : "warning",
-                "orders",
-                result.summary.failed > 0 ? "订单明细完整性巡检发现异常" : "订单明细完整性巡检已自动修复",
-                {
-                    "环境": environment,
-                    "扫描订单数": String(result.summary.scanned),
-                    "自动修复数": String(result.summary.repaired),
-                    "失败数": String(result.summary.failed),
-                    "修复样本": repairedSamples.join(", ") || "-",
-                    "失败样本": failedSamples.join(", ") || "-",
-                    "来源": "order_detail_integrity_guard",
-                },
-                environment,
-                false
-            )
-        }
-    }
-
-    if (totalScanned > 0 || totalRepaired > 0 || totalFailed > 0) {
-        console.log(`[OrderDetailIntegrity] summary: scanned=${totalScanned}, repaired=${totalRepaired}, failed=${totalFailed}`)
     }
 })

@@ -260,7 +260,7 @@ print_deploy_plan() {
 expand_implicit_package_units() {
   local target="$1"
   if is_unit_selected_for_target "$target" "ibkr_requirements"; then
-    if array_contains "ibkr_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_systemd" "${PLAN_UNITS[@]-}"; then
+    if array_contains "ibkr_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_systemd" "${PLAN_UNITS[@]-}" || array_contains "ibkr_api_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_api_systemd" "${PLAN_UNITS[@]-}" || array_contains "ibkr_scheduler_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_scheduler_systemd" "${PLAN_UNITS[@]-}"; then
       append_unique PLAN_UNITS "ibkr_requirements"
     fi
   fi

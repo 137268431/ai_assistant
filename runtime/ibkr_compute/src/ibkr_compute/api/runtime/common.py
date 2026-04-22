@@ -106,6 +106,11 @@ def _background_start_ibkr_service(service, trigger_login: bool, reason: str, so
 
 
 def get_ibkr_service():
+    from ibkr_compute.api.service_topology import is_runtime_remote_mode
+
+    if is_runtime_remote_mode():
+        return None
+
     api_app = _api_app()
     service = getattr(api_app, "_ibkr_service", None)
     if service is not None:

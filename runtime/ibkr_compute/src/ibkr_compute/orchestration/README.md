@@ -61,6 +61,7 @@
 - 不引入 bundler 或新框架
 - 保持 `IBKRTradingService` 作为单一兼容门面
 - 子文件按“领域职责”拆，不按“单个函数数量”机械拆分
+- 新的 startup/status/control-plane 页面或 webhook 功能优先迁到 `runtime/ibkr_api/src/ibkr_api/startup`、`system`、`callbacks`，而不是继续堆在 orchestration 里。
 
 ## 后续建议
 

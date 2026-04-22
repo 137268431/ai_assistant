@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IBKR 图表 - Trading Flight</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="common.js"></script>
+    <script>document.write(getCommonStyles());</script>
+    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_chart/page.css">
+</head>
+<body>
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
+
+    <section class="workspace">
+        <div class="panel chart-panel">
+            <div class="workspace-head">
+                <div class="workspace-head-top">
+                    <div class="workspace-title-group">
+                        <div class="hero-title" id="heroTitle">当前图表工作区</div>
+                        <div class="workspace-copy">主图展示 K 线 / EMA / VWAP / 标准差通道 / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。眉头负责页面身份，这里只保留当前标的、周期和分析操作本身。</div>
+                    </div>
+                    <div class="hero-status" id="heroStatus"></div>
+                </div>
+                <div class="toolbar">
+                    <div class="symbol-form">
+                        <input id="chartSymbolInput" class="symbol-input" type="text" placeholder="AAPL" maxlength="12">
+                        <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
+                        <button class="toolbar-btn" id="compareBtn" type="button" onclick="runIbkrCompare()">IBKR 对比</button>
+                        <button class="toolbar-btn" id="clearCompareBtn" type="button" onclick="clearIbkrCompare()">清空对比</button>
+                        <button class="toolbar-btn page-refresh-trigger" type="button" onclick="reloadChartPage()">刷新图表</button>
+                    </div>
+                    <div class="toolbar-filters">
+                        <div class="filter-block">
+                            <div class="toolbar-label">周期</div>
+                            <div class="tf-group" id="timeframeGroup"></div>
+                        </div>
+                        <div class="filter-block">
+                            <div class="toolbar-label">时间范围</div>
+                            <div class="range-group" id="rangeGroup"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="summary-strip" id="summaryStrip"></div>
+                <div class="layer-strip" id="layerStrip"></div>
+                <div class="cursor-strip" id="cursorStrip"></div>
+            </div>
+            <div class="panel-header">
+                <div>
+                    <div class="panel-title" id="chartPanelTitle">图表加载中</div>
+                    <div class="panel-copy">当前工作区只保留一套控制与状态条，数据缺失时会使用占位骨架，避免页面高度跳变。</div>
+                </div>
+                <div class="panel-meta" id="chartMeta">--</div>
+            </div>
+            <div class="chart-shell">
+                <div class="tv-toolbar" id="chartToolbar"></div>
+                <div class="chart-stage-shell">
+                    <div class="chart-stage-overlay">
+                        <div class="tv-floating-legend" id="chartFloatingLegend"></div>
+                        <div class="tv-watermark" id="chartWatermark">Trading Flight<br><span id="chartWatermarkSymbol">--</span></div>
+                    </div>
+                    <div id="chartCanvas" class="chart-stage"></div>
+                </div>
+                <div class="chart-bottom-bar">
+                    <div class="chart-bottom-status" id="chartBottomStatus"></div>
+                    <div class="chart-shortcut-strip" id="chartShortcutStrip"></div>
+                </div>
+            </div>
+            <div class="chart-note" id="chartNote">等待基于 bars 实时重算图表 ...</div>
+            <div class="trace-panel-shell" id="tracePanelShell"></div>
+        </div>
+
+        <div class="rail-shell">
+            <div class="rail-nav" id="railNav"></div>
+            <div class="rail" id="infoRail"></div>
+        </div>
+    </section>
+
+    <div class="detail-drawer" id="signalDetailDrawer" aria-hidden="true">
+        <div class="detail-drawer-backdrop" onclick="closeSignalDrawer()"></div>
+        <div class="detail-drawer-card" role="dialog" aria-modal="true" aria-label="信号详情抽屉">
+            <div id="signalDetailContent"></div>
+        </div>
+    </div>
+
+    <div class="mobile-dock" id="mobileDock"></div>
+
+    <div class="mobile-quick-panel" id="mobileQuickPanel" aria-hidden="true">
+        <div class="mobile-quick-backdrop" onclick="closeMobileQuickPanel()"></div>
+        <div class="mobile-quick-card" role="dialog" aria-modal="true" aria-label="移动端快捷面板">
+            <div class="mobile-quick-grabber"></div>
+            <div class="mobile-quick-head">
+                <div class="mobile-quick-title">快捷设置</div>
+                <button class="mobile-quick-close" type="button" onclick="closeMobileQuickPanel()">×</button>
+            </div>
+            <div class="mobile-quick-section">
+                <div class="mobile-quick-label">图层</div>
+                <div class="mobile-quick-grid" id="mobileQuickLayerGroup"></div>
+            </div>
+            <div class="mobile-quick-section">
+                <div class="mobile-quick-label">周期</div>
+                <div class="mobile-quick-grid" id="mobileQuickTimeframeGroup"></div>
+            </div>
+            <div class="mobile-quick-section">
+                <div class="mobile-quick-label">范围</div>
+                <div class="mobile-quick-grid" id="mobileQuickRangeGroup"></div>
+            </div>
+            <div class="mobile-quick-section">
+                <div class="mobile-quick-label">视图</div>
+                <div class="mobile-quick-grid" id="mobileQuickViewGroup"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="inspector-drawer" id="inspectorDrawer" aria-hidden="true">
+        <div class="inspector-drawer-backdrop" onclick="closeInspectorDrawer()"></div>
+        <div class="inspector-drawer-card" role="dialog" aria-modal="true" aria-label="图表检查面板">
+            <div class="drawer-head">
+                <div>
+                    <div class="drawer-kicker">Inspector</div>
+                    <div class="drawer-title" id="inspectorDrawerTitle">Chart Inspector</div>
+                    <div class="drawer-sub" id="inspectorDrawerSub">在焦点模式下也能快速查看分析卡和信号列表。</div>
+                </div>
+                <button class="drawer-close" type="button" onclick="closeInspectorDrawer()">×</button>
+            </div>
+            <div class="inspector-drawer-body" id="inspectorDrawerBody"></div>
+        </div>
+    </div>
+
+    <div class="mobile-gesture-hint" id="mobileGestureHint" aria-hidden="true">
+        <div class="mobile-gesture-card">
+            <div class="mobile-gesture-head">
+                <div class="mobile-gesture-title">触控提示</div>
+                <button class="mobile-gesture-close" type="button" onclick="dismissMobileGestureHint()">知道了</button>
+            </div>
+            <div class="mobile-gesture-strip">
+                <span class="mobile-gesture-chip">长按 锁定光标</span>
+                <span class="mobile-gesture-chip">轻扫 左右切 bar</span>
+                <span class="mobile-gesture-chip">双击 回到最新</span>
+                <span class="mobile-gesture-chip">Info 打开检查面板</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="nav"></div>
+
+    <script src="/assets/js/pages/ibkr_chart/page.js"></script>
+</body>
+</html>

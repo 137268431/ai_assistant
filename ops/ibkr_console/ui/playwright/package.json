@@ -1,0 +1,13 @@
+{
+  "name": "ai_assistant_playwright",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "smoke": "node pb_smoke.js",
+    "smoke:indicator-trace": "node indicator_trace_surface_check.js"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

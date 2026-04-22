@@ -1,0 +1,17 @@
+[Unit]
+Description=IBKR Console Static Service
+After=network.target ibkr-api.service
+Wants=ibkr-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ibkr_console
+EnvironmentFile=-/opt/ibkr_console/.env
+ExecStart=/bin/sh -lc 'exec ${PYTHON_BIN:-/usr/bin/python3} -m http.server "${PORT:-5104}" --bind "${IBKR_CONSOLE_BIND:-127.0.0.1}" --directory /opt/ibkr_console/static'
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

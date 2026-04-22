@@ -1,0 +1,105 @@
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from ibkr_compute.market import data_writer as data_writer_mod
+
+
+class _FakeConfig:
+    def get_int_for_environment(self, key, environment, fallback):
+        return fallback
+
+    def get_float_for_environment(self, key, environment, fallback):
+        if key == "ibkr_bar_flush_interval":
+            return 3600.0
+        return fallback
+
+
+class _FakePBClient:
+    def __init__(self):
+        self.state = {}
+        self.upserted_states = []
+        self.batches = []
+
+    def upsert_bars(self, batch):
+        self.batches.append(list(batch))
+        return {"ok": True, "created": len(batch), "updated": 0, "skipped": 0}
+
+    def get_state(self, state_key, environment, date="global"):
+        return self.state.get((state_key, environment, date))
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        record = {"data": data}
+        self.state[(state_key, environment, date)] = record
+        self.upserted_states.append((state_key, environment, date, data))
+        return record
+
+
+def _bar(symbol="AAPL", bar_time_ms=1713797100000):
+    return {
+        "symbol": symbol,
+        "interval": "5m",
+        "bar_time_ms": bar_time_ms,
+        "open": 180.1,
+        "high": 181.4,
+        "low": 179.8,
+        "close": 181.0,
+        "volume": 1234,
+        "us_time": "2026-04-22 09:35:00",
+        "cn_time": "2026-04-22 21:35:00",
+        "source": "ibkr_runtime",
+        "environment": "paper",
+    }
+
+
+class DataWriterQueueTest(unittest.TestCase):
+    def test_flush_persists_ingest_cursor_and_clears_disk_queue(self):
+        pb = _FakePBClient()
+        config = _FakeConfig()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
+                writer = data_writer_mod.DataWriter(pb, config=config, environment="paper")
+                try:
+                    self.assertTrue(writer.write_bar(_bar()))
+                    self.assertTrue(writer.flush())
+                    status = writer.status()
+                    self.assertEqual(status["pending_batch"], 0)
+                    self.assertEqual(status["inflight_batch"], 0)
+                    cursor = pb.state[(data_writer_mod.BAR_INGEST_CURSOR_STATE_KEY, "paper", "global")]["data"]
+                    self.assertEqual(cursor["intervals"]["5m"]["latest_bar_time_ms"], 1713797100000)
+                    queue_payload = json.loads(Path(status["pending_queue_path"]).read_text(encoding="utf-8"))
+                    self.assertEqual(queue_payload["pending"], [])
+                    self.assertEqual(queue_payload["inflight"], [])
+                finally:
+                    writer.close()
+
+    def test_reloads_pending_and_inflight_items_from_disk(self):
+        pb = _FakePBClient()
+        config = _FakeConfig()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue_path = Path(tmpdir) / "ibkr_bar_pending_paper.json"
+            queue_path.write_text(
+                json.dumps({"pending": [_bar("MSFT", 1713797400000)], "inflight": [_bar("AAPL", 1713797100000)]}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
+                writer = data_writer_mod.DataWriter(pb, config=config, environment="paper")
+                try:
+                    status = writer.status()
+                    self.assertEqual(status["pending_batch"], 2)
+                    self.assertEqual(status["inflight_batch"], 0)
+                finally:
+                    writer.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

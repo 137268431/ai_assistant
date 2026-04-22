@@ -1,5 +1,11 @@
 # API 目录地图
 
+## Split Control Plane 边界
+
+- `ibkr_compute/api` 现在只负责 compute、scan、recompute、backtest、history rebuild 和共享兼容能力。
+- 控制面路由、webhook 落地页、signal/order/reverse 动作、system summary / monitor / scheduler 可见性、startup progress、Feishu-facing callback 现在归 `runtime/ibkr_api/src/ibkr_api`。
+- 新的控制面需求优先落到 `ibkr_api/system`、`ibkr_api/startup`、`ibkr_api/integrations`、`ibkr_api/callbacks`、`ibkr_api/tradingview`，以及 root `signal_*` / `order_*` / `reverse_*` 模块，而不是回堆到 `ibkr_compute/api`。
+
 `api` 现在按“入口层 / 基础设施层 / 领域实现层 / 兼容层”四层组织，目标是让阅读路径先看到高可见入口，再逐步进入路由注册、公共能力和具体业务实现，而不是在根目录堆满几十个平级文件。
 
 ## 根目录只保留 3 个入口

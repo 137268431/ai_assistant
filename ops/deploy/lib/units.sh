@@ -5,14 +5,18 @@ list_all_units_for_target() {
     pocketbase)
       printf '%s\n' pb_public pb_hooks pb_migrations
       ;;
+    console|ibkr_console)
+      printf '%s\n' ibkr_console_static ibkr_console_systemd
+      ;;
     ibkr|ibkr_compute)
-      printf '%s\n' ibkr_src ibkr_requirements ibkr_systemd gateway_display_systemd gateway_systemd
+      printf '%s\n' ibkr_src ibkr_requirements ibkr_systemd ibkr_api_src ibkr_api_systemd ibkr_scheduler_src ibkr_scheduler_systemd gateway_display_systemd gateway_systemd
       ;;
     runtime|ibkr_runtime)
       printf '%s\n' ibkr_runtime_src ibkr_runtime_requirements ibkr_runtime_systemd gateway_display_systemd gateway_systemd
       ;;
     all)
       list_all_units_for_target pocketbase
+      list_all_units_for_target ibkr_console
       list_all_units_for_target ibkr_compute
       list_all_units_for_target ibkr_runtime
       ;;
@@ -30,11 +34,22 @@ list_selected_units_for_target() {
       [[ "${DEPLOY_MIGRATIONS:-0}" -eq 1 ]] && printf '%s\n' pb_migrations
       return 0
       ;;
+    console|ibkr_console)
+      printf '%s\n' ibkr_console_static
+      if [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
+        printf '%s\n' ibkr_console_systemd
+      fi
+      return 0
+      ;;
     ibkr|ibkr_compute)
       printf '%s\n' ibkr_src
       printf '%s\n' ibkr_requirements
+      printf '%s\n' ibkr_api_src
+      printf '%s\n' ibkr_scheduler_src
       if [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
         printf '%s\n' ibkr_systemd
+        printf '%s\n' ibkr_api_systemd
+        printf '%s\n' ibkr_scheduler_systemd
       fi
       if [[ "${DEPLOY_GATEWAY_SERVICE:-0}" -eq 1 && "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
         printf '%s\n' gateway_display_systemd
@@ -54,6 +69,7 @@ list_selected_units_for_target() {
       ;;
     all)
       list_selected_units_for_target pocketbase
+      list_selected_units_for_target ibkr_console
       list_selected_units_for_target ibkr_compute
       list_selected_units_for_target ibkr_runtime
       return 0
@@ -66,14 +82,20 @@ list_selected_units_for_target() {
 
 unit_local_rel() {
   case "$1" in
-    pb_public) printf '%s\n' runtime/pocketbase/pb_public ;;
+    pb_public) printf '%s\n' runtime/ibkr_console/static ;;
     pb_hooks) printf '%s\n' runtime/pocketbase/pb_hooks ;;
     pb_migrations) printf '%s\n' extensions/pocketbase/migrations ;;
+    ibkr_console_static) printf '%s\n' runtime/ibkr_console/static ;;
+    ibkr_console_systemd) printf '%s\n' runtime/ibkr_console/systemd/ibkr-console.service ;;
     ibkr_src) printf '%s\n' runtime/ibkr_compute/src ;;
     ibkr_requirements) printf '%s\n' runtime/ibkr_compute/requirements.txt ;;
     ibkr_systemd) printf '%s\n' runtime/ibkr_compute/systemd/ibkr-compute.service ;;
-    ibkr_runtime_src) printf '%s\n' runtime/ibkr_compute/src ;;
-    ibkr_runtime_requirements) printf '%s\n' runtime/ibkr_compute/requirements.txt ;;
+    ibkr_api_src) printf '%s\n' runtime/ibkr_api/src ;;
+    ibkr_api_systemd) printf '%s\n' runtime/ibkr_api/systemd/ibkr-api.service ;;
+    ibkr_scheduler_src) printf '%s\n' runtime/ibkr_scheduler/src ;;
+    ibkr_scheduler_systemd) printf '%s\n' runtime/ibkr_scheduler/systemd/ibkr-scheduler.service ;;
+    ibkr_runtime_src) printf '%s\n' runtime/ibkr_runtime/src ;;
+    ibkr_runtime_requirements) printf '%s\n' runtime/ibkr_runtime/requirements.txt ;;
     ibkr_runtime_systemd) printf '%s\n' runtime/ibkr_runtime/systemd/ibkr-runtime.service ;;
     gateway_display_systemd) printf '%s\n' runtime/ib_gateway/systemd/ibkr-display.service ;;
     gateway_systemd) printf '%s\n' runtime/ib_gateway/systemd/ibkr-gateway.service ;;
@@ -88,9 +110,15 @@ unit_remote_path() {
     pb_public) printf '%s\n' "$PB_REMOTE_ROOT/pb_public" ;;
     pb_hooks) printf '%s\n' "$PB_REMOTE_ROOT/pb_hooks" ;;
     pb_migrations) printf '%s\n' "$PB_REMOTE_ROOT/extensions/migrations" ;;
+    ibkr_console_static) printf '%s\n' "${IBKR_CONSOLE_REMOTE_ROOT:-/opt/ibkr_console}/static" ;;
+    ibkr_console_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-console.service" ;;
     ibkr_src) printf '%s\n' "$IBKR_REMOTE_ROOT/src" ;;
     ibkr_requirements) printf '%s\n' "$IBKR_REMOTE_ROOT/requirements.txt" ;;
     ibkr_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-compute.service" ;;
+    ibkr_api_src) printf '%s\n' "${IBKR_API_REMOTE_ROOT:-/opt/ibkr_api}/src" ;;
+    ibkr_api_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-api.service" ;;
+    ibkr_scheduler_src) printf '%s\n' "${IBKR_SCHEDULER_REMOTE_ROOT:-/opt/ibkr_scheduler}/src" ;;
+    ibkr_scheduler_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-scheduler.service" ;;
     ibkr_runtime_src) printf '%s\n' "${IBKR_RUNTIME_REMOTE_ROOT:-/opt/ibkr_runtime}/src" ;;
     ibkr_runtime_requirements) printf '%s\n' "${IBKR_RUNTIME_REMOTE_ROOT:-/opt/ibkr_runtime}/requirements.txt" ;;
     ibkr_runtime_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-runtime.service" ;;
@@ -104,10 +132,10 @@ unit_remote_path() {
 
 unit_type() {
   case "$1" in
-    pb_public|pb_hooks|pb_migrations|ibkr_src|ibkr_runtime_src)
+    pb_public|pb_hooks|pb_migrations|ibkr_console_static|ibkr_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
       printf '%s\n' dir
       ;;
-    ibkr_requirements|ibkr_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+    ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' file
       ;;
     *)
@@ -118,13 +146,13 @@ unit_type() {
 
 unit_validator() {
   case "$1" in
-    pb_public|pb_hooks|pb_migrations)
+    pb_public|pb_hooks|pb_migrations|ibkr_console_static)
       printf '%s\n' js_tree
       ;;
-    ibkr_src|ibkr_runtime_src)
+    ibkr_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
       printf '%s\n' python_tree
       ;;
-    ibkr_requirements|ibkr_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+    ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' none
       ;;
     *)
@@ -138,8 +166,17 @@ unit_family() {
     pb_public|pb_hooks|pb_migrations)
       printf '%s\n' pocketbase
       ;;
+    ibkr_console_static|ibkr_console_systemd)
+      printf '%s\n' ibkr_console
+      ;;
     ibkr_src|ibkr_requirements|ibkr_systemd)
       printf '%s\n' ibkr_compute
+      ;;
+    ibkr_api_src|ibkr_api_systemd)
+      printf '%s\n' ibkr_api
+      ;;
+    ibkr_scheduler_src|ibkr_scheduler_systemd)
+      printf '%s\n' ibkr_scheduler
       ;;
     ibkr_runtime_src|ibkr_runtime_requirements|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' ibkr_runtime
@@ -152,10 +189,10 @@ unit_family() {
 
 unit_category() {
   case "$1" in
-    pb_public|pb_hooks|ibkr_src|ibkr_requirements|ibkr_runtime_src|ibkr_runtime_requirements)
+    pb_public|pb_hooks|ibkr_console_static|ibkr_src|ibkr_requirements|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src|ibkr_runtime_requirements)
       printf '%s\n' runtime
       ;;
-    ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+    ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' systemd
       ;;
     pb_migrations)
@@ -175,8 +212,20 @@ unit_restart_group() {
     ibkr_src|ibkr_requirements|ibkr_systemd)
       printf '%s\n' ibkr-compute
       ;;
+    ibkr_api_src|ibkr_api_systemd)
+      printf '%s\n' ibkr-api
+      ;;
+    ibkr_scheduler_src|ibkr_scheduler_systemd)
+      printf '%s\n' ibkr-scheduler
+      ;;
     ibkr_runtime_src|ibkr_runtime_requirements|ibkr_runtime_systemd)
       printf '%s\n' ibkr-runtime
+      ;;
+    ibkr_console_static)
+      printf '%s\n' ""
+      ;;
+    ibkr_console_systemd)
+      printf '%s\n' ibkr-console
       ;;
     gateway_display_systemd)
       printf '%s\n' ibkr-display
@@ -185,7 +234,7 @@ unit_restart_group() {
       printf '%s\n' ibkr-gateway
       ;;
     *)
-      deploy_die "Unknown unit restart group: $1"
+      printf '%s\n' ""
       ;;
   esac
 }
@@ -195,8 +244,17 @@ unit_enable_service() {
     ibkr_systemd)
       printf '%s\n' ibkr-compute
       ;;
+    ibkr_api_systemd)
+      printf '%s\n' ibkr-api
+      ;;
+    ibkr_scheduler_systemd)
+      printf '%s\n' ibkr-scheduler
+      ;;
     ibkr_runtime_systemd)
       printf '%s\n' ibkr-runtime
+      ;;
+    ibkr_console_systemd)
+      printf '%s\n' ibkr-console
       ;;
     gateway_display_systemd)
       printf '%s\n' ibkr-display
@@ -218,6 +276,9 @@ unit_needs_pip_install() {
 unit_needs_daemon_reload() {
   case "$1" in
     ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+      return 0
+      ;;
+    ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_console_systemd)
       return 0
       ;;
     *)

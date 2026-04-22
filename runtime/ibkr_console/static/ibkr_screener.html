@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IBKR 筛选与标池</title>
+  <script src="/common.js"></script>
+  <script>document.write(getCommonStyles())</script>
+  <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css">
+</head>
+<body>
+  <div id="nav"></div>
+
+  <div class="page-shell">
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
+
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="hero-kicker">IBKR Selection Workspace</div>
+          <div class="hero-title" id="heroTitle">盘中先看当前标的，再决定今天的动作。</div>
+          <div class="hero-copy" id="heroCopy">信号页已经收敛成信号列表；这里承接当前标的榜、规则板和全量筛选，作为盘中工作台使用。</div>
+        </div>
+        <div class="hero-meta">
+          <div class="meta-line" id="marketDateMeta">等待加载...</div>
+          <div class="meta-line" id="refreshInfo">数据未刷新</div>
+          <div class="meta-line" id="selectionInfo">未选择标的</div>
+        </div>
+      </div>
+      <div class="summary-grid" id="summaryGrid"></div>
+    </section>
+
+    <section id="screenerTab" class="tab-panel">
+      <div class="panel-stack">
+        <div id="rulesBoard" class="rules-board"></div>
+        <section class="panel">
+          <div class="panel-title">当前操作视图</div>
+          <div class="panel-copy">默认先看“当前标的榜”。信号页只保留信号列表与状态筛选；需要盘中盯盘、看规则和切回全标池时，在这里完成。</div>
+          <div class="subview-tabs" id="screenerViewTabs">
+            <button class="subview-tab active" type="button" data-view="current">
+              <div class="subview-tab-kicker">Current</div>
+              <div class="subview-tab-label">当前标的榜</div>
+              <div class="subview-tab-copy">candidate / active 的技术状态、今日信号状态与轻操作入口。</div>
+            </button>
+            <button class="subview-tab" type="button" data-view="universe">
+              <div class="subview-tab-kicker">Universe</div>
+              <div class="subview-tab-label">全量筛选</div>
+              <div class="subview-tab-copy">看 watchlist + 今日 targets 的聚合大盘，再批量写回今日目标池。</div>
+            </button>
+          </div>
+        </section>
+
+        <div id="currentViewPanel" class="subview-panel active">
+          <section class="panel">
+            <div class="panel-title">当前标的榜</div>
+            <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。这里是从信号页跳转过来的盘中工作台：把技术满足、今日已出信号、以及需要继续盯的标的放在同一张榜里。</div>
+
+            <div class="control-grid current-control-grid current-control-grid-primary">
+              <div class="field span-2">
+                <label for="currentTargetSearch">Symbol / Reason Search</label>
+                <input id="currentTargetSearch" type="text" placeholder="AAPL / NVDA / waiting / EMA多头" />
+              </div>
+              <div class="field">
+                <label for="currentSignalStateFilter">Signal State</label>
+                <select id="currentSignalStateFilter">
+                  <option value="">全部</option>
+                  <option value="needs_action">needs action</option>
+                  <option value="signaled">signaled</option>
+                  <option value="no_signal">no signal</option>
+                  <option value="awaiting_confirm">awaiting confirm</option>
+                  <option value="pending">pending</option>
+                  <option value="executed">executed</option>
+                  <option value="closed">closed</option>
+                  <option value="expired">expired</option>
+                  <option value="rejected">rejected</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="currentTargetStatusFilter">Target Status</label>
+                <select id="currentTargetStatusFilter">
+                  <option value="">全部</option>
+                  <option value="active">active</option>
+                  <option value="candidate">candidate</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="currentTargetSortBy">Sort</label>
+                <select id="currentTargetSortBy">
+                  <option value="attention_asc">按关注优先级</option>
+                  <option value="signal_desc">按最新信号时间</option>
+                  <option value="tradability_desc">按可操作分</option>
+                  <option value="target_desc">按目标池分数</option>
+                  <option value="symbol_asc">按Symbol</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mobile-filter-actions">
+              <button id="toggleCurrentAdvancedFiltersBtn" class="ghost-btn mobile-filter-toggle" type="button" aria-expanded="false">更多筛选</button>
+            </div>
+
+            <div id="currentAdvancedFilters" class="current-advanced-filters">
+              <div class="control-grid current-control-grid current-control-grid-advanced">
+                <div class="field">
+                  <label for="currentTechnicalStateFilter">Technical State</label>
+                  <select id="currentTechnicalStateFilter">
+                    <option value="">全部</option>
+                    <option value="ready">ready</option>
+                    <option value="watch">watch</option>
+                    <option value="stale">stale</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="currentDirectionBiasFilter">Direction Bias</label>
+                  <select id="currentDirectionBiasFilter">
+                    <option value="">全部</option>
+                    <option value="long">long</option>
+                    <option value="short">short</option>
+                    <option value="neutral">neutral</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="currentTargetPageSize">每页条数</label>
+                  <select id="currentTargetPageSize">
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <div class="checkbox-row">
+                    <input id="currentReadyOnly" type="checkbox" />
+                    <label for="currentReadyOnly">仅技术 ready</label>
+                  </div>
+                </div>
+                <div class="field">
+                  <div class="checkbox-row">
+                    <input id="currentSignaledOnly" type="checkbox" />
+                    <label for="currentSignaledOnly">仅今日已出信号</label>
+                  </div>
+                </div>
+                <div class="field current-advanced-hint">
+                  <div class="muted-copy">手机端默认先保留主筛选，方向、分页和复核开关收在这里。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="table-header">
+              <div class="leaderboard-meta" id="currentTargetsMeta">等待加载...</div>
+              <div class="row-actions">
+                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的工作台</a>
+                <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
+              </div>
+            </div>
+            <div class="leaderboard-note" id="currentTargetsMetaSecondary">05:55 ET 日筛生成 candidate / active，09:20 ET 做盘前检查，盘中按 5m close 刷新技术与信号阶段。</div>
+            <div class="pagination-bar pagination-bar-top">
+              <div class="pagination-group" id="currentTargetsPaginationTop"></div>
+              <div class="pagination-status" id="currentTargetsPaginationStatusTop">第 1 / 1 页</div>
+            </div>
+            <div class="table-wrap desktop-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>价格 / Freshness</th>
+                    <th>Targets</th>
+                    <th>Technical</th>
+                    <th>Signal</th>
+                    <th>理由 / 操作</th>
+                  </tr>
+                </thead>
+                <tbody id="currentTargetsTable">
+                  <tr><td colspan="6" class="loading">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div id="currentTargetsCards" class="mobile-card-list" aria-live="polite">
+              <div class="empty-state">加载中...</div>
+            </div>
+            <div class="pagination-bar pagination-bar-bottom">
+              <div class="pagination-group" id="currentTargetsPaginationBottom"></div>
+              <div class="pagination-status" id="currentTargetsPaginationStatusBottom">第 1 / 1 页</div>
+            </div>
+          </section>
+        </div>
+
+        <div id="universeViewPanel" class="subview-panel">
+        <section class="panel">
+          <div class="panel-title">筛选条件</div>
+          <div class="panel-copy">支持按 symbol、交易所、行业、价格、波动、量能、freshness、方向和目标池状态过滤。筛完后可以直接复制可见代码，或把选中的结果写回当天 targets。</div>
+
+          <div class="filters">
+            <div class="field">
+              <label for="marketDate">Market Date</label>
+              <input id="marketDate" type="date" />
+            </div>
+            <div class="field span-2">
+              <label for="symbolSearch">Symbol Search</label>
+              <input id="symbolSearch" type="text" placeholder="AAPL / NVDA / TSLA" />
+            </div>
+            <div class="field">
+              <label for="exchangeFilter">Exchange</label>
+              <select id="exchangeFilter"><option value="">全部</option></select>
+            </div>
+            <div class="field">
+              <label for="industryFilter">Industry</label>
+              <select id="industryFilter"><option value="">全部</option></select>
+            </div>
+            <div class="field">
+              <label for="targetStatusFilter">Target Status</label>
+              <select id="targetStatusFilter"><option value="">全部</option></select>
+            </div>
+            <div class="field">
+              <label for="directionFilter">Direction</label>
+              <select id="directionFilter"><option value="">全部</option></select>
+            </div>
+            <div class="field">
+              <label for="priceMin">Price Min</label>
+              <input id="priceMin" type="number" min="0" step="0.01" placeholder="2" />
+            </div>
+            <div class="field">
+              <label for="priceMax">Price Max</label>
+              <input id="priceMax" type="number" min="0" step="0.01" placeholder="80" />
+            </div>
+            <div class="field">
+              <label for="dayChangeMin">Day % Min</label>
+              <input id="dayChangeMin" type="number" step="0.1" placeholder="2" />
+            </div>
+            <div class="field">
+              <label for="dayChangeMax">Day % Max</label>
+              <input id="dayChangeMax" type="number" step="0.1" placeholder="20" />
+            </div>
+            <div class="field">
+              <label for="atrPctMin">ATR % Min</label>
+              <input id="atrPctMin" type="number" min="0" step="0.1" placeholder="2" />
+            </div>
+            <div class="field">
+              <label for="avgVolumeMin">10D Avg Vol Min</label>
+              <input id="avgVolumeMin" type="number" min="0" step="10000" placeholder="1000000" />
+            </div>
+            <div class="field">
+              <label for="premarketVolumeMin">Premarket Vol Min</label>
+              <input id="premarketVolumeMin" type="number" min="0" step="10000" placeholder="100000" />
+            </div>
+            <div class="field">
+              <label for="targetScoreMin">Target Score Min</label>
+              <input id="targetScoreMin" type="number" min="0" step="0.1" placeholder="5" />
+            </div>
+            <div class="field">
+              <label for="freshnessMax">Freshness Max Min</label>
+              <input id="freshnessMax" type="number" min="0" step="1" placeholder="90" />
+            </div>
+            <div class="field">
+              <label for="sortBy">Sort</label>
+              <select id="sortBy">
+                <option value="tradability_desc">按可操作分</option>
+                <option value="premarket_desc">按盘前量能</option>
+                <option value="target_desc">按目标池分数</option>
+                <option value="volume_desc">按10日均量</option>
+                <option value="freshness_asc">按bars新鲜度</option>
+                <option value="symbol_asc">按Symbol</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="checkbox-row">
+                <input id="operableOnly" type="checkbox" />
+                <label for="operableOnly">仅显示可操作</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="action-grid">
+            <button class="action-btn" onclick="loadScreener(true)">
+              <strong>刷新筛选器</strong>
+              <span>重新从 compute 聚合最新 watchlist / bars / indicators / targets 数据。</span>
+            </button>
+            <button class="action-btn" onclick="selectVisibleRows()">
+              <strong>全选可见标的</strong>
+              <span>把当前过滤结果里的标的全部加入选择集，方便统一写入当天 targets。</span>
+            </button>
+            <button class="action-btn" onclick="clearSelection()">
+              <strong>清空选择</strong>
+              <span>保留当前过滤条件，只清掉页面上的选择状态。</span>
+            </button>
+            <button class="action-btn" onclick="copyVisibleSymbols()">
+              <strong>复制可见代码</strong>
+              <span>把过滤后的 symbols 复制成逗号分隔文本，方便外部核对或回测复用。</span>
+            </button>
+            <button class="action-btn" onclick="pushSelectedTargets()">
+              <strong>写入今日 Targets</strong>
+              <span>把选中的 rows 作为今日盘前筛选结果写回 <code>ibkr_targets</code>，并保留快照。飞书摘要只在自动盘前 scan 结束后发送。</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">筛选结果</div>
+          <div class="panel-copy">`tradability_score` 是基于价格区间、10 日均量、盘前量、ATR%、日内波动、bars 新鲜度和现有 target score 做的轻量打分，只作为人工筛选排序依据。</div>
+          <div class="table-header">
+            <div class="table-meta" id="tableMeta">等待加载...</div>
+            <div class="table-meta" id="tableMetaSecondary"></div>
+          </div>
+          <div class="table-wrap desktop-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>选择</th>
+                  <th>Symbol</th>
+                  <th>市场 / 行业</th>
+                  <th>价格 / 涨跌</th>
+                  <th>波动 / 量能</th>
+                  <th>Freshness</th>
+                  <th>Targets</th>
+                  <th>可操作分</th>
+                  <th>理由 / 操作</th>
+                </tr>
+              </thead>
+              <tbody id="screenerTable">
+                <tr><td colspan="9" class="loading">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="screenerCards" class="mobile-card-list" aria-live="polite">
+            <div class="empty-state">加载中...</div>
+          </div>
+        </section>
+        </div>
+      </div>
+    </section>
+
+    <section id="targetsTab" class="tab-panel">
+      <div class="panel-stack">
+        <section class="panel">
+          <div class="panel-title">每日操作标的维护</div>
+          <div class="panel-copy">直接维护指定交易日的 <code>ibkr_targets</code>。适合盘前补录、盘中修正 candidate / active / removed，和删除错误目标池记录。</div>
+
+          <div class="control-grid">
+            <div class="field">
+              <label for="dailyTargetDate">目标日期</label>
+              <input id="dailyTargetDate" type="date" />
+            </div>
+            <div class="field">
+              <label for="dailyTargetStatusInput">状态</label>
+              <select id="dailyTargetStatusInput">
+                <option value="candidate">candidate</option>
+                <option value="active">active</option>
+                <option value="removed">removed</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="dailyTargetDirectionInput">方向偏好</label>
+              <select id="dailyTargetDirectionInput">
+                <option value="neutral">neutral</option>
+                <option value="long">long</option>
+                <option value="short">short</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="dailyTargetScoreInput">分数</label>
+              <input id="dailyTargetScoreInput" type="number" step="0.1" value="0" />
+            </div>
+            <div class="field span-2">
+              <label for="dailyTargetReasonInput">理由</label>
+              <input id="dailyTargetReasonInput" type="text" maxlength="500" placeholder="例如：手动补录 / 盘前观察 / 临时剔除" />
+            </div>
+          </div>
+
+          <div class="search-row">
+            <input id="dailyTargetSearchInput" class="search-input" type="text" placeholder="输入 NVDA / TSLA / Nvidia / Tesla" />
+            <button id="dailyTargetSearchBtn" class="btn primary" type="button">搜索合约</button>
+          </div>
+          <div id="dailyTargetSearchMeta" class="muted-copy">输入后回车或点击搜索。</div>
+          <div id="dailyTargetSearchResults" class="result-grid"></div>
+
+          <div class="batch-shell">
+            <div class="field">
+              <label for="dailyTargetBatchSymbolsInput">批量导入 symbols</label>
+              <textarea id="dailyTargetBatchSymbolsInput" placeholder="支持逗号、空格、换行。会按当前 draft 参数批量加入目标池。"></textarea>
+            </div>
+            <div class="batch-actions">
+              <button id="dailyTargetBatchAddBtn" class="ghost-btn" type="button">批量加入目标池</button>
+              <button id="dailyTargetBatchClearBtn" class="ghost-btn" type="button">清空</button>
+            </div>
+            <div id="dailyTargetBatchMeta" class="muted-copy">批量导入只支持当前交易日的应急手动加入，会逐个调用 IBKR 搜索并触发运行时预热。</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">当日 ibkr_targets 列表</div>
+          <div class="panel-copy">只读取当前环境 + 当前交易日，不混入其他日期数据。可直接编辑状态、方向、分数和理由。</div>
+
+          <div class="control-grid">
+            <div class="field span-2">
+              <label for="dailyTargetTableSearchInput">本地筛选</label>
+              <input id="dailyTargetTableSearchInput" type="text" placeholder="symbol / reason / exchange / status" />
+            </div>
+            <div class="field">
+              <label for="dailyTargetRefreshBtn">刷新</label>
+              <button id="dailyTargetRefreshBtn" class="ghost-btn" type="button">刷新列表</button>
+            </div>
+          </div>
+
+          <div class="batch-shell">
+            <div class="field">
+              <label for="dailyTargetBatchDeleteInput">批量删除 symbols</label>
+              <textarea id="dailyTargetBatchDeleteInput" placeholder="只删除当前环境 + 当前日期下匹配到的记录。"></textarea>
+            </div>
+            <div class="batch-actions">
+              <button id="dailyTargetBatchDeleteBtn" class="ghost-btn" type="button">删除匹配记录</button>
+            </div>
+            <div id="dailyTargetDeleteMeta" class="muted-copy">适合快速清理某日一组错误 target。</div>
+          </div>
+
+          <div id="dailyTargetListMeta" class="muted-copy" style="margin-top:12px;">尚未加载记录。</div>
+          <div class="table-wrap desktop-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Exchange</th>
+                  <th>Date</th>
+                  <th>Direction</th>
+                  <th>Score</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                  <th>Updated</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="dailyTargetsTable">
+                <tr><td colspan="9" class="empty-state">尚未加载记录。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="dailyTargetsCards" class="mobile-card-list" aria-live="polite">
+            <div class="empty-state">尚未加载记录。</div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="watchlistTab" class="tab-panel">
+      <div class="panel-stack">
+        <section class="panel">
+          <div class="panel-title" id="watchlistSearchPanelTitle">搜索可加入的标的</div>
+          <div class="panel-copy" id="watchlistSearchPanelCopy">支持 ticker 或公司名。返回结果来自 IBKR Gateway，不依赖本地缓存前端匹配。</div>
+
+          <div class="control-grid">
+            <div class="field">
+              <label for="targetScope">写入范围</label>
+              <select id="targetScope"></select>
+            </div>
+            <div class="field span-2">
+              <label for="noteInput">默认备注</label>
+              <input id="noteInput" type="text" placeholder="例如：手动加入、重点观察" maxlength="500" />
+            </div>
+          </div>
+
+          <div class="search-row">
+            <input id="searchInput" class="search-input" type="text" placeholder="输入 AAPL / TSLA / Apple / Tesla" />
+            <button id="searchBtn" class="btn primary" type="button">搜索合约</button>
+          </div>
+          <div id="searchMeta" class="muted-copy">输入后回车或点击搜索。</div>
+          <div id="searchResults" class="result-grid"></div>
+
+          <div class="batch-shell">
+            <div class="field">
+              <label for="batchSymbolsInput">批量导入 symbols</label>
+              <textarea id="batchSymbolsInput" placeholder="支持逗号、空格、换行。示例：&#10;AAPL TSLA NVDA&#10;AMD, META"></textarea>
+            </div>
+            <div class="batch-actions">
+              <button id="batchAddBtn" class="ghost-btn" type="button">按最佳候选批量加入</button>
+              <button id="clearBatchBtn" class="ghost-btn" type="button">清空</button>
+            </div>
+            <div id="batchMeta" class="muted-copy">批量导入会逐个调用 IBKR 搜索并写入当前 scope。</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title" id="watchlistListPanelTitle">已有 watchlist 记录</div>
+          <div class="panel-copy" id="watchlistListPanelCopy">这里直接管理 PocketBase `watchlist` 集合，默认支持当前环境与 GLOBAL 共享池一起看。</div>
+
+          <div class="control-grid">
+            <div class="field">
+              <label for="scopeFilter">展示范围</label>
+              <select id="scopeFilter">
+                <option value="all">当前环境 + GLOBAL</option>
+                <option value="current">仅当前环境</option>
+                <option value="global">仅 GLOBAL</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label for="listSearchInput">本地筛选</label>
+              <input id="listSearchInput" type="text" placeholder="symbol / exchange / note" />
+            </div>
+            <div class="field">
+              <label for="refreshListBtn">刷新</label>
+              <button id="refreshListBtn" class="ghost-btn" type="button">刷新列表</button>
+            </div>
+          </div>
+
+          <div class="batch-shell">
+            <div class="field">
+              <label for="batchDeleteInput">批量删除 symbols</label>
+              <textarea id="batchDeleteInput" placeholder="只删除当前已加载范围内匹配到的 symbol。"></textarea>
+            </div>
+            <div class="batch-actions">
+              <button id="batchDeleteBtn" class="ghost-btn" type="button">删除匹配记录</button>
+            </div>
+            <div id="deleteMeta" class="muted-copy">适合清理一组手工加入的标的。</div>
+          </div>
+
+          <div class="table-header">
+            <div class="table-meta" id="listMeta">尚未加载记录。</div>
+          </div>
+          <div class="table-wrap desktop-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Exchange</th>
+                  <th>Industry</th>
+                  <th>Scope</th>
+                  <th>Role</th>
+                  <th>Member</th>
+                  <th>Note</th>
+                  <th>Updated</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="watchlistTable">
+                <tr><td colspan="9" class="empty-state">尚未加载记录。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="watchlistCards" class="mobile-card-list" aria-live="polite">
+            <div class="empty-state">尚未加载记录。</div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <script src="/assets/js/pages/ibkr_screener/page.js"></script>
+</body>
+</html>

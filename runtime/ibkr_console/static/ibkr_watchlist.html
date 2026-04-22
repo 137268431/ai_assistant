@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IBKR 标池管理</title>
+  <script src="/common.js"></script>
+  <script>
+    (function redirectToCombinedPage() {
+      const current = new URL(window.location.href);
+      const next = new URL('/ibkr_screener.html', window.location.origin);
+      current.searchParams.forEach((value, key) => {
+        next.searchParams.set(key, value);
+      });
+      next.searchParams.set('tab', 'watchlist');
+      window.location.replace(`${next.pathname}${next.search}`);
+    })();
+  </script>
+</head>
+<body>
+  <p style="padding:16px;font-family:sans-serif;">正在跳转到统一的筛选/标池页...</p>
+</body>
+</html>

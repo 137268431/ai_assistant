@@ -7,6 +7,8 @@ LIB_ROOT="$SCRIPT_DIR/lib"
 POCKETBASE_SCRIPT="$SCRIPT_DIR/deploy_pocketbase_runtime.sh"
 COMPUTE_SCRIPT="$SCRIPT_DIR/deploy_ibkr_compute_runtime.sh"
 RUNTIME_SCRIPT="$SCRIPT_DIR/deploy_ibkr_runtime_service.sh"
+CONSOLE_SCRIPT="$SCRIPT_DIR/deploy_ibkr_console.sh"
+PUBLIC_PROXY_SCRIPT="$SCRIPT_DIR/deploy_ibkr_public_proxy.sh"
 
 REMOTE_HOST=""
 WITH_MIGRATIONS=0
@@ -31,6 +33,7 @@ SKIP_REQUIREMENTS=0
 PB_REMOTE_ROOT="${PB_REMOTE_ROOT:-${IBKR_DEPLOY_PB_ROOT:-/opt/pocketbase}}"
 IBKR_REMOTE_ROOT="${IBKR_REMOTE_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
 IBKR_RUNTIME_REMOTE_ROOT="${IBKR_RUNTIME_REMOTE_ROOT:-${IBKR_DEPLOY_RUNTIME_ROOT:-/opt/ibkr_runtime}}"
+IBKR_CONSOLE_REMOTE_ROOT="${IBKR_CONSOLE_REMOTE_ROOT:-${IBKR_DEPLOY_CONSOLE_ROOT:-/opt/ibkr_console}}"
 SYSTEMD_DIR="/etc/systemd/system"
 OPS_REMOTE_ROOT="$IBKR_REMOTE_ROOT/ops"
 VENV_DIR="$IBKR_REMOTE_ROOT/venv"
@@ -64,7 +67,7 @@ Options:
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote syntax validation
   --no-restart        Skip service restarts
-  --status-only       Show pocketbase / ibkr-runtime / ibkr-compute / ibkr-display / ibkr-gateway status and exit
+  --status-only       Show pocketbase / ibkr-console / ibkr-api / ibkr-scheduler / ibkr-runtime / ibkr-compute / ibkr-display / ibkr-gateway status and exit
   -h, --help          Show this help
 EOF
 }
@@ -148,15 +151,22 @@ fi
 declare -a pb_args=()
 declare -a compute_args=()
 declare -a runtime_args=()
+declare -a console_args=()
+declare -a proxy_args=()
 
-[[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && compute_args+=(--host "$REMOTE_HOST") && runtime_args+=(--host "$REMOTE_HOST")
+[[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && compute_args+=(--host "$REMOTE_HOST") && runtime_args+=(--host "$REMOTE_HOST") && console_args+=(--host "$REMOTE_HOST")
 [[ "$WITH_MIGRATIONS" -eq 1 ]] && pb_args+=(--migrations)
 [[ "$WITH_OPS_TOOLS" -eq 1 ]] && compute_args+=(--ops-tools)
-[[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && compute_args+=(--dry-run) && runtime_args+=(--dry-run)
-[[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && compute_args+=(--skip-checks) && runtime_args+=(--skip-checks)
-[[ "$NO_RESTART" -eq 1 ]] && pb_args+=(--no-restart) && compute_args+=(--no-restart) && runtime_args+=(--no-restart)
-[[ "$PLAN_ONLY" -eq 1 ]] && pb_args+=(--plan-only) && compute_args+=(--plan-only) && runtime_args+=(--plan-only)
-[[ -n "$PACKAGE_NAME" ]] && pb_args+=(--package-name "$PACKAGE_NAME") && compute_args+=(--package-name "$PACKAGE_NAME") && runtime_args+=(--package-name "$PACKAGE_NAME")
+[[ -n "$REMOTE_HOST" ]] && proxy_args+=(--host "$REMOTE_HOST")
+[[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && compute_args+=(--dry-run) && runtime_args+=(--dry-run) && console_args+=(--dry-run) && proxy_args+=(--dry-run)
+[[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && compute_args+=(--skip-checks) && runtime_args+=(--skip-checks) && console_args+=(--skip-checks) && proxy_args+=(--skip-checks)
+[[ "$NO_RESTART" -eq 1 ]] && pb_args+=(--no-restart) && compute_args+=(--no-restart) && runtime_args+=(--no-restart) && console_args+=(--no-restart)
+[[ "$PLAN_ONLY" -eq 1 ]] && pb_args+=(--plan-only) && compute_args+=(--plan-only) && runtime_args+=(--plan-only) && console_args+=(--plan-only) && proxy_args+=(--plan-only)
+[[ -n "$PACKAGE_NAME" ]] && pb_args+=(--package-name "$PACKAGE_NAME") && compute_args+=(--package-name "$PACKAGE_NAME") && runtime_args+=(--package-name "$PACKAGE_NAME") && console_args+=(--package-name "$PACKAGE_NAME")
+
+if [[ "$NO_RESTART" -eq 1 ]]; then
+  proxy_args+=(--skip-reload)
+fi
 
 run_pb() {
   if [[ ${#pb_args[@]} -gt 0 ]]; then
@@ -180,6 +190,34 @@ run_runtime() {
   else
     bash "$RUNTIME_SCRIPT" "$@"
   fi
+}
+
+run_console() {
+  if [[ ${#console_args[@]} -gt 0 ]]; then
+    bash "$CONSOLE_SCRIPT" "${console_args[@]}" "$@"
+  else
+    bash "$CONSOLE_SCRIPT" "$@"
+  fi
+}
+
+run_public_proxy() {
+  if [[ ${#proxy_args[@]} -gt 0 ]]; then
+    bash "$PUBLIC_PROXY_SCRIPT" "${proxy_args[@]}" "$@"
+  else
+    bash "$PUBLIC_PROXY_SCRIPT" "$@"
+  fi
+}
+
+public_proxy_needs_deploy() {
+  local rel_path
+  for rel_path in "${INPUT_TOUCHED_PATHS[@]-}"; do
+    case "$rel_path" in
+      ops/deploy/deploy_ibkr_public_proxy.sh|ops/templates/caddy/*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
 }
 
 collect_target_file_args() {
@@ -235,7 +273,7 @@ wait_for_full_stack_health() {
   deploy_log "Waiting for full stack health (environment=$HEALTH_CHECK_ENVIRONMENT)..."
 
   while true; do
-    if output="$(python3 "$AI_ASSISTANT_ROOT/ops/health/check_stack.py" --environment "$HEALTH_CHECK_ENVIRONMENT" --json 2>&1)"; then
+    if output="$(python3 "$AI_ASSISTANT_ROOT/ops/ibkr_stack/health/check_stack.py" --environment "$HEALTH_CHECK_ENVIRONMENT" --json 2>&1)"; then
       deploy_log "Full stack health check passed."
       return 0
     fi
@@ -253,12 +291,19 @@ prepare_target_plan all
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
   run_pb --status-only
+  run_console --status-only
   run_runtime --status-only
   run_compute --status-only
+  run_public_proxy --status-only
   exit 0
 fi
 
-if [[ "$NO_MANAGED_CHANGES" -eq 1 ]]; then
+PUBLIC_PROXY_NEEDS_DEPLOY=0
+if public_proxy_needs_deploy; then
+  PUBLIC_PROXY_NEEDS_DEPLOY=1
+fi
+
+if [[ "$NO_MANAGED_CHANGES" -eq 1 && "$PUBLIC_PROXY_NEEDS_DEPLOY" -eq 0 ]]; then
   deploy_log "No managed changes for deploy_runtime_all."
   exit 0
 fi
@@ -270,18 +315,30 @@ if [[ "$REQUESTED_MODE" != "scope" || "$HAS_CHANGE_SOURCE" -eq 1 ]]; then
   fi
 
   target_pb_file_args=()
+  target_console_file_args=()
   target_compute_file_args=()
   target_runtime_file_args=()
   collect_target_file_args target_pb_file_args pocketbase "$local_file_source"
+  collect_target_file_args target_console_file_args ibkr_console "$local_file_source"
   collect_target_file_args target_compute_file_args ibkr_compute "$local_file_source"
   collect_target_file_args target_runtime_file_args ibkr_runtime "$local_file_source"
 
   pb_args+=(--mode "$FINAL_MODE")
+  console_args+=(--mode "$FINAL_MODE")
   compute_args+=(--mode "$FINAL_MODE")
   runtime_args+=(--mode "$FINAL_MODE")
-  pb_args+=( "${target_pb_file_args[@]-}" )
-  compute_args+=( "${target_compute_file_args[@]-}" )
-  runtime_args+=( "${target_runtime_file_args[@]-}" )
+  if [[ ${#target_pb_file_args[@]} -gt 0 ]]; then
+    pb_args+=( "${target_pb_file_args[@]}" )
+  fi
+  if [[ ${#target_console_file_args[@]} -gt 0 ]]; then
+    console_args+=( "${target_console_file_args[@]}" )
+  fi
+  if [[ ${#target_compute_file_args[@]} -gt 0 ]]; then
+    compute_args+=( "${target_compute_file_args[@]}" )
+  fi
+  if [[ ${#target_runtime_file_args[@]} -gt 0 ]]; then
+    runtime_args+=( "${target_runtime_file_args[@]}" )
+  fi
 fi
 
 families=()
@@ -293,6 +350,8 @@ if [[ "$REQUESTED_MODE" == "scope" && "$HAS_CHANGE_SOURCE" -eq 0 ]]; then
   run_runtime
   run_compute
   run_pb
+  run_console
+  run_public_proxy
   wait_for_full_stack_health
   exit 0
 fi
@@ -305,6 +364,12 @@ if array_contains "ibkr_compute" "${families[@]}"; then
 fi
 if array_contains "pocketbase" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_pb
+fi
+if array_contains "ibkr_console" "${families[@]}"; then
+  DEPLOY_IGNORE_UNMANAGED=1 run_console
+fi
+if [[ "$PUBLIC_PROXY_NEEDS_DEPLOY" -eq 1 ]]; then
+  DEPLOY_IGNORE_UNMANAGED=1 run_public_proxy
 fi
 
 wait_for_full_stack_health

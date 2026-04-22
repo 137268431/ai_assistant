@@ -6,7 +6,7 @@ const { chromium } = require('playwright');
 const REMOTE_BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
-const STATIC_ROOT = path.resolve(__dirname, '../../../runtime/pocketbase/pb_public');
+const STATIC_ROOT = path.resolve(__dirname, '../../../runtime/ibkr_console/static');
 const MAIN_TRACE_ROW_SELECTOR = '#tracePanelShell [data-trace-bar-ms]';
 const MAIN_TRACE_ACTIVE_ROW_SELECTOR = '#tracePanelShell [data-trace-bar-ms].active';
 

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Redirecting...</title>
+</head>
+<body>
+  <script>
+    (function() {
+      const current = new URL(window.location.href);
+      const next = new URL('/ibkr_screener.html', window.location.origin);
+      const environment = current.searchParams.get('environment') || 'live';
+      const date = current.searchParams.get('date') || current.searchParams.get('market_date') || '';
+      next.searchParams.set('environment', environment);
+      next.searchParams.set('tab', 'targets');
+      if (date) {
+        next.searchParams.set('date', date);
+        next.searchParams.set('market_date', date);
+      }
+      window.location.replace(next.toString());
+    })();
+  </script>
+</body>
+</html>

@@ -780,343 +780,60 @@ function runSystemMonitorAlertGuard(logPrefix) {
 }
 
 routerAdd("POST", "/api/custom/system/event", (c) => {
-    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
-    const { getRuntimeEnvironmentFromData, labelTitleWithEnvironment, addEnvironmentToDetail, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const reqInfo = c.requestInfo()
-    const d = reqInfo.body || reqInfo.data || {}
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const rawTitle = d.title || ""
-    const rawDetail = d.detail || {}
-    const eventType = d.event_type || "status_change"
-    const level = d.level || "info"
-    const source = d.source || "pb"
-    const messageId = String(d.message_id || "").trim()
-    const title = labelTitleWithEnvironment(rawTitle, environment)
-    const detail = addEnvironmentToDetail(rawDetail, environment)
-
-    if (!title) {
-        return c.json(400, { ok: false, error: "title required" })
-    }
-
-    let notifyResult = {
-        success: false,
-        message_id: messageId,
-        updated: false,
-        skipped: false,
-        suppressed: false,
-        error: "",
-    }
-    if (level === "error" || level === "warning" || eventType === "status_change" || eventType === "daily_report") {
-        notifyResult = feishuSystem.notifySystemEventDetailed(
-            eventType,
-            level,
-            source,
-            title,
-            detail,
-            environment,
-            { message_id: messageId },
-        )
-    }
-
-    const notified = !!(notifyResult && notifyResult.success && !notifyResult.suppressed)
-    writeSystemEvent(eventType, level, source, rawTitle, rawDetail, environment, notified)
-    return c.json(200, {
-        ok: true,
-        notified: notified,
-        message_id: String((notifyResult && notifyResult.message_id) || messageId || ""),
-        updated: !!(notifyResult && notifyResult.updated),
-        skipped: !!(notifyResult && notifyResult.skipped),
-        suppressed: !!(notifyResult && notifyResult.suppressed),
-        error: String((notifyResult && notifyResult.error) || ""),
+    const body = reqInfo.body || reqInfo.data || {}
+    return proxyIbkrApiJson(c, "/api/custom/system/event", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        body: body,
+        timeout: 10,
     })
 })
 
 routerAdd("GET", "/api/custom/system/cronz", (c) => {
-    try {
-        const { getPbCronDefinitions } = require(`${__hooks}/lib/pb_cron_registry.js`)
-        return c.json(200, {
-            ok: true,
-            items: getPbCronDefinitions(),
-        })
-    } catch (err) {
-        return c.json(500, {
-            ok: false,
-            error: logRouteError("/api/custom/system/cronz", err),
-        })
-    }
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/system/cronz", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        timeout: 10,
+    })
 })
 
 routerAdd("GET", "/api/custom/system/healthz", (c) => {
-    try {
-        const { normalizeRuntimeEnvironment, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-        const { fetchComputeJsonWithFallback } = require(`${__hooks}/lib/compute_http.js`)
-        const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
-        const fetchResult = fetchComputeJsonWithFallback("/ibkr/monitor", 10, environment)
-        const monitorPayload = fetchResult && fetchResult.payload && typeof fetchResult.payload === "object"
-            ? fetchResult.payload
-            : {}
-        const payload = {
-            ok: monitorPayload.ok !== false,
-            environment: environment,
-            status: String(monitorPayload.status || (monitorPayload.ok === false ? "offline" : "ok")).trim().toLowerCase() || "ok",
-            service_topology: monitorPayload.service_topology || {},
-            proxy_source: "pocketbase_ibkr_hook",
-            proxy_hook: "ibkr_system_monitor.pb.js",
-            proxy_route: "/api/custom/system/healthz",
-            proxy_upstream: String(fetchResult && fetchResult.upstream || ""),
-        }
-        return c.json(200, payload)
-    } catch (err) {
-        return c.json(200, {
-            ok: false,
-            status: "offline",
-            error: logRouteError("/api/custom/system/healthz", err),
-            proxy_source: "pocketbase_ibkr_hook",
-            proxy_hook: "ibkr_system_monitor.pb.js",
-            proxy_route: "/api/custom/system/healthz",
-        })
-    }
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/system/healthz", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        timeout: 10,
+    })
 })
 
 routerAdd("GET", "/api/custom/system/summaryz", (c) => {
-    try {
-        const { normalizeRuntimeEnvironment, getConfigValue, getIbkrComputeInternalUrl, getIbkrRuntimeInternalUrl, listEffectiveConfigRecords, LIVE_ENVIRONMENT, BACKTEST_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-        const { getTimeStrings } = require(`${__hooks}/lib/time_utils.js`)
-        const times = getTimeStrings()
-        const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
-        const liteMode = ["1", "true", "yes", "on"].indexOf(String(c.request.url.query().get("lite") || "").trim().toLowerCase()) !== -1
-        const todayStart = times.date + " 00:00:00"
-        const computeEnabled = environment !== BACKTEST_ENVIRONMENT
-            && String(getConfigValue("ibkr_compute_enabled", "TRUE", environment)).trim().toLowerCase() !== "false"
-        const tradingEnabled = environment !== BACKTEST_ENVIRONMENT
-            && String(getConfigValue("ibkr_trading_enabled", getConfigValue("trading_enabled", "TRUE", environment), environment)).trim().toLowerCase() !== "false"
-
-        let computeSummary = {
-            ok: false,
-            status: "offline",
-            engines: {},
-            total_engines: 0,
-            ready_engines: 0,
-            compute_count: 0,
-            error_count: 0,
-            uptime_s: 0,
-            last_compute: null,
-            last_scan: null,
-            compute_startup_preload: {},
-        }
-        let runtimeSummary = {
-            ok: false,
-            status: "offline",
-            environment: environment,
-            service_topology: {},
-        }
-        try {
-            const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
-            const healthResp = $http.send({ url: `${computeBaseUrl}/health`, method: "GET", timeout: 5 })
-            const healthData = JSON.parse(healthResp.raw || "{}")
-            const statusResp = $http.send({ url: `${computeBaseUrl}/status`, method: "GET", timeout: 5 })
-            const statusData = JSON.parse(statusResp.raw || "{}")
-            const runtimeProxyUpstream = `${computeBaseUrl}/ibkr/status`
-            const runtimeDirectUpstream = `${getIbkrRuntimeInternalUrl(environment, "http://127.0.0.1:5101")}/ibkr/status`
-            computeSummary = {
-                ok: healthData.ok !== false || statusData.ok !== false,
-                status: healthData.status || statusData.status || "unknown",
-                engines: statusData.engines || {},
-                total_engines: Number(statusData.total_engines || 0) || 0,
-                ready_engines: Number(statusData.ready_engines || 0) || 0,
-                compute_count: Number(healthData.compute_count || statusData.compute_count || 0) || 0,
-                error_count: Number(healthData.error_count || statusData.error_count || 0) || 0,
-                uptime_s: Number(healthData.uptime_s || 0) || 0,
-                last_compute: healthData.last_compute || statusData.last_compute || null,
-                last_scan: healthData.last_scan || statusData.last_scan || null,
-                compute_startup_preload: statusData.compute_startup_preload || healthData.compute_startup_preload || {},
-                service_topology: statusData.service_topology || healthData.service_topology || {},
-            }
-            try {
-                const runtimeResp = $http.send({ url: runtimeProxyUpstream, method: "GET", timeout: 5 })
-                const runtimeData = JSON.parse(runtimeResp.raw || "{}")
-                runtimeSummary = {
-                    ok: runtimeData.ok !== false,
-                    status: String(runtimeData.status || (runtimeData.ok === false ? "offline" : "running")).trim().toLowerCase() || "running",
-                    environment: String(runtimeData.environment || environment).trim().toLowerCase() || environment,
-                    service_topology: runtimeData.service_topology || computeSummary.service_topology || {},
-                    proxy_upstream: runtimeProxyUpstream,
-                }
-            } catch (_) {
-                try {
-                    const runtimeResp = $http.send({ url: runtimeDirectUpstream, method: "GET", timeout: 5 })
-                    const runtimeData = JSON.parse(runtimeResp.raw || "{}")
-                    runtimeSummary = {
-                        ok: runtimeData.ok !== false,
-                        status: String(runtimeData.status || (runtimeData.ok === false ? "offline" : "running")).trim().toLowerCase() || "running",
-                        environment: String(runtimeData.environment || environment).trim().toLowerCase() || environment,
-                        service_topology: runtimeData.service_topology || computeSummary.service_topology || {},
-                        proxy_upstream: runtimeDirectUpstream,
-                    }
-                } catch (runtimeErr) {
-                    runtimeSummary.error = runtimeErr.message || String(runtimeErr)
-                }
-            }
-        } catch (err) {
-            computeSummary.error = err.message || String(err)
-        }
-        const dataFreshness = []
-
-        const summary = {
-            timestamp: times.us,
-            environment: environment,
-            compute_enabled: computeEnabled,
-            ibkr_trading_enabled: tradingEnabled,
-            config: {},
-            today: { ibkr_signals: 0, ibkr_indicators: 0, orders: 0, ibkr_bars: 0, ibkr_targets: 0, events: 0 },
-            ibkr_compute: computeSummary,
-            ibkr_runtime: runtimeSummary,
-            service_topology: runtimeSummary.service_topology || computeSummary.service_topology || {},
-            recent_events: [],
-            data_freshness: dataFreshness,
-            lite_mode: liteMode,
-        }
-
-        try {
-            const configs = listEffectiveConfigRecords(environment)
-            for (let i = 0; i < configs.length; i++) {
-                const key = configs[i].get("key")
-                if (key) {
-                    summary.config[String(key)] = String(configs[i].get("value") || "")
-                }
-            }
-            if (summary.config.ibkr_compute_enabled) summary.compute_enabled = String(summary.config.ibkr_compute_enabled).trim().toLowerCase() === "true"
-            if (summary.config.ibkr_trading_enabled) {
-                summary.ibkr_trading_enabled = String(summary.config.ibkr_trading_enabled).trim().toLowerCase() === "true"
-            } else if (summary.config.trading_enabled) {
-                summary.ibkr_trading_enabled = String(summary.config.trading_enabled).trim().toLowerCase() === "true"
-            }
-        } catch (_) {}
-
-        // Keep summaryz lightweight for UI callers. Heavy per-day counts are fetched
-        // directly by pages via paginated collection APIs when needed.
-
-        try {
-            const recent = $app.findRecordsByFilter("system_events", "environment = {:env}", "-created", 20, 0, { env: environment }) || []
-            for (let i = 0; i < recent.length; i++) {
-                summary.recent_events.push({
-                    id: String(recent[i].getId() || ""),
-                    event_type: String(recent[i].get("event_type") || ""),
-                    level: String(recent[i].get("level") || ""),
-                    source: String(recent[i].get("source") || ""),
-                    environment: String(recent[i].get("environment") || environment),
-                    title: String(recent[i].get("title") || ""),
-                    notified: Boolean(recent[i].get("notified")),
-                    us_time: String(recent[i].get("us_time") || ""),
-                    created: String(recent[i].get("created") || ""),
-                })
-            }
-        } catch (_) {}
-        return c.json(200, JSON.parse(JSON.stringify(summary)))
-    } catch (err) {
-        return c.json(500, {
-            ok: false,
-            error: logRouteError("/api/custom/system/summaryz", err),
-        })
-    }
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const query = c.request.url.query()
+    return proxyIbkrApiJson(c, "/api/custom/system/summaryz", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        query: {
+            lite: query.get("lite") || "",
+        },
+        timeout: 10,
+    })
 })
 
 routerAdd("GET", "/api/custom/system/monitorz", (c) => {
-    try {
-        const { normalizeRuntimeEnvironment, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-        const { fetchComputeJsonWithFallback } = require(`${__hooks}/lib/compute_http.js`)
-        const pocketbaseDiskMonitor = require(`${__hooks}/lib/pocketbase_disk_monitor.js`)
-        const environment = normalizeRuntimeEnvironment(c.request.url.query().get("environment") || "", LIVE_ENVIRONMENT)
-        const loadMonitorConfig = () => {
-            const selectedKeys = {
-                ibkr_target_subscription_limit: true,
-                ibkr_history_request_spacing: true,
-                ibkr_target_refresh_sec: true,
-                ibkr_watchlist_backfill_interval_min: true,
-                system_monitor_ws_message_age_regular_warn_sec: true,
-                system_monitor_ws_message_age_regular_critical_sec: true,
-                system_monitor_ws_message_age_late_session_warn_sec: true,
-                system_monitor_ws_message_age_late_session_critical_sec: true,
-            }
-            const config = {}
-            try {
-                const records = listEffectiveConfigRecords(environment) || []
-                for (let i = 0; i < records.length; i++) {
-                    const key = String(records[i].get("key") || "")
-                    if (!selectedKeys[key]) continue
-                    config[key] = String(records[i].get("value") || "")
-                }
-            } catch (_) {}
-            return config
-        }
-        const loadMonitorRecentEvents = (limit) => {
-            const items = []
-            try {
-                const recent = $app.findRecordsByFilter("system_events", "environment = {:env}", "-created", Math.max(1, Number(limit) || 20), 0, { env: environment }) || []
-                for (let i = 0; i < recent.length; i++) {
-                    items.push({
-                        id: String(recent[i].getId() || ""),
-                        event_type: String(recent[i].get("event_type") || ""),
-                        level: String(recent[i].get("level") || ""),
-                        source: String(recent[i].get("source") || ""),
-                        environment: String(recent[i].get("environment") || environment),
-                        title: String(recent[i].get("title") || ""),
-                        notified: Boolean(recent[i].get("notified")),
-                        us_time: String(recent[i].get("us_time") || ""),
-                        created: String(recent[i].get("created") || ""),
-                    })
-                }
-            } catch (_) {}
-            return items
-        }
-        const fetchResult = fetchComputeJsonWithFallback("/ibkr/monitor", 10, environment)
-        const monitorPayload = fetchResult && fetchResult.payload && typeof fetchResult.payload === "object"
-            ? fetchResult.payload
-            : {}
-
-        const config = loadMonitorConfig()
-
-        const response = monitorPayload && typeof monitorPayload === "object" && !Array.isArray(monitorPayload)
-            ? { ...monitorPayload }
-            : {}
-
-        const actualRuntimeEnvironment = String(
-            response.environment
-            || ((response.runtime || {}).environment)
-            || environment
-        ).trim().toLowerCase() || environment
-
-        response.requested_environment = environment
-        response.actual_runtime_environment = actualRuntimeEnvironment
-        response.runtime_environment_mismatch = actualRuntimeEnvironment !== environment
-        response.config = config
-        response.recent_events = loadMonitorRecentEvents(20)
-        response.proxy_source = "pocketbase_ibkr_hook"
-        response.proxy_hook = "ibkr_system_monitor.pb.js"
-        response.proxy_route = "/api/custom/system/monitorz"
-        response.proxy_upstream = String(fetchResult && fetchResult.upstream || "")
-        response.proxy_upstream_attempts = Array.isArray(fetchResult && fetchResult.attempts)
-            ? fetchResult.attempts
-            : []
-        response.ok = response.ok !== false
-        response.status = String(response.status || (response.ok === false ? "offline" : "ok")).trim().toLowerCase() || "ok"
-        response.flags = Array.isArray(response.flags) ? response.flags : []
-
-        pocketbaseDiskMonitor.enrichMonitorPayloadWithPocketBaseDisk(response, false)
-
-        return c.html(200, JSON.stringify(response))
-    } catch (err) {
-        return c.html(500, JSON.stringify({
-            ok: false,
-            status: "offline",
-            error: logRouteError("/api/custom/system/monitorz", err),
-            proxy_source: "pocketbase_ibkr_hook",
-            proxy_hook: "ibkr_system_monitor.pb.js",
-            proxy_route: "/api/custom/system/monitorz",
-        }))
-    }
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/system/monitorz", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        timeout: 10,
+    })
 })
 
 cronAdd("ibkr_compute_runtime", "*/5 4-20 * * 1-5", () => {

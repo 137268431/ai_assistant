@@ -1,0 +1,26 @@
+[Unit]
+Description=IBKR Control-Plane API Service
+After=network.target pocketbase.service ibkr-compute.service ibkr-runtime.service ibkr-scheduler.service
+Wants=pocketbase.service ibkr-compute.service ibkr-runtime.service ibkr-scheduler.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ibkr_api
+ExecStart=/opt/ibkr_compute/venv/bin/python -m ibkr_api.api_server
+EnvironmentFile=-/opt/ibkr_api/.env
+Environment=PYTHONPATH=/opt/ibkr_api/src:/opt/ibkr_scheduler/src:/opt/ibkr_compute/src
+Environment=FLASK_SKIP_DOTENV=1
+Environment=IBKR_API_PORT=5102
+Environment=PORT=5102
+Environment=IBKR_SERVICE_PROFILE=api
+Environment=IBKR_RUNTIME_MODE=remote
+Environment=IBKR_COMPUTE_INTERNAL_URL=http://127.0.0.1:5100
+Environment=IBKR_RUNTIME_INTERNAL_URL=http://127.0.0.1:5101
+Environment=IBKR_SCHEDULER_INTERNAL_URL=http://127.0.0.1:5103
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -15,6 +15,9 @@ const ENVIRONMENT_LABELS = {
 
 const DEFAULT_IBKR_COMPUTE_PUBLIC_URL = "https://qc.lzw-glory.top"
 const DEFAULT_IBKR_COMPUTE_INTERNAL_URL = "http://127.0.0.1:5100"
+const DEFAULT_IBKR_API_PUBLIC_URL = ""
+const DEFAULT_IBKR_API_INTERNAL_URL = "http://127.0.0.1:5102"
+const DEFAULT_IBKR_SCHEDULER_INTERNAL_URL = "http://127.0.0.1:5103"
 const DEFAULT_IBKR_RUNTIME_PUBLIC_URL = ""
 const DEFAULT_IBKR_RUNTIME_INTERNAL_URL = "http://127.0.0.1:5101"
 
@@ -224,6 +227,24 @@ function getIbkrRuntimePublicUrl(environment, defaultValue) {
     return String(configured || fallback).trim().replace(/\/+$/, "")
 }
 
+function getIbkrApiPublicUrl(environment, defaultValue) {
+    const fallback = String(defaultValue || DEFAULT_IBKR_API_PUBLIC_URL || "").trim()
+    const configured = getConfigValue("ibkr_api_public_url", fallback, environment)
+    return String(configured || fallback).trim().replace(/\/+$/, "")
+}
+
+function getIbkrApiInternalUrl(environment, defaultValue) {
+    const fallback = String(defaultValue || DEFAULT_IBKR_API_INTERNAL_URL || "").trim() || DEFAULT_IBKR_API_INTERNAL_URL
+    const configured = getConfigValue("ibkr_api_internal_url", fallback, environment)
+    return String(configured || fallback).trim().replace(/\/+$/, "") || fallback
+}
+
+function getIbkrSchedulerInternalUrl(environment, defaultValue) {
+    const fallback = String(defaultValue || DEFAULT_IBKR_SCHEDULER_INTERNAL_URL || "").trim() || DEFAULT_IBKR_SCHEDULER_INTERNAL_URL
+    const configured = getConfigValue("ibkr_scheduler_internal_url", fallback, environment)
+    return String(configured || fallback).trim().replace(/\/+$/, "") || fallback
+}
+
 function getIbkrRuntimeInternalUrl(environment, defaultValue) {
     const fallback = String(defaultValue || DEFAULT_IBKR_RUNTIME_INTERNAL_URL || "").trim() || DEFAULT_IBKR_RUNTIME_INTERNAL_URL
     const configured = getConfigValue("ibkr_runtime_internal_url", fallback, environment)
@@ -248,6 +269,9 @@ const exported = {
     getEffectiveConfigRecord,
     getConfigValue,
     listEffectiveConfigRecords,
+    getIbkrApiPublicUrl,
+    getIbkrApiInternalUrl,
+    getIbkrSchedulerInternalUrl,
     getIbkrComputePublicUrl,
     getIbkrComputeInternalUrl,
     getIbkrRuntimePublicUrl,

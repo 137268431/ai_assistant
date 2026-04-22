@@ -64,7 +64,7 @@ Options:
   --dry-run             Show rsync changes without mutating the remote host
   --skip-checks         Skip remote python syntax validation
   --no-restart          Skip service restart
-  --status-only         Show ibkr-compute status and exit
+  --status-only         Show ibkr-compute / ibkr-api / ibkr-scheduler status and exit
   -h, --help            Show this help
 EOF
 }
@@ -141,7 +141,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
-  ssh_run "systemctl is-active ibkr-compute"
+  ssh_run "systemctl is-active ibkr-compute ibkr-api ibkr-scheduler"
   exit 0
 fi
 

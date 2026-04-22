@@ -128,6 +128,122 @@ class PBClient:
             resp = self._request("POST", url, json=data or {}, timeout=timeout)
         return resp.json()
 
+    @staticmethod
+    def _escape_filter_string(value: Any) -> str:
+        return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _build_unique_key(data: Dict[str, Any], unique_fields: List[str]) -> tuple:
+        return tuple(data.get(field) for field in unique_fields)
+
+    def _render_filter_condition(self, field: str, value: Any) -> str:
+        if value is None:
+            return f"{field} = null"
+        if isinstance(value, bool):
+            return f"{field} = {'true' if value else 'false'}"
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return f"{field} = {value}"
+        return f'{field} = "{self._escape_filter_string(value)}"'
+
+    def _find_existing_records(
+        self,
+        collection: str,
+        items: List[Dict[str, Any]],
+        unique_fields: List[str],
+        *,
+        filter_chunk_size: int = 12,
+    ) -> Dict[tuple, Dict[str, Any]]:
+        existing: Dict[tuple, Dict[str, Any]] = {}
+        if not items:
+            return existing
+
+        for start in range(0, len(items), max(1, int(filter_chunk_size or 1))):
+            chunk = items[start:start + max(1, int(filter_chunk_size or 1))]
+            filter_parts = []
+            for item in chunk:
+                predicates = [
+                    self._render_filter_condition(field, item.get(field))
+                    for field in unique_fields
+                ]
+                filter_parts.append(f"({' && '.join(predicates)})")
+            rows = self.get_all_records(
+                collection,
+                filter=" || ".join(filter_parts),
+                max_pages=max(1, len(chunk)),
+            )
+            for row in rows:
+                existing[self._build_unique_key(row, unique_fields)] = row
+        return existing
+
+    def _execute_batch_requests(
+        self,
+        requests_payload: List[Dict[str, Any]],
+        *,
+        timeout: int = 30,
+        batch_size: int = 50,
+    ) -> None:
+        if not requests_payload:
+            return
+
+        url = f"{self.base_url}/api/batch"
+        for start in range(0, len(requests_payload), max(1, int(batch_size or 1))):
+            chunk = requests_payload[start:start + max(1, int(batch_size or 1))]
+            self._request(
+                "POST",
+                url,
+                json={"requests": chunk},
+                timeout=timeout,
+            )
+
+    def _batch_upsert_records(
+        self,
+        collection: str,
+        items: List[Dict[str, Any]],
+        unique_fields: List[str],
+        *,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        prepared = [dict(item or {}) for item in (items or []) if isinstance(item, dict)]
+        if not prepared:
+            return {"ok": True, "created": 0, "updated": 0, "skipped": 0}
+
+        existing = self._find_existing_records(collection, prepared, unique_fields)
+        requests_payload = []
+        created = 0
+        updated = 0
+
+        for item in prepared:
+            unique_key = self._build_unique_key(item, unique_fields)
+            existing_row = existing.get(unique_key)
+            if existing_row and existing_row.get("id"):
+                updated += 1
+                requests_payload.append(
+                    {
+                        "method": "PATCH",
+                        "url": f"/api/collections/{collection}/records/{existing_row['id']}",
+                        "body": item,
+                    }
+                )
+                continue
+
+            created += 1
+            requests_payload.append(
+                {
+                    "method": "POST",
+                    "url": f"/api/collections/{collection}/records",
+                    "body": item,
+                }
+            )
+
+        self._execute_batch_requests(requests_payload, timeout=timeout)
+        return {
+            "ok": True,
+            "created": created,
+            "updated": updated,
+            "skipped": 0,
+            "total": len(prepared),
+        }
+
     def upsert_indicator(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/indicator", method="POST", data=data)
 
@@ -141,7 +257,21 @@ class PBClient:
         return self.call_custom_api("ibkr/signals", method="POST", data={"items": items}, timeout=30)
 
     def upsert_bars(self, bars: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return self.call_custom_api("ibkr/bars", method="POST", data={"bars": bars})
+        normalized = []
+        for bar in bars or []:
+            if not isinstance(bar, dict):
+                continue
+            item = dict(bar)
+            item["symbol"] = str(item.get("symbol") or "").strip().upper()
+            item["interval"] = str(item.get("interval") or "").strip().lower()
+            item["environment"] = str(item.get("environment") or os.environ.get("IBKR_ENVIRONMENT", "live")).strip().lower() or "live"
+            normalized.append(item)
+        return self._batch_upsert_records(
+            "ibkr_bars",
+            normalized,
+            ["symbol", "interval", "bar_time_ms", "environment"],
+            timeout=30,
+        )
 
     def upsert_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/scan", method="POST", data=data)
@@ -275,14 +405,32 @@ class PBClient:
             return self.update_record("ibkr_state", existing["id"], payload)
         return self.create_record("ibkr_state", payload)
 
-    def get_runtime_config(self) -> List[Dict[str, Any]]:
-        payload = self.call_custom_api(
-            "ibkr/runtime/config",
-            method="GET",
-            params={"scope": "all"},
-        )
-        items = payload.get("items", [])
-        return items if isinstance(items, list) else []
+    def get_runtime_config(
+        self,
+        *,
+        scope: str = "all",
+        environment: str = "",
+    ) -> List[Dict[str, Any]]:
+        params = {"scope": str(scope or "all").strip().lower() or "all"}
+        runtime_environment = str(environment or "").strip().lower()
+        if runtime_environment:
+            params["environment"] = runtime_environment
+
+        try:
+            payload = self.call_custom_api(
+                "ibkr/runtime/config",
+                method="GET",
+                params=params,
+                timeout=15,
+            )
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+        except Exception:
+            pass
+
+        rows = self.get_all_records("config", sort="sort_order,key", max_pages=20)
+        return rows if isinstance(rows, list) else []
 
     def notify_ibkr_event(
         self,

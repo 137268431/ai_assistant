@@ -1,0 +1,27 @@
+[Unit]
+Description=IBKR Scheduler Service
+After=network.target pocketbase.service ibkr-compute.service ibkr-api.service
+Wants=pocketbase.service ibkr-compute.service ibkr-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ibkr_scheduler
+ExecStart=/opt/ibkr_compute/venv/bin/python -m ibkr_scheduler.scheduler_server
+EnvironmentFile=-/opt/ibkr_scheduler/.env
+Environment=PYTHONPATH=/opt/ibkr_scheduler/src:/opt/ibkr_compute/src
+Environment=FLASK_SKIP_DOTENV=1
+Environment=IBKR_SCHEDULER_PORT=5103
+Environment=PORT=5103
+Environment=IBKR_SERVICE_PROFILE=scheduler
+Environment=IBKR_RUNTIME_MODE=remote
+Environment=IBKR_SCHEDULER_AUTOSTART=true
+Environment=IBKR_COMPUTE_INTERNAL_URL=http://127.0.0.1:5100
+Environment=IBKR_API_INTERNAL_URL=http://127.0.0.1:5102
+Environment=IBKR_RUNTIME_INTERNAL_URL=http://127.0.0.1:5101
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
