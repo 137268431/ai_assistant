@@ -7,6 +7,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let latestNextActionModel = null;
         let latestRuntimeLoadId = 0;
         let hasLoadedRuntimeData = false;
+        let runtimePageClosing = false;
         const CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000;
         const MANUAL_AUTH_REASON_LABELS = {
             weekly_reauth: '每周重登提醒',
@@ -97,6 +98,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const diffHour = Math.round(diffMin / 60);
             if (diffHour < 24) return `${diffHour}h ago`;
             return `${Math.round(diffHour / 24)}d ago`;
+        }
+
+        function shouldIgnoreRuntimeLoadError(error, loadId) {
+            if (loadId !== latestRuntimeLoadId) return true;
+            const message = String(error?.message || error || '');
+            if (!message) return false;
+            const navigationLike = message.includes('Failed to fetch') || message.includes('ERR_ABORTED');
+            if (!navigationLike) return false;
+            return runtimePageClosing || document.visibilityState === 'hidden';
         }
 
         function parseIsoMs(value) {
@@ -1822,6 +1832,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     syncActionLocks();
                 });
             } catch (error) {
+                if (shouldIgnoreRuntimeLoadError(error, loadId)) return;
                 console.error('Runtime 加载失败:', error);
                 document.getElementById('refreshInfo').textContent = '加载失败';
                 document.getElementById('lastAction').textContent = `加载失败：${error.message || error}`;
@@ -2115,6 +2126,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         document.addEventListener('DOMContentLoaded', async () => {
             if (!ensureIbkrPageAuth()) return;
+            window.addEventListener('pagehide', () => {
+                runtimePageClosing = true;
+                latestRuntimeLoadId += 1;
+            });
+            window.addEventListener('beforeunload', () => {
+                runtimePageClosing = true;
+                latestRuntimeLoadId += 1;
+            });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 控制台', { subtitle: '控制 / 调度 / 链路观察 / 跳转账户与统计' });
             document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_runtime.html');
