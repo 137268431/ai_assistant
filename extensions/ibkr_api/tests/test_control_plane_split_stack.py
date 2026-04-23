@@ -253,6 +253,9 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
             with mock.patch.object(api_app_mod, "_scheduler_status", return_value=scheduler_payload):
                 payload = api_app_mod.status()
         self.assertTrue(payload["ok"])
+        self.assertIn("ibkr/2fa/request", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/2fa/respond", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/2fa/result", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/2fa/status", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/healthz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/orders/upsert", payload["compatibility"]["native_custom_routes"])

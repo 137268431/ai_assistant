@@ -88,6 +88,7 @@ function forwardIbkrApiRequest(route, options) {
         ok: Number(resp && resp.statusCode) < 400,
         statusCode: Number(resp && resp.statusCode) || 200,
         payload: parseJson(resp && resp.raw),
+        raw: typeof (resp && resp.raw) === "string" ? resp.raw : String((resp && resp.raw) || ""),
         headers: parseHeaders(resp && resp.headers),
         upstream: upstream,
     }
@@ -149,8 +150,22 @@ function proxyIbkrApiJson(c, route, options) {
     }
 }
 
+function proxyIbkrApiHtml(c, route, options) {
+    try {
+        const result = forwardIbkrApiRequest(route, options)
+        applyResponseHeaders(c, result.headers)
+        return c.html(result.statusCode, result.raw || "")
+    } catch (err) {
+        return c.html(
+            502,
+            `<html><body><h1>Proxy Error</h1><p>${String(err && err.message ? err.message : err || "")}</p></body></html>`
+        )
+    }
+}
+
 module.exports = {
     forwardIbkrApiRequest,
     forwardIbkrSchedulerRequest,
+    proxyIbkrApiHtml,
     proxyIbkrApiJson,
 }

@@ -1,0 +1,201 @@
+import copy
+import sys
+import time
+import unittest
+from pathlib import Path
+
+SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
+if str(SERVICE_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICE_SRC_ROOT))
+
+from ibkr_api.two_factor.request import build_two_factor_request_response
+from ibkr_api.two_factor.respond import build_two_factor_respond_response
+from ibkr_api.two_factor.result import build_two_factor_result_response
+
+
+class _FakePB:
+    def __init__(self, state_rows=None):
+        self.state_rows = {}
+        for row in state_rows or []:
+            key = (str(row["state_key"]), str(row["environment"]), str(row.get("date") or "global"))
+            self.state_rows[key] = copy.deepcopy(row)
+
+    def get_state(self, state_key, environment, date="global"):
+        row = self.state_rows.get((str(state_key), str(environment), str(date)))
+        return copy.deepcopy(row) if row else None
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        key = (str(state_key), str(environment), str(date))
+        current = self.state_rows.get(key) or {"id": f"state-{len(self.state_rows) + 1}"}
+        next_row = {
+            **copy.deepcopy(current),
+            "state_key": str(state_key),
+            "environment": str(environment),
+            "date": str(date),
+            "data": copy.deepcopy(data),
+        }
+        self.state_rows[key] = next_row
+        return copy.deepcopy(next_row)
+
+
+class TwoFactorBuildersTest(unittest.TestCase):
+    def setUp(self):
+        self.normalize_environment = lambda value, default: str(value or default).strip().lower() or default
+        self.as_dict = lambda value: dict(value) if isinstance(value, dict) else {}
+        self.runtime_status = {
+            "payload": {
+                "environment": "live",
+                "session": {"authenticated": False, "running": True},
+                "gateway": {"running": True, "reachable": True, "status_code": 401},
+            },
+            "selected_upstream": "http://runtime/ibkr/status",
+            "proxy_upstream": "http://compute/ibkr/status",
+            "error": "",
+        }
+        self.inspect_runtime_environment = lambda environment: {
+            "requested_environment": environment,
+            "actual_runtime_environment": environment,
+            "runtime_environment_mismatch": False,
+        }
+        self.build_mismatch_payload = lambda info, route: {"ok": False, "route": route, **info}
+        self.console_base_url = "https://console.example.com"
+        self.config_value = lambda key, default, environment: default
+        self.request_json_request = lambda method, base_url, path, params=None, json_body=None, timeout=5.0: {
+            "ok": True,
+            "status_code": 200,
+            "payload": {"ok": True, "status": "starting" if path.endswith("/start") else "stopping"},
+            "target_url": f"{base_url}{path}",
+            "error": "",
+        }
+        self.emit_system_event = lambda **kwargs: {"ok": True, "message_id": "evt-1"}
+        self.merge_startup_steps = lambda existing, patch, trigger_login: dict(existing or {}) | dict(patch or {})
+        self.deliver_startup_progress_card = lambda state, environment: {"success": True, "message_id": "startup-1"}
+
+    def test_request_builder_reuses_active_card(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {
+                        "status": "waiting_confirm",
+                        "message_id": "msg-keep",
+                        "last_request_push_ms": int(time.time() * 1000),
+                        "reason": "manual_reauth",
+                        "requested_at": "2026-04-23 09:30:00",
+                    },
+                }
+            ]
+        )
+        send_calls = []
+        update_calls = []
+
+        payload, status_code = build_two_factor_request_response(
+            pb,
+            payload={"environment": "live", "reason": "manual_reauth"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=self.request_json_request,
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: self.runtime_status,
+            inspect_runtime_environment=self.inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+            console_base_url=self.console_base_url,
+            config_value=self.config_value,
+            send_interactive=lambda *args, **kwargs: send_calls.append((args, kwargs)) or {"success": True, "message_id": "msg-new"},
+            update_interactive=lambda *args, **kwargs: update_calls.append((args, kwargs)) or {"success": True, "message_id": "msg-keep"},
+            emit_system_event=self.emit_system_event,
+            merge_startup_steps=self.merge_startup_steps,
+            deliver_startup_progress_card=self.deliver_startup_progress_card,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("msg-keep", payload["message_id"])
+        self.assertEqual([], send_calls)
+        self.assertGreaterEqual(payload["renotify_remaining_ms"], 0)
+        self.assertIn(len(update_calls), {0, 1})
+
+    def test_result_builder_marks_success_and_clears_challenge_fields(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {
+                        "status": "waiting_response",
+                        "message_id": "msg-2",
+                        "challenge_code": "AB12",
+                        "response_status": "received",
+                        "detail": {"foo": "bar"},
+                    },
+                }
+            ]
+        )
+        payload, status_code = build_two_factor_result_response(
+            pb,
+            payload={"environment": "live", "status": "success", "message": "done"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            console_base_url=self.console_base_url,
+            config_value=self.config_value,
+            send_interactive=lambda *args, **kwargs: {"success": True, "message_id": "msg-new"},
+            update_interactive=lambda *args, **kwargs: {"success": True, "message_id": "msg-2"},
+            emit_system_event=self.emit_system_event,
+            merge_startup_steps=self.merge_startup_steps,
+            deliver_startup_progress_card=self.deliver_startup_progress_card,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("success", payload["status"])
+        self.assertEqual("", payload["state"]["challenge_code"])
+        self.assertEqual("", payload["state"]["response_status"])
+        self.assertEqual("msg-2", payload["message_id"])
+
+    def test_respond_builder_validates_and_records_response_code(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {
+                        "status": "waiting_response",
+                        "message_id": "msg-3",
+                        "challenge_code": "XYZ123",
+                        "reason": "manual_reauth",
+                    },
+                }
+            ]
+        )
+        payload, status_code = build_two_factor_respond_response(
+            pb,
+            payload={"environment": "live", "response_code": " ab-12 ", "challenge_code": "XYZ123"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            inspect_runtime_environment=self.inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+            console_base_url=self.console_base_url,
+            config_value=self.config_value,
+            send_interactive=lambda *args, **kwargs: {"success": True, "message_id": "msg-new"},
+            update_interactive=lambda *args, **kwargs: {"success": True, "message_id": "msg-3"},
+            merge_startup_steps=self.merge_startup_steps,
+            deliver_startup_progress_card=self.deliver_startup_progress_card,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("waiting_response", payload["status"])
+        self.assertEqual("AB12", payload["state"]["response_code"])
+        self.assertEqual("received", payload["state"]["response_status"])
+        self.assertEqual("msg-3", payload["message_id"])
+
+
+if __name__ == "__main__":
+    unittest.main()

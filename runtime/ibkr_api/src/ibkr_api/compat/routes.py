@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from flask import Response, jsonify, request
+
+
+NATIVE_CUSTOM_ROUTES = [
+    "ibkr/2fa/request",
+    "ibkr/2fa/respond",
+    "ibkr/2fa/result",
+    "ibkr/2fa/status",
+    "ibkr/emergency-stop",
+    "ibkr/health-report",
+    "ibkr/healthz",
+    "ibkr/notify",
+    "ibkr/orders/cancel_group",
+    "ibkr/orders/close_group",
+    "ibkr/orders/reconcile",
+    "ibkr/orders/upsert",
+    "ibkr/recover",
+    "ibkr/reauth",
+    "ibkr/state/orders",
+    "ibkr/state/signals",
+    "ibkr/reverse/ack",
+    "ibkr/reverse/calculate",
+    "ibkr/reverse/dispatch",
+    "ibkr/reverse/list",
+    "ibkr/reverse/pending",
+    "ibkr/runtime/config",
+    "ibkr/signal",
+    "ibkr/signals",
+    "ibkr/signals/ack",
+    "ibkr/signals/pending",
+    "ibkr/startup/progress",
+    "ibkr/startup/status",
+    "ibkr/statusz",
+    "system/cronz",
+    "system/event",
+    "system/healthz",
+    "system/jobs/2fa_hourly_check",
+    "system/jobs/auth_edge_guard",
+    "system/jobs/auth_pending_guard",
+    "system/jobs/daily_report",
+    "system/jobs/data_gap_guard",
+    "system/jobs/market_open_reminder",
+    "system/jobs/order_detail_integrity",
+    "system/jobs/order_expiry",
+    "system/jobs/signal_expiry",
+    "system/jobs/weekly_reauth_followup",
+    "system/jobs/weekly_reauth_reminder",
+    "system/monitorz",
+    "system/schedulerz",
+    "system/summaryz",
+]
+
+NATIVE_WEBHOOK_ROUTES = [
+    "feishu/callback",
+    "order/cancel",
+    "order/close",
+    "signal/cancel",
+    "signal/confirm",
+    "tv",
+]
+
+
+def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
+    pb_base_url = deps["pb_base_url"]
+    compute_base_url = deps["compute_base_url"]
+    runtime_base_url = deps["runtime_base_url"]
+    scheduler_base_url = deps["scheduler_base_url"]
+    direct_proxy_map = deps["direct_proxy_map"]
+    action_proxy_map = deps["action_proxy_map"]
+    delegated_pocketbase_custom_routes = deps["delegated_pocketbase_custom_routes"]
+    delegated_pocketbase_webhook_routes = deps["delegated_pocketbase_webhook_routes"]
+    build_service_topology = deps["build_service_topology"]
+    config = deps["config"]
+    normalize_environment = deps["normalize_environment"]
+    scheduler_status = deps["scheduler_status"]
+    scheduler_job_states = deps["scheduler_job_states"]
+    build_cron_payload = deps["build_cron_payload"]
+    build_scheduler_summary = deps["build_scheduler_summary"]
+    augment_scheduler_summary = deps["augment_scheduler_summary"]
+    forward_request = deps["forward_request"]
+    proxy_custom_to_pb = deps["proxy_custom_to_pb"]
+    proxy_webhook_to_pb = deps["proxy_webhook_to_pb"]
+    exports: dict[str, Any] = {}
+
+    @app.route("/health", methods=["GET"])
+    def health() -> Response:
+        scheduler_jobs = scheduler_job_states()
+        return jsonify(
+            {
+                "ok": True,
+                "status": "running",
+                "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
+                "service_topology": build_service_topology(),
+                "upstreams": {
+                    "pocketbase": pb_base_url,
+                    "compute": compute_base_url,
+                    "runtime": runtime_base_url,
+                    "scheduler": scheduler_base_url,
+                },
+                "scheduler_job_count": len(scheduler_jobs),
+            }
+        )
+    exports["health"] = health
+
+    @app.route("/status", methods=["GET"])
+    def status() -> Response:
+        environment = normalize_environment(request.args.get("environment"), "live")
+        scheduler_payload = scheduler_status(environment)
+        scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
+        config.refresh()
+        scheduler_items = build_cron_payload(config, environment, scheduler_jobs)
+        return jsonify(
+            {
+                "ok": True,
+                "status": "running",
+                "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
+                "service_topology": build_service_topology(),
+                "compatibility": {
+                    "direct_proxy_routes": sorted({path for (_, path) in direct_proxy_map}),
+                    "proxy_action_routes": sorted(action_proxy_map),
+                    "native_custom_routes": NATIVE_CUSTOM_ROUTES,
+                    "native_webhook_routes": NATIVE_WEBHOOK_ROUTES,
+                    "delegated_pocketbase_custom_routes": delegated_pocketbase_custom_routes,
+                    "delegated_pocketbase_webhook_routes": delegated_pocketbase_webhook_routes,
+                    "pocketbase_proxy_routes": {
+                        "custom": "/api/custom/*",
+                        "webhook": "/webhook/*",
+                    },
+                    "fallback_to_pocketbase_custom": True,
+                    "fallback_to_pocketbase_webhooks": True,
+                },
+                "scheduler_jobs": scheduler_jobs,
+                "scheduler": augment_scheduler_summary(build_scheduler_summary(environment, scheduler_payload), scheduler_items),
+            }
+        )
+    exports["status"] = status
+
+    @app.route("/api/collections/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
+    def collections_proxy(subpath: str) -> Response:
+        return forward_request(pb_base_url, f"/api/collections/{subpath}")
+    exports["collections_proxy"] = collections_proxy
+
+    @app.route("/api/custom/ibkr/proxy", methods=["POST"])
+    def custom_ibkr_proxy() -> Response:
+        payload = request.get_json(silent=True) or {}
+        action = str(payload.get("action") or "").strip().lower()
+        target = action_proxy_map.get(action)
+        if not target:
+            return proxy_custom_to_pb("ibkr/proxy")
+
+        base_url, target_path = target
+        proxy_body = {key: value for key, value in payload.items() if key != "action"}
+        if action == "recompute":
+            proxy_body = None
+        return forward_request(base_url, target_path, json_body=proxy_body)
+    exports["custom_ibkr_proxy"] = custom_ibkr_proxy
+
+    @app.route("/api/custom/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
+    def custom_proxy(subpath: str) -> Response:
+        direct_target = direct_proxy_map.get((request.method.upper(), subpath))
+        if direct_target:
+            base_url, target_path = direct_target
+            return forward_request(base_url, target_path)
+        return proxy_custom_to_pb(subpath)
+    exports["custom_proxy"] = custom_proxy
+
+    @app.route("/webhook/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
+    def webhook_proxy(subpath: str) -> Response:
+        return proxy_webhook_to_pb(subpath)
+    exports["webhook_proxy"] = webhook_proxy
+
+    return exports
+
+
+__all__ = [
+    "NATIVE_CUSTOM_ROUTES",
+    "NATIVE_WEBHOOK_ROUTES",
+    "register_compat_routes",
+]

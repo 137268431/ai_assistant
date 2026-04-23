@@ -64,8 +64,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "*/5 * * * *",
         "每 5 分钟",
         "扫描 Init / Submitted 订单，超时后自动标记为 Canceled。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生订单过期处理；PB 仅保留兼容壳。",
         hook_file="order_scheduler.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "order_detail_integrity_guard",
@@ -121,8 +122,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "* 4-20 * * 1-5",
         "工作日 UTC 04:00-20:59 每 1 分钟",
         "巡检 Session / 2FA 的边沿变化，并在需要时立即告警。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生 2FA 边沿巡检；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "ibkr_auth_pending_guard",
@@ -133,8 +135,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "*/10 4-20 * * 1-5",
         "工作日 UTC 04:00-20:50 每 10 分钟",
         "巡检 Session / 2FA 长时间未恢复状态，并在需要时发出系统告警。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生 2FA 长时间未恢复巡检；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "system_data_gap_guard",
@@ -145,8 +148,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "*/10 4-20 * * 1-5",
         "工作日 UTC 04:00-20:50 每 10 分钟",
         "巡检 bars / indicators / 序列缺口，并在检测到市场活动异常时发出告警。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生数据缺口巡检；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "ibkr_data_quality_open_sweep",
@@ -196,8 +200,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "0 5 * * 1",
         "每周一 UTC 05:00",
         "每周发送一张周验证提醒卡片；只提醒，不自动触发 Gateway 登录。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生周验证提醒；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "ibkr_weekly_reauth_followup",
@@ -208,8 +213,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "30 7 * * 1",
         "每周一 UTC 07:30",
         "若周验证仍停在待手动触发阶段，则补发一张飞书验证卡片提醒。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生周验证补提醒；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "ibkr_2fa_hourly_check",
@@ -220,8 +226,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "5 4-20 * * 1-5",
         "工作日 UTC 每小时 05 分",
         "若 2FA 仍未恢复，则按小时补发飞书验证卡片提醒。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生 2FA 每小时提醒；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "system_market_open_reminder",
@@ -232,8 +239,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "*/5 * * * *",
         "每 5 分钟轮询一次；内部按 ET 09:20 仅发送一次",
         "每日 09:20 发送开盘前系统状态；若为非交易日则发送闭市 / 休市提醒。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生开盘前状态提醒；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "system_daily_report",
@@ -244,8 +252,9 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "*/5 * * * *",
         "每 5 分钟轮询一次；内部按 ET 16:05 仅发送一次",
         "汇总当日信号、订单、bars、targets 和系统事件，并在收盘后发送日报。",
-        "当前仍由 PocketBase 兼容 cron 保底执行。",
+        "当前由 ibkr-scheduler 触发 ibkr-api 原生系统日报；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_api_http",
     ),
     _definition(
         "ibkr_history_retention",
@@ -275,6 +284,15 @@ NATIVE_HTTP_JOB_ENDPOINTS: dict[str, tuple[str, str]] = {
 NATIVE_API_HTTP_JOB_ENDPOINTS: dict[str, tuple[str, str]] = {
     "signal_expiry_check": ("POST", "/api/custom/system/jobs/signal_expiry"),
     "order_detail_integrity_guard": ("POST", "/api/custom/system/jobs/order_detail_integrity"),
+    "order_expiry_check": ("POST", "/api/custom/system/jobs/order_expiry"),
+    "ibkr_auth_edge_guard": ("POST", "/api/custom/system/jobs/auth_edge_guard"),
+    "ibkr_auth_pending_guard": ("POST", "/api/custom/system/jobs/auth_pending_guard"),
+    "system_data_gap_guard": ("POST", "/api/custom/system/jobs/data_gap_guard"),
+    "ibkr_2fa_hourly_check": ("POST", "/api/custom/system/jobs/2fa_hourly_check"),
+    "ibkr_weekly_reauth_reminder": ("POST", "/api/custom/system/jobs/weekly_reauth_reminder"),
+    "ibkr_weekly_reauth_followup": ("POST", "/api/custom/system/jobs/weekly_reauth_followup"),
+    "system_market_open_reminder": ("POST", "/api/custom/system/jobs/market_open_reminder"),
+    "system_daily_report": ("POST", "/api/custom/system/jobs/daily_report"),
 }
 
 

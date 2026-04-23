@@ -44,7 +44,7 @@ class SchedulerService:
     def __init__(self, pb_client: PBClient, cfg: Config):
         self.pb = pb_client
         self.cfg = cfg
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._job_cache: dict[str, dict[str, Any]] = {}
@@ -175,20 +175,10 @@ class SchedulerService:
             return {"ok": False, "error": "unknown_job", "job_id": job_id, "environment": environment}
 
         existing_state = self.job_states(environment).get(job_id) or {}
-        slot_token = str(scheduled_slot or "").strip()
-        if slot_token and str(existing_state.get("last_scheduled_slot") or "").strip() == slot_token:
-            return {
-                "ok": True,
-                "skipped": True,
-                "reason": "already_triggered_for_slot",
-                "job_id": job_id,
-                "environment": environment,
-                "scheduled_slot": slot_token,
-            }
-
         self.cfg.refresh()
         effective_items = build_cron_payload(self.cfg, environment, self.job_states(environment))
         effective_job = next((item for item in effective_items if item["id"] == job_id), None) or job
+        slot_token = str(scheduled_slot or "").strip()
         if not effective_job.get("effective_enabled", False):
             result = {
                 "ok": True,
@@ -208,12 +198,32 @@ class SchedulerService:
             return result
 
         started_at_ms = int(time.time() * 1000)
-        self._save_job_state(job_id, environment, {
-            "status": "running",
-            "last_run_started_at_ms": started_at_ms,
-            "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
-            "last_trigger_source": trigger_source,
-        })
+        with self._lock:
+            latest_state = self.job_states(environment).get(job_id) or {}
+            latest_result = latest_state.get("last_result") if isinstance(latest_state.get("last_result"), dict) else {}
+            same_completed_slot = slot_token and str(latest_state.get("last_scheduled_slot") or "").strip() == slot_token
+            if same_completed_slot and (
+                str(latest_state.get("status") or "").strip().lower() in {"running", "ok", "idle"}
+                or latest_result.get("ok") is True
+            ):
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "already_triggered_for_slot",
+                    "job_id": job_id,
+                    "environment": environment,
+                    "scheduled_slot": slot_token,
+                }
+            self._save_job_state(
+                job_id,
+                environment,
+                {
+                    "status": "running",
+                    "last_run_started_at_ms": started_at_ms,
+                    "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
+                    "last_trigger_source": trigger_source,
+                },
+            )
         try:
             if job_id == "ibkr_compute_runtime":
                 result = self._run_compute_dispatch(environment)
@@ -296,23 +306,32 @@ class SchedulerService:
             if str(definition.get("runner_kind") or "").strip().lower().startswith("native_")
         ]
 
+    def run_due_jobs(self, when_utc: datetime, environment: str) -> list[dict[str, Any]]:
+        slot_token = cron_slot_token(when_utc)
+        results: list[dict[str, Any]] = []
+        for definition in self._scheduled_jobs():
+            if not cron_matches_minute(str(definition.get("cron_expr") or ""), when_utc):
+                continue
+            results.append(
+                self.run_job(
+                    str(definition.get("id") or ""),
+                    environment,
+                    trigger_source="scheduler_loop",
+                    scheduled_slot=slot_token,
+                )
+            )
+        return results
+
     def _loop(self) -> None:
         environment = str(os.environ.get("IBKR_ENVIRONMENT") or "live").strip().lower() or "live"
-        while not self._stop_event.wait(LOOP_INTERVAL_SECONDS):
+        while not self._stop_event.is_set():
             now_utc = datetime.now(timezone.utc)
-            slot_token = cron_slot_token(now_utc)
             try:
-                for definition in self._scheduled_jobs():
-                    if not cron_matches_minute(str(definition.get("cron_expr") or ""), now_utc):
-                        continue
-                    self.run_job(
-                        str(definition.get("id") or ""),
-                        environment,
-                        trigger_source="scheduler_loop",
-                        scheduled_slot=slot_token,
-                    )
+                self.run_due_jobs(now_utc, environment)
             except Exception:
-                continue
+                pass
+            if self._stop_event.wait(LOOP_INTERVAL_SECONDS):
+                break
 
 
 scheduler = SchedulerService(pb, config)

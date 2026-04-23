@@ -1,0 +1,264 @@
+import os
+import sys
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+SERVICE_SRC_ROOTS = [
+    Path(__file__).resolve().parents[3] / "runtime" / "ibkr_scheduler" / "src",
+    Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src",
+]
+for src_root in SERVICE_SRC_ROOTS:
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
+
+os.environ.setdefault("IBKR_SCHEDULER_AUTOSTART", "false")
+
+if "flask" not in sys.modules:
+    import types
+
+    flask_stub = types.ModuleType("flask")
+
+    class _FakeFlask:
+        def __init__(self, name):
+            self.name = name
+
+        def route(self, _path, methods=None):
+            def decorator(func):
+                return func
+            return decorator
+
+    flask_stub.Flask = _FakeFlask
+    flask_stub.Response = object
+    flask_stub.jsonify = lambda payload: payload
+    flask_stub.request = SimpleNamespace(
+        args={},
+        headers={},
+        method="GET",
+        get_json=lambda silent=True: {},
+    )
+    sys.modules["flask"] = flask_stub
+
+from ibkr_scheduler import scheduler_app as scheduler_app_mod
+from ibkr_scheduler.schedule import cron_matches_minute
+from ibkr_scheduler.scheduler_app import (
+    BAR_INGEST_CURSOR_STATE_KEY,
+    COMPUTE_DISPATCH_CURSOR_STATE_KEY,
+    SCHEDULER_JOB_STATE_PREFIX,
+    SchedulerService,
+)
+
+
+class _FakeConfig:
+    def __init__(self, overrides=None):
+        self.overrides = overrides or {}
+
+    def refresh(self):
+        return None
+
+    def get_for_environment(self, key, environment, default=None):
+        return self.overrides.get((key, environment), self.overrides.get(key, (default if default is not None else "")))
+
+
+class _FakePB:
+    def __init__(self):
+        self.states = {}
+        self.records = []
+
+    def get_state(self, state_key, environment, date="global"):
+        return self.states.get((state_key, environment, date))
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        record = {"data": data}
+        self.states[(state_key, environment, date)] = record
+        return record
+
+    def create_record(self, collection, data):
+        self.records.append((collection, data))
+        return data
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.ok = 200 <= status_code < 300
+        self.content = b"{}"
+        self.headers = {}
+
+    def json(self):
+        return self._payload
+
+
+class SchedulerJobsTest(unittest.TestCase):
+    def test_cron_matches_minute_supports_ranges_steps_and_weekdays(self):
+        monday = datetime(2026, 4, 20, 9, 40, tzinfo=timezone.utc)
+        weekend = datetime(2026, 4, 19, 9, 40, tzinfo=timezone.utc)
+
+        self.assertTrue(cron_matches_minute("40 9 * * 1-5", monday))
+        self.assertTrue(cron_matches_minute("*/5 * * * *", monday))
+        self.assertFalse(cron_matches_minute("41 9 * * 1-5", monday))
+        self.assertFalse(cron_matches_minute("40 9 * * 1-5", weekend))
+
+    def test_compute_dispatch_updates_cursor_from_latest_persisted_bars(self):
+        pb = _FakePB()
+        pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713797100000}}}
+        }
+        pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713796800000}}}
+        }
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})):
+            result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+
+        self.assertTrue(result["ok"])
+        dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
+        self.assertEqual(dispatch["intervals"]["5m"]["latest_bar_time_ms"], 1713797100000)
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_compute_runtime", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "ok")
+        self.assertGreater(int(job_state["last_success_at_ms"]), 0)
+        self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
+
+    def test_native_api_job_persists_success_state_and_manual_event(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse({"ok": True, "expired_count": 2}),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "signal_expiry_check",
+                "live",
+                trigger_source="api_manual",
+                scheduled_slot="2026-04-23T10:00Z",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["payload"]["expired_count"], 2)
+        request_mock.assert_called_once()
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}signal_expiry_check", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "ok")
+        self.assertEqual(job_state["last_scheduled_slot"], "2026-04-23T10:00Z")
+        self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
+
+    def test_duplicate_slot_is_skipped_without_second_upstream_call(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+        pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}signal_expiry_check", "live", "global")] = {
+            "data": {
+                "status": "ok",
+                "last_result": {"ok": True},
+                "last_scheduled_slot": "2026-04-23T10:00Z",
+            }
+        }
+
+        with mock.patch("ibkr_scheduler.jobs.upstream_http.requests.request") as request_mock:
+            result = scheduler.run_job(
+                "signal_expiry_check",
+                "live",
+                trigger_source="scheduler_loop",
+                scheduled_slot="2026-04-23T10:00Z",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "already_triggered_for_slot")
+        request_mock.assert_not_called()
+
+    def test_failed_slot_can_retry_within_same_minute(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+        pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}signal_expiry_check", "live", "global")] = {
+            "data": {
+                "status": "error",
+                "last_result": {"ok": False, "error": "upstream_down"},
+                "last_scheduled_slot": "2026-04-23T10:00Z",
+            }
+        }
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse({"ok": True, "expired_count": 1}),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "signal_expiry_check",
+                "live",
+                trigger_source="api_manual",
+                scheduled_slot="2026-04-23T10:00Z",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["payload"]["expired_count"], 1)
+        request_mock.assert_called_once()
+
+    def test_disabled_job_records_disabled_state(self):
+        pb = _FakePB()
+        cfg = _FakeConfig({"pb_cron_signal_expiry_enabled": "FALSE"})
+        scheduler = SchedulerService(pb, cfg)
+
+        result = scheduler.run_job(
+            "signal_expiry_check",
+            "live",
+            trigger_source="scheduler_loop",
+            scheduled_slot="2026-04-23T10:00Z",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "disabled")
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}signal_expiry_check", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "disabled")
+        self.assertEqual(job_state["last_scheduled_slot"], "2026-04-23T10:00Z")
+
+    def test_run_due_jobs_dispatches_all_matching_native_jobs_with_shared_slot(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+        when_utc = datetime(2026, 4, 20, 9, 40, tzinfo=timezone.utc)
+
+        with mock.patch.object(scheduler, "run_job", return_value={"ok": True}) as run_job_mock:
+            results = scheduler.run_due_jobs(when_utc, "live")
+
+        self.assertEqual(len(results), run_job_mock.call_count)
+        called_job_ids = {call.args[0] for call in run_job_mock.call_args_list}
+        self.assertEqual(
+            called_job_ids,
+            {
+                "order_expiry_check",
+                "signal_expiry_check",
+                "order_detail_integrity_guard",
+                "ibkr_compute_runtime",
+                "ibkr_scan_runtime",
+                "ibkr_auth_edge_guard",
+                "ibkr_auth_pending_guard",
+                "system_data_gap_guard",
+                "ibkr_data_quality_open_sweep",
+                "system_market_open_reminder",
+                "system_daily_report",
+            },
+        )
+        called_slots = {call.kwargs["scheduled_slot"] for call in run_job_mock.call_args_list}
+        self.assertEqual(called_slots, {"2026-04-20T09:40Z"})
+
+    def test_manual_run_route_uses_scheduler_service(self):
+        sentinel = {"ok": True, "job_id": "signal_expiry_check"}
+        with mock.patch.object(scheduler_app_mod.request, "get_json", return_value={"environment": "paper", "scheduled_slot": "2026-04-23T10:00Z"}):
+            with mock.patch.object(scheduler_app_mod.scheduler, "run_job", return_value=sentinel) as run_job_mock:
+                payload, status_code = scheduler_app_mod.run_job("signal_expiry_check")
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["job_id"], "signal_expiry_check")
+        run_job_mock.assert_called_once_with(
+            "signal_expiry_check",
+            "paper",
+            trigger_source="api_manual",
+            scheduled_slot="2026-04-23T10:00Z",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -15,22 +15,26 @@ This repo is split by responsibility instead of by product history.
 - `ibkr_compute`
   - Owns compute, recompute, scan, backtest, history rebuild, and shared compute libraries under `runtime/ibkr_compute/src/ibkr_compute`.
 - `pocketbase`
-  - Owns collections, auth, legacy compatibility hooks, and the compatibility public mirror.
+  - Owns collections, auth, and temporary compatibility shells; final target is storage/auth/admin only, with `pb_public` shrinking to a mirror-only layer and `pb_hooks` shrinking to proxy-only shells before both become removable.
 
 ## ibkr-api Feature Slices
 
+- `runtime/ibkr_api/src/ibkr_api/compat`
+  - Service shell routes and PB compatibility fallback (`/health`, `/status`, `/api/collections/*`, generic `/api/custom/*`, generic `/webhook/*`).
+- `runtime/ibkr_api/src/ibkr_api/runtime`
+  - Runtime/status/2FA route registrars plus runtime payload-shaping helpers.
 - `runtime/ibkr_api/src/ibkr_api/system`
   - System summary, monitor, topology, system-event delivery, and PocketBase disk helpers.
 - `runtime/ibkr_api/src/ibkr_api/startup`
-  - Runtime startup progress, 2FA/startup state shaping, and startup card payload helpers.
+  - Runtime startup progress, startup card payload helpers, and startup route registration.
 - `runtime/ibkr_api/src/ibkr_api/integrations`
   - External service adapters such as Feishu delivery and runtime order-cancel bridging.
 - `runtime/ibkr_api/src/ibkr_api/callbacks`
-  - Feishu callback parsing and action dispatch builders.
+  - Feishu callback parsing/action dispatch builders plus callback route registration.
 - `runtime/ibkr_api/src/ibkr_api/tradingview`
-  - TradingView webhook normalization and `tv_indicators` / `tv_signals` ingestion helpers.
+  - TradingView webhook normalization, `tv_indicators` / `tv_signals` ingestion helpers, and route registration.
 - `runtime/ibkr_api/src/ibkr_api/signals`, `runtime/ibkr_api/src/ibkr_api/orders`, `runtime/ibkr_api/src/ibkr_api/reverse`, `runtime/ibkr_api/src/ibkr_api/webhooks`
-  - API-owned domain slices that should keep growing instead of `api_app.py`.
+  - API-owned domain slices and route registrars that should keep growing instead of `api_app.py`.
 - Legacy root import paths like `ibkr_api.order_upsert` now resolve through `runtime/ibkr_api/src/ibkr_api/compat`, so the repo tree can stay folderized without keeping duplicate root files.
 
 ## Directories
@@ -78,6 +82,7 @@ This repo is split by responsibility instead of by product history.
 - `extensions/`
   - Non-runtime assets: migrations, schema bundles, seeds, tests, and maintenance scripts.
   - `extensions/ibkr_api/tests`
+  - `extensions/ibkr_scheduler/tests`
   - `extensions/ibkr_runtime/tests`
   - `extensions/pocketbase/migrations`
   - `extensions/pocketbase/schema`
@@ -144,7 +149,7 @@ bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --ops-tools --gatewa
 Small change, file-level publish:
 
 ```bash
-bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh --mode files --file runtime/pocketbase/pb_hooks/ibkr_actions.pb.js
+bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_api/src/ibkr_api/signals/ingest.py
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_compute/src/ibkr_compute/api/app.py
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_api/src/ibkr_api/api_app.py
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_scheduler/src/ibkr_scheduler/scheduler_app.py
@@ -191,10 +196,12 @@ python3 ai_assistant/ops/ibkr_console/validate/check_console_static_sync.py
 - `runtime/ibkr_console/static` is the source-of-truth static console bundle.
 - PocketBase public compatibility deploys from `runtime/ibkr_console/static`.
 - Use `ops/dev/sync_console_static.sh` only when you intentionally need to refresh the legacy repo-side `runtime/pocketbase/pb_public` mirror.
+- `runtime/pocketbase/pb_public` is still a compatibility mirror and cannot be deleted until deploy/proxy paths stop syncing or serving it.
 - PocketBase runtime business logic should keep shrinking toward `pb_hooks` compatibility only.
+- `runtime/pocketbase/pb_hooks` cannot be deleted yet; some paths are already thin proxies, but large PB-owned domains still remain in `pb_hooks/modules/actions/ibkr_actions.js` and related libs, including bar/indicator ingest, today-targets/watchlist/targets, data-quality/screener/quotes/history, runtime order execution and account views, `orders/cancel_sync`, remaining 2FA runtime actions `takeover|probe|panic-reset`, plus PB-side `system_notify_scheduler.js` and `system_monitor_alert_guard.js` piggyback logic.
 - `runtime/ibkr_api/src`, `runtime/ibkr_scheduler/src`, and `runtime/ibkr_runtime/src` are the source-of-truth service-owned split-stack entrypoints.
 - `runtime/ibkr_compute/src` now holds shared compute/runtime libraries plus compatibility wrappers for legacy imports.
-- `extensions/ibkr_api/tests` and `extensions/ibkr_runtime/tests` are the source-of-truth split-stack test homes; legacy `extensions/ibkr_compute/tests/*` wrappers stay only for compatibility.
+- `extensions/ibkr_api/tests`, `extensions/ibkr_scheduler/tests`, and `extensions/ibkr_runtime/tests` are the source-of-truth split-stack test homes; legacy `extensions/ibkr_compute/tests/*` wrappers stay only for compatibility.
 - `ops/ibkr_stack/*`, `ops/ibkr_console/*`, and `ops/ib_gateway/*` are the source-of-truth service/function-specific ops homes; legacy `ops/health`, `ops/ui`, `ops/validate`, and `ops/ibkr_compute/install` entrypoints stay only as wrappers.
 - Gateway binaries are not stored in this repo. Only the service contract is stored here.
 - `--mode auto` requires `--file` or `--diff`.

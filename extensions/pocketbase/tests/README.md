@@ -40,7 +40,7 @@
 - 写入 `ibkr_signals`
 - 如需人工确认，则飞书卡片先停在 `awaiting_confirm`
 - 如已存在反向持仓或反向挂单，可额外生成 `reverse_signals`
-- 这个入口目前仍是 PocketBase 兼容写入链路；`signals/pending`、`signals/ack`、`/webhook/signal/*`、`/webhook/order/*` 已优先切到 `ibkr-api` 原生处理
+- 这个入口现在由 `ibkr-api` 原生处理；PocketBase 只保留兼容注册 / 转发壳，`signals/pending`、`signals/ack`、`/webhook/signal/*`、`/webhook/order/*` 也已优先切到 `ibkr-api`
 
 兼容链路 `POST /webhook/tv` 仍保留给 TradingView webhook，但不再是 `flows/pb-flow.sh` 的主测试入口
 

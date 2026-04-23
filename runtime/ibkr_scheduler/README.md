@@ -4,3 +4,22 @@
 - Job registry visibility, persisted cursors, and scheduler health endpoints belong here.
 - Legacy `ibkr_compute.control_plane.*` scheduler modules remain only as compatibility wrappers.
 - `ibkr_scheduler` owns scheduler visibility pages/data and restart-safe cursor recovery, while `ibkr_api` owns control/webhook/topology routes and `ibkr_console` owns the static pages that render them.
+- Native scheduler-owned jobs now include:
+  - `order_expiry_check`
+  - `signal_expiry_check`
+  - `order_detail_integrity_guard`
+  - `ibkr_compute_runtime`
+  - `ibkr_scan_runtime`
+  - `ibkr_auth_edge_guard`
+  - `ibkr_auth_pending_guard`
+  - `system_data_gap_guard`
+  - `ibkr_history_retention`
+  - `ibkr_data_quality_open_sweep`
+  - `ibkr_data_quality_close_sweep`
+  - `ibkr_data_quality_truth_audit`
+  - `ibkr_2fa_hourly_check`
+  - `ibkr_weekly_reauth_reminder`
+  - `ibkr_weekly_reauth_followup`
+  - `system_market_open_reminder`
+  - `system_daily_report`
+- PocketBase cron files now keep only thin compatibility forwarding for the migrated jobs above; remaining PB-owned cron logic is mostly limited to piggyback heartbeat / status-summary / scan-summary helpers that still ride on top of scheduler-owned cron slots.

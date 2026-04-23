@@ -19,8 +19,16 @@ from ibkr_api.callbacks.feishu import (
     dispatch_feishu_signal_callback as _dispatch_feishu_signal_callback_support,
     handle_feishu_callback as _handle_feishu_callback_support,
 )
+from ibkr_api.callbacks.routes import register_callback_routes
+from ibkr_api.compat.routes import register_compat_routes
+from ibkr_api.control.routes import register_control_routes
+from ibkr_api.control.runtime_guard import (
+    build_runtime_environment_mismatch_payload,
+    inspect_requested_runtime_environment,
+)
 from ibkr_api.integrations.feishu import feishu_send_interactive, feishu_suppressed, feishu_token, feishu_update_interactive
 from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime as _cancel_broker_order_via_runtime_support
+from ibkr_api.orders.routes import register_order_routes
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response
 from ibkr_api.orders.group_close import build_order_close_group_response
 from ibkr_api.orders.integrity import build_order_detail_integrity_response
@@ -28,11 +36,26 @@ from ibkr_api.orders.webhooks import build_order_cancel_webhook_response, build_
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.reconcile import build_orders_reconcile_response
 from ibkr_api.reverse.actions import build_reverse_ack_response, build_reverse_dispatch_response
+from ibkr_api.reverse.routes import register_reverse_routes
 from ibkr_api.reverse.calculate import build_reverse_calculate_response
 from ibkr_api.reverse.queries import build_reverse_list_response, build_reverse_pending_response
 from ibkr_api.signals.expiry import build_signal_expiry_response
+from ibkr_api.signals.routes import register_signal_routes
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
 from ibkr_api.signals.webhooks import build_signal_cancel_webhook_response, build_signal_confirm_webhook_response
+from ibkr_api.runtime.routes import register_runtime_routes
+from ibkr_api.runtime.status_support import (
+    build_statusz_compute_payload as _build_statusz_compute_payload_support,
+    build_statusz_live_readiness as _build_statusz_live_readiness_support,
+    build_statusz_runtime_payload as _build_statusz_runtime_payload_support,
+    fetch_compute_health as _fetch_compute_health_support,
+    fetch_compute_monitor as _fetch_compute_monitor_support,
+    fetch_compute_status as _fetch_compute_status_support,
+    fetch_runtime_health as _fetch_runtime_health_support,
+    fetch_runtime_status as _fetch_runtime_status_support,
+    merge_service_topology as _merge_service_topology_support,
+)
+from ibkr_api.runtime.two_factor import normalize_two_factor_state_with_runtime as _normalize_two_factor_state_with_runtime_support
 from ibkr_api.startup.progress import (
     STARTUP_LEGACY_STEP_KEY_MAP,
     STARTUP_STEP_LABELS,
@@ -50,6 +73,8 @@ from ibkr_api.startup.progress import (
     resolve_startup_step_label as _resolve_startup_step_label,
     startup_chat_id as _startup_chat_id_support,
 )
+from ibkr_api.startup.routes import register_startup_routes
+from ibkr_api.state.routes import register_state_routes
 from ibkr_api.system.events import (
     build_system_event_card as _build_system_event_card_support,
     deliver_system_event_notification as _deliver_system_event_notification_support,
@@ -66,7 +91,10 @@ from ibkr_api.system.pocketbase_disk import (
     merge_monitor_flags as _merge_monitor_flags,
     merge_monitor_status as _merge_monitor_status,
 )
+from ibkr_api.system.routes import register_system_routes
+from ibkr_api.two_factor.routes import register_two_factor_routes
 from ibkr_api.tradingview.ingest import upsert_tv_indicator as _upsert_tv_indicator_support, upsert_tv_signal as _upsert_tv_signal_support
+from ibkr_api.tradingview.routes import register_tradingview_routes
 from ibkr_compute.api.service_topology import build_service_topology
 from ibkr_scheduler.cron_registry import build_cron_payload
 from ibkr_compute.core.config import Config
@@ -103,27 +131,6 @@ MONITOR_CONFIG_KEYS = (
     "system_monitor_ws_message_age_regular_critical_sec",
     "system_monitor_ws_message_age_late_session_warn_sec",
     "system_monitor_ws_message_age_late_session_critical_sec",
-)
-CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000
-RECOVERY_FIELDS = (
-    "cycle_id",
-    "recovery_phase",
-    "recovery_class",
-    "recovery_reason",
-    "interruption_kind",
-    "manual_takeover_active",
-    "manual_takeover_started_at",
-    "manual_takeover_until",
-    "probe_started_at",
-    "probe_last_checked_at",
-    "probe_attempts",
-    "probe_result",
-    "auto_restart_scheduled",
-    "last_runtime_authenticated_at",
-    "last_gateway_status_code",
-    "last_recovery_source",
-    "lock_owner",
-    "lock_expires_at",
 )
 ENVIRONMENT_LABELS = {
     "live": "LIVE",
@@ -392,11 +399,10 @@ def _is_enabled_text(value: Any) -> bool:
 
 
 def _fetch_compute_monitor(environment: str) -> dict[str, Any]:
-    return _request_json(
-        COMPUTE_BASE_URL,
-        "/ibkr/monitor",
-        params=[("environment", environment)],
-        timeout=10,
+    return _fetch_compute_monitor_support(
+        environment,
+        request_json=_request_json,
+        compute_base_url=COMPUTE_BASE_URL,
     )
 
 
@@ -523,6 +529,60 @@ _write_system_event_record = partial(
     label_title_with_environment=_label_title_with_environment,
     add_environment_to_detail=_add_environment_to_detail,
 )
+
+
+def _emit_system_event(
+    *,
+    event_type: str,
+    level: str,
+    source: str,
+    title: str,
+    detail: Any,
+    environment: str,
+    message_id: str = "",
+) -> dict[str, Any]:
+    delivery = _deliver_system_event_notification(
+        event_type,
+        level,
+        source,
+        title,
+        detail,
+        environment,
+        message_id=message_id,
+    )
+    notified = bool(delivery.get("success")) and not bool(delivery.get("suppressed"))
+    persisted = bool(_write_system_event_record(event_type, level, source, title, detail, environment, notified))
+    return {
+        "ok": True,
+        "notified": notified,
+        "persisted": persisted,
+        "message_id": str(delivery.get("message_id") or message_id),
+        "updated": bool(delivery.get("updated")),
+        "skipped": bool(delivery.get("skipped")),
+        "suppressed": bool(delivery.get("suppressed")),
+        "error": str(delivery.get("error") or ""),
+    }
+
+
+def _request_two_factor_approval(
+    *,
+    environment: str,
+    reason: str,
+    source: str,
+    message: str,
+    detail: dict[str, Any] | None = None,
+    force_reset: bool = False,
+    force_new: bool = False,
+) -> dict[str, Any]:
+    return pb.request_ibkr_2fa(
+        reason=reason,
+        detail=detail or {},
+        source=source,
+        environment=environment,
+        message=message,
+        force_reset=force_reset,
+        force_new=force_new,
+    )
 
 _normalize_startup_step_status = normalize_startup_step_status
 _startup_chat_id = partial(
@@ -704,596 +764,65 @@ def _count_active_today_targets(environment: str, market_date: str) -> int:
 
 
 def _fetch_compute_status(environment: str) -> dict[str, Any]:
-    return _request_json(
-        COMPUTE_BASE_URL,
-        "/status",
-        params=[("environment", environment)],
-        timeout=10,
+    return _fetch_compute_status_support(
+        environment,
+        request_json=_request_json,
+        compute_base_url=COMPUTE_BASE_URL,
     )
 
 
 def _fetch_compute_health(environment: str) -> dict[str, Any]:
-    return _request_json(
-        COMPUTE_BASE_URL,
-        "/health",
-        params=[("environment", environment)],
-        timeout=10,
+    return _fetch_compute_health_support(
+        environment,
+        request_json=_request_json,
+        compute_base_url=COMPUTE_BASE_URL,
     )
 
 
 def _fetch_runtime_status(environment: str) -> dict[str, Any]:
-    proxy_result = _request_json(
-        COMPUTE_BASE_URL,
-        "/ibkr/status",
-        params=[("environment", environment)],
-        timeout=10,
+    return _fetch_runtime_status_support(
+        environment,
+        request_json=_request_json,
+        compute_base_url=COMPUTE_BASE_URL,
+        runtime_base_url=RUNTIME_BASE_URL,
+        as_dict=_as_dict,
     )
-    proxy_upstream = f"{COMPUTE_BASE_URL}/ibkr/status"
-    direct_upstream = f"{RUNTIME_BASE_URL}/ibkr/status"
-    selected_result = proxy_result
-    selected_upstream = proxy_upstream
-    error = str(proxy_result.get("error") or "")
-
-    if (not bool(proxy_result.get("ok"))) and RUNTIME_BASE_URL:
-        direct_result = _request_json(
-            RUNTIME_BASE_URL,
-            "/ibkr/status",
-            params=[("environment", environment)],
-            timeout=10,
-        )
-        if bool(direct_result.get("ok")):
-            selected_result = direct_result
-            selected_upstream = direct_upstream
-            error = ""
-        elif not error:
-            error = str(direct_result.get("error") or "")
-
-    return {
-        "payload": _as_dict(selected_result.get("payload")),
-        "ok": bool(selected_result.get("ok")),
-        "error": error,
-        "selected_upstream": selected_upstream,
-        "proxy_upstream": proxy_upstream,
-        "direct_upstream": direct_upstream,
-        "status_code": int(selected_result.get("status_code") or 0),
-    }
 
 
 def _fetch_runtime_health(environment: str) -> dict[str, Any]:
-    result = _request_json(
-        RUNTIME_BASE_URL,
-        "/health",
-        params=[("environment", environment)],
-        timeout=10,
+    return _fetch_runtime_health_support(
+        environment,
+        request_json=_request_json,
+        runtime_base_url=RUNTIME_BASE_URL,
+        as_dict=_as_dict,
     )
-    return {
-        "payload": _as_dict(result.get("payload")),
-        "ok": bool(result.get("ok")),
-        "error": str(result.get("error") or ""),
-        "upstream": f"{RUNTIME_BASE_URL}/health",
-        "status_code": int(result.get("status_code") or 0),
-    }
 
 
 def _merge_service_topology(*payloads: Any) -> dict[str, Any]:
-    merged = build_service_topology()
-    merged_services = dict(merged.get("services") if isinstance(merged.get("services"), dict) else {})
-    for payload in payloads:
-        if not isinstance(payload, dict):
-            continue
-        topology = (
-            payload
-            if isinstance(payload.get("services"), dict)
-            else payload.get("service_topology")
-        )
-        if not isinstance(topology, dict):
-            continue
-        for key, value in topology.items():
-            if key == "services":
-                continue
-            merged[key] = value
-        if isinstance(topology.get("services"), dict):
-            merged_services.update(topology.get("services") or {})
-    merged["services"] = merged_services
-    return merged
-
-
-def _normalize_two_factor_status(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if not text:
-        return "requested"
-    if text in {"pending", "waiting_mobile_approval", "mobile_approval", "awaiting_mobile_approval"}:
-        return "waiting_confirm"
-    if text in {"complete", "completed", "authenticated"}:
-        return "success"
-    if text == "error":
-        return "failed"
-    return text
-
-
-def _is_server_boot_resume_recovery_state(state_data: dict[str, Any]) -> bool:
-    state = _as_dict(state_data)
-    interruption_kind = str(state.get("interruption_kind") or "").strip().lower()
-    recovery_phase = str(state.get("recovery_phase") or "").strip().lower()
-    recovery_reason = str(state.get("recovery_reason") or "").strip().lower()
-    last_recovery_source = str(state.get("last_recovery_source") or "").strip().lower()
-    return (
-        interruption_kind == "server_boot_resume"
-        or recovery_phase == "resume_waiting_manual"
-        or (recovery_reason == "auto_restore" and last_recovery_source == "server_boot")
-    )
-
-
-def _is_manual_auth_required_recovery_state(state_data: dict[str, Any]) -> bool:
-    state = _as_dict(state_data)
-    recovery_class = str(state.get("recovery_class") or "").strip().lower()
-    recovery_phase = str(state.get("recovery_phase") or "").strip().lower()
-    probe_result = str(state.get("probe_result") or "").strip().lower()
-    return (
-        recovery_class == "manual_auth_required"
-        or recovery_phase == "requested"
-        or probe_result == "manual_trigger_required"
-        or probe_result == "timeout_after_self_heal"
-    )
-
-
-def _is_silent_recovery_state(state_data: dict[str, Any]) -> bool:
-    state = _as_dict(state_data)
-    if _is_manual_auth_required_recovery_state(state):
-        return False
-    if _is_server_boot_resume_recovery_state(state):
-        return True
-    recovery_phase = str(state.get("recovery_phase") or "").strip().lower()
-    recovery_class = str(state.get("recovery_class") or "").strip().lower()
-    probe_result = str(state.get("probe_result") or "").strip().lower()
-    return recovery_phase == "silent_probe" and (
-        recovery_class == "scheduled_restart"
-        or recovery_class == "stale_broker"
-        or bool(state.get("auto_restart_scheduled"))
-        or probe_result in {
-            "pending",
-            "self_heal",
-            "self_heal_pending",
-            "stale_broker_restart_scheduled",
-            "stale_broker_restart_failed",
-        }
-    )
-
-
-def _build_silent_recovery_message(state_data: dict[str, Any]) -> dict[str, str]:
-    state = _as_dict(state_data)
-    recovery_class = str(state.get("recovery_class") or "").strip().lower()
-    interruption_kind = str(state.get("interruption_kind") or "").strip().lower()
-    probe_result = str(state.get("probe_result") or "").strip().lower()
-    if recovery_class == "stale_broker" or probe_result.startswith("stale_broker"):
-        if bool(state.get("auto_restart_scheduled")):
-            return {
-                "message": "检测到运行态内 broker 连接失配，系统已安排自动重启 Runtime 以恢复主连接；暂不需要立即重新 2FA。",
-                "last_result": "已识别 stale in-process broker，正在等待自动重启恢复主连接。",
-            }
-        return {
-            "message": "检测到运行态内 broker 连接失配，系统正在尝试本地恢复主连接；暂不需要立即重新 2FA。",
-            "last_result": "已识别 stale in-process broker，正在继续静默恢复。",
-        }
-    if interruption_kind == "gateway_down":
-        return {
-            "message": "Gateway 刚经历中断或重启，系统正在静默探测并恢复当前会话；暂不需要立即重新 2FA。",
-            "last_result": "已进入 Gateway 中断后的静默恢复窗口。",
-        }
-    return {
-        "message": "检测到会话认证中断，系统正在静默探测与本地重连；暂不需要立即重新 2FA。",
-        "last_result": "已进入静默恢复窗口，等待会话自动恢复。",
-    }
-
-
-def _derive_2fa_action_state(state_data: dict[str, Any], *, now_ms: int | None = None) -> dict[str, Any]:
-    current_ms = int(now_ms or 0) or int(datetime.now(tz=ET).timestamp() * 1000)
-    state = _as_dict(state_data)
-    status = _normalize_two_factor_status(state.get("status") or "")
-    response_status = str(state.get("response_status") or "").strip().lower()
-    challenge_code = str(state.get("challenge_code") or "").strip()
-    feedback = str(state.get("challenge_feedback") or "").strip()
-    recovery_phase = str(state.get("recovery_phase") or "").strip().lower()
-    submitted_ms = _parse_et_time_ms(state.get("response_submitted_at"))
-    rejected_ms = _parse_et_time_ms(state.get("response_rejected_at"))
-    submitted_age_ms = max(0, current_ms - submitted_ms) if submitted_ms > 0 else 0
-    rejected_age_ms = max(0, current_ms - rejected_ms) if rejected_ms > 0 else 0
-    operator_action = "request_approval"
-    reset_recommended = bool(state.get("reset_recommended"))
-    reset_reason = str(state.get("reset_reason") or "").strip()
-
-    if recovery_phase == "panic_resetting":
-        operator_action = "panic_resetting"
-    elif bool(state.get("manual_takeover_active")):
-        operator_action = "manual_takeover"
-    elif status == "waiting_response":
-        if response_status == "received":
-            operator_action = "wait_browser_submit"
-        elif response_status == "submitted":
-            operator_action = "wait_auth_restore"
-            if not reset_recommended and submitted_age_ms >= CHALLENGE_RESET_RECOMMEND_MS:
-                operator_action = "panic_reset"
-                reset_recommended = True
-                reset_reason = reset_reason or "submitted_no_recovery"
-        elif response_status == "gateway_rejected":
-            operator_action = "retry_response_same_challenge"
-            if not reset_recommended and rejected_age_ms >= CHALLENGE_RESET_RECOMMEND_MS:
-                operator_action = "panic_reset"
-                reset_recommended = True
-                reset_reason = reset_reason or "gateway_rejected_no_recovery"
-        elif response_status == "submit_failed":
-            operator_action = "retry_response_same_challenge"
-        else:
-            operator_action = "submit_response" if challenge_code else "wait_challenge"
-    elif status == "waiting_confirm":
-        operator_action = "confirm_push"
-    elif status == "triggered":
-        operator_action = "wait_for_mode"
-    elif status in {"resume_pending", "recovering"}:
-        operator_action = "check_runtime_status" if recovery_phase == "resume_waiting_manual" else "wait_auth_restore"
-    elif status == "success":
-        operator_action = "none"
-    elif status in {"timeout", "failed"}:
-        operator_action = "request_new_cycle"
-
-    state["status"] = status
-    state["response_status"] = response_status
-    state["challenge_feedback"] = feedback
-    state["operator_action"] = operator_action
-    state["reset_recommended"] = reset_recommended
-    state["reset_reason"] = reset_reason
-    state["response_submitted_age_sec"] = round(submitted_age_ms / 1000) if submitted_age_ms > 0 else 0
-    state["response_rejected_age_sec"] = round(rejected_age_ms / 1000) if rejected_age_ms > 0 else 0
-    state.setdefault("business_deadline_at", "")
-    state.setdefault("business_deadline_cn", "")
-    state.setdefault("business_deadline_label", "")
-    state.setdefault("business_deadline_overdue", False)
-    state["confirm_window_seconds"] = int(state.get("confirm_window_seconds") or 180)
-    state.setdefault("confirm_deadline_at", "")
-    state.setdefault("confirm_deadline_cn", "")
-    state.setdefault("confirm_deadline_overdue", False)
-    return state
+    return _merge_service_topology_support(*payloads, build_service_topology=build_service_topology)
 
 
 def _normalize_two_factor_state_with_runtime(state_data: dict[str, Any], runtime_status: dict[str, Any]) -> dict[str, Any]:
-    state = _as_dict(state_data)
-    runtime = _as_dict(runtime_status)
-    auth_recovery = _as_dict(runtime.get("auth_recovery"))
-    runtime_started = bool(
-        runtime.get("starting")
-        or _as_dict(runtime.get("session")).get("running")
-        or _as_dict(runtime.get("websocket")).get("running")
-        or _as_dict(runtime.get("order_tracker")).get("running")
+    return _normalize_two_factor_state_with_runtime_support(
+        state_data,
+        runtime_status,
+        as_dict=_as_dict,
+        parse_et_time_ms=_parse_et_time_ms,
     )
-    runtime_authenticated = bool(_as_dict(runtime.get("session")).get("authenticated"))
-    gateway = _as_dict(runtime.get("gateway"))
-    gateway_reachable = bool(gateway.get("running") or gateway.get("reachable"))
-    gateway_status_code = int(gateway.get("status_code") or 0)
-
-    state["runtime_started"] = runtime_started
-    state["runtime_authenticated"] = runtime_authenticated
-    state["gateway_status_code"] = gateway_status_code
-    state["gateway_reachable"] = gateway_reachable
-    for key in RECOVERY_FIELDS:
-        if key in auth_recovery:
-            state[key] = auth_recovery.get(key)
-    if not str(state.get("recovery_phase") or "").strip():
-        state["recovery_phase"] = "recovered" if runtime_authenticated else "idle"
-    normalized_status = _normalize_two_factor_status(state.get("status") or "")
-    server_boot_resume_pending = _is_server_boot_resume_recovery_state(state) and not runtime_authenticated
-
-    if runtime_authenticated and gateway_reachable and gateway_status_code != 401:
-        state.update(
-            {
-                "status": "success",
-                "message": "Gateway 会话有效，无需再次确认。",
-                "last_result": "运行态会话正常。",
-                "last_error": "",
-                "mode": "",
-                "challenge_code": "",
-                "challenge_detected_at": "",
-                "response_code": "",
-                "response_status": "",
-                "response_received_at": "",
-                "response_submitted_at": "",
-                "response_rejected_at": "",
-                "challenge_feedback": "",
-                "page_title": "",
-                "page_url": "",
-                "gateway_trace": "",
-                "browser_authenticated": True,
-                "gateway_authenticated": True,
-                "backend_authenticated": True,
-                "recovery_phase": "recovered",
-                "auto_restart_scheduled": False,
-                "manual_takeover_active": False,
-            }
-        )
-        return _derive_2fa_action_state(state)
-
-    if (not runtime_authenticated) or gateway_status_code == 401:
-        state["gateway_authenticated"] = False
-        state["backend_authenticated"] = False
-        if not runtime_started:
-            state["browser_authenticated"] = False
-        active_cycle = normalized_status in {"triggered", "waiting_confirm", "waiting_response"}
-        if server_boot_resume_pending and not active_cycle:
-            state.update(
-                {
-                    "status": "resume_pending",
-                    "message": (
-                        "静默恢复尚未自动成功；当前不会自动补发新的 2FA，如需立即恢复请去 Runtime 页面人工处理。"
-                        if str(state.get("probe_result") or "").strip().lower() == "resume_probe_timeout"
-                        else "Compute 重启后正在静默复用现有 Gateway Session，本轮不会自动重开 2FA。"
-                    ),
-                    "last_result": (
-                        "静默恢复未自动成功，当前保持被动等待，不会自动新开 2FA。"
-                        if str(state.get("probe_result") or "").strip().lower() == "resume_probe_timeout"
-                        else "已进入 server_boot 静默恢复窗口。"
-                    ),
-                    "last_error": "",
-                    "mode": "",
-                    "challenge_code": "",
-                    "challenge_detected_at": "",
-                    "response_code": "",
-                    "response_status": "",
-                    "response_received_at": "",
-                    "response_submitted_at": "",
-                    "response_rejected_at": "",
-                    "challenge_feedback": "",
-                    "page_title": "",
-                    "page_url": "",
-                    "gateway_trace": "",
-                }
-            )
-        elif _is_silent_recovery_state(state) and not active_cycle:
-            silent_recovery = _build_silent_recovery_message(state)
-            state.update(
-                {
-                    "status": "recovering",
-                    "message": silent_recovery.get("message") or "",
-                    "last_result": silent_recovery.get("last_result") or "",
-                    "last_error": "",
-                    "mode": "",
-                    "challenge_code": "",
-                    "challenge_detected_at": "",
-                    "response_code": "",
-                    "response_status": "",
-                    "response_received_at": "",
-                    "response_submitted_at": "",
-                    "response_rejected_at": "",
-                    "challenge_feedback": "",
-                    "page_title": "",
-                    "page_url": "",
-                    "gateway_trace": "",
-                }
-            )
-        elif _is_manual_auth_required_recovery_state(state) and not active_cycle:
-            state["status"] = "requested"
-            state["message"] = "静默恢复窗口已结束，当前需要手动触发 2FA。"
-            state["last_result"] = "静默恢复未完成，等待手动触发新的 2FA 轮次。"
-        elif normalized_status == "success":
-            state["status"] = "requested"
-            state["message"] = "旧 Gateway 认证已失效，请重新触发 2FA。"
-            state["last_result"] = "旧 Gateway 认证已失效，等待重新触发 2FA。"
-
-    return _derive_2fa_action_state(state)
-
-
-def _split_symbol_list_by_monitor(values: Any, monitor_symbols: Any) -> dict[str, list[str]]:
-    monitor_set = set(_normalize_symbol_list(monitor_symbols))
-    blocking: list[str] = []
-    monitor: list[str] = []
-    for symbol in _normalize_symbol_list(values):
-        if symbol in monitor_set:
-            monitor.append(symbol)
-        else:
-            blocking.append(symbol)
-    return {"blocking": blocking, "monitor": monitor}
-
-
-def _split_reason_map_by_monitor(value: Any, monitor_symbols: Any) -> dict[str, dict[str, Any]]:
-    monitor_set = set(_normalize_symbol_list(monitor_symbols))
-    blocking: dict[str, Any] = {}
-    monitor: dict[str, Any] = {}
-    if not isinstance(value, dict):
-        return {"blocking": blocking, "monitor": monitor}
-    for symbol, reason in value.items():
-        normalized_symbol = str(symbol or "").strip().upper()
-        if not normalized_symbol:
-            continue
-        if normalized_symbol in monitor_set:
-            monitor[normalized_symbol] = reason
-        else:
-            blocking[normalized_symbol] = reason
-    return {"blocking": blocking, "monitor": monitor}
 
 
 def _build_statusz_compute_payload(compute_payload: dict[str, Any], include_engines: bool) -> dict[str, Any]:
-    payload = _as_dict(compute_payload)
-    engine_map = payload.get("engines") if isinstance(payload.get("engines"), dict) else {}
-    total_engines = int(payload.get("total_engines") or len(engine_map))
-    payload["total_engines"] = total_engines
-    payload["ready_engines"] = int(payload.get("ready_engines") or 0)
-    payload["engines_available"] = total_engines > 0
-    payload["engines_included"] = bool(include_engines)
-    payload["statusz_mode"] = "full" if include_engines else "lite"
-    if include_engines:
-        payload["engines"] = dict(engine_map)
-    else:
-        payload.pop("engines", None)
-    return payload
+    return _build_statusz_compute_payload_support(compute_payload, include_engines, as_dict=_as_dict)
 
 
 def _build_statusz_live_readiness(compute_payload: dict[str, Any], runtime_payload: dict[str, Any]) -> dict[str, Any]:
-    compute = _as_dict(compute_payload)
-    runtime = _as_dict(runtime_payload)
-    engine_map = compute.get("engines") if isinstance(compute.get("engines"), dict) else {}
-    warmup = _as_dict(runtime.get("warmup"))
-    market_universe = _as_dict(runtime.get("market_universe"))
-    service_topology = _as_dict(runtime.get("service_topology"))
-    environment = _normalize_environment(runtime.get("environment") or compute.get("environment"), "live")
-    required_interval = str(warmup.get("required_interval") or "5m").strip() or "5m"
-    trade_symbols = _normalize_symbol_list(
-        warmup.get("trade_symbols")
-        if isinstance(warmup.get("trade_symbols"), list) and warmup.get("trade_symbols")
-        else market_universe.get("active_trade_symbols")
+    return _build_statusz_live_readiness_support(
+        compute_payload,
+        runtime_payload,
+        as_dict=_as_dict,
+        normalize_environment=_normalize_environment,
+        normalize_symbol_list=_normalize_symbol_list,
     )
-    monitor_symbols = _normalize_symbol_list(
-        warmup.get("monitor_symbols")
-        if isinstance(warmup.get("monitor_symbols"), list) and warmup.get("monitor_symbols")
-        else market_universe.get("market_ws_symbols")
-    )
-    symbols = _normalize_symbol_list(
-        warmup.get("symbols")
-        if isinstance(warmup.get("symbols"), list) and warmup.get("symbols")
-        else (
-            market_universe.get("data_symbols")
-            if isinstance(market_universe.get("data_symbols"), list)
-            else trade_symbols + monitor_symbols
-        )
-    )
-    if not symbols:
-        derived_symbols: list[str] = []
-        for key in engine_map:
-            parts = str(key or "").split("/")
-            if len(parts) != 3:
-                continue
-            if parts[0] == environment and parts[2] == required_interval:
-                derived_symbols.append(parts[1])
-        symbols = _normalize_symbol_list(derived_symbols)
-
-    symbol_set = set(symbols + trade_symbols + monitor_symbols)
-    all_symbols = sorted(symbol_set)
-    trade_set = set(trade_symbols)
-    monitor_set = set(monitor_symbols)
-    ready_symbols = 0
-    ready_trade_symbols = 0
-    ready_monitor_symbols = 0
-    ready_set: set[str] = set()
-    for symbol in all_symbols:
-        engine = engine_map.get(f"{environment}/{symbol}/{required_interval}") if isinstance(engine_map, dict) else None
-        if not isinstance(engine, dict) or not bool(engine.get("is_ready")):
-            continue
-        ready_set.add(symbol)
-        ready_symbols += 1
-        if symbol in trade_set:
-            ready_trade_symbols += 1
-        if symbol in monitor_set:
-            ready_monitor_symbols += 1
-    non_monitor_pending_total = len([symbol for symbol in all_symbols if symbol not in ready_set and symbol not in monitor_set])
-    monitor_pending_total = len([symbol for symbol in all_symbols if symbol not in ready_set and symbol in monitor_set])
-    gate_open = len(trade_symbols) > 0 and ready_trade_symbols >= len(trade_symbols)
-    phase = "idle"
-    if all_symbols:
-        phase = "ready" if non_monitor_pending_total == 0 else "pending"
-
-    snapshot_symbols_total = int(warmup.get("symbols_total") or 0)
-    snapshot_ready_symbols = int(warmup.get("ready_symbols") or 0)
-    snapshot_ready_trade_symbols = int(warmup.get("ready_trade_symbols") or 0)
-    snapshot_ready_monitor_symbols = int(warmup.get("ready_monitor_symbols") or 0)
-    snapshot_phase = str(warmup.get("phase") or "").strip().lower() or "idle"
-    snapshot_finished_at = warmup.get("finished_at") or ""
-    snapshot_trade_symbols_total = int(warmup.get("trade_symbols_total") or len(trade_symbols))
-    snapshot_monitor_symbols_total = int(warmup.get("monitor_symbols_total") or len(monitor_symbols))
-    snapshot_pending_symbols_total = (
-        len(warmup.get("pending_symbols"))
-        if isinstance(warmup.get("pending_symbols"), list)
-        else int(warmup.get("pending_symbols_total") or 0)
-    )
-    snapshot_monitor_pending_total = int(warmup.get("monitor_pending_symbols_total") or 0) or max(
-        0, snapshot_monitor_symbols_total - snapshot_ready_monitor_symbols
-    )
-    snapshot_blocking_pending_total = int(warmup.get("blocking_pending_symbols_total") or 0) or max(
-        0, snapshot_pending_symbols_total - snapshot_monitor_pending_total
-    )
-    snapshot_gate_open = bool(warmup.get("trading_gate_open"))
-    snapshot_gate_reason = str(warmup.get("trading_gate_reason") or "").strip().lower() or (
-        "ready" if snapshot_trade_symbols_total > 0 and snapshot_gate_open else (
-            "warmup_incomplete" if snapshot_trade_symbols_total > 0 else "no_trade_symbols"
-        )
-    )
-    snapshot_present = bool(
-        snapshot_symbols_total
-        or snapshot_ready_symbols
-        or snapshot_ready_trade_symbols
-        or snapshot_ready_monitor_symbols
-        or str(warmup.get("phase") or "").strip()
-        or str(warmup.get("finished_at") or "").strip()
-    )
-    snapshot_differs = bool(
-        snapshot_present
-        and (
-            (snapshot_symbols_total > 0 and snapshot_symbols_total != len(all_symbols))
-            or snapshot_ready_symbols != ready_symbols
-            or snapshot_ready_trade_symbols != ready_trade_symbols
-            or snapshot_ready_monitor_symbols != ready_monitor_symbols
-        )
-    )
-    runtime_mode = str(
-        runtime.get("runtime_mode")
-        or compute.get("runtime_mode")
-        or service_topology.get("runtime_mode")
-        or ""
-    ).strip().lower()
-    runtime_snapshot_available = snapshot_present and (
-        snapshot_symbols_total > 0
-        or snapshot_ready_symbols > 0
-        or snapshot_trade_symbols_total > 0
-        or snapshot_monitor_symbols_total > 0
-        or snapshot_phase != "idle"
-        or bool(snapshot_finished_at)
-    )
-    if (runtime_mode == "remote" or not engine_map) and runtime_snapshot_available:
-        return {
-            "available": True,
-            "engine_snapshot_available": bool(engine_map),
-            "source": "runtime_warmup_snapshot",
-            "environment": environment,
-            "required_interval": required_interval,
-            "computed_at": datetime.now(tz=ET).isoformat(),
-            "phase": snapshot_phase,
-            "gate_open": snapshot_gate_open,
-            "gate_reason": snapshot_gate_reason,
-            "symbols_total": snapshot_symbols_total or len(all_symbols),
-            "trade_symbols_total": snapshot_trade_symbols_total,
-            "monitor_symbols_total": snapshot_monitor_symbols_total,
-            "ready_symbols": snapshot_ready_symbols,
-            "ready_trade_symbols": snapshot_ready_trade_symbols,
-            "ready_monitor_symbols": snapshot_ready_monitor_symbols,
-            "pending_symbols_total": snapshot_pending_symbols_total,
-            "non_monitor_pending_symbols_total": snapshot_blocking_pending_total,
-            "blocking_pending_symbols_total": snapshot_blocking_pending_total,
-            "monitor_pending_symbols_total": snapshot_monitor_pending_total,
-            "snapshot_differs": False,
-            "snapshot_phase": snapshot_phase,
-            "snapshot_finished_at": snapshot_finished_at,
-        }
-
-    return {
-        "available": bool(all_symbols) and bool(engine_map),
-        "engine_snapshot_available": bool(engine_map),
-        "source": "compute_engines",
-        "environment": environment,
-        "required_interval": required_interval,
-        "computed_at": datetime.now(tz=ET).isoformat(),
-        "phase": phase,
-        "gate_open": gate_open,
-        "gate_reason": "ready" if gate_open else ("live_not_ready" if trade_symbols else "no_trade_symbols"),
-        "symbols_total": len(all_symbols),
-        "trade_symbols_total": len(trade_symbols),
-        "monitor_symbols_total": len(monitor_symbols),
-        "ready_symbols": ready_symbols,
-        "ready_trade_symbols": ready_trade_symbols,
-        "ready_monitor_symbols": ready_monitor_symbols,
-        "pending_symbols_total": max(0, len(all_symbols) - ready_symbols),
-        "non_monitor_pending_symbols_total": non_monitor_pending_total,
-        "blocking_pending_symbols_total": non_monitor_pending_total,
-        "monitor_pending_symbols_total": monitor_pending_total,
-        "snapshot_differs": snapshot_differs,
-        "snapshot_phase": snapshot_phase,
-        "snapshot_finished_at": snapshot_finished_at,
-    }
 
 
 def _build_statusz_runtime_payload(
@@ -1303,287 +832,16 @@ def _build_statusz_runtime_payload(
     live_readiness: dict[str, Any],
     fallback_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = _as_dict(runtime_payload)
-    fallback = _as_dict(fallback_state)
-    gateway = _as_dict(payload.get("gateway"))
-    session = _as_dict(payload.get("session"))
-    auth_recovery = _as_dict(payload.get("auth_recovery"))
-    websocket = _as_dict(payload.get("websocket"))
-    realtime_quotes = _as_dict(payload.get("realtime_quotes"))
-    canonical_5m = _as_dict(payload.get("canonical_5m"))
-    data_backfill = _as_dict(payload.get("data_backfill"))
-    order_tracker = _as_dict(payload.get("order_tracker"))
-    warmup = _as_dict(payload.get("warmup"))
-    realtime_compute = _as_dict(payload.get("realtime_compute"))
-    realtime_result = _as_dict(realtime_compute.get("last_result"))
-    market_universe = _as_dict(payload.get("market_universe"))
-    daily_scan = _as_dict(payload.get("daily_scan"))
-    persisted_daily_scan = _as_dict(fallback.get("daily_scan"))
-    if not daily_scan and persisted_daily_scan:
-        daily_scan = dict(persisted_daily_scan)
-    if int(market_universe.get("active_target_count") or 0) <= 0:
-        fallback_active_target_count = int(fallback.get("active_target_count") or 0)
-        if fallback_active_target_count > 0:
-            market_universe["active_target_count"] = fallback_active_target_count
-    if not str(market_universe.get("active_target_date") or "").strip():
-        fallback_market_date = str(
-            fallback.get("active_target_date") or daily_scan.get("market_date") or ""
-        ).strip()
-        if fallback_market_date:
-            market_universe["active_target_date"] = fallback_market_date
-
-    auth_recovery_summary = {
-        "cycle_id": str(auth_recovery.get("cycle_id") or ""),
-        "recovery_phase": str(auth_recovery.get("recovery_phase") or ""),
-        "recovery_class": str(auth_recovery.get("recovery_class") or ""),
-        "recovery_reason": str(auth_recovery.get("recovery_reason") or ""),
-        "interruption_kind": str(auth_recovery.get("interruption_kind") or ""),
-        "last_runtime_authenticated_at": auth_recovery.get("last_runtime_authenticated_at") or "",
-        "last_gateway_status_code": int(auth_recovery.get("last_gateway_status_code") or 0),
-        "last_recovery_source": str(auth_recovery.get("last_recovery_source") or ""),
-        "probe_result": str(auth_recovery.get("probe_result") or ""),
-        "probe_last_checked_at": auth_recovery.get("probe_last_checked_at") or "",
-        "probe_attempts": int(auth_recovery.get("probe_attempts") or 0),
-        "auto_restart_scheduled": bool(auth_recovery.get("auto_restart_scheduled")),
-        "manual_takeover_active": bool(auth_recovery.get("manual_takeover_active")),
-        "lock_owner": str(auth_recovery.get("lock_owner") or ""),
-    }
-
-    monitor_symbols = _normalize_symbol_list(warmup.get("monitor_symbols"))
-    pending_symbols = _normalize_symbol_list(warmup.get("pending_symbols"))
-    integrity_pending_symbols_all = _normalize_symbol_list(warmup.get("integrity_pending_symbols"))
-    pending_split = _split_symbol_list_by_monitor(pending_symbols, monitor_symbols)
-    integrity_pending_split = _split_symbol_list_by_monitor(integrity_pending_symbols_all, monitor_symbols)
-    integrity_repair_reasons = _as_dict(warmup.get("integrity_repair_reasons")) if include_warmup_details else {}
-    reason_split = _split_reason_map_by_monitor(integrity_repair_reasons, monitor_symbols)
-
-    return {
-        "ok": payload.get("ok") if payload else None,
-        "starting": bool(payload.get("starting")),
-        "startup_complete": bool(payload.get("startup_complete")),
-        "runtime_phase": str(payload.get("runtime_phase") or ""),
-        "environment": str(payload.get("environment") or ""),
-        "service_profile": str(payload.get("service_profile") or ""),
-        "runtime_mode": str(payload.get("runtime_mode") or ""),
-        "service_topology": _as_dict(payload.get("service_topology")),
-        "market_session": _as_dict(payload.get("market_session")),
-        "warmup_details_included": bool(include_warmup_details),
-        "live_readiness": _as_dict(live_readiness),
-        "gateway": {
-            "running": bool(gateway.get("running")),
-            "reachable": bool(gateway.get("reachable")),
-            "managed_by": str(gateway.get("managed_by") or ""),
-            "status_code": int(gateway.get("status_code") or 0),
-            "pid": int(gateway.get("pid") or 0),
-            "uptime_s": int(gateway.get("uptime_s") or 0),
-        },
-        "session": {
-            "authenticated": bool(session.get("authenticated")),
-            "running": bool(session.get("running")),
-            "consecutive_failures": int(session.get("consecutive_failures") or 0),
-            "last_check": session.get("last_check") or session.get("last_tickle") or "",
-            "last_tickle": session.get("last_tickle") or session.get("last_check") or "",
-        },
-        "auth_recovery": auth_recovery_summary,
-        "websocket": {
-            "connected": bool(websocket.get("connected")),
-            "ready": bool(websocket.get("ready")),
-            "running": bool(websocket.get("running")),
-            "last_message": websocket.get("last_message") or "",
-            "message_count": int(websocket.get("message_count") or 0),
-            "subscribed_count": (
-                len(websocket.get("subscribed_conids"))
-                if isinstance(websocket.get("subscribed_conids"), list)
-                else int(websocket.get("subscribed_count") or 0)
-            ),
-            "pending_count": (
-                len(websocket.get("pending_conids"))
-                if isinstance(websocket.get("pending_conids"), list)
-                else int(websocket.get("pending_count") or 0)
-            ),
-        },
-        "realtime_quotes": {
-            "total_quotes": int(realtime_quotes.get("total_quotes") or 0),
-            "stale_quotes": int(realtime_quotes.get("stale_quotes") or 0),
-            "tick_count": int(realtime_quotes.get("tick_count") or 0),
-            "update_count": int(realtime_quotes.get("update_count") or 0),
-        },
-        "canonical_5m": {
-            "enabled": bool(canonical_5m.get("enabled", True)),
-            "driver": str(canonical_5m.get("driver") or ""),
-            "close_delay_sec": int(canonical_5m.get("close_delay_sec") or 0),
-            "request_period": str(canonical_5m.get("request_period") or ""),
-            "last_run": canonical_5m.get("last_run") or "",
-            "last_due_bucket_ms": int(canonical_5m.get("last_due_bucket_ms") or 0),
-            "last_completed_bucket_ms": int(canonical_5m.get("last_completed_bucket_ms") or 0),
-            "lag_s": int(canonical_5m.get("lag_s") or 0),
-            "last_written_bars": int(canonical_5m.get("last_written_bars") or 0),
-            "written_symbols": _trim_array(canonical_5m.get("written_symbols"), 24),
-            "written_symbols_total": (
-                len(canonical_5m.get("written_symbols"))
-                if isinstance(canonical_5m.get("written_symbols"), list)
-                else int(canonical_5m.get("written_symbols_total") or 0)
-            ),
-            "pending_symbols": _trim_array(canonical_5m.get("pending_symbols"), 24),
-            "pending_symbols_total": (
-                len(canonical_5m.get("pending_symbols"))
-                if isinstance(canonical_5m.get("pending_symbols"), list)
-                else int(canonical_5m.get("pending_symbols_total") or 0)
-            ),
-            "last_error": str(canonical_5m.get("last_error") or ""),
-        },
-        "data_backfill": {
-            "total_backfilled": int(data_backfill.get("total_backfilled") or 0),
-        },
-        "order_tracker": {
-            "running": bool(order_tracker.get("running")),
-            "last_poll": order_tracker.get("last_poll") or "",
-            "tracked_orders": int(order_tracker.get("tracked_orders") or 0),
-        },
-        "warmup": {
-            "phase": str(warmup.get("phase") or ""),
-            "trading_gate_open": bool(warmup.get("trading_gate_open")),
-            "trading_gate_reason": str(warmup.get("trading_gate_reason") or ""),
-            "required_interval": str(warmup.get("required_interval") or ""),
-            "symbols_total": int(warmup.get("symbols_total") or 0),
-            "trade_symbols_total": int(warmup.get("trade_symbols_total") or 0),
-            "monitor_symbols_total": int(warmup.get("monitor_symbols_total") or 0),
-            "ready_symbols": int(warmup.get("ready_symbols") or 0),
-            "ready_trade_symbols": int(warmup.get("ready_trade_symbols") or 0),
-            "ready_monitor_symbols": int(warmup.get("ready_monitor_symbols") or 0),
-            "pending_symbols": (
-                _trim_array(pending_symbols, len(pending_symbols))
-                if include_warmup_details
-                else _trim_array(pending_symbols, 12)
-            ),
-            "pending_symbols_total": (
-                len(warmup.get("pending_symbols"))
-                if isinstance(warmup.get("pending_symbols"), list)
-                else int(warmup.get("pending_symbols_total") or len(pending_symbols))
-            ),
-            "blocking_pending_symbols": _trim_array(
-                pending_split.get("blocking"), len(pending_split.get("blocking", [])) if include_warmup_details else 12
-            ),
-            "blocking_pending_symbols_total": len(pending_split.get("blocking") or []),
-            "monitor_pending_symbols": _trim_array(
-                pending_split.get("monitor"), len(pending_split.get("monitor", [])) if include_warmup_details else 12
-            ),
-            "monitor_pending_symbols_total": len(pending_split.get("monitor") or []),
-            "requested_at": warmup.get("requested_at") or "",
-            "started_at": warmup.get("started_at") or "",
-            "finished_at": warmup.get("finished_at") or "",
-            "last_success_at": warmup.get("last_success_at") or "",
-            "last_error": str(warmup.get("last_error") or ""),
-            "reason": str(warmup.get("reason") or ""),
-            "target_date": str(warmup.get("target_date") or ""),
-            "symbols": (
-                _trim_array(warmup.get("symbols"), len(warmup.get("symbols")))
-                if include_warmup_details and isinstance(warmup.get("symbols"), list)
-                else []
-            ),
-            "trade_symbols": (
-                _trim_array(warmup.get("trade_symbols"), len(warmup.get("trade_symbols")))
-                if include_warmup_details and isinstance(warmup.get("trade_symbols"), list)
-                else []
-            ),
-            "monitor_symbols": (
-                _trim_array(warmup.get("monitor_symbols"), len(warmup.get("monitor_symbols")))
-                if include_warmup_details and isinstance(warmup.get("monitor_symbols"), list)
-                else []
-            ),
-            "ready_symbols_list": (
-                _trim_array(warmup.get("ready_symbols_list"), len(warmup.get("ready_symbols_list")))
-                if include_warmup_details and isinstance(warmup.get("ready_symbols_list"), list)
-                else []
-            ),
-            "symbol_status": (
-                _trim_array(warmup.get("symbol_status"), len(warmup.get("symbol_status")))
-                if include_warmup_details and isinstance(warmup.get("symbol_status"), list)
-                else []
-            ),
-            "integrity_pending_symbols": (
-                _trim_array(integrity_pending_symbols_all, len(integrity_pending_symbols_all))
-                if include_warmup_details
-                else []
-            ),
-            "integrity_pending_symbols_total": (
-                len(warmup.get("integrity_pending_symbols"))
-                if isinstance(warmup.get("integrity_pending_symbols"), list)
-                else len(integrity_pending_symbols_all)
-            ),
-            "blocking_integrity_pending_symbols": (
-                _trim_array(integrity_pending_split.get("blocking"), len(integrity_pending_split.get("blocking", [])))
-                if include_warmup_details
-                else []
-            ),
-            "blocking_integrity_pending_symbols_total": len(integrity_pending_split.get("blocking") or []),
-            "monitor_integrity_pending_symbols": (
-                _trim_array(integrity_pending_split.get("monitor"), len(integrity_pending_split.get("monitor", [])))
-                if include_warmup_details
-                else []
-            ),
-            "monitor_integrity_pending_symbols_total": len(integrity_pending_split.get("monitor") or []),
-            "integrity_repair_reasons": integrity_repair_reasons,
-            "blocking_integrity_repair_reasons": reason_split.get("blocking") or {},
-            "monitor_integrity_repair_reasons": reason_split.get("monitor") or {},
-            "preflight_repair": _as_dict(warmup.get("preflight_repair")) if include_warmup_details else {},
-        },
-        "realtime_compute": {
-            "runs": int(realtime_compute.get("runs") or 0),
-            "queue_size": int(realtime_compute.get("queue_size") or 0),
-            "thread_alive": bool(realtime_compute.get("thread_alive")),
-            "inflight": bool(realtime_compute.get("inflight")),
-            "inflight_age_s": int(realtime_compute.get("inflight_age_s") or 0),
-            "inflight_timeout_threshold_s": int(realtime_compute.get("inflight_timeout_threshold_s") or 0),
-            "stalled": bool(realtime_compute.get("stalled")),
-            "stall_reason": str(realtime_compute.get("stall_reason") or ""),
-            "last_started": realtime_compute.get("last_started") or "",
-            "last_run": realtime_compute.get("last_run") or "",
-            "last_bar_close": realtime_compute.get("last_bar_close") or "",
-            "last_elapsed_s": float(realtime_compute.get("last_elapsed_s") or realtime_result.get("elapsed_s") or 0),
-            "last_processed": int(realtime_result.get("processed") or 0),
-            "last_signals": int(realtime_result.get("signals") or 0),
-            "last_errors": int(realtime_result.get("errors") or 0),
-        },
-        "daily_scan": {
-            "market_date": str(daily_scan.get("market_date") or ""),
-            "status": str(daily_scan.get("status") or ""),
-            "reason": str(daily_scan.get("reason") or ""),
-            "started_at": daily_scan.get("started_at") or "",
-            "finished_at": daily_scan.get("finished_at") or "",
-            "last_error": str(daily_scan.get("last_error") or ""),
-            "result": _as_dict(daily_scan.get("result")),
-        },
-        "market_universe": {
-            "market_date": str(market_universe.get("market_date") or ""),
-            "last_daily_reset": market_universe.get("last_daily_reset") or "",
-            "watchlist_pool_count": int(market_universe.get("watchlist_pool_count") or 0),
-            "active_target_date": str(market_universe.get("active_target_date") or ""),
-            "active_target_count": int(market_universe.get("active_target_count") or 0),
-            "active_trade_symbols": _trim_array(
-                market_universe.get("active_trade_symbols"),
-                len(market_universe.get("active_trade_symbols")) if isinstance(market_universe.get("active_trade_symbols"), list) else 0,
-            ),
-            "active_trade_symbols_total": (
-                len(market_universe.get("active_trade_symbols"))
-                if isinstance(market_universe.get("active_trade_symbols"), list)
-                else int(market_universe.get("active_trade_symbols_total") or 0)
-            ),
-            "last_target_refresh": market_universe.get("last_target_refresh") or "",
-            "active_repair_interval_min": int(market_universe.get("active_repair_interval_min") or 0),
-            "last_active_repair": market_universe.get("last_active_repair") or "",
-            "last_active_repair_symbols": _trim_array(market_universe.get("last_active_repair_symbols"), 12),
-            "last_active_repair_symbols_total": (
-                len(market_universe.get("last_active_repair_symbols"))
-                if isinstance(market_universe.get("last_active_repair_symbols"), list)
-                else int(market_universe.get("last_active_repair_symbols_total") or 0)
-            ),
-            "last_active_repair_reasons": _trim_object_entries(market_universe.get("last_active_repair_reasons"), 12),
-            "watchlist_backfill_interval_min": int(market_universe.get("watchlist_backfill_interval_min") or 0),
-            "last_watchlist_backfill": market_universe.get("last_watchlist_backfill") or "",
-        },
-        "runtime_control": _as_dict(payload.get("runtime_control")),
-    }
+    return _build_statusz_runtime_payload_support(
+        runtime_payload,
+        include_warmup_details,
+        live_readiness=live_readiness,
+        fallback_state=fallback_state,
+        as_dict=_as_dict,
+        normalize_symbol_list=_normalize_symbol_list,
+        trim_array=_trim_array,
+        trim_object_entries=_trim_object_entries,
+    )
 
 
 def _forward_request(base_url: str, path: str, *, params: list[tuple[str, str]] | None = None, json_body: Any = None) -> Response:
@@ -2017,6 +1275,70 @@ def _build_system_monitor_payload(environment: str) -> dict[str, Any]:
     return merged_payload
 
 
+_system_route_handlers = register_system_routes(
+    app,
+    deps={
+        "pb": pb,
+        "config": config,
+        "normalize_environment": _normalize_environment,
+        "parse_boolean": _parse_boolean,
+        "escape_filter_string": _escape_filter_string,
+        "config_value": _config_value,
+        "signal_chat_id": _signal_chat_id,
+        "console_base_url": _console_base_url,
+        "feishu_send_interactive": _feishu_send_interactive,
+        "feishu_update_interactive": _feishu_update_interactive,
+        "emit_system_event": _emit_system_event,
+        "label_title_with_environment": _label_title_with_environment,
+        "add_environment_to_detail": _add_environment_to_detail,
+        "write_system_event_record": lambda *args, **kwargs: _write_system_event_record(*args, **kwargs),
+        "deliver_system_event_notification": lambda *args, **kwargs: _deliver_system_event_notification(*args, **kwargs),
+        "build_cron_payload": build_cron_payload,
+        "scheduler_status": lambda environment: _scheduler_status(environment),
+        "build_scheduler_summary": lambda environment, payload: _build_scheduler_summary(environment, payload),
+        "augment_scheduler_summary": lambda summary, items: _augment_scheduler_summary(summary, items),
+        "build_system_monitor_payload": lambda environment: _build_system_monitor_payload(environment),
+        "build_system_summary_payload": lambda environment, lite_mode=False: _build_system_summary_payload(environment, lite_mode=lite_mode),
+        "build_service_topology": build_service_topology,
+        "time_strings": _time_strings,
+        "get_state_payload": _get_state_payload,
+        "normalize_two_factor_state_with_runtime": _normalize_two_factor_state_with_runtime,
+        "fetch_runtime_status": _fetch_runtime_status,
+        "request_two_factor_approval": _request_two_factor_approval,
+        "build_signal_expiry_response": lambda *args, **kwargs: build_signal_expiry_response(*args, **kwargs),
+        "build_order_detail_integrity_response": lambda *args, **kwargs: build_order_detail_integrity_response(*args, **kwargs),
+        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime_support(
+            environment,
+            order_id,
+            payload,
+            request_json_request=_request_json_request,
+            runtime_base_url=RUNTIME_BASE_URL,
+            normalize_environment=_normalize_environment,
+            as_dict=_as_dict,
+        ),
+    },
+)
+custom_ibkr_health_report = _system_route_handlers["custom_ibkr_health_report"]
+custom_ibkr_notify = _system_route_handlers["custom_ibkr_notify"]
+custom_system_event = _system_route_handlers["custom_system_event"]
+custom_system_cronz = _system_route_handlers["custom_system_cronz"]
+custom_system_healthz = _system_route_handlers["custom_system_healthz"]
+custom_system_schedulerz = _system_route_handlers["custom_system_schedulerz"]
+custom_system_summaryz = _system_route_handlers["custom_system_summaryz"]
+custom_system_monitorz = _system_route_handlers["custom_system_monitorz"]
+custom_system_job_signal_expiry = _system_route_handlers["custom_system_job_signal_expiry"]
+custom_system_job_order_detail_integrity = _system_route_handlers["custom_system_job_order_detail_integrity"]
+custom_system_job_order_expiry = _system_route_handlers["custom_system_job_order_expiry"]
+custom_system_job_auth_edge_guard = _system_route_handlers["custom_system_job_auth_edge_guard"]
+custom_system_job_auth_pending_guard = _system_route_handlers["custom_system_job_auth_pending_guard"]
+custom_system_job_data_gap_guard = _system_route_handlers["custom_system_job_data_gap_guard"]
+custom_system_job_two_factor_hourly_check = _system_route_handlers["custom_system_job_two_factor_hourly_check"]
+custom_system_job_weekly_reauth_reminder = _system_route_handlers["custom_system_job_weekly_reauth_reminder"]
+custom_system_job_weekly_reauth_followup = _system_route_handlers["custom_system_job_weekly_reauth_followup"]
+custom_system_job_market_open_reminder = _system_route_handlers["custom_system_job_market_open_reminder"]
+custom_system_job_daily_report = _system_route_handlers["custom_system_job_daily_report"]
+
+
 _callback_toast = _callback_toast_support
 
 
@@ -2090,877 +1412,286 @@ def _cancel_broker_order_via_runtime(environment: str, order_id: str, payload: d
     )
 
 
-@app.route("/health", methods=["GET"])
-def health() -> Response:
-    scheduler_jobs = _scheduler_job_states()
-    return jsonify(
-        {
-            "ok": True,
-            "status": "running",
-            "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
-            "service_topology": build_service_topology(),
-            "upstreams": {
-                "pocketbase": PB_BASE_URL,
-                "compute": COMPUTE_BASE_URL,
-                "runtime": RUNTIME_BASE_URL,
-                "scheduler": SCHEDULER_BASE_URL,
-            },
-            "scheduler_job_count": len(scheduler_jobs),
-        }
-    )
-
-
-@app.route("/status", methods=["GET"])
-def status() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    scheduler_status = _scheduler_status(environment)
-    scheduler_jobs = scheduler_status.get("jobs") if isinstance(scheduler_status.get("jobs"), dict) else {}
-    config.refresh()
-    scheduler_items = build_cron_payload(config, environment, scheduler_jobs)
-    return jsonify(
-        {
-            "ok": True,
-            "status": "running",
-            "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
-            "service_topology": build_service_topology(),
-            "compatibility": {
-                "direct_proxy_routes": sorted({path for (_, path) in DIRECT_PROXY_MAP}),
-                "proxy_action_routes": sorted(ACTION_PROXY_MAP),
-                "native_custom_routes": [
-                    "ibkr/2fa/status",
-                    "ibkr/healthz",
-                    "ibkr/orders/cancel_group",
-                    "ibkr/orders/close_group",
-                    "ibkr/orders/reconcile",
-                    "ibkr/orders/upsert",
-                    "ibkr/reverse/ack",
-                    "ibkr/reverse/calculate",
-                    "ibkr/reverse/dispatch",
-                    "ibkr/reverse/list",
-                    "ibkr/reverse/pending",
-                    "ibkr/signal",
-                    "ibkr/signals",
-                    "ibkr/runtime/config",
-                    "ibkr/signals/ack",
-                    "ibkr/signals/pending",
-                    "ibkr/startup/progress",
-                    "ibkr/startup/status",
-                    "ibkr/statusz",
-                    "system/cronz",
-                    "system/event",
-                    "system/healthz",
-                    "system/monitorz",
-                    "system/summaryz",
-                    "system/schedulerz",
-                ],
-                "native_webhook_routes": [
-                    "feishu/callback",
-                    "order/cancel",
-                    "order/close",
-                    "signal/cancel",
-                    "signal/confirm",
-                    "tv",
-                ],
-                "delegated_pocketbase_custom_routes": DELEGATED_POCKETBASE_CUSTOM_ROUTES,
-                "delegated_pocketbase_webhook_routes": DELEGATED_POCKETBASE_WEBHOOK_ROUTES,
-                "pocketbase_proxy_routes": {
-                    "custom": "/api/custom/*",
-                    "webhook": "/webhook/*",
-                },
-                "fallback_to_pocketbase_custom": True,
-                "fallback_to_pocketbase_webhooks": True,
-            },
-            "scheduler_jobs": scheduler_jobs,
-            "scheduler": _augment_scheduler_summary(_build_scheduler_summary(environment, scheduler_status), scheduler_items),
-        }
-    )
-
-
-@app.route("/api/collections/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
-def collections_proxy(subpath: str) -> Response:
-    return _forward_request(PB_BASE_URL, f"/api/collections/{subpath}")
-
-@app.route("/api/custom/ibkr/runtime/config", methods=["GET"])
-def custom_ibkr_runtime_config() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    scope = str(request.args.get("scope") or "").strip().lower() or "effective"
-    rows = pb.get_runtime_config(scope="all", environment=environment)
-    if scope != "all":
-        rows = _pick_effective_config_rows(rows, environment)
-    return jsonify(
-        {
-            "ok": True,
-            "environment": environment,
-            "scope": "all" if scope == "all" else "effective",
-            "items": _serialize_config_rows(rows),
-            "source": "ibkr-api",
-            "service_topology": build_service_topology(),
-        }
-    )
-
-
-@app.route("/api/custom/system/event", methods=["POST"])
-def custom_system_event() -> Response:
-    payload = request.get_json(silent=True) or {}
-    environment = _normalize_environment(payload.get("environment"), "live")
-    raw_title = str(payload.get("title") or "").strip()
-    raw_detail = payload.get("detail") if payload.get("detail") is not None else {}
-    event_type = str(payload.get("event_type") or "status_change").strip() or "status_change"
-    level = str(payload.get("level") or "info").strip().lower() or "info"
-    source = str(payload.get("source") or "ibkr-api").strip() or "ibkr-api"
-    message_id = str(payload.get("message_id") or "").strip()
-
-    if not raw_title:
-        return jsonify({"ok": False, "environment": environment, "error": "title required", "source": "ibkr-api"}), 400
-
-    config.refresh()
-    delivery = _deliver_system_event_notification(
-        event_type,
-        level,
-        source,
-        raw_title,
-        raw_detail,
-        environment,
-        message_id=message_id,
-    )
-    notified = bool(delivery.get("success")) and not bool(delivery.get("suppressed"))
-    persisted = bool(_write_system_event_record(event_type, level, source, raw_title, raw_detail, environment, notified))
-    return jsonify(
-        {
-            "ok": True,
-            "environment": environment,
-            "notified": notified,
-            "persisted": persisted,
-            "message_id": str(delivery.get("message_id") or message_id),
-            "updated": bool(delivery.get("updated")),
-            "skipped": bool(delivery.get("skipped")),
-            "suppressed": bool(delivery.get("suppressed")),
-            "error": str(delivery.get("error") or ""),
-            "source": "ibkr-api",
-        }
-    )
-
-
-@app.route("/api/custom/system/cronz", methods=["GET"])
-def custom_system_cronz() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    config.refresh()
-    scheduler_status = _scheduler_status(environment)
-    scheduler_jobs = scheduler_status.get("jobs") if isinstance(scheduler_status.get("jobs"), dict) else {}
-    items = build_cron_payload(config, environment, scheduler_jobs)
-    return jsonify(
-        {
-            "ok": True,
-            "items": items,
-            "scheduler": _augment_scheduler_summary(_build_scheduler_summary(environment, scheduler_status), items),
-            "source": "ibkr-api",
-            "service_topology": build_service_topology(),
-        }
-    )
-
-
-@app.route("/api/custom/system/healthz", methods=["GET"])
-def custom_system_healthz() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    payload = _build_system_monitor_payload(environment)
-    return jsonify(
-        {
-            "ok": bool(payload.get("ok", False)),
-            "status": str(payload.get("status") or "offline"),
-            "environment": environment,
-            "requested_environment": payload.get("requested_environment") or environment,
-            "actual_runtime_environment": payload.get("actual_runtime_environment") or environment,
-            "runtime_environment_mismatch": bool(payload.get("runtime_environment_mismatch")),
-            "service_topology": payload.get("service_topology") if isinstance(payload.get("service_topology"), dict) else build_service_topology(),
-            "service_monitor": payload.get("service_monitor") if isinstance(payload.get("service_monitor"), dict) else {},
-            "scheduler": payload.get("scheduler") if isinstance(payload.get("scheduler"), dict) else {},
-            "source": "ibkr-api",
-        }
-    )
-
-
-@app.route("/api/custom/system/schedulerz", methods=["GET"])
-def custom_system_schedulerz() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    config.refresh()
-    scheduler_status = _scheduler_status(environment)
-    scheduler_jobs = scheduler_status.get("jobs") if isinstance(scheduler_status.get("jobs"), dict) else {}
-    items = build_cron_payload(config, environment, scheduler_jobs)
-    summary = _augment_scheduler_summary(_build_scheduler_summary(environment, scheduler_status), items)
-    return jsonify(
-        {
-            "ok": bool(scheduler_status.get("ok", False)),
-            "status": str(summary.get("status") or "offline"),
-            "environment": environment,
-            "scheduler": summary,
-            "items": items,
-            "source": "ibkr-api",
-            "service_topology": build_service_topology(),
-        }
-    )
-
-
-@app.route("/api/custom/system/jobs/signal_expiry", methods=["POST"])
-def custom_system_job_signal_expiry() -> Response:
-    payload, status_code = build_signal_expiry_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        config_value=_config_value,
-        send_interactive=_feishu_send_interactive,
-        update_interactive=_feishu_update_interactive,
-        signal_chat_id_fn=_signal_chat_id,
-        console_base_url=_console_base_url(),
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
-
-
-@app.route("/api/custom/system/jobs/order_detail_integrity", methods=["POST"])
-def custom_system_job_order_detail_integrity() -> Response:
-    payload, status_code = build_order_detail_integrity_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
-
-
-@app.route("/api/custom/system/summaryz", methods=["GET"])
-def custom_system_summaryz() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    lite_mode = _parse_boolean(request.args.get("lite"), False)
-    return jsonify(_build_system_summary_payload(environment, lite_mode=lite_mode))
-
-
-@app.route("/api/custom/system/monitorz", methods=["GET"])
-def custom_system_monitorz() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    return jsonify(_build_system_monitor_payload(environment))
-
-
-@app.route("/api/custom/ibkr/healthz", methods=["GET"])
-def custom_ibkr_healthz() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    compute_result = _fetch_compute_health(environment)
-    runtime_result = _fetch_runtime_health(environment)
-    compute_payload = _as_dict(compute_result.get("payload"))
-    runtime_payload = _as_dict(runtime_result.get("payload"))
-    service_topology = _merge_service_topology(compute_payload, runtime_payload)
-    runtime_expected = str(service_topology.get("runtime_mode") or "").strip().lower() == "remote"
-    ok = bool(compute_result.get("ok")) and (not runtime_expected or bool(runtime_result.get("ok")))
-    degraded = bool(compute_result.get("ok")) or bool(runtime_result.get("ok")) or bool(compute_payload) or bool(runtime_payload)
-    errors = {
-        key: value
-        for key, value in {
-            "compute": str(compute_result.get("error") or ""),
-            "runtime": str(runtime_result.get("error") or ""),
-        }.items()
-        if value
-    }
-    return jsonify(
-        {
-            "ok": ok,
-            "status": "running" if ok else ("degraded" if degraded else "offline"),
-            "environment": environment,
-            "requested_environment": environment,
-            "actual_runtime_environment": _normalize_environment(runtime_payload.get("environment") or environment, environment),
-            "compute": compute_payload,
-            "runtime": runtime_payload,
-            "service_topology": service_topology,
-            "source": "ibkr-api",
-            "proxy_upstream_compute": f"{COMPUTE_BASE_URL}/health",
-            "proxy_upstream_runtime": runtime_result.get("upstream") or "",
-            "error": "; ".join(f"{key}: {value}" for key, value in errors.items()),
-            "errors": errors,
-        }
-    )
-
-
-@app.route("/api/custom/ibkr/statusz", methods=["GET"])
-def custom_ibkr_statusz() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    include_engines = _parse_boolean(request.args.get("full"), False) or not _parse_boolean(request.args.get("lite"), True)
-    include_warmup_details = (
-        _parse_boolean(request.args.get("warmup"), False)
-        or _parse_boolean(request.args.get("warmup_full"), False)
-        or include_engines
-    )
-
-    compute_result = _fetch_compute_status(environment)
-    runtime_result = _fetch_runtime_status(environment)
-    compute_payload = _as_dict(compute_result.get("payload"))
-    runtime_payload = _as_dict(runtime_result.get("payload"))
-    persisted_daily_scan = _load_daily_scan_state(environment)
-    fallback_active_target_date = str(persisted_daily_scan.get("market_date") or "").strip()
-    fallback_active_target_count = (
-        _count_active_today_targets(environment, fallback_active_target_date)
-        if fallback_active_target_date
-        else 0
-    )
-
-    compute_data = _build_statusz_compute_payload(compute_payload, include_engines)
-    live_readiness = _build_statusz_live_readiness(compute_payload, runtime_payload)
-    runtime_data = _build_statusz_runtime_payload(
-        runtime_payload,
-        include_warmup_details,
-        live_readiness=live_readiness,
-        fallback_state={
-            "daily_scan": persisted_daily_scan,
-            "active_target_date": fallback_active_target_date,
-            "active_target_count": fallback_active_target_count,
-        },
-    )
-    service_topology = _merge_service_topology(compute_data, runtime_data)
-    actual_runtime_environment = _normalize_environment(
-        runtime_data.get("environment") or compute_data.get("environment") or environment,
-        environment,
-    )
-    errors = {
-        key: value
-        for key, value in {
-            "compute": str(compute_result.get("error") or ""),
-            "runtime": str(runtime_result.get("error") or ""),
-        }.items()
-        if value
-    }
-    ok = (
-        not errors
-        and compute_data.get("ok") is not False
-        and (runtime_data.get("ok") is not False or not runtime_data)
-    )
-    degraded = bool(compute_result.get("ok")) or bool(runtime_result.get("ok")) or bool(compute_data) or bool(runtime_payload)
-    response = dict(compute_data)
-    if runtime_data.get("ok") is not False:
-        response.update(runtime_data)
-    response.update(
-        {
-            "compute": compute_data,
-            "runtime": runtime_data,
-            "service_topology": service_topology,
-            "warmup_details_included": bool(include_warmup_details),
-            "requested_environment": environment,
-            "actual_runtime_environment": actual_runtime_environment,
-            "runtime_environment_mismatch": actual_runtime_environment != environment,
-            "ok": ok,
-            "status": "running" if ok else ("degraded" if degraded else "offline"),
-            "source": "ibkr-api",
-            "proxy_upstream_compute": f"{COMPUTE_BASE_URL}/status",
-            "proxy_upstream_runtime": runtime_result.get("selected_upstream") or "",
-            "proxy_upstream_runtime_proxy": runtime_result.get("proxy_upstream") or "",
-            "proxy_upstream_runtime_direct": runtime_result.get("direct_upstream") or "",
-        }
-    )
-    if errors:
-        response["errors"] = errors
-        response["error"] = "; ".join(f"{key}: {value}" for key, value in errors.items())
-    return jsonify(response)
-
-
-@app.route("/api/custom/ibkr/startup/progress", methods=["POST"])
-def custom_ibkr_startup_progress() -> Response:
-    payload = request.get_json(silent=True) or {}
-    environment = _normalize_environment(payload.get("environment"), "live")
-    times = _time_strings()
-    action = str(payload.get("action") or "update").strip().lower() or "update"
-    create_if_missing = bool(payload.get("create_if_missing") is True)
-    current_payload = _get_state_payload(IBKR_STARTUP_STATE_KEY, environment, date=IBKR_STARTUP_STATE_DATE)
-    current = _normalize_startup_state(current_payload.get("data"), environment)
-    next_state = _normalize_startup_state(current, environment)
-
-    should_create_cycle = action == "begin" or (not bool(current.get("active")) and create_if_missing)
-    if should_create_cycle:
-        next_seq = max(0, int(current.get("startup_seq") or 0)) + 1
-        next_state.update(
-            {
-                "cycle_id": _build_startup_cycle_id(environment),
-                "startup_seq": next_seq,
-                "startup_label": _build_startup_label(environment, next_seq, times["us"]),
-                "active": True,
-                "status": "active",
-                "started_at": times["us"],
-                "finished_at": "",
-                "startup_chat_id": _startup_chat_id(environment),
-                "message_id": "",
-                "last_delivery_mode": "",
-                "last_delivery_at": "",
-                "last_delivery_error": "",
-                "fields": {},
-                "steps": _default_startup_steps(),
-            }
-        )
-    elif not next_state.get("cycle_id"):
-        next_seq = max(1, int(current.get("startup_seq") or 1))
-        next_state["cycle_id"] = _build_startup_cycle_id(environment)
-        next_state["startup_seq"] = next_seq
-        next_state["startup_label"] = current.get("startup_label") or _build_startup_label(environment, next_seq, current.get("started_at") or times["us"])
-
-    next_state["startup_chat_id"] = _startup_chat_id(environment)
-    if "title" in payload:
-        next_state["title"] = str(payload.get("title") or next_state.get("title") or "IBKR Runtime 启动中")
-    if "summary" in payload:
-        next_state["summary"] = str(payload.get("summary") or "")
-    if "current_step" in payload:
-        next_state["current_step"] = str(payload.get("current_step") or "")
-    if "current_blocker" in payload:
-        next_state["current_blocker"] = str(payload.get("current_blocker") or "")
-    if "operator_action" in payload:
-        next_state["operator_action"] = str(payload.get("operator_action") or "")
-    if "reason" in payload:
-        next_state["reason"] = str(payload.get("reason") or "")
-    if "source" in payload:
-        next_state["source"] = str(payload.get("source") or "")
-    if "runtime_phase" in payload:
-        next_state["runtime_phase"] = str(payload.get("runtime_phase") or "")
-    if "runtime_url" in payload:
-        next_state["runtime_url"] = str(payload.get("runtime_url") or "")
-    if "trigger_login" in payload:
-        next_state["trigger_login"] = bool(payload.get("trigger_login") is True)
-
-    if isinstance(payload.get("fields"), dict):
-        next_state["fields"] = {
-            **_normalize_startup_fields(next_state.get("fields")),
-            **_normalize_startup_fields(payload.get("fields")),
-        }
-    next_state["steps"] = _merge_startup_steps(next_state.get("steps"), payload.get("steps"), bool(next_state.get("trigger_login")))
-
-    if action in {"begin", "update", "pause"}:
-        next_state["active"] = True
-        next_state["status"] = str(payload.get("status") or "active").strip().lower() or "active"
-        if not next_state.get("started_at"):
-            next_state["started_at"] = times["us"]
-        next_state["finished_at"] = ""
-    elif action == "complete":
-        next_state["active"] = False
-        next_state["status"] = "completed"
-        next_state["finished_at"] = times["us"]
-    elif action == "fail":
-        next_state["active"] = False
-        next_state["status"] = "failed"
-        next_state["finished_at"] = times["us"]
-    elif action in {"abort", "clear"}:
-        next_state["active"] = False
-        next_state["status"] = "aborted"
-        next_state["finished_at"] = times["us"]
-
-    if action == "complete":
-        next_state["steps"] = _merge_startup_steps(
-            next_state.get("steps"),
-            {
-                "runtime_resume": {"status": "done", "detail": "认证恢复后 Runtime 已回到可运行状态。"},
-                "health_check": {"status": "done", "detail": "启动后健康检查已通过。"},
-            },
-            bool(next_state.get("trigger_login")),
-        )
-
-    next_state["last_update_at"] = times["us"]
-
-    try:
-        saved_record = pb.upsert_state(IBKR_STARTUP_STATE_KEY, environment, next_state, date=IBKR_STARTUP_STATE_DATE)
-    except Exception as exc:
-        return jsonify({"ok": False, "environment": environment, "error": str(exc), "source": "ibkr-api"}), 500
-
-    saved_state = _normalize_startup_state((saved_record or {}).get("data") if isinstance(saved_record, dict) else next_state, environment)
-    delivery = _deliver_startup_progress_card(saved_state, environment)
-    if delivery.get("message_id"):
-        saved_state["message_id"] = str(delivery.get("message_id") or "")
-    saved_state["last_delivery_mode"] = "update" if current.get("message_id") else "send"
-    saved_state["last_delivery_at"] = times["us"]
-    saved_state["last_delivery_error"] = "" if delivery.get("success") else str(delivery.get("error") or "")
-    try:
-        pb.upsert_state(IBKR_STARTUP_STATE_KEY, environment, saved_state, date=IBKR_STARTUP_STATE_DATE)
-    except Exception:
-        pass
-
-    if bool(payload.get("record_event") is True):
-        event_type = str(payload.get("event_type") or "status_change").strip() or "status_change"
-        level = str(payload.get("level") or "info").strip().lower() or "info"
-        event_source = str(payload.get("event_source") or payload.get("source") or "ibkr_compute").strip() or "ibkr_compute"
-        event_detail = payload.get("event_detail") if isinstance(payload.get("event_detail"), dict) else {
-            "cycle_id": saved_state.get("cycle_id") or "",
-            "current_step": _resolve_startup_step_label(saved_state),
-            "current_blocker": saved_state.get("current_blocker") or saved_state.get("summary") or "",
-            "operator_action": saved_state.get("operator_action") or "",
-        }
-        _write_system_event_record(
-            event_type,
-            level,
-            event_source,
-            str(payload.get("event_title") or saved_state.get("title") or "IBKR Runtime 启动中"),
-            event_detail,
-            environment,
-            bool(delivery.get("success")),
-        )
-
-    return jsonify(
-        {
-            "ok": True,
-            "environment": environment,
-            "date": IBKR_STARTUP_STATE_DATE,
-            "cycle_id": saved_state.get("cycle_id") or "",
-            "startup_label": saved_state.get("startup_label") or "",
-            "message_id": saved_state.get("message_id") or "",
-            "state": saved_state,
-            "delivery_ok": bool(delivery.get("success")),
-            "delivery_error": str(delivery.get("error") or ""),
-            "source": "ibkr-api",
-        }
-    )
-
-
-@app.route("/api/custom/ibkr/startup/status", methods=["GET"])
-def custom_ibkr_startup_status() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    payload = _get_state_payload(IBKR_STARTUP_STATE_KEY, environment, date=IBKR_STARTUP_STATE_DATE)
-    raw_state = _as_dict(payload.get("data"))
-    state = {
-        **raw_state,
-        "active": bool(raw_state.get("active")),
-        "status": str(raw_state.get("status") or "idle").strip().lower() or "idle",
-        "startup_label": str(raw_state.get("startup_label") or ""),
-        "current_step": str(raw_state.get("current_step") or ""),
-        "current_blocker": str(raw_state.get("current_blocker") or ""),
-        "operator_action": str(raw_state.get("operator_action") or ""),
-        "summary": str(raw_state.get("summary") or ""),
-        "reason": str(raw_state.get("reason") or ""),
-        "runtime_phase": str(raw_state.get("runtime_phase") or ""),
-        "steps": _as_dict(raw_state.get("steps")),
-        "fields": _as_dict(raw_state.get("fields")),
-    }
-    return jsonify(
-        {
-            "ok": True,
-            "environment": payload.get("environment") or environment,
-            "date": payload.get("date") or IBKR_STARTUP_STATE_DATE,
-            "startup_label": state.get("startup_label") or "",
-            "state": state,
-            "source": "ibkr-api",
-        }
-    )
-
-
-@app.route("/api/custom/ibkr/2fa/status", methods=["GET"])
-def custom_ibkr_two_factor_status() -> Response:
-    environment = _normalize_environment(request.args.get("environment"), "live")
-    payload = _get_state_payload(IBKR_2FA_STATE_KEY, environment, date=IBKR_2FA_STATE_DATE)
-    state = _as_dict(payload.get("data"))
-    if not str(state.get("status") or "").strip():
-        state["status"] = "requested"
-    if not str(state.get("recovery_phase") or "").strip():
-        state["recovery_phase"] = "idle"
-
-    runtime_result = _fetch_runtime_status(environment)
-    runtime_payload = _as_dict(runtime_result.get("payload"))
-    if runtime_payload:
-        state = _normalize_two_factor_state_with_runtime(state, runtime_payload)
-        actual_runtime_environment = _normalize_environment(runtime_payload.get("environment") or environment, environment)
-        state["requested_environment"] = environment
-        state["actual_runtime_environment"] = actual_runtime_environment
-        state["runtime_environment_mismatch"] = actual_runtime_environment != environment
-        if state["runtime_environment_mismatch"]:
-            state["message"] = (
-                f"当前 {environment.upper()} 页面没有独立 runtime；实际运行中的是 "
-                f"{actual_runtime_environment.upper()}，2FA 动作已阻止。"
+_runtime_route_handlers = register_runtime_routes(
+    app,
+    deps={
+        "pb": pb,
+        "build_service_topology": build_service_topology,
+        "normalize_environment": _normalize_environment,
+        "parse_boolean": _parse_boolean,
+        "pick_effective_config_rows": _pick_effective_config_rows,
+        "serialize_config_rows": _serialize_config_rows,
+        "merge_service_topology": lambda *payloads: _merge_service_topology(*payloads),
+        "fetch_compute_health": lambda environment: _fetch_compute_health(environment),
+        "fetch_compute_status": lambda environment: _fetch_compute_status(environment),
+        "fetch_runtime_health": lambda environment: _fetch_runtime_health(environment),
+        "fetch_runtime_status": lambda environment: _fetch_runtime_status(environment),
+        "as_dict": _as_dict,
+        "load_daily_scan_state": lambda environment: _load_daily_scan_state(environment),
+        "count_active_today_targets": lambda environment, market_date: _count_active_today_targets(environment, market_date),
+        "build_statusz_compute_payload": lambda compute_payload, include_engines: _build_statusz_compute_payload(compute_payload, include_engines),
+        "build_statusz_live_readiness": lambda compute_payload, runtime_payload: _build_statusz_live_readiness(compute_payload, runtime_payload),
+        "build_statusz_runtime_payload": (
+            lambda runtime_payload, include_warmup_details, *, live_readiness, fallback_state=None: _build_statusz_runtime_payload(
+                runtime_payload,
+                include_warmup_details,
+                live_readiness=live_readiness,
+                fallback_state=fallback_state,
             )
-            state["last_result"] = f"当前显示的是 {actual_runtime_environment.upper()} 运行态。"
-    if runtime_result.get("error"):
-        state["runtime_status_error"] = str(runtime_result.get("error") or "")
-
-    return jsonify(
-        {
-            "ok": True,
-            "environment": payload.get("environment") or environment,
-            "date": payload.get("date") or IBKR_2FA_STATE_DATE,
-            "state": state,
-            "source": "ibkr-api",
-        }
-    )
-
-
-@app.route("/api/custom/ibkr/proxy", methods=["POST"])
-def custom_ibkr_proxy() -> Response:
-    payload = request.get_json(silent=True) or {}
-    action = str(payload.get("action") or "").strip().lower()
-    target = ACTION_PROXY_MAP.get(action)
-    if not target:
-        return _proxy_custom_to_pb("ibkr/proxy")
-
-    base_url, target_path = target
-    proxy_body = {key: value for key, value in payload.items() if key != "action"}
-    if action == "recompute":
-        proxy_body = None
-    return _forward_request(base_url, target_path, json_body=proxy_body)
+        ),
+        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
+        "normalize_two_factor_state_with_runtime": lambda state_data, runtime_status: _normalize_two_factor_state_with_runtime(state_data, runtime_status),
+        "ibkr_2fa_state_key": IBKR_2FA_STATE_KEY,
+        "ibkr_2fa_state_date": IBKR_2FA_STATE_DATE,
+        "compute_base_url": COMPUTE_BASE_URL,
+    },
+)
+custom_ibkr_runtime_config = _runtime_route_handlers["custom_ibkr_runtime_config"]
+custom_ibkr_healthz = _runtime_route_handlers["custom_ibkr_healthz"]
+custom_ibkr_statusz = _runtime_route_handlers["custom_ibkr_statusz"]
+custom_ibkr_two_factor_status = _runtime_route_handlers["custom_ibkr_two_factor_status"]
 
 
-@app.route("/api/custom/ibkr/signal", methods=["POST"])
-def custom_ibkr_signal() -> Response:
-    payload, status_code = build_signal_ingest_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        config_value=_config_value,
-        send_interactive=_feishu_send_interactive,
-        update_interactive=_feishu_update_interactive,
-        signal_chat_id_fn=_signal_chat_id,
-        console_base_url=_console_base_url(),
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_startup_route_handlers = register_startup_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "time_strings": _time_strings,
+        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
+        "normalize_startup_state": lambda value, environment: _normalize_startup_state(value, environment),
+        "build_startup_cycle_id": lambda environment: _build_startup_cycle_id(environment),
+        "build_startup_label": lambda environment, startup_seq, started_at: _build_startup_label(environment, startup_seq, started_at),
+        "startup_chat_id": lambda environment: _startup_chat_id(environment),
+        "default_startup_steps": _default_startup_steps,
+        "normalize_startup_fields": _normalize_startup_fields,
+        "merge_startup_steps": _merge_startup_steps,
+        "deliver_startup_progress_card": lambda state, environment: _deliver_startup_progress_card(state, environment),
+        "resolve_startup_step_label": lambda state: _resolve_startup_step_label(state),
+        "write_system_event_record": lambda *args, **kwargs: _write_system_event_record(*args, **kwargs),
+        "ibkr_startup_state_key": IBKR_STARTUP_STATE_KEY,
+        "ibkr_startup_state_date": IBKR_STARTUP_STATE_DATE,
+        "as_dict": _as_dict,
+    },
+)
+custom_ibkr_startup_progress = _startup_route_handlers["custom_ibkr_startup_progress"]
+custom_ibkr_startup_status = _startup_route_handlers["custom_ibkr_startup_status"]
 
 
-@app.route("/api/custom/ibkr/signals", methods=["POST"])
-def custom_ibkr_signals() -> Response:
-    payload, status_code = build_signals_ingest_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        config_value=_config_value,
-        send_interactive=_feishu_send_interactive,
-        update_interactive=_feishu_update_interactive,
-        signal_chat_id_fn=_signal_chat_id,
-        console_base_url=_console_base_url(),
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_signal_route_handlers = register_signal_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "escape_filter_string": _escape_filter_string,
+        "as_dict": _as_dict,
+        "console_base_url": _console_base_url,
+        "signal_chat_id": _signal_chat_id,
+        "feishu_send_interactive": _feishu_send_interactive,
+        "feishu_update_interactive": _feishu_update_interactive,
+        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime(environment, order_id, payload),
+        "build_signal_ingest_response": lambda *args, **kwargs: build_signal_ingest_response(*args, **kwargs),
+        "build_signals_ingest_response": lambda *args, **kwargs: build_signals_ingest_response(*args, **kwargs),
+        "build_signals_pending_response": lambda *args, **kwargs: build_signals_pending_response(*args, **kwargs),
+        "build_signals_ack_response": lambda *args, **kwargs: build_signals_ack_response(*args, **kwargs),
+        "build_order_upsert_response": lambda *args, **kwargs: build_order_upsert_response(*args, **kwargs),
+        "build_signal_confirm_webhook_response": lambda *args, **kwargs: build_signal_confirm_webhook_response(*args, **kwargs),
+        "build_signal_cancel_webhook_response": lambda *args, **kwargs: build_signal_cancel_webhook_response(*args, **kwargs),
+        "config_value": _config_value,
+    },
+)
+custom_ibkr_signal = _signal_route_handlers["custom_ibkr_signal"]
+custom_ibkr_signals = _signal_route_handlers["custom_ibkr_signals"]
+custom_ibkr_signals_pending = _signal_route_handlers["custom_ibkr_signals_pending"]
+custom_ibkr_signals_ack = _signal_route_handlers["custom_ibkr_signals_ack"]
+webhook_signal_confirm = _signal_route_handlers["webhook_signal_confirm"]
+webhook_signal_cancel = _signal_route_handlers["webhook_signal_cancel"]
 
 
-@app.route("/api/custom/ibkr/signals/pending", methods=["GET"])
-def custom_ibkr_signals_pending() -> Response:
-    payload, status_code = build_signals_pending_response(
-        pb,
-        environment=request.args.get("environment"),
-        date_str=request.args.get("date") or "",
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        as_dict=_as_dict,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_state_route_handlers = register_state_routes(
+    app,
+    deps={
+        "normalize_environment": _normalize_environment,
+        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
+        "upsert_state": lambda state_key, environment, data, date="global": pb.upsert_state(state_key, environment, data, date=date),
+        "as_dict": _as_dict,
+    },
+)
+custom_ibkr_state_signals_get = _state_route_handlers["custom_ibkr_state_signals_get"]
+custom_ibkr_state_signals_post = _state_route_handlers["custom_ibkr_state_signals_post"]
+custom_ibkr_state_orders_get = _state_route_handlers["custom_ibkr_state_orders_get"]
+custom_ibkr_state_orders_post = _state_route_handlers["custom_ibkr_state_orders_post"]
 
 
-@app.route("/api/custom/ibkr/signals/ack", methods=["POST"])
-def custom_ibkr_signals_ack() -> Response:
-    payload, status_code = build_signals_ack_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        order_upsert_builder=build_order_upsert_response,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_order_route_handlers = register_order_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "escape_filter_string": _escape_filter_string,
+        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime(environment, order_id, payload),
+        "build_order_upsert_response": lambda *args, **kwargs: build_order_upsert_response(*args, **kwargs),
+        "build_orders_reconcile_response": lambda *args, **kwargs: build_orders_reconcile_response(*args, **kwargs),
+        "build_order_cancel_group_response": lambda *args, **kwargs: build_order_cancel_group_response(*args, **kwargs),
+        "build_order_close_group_response": lambda *args, **kwargs: build_order_close_group_response(*args, **kwargs),
+        "build_order_cancel_webhook_response": lambda *args, **kwargs: build_order_cancel_webhook_response(*args, **kwargs),
+        "build_order_close_webhook_response": lambda *args, **kwargs: build_order_close_webhook_response(*args, **kwargs),
+    },
+)
+custom_ibkr_orders_upsert = _order_route_handlers["custom_ibkr_orders_upsert"]
+custom_ibkr_orders_reconcile = _order_route_handlers["custom_ibkr_orders_reconcile"]
+custom_ibkr_orders_cancel_group = _order_route_handlers["custom_ibkr_orders_cancel_group"]
+custom_ibkr_orders_close_group = _order_route_handlers["custom_ibkr_orders_close_group"]
+webhook_order_cancel = _order_route_handlers["webhook_order_cancel"]
+webhook_order_close = _order_route_handlers["webhook_order_close"]
 
 
-@app.route("/api/custom/ibkr/orders/upsert", methods=["POST"])
-def custom_ibkr_orders_upsert() -> Response:
-    payload, status_code = build_order_upsert_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_reverse_route_handlers = register_reverse_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "escape_filter_string": _escape_filter_string,
+        "build_reverse_list_response": lambda *args, **kwargs: build_reverse_list_response(*args, **kwargs),
+        "build_reverse_calculate_response": lambda *args, **kwargs: build_reverse_calculate_response(*args, **kwargs),
+        "build_reverse_pending_response": lambda *args, **kwargs: build_reverse_pending_response(*args, **kwargs),
+        "build_reverse_dispatch_response": lambda *args, **kwargs: build_reverse_dispatch_response(*args, **kwargs),
+        "build_reverse_ack_response": lambda *args, **kwargs: build_reverse_ack_response(*args, **kwargs),
+    },
+)
+custom_ibkr_reverse_list = _reverse_route_handlers["custom_ibkr_reverse_list"]
+custom_ibkr_reverse_calculate = _reverse_route_handlers["custom_ibkr_reverse_calculate"]
+custom_ibkr_reverse_pending = _reverse_route_handlers["custom_ibkr_reverse_pending"]
+custom_ibkr_reverse_dispatch = _reverse_route_handlers["custom_ibkr_reverse_dispatch"]
+custom_ibkr_reverse_ack = _reverse_route_handlers["custom_ibkr_reverse_ack"]
 
 
-@app.route("/api/custom/ibkr/orders/reconcile", methods=["POST"])
-def custom_ibkr_orders_reconcile() -> Response:
-    payload, status_code = build_orders_reconcile_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_tradingview_route_handlers = register_tradingview_routes(
+    app,
+    deps={
+        "upsert_tv_indicator": lambda payload: _upsert_tv_indicator(payload),
+        "upsert_tv_signal": lambda payload: _upsert_tv_signal(payload),
+    },
+)
+webhook_tv = _tradingview_route_handlers["webhook_tv"]
 
 
-@app.route("/api/custom/ibkr/orders/cancel_group", methods=["POST"])
-def custom_ibkr_orders_cancel_group() -> Response:
-    payload, status_code = build_order_cancel_group_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        cancel_broker_order=_cancel_broker_order_via_runtime,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_control_route_handlers = register_control_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "escape_filter_string": _escape_filter_string,
+        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
+            method,
+            base_url,
+            path,
+            params=params,
+            json_body=json_body,
+            timeout=timeout,
+        ),
+        "runtime_base_url": RUNTIME_BASE_URL,
+        "inspect_runtime_environment": lambda environment: inspect_requested_runtime_environment(
+            environment,
+            normalize_environment=_normalize_environment,
+            fetch_runtime_status=_fetch_runtime_status,
+            as_dict=_as_dict,
+        ),
+        "build_runtime_environment_mismatch_payload": build_runtime_environment_mismatch_payload,
+        "emit_system_event": _emit_system_event,
+        "as_dict": _as_dict,
+    },
+)
+custom_ibkr_emergency_stop = _control_route_handlers["custom_ibkr_emergency_stop"]
+custom_ibkr_recover = _control_route_handlers["custom_ibkr_recover"]
+custom_ibkr_reauth = _control_route_handlers["custom_ibkr_reauth"]
 
 
-@app.route("/api/custom/ibkr/orders/close_group", methods=["POST"])
-def custom_ibkr_orders_close_group() -> Response:
-    payload, status_code = build_order_close_group_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_two_factor_route_handlers = register_two_factor_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "as_dict": _as_dict,
+        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
+            method,
+            base_url,
+            path,
+            params=params,
+            json_body=json_body,
+            timeout=timeout,
+        ),
+        "runtime_base_url": RUNTIME_BASE_URL,
+        "fetch_runtime_status": lambda environment: _fetch_runtime_status(environment),
+        "inspect_runtime_environment": lambda environment: inspect_requested_runtime_environment(
+            environment,
+            normalize_environment=_normalize_environment,
+            fetch_runtime_status=_fetch_runtime_status,
+            as_dict=_as_dict,
+        ),
+        "build_runtime_environment_mismatch_payload": build_runtime_environment_mismatch_payload,
+        "console_base_url": _console_base_url,
+        "config_value": _config_value,
+        "feishu_send_interactive": _feishu_send_interactive,
+        "feishu_update_interactive": _feishu_update_interactive,
+        "emit_system_event": _emit_system_event,
+        "merge_startup_steps": _merge_startup_steps,
+        "deliver_startup_progress_card": lambda state, environment: _deliver_startup_progress_card(state, environment),
+    },
+)
+custom_ibkr_two_factor_request = _two_factor_route_handlers["custom_ibkr_two_factor_request"]
+custom_ibkr_two_factor_result = _two_factor_route_handlers["custom_ibkr_two_factor_result"]
+custom_ibkr_two_factor_respond = _two_factor_route_handlers["custom_ibkr_two_factor_respond"]
 
 
-@app.route("/api/custom/ibkr/reverse/list", methods=["GET"])
-def custom_ibkr_reverse_list() -> Response:
-    payload, status_code = build_reverse_list_response(
-        pb,
-        environment=request.args.get("environment"),
-        date_str=request.args.get("date") or "",
-        symbol=request.args.get("symbol") or "",
-        statuses=request.args.get("status") or "",
-        limit=request.args.get("limit"),
-        normalize_environment=_normalize_environment,
-        escape_filter=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
+_callback_route_handlers = register_callback_routes(
+    app,
+    deps={
+        "handle_feishu_callback": _handle_feishu_callback_support,
+        "as_dict": _as_dict,
+        "normalize_environment": _normalize_environment,
+        "dispatch_feishu_2fa_callback": lambda action, environment: _dispatch_feishu_2fa_callback(action, environment),
+        "dispatch_feishu_order_callback": lambda action, order_id, environment: _dispatch_feishu_order_callback(action, order_id, environment),
+        "dispatch_feishu_signal_callback": lambda action, signal_id, environment: _dispatch_feishu_signal_callback(action, signal_id, environment),
+        "callback_toast": _callback_toast,
+        "callback_response": _feishu_callback_response,
+    },
+)
+webhook_feishu_callback = _callback_route_handlers["webhook_feishu_callback"]
 
 
-@app.route("/api/custom/ibkr/reverse/calculate", methods=["POST"])
-def custom_ibkr_reverse_calculate() -> Response:
-    payload, status_code = build_reverse_calculate_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        escape_filter=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
-
-
-@app.route("/api/custom/ibkr/reverse/pending", methods=["GET"])
-def custom_ibkr_reverse_pending() -> Response:
-    payload, status_code = build_reverse_pending_response(
-        pb,
-        environment=request.args.get("environment"),
-        limit=request.args.get("limit"),
-        normalize_environment=_normalize_environment,
-        escape_filter=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
-
-
-@app.route("/api/custom/ibkr/reverse/dispatch", methods=["POST"])
-def custom_ibkr_reverse_dispatch() -> Response:
-    payload, status_code = build_reverse_dispatch_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        escape_filter=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
-
-
-@app.route("/api/custom/ibkr/reverse/ack", methods=["POST"])
-def custom_ibkr_reverse_ack() -> Response:
-    payload, status_code = build_reverse_ack_response(
-        pb,
-        payload=request.get_json(silent=True) or {},
-        escape_filter=_escape_filter_string,
-    )
-    response = jsonify(payload)
-    return response if status_code == 200 else (response, status_code)
-
-
-@app.route("/webhook/tv", methods=["POST"])
-def webhook_tv() -> Response:
-    payload = request.get_json(silent=True) or {}
-    data_type = str(payload.get("type") or "signal").strip().lower() or "signal"
-    if data_type == "indicator":
-        return _upsert_tv_indicator(payload)
-    return _upsert_tv_signal(payload)
-
-
-@app.route("/webhook/signal/confirm", methods=["GET"])
-def webhook_signal_confirm() -> Response:
-    payload, status_code = build_signal_confirm_webhook_response(
-        pb,
-        payload={
-            "id": request.args.get("id") or "",
-            "environment": request.args.get("environment") or "",
-        },
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        update_signal_card=_feishu_update_interactive,
-        console_base_url=_console_base_url(),
-    )
-    return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
-
-
-@app.route("/webhook/signal/cancel", methods=["GET"])
-def webhook_signal_cancel() -> Response:
-    payload, status_code = build_signal_cancel_webhook_response(
-        pb,
-        payload={
-            "id": request.args.get("id") or "",
-            "environment": request.args.get("environment") or "",
-        },
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        cancel_broker_order=_cancel_broker_order_via_runtime,
-        update_signal_card=_feishu_update_interactive,
-        console_base_url=_console_base_url(),
-    )
-    return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
-
-
-@app.route("/webhook/order/cancel", methods=["GET"])
-def webhook_order_cancel() -> Response:
-    payload, status_code = build_order_cancel_webhook_response(
-        pb,
-        payload={
-            "id": request.args.get("id") or "",
-            "environment": request.args.get("environment") or "",
-        },
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        cancel_broker_order=_cancel_broker_order_via_runtime,
-    )
-    return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
-
-
-@app.route("/webhook/order/close", methods=["GET"])
-def webhook_order_close() -> Response:
-    payload, status_code = build_order_close_webhook_response(
-        pb,
-        payload={
-            "id": request.args.get("id") or "",
-            "environment": request.args.get("environment") or "",
-        },
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-    )
-    return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
-
-
-@app.route("/webhook/feishu/callback", methods=["POST"])
-def webhook_feishu_callback():
-    return _handle_feishu_callback_support(
-        request.get_json(silent=True) or {},
-        as_dict=_as_dict,
-        normalize_environment=_normalize_environment,
-        dispatch_feishu_2fa_callback_fn=_dispatch_feishu_2fa_callback,
-        dispatch_feishu_order_callback_fn=_dispatch_feishu_order_callback,
-        dispatch_feishu_signal_callback_fn=_dispatch_feishu_signal_callback,
-        callback_toast_fn=_callback_toast,
-        callback_response_fn=_feishu_callback_response,
-    )
-
-
-@app.route("/api/custom/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
-def custom_proxy(subpath: str) -> Response:
-    direct_target = DIRECT_PROXY_MAP.get((request.method.upper(), subpath))
-    if direct_target:
-        base_url, target_path = direct_target
-        return _forward_request(base_url, target_path)
-    return _proxy_custom_to_pb(subpath)
-
-
-@app.route("/webhook/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
-def webhook_proxy(subpath: str) -> Response:
-    return _proxy_webhook_to_pb(subpath)
+_compat_route_handlers = register_compat_routes(
+    app,
+    deps={
+        "pb_base_url": PB_BASE_URL,
+        "compute_base_url": COMPUTE_BASE_URL,
+        "runtime_base_url": RUNTIME_BASE_URL,
+        "scheduler_base_url": SCHEDULER_BASE_URL,
+        "direct_proxy_map": DIRECT_PROXY_MAP,
+        "action_proxy_map": ACTION_PROXY_MAP,
+        "delegated_pocketbase_custom_routes": DELEGATED_POCKETBASE_CUSTOM_ROUTES,
+        "delegated_pocketbase_webhook_routes": DELEGATED_POCKETBASE_WEBHOOK_ROUTES,
+        "build_service_topology": build_service_topology,
+        "config": config,
+        "normalize_environment": _normalize_environment,
+        "scheduler_status": lambda environment: _scheduler_status(environment),
+        "scheduler_job_states": lambda environment="live": _scheduler_job_states(environment),
+        "build_cron_payload": build_cron_payload,
+        "build_scheduler_summary": lambda environment, payload: _build_scheduler_summary(environment, payload),
+        "augment_scheduler_summary": lambda summary, items: _augment_scheduler_summary(summary, items),
+        "forward_request": lambda base_url, path, params=None, json_body=None: _forward_request(
+            base_url,
+            path,
+            params=params,
+            json_body=json_body,
+        ),
+        "proxy_custom_to_pb": lambda subpath: _proxy_custom_to_pb(subpath),
+        "proxy_webhook_to_pb": lambda subpath: _proxy_webhook_to_pb(subpath),
+    },
+)
+health = _compat_route_handlers["health"]
+status = _compat_route_handlers["status"]
+collections_proxy = _compat_route_handlers["collections_proxy"]
+custom_ibkr_proxy = _compat_route_handlers["custom_ibkr_proxy"]
+custom_proxy = _compat_route_handlers["custom_proxy"]
+webhook_proxy = _compat_route_handlers["webhook_proxy"]

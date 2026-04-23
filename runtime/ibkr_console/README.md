@@ -6,6 +6,10 @@ Deployment fans this directory out to:
 - `/opt/ibkr_console/static` for the standalone `ibkr-console` service
 - `/opt/pocketbase/pb_public` as a PocketBase compatibility public tree
 
+Deploy responsibility is split:
+- `ops/deploy/deploy_ibkr_console.sh` updates `/opt/ibkr_console/static`
+- `ops/deploy/deploy_pocketbase_runtime.sh --public-only` updates `/opt/pocketbase/pb_public`
+
 `runtime/pocketbase/pb_public` remains as a legacy compatibility workspace during the migration,
 but new console edits should land in `runtime/ibkr_console/static`.
 

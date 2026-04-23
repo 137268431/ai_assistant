@@ -2,28 +2,44 @@
 
 - Source-owned control-plane API code lives under `runtime/ibkr_api/src/ibkr_api`.
 - This service hosts compatibility routes, control actions, webhook entrypoints, and topology/status aggregation.
+- `compat/routes.py` owns the service shell routes (`/health`, `/status`, `/api/collections/*`, generic `/api/custom/*`, generic `/webhook/*`) so PB compatibility fallback is isolated from feature code.
+- `runtime/routes.py`, `runtime/status_support.py`, and `runtime/two_factor.py` own runtime/status/2FA status payload shaping; `two_factor/` owns the active 2FA request/result/respond flow instead of leaving those state machines embedded in `api_app.py`.
 - `system/` owns topology/status/monitor/cron helpers plus API-side system-event and PocketBase disk support.
-- `startup/` owns runtime-startup / 2FA progress-state helpers and startup card shaping.
+- `startup/` owns runtime-startup / 2FA progress-state helpers and startup card shaping; `startup/routes.py` owns the startup route registration.
 - `integrations/` owns external adapters such as Feishu transport and runtime order-cancel bridging.
-- `callbacks/` owns Feishu callback parsing and dispatch helpers.
-- `tradingview/` owns TradingView webhook normalization and `tv_indicators` / `tv_signals` upsert helpers.
-- `signals/` owns signal ingress, signal ACK, signal status notification, signal-related order cancel flow, signal webhook pages, and pending/ack API builders.
-- `orders/` owns order upsert, detail payloads, group actions, reconcile flow, order webhook pages, and shared order value/timestamp/relationship helpers.
-- `reverse/` owns reverse-signal query, calculate, dispatch, ack, and shared reverse normalization helpers.
+- `callbacks/` owns Feishu callback parsing and dispatch helpers; `callbacks/routes.py` owns the callback entry route.
+- `tradingview/` owns TradingView webhook normalization and `tv_indicators` / `tv_signals` upsert helpers; `tradingview/routes.py` owns the TradingView webhook route.
+- `signals/` owns signal ingress, signal ACK, signal status notification, signal-related order cancel flow, signal webhook pages, pending/ack API builders, and `signals/routes.py`.
+- `orders/` owns order upsert, detail payloads, group actions, reconcile flow, order webhook pages, shared order value/timestamp/relationship helpers, and `orders/routes.py`.
+- `reverse/` owns reverse-signal query, calculate, dispatch, ack, shared reverse normalization helpers, and `reverse/routes.py`.
 - `webhooks/` owns reusable webhook page rendering helpers.
 - `system/healthz` / `system/summaryz` / `system/monitorz` / `system/cronz` now have native ownership in `ibkr-api`; PocketBase hooks only keep thin compatibility forwarding.
+- Native scheduler-triggered system jobs now live under `runtime/ibkr_api/src/ibkr_api/system/jobs/` and `runtime/ibkr_api/src/ibkr_api/system/routes.py`, including `order_expiry`, auth/session guards, data-gap guard, weekly 2FA reminders, and open/close reminder dispatch.
+- `ibkr/statusz`, `ibkr/healthz`, `ibkr/runtime/config`, `ibkr/startup/progress`, `ibkr/startup/status`, `ibkr/2fa/status`, and `ibkr/proxy` now also terminate in `ibkr-api`; PocketBase hook routes for these paths are compatibility forwarders only.
+- `runtime/ibkr_api/src/ibkr_api/two_factor/` now natively owns `POST /api/custom/ibkr/2fa/request`, `POST /api/custom/ibkr/2fa/result`, and `POST /api/custom/ibkr/2fa/respond`; PocketBase `ibkr_actions.js` only keeps thin proxy shells for those routes.
+- `runtime/ibkr_api/src/ibkr_api/state/` now natively owns `state/signals` and `state/orders`, and `runtime/ibkr_api/src/ibkr_api/system/health_report.py` plus `runtime/ibkr_api/src/ibkr_api/system/notify.py` now own `health-report` and `notify`.
 - Native webhook ownership for `/webhook/tv`, `/webhook/feishu/callback`, `/webhook/signal/confirm`, `/webhook/signal/cancel`, `/webhook/order/cancel`, and `/webhook/order/close` now lives in `ibkr-api`.
 - Generic compatibility fallbacks `/api/custom/*` and `/webhook/*` are exposed from `ibkr-api` and currently proxy remaining PB-owned endpoints during incremental migration.
-- `api_app.py` should stay as assembly/composition; domain logic should keep moving into feature slices such as `system/`, `startup/`, `integrations/`, `callbacks/`, `tradingview/`, `signals/`, `orders/`, `reverse/`, and `webhooks/`, instead of continuing to grow one giant file.
+- `api_app.py` is now primarily composition glue: env/config wiring, shared adapters, and route registrar assembly. New work should land in feature-owned folders first, not back into one large file.
 - Old import paths like `ibkr_api.signal_webhooks`, `ibkr_api.order_upsert`, and `ibkr_api.reverse_actions` now resolve through `ibkr_api/compat`, so the visible source tree can stay under `signals/`, `orders/`, `reverse/`, and `webhooks/`.
-- Public entrypoints formerly owned by `pb_hooks/modules/actions/ibkr_signal_actions.js`, `order_manage.js`, and `ibkr_reverse_signals.js` now terminate at `ibkr-api` first; the remaining PB-owned compatibility logic is now mostly limited to legacy cron wrappers and a few not-yet-migrated PB-side jobs.
+- Public entrypoints formerly owned by `pb_hooks/modules/actions/ibkr_signal_actions.js`, `order_manage.js`, and `ibkr_reverse_signals.js` now terminate at `ibkr-api` first.
+- Current migration boundary is still mixed:
+  - Native in `ibkr-api`: signal/order/reverse routes, webhook pages, system `healthz|summaryz|monitorz|cronz|schedulerz`, runtime `statusz|healthz|runtime/config|startup/*|2fa/status`, control actions `emergency-stop|recover|reauth`, 2FA `request|result|respond`, state `signals|orders`, plus `health-report` and `notify`.
+  - Still delegated back to PocketBase through `compat/routes.py` fallback: large parts of `pb_hooks/modules/actions/ibkr_actions.js`, including bar/indicator ingest, today-targets/watchlist/targets, data-quality/screener/quotes/history rebuild, runtime order execution and account views, `orders/cancel_sync`, and remaining 2FA runtime actions `takeover|probe|panic-reset`.
+  - Still piggybacked from PocketBase cron wrappers: `system_notify_scheduler.js` and `system_monitor_alert_guard.js` flows that have not yet been moved behind native `ibkr-api` + `ibkr-scheduler` ownership.
 - `GET /api/custom/ibkr/signals/pending` is now read natively from `ibkr-api` via PocketBase REST instead of executing inside PB hooks.
 - `POST /api/custom/ibkr/signal` and `POST /api/custom/ibkr/signals` are now handled natively in `ibkr-api`; signal-source normalization, bar-level duplicate detection, lifecycle state resolution, and Feishu signal-card sync all live under `signals/`.
 - `POST /api/custom/ibkr/signals/ack` is now handled natively in `ibkr-api`; signal status updates and child order skeleton creation both stay inside API-owned Python modules.
+- `POST /api/custom/system/jobs/signal_expiry` is now handled natively in `ibkr-api`; stale pending / awaiting_confirm signals are expired or repaired-to-executed from related orders inside `signals/expiry.py`.
+- `POST /api/custom/system/jobs/order_detail_integrity` is now handled natively in `ibkr-api`; order-detail self-heal stays in `orders/integrity.py` as a thin wrapper around the split reconcile flow.
 - `GET /webhook/signal/confirm` and `GET /webhook/signal/cancel` are now rendered natively in `ibkr-api` with service-owned signal webhook builders and landing pages.
 - `POST /api/custom/ibkr/orders/upsert`, `POST /api/custom/ibkr/orders/reconcile`, `POST /api/custom/ibkr/orders/cancel_group`, and `POST /api/custom/ibkr/orders/close_group` are now handled natively in `ibkr-api`.
 - `GET /webhook/order/cancel` and `GET /webhook/order/close` are now rendered natively in `ibkr-api` with service-owned landing pages instead of PocketBase hook HTML helpers.
 - `GET /api/custom/ibkr/reverse/list`, `GET /api/custom/ibkr/reverse/pending`, `POST /api/custom/ibkr/reverse/dispatch`, `POST /api/custom/ibkr/reverse/ack`, and `POST /api/custom/ibkr/reverse/calculate` are now handled natively in `ibkr-api`; PocketBase hooks mainly remain as compatibility forwarding and scheduler-era JS jobs.
+- PocketBase compatibility files `pb_hooks/modules/actions/ibkr_actions.js`, `ibkr_signal_actions.js`, `order_manage.js`, and `ibkr_reverse_signals.js` now forward these migrated signal/order/reverse routes to `ibkr-api` instead of executing the old business logic locally.
+- Deletion bar for PocketBase compatibility from the API point of view:
+  - `compat/routes.py` should eventually stop delegating business routes back to PocketBase.
+  - `api_app.py` should keep shrinking toward registrar wiring plus shared adapters, not reclaim business code from the feature folders.
 - `orders_api.py` is now only a thin compatibility export so route code and tests can move gradually while the real order logic stays split by function.
 - Legacy `ibkr_compute.control_plane.*` modules remain only as compatibility wrappers.
 - Ownership boundary: `ibkr_console` owns static UI, `ibkr_scheduler` owns cron registry/cursors, `ibkr_runtime` owns broker/gateway/live runtime state, and `ibkr_compute` owns compute/backtest/history rebuild.

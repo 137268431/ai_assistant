@@ -1,7 +1,7 @@
 [Unit]
 Description=IBKR Control-Plane API Service
-After=network.target pocketbase.service ibkr-compute.service ibkr-runtime.service ibkr-scheduler.service
-Wants=pocketbase.service ibkr-compute.service ibkr-runtime.service ibkr-scheduler.service
+After=network.target pocketbase.service ibkr-compute.service ibkr-runtime.service
+Wants=pocketbase.service ibkr-compute.service ibkr-runtime.service
 
 [Service]
 Type=simple

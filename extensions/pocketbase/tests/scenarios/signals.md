@@ -12,7 +12,7 @@
 
 ---
 
-> 兼容说明：`POST /api/custom/ibkr/signal` 目前仍保留为 PocketBase 兼容写入入口；`GET /api/custom/ibkr/signals/pending`、`POST /api/custom/ibkr/signals/ack`、`GET /webhook/signal/*` 与 `GET /webhook/order/*` 已优先由 `ibkr-api` 原生处理。
+> 兼容说明：`POST /api/custom/ibkr/signal` 现在已经由 `ibkr-api` 原生处理；PocketBase 只保留兼容注册 / 转发层。`GET /api/custom/ibkr/signals/pending`、`POST /api/custom/ibkr/signals/ack`、`GET /webhook/signal/*` 与 `GET /webhook/order/*` 也都优先由 `ibkr-api` 原生处理。
 
 ---
 

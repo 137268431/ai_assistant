@@ -2179,124 +2179,30 @@ routerAdd("POST", "/api/custom/ibkr/indicators", (c) => {
 })
 
 // ══════════════════════════════════════
-// 信号写入 -> ibkr_signals
+// 信号写入兼容入口 -> ibkr-api / ibkr_signals
 routerAdd("POST", "/api/custom/ibkr/signal", (c) => {
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const reqInfo = c.requestInfo()
-    const d = reqInfo.body || reqInfo.data || {}
-    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
-    const signalLifecycle = require(`${__hooks}/lib/ibkr_signal_lifecycle.js`)
-    const environment = String(d.environment || "live").trim().toLowerCase() || "live"
-    const prepared = actionHelpers.buildSignalData(d, environment)
-    if (!prepared.ok) {
-        return c.json(400, { ok: false, error: prepared.error || "invalid_signal_payload" })
-    }
-
-    try {
-        let existing = null
-        try {
-            existing = $app.findFirstRecordByFilter("ibkr_signals", prepared.filter, prepared.params)
-        } catch (_) {}
-        if (!existing) {
-            const duplicate = actionHelpers.findSignalDuplicateByBarKey(prepared.data, environment, prepared.signal_id)
-            if (duplicate) {
-                actionHelpers.annotateSignalDuplicate(duplicate, prepared.data, environment)
-                return c.json(200, {
-                    ok: true,
-                    signal_id: String(duplicate.get("signal_id") || "").trim() || prepared.signal_id,
-                    duplicate_signal_id: prepared.signal_id,
-                    target: "ibkr_signals",
-                    id: duplicate.id,
-                    action: "skipped_duplicate_bar_signal",
-                    status: String(duplicate.get("status") || "").trim(),
-                    dedupe_key: actionHelpers.buildSignalBarDedupeKey(prepared.data, environment),
-                })
-            }
-        }
-        signalLifecycle.prepareSignalLifecycle(prepared, existing, environment)
-        const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
-        if (result.action !== "skipped") {
-            signalLifecycle.syncSignalNotification(result.record, existing ? String(existing.get("status") || "").trim() : "")
-        }
-        return c.json(200, {
-            ok: true,
-            signal_id: prepared.signal_id,
-            target: "ibkr_signals",
-            id: (result.record && result.record.id) || "",
-            action: result.action,
-            status: (result.record && result.record.get("status")) || prepared.data.status,
-        })
-    } catch (err) {
-        console.error(`[IBKRActions] signal upsert error: ${err.message}`)
-        return c.json(500, { ok: false, error: err.message || String(err), target: "ibkr_signals" })
-    }
+    const body = reqInfo.body || reqInfo.data || {}
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/signal", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(body, LIVE_ENVIRONMENT),
+        body: body,
+        timeout: 20,
+    })
 })
 
 routerAdd("POST", "/api/custom/ibkr/signals", (c) => {
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const reqInfo = c.requestInfo()
-    const d = reqInfo.body || reqInfo.data || {}
-    const items = Array.isArray(d.items) ? d.items : []
-    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
-    const signalLifecycle = require(`${__hooks}/lib/ibkr_signal_lifecycle.js`)
-    const defaultEnvironment = String(d.environment || "live").trim().toLowerCase() || "live"
-
-    if (!items.length) {
-        return c.json(400, { ok: false, error: "Empty signals array" })
-    }
-
-    let created = 0
-    let updated = 0
-    let skipped = 0
-    let duplicates = 0
-    let errors = 0
-    for (let i = 0; i < items.length; i++) {
-        const environment = String((items[i] && items[i].environment) || defaultEnvironment).trim().toLowerCase() || defaultEnvironment
-        const prepared = actionHelpers.buildSignalData(items[i] || {}, environment)
-        if (!prepared.ok) {
-            errors++
-            continue
-        }
-        try {
-            let existing = null
-            try {
-                existing = $app.findFirstRecordByFilter("ibkr_signals", prepared.filter, prepared.params)
-            } catch (_) {}
-            if (!existing) {
-                const duplicate = actionHelpers.findSignalDuplicateByBarKey(prepared.data, environment, prepared.signal_id)
-                if (duplicate) {
-                    actionHelpers.annotateSignalDuplicate(duplicate, prepared.data, environment)
-                    duplicates++
-                    skipped++
-                    continue
-                }
-            }
-            signalLifecycle.prepareSignalLifecycle(prepared, existing, environment)
-            const result = actionHelpers.upsertRecord("ibkr_signals", prepared.filter, prepared.params, prepared.data)
-            if (result.action === "created") {
-                created++
-            } else if (result.action === "updated") {
-                updated++
-            } else {
-                skipped++
-            }
-            if (result.action !== "skipped") {
-                signalLifecycle.syncSignalNotification(result.record, existing ? String(existing.get("status") || "").trim() : "")
-            }
-        } catch (err) {
-            errors++
-            console.error(`[IBKRActions] signals upsert error: ${prepared.signal_id}: ${err.message}`)
-        }
-    }
-
-    return c.json(200, {
-        ok: errors === 0,
-        received: items.length,
-        success: created + updated,
-        created: created,
-        updated: updated,
-        skipped: skipped,
-        duplicates: duplicates,
-        errors: errors,
-        target: "ibkr_signals",
+    const body = reqInfo.body || reqInfo.data || {}
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/signals", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(body, LIVE_ENVIRONMENT),
+        body: body,
+        timeout: 30,
     })
 })
 
@@ -4642,60 +4548,16 @@ function buildRuntimeEnvironmentMismatchPayload(environmentInfo, route) {
 }
 
 routerAdd("POST", "/api/custom/ibkr/proxy", (c) => {
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const reqInfo = c.requestInfo()
-    const d = reqInfo.body || reqInfo.data || {}
-    const action = String(d.action || "").trim()
-    // PB hooks run in a shared JS runtime; keep critical proxy helpers route-local.
-    const { getRuntimeEnvironmentFromData, getIbkrComputeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const computeBaseUrl = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
-    const parsePayload = function(rawValue) {
-        const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
-        if (!raw) return {}
-        try {
-            return JSON.parse(raw)
-        } catch (_) {
-            return { ok: false, raw: raw }
-        }
-    }
-    const withMeta = function(payload, upstream) {
-        const base = payload && typeof payload === "object" && !Array.isArray(payload)
-            ? { ...payload }
-            : { ok: false, raw: String(payload || "") }
-        base.proxy_source = "pocketbase_ibkr_hook"
-        base.proxy_hook = "ibkr_actions.pb.js"
-        base.proxy_route = "/api/custom/ibkr/proxy"
-        base.proxy_upstream = upstream
-        return base
-    }
-
-    const validActions = ["compute", "scan", "recompute", "chart/timeline", "chart/compare"]
-    if (!validActions.includes(action)) {
-        return c.json(400, { ok: false, error: "Invalid action, must be: " + validActions.join("/") })
-    }
-
-    try {
-        const upstream = `${computeBaseUrl}/${action}`
-        const timeoutSeconds = action === "compute" ? 180 : 60
-        const resp = $http.send({
-            url: upstream,
-            method: "POST",
-            body: JSON.stringify({ source: "pb_proxy", ...d }),
-            headers: { "Content-Type": "application/json" },
-            timeout: timeoutSeconds,
-        })
-        return c.html((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), JSON.stringify(withMeta(parsePayload(resp.raw), upstream)))
-    } catch (err) {
-        console.error(`[IBKRActions] proxy ${action} error: ${err.message}`)
-        const upstream = `${computeBaseUrl}/${action}`
-        return c.json(
-            502,
-            withMeta(
-                { ok: false, status: "offline", error: `ibkr_compute unreachable: ${err.message}` },
-                upstream
-            )
-        )
-    }
+    const body = reqInfo.body || reqInfo.data || {}
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/proxy", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(body, LIVE_ENVIRONMENT),
+        body: body,
+        timeout: 30,
+    })
 })
 
 routerAdd("GET", "/api/custom/ibkr/quotes", (c) => {
@@ -4880,877 +4742,30 @@ routerAdd("GET", "/api/custom/ibkr/history/rebuild/status", (c) => {
 // IBKR Compute 状态查询 (PB页面用)
 // ══════════════════════════════════════
 routerAdd("GET", "/api/custom/ibkr/statusz", (c) => {
-    try {
-        const parseBoolean = function(value, fallback) {
-            if (value === undefined || value === null || value === "") {
-                return fallback
-            }
-            if (typeof value === "boolean") return value
-            const normalized = String(value || "").trim().toLowerCase()
-            if (["true", "1", "yes", "y"].indexOf(normalized) !== -1) return true
-            if (["false", "0", "no", "n"].indexOf(normalized) !== -1) return false
-            return fallback
-        }
-        const parseHttpJson = function(rawValue) {
-            const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
-            if (!raw) return {}
-            try {
-                return JSON.parse(raw)
-            } catch (_) {
-                return { ok: false, raw: raw }
-            }
-        }
-        const cloneObject = function(value) {
-            if (!value || typeof value !== "object" || Array.isArray(value)) {
-                return {}
-            }
-            return { ...value }
-        }
-        const trimArray = function(values, limit) {
-            if (!Array.isArray(values)) return []
-            const maxItems = Math.max(0, Number(limit) || 0)
-            return maxItems > 0 ? values.slice(0, maxItems) : []
-        }
-        const trimObjectEntries = function(value, limit) {
-            if (!value || typeof value !== "object" || Array.isArray(value)) {
-                return {}
-            }
-            const maxItems = Math.max(0, Number(limit) || 0)
-            const entries = Object.entries(value)
-            if (!maxItems || entries.length <= maxItems) {
-                return { ...value }
-            }
-            const trimmed = {}
-            entries.slice(0, maxItems).forEach(([key, item]) => {
-                trimmed[key] = item
-            })
-            return trimmed
-        }
-        const buildStatuszComputePayload = function(computePayload, includeEngines) {
-            const payload = cloneObject(computePayload)
-            const engineMap = payload.engines && typeof payload.engines === "object" && !Array.isArray(payload.engines)
-                ? payload.engines
-                : {}
-            const totalEngines = Number(payload.total_engines || 0) || Object.keys(engineMap).length
-
-            payload.total_engines = totalEngines
-            payload.ready_engines = Number(payload.ready_engines || 0) || 0
-            payload.engines_available = totalEngines > 0
-            payload.engines_included = Boolean(includeEngines)
-            payload.statusz_mode = includeEngines ? "full" : "lite"
-
-            if (includeEngines) {
-                payload.engines = engineMap
-            } else {
-                delete payload.engines
-            }
-
-            return payload
-        }
-        const buildStatuszLiveReadiness = function(computePayload, runtimePayload) {
-            const compute = cloneObject(computePayload)
-            const runtime = cloneObject(runtimePayload)
-            const engineMap = compute.engines && typeof compute.engines === "object" && !Array.isArray(compute.engines)
-                ? compute.engines
-                : {}
-            const warmup = cloneObject(runtime.warmup)
-            const marketUniverse = cloneObject(runtime.market_universe)
-            const environment = String(runtime.environment || compute.environment || "live").trim().toLowerCase() || "live"
-            const requiredInterval = String(warmup.required_interval || "5m").trim() || "5m"
-            const normalizeSymbolList = (values) => {
-                const source = Array.isArray(values) ? values : [values]
-                const items = []
-                const seen = {}
-                source.forEach((value) => {
-                    if (Array.isArray(value)) {
-                        value.forEach((nested) => {
-                            const symbol = String(nested || "").trim().toUpperCase()
-                            if (!symbol || seen[symbol]) return
-                            seen[symbol] = true
-                            items.push(symbol)
-                        })
-                        return
-                    }
-                    const symbol = String(value || "").trim().toUpperCase()
-                    if (!symbol || seen[symbol]) return
-                    seen[symbol] = true
-                    items.push(symbol)
-                })
-                return items
-            }
-            const tradeSymbols = normalizeSymbolList(
-                Array.isArray(warmup.trade_symbols) && warmup.trade_symbols.length
-                    ? warmup.trade_symbols
-                    : (Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols : [])
-            )
-            const monitorSymbols = normalizeSymbolList(
-                Array.isArray(warmup.monitor_symbols) && warmup.monitor_symbols.length
-                    ? warmup.monitor_symbols
-                    : (Array.isArray(marketUniverse.market_ws_symbols) ? marketUniverse.market_ws_symbols : [])
-            )
-            let symbols = normalizeSymbolList(
-                Array.isArray(warmup.symbols) && warmup.symbols.length
-                    ? warmup.symbols
-                    : (Array.isArray(marketUniverse.data_symbols) ? marketUniverse.data_symbols : tradeSymbols.concat(monitorSymbols))
-            )
-            if (!symbols.length) {
-                symbols = normalizeSymbolList(
-                    Object.keys(engineMap).map((key) => {
-                        const parts = String(key || "").split("/")
-                        if (parts.length !== 3) return ""
-                        return parts[0] === environment && parts[2] === requiredInterval ? parts[1] : ""
-                    })
-                )
-            }
-
-            const symbolSet = {}
-            symbols.concat(tradeSymbols, monitorSymbols).forEach((symbol) => {
-                if (symbol) symbolSet[symbol] = true
-            })
-            const allSymbols = Object.keys(symbolSet).sort()
-            const tradeSet = {}
-            const monitorSet = {}
-            tradeSymbols.forEach((symbol) => {
-                tradeSet[symbol] = true
-            })
-            monitorSymbols.forEach((symbol) => {
-                monitorSet[symbol] = true
-            })
-
-            let readySymbols = 0
-            let readyTradeSymbols = 0
-            let readyMonitorSymbols = 0
-            const readySet = {}
-            allSymbols.forEach((symbol) => {
-                const engine = engineMap[`${environment}/${symbol}/${requiredInterval}`]
-                const isReady = Boolean(engine && engine.is_ready)
-                if (!isReady) return
-                readySet[symbol] = true
-                readySymbols += 1
-                if (tradeSet[symbol]) readyTradeSymbols += 1
-                if (monitorSet[symbol]) readyMonitorSymbols += 1
-            })
-
-            const nonMonitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && !monitorSet[symbol]).length
-            const monitorPendingTotal = allSymbols.filter((symbol) => !readySet[symbol] && monitorSet[symbol]).length
-            const gateOpen = tradeSymbols.length > 0 && readyTradeSymbols >= tradeSymbols.length
-            let phase = "idle"
-            if (allSymbols.length > 0) {
-                if (nonMonitorPendingTotal === 0) {
-                    phase = "ready"
-                } else {
-                    phase = "pending"
-                }
-            }
-
-            const snapshotSymbolsTotal = Number(warmup.symbols_total || 0) || 0
-            const snapshotReadySymbols = Number(warmup.ready_symbols || 0) || 0
-            const snapshotReadyTradeSymbols = Number(warmup.ready_trade_symbols || 0) || 0
-            const snapshotReadyMonitorSymbols = Number(warmup.ready_monitor_symbols || 0) || 0
-            const snapshotPresent = Boolean(
-                snapshotSymbolsTotal
-                || snapshotReadySymbols
-                || snapshotReadyTradeSymbols
-                || snapshotReadyMonitorSymbols
-                || String(warmup.phase || "").trim()
-                || String(warmup.finished_at || "").trim()
-            )
-            const snapshotDiffers = snapshotPresent && (
-                (snapshotSymbolsTotal > 0 && snapshotSymbolsTotal !== allSymbols.length)
-                || snapshotReadySymbols !== readySymbols
-                || snapshotReadyTradeSymbols !== readyTradeSymbols
-                || snapshotReadyMonitorSymbols !== readyMonitorSymbols
-            )
-            const snapshotPhase = String(warmup.phase || "").trim().toLowerCase() || "idle"
-            const snapshotFinishedAt = warmup.finished_at || ""
-            const snapshotTradeSymbolsTotal = Number(warmup.trade_symbols_total || 0) || tradeSymbols.length
-            const snapshotMonitorSymbolsTotal = Number(warmup.monitor_symbols_total || 0) || monitorSymbols.length
-            const snapshotPendingSymbolsTotal = Array.isArray(warmup.pending_symbols)
-                ? warmup.pending_symbols.length
-                : (Number(warmup.pending_symbols_total || 0) || 0)
-            const snapshotMonitorPendingTotal = Number(warmup.monitor_pending_symbols_total || 0)
-                || Math.max(0, snapshotMonitorSymbolsTotal - snapshotReadyMonitorSymbols)
-            const snapshotBlockingPendingTotal = Number(warmup.blocking_pending_symbols_total || 0)
-                || Math.max(0, snapshotPendingSymbolsTotal - snapshotMonitorPendingTotal)
-            const snapshotGateOpen = Boolean(warmup.trading_gate_open)
-            const snapshotGateReason = String(warmup.trading_gate_reason || "").trim().toLowerCase()
-                || (snapshotTradeSymbolsTotal > 0 ? (snapshotGateOpen ? "ready" : "warmup_incomplete") : "no_trade_symbols")
-            const runtimeMode = String(
-                runtime.runtime_mode
-                || compute.runtime_mode
-                || ((runtime.service_topology && runtime.service_topology.runtime_mode) || "")
-            ).trim().toLowerCase()
-            const preferRuntimeSnapshot = runtimeMode === "remote"
-            const runtimeSnapshotAvailable = snapshotPresent && (
-                snapshotSymbolsTotal > 0
-                || snapshotReadySymbols > 0
-                || snapshotTradeSymbolsTotal > 0
-                || snapshotMonitorSymbolsTotal > 0
-                || snapshotPhase !== "idle"
-                || Boolean(snapshotFinishedAt)
-            )
-
-            if ((preferRuntimeSnapshot || !Object.keys(engineMap).length) && runtimeSnapshotAvailable) {
-                return {
-                    available: true,
-                    engine_snapshot_available: Object.keys(engineMap).length > 0,
-                    source: "runtime_warmup_snapshot",
-                    environment: environment,
-                    required_interval: requiredInterval,
-                    computed_at: new Date().toISOString(),
-                    phase: snapshotPhase,
-                    gate_open: snapshotGateOpen,
-                    gate_reason: snapshotGateReason,
-                    symbols_total: snapshotSymbolsTotal || allSymbols.length,
-                    trade_symbols_total: snapshotTradeSymbolsTotal,
-                    monitor_symbols_total: snapshotMonitorSymbolsTotal,
-                    ready_symbols: snapshotReadySymbols,
-                    ready_trade_symbols: snapshotReadyTradeSymbols,
-                    ready_monitor_symbols: snapshotReadyMonitorSymbols,
-                    pending_symbols_total: snapshotPendingSymbolsTotal,
-                    non_monitor_pending_symbols_total: snapshotBlockingPendingTotal,
-                    blocking_pending_symbols_total: snapshotBlockingPendingTotal,
-                    monitor_pending_symbols_total: snapshotMonitorPendingTotal,
-                    snapshot_differs: false,
-                    snapshot_phase: snapshotPhase,
-                    snapshot_finished_at: snapshotFinishedAt,
-                }
-            }
-
-            return {
-                available: allSymbols.length > 0 && Object.keys(engineMap).length > 0,
-                engine_snapshot_available: Object.keys(engineMap).length > 0,
-                source: "compute_engines",
-                environment: environment,
-                required_interval: requiredInterval,
-                computed_at: new Date().toISOString(),
-                phase: phase,
-                gate_open: gateOpen,
-                gate_reason: gateOpen ? "ready" : (tradeSymbols.length ? "live_not_ready" : "no_trade_symbols"),
-                symbols_total: allSymbols.length,
-                trade_symbols_total: tradeSymbols.length,
-                monitor_symbols_total: monitorSymbols.length,
-                ready_symbols: readySymbols,
-                ready_trade_symbols: readyTradeSymbols,
-                ready_monitor_symbols: readyMonitorSymbols,
-                pending_symbols_total: Math.max(0, allSymbols.length - readySymbols),
-                non_monitor_pending_symbols_total: nonMonitorPendingTotal,
-                blocking_pending_symbols_total: nonMonitorPendingTotal,
-                monitor_pending_symbols_total: monitorPendingTotal,
-                snapshot_differs: Boolean(snapshotDiffers),
-                snapshot_phase: snapshotPhase,
-                snapshot_finished_at: snapshotFinishedAt,
-            }
-        }
-        const buildStatuszRuntimePayload = function(runtimePayload, includeWarmupDetails, liveReadiness = {}, fallbackState = {}) {
-            const payload = cloneObject(runtimePayload)
-            const gateway = cloneObject(payload.gateway)
-            const session = cloneObject(payload.session)
-            const authRecovery = cloneObject(payload.auth_recovery)
-            const websocket = cloneObject(payload.websocket)
-            const realtimeQuotes = cloneObject(payload.realtime_quotes)
-            const canonical5m = cloneObject(payload.canonical_5m)
-            const dataBackfill = cloneObject(payload.data_backfill)
-            const orderTracker = cloneObject(payload.order_tracker)
-            const warmup = cloneObject(payload.warmup)
-            const realtimeCompute = cloneObject(payload.realtime_compute)
-            const realtimeResult = cloneObject(realtimeCompute.last_result)
-            const marketUniverse = cloneObject(payload.market_universe)
-            const fallback = cloneObject(fallbackState)
-            const dailyScan = cloneObject(payload.daily_scan)
-            const persistedDailyScan = cloneObject(fallback.daily_scan)
-            if (!Object.keys(dailyScan).length && Object.keys(persistedDailyScan).length) {
-                Object.assign(dailyScan, persistedDailyScan)
-            }
-            if ((Number(marketUniverse.active_target_count || 0) || 0) <= 0) {
-                const fallbackActiveTargetCount = Number(fallback.active_target_count || 0) || 0
-                if (fallbackActiveTargetCount > 0) {
-                    marketUniverse.active_target_count = fallbackActiveTargetCount
-                }
-            }
-            if (!String(marketUniverse.active_target_date || "").trim()) {
-                const fallbackMarketDate = String(
-                    fallback.active_target_date
-                    || dailyScan.market_date
-                    || ""
-                ).trim()
-                if (fallbackMarketDate) {
-                    marketUniverse.active_target_date = fallbackMarketDate
-                }
-            }
-            const authRecoverySummary = {
-                cycle_id: String(authRecovery.cycle_id || ""),
-                recovery_phase: String(authRecovery.recovery_phase || ""),
-                recovery_class: String(authRecovery.recovery_class || ""),
-                recovery_reason: String(authRecovery.recovery_reason || ""),
-                interruption_kind: String(authRecovery.interruption_kind || ""),
-                last_runtime_authenticated_at: authRecovery.last_runtime_authenticated_at || "",
-                last_gateway_status_code: Number(authRecovery.last_gateway_status_code || 0) || 0,
-                last_recovery_source: String(authRecovery.last_recovery_source || ""),
-                probe_result: String(authRecovery.probe_result || ""),
-                probe_last_checked_at: authRecovery.probe_last_checked_at || "",
-                probe_attempts: Number(authRecovery.probe_attempts || 0) || 0,
-                auto_restart_scheduled: Boolean(authRecovery.auto_restart_scheduled),
-                manual_takeover_active: Boolean(authRecovery.manual_takeover_active),
-                lock_owner: String(authRecovery.lock_owner || ""),
-            }
-
-            const normalizeSymbolList = (values) => {
-                const source = Array.isArray(values) ? values : [values]
-                const items = []
-                const seen = {}
-                source.forEach((value) => {
-                    if (Array.isArray(value)) {
-                        value.forEach((nested) => {
-                            const symbol = String(nested || "").trim().toUpperCase()
-                            if (!symbol || seen[symbol]) return
-                            seen[symbol] = true
-                            items.push(symbol)
-                        })
-                        return
-                    }
-                    const symbol = String(value || "").trim().toUpperCase()
-                    if (!symbol || seen[symbol]) return
-                    seen[symbol] = true
-                    items.push(symbol)
-                })
-                return items
-            }
-            const shouldPromoteReadySnapshot = Boolean(
-                liveReadiness
-                && liveReadiness.snapshot_differs
-                && Boolean(liveReadiness.gate_open)
-                && String(liveReadiness.phase || "").trim().toLowerCase() === "ready"
-                && (Number(liveReadiness.pending_symbols_total || 0) || 0) === 0
-            )
-            if (shouldPromoteReadySnapshot) {
-                const normalizedWarmupSymbols = normalizeSymbolList(
-                    Array.isArray(warmup.symbols) && warmup.symbols.length
-                        ? warmup.symbols
-                        : marketUniverse.data_symbols
-                )
-                const normalizedScanSymbols = normalizeSymbolList(
-                    Array.isArray(warmup.scan_symbols) && warmup.scan_symbols.length
-                        ? warmup.scan_symbols
-                        : marketUniverse.scan_symbols
-                )
-                const normalizedTradeSymbols = normalizeSymbolList(
-                    Array.isArray(warmup.trade_symbols) && warmup.trade_symbols.length
-                        ? warmup.trade_symbols
-                        : marketUniverse.active_trade_symbols
-                )
-                const normalizedMonitorSymbols = normalizeSymbolList(
-                    Array.isArray(warmup.monitor_symbols) && warmup.monitor_symbols.length
-                        ? warmup.monitor_symbols
-                        : marketUniverse.market_ws_symbols
-                )
-                const scanSymbolSet = {}
-                const tradeSymbolSet = {}
-                const monitorSymbolSet = {}
-                normalizedScanSymbols.forEach((symbol) => {
-                    scanSymbolSet[symbol] = true
-                })
-                normalizedTradeSymbols.forEach((symbol) => {
-                    tradeSymbolSet[symbol] = true
-                })
-                normalizedMonitorSymbols.forEach((symbol) => {
-                    monitorSymbolSet[symbol] = true
-                })
-                const existingStatusRows = {}
-                ;(Array.isArray(warmup.symbol_status) ? warmup.symbol_status : []).forEach((item) => {
-                    const symbol = String(item && item.symbol || "").trim().toUpperCase()
-                    if (!symbol) return
-                    existingStatusRows[symbol] = cloneObject(item)
-                })
-
-                warmup.phase = "ready"
-                warmup.trading_gate_open = true
-                warmup.trading_gate_reason = String(liveReadiness.gate_reason || warmup.trading_gate_reason || "ready")
-                warmup.required_interval = String(liveReadiness.required_interval || warmup.required_interval || "")
-                warmup.symbols = normalizedWarmupSymbols
-                warmup.scan_symbols = normalizedScanSymbols
-                warmup.trade_symbols = normalizedTradeSymbols
-                warmup.monitor_symbols = normalizedMonitorSymbols
-                warmup.symbols_total = normalizedWarmupSymbols.length || (Number(liveReadiness.symbols_total || 0) || 0)
-                warmup.trade_symbols_total = normalizedTradeSymbols.length || (Number(liveReadiness.trade_symbols_total || 0) || 0)
-                warmup.monitor_symbols_total = normalizedMonitorSymbols.length || (Number(liveReadiness.monitor_symbols_total || 0) || 0)
-                warmup.ready_symbols = Number(liveReadiness.ready_symbols || warmup.symbols_total || 0) || 0
-                warmup.ready_trade_symbols = Number(liveReadiness.ready_trade_symbols || warmup.trade_symbols_total || 0) || 0
-                warmup.ready_monitor_symbols = Number(liveReadiness.ready_monitor_symbols || warmup.monitor_symbols_total || 0) || 0
-                warmup.ready_symbols_list = normalizedWarmupSymbols
-                warmup.pending_symbols = []
-                warmup.last_error = ""
-                if (String(warmup.reason || "").trim().toLowerCase() === "pb_unavailable_retry") {
-                    warmup.reason = ""
-                }
-                warmup.symbol_status = normalizedWarmupSymbols.map((symbol) => {
-                    const current = existingStatusRows[symbol] || {}
-                    let role = "data"
-                    if (tradeSymbolSet[symbol]) {
-                        role = "trade"
-                    } else if (monitorSymbolSet[symbol]) {
-                        role = "monitor"
-                    } else if (scanSymbolSet[symbol]) {
-                        role = "scan"
-                    }
-                    return {
-                        ...current,
-                        symbol: symbol,
-                        role: String(current.role || role),
-                        ready: true,
-                        integrity_ready: true,
-                        integrity_reason: "",
-                    }
-                })
-            }
-            const activeTradeSymbols = trimArray(
-                marketUniverse.active_trade_symbols,
-                Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols.length : 0
-            )
-            const monitorSymbolSet = {}
-            normalizeSymbolList(warmup.monitor_symbols).forEach((symbol) => {
-                monitorSymbolSet[symbol] = true
-            })
-            const splitByMonitorRole = (values) => {
-                const blocking = []
-                const monitor = []
-                normalizeSymbolList(values).forEach((symbol) => {
-                    if (monitorSymbolSet[symbol]) {
-                        monitor.push(symbol)
-                    } else {
-                        blocking.push(symbol)
-                    }
-                })
-                return { blocking, monitor }
-            }
-            const pendingSplit = splitByMonitorRole(warmup.pending_symbols)
-            const integrityPendingSplit = splitByMonitorRole(warmup.integrity_pending_symbols)
-            const pendingSymbols = trimArray(warmup.pending_symbols, 12)
-            const fullPendingSymbols = trimArray(
-                warmup.pending_symbols,
-                Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : 0
-            )
-            const blockingPendingSymbols = trimArray(
-                pendingSplit.blocking,
-                includeWarmupDetails ? pendingSplit.blocking.length : 12
-            )
-            const monitorPendingSymbols = trimArray(
-                pendingSplit.monitor,
-                includeWarmupDetails ? pendingSplit.monitor.length : 12
-            )
-            const activeRepairSymbols = trimArray(marketUniverse.last_active_repair_symbols, 12)
-            const fullSymbolStatus = includeWarmupDetails
-                ? trimArray(
-                    warmup.symbol_status,
-                    Array.isArray(warmup.symbol_status) ? warmup.symbol_status.length : 0
-                )
-                : []
-            const integrityPendingSymbols = includeWarmupDetails
-                ? trimArray(
-                    warmup.integrity_pending_symbols,
-                    Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0
-                )
-                : []
-            const blockingIntegrityPendingSymbols = includeWarmupDetails
-                ? trimArray(
-                    integrityPendingSplit.blocking,
-                    integrityPendingSplit.blocking.length
-                )
-                : []
-            const monitorIntegrityPendingSymbols = includeWarmupDetails
-                ? trimArray(
-                    integrityPendingSplit.monitor,
-                    integrityPendingSplit.monitor.length
-                )
-                : []
-            const readySymbolsList = includeWarmupDetails
-                ? trimArray(
-                    warmup.ready_symbols_list,
-                    Array.isArray(warmup.ready_symbols_list) ? warmup.ready_symbols_list.length : 0
-                )
-                : []
-            const warmupSymbols = includeWarmupDetails
-                ? trimArray(
-                    warmup.symbols,
-                    Array.isArray(warmup.symbols) ? warmup.symbols.length : 0
-                )
-                : []
-            const warmupTradeSymbols = includeWarmupDetails
-                ? trimArray(
-                    warmup.trade_symbols,
-                    Array.isArray(warmup.trade_symbols) ? warmup.trade_symbols.length : 0
-                )
-                : []
-            const warmupMonitorSymbols = includeWarmupDetails
-                ? trimArray(
-                    warmup.monitor_symbols,
-                    Array.isArray(warmup.monitor_symbols) ? warmup.monitor_symbols.length : 0
-                )
-                : []
-            const integrityRepairReasons = includeWarmupDetails
-                ? cloneObject(warmup.integrity_repair_reasons)
-                : {}
-            const blockingIntegrityRepairReasons = {}
-            const monitorIntegrityRepairReasons = {}
-            Object.entries(integrityRepairReasons).forEach(([symbol, reason]) => {
-                const normalizedSymbol = String(symbol || "").trim().toUpperCase()
-                if (!normalizedSymbol) return
-                if (monitorSymbolSet[normalizedSymbol]) {
-                    monitorIntegrityRepairReasons[normalizedSymbol] = reason
-                } else {
-                    blockingIntegrityRepairReasons[normalizedSymbol] = reason
-                }
-            })
-            const preflightRepair = includeWarmupDetails
-                ? cloneObject(warmup.preflight_repair)
-                : {}
-
-            return {
-                ok: payload.ok,
-                starting: Boolean(payload.starting),
-                startup_complete: Boolean(payload.startup_complete),
-                runtime_phase: String(payload.runtime_phase || ""),
-                environment: String(payload.environment || ""),
-                service_profile: String(payload.service_profile || ""),
-                runtime_mode: String(payload.runtime_mode || ""),
-                service_topology: cloneObject(payload.service_topology),
-                market_session: cloneObject(payload.market_session),
-                warmup_details_included: Boolean(includeWarmupDetails),
-                live_readiness: cloneObject(liveReadiness),
-                gateway: {
-                    running: Boolean(gateway.running),
-                    reachable: Boolean(gateway.reachable),
-                    managed_by: String(gateway.managed_by || ""),
-                    status_code: Number(gateway.status_code || 0) || 0,
-                    pid: Number(gateway.pid || 0) || 0,
-                    uptime_s: Number(gateway.uptime_s || 0) || 0,
-                },
-                session: {
-                    authenticated: Boolean(session.authenticated),
-                    running: Boolean(session.running),
-                    consecutive_failures: Number(session.consecutive_failures || 0) || 0,
-                    last_check: session.last_check || session.last_tickle || "",
-                    last_tickle: session.last_tickle || session.last_check || "",
-                },
-                auth_recovery: authRecoverySummary,
-                websocket: {
-                    connected: Boolean(websocket.connected),
-                    ready: Boolean(websocket.ready),
-                    running: Boolean(websocket.running),
-                    last_message: websocket.last_message || "",
-                    message_count: Number(websocket.message_count || 0) || 0,
-                    subscribed_count: Array.isArray(websocket.subscribed_conids) ? websocket.subscribed_conids.length : (Number(websocket.subscribed_count || 0) || 0),
-                    pending_count: Array.isArray(websocket.pending_conids) ? websocket.pending_conids.length : (Number(websocket.pending_count || 0) || 0),
-                },
-                realtime_quotes: {
-                    total_quotes: Number(realtimeQuotes.total_quotes || 0) || 0,
-                    stale_quotes: Number(realtimeQuotes.stale_quotes || 0) || 0,
-                    tick_count: Number(realtimeQuotes.tick_count || 0) || 0,
-                    update_count: Number(realtimeQuotes.update_count || 0) || 0,
-                },
-                canonical_5m: {
-                    enabled: Boolean(canonical5m.enabled !== false),
-                    driver: String(canonical5m.driver || ""),
-                    close_delay_sec: Number(canonical5m.close_delay_sec || 0) || 0,
-                    request_period: String(canonical5m.request_period || ""),
-                    last_run: canonical5m.last_run || "",
-                    last_due_bucket_ms: Number(canonical5m.last_due_bucket_ms || 0) || 0,
-                    last_completed_bucket_ms: Number(canonical5m.last_completed_bucket_ms || 0) || 0,
-                    lag_s: Number(canonical5m.lag_s || 0) || 0,
-                    last_written_bars: Number(canonical5m.last_written_bars || 0) || 0,
-                    written_symbols: trimArray(canonical5m.written_symbols, 24),
-                    written_symbols_total: Array.isArray(canonical5m.written_symbols) ? canonical5m.written_symbols.length : (Number(canonical5m.written_symbols_total || 0) || 0),
-                    pending_symbols: trimArray(canonical5m.pending_symbols, 24),
-                    pending_symbols_total: Array.isArray(canonical5m.pending_symbols) ? canonical5m.pending_symbols.length : (Number(canonical5m.pending_symbols_total || 0) || 0),
-                    last_error: String(canonical5m.last_error || ""),
-                },
-                data_backfill: {
-                    total_backfilled: Number(dataBackfill.total_backfilled || 0) || 0,
-                },
-                order_tracker: {
-                    running: Boolean(orderTracker.running),
-                    last_poll: orderTracker.last_poll || "",
-                    tracked_orders: Number(orderTracker.tracked_orders || 0) || 0,
-                },
-                warmup: {
-                    phase: String(warmup.phase || ""),
-                    trading_gate_open: Boolean(warmup.trading_gate_open),
-                    trading_gate_reason: String(warmup.trading_gate_reason || ""),
-                    required_interval: String(warmup.required_interval || ""),
-                    symbols_total: Number(warmup.symbols_total || 0) || 0,
-                    trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
-                    monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
-                    ready_symbols: Number(warmup.ready_symbols || 0) || 0,
-                    ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
-                    ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-                    pending_symbols: includeWarmupDetails ? fullPendingSymbols : pendingSymbols,
-                    pending_symbols_total: Array.isArray(warmup.pending_symbols) ? warmup.pending_symbols.length : (Number(warmup.pending_symbols_total || 0) || 0),
-                    blocking_pending_symbols: blockingPendingSymbols,
-                    blocking_pending_symbols_total: pendingSplit.blocking.length,
-                    monitor_pending_symbols: monitorPendingSymbols,
-                    monitor_pending_symbols_total: pendingSplit.monitor.length,
-                    requested_at: warmup.requested_at || "",
-                    started_at: warmup.started_at || "",
-                    finished_at: warmup.finished_at || "",
-                    last_success_at: warmup.last_success_at || "",
-                    last_error: String(warmup.last_error || ""),
-                    reason: String(warmup.reason || ""),
-                    target_date: String(warmup.target_date || ""),
-                    symbols: warmupSymbols,
-                    trade_symbols: warmupTradeSymbols,
-                    monitor_symbols: warmupMonitorSymbols,
-                    ready_symbols_list: readySymbolsList,
-                    symbol_status: fullSymbolStatus,
-                    integrity_pending_symbols: integrityPendingSymbols,
-                    integrity_pending_symbols_total: Array.isArray(warmup.integrity_pending_symbols) ? warmup.integrity_pending_symbols.length : 0,
-                    blocking_integrity_pending_symbols: blockingIntegrityPendingSymbols,
-                    blocking_integrity_pending_symbols_total: integrityPendingSplit.blocking.length,
-                    monitor_integrity_pending_symbols: monitorIntegrityPendingSymbols,
-                    monitor_integrity_pending_symbols_total: integrityPendingSplit.monitor.length,
-                    integrity_repair_reasons: integrityRepairReasons,
-                    blocking_integrity_repair_reasons: blockingIntegrityRepairReasons,
-                    monitor_integrity_repair_reasons: monitorIntegrityRepairReasons,
-                    preflight_repair: preflightRepair,
-                },
-                realtime_compute: {
-                    runs: Number(realtimeCompute.runs || 0) || 0,
-                    queue_size: Number(realtimeCompute.queue_size || 0) || 0,
-                    thread_alive: Boolean(realtimeCompute.thread_alive),
-                    inflight: Boolean(realtimeCompute.inflight),
-                    inflight_age_s: Number(realtimeCompute.inflight_age_s || 0) || 0,
-                    inflight_timeout_threshold_s: Number(realtimeCompute.inflight_timeout_threshold_s || 0) || 0,
-                    stalled: Boolean(realtimeCompute.stalled),
-                    stall_reason: String(realtimeCompute.stall_reason || ""),
-                    last_started: realtimeCompute.last_started || "",
-                    last_run: realtimeCompute.last_run || "",
-                    last_bar_close: realtimeCompute.last_bar_close || "",
-                    last_elapsed_s: Number(realtimeCompute.last_elapsed_s || realtimeResult.elapsed_s || 0) || 0,
-                    last_processed: Number(realtimeResult.processed || 0) || 0,
-                    last_signals: Number(realtimeResult.signals || 0) || 0,
-                    last_errors: Number(realtimeResult.errors || 0) || 0,
-                },
-                daily_scan: {
-                    market_date: String(dailyScan.market_date || ""),
-                    status: String(dailyScan.status || ""),
-                    reason: String(dailyScan.reason || ""),
-                    started_at: dailyScan.started_at || "",
-                    finished_at: dailyScan.finished_at || "",
-                    last_error: String(dailyScan.last_error || ""),
-                    result: cloneObject(dailyScan.result),
-                },
-                market_universe: {
-                    market_date: String(marketUniverse.market_date || ""),
-                    last_daily_reset: marketUniverse.last_daily_reset || "",
-                    watchlist_pool_count: Number(marketUniverse.watchlist_pool_count || 0) || 0,
-                    active_target_date: String(marketUniverse.active_target_date || ""),
-                    active_target_count: Number(marketUniverse.active_target_count || 0) || 0,
-                    active_trade_symbols: activeTradeSymbols,
-                    active_trade_symbols_total: Array.isArray(marketUniverse.active_trade_symbols) ? marketUniverse.active_trade_symbols.length : (Number(marketUniverse.active_trade_symbols_total || 0) || 0),
-                    last_target_refresh: marketUniverse.last_target_refresh || "",
-                    active_repair_interval_min: Number(marketUniverse.active_repair_interval_min || 0) || 0,
-                    last_active_repair: marketUniverse.last_active_repair || "",
-                    last_active_repair_symbols: activeRepairSymbols,
-                    last_active_repair_symbols_total: Array.isArray(marketUniverse.last_active_repair_symbols) ? marketUniverse.last_active_repair_symbols.length : (Number(marketUniverse.last_active_repair_symbols_total || 0) || 0),
-                    last_active_repair_reasons: trimObjectEntries(marketUniverse.last_active_repair_reasons, 12),
-                    watchlist_backfill_interval_min: Number(marketUniverse.watchlist_backfill_interval_min || 0) || 0,
-                    last_watchlist_backfill: marketUniverse.last_watchlist_backfill || "",
-                },
-                runtime_control: cloneObject(payload.runtime_control),
-            }
-        }
-
-        const { getRuntimeEnvironmentFromRequest, getIbkrComputeInternalUrl, getIbkrRuntimeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-        const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-        const query = c.request.url.query()
-        const includeEngines = parseBoolean(query.get("full"), false)
-            || !parseBoolean(query.get("lite"), true)
-        const includeWarmupDetails = parseBoolean(query.get("warmup"), false)
-            || parseBoolean(query.get("warmup_full"), false)
-            || includeEngines
-        const computeBase = getIbkrComputeInternalUrl(environment, "http://127.0.0.1:5100")
-        const computeUpstream = `${computeBase}/status`
-        const runtimeProxyUpstream = `${computeBase}/ibkr/status`
-        const runtimeDirectBase = getIbkrRuntimeInternalUrl(environment, "http://127.0.0.1:5101")
-        const runtimeDirectUpstream = `${runtimeDirectBase}/ibkr/status`
-
-        let computePayload = {}
-        let runtimePayload = {}
-        let computeError = ""
-        let runtimeError = ""
-        let runtimeSelectedUpstream = runtimeProxyUpstream
-        const persistedDailyScan = typeof globalThis.ibkrActionsLoadDailyScanState === "function"
-            ? globalThis.ibkrActionsLoadDailyScanState(environment)
-            : {}
-        const fallbackActiveTargetDate = String((persistedDailyScan && persistedDailyScan.market_date) || "").trim()
-        const fallbackActiveTargetCount = typeof globalThis.ibkrActionsCountActiveTodayTargets === "function"
-            ? globalThis.ibkrActionsCountActiveTodayTargets(environment, fallbackActiveTargetDate)
-            : 0
-
-        try {
-            const computeResp = $http.send({
-                url: computeUpstream,
-                method: "GET",
-                timeout: 10,
-            })
-            computePayload = parseHttpJson(computeResp.raw)
-        } catch (err) {
-            computeError = err.message || String(err)
-        }
-
-        try {
-            const runtimeResp = $http.send({
-                url: runtimeProxyUpstream,
-                method: "GET",
-                timeout: 10,
-            })
-            runtimePayload = parseHttpJson(runtimeResp.raw)
-        } catch (err) {
-            runtimeError = err.message || String(err)
-        }
-        if ((runtimeError || runtimePayload.ok === false) && runtimeDirectUpstream) {
-            try {
-                const runtimeResp = $http.send({
-                    url: runtimeDirectUpstream,
-                    method: "GET",
-                    timeout: 10,
-                })
-                runtimePayload = parseHttpJson(runtimeResp.raw)
-                runtimeError = ""
-                runtimeSelectedUpstream = runtimeDirectUpstream
-            } catch (err) {
-                runtimeError = runtimeError || err.message || String(err)
-            }
-        }
-
-        const computeData = buildStatuszComputePayload(computePayload, includeEngines)
-        const liveReadiness = buildStatuszLiveReadiness(computePayload, runtimePayload)
-        const runtimeData = buildStatuszRuntimePayload(runtimePayload, includeWarmupDetails, liveReadiness, {
-            daily_scan: persistedDailyScan,
-            active_target_date: fallbackActiveTargetDate,
-            active_target_count: fallbackActiveTargetCount,
-        })
-        const serviceTopology = typeof globalThis.ibkrActionsMergeServiceTopologySafe === "function"
-            ? globalThis.ibkrActionsMergeServiceTopologySafe(
-                computeData.service_topology,
-                runtimeData.service_topology
-            )
-            : {
-                ...(computeData.service_topology && typeof computeData.service_topology === "object" ? computeData.service_topology : {}),
-                ...(runtimeData.service_topology && typeof runtimeData.service_topology === "object" ? runtimeData.service_topology : {}),
-                services: {
-                    ...((computeData.service_topology && computeData.service_topology.services) || {}),
-                    ...((runtimeData.service_topology && runtimeData.service_topology.services) || {}),
-                },
-            }
-        const actualRuntimeEnvironment = String(runtimeData.environment || computeData.environment || environment).trim().toLowerCase() || environment
-        const response = {
-            ...computeData,
-            ...(runtimeData && runtimeData.ok !== false ? runtimeData : {}),
-            compute: computeData,
-            runtime: runtimeData,
-            service_topology: serviceTopology,
-            warmup_details_included: Boolean(includeWarmupDetails),
-            requested_environment: environment,
-            actual_runtime_environment: actualRuntimeEnvironment,
-            runtime_environment_mismatch: actualRuntimeEnvironment !== environment,
-            ok: !computeError && !runtimeError && computeData.ok !== false && (runtimeData.ok !== false || Object.keys(runtimeData).length === 0),
-            status: !computeError && !runtimeError
-                ? "running"
-                : (!computeError || !runtimeError ? "degraded" : "offline"),
-            proxy_source: "pocketbase_ibkr_hook",
-            proxy_hook: "ibkr_actions.pb.js",
-            proxy_route: "/api/custom/ibkr/statusz",
-            proxy_upstream_compute: computeUpstream,
-            proxy_upstream_runtime: runtimeSelectedUpstream,
-            proxy_upstream_runtime_proxy: runtimeProxyUpstream,
-            proxy_upstream_runtime_direct: runtimeDirectUpstream,
-        }
-
-        if (computeError || runtimeError) {
-            response.errors = {}
-            if (computeError) response.errors.compute = computeError
-            if (runtimeError) response.errors.runtime = runtimeError
-            response.error = Object.keys(response.errors)
-                .map((key) => `${key}: ${response.errors[key]}`)
-                .join("; ")
-        }
-
-        return c.json(200, response)
-    } catch (err) {
-        console.error(`[IBKRActions] statusz route error: ${err.message || err}`)
-        return c.json(200, {
-            ok: false,
-            status: "offline",
-            error: err.message || String(err),
-            proxy_source: "pocketbase_ibkr_hook",
-            proxy_hook: "ibkr_actions.pb.js",
-            proxy_route: "/api/custom/ibkr/statusz",
-        })
-    }
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/statusz", {
+        method: "GET",
+        environment: environment,
+        query: {
+            lite: c.request.url.query().get("lite") || "",
+            full: c.request.url.query().get("full") || "",
+            warmup: c.request.url.query().get("warmup") || "",
+            warmup_full: c.request.url.query().get("warmup_full") || "",
+        },
+        timeout: 20,
+    })
 })
 
 routerAdd("GET", "/api/custom/ibkr/healthz", (c) => {
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, getIbkrRuntimeInternalUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    try {
-        const computeUpstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/health`
-        const runtimeUpstream = `${getIbkrRuntimeInternalUrl(environment, "http://127.0.0.1:5101")}/health`
-        const resp = $http.send({
-            url: computeUpstream,
-            method: "GET",
-            timeout: 5,
-        })
-        let computePayload = {}
-        try {
-            computePayload = JSON.parse(resp.raw || "{}")
-        } catch (_) {
-            computePayload = {}
-        }
-        let runtimePayload = {}
-        let runtimeError = ""
-        try {
-            const runtimeResp = $http.send({
-                url: runtimeUpstream,
-                method: "GET",
-                timeout: 5,
-            })
-            runtimePayload = JSON.parse(runtimeResp.raw || "{}")
-        } catch (err) {
-            runtimeError = err.message || String(err)
-        }
-        const serviceTopology = typeof globalThis.ibkrActionsMergeServiceTopologySafe === "function"
-            ? globalThis.ibkrActionsMergeServiceTopologySafe(
-                computePayload.service_topology,
-                runtimePayload.service_topology
-            )
-            : {
-                ...(computePayload.service_topology && typeof computePayload.service_topology === "object" ? computePayload.service_topology : {}),
-                ...(runtimePayload.service_topology && typeof runtimePayload.service_topology === "object" ? runtimePayload.service_topology : {}),
-                services: {
-                    ...((computePayload.service_topology && computePayload.service_topology.services) || {}),
-                    ...((runtimePayload.service_topology && runtimePayload.service_topology.services) || {}),
-                },
-            }
-        const runtimeExpected = String(serviceTopology.runtime_mode || "").trim().toLowerCase() === "remote"
-        return c.json(200, {
-            ok: computePayload.ok !== false && (!runtimeExpected || runtimePayload.ok !== false),
-            status: computePayload.ok !== false && (!runtimeExpected || runtimePayload.ok !== false)
-                ? String(computePayload.status || runtimePayload.status || "running").trim().toLowerCase() || "running"
-                : (computePayload.ok !== false || runtimePayload.ok !== false ? "degraded" : "offline"),
-            environment,
-            compute: computePayload,
-            runtime: runtimePayload,
-            service_topology: serviceTopology,
-            proxy_source: "pocketbase_ibkr_hook",
-            proxy_hook: "ibkr_actions.pb.js",
-            proxy_route: "/api/custom/ibkr/healthz",
-            proxy_upstream_compute: computeUpstream,
-            proxy_upstream_runtime: runtimeUpstream,
-            error: runtimeError || "",
-        })
-    } catch (err) {
-        return c.json(200, { ok: false, status: "offline", error: err.message || String(err) })
-    }
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/healthz", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        timeout: 15,
+    })
 })
 
 routerAdd("GET", "/api/custom/ibkr/account_snapshot", (c) => {
@@ -5827,27 +4842,17 @@ routerAdd("GET", "/api/custom/ibkr/account_snapshot", (c) => {
 })
 
 routerAdd("GET", "/api/custom/ibkr/runtime/config", (c) => {
-    const { getRuntimeEnvironmentFromRequest, listEffectiveConfigRecords, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const scope = String(c.request.url.query().get("scope") || "").trim().toLowerCase()
-    const items = []
-    try {
-        const records = scope === "all"
-            ? (($app.findRecordsByFilter("config", "", "key,environment", 1000, 0) || []))
-            : listEffectiveConfigRecords(environment)
-
-        for (let i = 0; i < records.length; i++) {
-            items.push({
-                key: records[i].get("key") || "",
-                value: records[i].get("value") || "",
-                environment: records[i].get("environment") || "",
-                updated: records[i].get("updated") || "",
-            })
-        }
-    } catch (err) {
-        return c.json(500, { ok: false, error: err.message || String(err) })
-    }
-    return c.json(200, { ok: true, environment: environment, scope: scope || "effective", items: items })
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/runtime/config", {
+        method: "GET",
+        environment: environment,
+        query: {
+            scope: c.request.url.query().get("scope") || "",
+        },
+        timeout: 15,
+    })
 })
 
 routerAdd("GET", "/api/custom/ibkr/rules", (c) => {
@@ -6059,81 +5064,26 @@ routerAdd("POST", "/api/custom/ibkr/gateway/restart", (c) => {
 })
 
 routerAdd("POST", "/api/custom/ibkr/startup/progress", (c) => {
-    const reqInfo = c.requestInfo()
-    const d = reqInfo.body || reqInfo.data || {}
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const startupProgress = require(`${__hooks}/lib/feishu/feishu_startup.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-
-    try {
-        const payload = {
-            environment: environment,
-            action: d.action || "update",
-            status: d.status || "",
-            title: d.title || "",
-            summary: d.summary || "",
-            current_step: d.current_step || "",
-            current_blocker: d.current_blocker || "",
-            operator_action: d.operator_action || "",
-            reason: d.reason || "",
-            source: d.source || "",
-            runtime_phase: d.runtime_phase || "",
-            runtime_url: d.runtime_url || "",
-            steps: d.steps && typeof d.steps === "object" ? d.steps : {},
-            fields: d.fields && typeof d.fields === "object" ? d.fields : {},
-            create_if_missing: d.create_if_missing === true,
-            record_event: d.record_event === true,
-            event_type: d.event_type || "",
-            event_title: d.event_title || "",
-            event_detail: d.event_detail && typeof d.event_detail === "object" ? d.event_detail : {},
-            level: d.level || "",
-            event_source: d.event_source || d.source || "ibkr_compute",
-        }
-        if (Object.prototype.hasOwnProperty.call(d, "trigger_login")) {
-            payload.trigger_login = d.trigger_login === true
-        }
-        const result = startupProgress.syncStartupProgress(payload)
-        return c.json(result.ok ? 200 : 500, {
-            ok: !!result.ok,
-            environment: result.environment || environment,
-            date: result.date || "",
-            cycle_id: result.cycle_id || "",
-            startup_label: result.startup_label || "",
-            message_id: result.message_id || "",
-            state: result.state || {},
-            error: result.result && result.result.success ? "" : String((result.result && result.result.error) || ""),
-        })
-    } catch (err) {
-        return c.json(500, {
-            ok: false,
-            environment: environment,
-            error: err.message || String(err),
-        })
-    }
+    const reqInfo = c.requestInfo()
+    const body = reqInfo.body || reqInfo.data || {}
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/startup/progress", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(body, LIVE_ENVIRONMENT),
+        body: body,
+        timeout: 30,
+    })
 })
 
 routerAdd("GET", "/api/custom/ibkr/startup/status", (c) => {
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const startupProgress = require(`${__hooks}/lib/feishu/feishu_startup.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-
-    try {
-        const payload = startupProgress.getStatePayload(environment)
-        const state = payload && payload.data ? payload.data : {}
-        return c.json(200, {
-            ok: true,
-            environment: payload.environment || environment,
-            date: payload.date || "",
-            startup_label: String(state.startup_label || ""),
-            state: state,
-        })
-    } catch (err) {
-        return c.json(500, {
-            ok: false,
-            environment: environment,
-            error: err.message || String(err),
-        })
-    }
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/startup/status", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        timeout: 15,
+    })
 })
 
 routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
@@ -6655,481 +5605,91 @@ routerAdd("POST", "/api/custom/ibkr/positions/close", (c) => {
 })
 
 routerAdd("POST", "/api/custom/ibkr/emergency-stop", (c) => {
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
-    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const action = String(d.action || "all").trim().toLowerCase() || "all"
-    const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
-
-    const configActions = {
-        compute: [
-            ["ibkr_compute_enabled", "FALSE", "Compute 调度开关", "紧急停止后关闭自动 compute / scan"],
-        ],
-        trading: [
-            ["ibkr_trading_enabled", "FALSE", "交易总开关", "紧急停止后禁止继续下单"],
-        ],
-        scheduler: [
-            ["pb_scheduler_enabled", "FALSE", "PB 调度开关", "紧急停止后暂停 PB cron 调度"],
-        ],
-        publish: [
-            ["ibkr_bar_publish_enabled", "FALSE", "IBKR K线发布开关", "紧急停止后暂停 bars 写入 PocketBase"],
-        ],
-        all: [
-            ["ibkr_compute_enabled", "FALSE", "Compute 调度开关", "紧急停止后关闭自动 compute / scan"],
-            ["ibkr_trading_enabled", "FALSE", "交易总开关", "紧急停止后禁止继续下单"],
-            ["pb_scheduler_enabled", "FALSE", "PB 调度开关", "紧急停止后暂停 PB cron 调度"],
-            ["ibkr_bar_publish_enabled", "FALSE", "IBKR K线发布开关", "紧急停止后暂停 bars 写入 PocketBase"],
-        ],
-        runtime: [],
-    }
-
-    const selected = configActions[action]
-    if (!selected) {
-        return c.json(400, { ok: false, error: "Unsupported emergency action", action: action })
-    }
-
-    if (["runtime", "compute", "all"].indexOf(action) !== -1) {
-        try {
-            const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
-            if (environmentInfo.runtime_environment_mismatch) {
-                return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/emergency-stop"))
-            }
-        } catch (_) {}
-    }
-
-    const updated = []
-    for (let i = 0; i < selected.length; i++) {
-        const item = selected[i]
-        const record = actionHelpers.upsertConfigValue(item[0], item[1], environment, {
-            display_name: item[2],
-            description: item[3],
-            group_name: "PB / IBKR 服务",
-        })
-        updated.push({
-            key: item[0],
-            value: item[1],
-            id: record && record.id ? record.id : "",
-        })
-    }
-
-    let stopPayload = { ok: true, skipped: true }
-    if (action === "runtime" || action === "all" || action === "compute") {
-        try {
-            const resp = $http.send({ url: `${computeBaseUrl}/ibkr/stop`, method: "POST", timeout: 20 })
-            try {
-                stopPayload = JSON.parse(resp.raw || "{}")
-            } catch (_) {
-                stopPayload = {}
-            }
-            stopPayload.status_code = (Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200)
-        } catch (err) {
-            stopPayload = { ok: false, error: err.message || String(err) }
-        }
-    }
-
-    writeSystemEvent(
-        "status_change",
-        "warning",
-        "manual",
-        "触发紧急停止",
-        {
-            action: action,
-            updated_keys: updated.map((item) => item.key).join(","),
-            runtime_stop: stopPayload.ok !== false ? "requested" : "failed",
-        },
-        environment,
-        false,
-    )
-
-    return c.json(200, {
-        ok: stopPayload.ok !== false,
-        environment: environment,
-        action: action,
-        updated: updated,
-        runtime_stop: stopPayload,
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/emergency-stop", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 30,
     })
 })
 
 routerAdd("POST", "/api/custom/ibkr/recover", (c) => {
-    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { writeSystemEvent } = require(`${__hooks}/lib/system_events.js`)
-    const actionHelpers = require(`${__hooks}/lib/ibkr_action_helpers.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const action = String(d.action || "all").trim().toLowerCase() || "all"
-
-    const configActions = {
-        compute: [
-            ["ibkr_compute_enabled", "TRUE", "Compute 调度开关", "恢复自动 compute / scan"],
-        ],
-        trading: [
-            ["ibkr_trading_enabled", "TRUE", "交易总开关", "恢复自动交易执行"],
-        ],
-        scheduler: [
-            ["pb_scheduler_enabled", "TRUE", "PB 调度开关", "恢复 PB cron 调度"],
-        ],
-        publish: [
-            ["ibkr_bar_publish_enabled", "TRUE", "IBKR K线发布开关", "恢复 bars 写入 PocketBase"],
-        ],
-        all: [
-            ["ibkr_compute_enabled", "TRUE", "Compute 调度开关", "恢复自动 compute / scan"],
-            ["ibkr_trading_enabled", "TRUE", "交易总开关", "恢复自动交易执行"],
-            ["pb_scheduler_enabled", "TRUE", "PB 调度开关", "恢复 PB cron 调度"],
-            ["ibkr_bar_publish_enabled", "TRUE", "IBKR K线发布开关", "恢复 bars 写入 PocketBase"],
-        ],
-    }
-
-    const selected = configActions[action]
-    if (!selected) {
-        return c.json(400, { ok: false, error: "Unsupported recover action", action: action })
-    }
-
-    const updated = []
-    for (let i = 0; i < selected.length; i++) {
-        const item = selected[i]
-        const record = actionHelpers.upsertConfigValue(item[0], item[1], environment, {
-            display_name: item[2],
-            description: item[3],
-            group_name: "PB / IBKR 服务",
-        })
-        updated.push({
-            key: item[0],
-            value: item[1],
-            id: record && record.id ? record.id : "",
-        })
-    }
-
-    writeSystemEvent(
-        "status_change",
-        "info",
-        "manual",
-        "恢复运行开关",
-        {
-            action: action,
-            updated_keys: updated.map((item) => item.key).join(","),
-        },
-        environment,
-        false,
-    )
-
-    return c.json(200, {
-        ok: true,
-        environment: environment,
-        action: action,
-        updated: updated,
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/recover", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 20,
     })
 })
 
 routerAdd("POST", "/api/custom/ibkr/reauth", (c) => {
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
-    try {
-        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
-        if (environmentInfo.runtime_environment_mismatch) {
-            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/reauth"))
-        }
-    } catch (_) {}
-    try {
-        $http.send({ url: `${computeBaseUrl}/ibkr/stop`, method: "POST", timeout: 30 })
-    } catch (_) {}
-    const upstream = `${computeBaseUrl}/ibkr/start`
-    try {
-        const resp = $http.send({ url: upstream, method: "POST", timeout: 30 })
-        let payload = {}
-        try {
-            payload = JSON.parse(resp.raw || "{}")
-        } catch (_) {
-            payload = {}
-        }
-        payload.proxy_source = "pocketbase_ibkr_hook"
-        payload.proxy_hook = "ibkr_actions.pb.js"
-        payload.proxy_route = "/api/custom/ibkr/reauth"
-        payload.proxy_upstream = upstream
-        return c.html((Number(resp && resp.statusCode) > 0 ? Number(resp.statusCode) : 200), JSON.stringify(payload))
-    } catch (err) {
-        return c.json(502, {
-            ok: false,
-            error: err.message || String(err),
-            proxy_source: "pocketbase_ibkr_hook",
-            proxy_hook: "ibkr_actions.pb.js",
-            proxy_route: "/api/custom/ibkr/reauth",
-            proxy_upstream: upstream,
-        })
-    }
+    const reqInfo = c.requestInfo()
+    const d = reqInfo.body || reqInfo.data || {}
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/reauth", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 30,
+    })
 })
 
 routerAdd("GET", "/api/custom/ibkr/2fa/status", (c) => {
-    const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { getStatePayload, normalizeStateWithRuntime } = require(`${__hooks}/lib/feishu_2fa.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const payload = getStatePayload(environment)
-    let state = { ...(payload.data || {}) }
-
-    try {
-        const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
-        const runtimeResp = $http.send({
-            url: `${computeBaseUrl}/ibkr/status`,
-            method: "GET",
-            timeout: 8,
-        })
-        let runtime = {}
-        try {
-            runtime = JSON.parse(runtimeResp.raw || "{}")
-        } catch (_) {
-            runtime = {}
-        }
-        state = normalizeStateWithRuntime(state, runtime)
-        const actualRuntimeEnvironment = String(runtime.environment || environment).trim().toLowerCase() || environment
-        state.requested_environment = environment
-        state.actual_runtime_environment = actualRuntimeEnvironment
-        state.runtime_environment_mismatch = actualRuntimeEnvironment !== environment
-        if (state.runtime_environment_mismatch) {
-            state.message = `当前 ${environment.toUpperCase()} 页面没有独立 runtime；实际运行中的是 ${actualRuntimeEnvironment.toUpperCase()}，2FA 动作已阻止。`
-            state.last_result = `当前显示的是 ${actualRuntimeEnvironment.toUpperCase()} 运行态。`
-        }
-    } catch (err) {
-        state.runtime_status_error = err.message || String(err)
-    }
-
-    return c.json(200, {
-        ok: true,
-        environment: payload.environment,
-        date: payload.date,
-        state: state,
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/2fa/status", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        timeout: 15,
     })
 })
 
 routerAdd("POST", "/api/custom/ibkr/2fa/request", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
-    const { getStatePayload, normalizeStateWithRuntime, request2faApproval, trigger2faFlow } = require(`${__hooks}/lib/feishu_2fa.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const forceReset = d.force_reset === true || ["1", "true", "yes", "on"].includes(String(d.force_reset || "").trim().toLowerCase())
-    const forceNew = d.force_new === true || ["1", "true", "yes", "on"].includes(String(d.force_new || "").trim().toLowerCase())
-    const triggerNow = d.trigger_now === true || ["1", "true", "yes", "on"].includes(String(d.trigger_now || "").trim().toLowerCase())
-    const forceRestart = d.force_restart === true || ["1", "true", "yes", "on"].includes(String(d.force_restart || "").trim().toLowerCase()) || triggerNow
-
-    try {
-        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
-        if (environmentInfo.runtime_environment_mismatch) {
-            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/2fa/request"))
-        }
-        let runtime = {}
-        let runtimeStatusError = ""
-        try {
-            const computeBaseUrl = getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")
-            const runtimeResp = $http.send({
-                url: `${computeBaseUrl}/ibkr/status`,
-                method: "GET",
-                timeout: 8,
-            })
-            try {
-                runtime = JSON.parse(runtimeResp.raw || "{}")
-            } catch (_) {
-                runtime = {}
-            }
-        } catch (err) {
-            runtimeStatusError = err.message || String(err)
-        }
-
-        const currentState = normalizeStateWithRuntime((getStatePayload(environment).data || {}), runtime)
-        currentState.requested_environment = environment
-        currentState.actual_runtime_environment = String((runtime && runtime.environment) || environment).trim().toLowerCase() || environment
-        currentState.runtime_environment_mismatch = currentState.actual_runtime_environment !== environment
-        if (
-            currentState.runtime_authenticated
-            && currentState.gateway_reachable
-            && Number(currentState.gateway_status_code || 0) !== 401
-        ) {
-            if (runtimeStatusError) currentState.runtime_status_error = runtimeStatusError
-            return c.json(200, {
-                ok: true,
-                environment: environment,
-                date: getStatePayload(environment).date || "",
-                status: currentState.status || "success",
-                message: "当前 Gateway 会话已认证，无需再次确认。",
-                message_id: currentState.message_id || "",
-                state: currentState,
-                skipped: true,
-                skipped_reason: "runtime_already_authenticated",
-                renotify_remaining_ms: 0,
-                error: "",
-            })
-        }
-
-        const reason = String(d.reason || "").trim() || "manual_reauth"
-        const source = String(d.source || "").trim() || "ibkr_compute"
-        const messageText = String(d.message || "").trim()
-        const detail = d.detail && typeof d.detail === "object" ? d.detail : {}
-        const weeklyReminderRequested = !triggerNow && reason === "weekly_reauth"
-        const result = triggerNow
-            ? trigger2faFlow({
-                environment: environment,
-                reason: reason,
-                source: source,
-                detail: detail,
-                forceRestart: forceRestart,
-                forceNewCard: forceNew,
-            })
-            : request2faApproval({
-                environment: environment,
-                reason: reason,
-                source: source,
-                message: messageText,
-                detail: detail,
-                forceReset: forceReset,
-                forceNew: forceNew,
-            })
-        const state = normalizeStateWithRuntime(result.state || {}, runtime)
-        state.requested_environment = environment
-        state.actual_runtime_environment = String((runtime && runtime.environment) || environment).trim().toLowerCase() || environment
-        state.runtime_environment_mismatch = state.actual_runtime_environment !== environment
-        if (runtimeStatusError) state.runtime_status_error = runtimeStatusError
-        let message = ""
-        const activeStatus = String(state.status || "").trim().toLowerCase()
-        const currentCycleActive = ["triggered", "waiting_confirm", "waiting_response"].includes(activeStatus)
-        if (state.runtime_authenticated && state.gateway_reachable && Number(state.gateway_status_code || 0) !== 401) {
-            message = "当前 Gateway 会话已认证，无需再次确认。"
-        } else if (currentCycleActive || result.already_active) {
-            if (activeStatus === "waiting_response") {
-                if (state.reset_recommended) {
-                    message = "当前旧 2FA / Session 状态很可能已失配，请打开 Runtime 页面执行“全量清空并重新验证”，不要重复触发。"
-                } else if (state.response_status === "submitted") {
-                    message = "当前 Response Code 已提交，正在等待 Gateway 恢复认证；请继续当前轮次，不要重复触发。"
-                } else if (state.response_status === "gateway_rejected") {
-                    message = "Gateway 已拒绝当前 Response Code，请打开 Runtime 页面核对当前 Challenge 后重新提交，不要重复触发。"
-                } else if (state.response_status === "submit_failed") {
-                    message = "浏览器提交 Response Code 失败，请打开 Runtime 页面重试当前 Challenge，不要重复触发。"
-                } else if (state.response_status === "received") {
-                    message = "Runtime 已收到 Response Code，正在等待浏览器提交流程；请继续当前轮次，不要重复触发。"
-                } else {
-                    message = "当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。"
-                }
-            } else {
-                message = "当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。"
-            }
-        } else if (triggerNow && result.ok) {
-            message = forceNew
-                ? "已强制开启新一轮 2FA，并刷新卡片。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
-                : "已重新触发 2FA。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
-        } else if (result.skipped_reason === "active_card_reused") {
-            if (weeklyReminderRequested) {
-                message = state.business_deadline_overdue
-                    ? "已复用现有本周重登提醒卡片；当前已晚于美股周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
-                    : "已复用现有本周重登提醒卡片；你有空时直接去飞书点击开始验证，最晚请于美股周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
-            } else {
-                const remainingMs = Number(result.renotify_remaining_ms || 0) || 0
-                const remainingMin = remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0
-                message = remainingMin > 0
-                    ? `已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证（约 ${remainingMin} 分钟内不会再新发提醒）。`
-                    : "已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证。"
-            }
-        } else if (result.skipped_reason === "cooldown") {
-            message = "2FA 卡片刚更新过，请直接使用飞书中的当前卡片。"
-        } else if (result.skipped_reason === "delivery_locked") {
-            message = "2FA 卡片发送仍在处理中，请直接查看飞书中的当前卡片。"
-        } else if (result.ok) {
-            if (weeklyReminderRequested) {
-                message = state.business_deadline_overdue
-                    ? "已发送本周重登提醒卡片；当前已晚于美股周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
-                    : "已发送本周重登提醒卡片；你有空时可在飞书点击开始验证，最晚请于美股周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
-            } else {
-                message = forceNew
-                    ? "已强制发送新的 2FA 卡片，请在飞书点击按钮触发验证。"
-                    : "已请求 2FA 卡片，请在飞书点击按钮触发验证。"
-            }
-        } else {
-            message = result.error ? `2FA 请求失败：${result.error}` : "2FA 请求失败。"
-        }
-        return c.json(result.ok ? 200 : 500, {
-            ok: !!result.ok,
-            environment: result.environment || environment,
-            date: result.date || "",
-            status: state.status || result.status || "",
-            message: message,
-            message_id: result.message_id || "",
-            state: state,
-            skipped: !!result.skipped,
-            skipped_reason: result.skipped_reason || "",
-            renotify_remaining_ms: Number(result.renotify_remaining_ms || 0) || 0,
-            error: result.error || "",
-            already_active: !!result.already_active,
-        })
-    } catch (err) {
-        return c.json(500, { ok: false, error: err.message || String(err), environment: environment })
-    }
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/2fa/request", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 20,
+    })
 })
 
 routerAdd("POST", "/api/custom/ibkr/2fa/result", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { report2faResult } = require(`${__hooks}/lib/feishu_2fa.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-
-    try {
-        const result = report2faResult({
-            environment: environment,
-            status: String(d.status || "").trim() || "requested",
-            source: String(d.source || "").trim() || "ibkr_compute",
-            message: String(d.message || "").trim(),
-            last_result: String(d.last_result || "").trim(),
-            error: d.error != null ? String(d.error) : "",
-            detail: d.detail && typeof d.detail === "object" ? d.detail : {},
-            state_patch: d.state_patch && typeof d.state_patch === "object" ? d.state_patch : {},
-        })
-        return c.json(result.ok ? 200 : 500, {
-            ok: !!result.ok,
-            environment: result.environment || environment,
-            status: result.status || "",
-            message_id: result.message_id || "",
-            state: result.state || {},
-            error: result.error || "",
-        })
-    } catch (err) {
-        return c.json(500, { ok: false, error: err.message || String(err), environment: environment })
-    }
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/2fa/result", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 20,
+    })
 })
 
 routerAdd("POST", "/api/custom/ibkr/2fa/respond", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const { inspectRequestedRuntimeEnvironment, buildRuntimeEnvironmentMismatchPayload } = require(`${__hooks}/lib/runtime_guard.js`)
-    const { submit2faResponse } = require(`${__hooks}/lib/feishu_2fa.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-
-    try {
-        const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
-        if (environmentInfo.runtime_environment_mismatch) {
-            return c.json(409, buildRuntimeEnvironmentMismatchPayload(environmentInfo, "/api/custom/ibkr/2fa/respond"))
-        }
-        const result = submit2faResponse({
-            environment: environment,
-            response_code: String(d.response_code || "").trim(),
-            challenge_code: String(d.challenge_code || "").trim(),
-            source: String(d.source || "").trim() || "runtime_page",
-        })
-        return c.json(result.ok ? 200 : 400, {
-            ok: !!result.ok,
-            environment: result.environment || environment,
-            status: result.status || "",
-            message_id: result.message_id || "",
-            state: result.state || {},
-            error: result.error || "",
-        })
-    } catch (err) {
-        return c.json(500, { ok: false, error: err.message || String(err), environment: environment })
-    }
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/2fa/respond", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 20,
+    })
 })
 
 routerAdd("POST", "/api/custom/ibkr/2fa/takeover", (c) => {
@@ -7297,200 +5857,83 @@ routerAdd("POST", "/api/custom/ibkr/2fa/panic-reset", (c) => {
 // GET /api/custom/ibkr/state/signals?date=YYYY-MM-DD
 routerAdd("GET", "/api/custom/ibkr/state/signals", (c) => {
     const date = c.request.url.query().get("date") || ""
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    if (!date) {
-        return c.json(400, { ok: false, error: "date required" })
-    }
-
-    try {
-        const record = $app.findFirstRecordByFilter(
-            "ibkr_state", "state_key = {:k} && date = {:d} && environment = {:env}",
-            { k: "ibkr_signals", d: date, env: environment }
-        )
-        if (record) {
-            return c.json(200, { ok: true, date: date, environment: environment, data: record.get("data") || {} })
-        }
-        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
-    } catch (_) {
-        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
-    }
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/state/signals", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        query: { date: date },
+        timeout: 15,
+    })
 })
 
 // POST /api/custom/ibkr/state/signals
 routerAdd("POST", "/api/custom/ibkr/state/signals", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const date = d.date || ""
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    if (!date) {
-        return c.json(400, { ok: false, error: "date required" })
-    }
-
-    const stateData = {
-        processed_ids: d.processed_ids || [],
-        confirmed_ids: d.confirmed_ids || [],
-        active_signals: d.active_signals || []
-    }
-
-    try {
-        let record = null
-        try {
-            record = $app.findFirstRecordByFilter(
-                "ibkr_state",
-                "state_key = {:k} && date = {:d} && environment = {:env}",
-                { k: "ibkr_signals", d: date, env: environment }
-            )
-        } catch (_) {}
-        const col = $app.findCollectionByNameOrId("ibkr_state")
-        if (!record) {
-            record = new Record(col, {})
-        }
-        record.set("state_key", "ibkr_signals")
-        record.set("date", date)
-        record.set("environment", environment)
-        record.set("data", stateData)
-        $app.save(record)
-        return c.json(200, { ok: true, date: date, environment: environment })
-    } catch (err) {
-        return c.json(500, { ok: false, error: err.message })
-    }
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/state/signals", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 15,
+    })
 })
 
 // GET /api/custom/ibkr/state/orders?date=YYYY-MM-DD
 routerAdd("GET", "/api/custom/ibkr/state/orders", (c) => {
     const date = c.request.url.query().get("date") || ""
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromRequest, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    if (!date) {
-        return c.json(400, { ok: false, error: "date required" })
-    }
-
-    try {
-        const record = $app.findFirstRecordByFilter(
-            "ibkr_state", "state_key = {:k} && date = {:d} && environment = {:env}",
-            { k: "orders", d: date, env: environment }
-        )
-        if (record) {
-            return c.json(200, { ok: true, date: date, environment: environment, data: record.get("data") || {} })
-        }
-        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
-    } catch (_) {
-        return c.json(200, { ok: true, date: date, environment: environment, data: {} })
-    }
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/state/orders", {
+        method: "GET",
+        environment: getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT),
+        query: { date: date },
+        timeout: 15,
+    })
 })
 
 // POST /api/custom/ibkr/state/orders
 routerAdd("POST", "/api/custom/ibkr/state/orders", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const date = d.date || ""
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
     const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    if (!date) {
-        return c.json(400, { ok: false, error: "date required" })
-    }
-
-    const stateData = {
-        closed_today: d.closed_today || [],
-        stop_loss_count_today: d.stop_loss_count_today || 0,
-        pending: d.pending || {},
-        positions: d.positions || {},
-        order_id_map: d.order_id_map || {},
-        completed_signal_ids: d.completed_signal_ids || [],
-        completed_signal_outcomes: d.completed_signal_outcomes || {}
-    }
-
-    try {
-        let record = null
-        try {
-            record = $app.findFirstRecordByFilter(
-                "ibkr_state",
-                "state_key = {:k} && date = {:d} && environment = {:env}",
-                { k: "orders", d: date, env: environment }
-            )
-        } catch (_) {}
-        const col = $app.findCollectionByNameOrId("ibkr_state")
-        if (!record) {
-            record = new Record(col, {})
-        }
-        record.set("state_key", "orders")
-        record.set("date", date)
-        record.set("environment", environment)
-        record.set("data", stateData)
-        $app.save(record)
-        return c.json(200, { ok: true, date: date, environment: environment })
-    } catch (err) {
-        return c.json(500, { ok: false, error: err.message })
-    }
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/state/orders", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 15,
+    })
 })
 
 // POST /api/custom/ibkr/health-report — IBKR Compute 健康数据上报
 routerAdd("POST", "/api/custom/ibkr/health-report", (c) => {
-    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const { getRuntimeEnvironmentFromData, labelTitleWithEnvironment, addEnvironmentToDetail, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-
-    // 写 system_events
-    try {
-        const collection = $app.findCollectionByNameOrId("system_events")
-        const record = new Record(collection)
-        record.set("event_type", "heartbeat")
-        record.set("level", "info")
-        record.set("source", "ibkr_compute")
-        record.set("environment", environment)
-        record.set("title", labelTitleWithEnvironment("IBKR 健康上报", environment))
-        record.set("detail", addEnvironmentToDetail(d, environment))
-        record.set("us_time", d.et_time || "")
-        record.set("cn_time", d.bj_time || "")
-        record.set("notified", false)
-        $app.save(record)
-    } catch (_) {}
-
-    return c.json(200, { ok: true })
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/health-report", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 15,
+    })
 })
 
 // POST /api/custom/ibkr/notify — IBKR Compute 通知转发
 routerAdd("POST", "/api/custom/ibkr/notify", (c) => {
-    const feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
-    const { getRuntimeEnvironmentFromData, labelTitleWithEnvironment, addEnvironmentToDetail, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
-    const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-
-    const notifyType = d.type || "status"
-    const title = labelTitleWithEnvironment(d.title || "", environment)
-    const detail = addEnvironmentToDetail(d.data || d.detail || {}, environment)
-
-    if (!title) {
-        return c.json(400, { ok: false, error: "title required" })
-    }
-
-    var level = "info"
-    if (notifyType === "alert" || notifyType === "error") level = "error"
-    if (notifyType === "warning") level = "warning"
-
-    // 写 system_events
-    try {
-        const collection = $app.findCollectionByNameOrId("system_events")
-        const record = new Record(collection)
-        record.set("event_type", "status_change")
-        record.set("level", level)
-        record.set("source", "ibkr_compute")
-        record.set("environment", environment)
-        record.set("title", title)
-        record.set("detail", detail)
-        record.set("notified", false)
-        $app.save(record)
-    } catch (_) {}
-
-    // 发飞书
-    var notified = feishuSystem.notifySystemEvent("status_change", level, "ibkr_compute", title, detail, environment)
-
-    return c.json(200, { ok: true, notified: notified })
+    const { proxyIbkrApiJson } = require(`${__hooks}/lib/system/api_proxy.js`)
+    const { getRuntimeEnvironmentFromData, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
+    return proxyIbkrApiJson(c, "/api/custom/ibkr/notify", {
+        method: "POST",
+        environment: getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT),
+        body: d,
+        timeout: 15,
+    })
 })
 
 console.log("[IBKRActions] Hook 文件加载完成");

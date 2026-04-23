@@ -89,10 +89,10 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/signals/ack" \
 | `GET /webhook/signal/*` | `ibkr-api` 原生 | `ibkr_signal_actions.pb.js` |
 | `GET /webhook/order/*` | `ibkr-api` 原生 | `ibkr_signal_actions.pb.js` |
 | `GET /api/custom/ibkr/signals/pending` / `POST /api/custom/ibkr/signals/ack` | `ibkr-api` 原生 | `ibkr_signal_actions.pb.js` |
-| `POST /api/custom/ibkr/signal` / `POST /api/custom/ibkr/signals` | PocketBase 兼容写入链路 | `ibkr_actions.js` |
+| `POST /api/custom/ibkr/signal` / `POST /api/custom/ibkr/signals` | `ibkr-api` 原生 | `ibkr_actions.js` 兼容壳 |
 | `POST /api/custom/ibkr/reverse/*` / `GET /api/custom/ibkr/reverse/*` | `ibkr-api` 原生 | `ibkr_reverse_signals.pb.js` |
-| 定时信号过期任务 | `ibkr-scheduler` / 兼容过渡层 | `signal_expiry.pb.js` |
-| `POST /api/custom/orders/*` / `GET /api/custom/orders/*` | 兼容链路 | `order_manage.pb.js` |
+| `signal_expiry_check` / `order_detail_integrity_guard` | `ibkr-scheduler` + `ibkr-api` 原生 | `ibkr_signal_scheduler.js` / `order_scheduler.js` 兼容壳 |
+| `POST /api/custom/ibkr/orders/*` | `ibkr-api` 原生 | `order_manage.js` 兼容壳 |
 | 飞书通知模块 | `ibkr-api` / PocketBase 兼容混合阶段 | `feishu.js` |
 
 ---
