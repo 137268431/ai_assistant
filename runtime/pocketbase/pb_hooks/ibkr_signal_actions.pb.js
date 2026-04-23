@@ -1,3 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-require(`${__hooks}/modules/actions/ibkr_signal_actions.js`)
+/**
+ * No-op compatibility shell. Signal action webhooks and APIs migrated to ibkr-api.
+ * PocketBase now keeps only auth + collections responsibilities.
+ */

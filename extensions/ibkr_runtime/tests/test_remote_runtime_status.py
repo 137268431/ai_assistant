@@ -12,8 +12,25 @@ if str(SRC_ROOT) not in sys.path:
 
 if "flask" not in sys.modules:
     flask_stub = types.ModuleType("flask")
+
+    class _FakeFlask:
+        def __init__(self, name):
+            self.name = name
+
+        def route(self, _path, methods=None):
+            def decorator(func):
+                return func
+            return decorator
+
+    flask_stub.Flask = _FakeFlask
     flask_stub.jsonify = lambda payload: payload
-    flask_stub.request = SimpleNamespace(args={}, headers={}, get_json=lambda silent=True: {})
+    flask_stub.request = SimpleNamespace(
+        args={},
+        headers={},
+        method="GET",
+        get_json=lambda silent=True: {},
+        get_data=lambda cache=True: b"",
+    )
     flask_stub.Response = object
     sys.modules["flask"] = flask_stub
 
@@ -24,6 +41,25 @@ from ibkr_compute.api.service_topology import build_service_topology
 
 
 class RemoteRuntimeTopologyTest(unittest.TestCase):
+    def test_console_topology_ignores_legacy_pb_public_url_for_public_entry(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "IBKR_SERVICE_PROFILE": "compute",
+                "IBKR_RUNTIME_MODE": "remote",
+                "PB_PUBLIC_URL": "https://pb.lzw-glory.top",
+            },
+            clear=False,
+        ):
+            with mock.patch(
+                "ibkr_compute.api.service_topology.get_remote_runtime_status",
+                return_value={},
+            ):
+                topology = build_service_topology(service_status={"ok": True})
+
+        console_service = topology["services"]["ibkr-console"]
+        self.assertEqual(console_service["public_url"], "https://quant.lzw-glory.top")
+
     def test_compute_topology_uses_remote_runtime_snapshot(self):
         runtime_payload = {
             "ok": True,

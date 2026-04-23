@@ -37,7 +37,8 @@ def register_runtime_routes(app):
         @app.route("/ibkr/dashboard", methods=["GET"])
         def ibkr_dashboard():
             app_mod = get_app_module()
-            return redirect(f"{app_mod.PB_PUBLIC_URL.rstrip('/')}/ibkr_runtime.html", code=302)
+            console_base_url = getattr(app_mod, "CONSOLE_BASE_URL", "") or app_mod.PB_PUBLIC_URL
+            return redirect(f"{console_base_url.rstrip('/')}/ibkr_runtime.html", code=302)
 
         return
 
@@ -89,4 +90,5 @@ def register_runtime_routes(app):
     @app.route("/ibkr/dashboard", methods=["GET"])
     def ibkr_dashboard():
         app_mod = get_app_module()
-        return redirect(f"{app_mod.PB_PUBLIC_URL.rstrip('/')}/ibkr_runtime.html", code=302)
+        console_base_url = getattr(app_mod, "CONSOLE_BASE_URL", "") or app_mod.PB_PUBLIC_URL
+        return redirect(f"{console_base_url.rstrip('/')}/ibkr_runtime.html", code=302)

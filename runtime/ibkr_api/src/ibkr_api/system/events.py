@@ -9,6 +9,7 @@ DEFAULT_FEISHU_ALERT_CHAT_ID = "oc_91aa4f84bc6fedb125b1a263d91d4104"
 
 SYSTEM_EVENT_SOURCE_LABELS = {
     "qc": "IBKR Data",
+    "ibkr_api": "IBKR API",
     "ibkr_compute": "IBKR Compute",
     "pb": "PocketBase",
     "manual": "Manual",
@@ -30,6 +31,9 @@ LabelTitleWithEnvironment = Callable[[Any, str], str]
 SendInteractive = Callable[[dict[str, Any], str, str], dict[str, Any]]
 UpdateInteractive = Callable[[str, dict[str, Any], str], dict[str, Any]]
 
+
+def normalized_system_event_source(source: Any) -> str:
+    return str(source or "").strip().lower().replace("-", "_")
 
 
 def resolved_system_chat_id() -> str:
@@ -67,7 +71,8 @@ def build_system_event_card(
 ) -> dict[str, Any]:
     runtime_environment = normalize_environment(environment, "live")
     level_meta = system_event_level_meta(level)
-    source_label = SYSTEM_EVENT_SOURCE_LABELS.get(str(source or "").strip().lower(), str(source or "").strip() or "system")
+    normalized_source = normalized_system_event_source(source)
+    source_label = SYSTEM_EVENT_SOURCE_LABELS.get(normalized_source, str(source or "").strip() or "system")
     detail_fields = add_environment_to_detail(detail, runtime_environment)
     lines = [f"**来源**: {source_label}  |  **级别**: {level_meta['emoji']} {str(level or 'info').upper()}"]
     for key, value in detail_fields.items():
@@ -126,7 +131,7 @@ def should_notify_system_event(
     runtime_environment = normalize_environment(environment, "live")
     normalized_event_type = str(event_type or "status_change").strip().lower()
     normalized_level = str(level or "info").strip().lower()
-    normalized_source = str(source or "").strip().lower()
+    normalized_source = normalized_system_event_source(source)
     normalized_title = str(title or "")
     if normalized_event_type == "daily_report":
         return is_enabled_text(config_value("daily_summary_notify_enabled", "TRUE", runtime_environment))
@@ -215,7 +220,7 @@ def write_system_event_record(
     payload = {
         "event_type": str(event_type or "status_change").strip() or "status_change",
         "level": str(level or "info").strip() or "info",
-        "source": str(source or "ibkr-api").strip() or "ibkr-api",
+        "source": normalized_system_event_source(source) or "ibkr_api",
         "environment": runtime_environment,
         "title": label_title_with_environment(title, runtime_environment),
         "detail": add_environment_to_detail(detail, runtime_environment),

@@ -31,6 +31,7 @@ from ibkr_api.integrations.feishu import feishu_send_interactive, feishu_suppres
 from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime as _cancel_broker_order_via_runtime_support
 from ibkr_api.data_quality.routes import register_data_quality_routes
 from ibkr_api.universe.routes import register_universe_routes
+from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.orders.routes import register_order_routes
 from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response
@@ -96,7 +97,20 @@ from ibkr_api.system.pocketbase_disk import (
     merge_monitor_flags as _merge_monitor_flags,
     merge_monitor_status as _merge_monitor_status,
 )
+from ibkr_api.system.monitor_support import (
+    build_system_monitor_payload as _build_system_monitor_payload_support,
+    derive_monitor_service_map as _derive_monitor_service_map_support,
+    probe_console_status as _probe_console_status_support,
+)
 from ibkr_api.system.routes import register_system_routes
+from ibkr_api.system.scheduler_support import (
+    augment_scheduler_summary as _augment_scheduler_summary_support,
+    build_scheduler_summary as _build_scheduler_summary_support,
+    extract_cursor_interval as _extract_cursor_interval_support,
+    scheduler_job_states as _scheduler_job_states_support,
+    scheduler_status as _scheduler_status_support,
+)
+from ibkr_api.system.summary_support import build_system_summary_payload as _build_system_summary_payload_support
 from ibkr_api.two_factor.routes import register_two_factor_routes
 from ibkr_api.tradingview.ingest import upsert_tv_indicator as _upsert_tv_indicator_support, upsert_tv_signal as _upsert_tv_signal_support
 from ibkr_api.tradingview.routes import register_tradingview_routes
@@ -121,8 +135,8 @@ IBKR_STARTUP_STATE_DATE = "global"
 IBKR_DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
 DEFAULT_CONSOLE_BASE_URL = str(
     os.environ.get("CONSOLE_BASE_URL")
+    or os.environ.get("QUANT_BASE_URL")
     or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
-    or os.environ.get("PB_PUBLIC_URL")
     or "https://quant.lzw-glory.top"
 ).rstrip("/")
 DEFAULT_FEISHU_APP_ID = str(os.environ.get("FEISHU_APP_ID") or "cli_a936b8d2cc79dccb").strip()
@@ -449,8 +463,8 @@ def _add_environment_to_detail(detail: Any, environment: str) -> dict[str, Any]:
 def _console_base_url() -> str:
     return str(
         os.environ.get("CONSOLE_BASE_URL")
+        or os.environ.get("QUANT_BASE_URL")
         or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
-        or os.environ.get("PB_PUBLIC_URL")
         or DEFAULT_CONSOLE_BASE_URL
     ).rstrip("/")
 
@@ -478,6 +492,10 @@ def _config_value(key: str, default: str, environment: str) -> str:
 
 def _signal_chat_id(environment: str) -> str:
     return _config_value("signal_chat_id", DEFAULT_FEISHU_SIGNAL_CHAT_ID, environment)
+
+
+def _system_status_chat_id(environment: str) -> str:
+    return _config_value("system_status_chat_id", DEFAULT_FEISHU_SYSTEM_CHAT_ID, environment)
 
 
 _feishu_suppressed = partial(feishu_suppressed, normalize_environment=_normalize_environment)
@@ -896,214 +914,55 @@ def _proxy_webhook_to_pb(subpath: str) -> Response:
 
 
 def _extract_cursor_interval(cursor_payload: dict[str, Any], interval: str = "5m") -> dict[str, Any]:
-    intervals = cursor_payload.get("intervals") if isinstance(cursor_payload.get("intervals"), dict) else {}
-    bucket = intervals.get(interval) if isinstance(intervals, dict) else {}
-    return dict(bucket) if isinstance(bucket, dict) else {}
+    return _extract_cursor_interval_support(cursor_payload, interval)
+
 
 
 def _build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any]) -> dict[str, Any]:
-    payload = scheduler_payload if isinstance(scheduler_payload, dict) else {}
-    jobs = payload.get("jobs") if isinstance(payload.get("jobs"), dict) else {}
-    ingest_cursor = payload.get("ingest_cursor") if isinstance(payload.get("ingest_cursor"), dict) else {}
-    dispatch_cursor = payload.get("compute_dispatch_cursor") if isinstance(payload.get("compute_dispatch_cursor"), dict) else {}
-    ingest_5m = _extract_cursor_interval(ingest_cursor, "5m")
-    dispatch_5m = _extract_cursor_interval(dispatch_cursor, "5m")
-    latest_ingested_bar_time_ms = int(ingest_5m.get("latest_bar_time_ms") or 0)
-    latest_dispatched_bar_time_ms = int(dispatch_5m.get("latest_bar_time_ms") or 0)
-    lag_ms = max(0, latest_ingested_bar_time_ms - latest_dispatched_bar_time_ms) if latest_ingested_bar_time_ms else 0
+    return _build_scheduler_summary_support(environment, scheduler_payload)
 
-    status_counts: dict[str, int] = {}
-    for state in jobs.values():
-        normalized = str((state or {}).get("status") or "idle").strip().lower() or "idle"
-        status_counts[normalized] = status_counts.get(normalized, 0) + 1
-
-    return {
-        "ok": bool(payload.get("ok", False)) if payload else False,
-        "status": str(payload.get("status") or ("running" if payload else "offline")).strip().lower() or "offline",
-        "environment": str(payload.get("environment") or environment).strip().lower() or environment,
-        "loop_interval_seconds": float(payload.get("loop_interval_seconds") or 0),
-        "job_count": len(jobs),
-        "job_status_counts": status_counts,
-        "jobs": jobs,
-        "ingest_cursor": ingest_cursor,
-        "compute_dispatch_cursor": dispatch_cursor,
-        "latest_ingested_bar_time_ms": latest_ingested_bar_time_ms,
-        "latest_dispatched_bar_time_ms": latest_dispatched_bar_time_ms,
-        "last_dispatch_at_ms": int(dispatch_5m.get("last_dispatched_at_ms") or 0),
-        "dispatch_lag_ms": lag_ms,
-        "dispatch_lag_min": round(lag_ms / 60000.0, 2) if lag_ms else 0.0,
-    }
 
 
 def _scheduler_status(environment: str = "live") -> dict[str, Any]:
-    result = _request_json(
-        SCHEDULER_BASE_URL,
-        "/status",
-        params=[("environment", environment)],
-        timeout=5,
+    return _scheduler_status_support(
+        environment,
+        request_json=_request_json,
+        scheduler_base_url=SCHEDULER_BASE_URL,
     )
-    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
-    if payload:
-        return {
-            **payload,
-            "ok": bool(payload.get("ok", result.get("ok", False))),
-            "_meta": {
-                "target_url": result.get("target_url"),
-                "status_code": result.get("status_code"),
-                "error": result.get("error") or "",
-            },
-        }
-    return {
-        "ok": False,
-        "status": "offline",
-        "environment": environment,
-        "jobs": {},
-        "ingest_cursor": {},
-        "compute_dispatch_cursor": {},
-        "_meta": {
-            "target_url": result.get("target_url"),
-            "status_code": result.get("status_code"),
-            "error": result.get("error") or "scheduler_unavailable",
-        },
-    }
+
 
 
 def _scheduler_job_states(environment: str = "live") -> dict[str, Any]:
-    payload = _scheduler_status(environment)
-    jobs = payload.get("jobs") if isinstance(payload, dict) else {}
-    return jobs if isinstance(jobs, dict) else {}
+    return _scheduler_job_states_support(environment, scheduler_status_fn=_scheduler_status)
+
 
 
 def _augment_scheduler_summary(summary: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
-    definitions = items if isinstance(items, list) else []
-    return {
-        **(summary if isinstance(summary, dict) else {}),
-        "enabled_job_count": sum(1 for item in definitions if bool(item.get("effective_enabled"))),
-        "native_job_count": sum(1 for item in definitions if str(item.get("runner_kind") or "").startswith("native_")),
-        "compatibility_job_count": sum(
-            1 for item in definitions if str(item.get("runner_kind") or "").strip().lower() == "compatibility_pending"
-        ),
-    }
+    return _augment_scheduler_summary_support(summary, items)
+
 
 
 def _build_system_summary_payload(environment: str, *, lite_mode: bool) -> dict[str, Any]:
-    runtime_environment = _normalize_environment(environment, "live")
-    config_map = _load_effective_config_map(runtime_environment)
-    compute_enabled = runtime_environment != "backtest" and _is_enabled_text(config_map.get("ibkr_compute_enabled", "TRUE"))
-    trading_enabled = runtime_environment != "backtest" and _is_enabled_text(
-        config_map.get("ibkr_trading_enabled", config_map.get("trading_enabled", "TRUE"))
+    return _build_system_summary_payload_support(
+        environment,
+        lite_mode=lite_mode,
+        normalize_environment=_normalize_environment,
+        load_effective_config_map=_load_effective_config_map,
+        is_enabled_text=_is_enabled_text,
+        fetch_compute_health=_fetch_compute_health,
+        fetch_compute_status=_fetch_compute_status,
+        fetch_runtime_status=_fetch_runtime_status,
+        as_dict=_as_dict,
+        merge_service_topology=_merge_service_topology,
+        load_recent_system_events=_load_recent_system_events,
+        time_strings=_time_strings,
     )
 
-    compute_health = _fetch_compute_health(runtime_environment)
-    compute_status = _fetch_compute_status(runtime_environment)
-    runtime_status = _fetch_runtime_status(runtime_environment)
-
-    compute_health_payload = _as_dict(compute_health.get("payload"))
-    compute_status_payload = _as_dict(compute_status.get("payload"))
-    runtime_payload = _as_dict(runtime_status.get("payload"))
-
-    compute_summary = {
-        "ok": bool(compute_health.get("ok")) or bool(compute_status.get("ok")) or bool(compute_health_payload) or bool(compute_status_payload),
-        "status": str(
-            compute_status_payload.get("status")
-            or compute_health_payload.get("status")
-            or ("running" if (compute_health.get("ok") or compute_status.get("ok")) else "offline")
-        ).strip().lower() or "offline",
-        "engines": (
-            compute_status_payload.get("engines")
-            if isinstance(compute_status_payload.get("engines"), dict) and not lite_mode
-            else {}
-        ),
-        "total_engines": int(compute_status_payload.get("total_engines") or compute_health_payload.get("total_engines") or 0),
-        "ready_engines": int(compute_status_payload.get("ready_engines") or compute_health_payload.get("ready_engines") or 0),
-        "compute_count": int(compute_health_payload.get("compute_count") or compute_status_payload.get("compute_count") or 0),
-        "error_count": int(compute_health_payload.get("error_count") or compute_status_payload.get("error_count") or 0),
-        "uptime_s": int(compute_health_payload.get("uptime_s") or 0),
-        "last_compute": compute_health_payload.get("last_compute") or compute_status_payload.get("last_compute"),
-        "last_scan": compute_health_payload.get("last_scan") or compute_status_payload.get("last_scan"),
-        "compute_startup_preload": _as_dict(
-            compute_status_payload.get("compute_startup_preload") or compute_health_payload.get("compute_startup_preload")
-        ),
-        "service_topology": _merge_service_topology(compute_status_payload, compute_health_payload),
-    }
-    if compute_health.get("error") or compute_status.get("error"):
-        compute_summary["error"] = "; ".join(
-            part for part in (str(compute_health.get("error") or ""), str(compute_status.get("error") or "")) if part
-        )
-
-    merged_topology = _merge_service_topology(compute_summary, runtime_payload)
-    runtime_summary = {
-        "ok": bool(runtime_status.get("ok")) or bool(runtime_payload),
-        "status": str(runtime_payload.get("status") or ("running" if runtime_payload else "offline")).strip().lower() or "offline",
-        "environment": _normalize_environment(runtime_payload.get("environment") or runtime_environment, runtime_environment),
-        "service_topology": merged_topology,
-        "proxy_upstream": runtime_status.get("selected_upstream") or runtime_status.get("proxy_upstream") or "",
-    }
-    if runtime_status.get("error"):
-        runtime_summary["error"] = str(runtime_status.get("error") or "")
-
-    actual_runtime_environment = _normalize_environment(runtime_summary.get("environment") or runtime_environment, runtime_environment)
-    ok = bool(compute_summary.get("ok")) and (bool(runtime_summary.get("ok")) or not runtime_payload)
-    degraded = bool(compute_summary.get("ok")) or bool(runtime_summary.get("ok")) or bool(runtime_payload)
-    return {
-        "ok": ok,
-        "status": "running" if ok else ("degraded" if degraded else "offline"),
-        "timestamp": _time_strings()["us"],
-        "environment": runtime_environment,
-        "requested_environment": runtime_environment,
-        "actual_runtime_environment": actual_runtime_environment,
-        "runtime_environment_mismatch": actual_runtime_environment != runtime_environment,
-        "compute_enabled": compute_enabled,
-        "ibkr_trading_enabled": trading_enabled,
-        "config": config_map,
-        "today": {
-            "ibkr_signals": 0,
-            "ibkr_indicators": 0,
-            "orders": 0,
-            "ibkr_bars": 0,
-            "ibkr_targets": 0,
-            "events": 0,
-        },
-        "ibkr_compute": compute_summary,
-        "ibkr_runtime": runtime_summary,
-        "service_topology": merged_topology,
-        "recent_events": _load_recent_system_events(runtime_environment, 20),
-        "data_freshness": [],
-        "lite_mode": bool(lite_mode),
-        "source": "ibkr-api",
-    }
 
 
 def _probe_console_status() -> dict[str, Any]:
-    console_base_url = str(
-        os.environ.get("CONSOLE_BASE_URL")
-        or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
-        or os.environ.get("PB_PUBLIC_URL")
-        or DEFAULT_CONSOLE_BASE_URL
-    ).rstrip("/")
-    if not console_base_url:
-        return {
-            "ok": False,
-            "status_code": 0,
-            "target_url": "",
-            "error": "console_base_url_missing",
-        }
-    target_url = f"{console_base_url}/index.html"
-    try:
-        response = requests.get(target_url, timeout=5)
-    except requests.RequestException as exc:
-        return {
-            "ok": False,
-            "status_code": 0,
-            "target_url": target_url,
-            "error": str(exc),
-        }
-    return {
-        "ok": bool(response.ok),
-        "status_code": int(response.status_code),
-        "target_url": target_url,
-        "error": "",
-    }
+    return _probe_console_status_support(_console_base_url())
+
 
 
 def _derive_monitor_service_map(
@@ -1113,208 +972,46 @@ def _derive_monitor_service_map(
     *,
     console_probe: dict[str, Any],
     pb_health: dict[str, Any],
+    build_service_topology_fn=None,
+    build_service_topology: Any = None,
 ) -> dict[str, Any]:
-    topology = base_payload.get("service_topology") if isinstance(base_payload.get("service_topology"), dict) else build_service_topology()
-    services = topology.get("services") if isinstance(topology.get("services"), dict) else {}
-    runtime = base_payload.get("runtime") if isinstance(base_payload.get("runtime"), dict) else {}
-    gateway = runtime.get("gateway") if isinstance(runtime.get("gateway"), dict) else {}
-    compute = base_payload.get("compute") if isinstance(base_payload.get("compute"), dict) else {}
-    monitor_status = str(base_payload.get("status") or "").strip().lower()
-
-    def _normalize_service_status(raw_status: Any, *, fallback_running: bool) -> str:
-        text = str(raw_status or "").strip().lower()
-        if text in {"ok", "running", "healthy", "ready"}:
-            return "running"
-        if text in {"warning", "warn", "degraded", "partial"}:
-            return "degraded"
-        if text == "error":
-            return "degraded" if fallback_running else "offline"
-        if text in {"offline", "down", "stopped"}:
-            return "offline"
-        return "running" if fallback_running else "offline"
-
-    def _topology_meta(name: str) -> dict[str, Any]:
-        item = services.get(name) if isinstance(services.get(name), dict) else {}
-        return dict(item)
-
-    def _detail_parts(*parts: Any) -> str:
-        normalized = [str(part).strip() for part in parts if str(part or "").strip()]
-        return " · ".join(normalized)
-
-    console_meta = _topology_meta("ibkr-console")
-    console_running = bool(console_probe.get("ok"))
-    pb_meta = _topology_meta("pocketbase")
-    pb_disk = ((base_payload.get("pocketbase") or {}).get("disk") or {}) if isinstance(base_payload.get("pocketbase"), dict) else {}
-    pb_flags = [item for item in (base_payload.get("flags") or []) if str((item or {}).get("code") or "").startswith("pb_")]
-    pb_status = "running" if pb_health.get("ok") else "offline"
-    if pb_status == "running" and pb_flags:
-        pb_status = "degraded"
-    elif pb_status != "running" and pb_disk.get("status") == "partial":
-        pb_status = "degraded"
-
-    compute_status = _normalize_service_status(compute.get("status"), fallback_running=bool(compute))
-    ready_engines = int(compute.get("ready_engines") or 0)
-    total_engines = int(compute.get("total_engines") or 0)
-    if total_engines > 0 and ready_engines < total_engines and compute_status == "running":
-        compute_status = "degraded"
-    if not compute and monitor_status in {"warning", "warn", "degraded"}:
-        compute_status = "degraded"
-    if not compute and monitor_status in {"offline", "error"}:
-        compute_status = "offline"
-
-    runtime_status = _normalize_service_status(runtime.get("status"), fallback_running=bool(runtime))
-    runtime_phase = str(runtime.get("runtime_phase") or "").strip().lower()
-    session = runtime.get("session") if isinstance(runtime.get("session"), dict) else {}
-    websocket = runtime.get("websocket") if isinstance(runtime.get("websocket"), dict) else {}
-    gateway_reachable = bool(gateway.get("running") or gateway.get("reachable"))
-    websocket_ready = bool(websocket.get("connected") or websocket.get("ready"))
-    session_authenticated = bool(session.get("authenticated"))
-    if runtime:
-        if runtime_phase in {"stopped", "stop_requested", "stopping"}:
-            runtime_status = "degraded" if gateway_reachable or session_authenticated or websocket_ready else "offline"
-        elif not gateway_reachable or not session_authenticated or not websocket_ready:
-            runtime_status = "degraded"
-    elif compute_status != "running":
-        runtime_status = "offline"
-
-    gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
-    scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "offline"
-    if scheduler_status == "running" and float(scheduler_summary.get("dispatch_lag_min") or 0) >= 10:
-        scheduler_status = "degraded"
-
-    service_map = {
-        "ibkr-console": {
-            **console_meta,
-            "status": "running" if console_running else "offline",
-            "detail": _detail_parts(
-                "static console",
-                console_probe.get("target_url"),
-                f"http {console_probe.get('status_code')}" if console_probe.get("status_code") else console_probe.get("error"),
-            ),
-        },
-        "ibkr-api": {
-            **_topology_meta("ibkr-api"),
-            "status": "running",
-            "detail": _detail_parts(
-                "compat routes active",
-                f"env {environment}",
-                f"scheduler jobs {int(scheduler_summary.get('job_count') or 0)}",
-            ),
-        },
-        "ibkr-scheduler": {
-            **_topology_meta("ibkr-scheduler"),
-            "status": scheduler_status,
-            "detail": _detail_parts(
-                f"loop {int(float(scheduler_summary.get('loop_interval_seconds') or 0))}s" if scheduler_summary.get("loop_interval_seconds") else "",
-                (
-                    f"lag {float(scheduler_summary.get('dispatch_lag_min') or 0):.2f}m"
-                    if scheduler_summary.get("latest_ingested_bar_time_ms")
-                    else "awaiting bars"
-                ),
-                f"jobs {int(scheduler_summary.get('job_count') or 0)}",
-            ),
-        },
-        "ibkr-compute": {
-            **_topology_meta("ibkr-compute"),
-            "status": compute_status,
-            "detail": _detail_parts(
-                f"engines {int(compute.get('ready_engines') or 0)}/{int(compute.get('total_engines') or 0)}",
-                f"compute {int(compute.get('compute_count') or 0)}",
-                f"tracked {int(compute.get('tracked_cursors') or 0)}",
-            ),
-        },
-        "ibkr-runtime": {
-            **_topology_meta("ibkr-runtime"),
-            "status": runtime_status,
-            "detail": _detail_parts(
-                f"phase {runtime.get('runtime_phase') or '--'}",
-                f"session {'AUTHED' if ((runtime.get('session') or {}).get('authenticated')) else 'PENDING'}",
-                f"ws {'READY' if ((runtime.get('websocket') or {}).get('connected')) else 'PENDING'}",
-            ),
-        },
-        "ibkr-gateway": {
-            **_topology_meta("ibkr-gateway"),
-            "status": gateway_status,
-            "detail": _detail_parts(
-                f"managed_by {gateway.get('managed_by') or '--'}",
-                f"pid {int(gateway.get('pid') or 0)}" if gateway.get("pid") else "",
-                "reachable" if gateway.get("reachable") else "not reachable",
-            ),
-        },
-        "pocketbase": {
-            **pb_meta,
-            "status": pb_status,
-            "detail": _detail_parts(
-                f"pb_data {pb_disk.get('data_path') or '--'}",
-                f"size {pb_disk.get('status') or 'unknown'}",
-                f"http {pb_health.get('status_code')}" if pb_health.get("status_code") else pb_health.get("error"),
-            ),
-        },
-    }
-
-    counts: dict[str, int] = {}
-    for service in service_map.values():
-        normalized = str(service.get("status") or "unknown").strip().lower() or "unknown"
-        counts[normalized] = counts.get(normalized, 0) + 1
-    return {
-        "environment": environment,
-        "services": service_map,
-        "status_counts": counts,
-    }
-
-
-def _build_system_monitor_payload(environment: str) -> dict[str, Any]:
-    runtime_environment = _normalize_environment(environment, "live")
-    base_monitor_result = _fetch_compute_monitor(runtime_environment)
-    base_payload = _as_dict(base_monitor_result.get("payload"))
-    config.refresh()
-    scheduler_status = _scheduler_status(runtime_environment)
-    scheduler_jobs = scheduler_status.get("jobs") if isinstance(scheduler_status.get("jobs"), dict) else {}
-    scheduler_items = build_cron_payload(config, runtime_environment, scheduler_jobs)
-    scheduler_summary = _augment_scheduler_summary(_build_scheduler_summary(runtime_environment, scheduler_status), scheduler_items)
-    pb_health = _request_json(PB_BASE_URL, "/api/health", timeout=5)
-    console_probe = _probe_console_status()
-
-    merged_payload = dict(base_payload)
-    merged_payload.setdefault("ok", bool(base_monitor_result.get("ok", False)))
-    merged_payload["status"] = str(
-        merged_payload.get("status") or ("offline" if merged_payload.get("ok") is False else "ok")
-    ).strip().lower() or "ok"
-    actual_runtime_environment = _normalize_environment(
-        merged_payload.get("environment") or _as_dict(merged_payload.get("runtime")).get("environment") or runtime_environment,
-        runtime_environment,
-    )
-    merged_payload["requested_environment"] = runtime_environment
-    merged_payload["actual_runtime_environment"] = actual_runtime_environment
-    merged_payload["runtime_environment_mismatch"] = actual_runtime_environment != runtime_environment
-    merged_payload["config"] = _load_effective_config_map(runtime_environment, MONITOR_CONFIG_KEYS)
-    merged_payload["recent_events"] = _load_recent_system_events(runtime_environment, 20)
-    merged_payload["source"] = "ibkr-api"
-    merged_payload["upstream_monitor"] = {
-        "ok": bool(base_monitor_result.get("ok", False)),
-        "status_code": int(base_monitor_result.get("status_code") or 0),
-        "target_url": base_monitor_result.get("target_url") or "",
-        "error": base_monitor_result.get("error") or "",
-    }
-    merged_payload["scheduler"] = scheduler_summary
-    merged_payload["control_plane"] = {
-        "api": {
-            "ok": True,
-            "status": "running",
-            "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
-        },
-        "scheduler": scheduler_summary,
-    }
-    merged_payload["service_topology"] = _merge_service_topology(merged_payload, build_service_topology())
-    merged_payload = _enrich_monitor_payload_with_pocketbase_disk(merged_payload)
-    merged_payload["service_monitor"] = _derive_monitor_service_map(
-        runtime_environment,
-        merged_payload,
+    topology_builder = build_service_topology_fn or build_service_topology or globals().get("build_service_topology")
+    return _derive_monitor_service_map_support(
+        environment,
+        base_payload,
         scheduler_summary,
         console_probe=console_probe,
         pb_health=pb_health,
+        build_service_topology=topology_builder,
     )
-    return merged_payload
+
+
+
+def _build_system_monitor_payload(environment: str) -> dict[str, Any]:
+    return _build_system_monitor_payload_support(
+        environment,
+        normalize_environment=_normalize_environment,
+        fetch_compute_monitor=_fetch_compute_monitor,
+        as_dict=_as_dict,
+        config_refresh=config.refresh,
+        scheduler_status=_scheduler_status,
+        build_cron_payload=build_cron_payload,
+        config=config,
+        build_scheduler_summary=_build_scheduler_summary,
+        augment_scheduler_summary=_augment_scheduler_summary,
+        request_json=_request_json,
+        pb_base_url=PB_BASE_URL,
+        console_base_url=_console_base_url(),
+        probe_console_status=_probe_console_status_support,
+        load_effective_config_map=_load_effective_config_map,
+        monitor_config_keys=MONITOR_CONFIG_KEYS,
+        load_recent_system_events=_load_recent_system_events,
+        enrich_monitor_payload_with_pocketbase_disk=_enrich_monitor_payload_with_pocketbase_disk,
+        derive_monitor_service_map=_derive_monitor_service_map,
+        merge_service_topology=_merge_service_topology,
+        build_service_topology=build_service_topology,
+        service_profile=str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
+    )
 
 
 _system_route_handlers = register_system_routes(
@@ -1349,6 +1046,13 @@ _system_route_handlers = register_system_routes(
         "request_two_factor_approval": _request_two_factor_approval,
         "build_signal_expiry_response": lambda *args, **kwargs: build_signal_expiry_response(*args, **kwargs),
         "build_order_detail_integrity_response": lambda *args, **kwargs: build_order_detail_integrity_response(*args, **kwargs),
+        "build_today_targets_response": lambda payload: build_today_targets_response(
+            pb,
+            payload=payload,
+            normalize_environment=_normalize_environment,
+            time_strings=_time_strings,
+        ),
+        "system_status_chat_id": _system_status_chat_id,
         "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime_support(
             environment,
             order_id,
@@ -1378,6 +1082,10 @@ custom_system_job_two_factor_hourly_check = _system_route_handlers["custom_syste
 custom_system_job_weekly_reauth_reminder = _system_route_handlers["custom_system_job_weekly_reauth_reminder"]
 custom_system_job_weekly_reauth_followup = _system_route_handlers["custom_system_job_weekly_reauth_followup"]
 custom_system_job_market_open_reminder = _system_route_handlers["custom_system_job_market_open_reminder"]
+custom_system_job_heartbeat = _system_route_handlers["custom_system_job_heartbeat"]
+custom_system_job_status_reminder = _system_route_handlers["custom_system_job_status_reminder"]
+custom_system_job_scan_summary = _system_route_handlers["custom_system_job_scan_summary"]
+custom_system_job_monitor_alert_guard = _system_route_handlers["custom_system_job_monitor_alert_guard"]
 custom_system_job_daily_report = _system_route_handlers["custom_system_job_daily_report"]
 
 

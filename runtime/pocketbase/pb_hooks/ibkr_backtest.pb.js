@@ -1,3 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-require(`${__hooks}/modules/backtest/ibkr_backtest.js`)
+/**
+ * No-op compatibility shell. Backtest routes migrated to ibkr-api / ibkr-compute.
+ * PocketBase now keeps only auth + collections responsibilities.
+ */

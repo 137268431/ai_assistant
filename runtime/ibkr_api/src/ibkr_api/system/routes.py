@@ -11,7 +11,11 @@ from ibkr_api.system.jobs import (
     build_data_gap_guard_response,
     build_order_expiry_response,
     build_system_daily_report_response,
+    build_system_heartbeat_response,
     build_system_market_open_reminder_response,
+    build_system_monitor_alert_guard_response,
+    build_system_scan_summary_response,
+    build_system_status_reminder_response,
     build_two_factor_hourly_check_response,
     build_weekly_reauth_followup_response,
     build_weekly_reauth_reminder_response,
@@ -50,6 +54,8 @@ def register_system_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     cancel_broker_order = deps["cancel_broker_order"]
     build_signal_expiry_response = deps["build_signal_expiry_response"]
     build_order_detail_integrity_response = deps["build_order_detail_integrity_response"]
+    build_today_targets_response = deps["build_today_targets_response"]
+    system_status_chat_id = deps["system_status_chat_id"]
     exports: dict[str, Any] = {}
 
     @app.route("/api/custom/ibkr/health-report", methods=["POST"])
@@ -333,6 +339,70 @@ def register_system_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_system_job_market_open_reminder"] = custom_system_job_market_open_reminder
+
+    @app.route("/api/custom/system/jobs/heartbeat", methods=["POST"])
+    def custom_system_job_heartbeat() -> Response:
+        payload, status_code = build_system_heartbeat_response(
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
+            build_system_monitor_payload=build_system_monitor_payload,
+            emit_system_event=emit_system_event,
+            get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
+            upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+    exports["custom_system_job_heartbeat"] = custom_system_job_heartbeat
+
+    @app.route("/api/custom/system/jobs/status_reminder", methods=["POST"])
+    def custom_system_job_status_reminder() -> Response:
+        payload, status_code = build_system_status_reminder_response(
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
+            build_system_monitor_payload=build_system_monitor_payload,
+            emit_system_event=emit_system_event,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+    exports["custom_system_job_status_reminder"] = custom_system_job_status_reminder
+
+    @app.route("/api/custom/system/jobs/scan_summary", methods=["POST"])
+    def custom_system_job_scan_summary() -> Response:
+        payload, status_code = build_system_scan_summary_response(
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
+            feishu_send_interactive=feishu_send_interactive,
+            write_system_event_record=write_system_event_record,
+            get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
+            upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+            config_value=config_value,
+            console_base_url=console_base_url,
+            system_status_chat_id=system_status_chat_id,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+    exports["custom_system_job_scan_summary"] = custom_system_job_scan_summary
+
+    @app.route("/api/custom/system/jobs/monitor_alert_guard", methods=["POST"])
+    def custom_system_job_monitor_alert_guard() -> Response:
+        payload, status_code = build_system_monitor_alert_guard_response(
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            build_system_monitor_payload=build_system_monitor_payload,
+            emit_system_event=emit_system_event,
+            get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
+            upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+    exports["custom_system_job_monitor_alert_guard"] = custom_system_job_monitor_alert_guard
 
     @app.route("/api/custom/system/jobs/daily_report", methods=["POST"])
     def custom_system_job_daily_report() -> Response:

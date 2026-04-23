@@ -74,7 +74,11 @@ def get_scheduler_internal_url(default: str | None = None) -> str:
 
 def get_console_base_url(default: str | None = None) -> str:
     return _normalize_base_url(
-        os.environ.get("CONSOLE_BASE_URL") or os.environ.get("PB_PUBLIC_URL"),
+        os.environ.get("CONSOLE_BASE_URL")
+        or os.environ.get("QUANT_BASE_URL")
+        or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
+        or default
+        or "https://quant.lzw-glory.top",
         default or DEFAULT_CONSOLE_BASE_URL,
     )
 

@@ -281,6 +281,7 @@ updates = {
     'IBKR_COMPUTE_INTERNAL_URL': 'http://127.0.0.1:5100',
     'IBKR_RUNTIME_INTERNAL_URL': 'http://127.0.0.1:5101',
     'IBKR_GATEWAY_LOG_DIR': '/opt/ibkr_runtime/logs/ibgateway',
+    'CONSOLE_BASE_URL': 'https://quant.lzw-glory.top',
 }
 
 output_lines = []
@@ -349,6 +350,7 @@ updates = {
     'IBKR_RUNTIME_INTERNAL_URL': 'http://127.0.0.1:5101',
     'IBKR_API_INTERNAL_URL': 'http://127.0.0.1:5102',
     'IBKR_SCHEDULER_INTERNAL_URL': 'http://127.0.0.1:5103',
+    'CONSOLE_BASE_URL': 'https://quant.lzw-glory.top',
 }
 
 output_lines = []
@@ -418,6 +420,7 @@ updates = {
     'IBKR_RUNTIME_INTERNAL_URL': 'http://127.0.0.1:5101',
     'IBKR_API_INTERNAL_URL': 'http://127.0.0.1:5102',
     'IBKR_SCHEDULER_INTERNAL_URL': 'http://127.0.0.1:5103',
+    'CONSOLE_BASE_URL': 'https://quant.lzw-glory.top',
 }
 
 output_lines = []

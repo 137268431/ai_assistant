@@ -1,1416 +1,156 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Trading Flight - 首页</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/index/page.css">
-</head>
-<body data-home-layout="desktop">
-    <div class="home-shell">
-        <div id="contextBar"></div>
-        <div id="pageBridge"></div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PocketBase</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-        <main class="home-main">
-            <section id="homeOverview" class="home-panel" data-ready="loading">
-                <div class="home-overview-layout">
-                    <div class="home-panel-head home-panel-head-overview">
-                        <div>
-                            <div class="home-panel-kicker">Session</div>
-                            <div class="home-panel-title">今日交易总览</div>
-                            <div class="home-panel-copy">不再铺满多层卡片，先看最关键的交易状态，再决定跳哪一页。</div>
-                        </div>
-                    </div>
-                    <div class="home-overview-side">
-                        <div class="home-panel-meta" id="overviewMeta">加载中...</div>
-                        <div id="overviewStackCard" class="home-stack-card" data-ready="loading">
-                            <div class="home-stack-head">
-                                <div class="home-stack-title">Split Stack</div>
-                                <a id="overviewStackLink" href="/ibkr_system.html" class="home-stack-link">系统总览</a>
-                            </div>
-                            <div class="home-stack-summary" id="overviewStackSummary">正在读取 runtime / compute / pocketbase 拆分状态...</div>
-                            <div class="home-stack-services" id="overviewServiceRows">
-                                <div class="home-stack-service" data-tone="neutral">
-                                    <div class="home-stack-service-top">
-                                        <span class="home-stack-service-name">LOADING</span>
-                                        <span class="home-stack-service-status">WAIT</span>
-                                    </div>
-                                    <div class="home-stack-service-copy">同步服务拓扑、职责归属和 startup preload 进度。</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="home-overview-grid">
-                        <a id="signalsLink" href="/ibkr_signals.html" class="home-stat-card" data-tone="long">
-                            <div class="home-stat-kicker">Signals</div>
-                            <div class="home-stat-value split">
-                                <div class="home-stat-dual">
-                                    <span class="long" id="todaySignalsLong">-</span>
-                                    <span class="short" id="todaySignalsShort">-</span>
-                                </div>
-                            </div>
-                            <div class="home-stat-label">今日信号</div>
-                            <div class="home-stat-foot">LONG / SHORT</div>
-                        </a>
+      * {
+        box-sizing: border-box;
+      }
 
-                        <a id="reverseSignalsLink" href="/ibkr_reverse_signals.html" class="home-stat-card" data-tone="neutral">
-                            <div class="home-stat-kicker">Reverse</div>
-                            <div class="home-stat-value">
-                                <span id="reverseSignalsPending">-</span>
-                            </div>
-                            <div class="home-stat-label">待处理反转</div>
-                            <div class="home-stat-foot">平仓 / 取消 / 调整</div>
-                        </a>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-                        <a id="ordersLink" href="/orders.html" class="home-stat-card" data-tone="long">
-                            <div class="home-stat-kicker">Orders</div>
-                            <div class="home-stat-value split">
-                                <div class="home-stat-dual">
-                                    <span class="long" id="todayOrdersLong">-</span>
-                                    <span class="short" id="todayOrdersShort">-</span>
-                                </div>
-                            </div>
-                            <div class="home-stat-label">今日订单</div>
-                            <div class="home-stat-foot">LONG / SHORT</div>
-                        </a>
+      main {
+        width: min(780px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-                        <a id="positionsLink" href="/ibkr_account.html" class="home-stat-card" data-tone="neutral">
-                            <div class="home-stat-kicker">Positions</div>
-                            <div class="home-stat-value split">
-                                <div class="home-stat-dual">
-                                    <span class="long" id="activePositionsLong">-</span>
-                                    <span class="short" id="activePositionsShort">-</span>
-                                </div>
-                            </div>
-                            <div class="home-stat-label">当前持仓</div>
-                            <div class="home-stat-foot">已成交 Entry</div>
-                        </a>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-                        <a id="pnlCardLink" href="/orders.html" class="home-stat-card" data-tone="neutral">
-                            <div class="home-stat-kicker">PnL</div>
-                            <div class="home-stat-value">
-                                <span id="todayPnL">-</span>
-                            </div>
-                            <div class="home-stat-label">今日盈亏</div>
-                            <div class="home-stat-foot">已成交 TP / SL 估算</div>
-                        </a>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(34px, 6vw, 56px);
+        line-height: 0.98;
+        font-weight: 700;
+      }
 
-                        <a id="targetsSummaryLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-stat-card" data-tone="candidate">
-                            <div class="home-stat-kicker">Targets</div>
-                            <div class="home-stat-value split">
-                                <div class="home-stat-dual">
-                                    <span class="long" id="todayTargetsActive">-</span>
-                                    <span class="candidate" id="todayTargetsCandidate">-</span>
-                                </div>
-                            </div>
-                            <div class="home-stat-label">今日目标池</div>
-                            <div class="home-stat-foot">ACTIVE / CANDIDATE</div>
-                        </a>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-                    </div>
-                </div>
-            </section>
+      .grid {
+        display: grid;
+        gap: 16px;
+        margin-top: 28px;
+      }
 
-            <div class="home-primary-grid">
-                <section id="homeTargets" class="home-panel home-targets-panel" data-ready="loading">
-                    <div class="home-panel-head">
-                        <div>
-                            <div class="home-panel-kicker">Targets</div>
-                            <div class="home-panel-title">今日目标池</div>
-                            <div class="home-panel-copy">直接看 candidate / active 标的、核心理由和图表跳转。PC 会显示更多条，手机端按优先级压缩。</div>
-                        </div>
-                        <a id="todayTargetsLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-inline-btn">查看当前标的榜</a>
-                    </div>
-                    <div class="home-panel-meta home-panel-meta-row" id="todayTargetsMeta">加载中...</div>
-                    <div class="home-panel-tip" aria-live="polite">
-                        <span class="home-panel-tip-badge">Tips</span>
-                        <div class="home-panel-tip-copy" id="todayTargetsTimeTip">首页默认按当前美东交易日展示目标池，需切换日期请进入当前标的榜。</div>
-                    </div>
-                    <div id="todayTargetsList" class="home-targets-grid home-panel-scroll">
-                        <div class="home-empty">加载中...</div>
-                    </div>
-                </section>
-
-                <section id="homeQuickLinks" class="home-panel home-links-panel">
-                    <div class="home-panel-head">
-                        <div>
-                            <div class="home-panel-kicker">Quick Access</div>
-                            <div class="home-panel-title">重要入口</div>
-                            <div class="home-panel-copy">只保留最常用的主入口，避免同一批链接在首页重复堆叠。</div>
-                        </div>
-                    </div>
-                    <div class="home-panel-meta home-panel-meta-row" id="quickLinksMeta">高频入口加载中...</div>
-                    <div class="home-quick-grid home-panel-scroll">
-                        <a id="actionScreenerLink" href="/ibkr_screener.html" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">🔎</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">今日筛选</div>
-                            <div class="home-quick-copy">先看今天可操作标的和筛选理由。</div>
-                        </a>
-
-                        <a id="actionTargetsLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">🎯</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">当前标的榜</div>
-                            <div class="home-quick-copy">看今日 workflow、信号阶段和盘中下一步动作。</div>
-                        </a>
-
-                        <a id="actionSignalsLink" href="/ibkr_signals.html" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">📡</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">信号管理</div>
-                            <div class="home-quick-copy">确认今天的信号、指标快照和执行上下文。</div>
-                        </a>
-
-                        <a id="actionOrdersLink" href="/orders.html" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">📋</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">订单管理</div>
-                            <div class="home-quick-copy">跟踪入场、止盈、止损和当前状态。</div>
-                        </a>
-
-                        <a id="actionAccountLink" href="/ibkr_account.html" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">💼</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">账户概览</div>
-                            <div class="home-quick-copy">查看净值、持仓和资金摘要。</div>
-                        </a>
-
-                        <a id="actionSystemLink" href="/ibkr_system.html" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">🖥️</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">系统总览</div>
-                            <div class="home-quick-copy">快速确认 runtime、compute 和链路健康。</div>
-                        </a>
-                    </div>
-
-                    <div class="home-tool-strip">
-                        <a id="actionIndicatorsLink" href="/ibkr_indicators.html" class="home-tool-chip">📈 指标</a>
-                        <a id="actionRuntimeLink" href="/ibkr_runtime.html" class="home-tool-chip">🎛️ 控制台</a>
-                        <a id="actionMonitorLink" href="/ibkr_monitor.html" class="home-tool-chip">🛠️ 运维</a>
-                        <a id="actionBacktestsLink" href="/ibkr_backtests.html" class="home-tool-chip">🧪 回测</a>
-                    </div>
-                </section>
-            </div>
-
-            <div id="homeSecondary" class="home-secondary-grid">
-                <section id="homeMarket" class="home-panel" data-ready="loading">
-                    <div class="home-panel-head">
-                        <div>
-                            <div class="home-panel-kicker">Market</div>
-                            <div class="home-panel-title">市场脉搏</div>
-                            <div class="home-panel-copy">保留指数和风险情绪摘要，但压缩成次级信息区，不抢交易首屏。</div>
-                        </div>
-                        <a id="marketPanelLink" href="/ibkr_indicators.html" class="home-inline-btn">更多指标</a>
-                    </div>
-                    <div class="home-panel-meta home-panel-meta-row" id="marketSummaryText">加载中...</div>
-                    <div id="marketIndexGrid" class="home-market-grid home-panel-scroll">
-                        <div class="home-empty">加载中...</div>
-                    </div>
-                </section>
-
-                <section id="homeActivity" class="home-panel" data-ready="loading">
-                    <div class="home-panel-head">
-                        <div>
-                            <div class="home-panel-kicker">Activity</div>
-                            <div class="home-panel-title">最近活动</div>
-                            <div class="home-panel-copy">只保留最新信号和订单动态，作为快速回看入口。</div>
-                        </div>
-                        <a id="activityPanelLink" href="/ibkr_signals.html" class="home-inline-btn">查看全部</a>
-                    </div>
-                    <div class="home-panel-meta home-panel-meta-row" id="activityMeta">加载中...</div>
-                    <div id="activityList" class="home-activity-list home-panel-scroll">
-                        <div class="home-empty">加载中...</div>
-                    </div>
-                </section>
-            </div>
-        </main>
-    </div>
-
-    <div id="nav"></div>
-
-    <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
-    <script>
-        const pb = createPocketBaseClient();
-        let currentEnvironment = getCurrentRuntimeEnvironment();
-        let latestTodayTargetsPayload = null;
-        let responsiveListenerBound = false;
-
-        function escapeHtml(value) {
-            return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
+      @media (min-width: 720px) {
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-
-        function formatNumber(value, digits = 0) {
-            const num = Number(value);
-            if (!Number.isFinite(num)) return '--';
-            return num.toLocaleString('en-US', {
-                minimumFractionDigits: digits,
-                maximumFractionDigits: digits
-            });
-        }
-
-        function formatPrice(value) {
-            const num = Number(value);
-            if (!Number.isFinite(num) || num <= 0) return '--';
-            return `$${formatNumber(num, 2)}`;
-        }
-
-        function getUsDate() {
-            return new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'America/New_York',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(new Date());
-        }
-
-        function getUsDateFromTime(value) {
-            const date = new Date(value);
-            if (Number.isNaN(date.getTime())) return getUsDate();
-            return new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'America/New_York',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(date);
-        }
-
-        function formatRefreshClock() {
-            return new Intl.DateTimeFormat('zh-CN', {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: false
-            }).format(new Date());
-        }
-
-        function setSectionState(id, state) {
-            const el = document.getElementById(id);
-            if (el) {
-                el.dataset.ready = state;
-            }
-        }
-
-        function setCardTone(id, tone) {
-            const el = document.getElementById(id);
-            if (el) {
-                el.dataset.tone = tone || 'neutral';
-            }
-        }
-
-        function syncHomeLayoutState() {
-            const width = window.innerWidth || document.documentElement.clientWidth || 0;
-            let layout = 'desktop';
-            if (width <= 720) {
-                layout = 'mobile';
-            } else if (width <= 1100) {
-                layout = 'tablet';
-            }
-            document.body.dataset.homeLayout = layout;
-        }
-
-        function bindResponsiveState() {
-            if (responsiveListenerBound) return;
-            responsiveListenerBound = true;
-            const rerender = () => {
-                syncHomeLayoutState();
-                if (latestTodayTargetsPayload) {
-                    renderTodayTargets(latestTodayTargetsPayload);
-                }
-            };
-            window.addEventListener('resize', rerender, { passive: true });
-            rerender();
-        }
-
-        function getTodayTargetsDisplayLimit() {
-            const width = window.innerWidth || document.documentElement.clientWidth || 0;
-            if (width <= 720) return 4;
-            if (width <= 1280) return 6;
-            return 8;
-        }
-
-        function bindEnvironmentLinks() {
-            const links = {
-                overviewStackLink: buildPageUrl('/ibkr_system.html'),
-                signalsLink: buildPageUrl('/ibkr_signals.html'),
-                reverseSignalsLink: buildPageUrl('/ibkr_reverse_signals.html'),
-                ordersLink: buildPageUrl('/orders.html'),
-                pnlCardLink: buildPageUrl('/orders.html'),
-                positionsLink: buildPageUrl('/ibkr_account.html'),
-                targetsSummaryLink: buildPageUrl('/ibkr_screener.html', { tab: 'targets' }),
-                todayTargetsLink: buildPageUrl('/ibkr_screener.html', { tab: 'targets' }),
-                actionScreenerLink: buildPageUrl('/ibkr_screener.html'),
-                actionTargetsLink: buildPageUrl('/ibkr_screener.html', { tab: 'targets' }),
-                actionSignalsLink: buildPageUrl('/ibkr_signals.html'),
-                actionOrdersLink: buildPageUrl('/orders.html'),
-                actionAccountLink: buildPageUrl('/ibkr_account.html'),
-                actionSystemLink: buildPageUrl('/ibkr_system.html'),
-                actionIndicatorsLink: buildPageUrl('/ibkr_indicators.html'),
-                actionRuntimeLink: buildPageUrl('/ibkr_runtime.html'),
-                actionMonitorLink: buildPageUrl('/ibkr_monitor.html'),
-                actionBacktestsLink: buildPageUrl('/ibkr_backtests.html'),
-                marketPanelLink: buildPageUrl('/ibkr_indicators.html'),
-                activityPanelLink: buildPageUrl('/ibkr_signals.html')
-            };
-
-            Object.entries(links).forEach(([id, href]) => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.href = href;
-                }
-            });
-        }
-
-        async function initAuth() {
-            const token = getToken();
-            if (!token) {
-                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
-                return;
-            }
-            pb.authStore.save(token, null);
-        }
-
-        async function requestJson(path, { method = 'GET', body = null } = {}) {
-            const token = getToken();
-            const headers = { 'Content-Type': 'application/json' };
-            if (token) headers.Authorization = `Bearer ${token}`;
-            const response = await fetchWithRetry(`${BASE_URL}${path}`, {
-                method,
-                headers,
-                body: body ? JSON.stringify(body) : null
-            }, {
-                attempts: 3,
-                retryDelayMs: 500
-            });
-            const text = await response.text();
-            let payload = {};
-            try {
-                payload = text ? JSON.parse(text) : {};
-            } catch (_) {
-                payload = { ok: false, raw: text };
-            }
-            if (response.status === 401 || response.status === 403) {
-                handleAuthError();
-                throw new Error('Authentication failed');
-            }
-            if (!response.ok) {
-                throw new Error(payload.message || payload.error || `Request failed (${response.status})`);
-            }
-            return payload;
-        }
-
-        function renderOverviewMeta(marketDate) {
-            document.getElementById('overviewMeta').textContent = `${currentEnvironment.toUpperCase()} · ${marketDate} · 更新 ${formatRefreshClock()}`;
-        }
-
-        function formatCompactSeconds(value) {
-            const numeric = Number(value);
-            if (!Number.isFinite(numeric) || numeric <= 0) return '--';
-            if (numeric < 60) return `${numeric.toFixed(1)}s`;
-            const totalSeconds = Math.round(numeric);
-            const hours = Math.floor(totalSeconds / 3600);
-            const minutes = Math.floor((totalSeconds % 3600) / 60);
-            const seconds = totalSeconds % 60;
-            if (hours > 0) return `${hours}h ${minutes}m`;
-            return `${minutes}m ${seconds}s`;
-        }
-
-        function summarizeHomeErrorMessage(value) {
-            const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-            if (!normalized) return '';
-            if (/connection refused/i.test(normalized)) return 'runtime upstream 拒绝连接';
-            if (/timed out|timeout/i.test(normalized)) return 'runtime upstream 超时';
-            if (/502|bad gateway/i.test(normalized)) return 'runtime upstream 502';
-            if (/401|403|auth/i.test(normalized)) return '鉴权失败';
-            if (/watchlist/i.test(normalized)) return 'watchlist 拉取失败';
-            return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
-        }
-
-        function normalizeHomePreloadState(payload = {}) {
-            const source = payload && typeof payload === 'object' ? payload : {};
-            const status = String(source.status || '').trim().toLowerCase()
-                || (source.running ? 'running' : (source.finished_at ? 'completed' : (source.scheduled ? 'scheduled' : 'idle')));
-            const environments = Array.isArray(source.environments)
-                ? source.environments.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
-                : [];
-            return {
-                enabled: source.enabled !== false,
-                status,
-                environments,
-                envTotal: Number(source.env_total || 0) || 0,
-                envCompleted: Number(source.env_completed || 0) || 0,
-                symbolTotal: Number(source.symbol_total || 0) || 0,
-                symbolCompleted: Number(source.symbol_completed || 0) || 0,
-                readyCount: Number(source.ready_count || 0) || 0,
-                elapsedS: Number(source.elapsed_s || 0) || 0,
-                error: String(source.error || source.reason || '').trim(),
-                results: source.results && typeof source.results === 'object' ? source.results : {}
-            };
-        }
-
-        function buildHomeEngineEnvironmentSummary(computeSummary = {}) {
-            const engines = computeSummary?.engines || {};
-            if (!engines || typeof engines !== 'object') return '';
-            const counts = new Map();
-            Object.entries(engines).forEach(([key, engine]) => {
-                const fallbackEnvironment = String(key || '').split(/[/:]/)[0] || '';
-                const environment = String(engine?.environment || fallbackEnvironment).trim().toLowerCase();
-                if (!environment) return;
-                const item = counts.get(environment) || { environment, ready: 0, total: 0 };
-                item.total += 1;
-                if (engine?.is_ready) item.ready += 1;
-                counts.set(environment, item);
-            });
-            const order = ['live', 'paper', 'backtest', ...Array.from(counts.keys()).sort()];
-            const seen = new Set();
-            const parts = [];
-            order.forEach((environment) => {
-                const normalized = String(environment || '').trim().toLowerCase();
-                if (!normalized || seen.has(normalized) || !counts.has(normalized)) return;
-                seen.add(normalized);
-                const item = counts.get(normalized);
-                parts.push(`${normalized.toUpperCase()} ${item.ready}/${item.total}`);
-            });
-            return parts.length > 1 ? parts.join(' · ') : '';
-        }
-
-        function buildHomePreloadEnvironmentSummary(state) {
-            if (!state || !state.results || typeof state.results !== 'object') return '';
-            const order = [
-                ...(Array.isArray(state.environments) ? state.environments : []),
-                'live',
-                'paper',
-                'backtest',
-                ...Object.keys(state.results || {}).sort(),
-            ];
-            const seen = new Set();
-            const parts = [];
-            order.forEach((environment) => {
-                const normalized = String(environment || '').trim().toLowerCase();
-                if (!normalized || seen.has(normalized)) return;
-                seen.add(normalized);
-                const item = state.results?.[normalized] || {};
-                const total = Number(item.symbol_total || 0) || 0;
-                if (total <= 0) return;
-                const ready = Number(item.ready_count || 0) || 0;
-                parts.push(`${normalized.toUpperCase()} 启动时 ${ready}/${total}`);
-            });
-            return parts.length > 1 ? parts.join(' · ') : '';
-        }
-
-        function buildHomePreloadSummary(state) {
-            if (!state || !state.enabled) return 'startup preload 未启用';
-            if (state.status === 'running') return `startup preload ${state.symbolCompleted}/${state.symbolTotal || '--'} · ${formatCompactSeconds(state.elapsedS)}`;
-            if (state.status === 'scheduled') return `startup preload 排队中 · env ${state.envCompleted}/${state.envTotal || '--'}`;
-            if (state.status === 'completed') {
-                const environmentSummary = buildHomePreloadEnvironmentSummary(state);
-                return environmentSummary
-                    ? `startup preload 完成 · ${environmentSummary}`
-                    : `startup preload 完成 · 启动时 ready ${state.readyCount}/${state.symbolTotal || 0}`;
-            }
-            if (state.status === 'failed') return 'startup preload 失败';
-            if (state.status === 'skipped') return 'startup preload 已跳过';
-            if (state.status === 'disabled') return 'startup preload 已禁用';
-            return 'startup preload 等待状态';
-        }
-
-        function normalizeHomeServiceStatus(status) {
-            const normalized = String(status || '').trim().toLowerCase();
-            if (normalized === 'peer') return 'running';
-            return normalized;
-        }
-
-        function getHomeServiceTone(status) {
-            const normalized = normalizeHomeServiceStatus(status);
-            if (normalized === 'running') return 'running';
-            if (normalized === 'external') return 'external';
-            if (!normalized || normalized === 'unknown' || normalized === 'idle') return 'neutral';
-            return 'warning';
-        }
-
-        function getHomeServiceLabel(status) {
-            const normalized = normalizeHomeServiceStatus(status);
-            if (!normalized) return 'UNKNOWN';
-            if (normalized === 'running') return 'RUNNING';
-            if (normalized === 'external') return 'EXTERNAL';
-            return normalized.toUpperCase();
-        }
-
-        function buildHomeStackSummary(topology = {}, preloadState = null, computeSummary = {}) {
-            const services = topology?.services || {};
-            const hasRuntime = Boolean(services['ibkr-runtime']);
-            const hasCompute = Boolean(services['ibkr-compute']);
-            const hasApi = Boolean(services['ibkr-api']);
-            const hasScheduler = Boolean(services['ibkr-scheduler']);
-            const splitActive = hasRuntime && hasCompute && hasApi && hasScheduler;
-            const parts = [splitActive ? 'Runtime / Compute / API / Scheduler 已拆分' : 'Split stack 信息不完整'];
-            const readyEngines = Number(computeSummary?.ready_engines || 0) || 0;
-            const totalEngines = Number(computeSummary?.total_engines || 0) || 0;
-            const environmentReadySummary = buildHomeEngineEnvironmentSummary(computeSummary);
-            if (splitActive) {
-                parts.push(topology?.restart_independent === false
-                    ? '重启仍可能互相影响'
-                    : 'runtime / compute / api / scheduler 可独立重启');
-            }
-            if (totalEngines > 0) {
-                parts.push(`engines ready ${readyEngines}/${totalEngines}`);
-            }
-            if (environmentReadySummary) {
-                parts.push(environmentReadySummary);
-            }
-            if (preloadState && preloadState.enabled) {
-                if (preloadState.status === 'running') {
-                    parts.push(`preload ${preloadState.symbolCompleted}/${preloadState.symbolTotal || '--'}`);
-                } else if (preloadState.status === 'completed') {
-                    parts.push('preload 已完成');
-                } else if (preloadState.status === 'scheduled') {
-                    parts.push('preload 排队中');
-                } else if (preloadState.status === 'failed') {
-                    parts.push('preload failed');
-                }
-            }
-            return parts.join(' · ');
-        }
-
-        function renderHomeStackOverview(summary = {}) {
-            const cardEl = document.getElementById('overviewStackCard');
-            const summaryEl = document.getElementById('overviewStackSummary');
-            const rowsEl = document.getElementById('overviewServiceRows');
-            if (!cardEl || !summaryEl || !rowsEl) return;
-
-            const topology = summary?.service_topology || {};
-            const services = topology?.services || {};
-            const runtimeService = services['ibkr-runtime'] || {};
-            const computeService = services['ibkr-compute'] || {};
-            const apiService = services['ibkr-api'] || {};
-            const schedulerService = services['ibkr-scheduler'] || {};
-            const gatewayService = services['ibkr-gateway'] || {};
-            const pocketbaseService = services.pocketbase || {};
-            const computeSummary = summary?.ibkr_compute || {};
-            const preloadState = normalizeHomePreloadState(computeSummary.compute_startup_preload || {});
-            const readyEngines = Number(computeSummary.ready_engines || 0) || 0;
-            const totalEngines = Number(computeSummary.total_engines || 0) || 0;
-            const environmentReadySummary = buildHomeEngineEnvironmentSummary(computeSummary);
-            const runtimeRunning = normalizeHomeServiceStatus(runtimeService.status) === 'running';
-            const gatewayRunning = normalizeHomeServiceStatus(gatewayService.status) === 'running';
-            const runtimeAuthenticated = runtimeService.session_authenticated === true;
-            const computeRunning = normalizeHomeServiceStatus(computeService.status || computeSummary.status) === 'running';
-            const computeFullyReady = computeRunning && totalEngines > 0 && readyEngines >= totalEngines;
-            const computeWarming = computeRunning && totalEngines > 0 && readyEngines < totalEngines;
-
-            summaryEl.textContent = buildHomeStackSummary(topology, preloadState, computeSummary);
-
-            const rows = [
-                {
-                    name: 'Runtime',
-                    status: runtimeService.status || summary?.ibkr_runtime?.status || 'unknown',
-                    label: runtimeAuthenticated
-                        ? 'AUTH'
-                        : (runtimeRunning ? 'WAIT' : getHomeServiceLabel(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')),
-                    tone: runtimeRunning && runtimeAuthenticated && gatewayRunning
-                        ? 'running'
-                        : (runtimeRunning ? 'warning' : getHomeServiceTone(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')),
-                    copy: 'IBKR 建联 / gateway / live bars',
-                    meta: [
-                        runtimeService.session_authenticated ? 'session auth' : 'session wait',
-                        gatewayService.status ? `gateway ${String(gatewayService.status).toLowerCase()}` : 'gateway --',
-                        'owner ibkr-runtime'
-                    ]
-                },
-                {
-                    name: 'Compute',
-                    status: computeService.status || computeSummary.status || 'unknown',
-                    label: preloadState.status === 'failed'
-                        ? 'FAILED'
-                        : computeFullyReady
-                        ? 'READY'
-                        : (computeWarming ? 'WARMING' : getHomeServiceLabel(computeService.status || computeSummary.status || 'unknown')),
-                    tone: preloadState.status === 'failed'
-                        ? 'warning'
-                        : (computeWarming ? 'warning' : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown')),
-                    copy: 'scan / engines / signals',
-                    meta: [
-                        totalEngines > 0 ? `engines ${readyEngines}/${totalEngines}` : 'engines --',
-                        environmentReadySummary,
-                        buildHomePreloadSummary(preloadState),
-                        preloadState.status === 'failed' ? summarizeHomeErrorMessage(preloadState.error) : '',
-                        'owner ibkr-compute'
-                    ]
-                },
-                {
-                    name: 'API',
-                    status: apiService.status || 'peer',
-                    label: String(apiService.status || 'peer').toUpperCase(),
-                    tone: String(apiService.status || '').trim().toLowerCase() === 'running'
-                        ? 'running'
-                        : (String(apiService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(apiService.status || 'peer')),
-                    copy: 'compat routes / control APIs / auth proxy',
-                    meta: [
-                        apiService.internal_url || 'internal --',
-                        'api/custom + api/collections',
-                        'owner ibkr-api'
-                    ]
-                },
-                {
-                    name: 'Scheduler',
-                    status: schedulerService.status || 'peer',
-                    label: String(schedulerService.status || 'peer').toUpperCase(),
-                    tone: String(schedulerService.status || '').trim().toLowerCase() === 'running'
-                        ? 'running'
-                        : (String(schedulerService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(schedulerService.status || 'peer')),
-                    copy: 'bar cursor dispatch / cron registry / job state',
-                    meta: [
-                        schedulerService.internal_url || 'internal --',
-                        'persisted cursor driven',
-                        'owner ibkr-scheduler'
-                    ]
-                },
-                {
-                    name: 'PocketBase',
-                    status: pocketbaseService.status || 'external',
-                    label: getHomeServiceLabel(pocketbaseService.status || 'external'),
-                    tone: getHomeServiceTone(pocketbaseService.status || 'external'),
-                    copy: 'auth / collections / storage',
-                    meta: [
-                        'auth tokens',
-                        'collections only',
-                        'owner pocketbase'
-                    ]
-                }
-            ];
-
-            rowsEl.innerHTML = rows.map((row) => {
-                const tone = row.tone || getHomeServiceTone(row.status);
-                const metaText = row.meta.filter(Boolean).join(' · ');
-                return `
-                    <div class="home-stack-service" data-tone="${escapeHtml(tone)}">
-                        <div class="home-stack-service-top">
-                            <span class="home-stack-service-name">${escapeHtml(row.name)}</span>
-                            <span class="home-stack-service-status">${escapeHtml(row.label || getHomeServiceLabel(row.status))}</span>
-                        </div>
-                        <div class="home-stack-service-copy">${escapeHtml(row.copy)}</div>
-                        <div class="home-stack-service-meta">${escapeHtml(metaText)}</div>
-                    </div>
-                `;
-            }).join('');
-
-            cardEl.dataset.ready = 'ready';
-        }
-
-        async function loadSystemOverview() {
-            const cardEl = document.getElementById('overviewStackCard');
-            const summaryEl = document.getElementById('overviewStackSummary');
-            const rowsEl = document.getElementById('overviewServiceRows');
-            if (!cardEl || !summaryEl || !rowsEl) return;
-
-            try {
-                cardEl.dataset.ready = 'loading';
-                const payload = await requestJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`);
-                renderHomeStackOverview(payload || {});
-            } catch (error) {
-                console.error('加载 split stack 摘要失败:', error);
-                cardEl.dataset.ready = 'error';
-                summaryEl.textContent = `系统摘要加载失败: ${error.message || error}`;
-                rowsEl.innerHTML = `
-                    <div class="home-stack-service" data-tone="warning">
-                        <div class="home-stack-service-top">
-                            <span class="home-stack-service-name">SUMMARYZ</span>
-                            <span class="home-stack-service-status">ERROR</span>
-                        </div>
-                        <div class="home-stack-service-copy">首页没有拿到 runtime / compute / pocketbase 拆分摘要。</div>
-                        <div class="home-stack-service-meta">请进入系统总览或稍后刷新重试</div>
-                    </div>
-                `;
-            }
-        }
-
-        function renderTargetSummary(summary = {}, marketDate = getUsDate(), targetUrl = buildPageUrl('/ibkr_screener.html', { tab: 'targets' })) {
-            const activeCount = Number(summary.active_count || 0);
-            const candidateCount = Number(summary.candidate_count || 0);
-            document.getElementById('todayTargetsActive').textContent = formatNumber(activeCount, 0);
-            document.getElementById('todayTargetsCandidate').textContent = formatNumber(candidateCount, 0);
-            document.getElementById('targetsSummaryLink').href = targetUrl;
-            setCardTone('targetsSummaryLink', activeCount > 0 ? 'long' : (candidateCount > 0 ? 'candidate' : 'neutral'));
-            renderOverviewMeta(marketDate);
-        }
-
-        function syncQuickLinksMeta() {
-            const primaryCount = document.querySelectorAll('#homeQuickLinks .home-quick-link').length;
-            const toolCount = document.querySelectorAll('#homeQuickLinks .home-tool-chip').length;
-            const metaEl = document.getElementById('quickLinksMeta');
-            if (!metaEl) return;
-            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖筛选 / 执行 / 账户 / 系统`;
-        }
-
-        function buildTargetSignalUrl(symbol, marketDate) {
-            return buildPageUrl('/ibkr_signals.html', {
-                search: symbol || '',
-                date: marketDate
-            }, {
-                environment: currentEnvironment
-            });
-        }
-
-        function renderTodayTargetsTimeTip(payload = {}) {
-            const tipEl = document.getElementById('todayTargetsTimeTip');
-            if (!tipEl) return;
-
-            const marketDate = String(payload.market_date || getUsDate()).trim() || getUsDate();
-            const currentMarketDate = String(payload.current_market_date || marketDate).trim() || marketDate;
-            const workflow = payload.workflow || {};
-            const scanTimeEt = String(workflow.scan_summary_time_et || '09:20').trim() || '09:20';
-            const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt).trim() || scanTimeEt;
-            const intradayRefreshRule = String(workflow.intraday_refresh_rule || '5m close-driven').trim() || '5m close-driven';
-            const timingCopy = scanTimeEt === openCheckTimeEt
-                ? `${scanTimeEt} ET 生成 candidate / active，并完成盘前检查`
-                : `${scanTimeEt} ET 生成 candidate / active，${openCheckTimeEt} ET 做盘前检查`;
-            const dateCopy = marketDate === currentMarketDate
-                ? `首页默认按当前美东交易日 ${marketDate} 展示，不按本地自然日。`
-                : `首页当前展示交易日 ${marketDate}，当前美东交易日为 ${currentMarketDate}。`;
-
-            tipEl.textContent = `${dateCopy} ${timingCopy}，盘中按 ${intradayRefreshRule} 刷新；要看其他交易日，请进入“当前标的榜”。`;
-        }
-
-        function renderTodayTargets(payload) {
-            latestTodayTargetsPayload = payload || { items: [], summary: {}, market_date: getUsDate() };
-
-            const metaEl = document.getElementById('todayTargetsMeta');
-            const listEl = document.getElementById('todayTargetsList');
-            const items = Array.isArray(latestTodayTargetsPayload.items) ? latestTodayTargetsPayload.items : [];
-            const summary = latestTodayTargetsPayload.summary || {};
-            const marketDate = latestTodayTargetsPayload.market_date || getUsDate();
-            const displayLimit = getTodayTargetsDisplayLimit();
-            const visibleItems = items.slice(0, displayLimit);
-            const hiddenCount = Math.max(items.length - visibleItems.length, 0);
-            const todayTargetsUrl = buildPageUrl('/ibkr_screener.html', {
-                tab: 'targets',
-                date: marketDate,
-                market_date: marketDate
-            }, {
-                environment: currentEnvironment
-            });
-
-            document.getElementById('todayTargetsLink').href = todayTargetsUrl;
-            renderTargetSummary(summary, marketDate, todayTargetsUrl);
-            renderTodayTargetsTimeTip(latestTodayTargetsPayload);
-
-            metaEl.textContent = `交易日 ${marketDate} · 共 ${summary.total || 0} 条 · active ${summary.active_count || 0} · candidate ${summary.candidate_count || 0}`;
-
-            if (!items.length) {
-                setSectionState('homeTargets', 'empty');
-                listEl.innerHTML = `
-                    <div class="home-empty">
-                        当前交易日还没有 candidate / active 标的。<br>
-                        可直接进入筛选页生成或补充今日目标池。
-                    </div>
-                `;
-                return;
-            }
-
-            setSectionState('homeTargets', 'ready');
-            listEl.innerHTML = visibleItems.map((row) => {
-                const reasons = Array.isArray(row.operable_reasons) ? row.operable_reasons.slice(0, 3) : [];
-                const chartUrl = buildPageUrl('/ibkr_chart.html', {
-                    symbol: row.symbol || '',
-                    interval: '5m'
-                }, {
-                    environment: currentEnvironment
-                });
-                const signalUrl = buildTargetSignalUrl(row.symbol || '', marketDate);
-                return `
-                    <article class="home-target-card">
-                        <div class="home-target-top">
-                            <div>
-                                <div class="home-target-symbol">${escapeHtml(row.symbol || '--')}</div>
-                                <div class="home-target-time">${escapeHtml(row.latest_us_time || '--')}</div>
-                            </div>
-                            <div class="home-target-badges">
-                                <span class="home-status-badge ${escapeHtml(row.status || 'neutral')}">${escapeHtml((row.status || '--').toUpperCase())}</span>
-                                <span class="home-status-badge ${escapeHtml(row.direction_bias || 'neutral')}">${escapeHtml((row.direction_bias || 'neutral').toUpperCase())}</span>
-                            </div>
-                        </div>
-                        <div class="home-target-copy">${escapeHtml(row.scan_reason || row.note || '--')}</div>
-                        <div class="home-target-reasons">
-                            ${reasons.length
-                                ? reasons.map((reason) => `<span class="home-reason-chip">${escapeHtml(reason)}</span>`).join('')
-                                : '<span class="home-reason-chip">等待补充可操作依据</span>'}
-                        </div>
-                        <div class="home-target-foot">
-                            <div class="home-target-metrics">
-                                <span>Score <strong>${escapeHtml(formatNumber(row.score || 0, 1))}</strong></span>
-                                <span>Trad <strong>${escapeHtml(formatNumber(row.tradability_score || 0, 0))}</strong></span>
-                                <span>${escapeHtml(formatPrice(row.price))}</span>
-                            </div>
-                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                                <a class="home-target-action" href="${chartUrl}">Chart</a>
-                                <a class="home-target-action" href="${signalUrl}">Signals</a>
-                            </div>
-                        </div>
-                    </article>
-                `;
-            }).join('');
-
-            if (hiddenCount > 0) {
-                listEl.insertAdjacentHTML('beforeend', `
-                    <a class="home-targets-more" href="${todayTargetsUrl}">
-                        查看剩余 ${hiddenCount} 条标的
-                    </a>
-                `);
-            }
-        }
-
-        async function loadTodayTargets() {
-            try {
-                setSectionState('homeTargets', 'loading');
-                const marketDate = getUsDate();
-                document.getElementById('todayTargetsMeta').textContent = `交易日 ${marketDate} · 正在加载...`;
-                renderTodayTargetsTimeTip({ market_date: marketDate });
-                const payload = await requestJson(`/api/custom/ibkr/today-targets?environment=${encodeURIComponent(currentEnvironment)}&market_date=${encodeURIComponent(marketDate)}`);
-                renderTodayTargets(payload || { items: [], summary: {}, market_date: marketDate });
-            } catch (error) {
-                console.error('加载今日标的失败:', error);
-                setSectionState('homeTargets', 'error');
-                document.getElementById('todayTargetsMeta').textContent = `加载失败: ${error.message || error}`;
-                document.getElementById('todayTargetsList').innerHTML = `<div class="home-empty">${escapeHtml(error.message || error)}</div>`;
-                renderTodayTargetsTimeTip();
-                document.getElementById('todayTargetsActive').textContent = '--';
-                document.getElementById('todayTargetsCandidate').textContent = '--';
-                setCardTone('targetsSummaryLink', 'neutral');
-            }
-        }
-
-        function calculatePnL(orders) {
-            const entryOrders = {};
-            let totalPnL = 0;
-
-            orders.forEach((order) => {
-                const uniqueId = order.unique_id || '';
-                const parts = uniqueId.split('_');
-                if (parts.length < 5) return;
-
-                const baseId = parts.slice(0, 4).join('_');
-                const orderType = parts[4];
-
-                if (orderType === 'Entry' && order.status === 'Filled') {
-                    entryOrders[baseId] = order;
-                } else if ((orderType === 'TP' || orderType === 'SL') && order.status === 'Filled') {
-                    const entry = entryOrders[baseId];
-                    if (!entry) return;
-
-                    const direction = order.direction;
-                    const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
-                    const exitPrice = parseFloat(order.fill_price || order.limit_price);
-                    const quantity = parseFloat(order.filled_qty || order.quantity);
-                    if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || !Number.isFinite(quantity)) {
-                        return;
-                    }
-
-                    const pnl = direction === 'long'
-                        ? (exitPrice - entryPrice) * quantity
-                        : (entryPrice - exitPrice) * quantity;
-                    totalPnL += pnl;
-                }
-            });
-
-            return totalPnL;
-        }
-
-        function buildActivityUrl(activity) {
-            const marketDate = getUsDateFromTime(activity.time);
-            const params = {
-                date: marketDate
-            };
-            if (activity.symbol) {
-                params.search = activity.symbol;
-            }
-
-            if (activity.type === 'signal') {
-                return buildPageUrl('/ibkr_signals.html', params, { environment: currentEnvironment });
-            }
-            return buildPageUrl('/orders.html', params, { environment: currentEnvironment });
-        }
-
-        function renderRecentActivity(ibkrSignals, orders) {
-            const container = document.getElementById('activityList');
-            const activities = [
-                ...ibkrSignals.slice(0, 4).map((signal) => ({
-                    type: 'signal',
-                    icon: signal.direction === 'long' ? '📈' : '📉',
-                    title: `${signal.symbol} 信号`,
-                    time: signal.created,
-                    symbol: signal.symbol,
-                    direction: signal.direction || 'neutral'
-                })),
-                ...orders.slice(0, 4).map((order) => ({
-                    type: 'order',
-                    icon: order.order_type === 'Entry' ? '📋' : (order.order_type === 'TakeProfit' ? '✅' : '🛑'),
-                    title: `${order.symbol} ${order.order_type === 'Entry' ? '入场' : (order.order_type === 'TakeProfit' ? '止盈' : '止损')}`,
-                    time: order.created,
-                    symbol: order.symbol,
-                    direction: order.direction || 'neutral'
-                }))
-            ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 6);
-
-            document.getElementById('activityMeta').textContent = `最近 ${activities.length} 条 · 更新 ${formatRefreshClock()}`;
-
-            if (!activities.length) {
-                setSectionState('homeActivity', 'empty');
-                container.innerHTML = `
-                    <div class="home-empty">
-                        当前环境暂时没有新的信号或订单活动。
-                    </div>
-                `;
-                return;
-            }
-
-            setSectionState('homeActivity', 'ready');
-            container.innerHTML = activities.map((activity) => `
-                <a class="home-activity-item" href="${buildActivityUrl(activity)}">
-                    <div class="home-activity-icon">${activity.icon}</div>
-                    <div>
-                        <div class="home-activity-title">${escapeHtml(activity.title)}</div>
-                        <div class="home-activity-time">${escapeHtml(formatRelativeTime(activity.time))}</div>
-                    </div>
-                    <div class="home-activity-badge ${escapeHtml(activity.direction || 'neutral')}">
-                        ${escapeHtml(String(activity.direction || 'neutral').toUpperCase())}
-                    </div>
-                </a>
-            `).join('');
-        }
-
-        async function loadDashboard() {
-            try {
-                setSectionState('homeOverview', 'loading');
-                setSectionState('homeActivity', 'loading');
-
-                const marketDate = getUsDate();
-                const startTimeMs = Date.parse(`${marketDate}T04:00:00.000Z`);
-                const endTimeMs = startTimeMs + (24 * 60 * 60 * 1000);
-
-                const [ibkrSignals, reverseSignals, orders, activePositions] = await Promise.all([
-                    pb.collection('ibkr_signals').getFullList({
-                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                        sort: '-created',
-                        $autoCancel: false
-                    }),
-                    pb.collection('ibkr_reverse_signals').getFullList({
-                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                        sort: '-created',
-                        $autoCancel: false
-                    }),
-                    pb.collection('orders').getFullList({
-                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                        sort: '-created',
-                        $autoCancel: false
-                    }),
-                    pb.collection('orders').getFullList({
-                        filter: `environment = "${currentEnvironment}" && status = "Filled" && order_type = "Entry"`,
-                        sort: '-created',
-                        $autoCancel: false
-                    })
-                ]);
-
-                const longSignals = ibkrSignals.filter((item) => item.direction === 'long').length;
-                const shortSignals = ibkrSignals.filter((item) => item.direction === 'short').length;
-                const pendingReverseSignals = reverseSignals.filter((item) => !item.processed).length;
-                const longOrders = orders.filter((item) => item.direction === 'long').length;
-                const shortOrders = orders.filter((item) => item.direction === 'short').length;
-                const longPositions = activePositions.filter((item) => item.direction === 'long').length;
-                const shortPositions = activePositions.filter((item) => item.direction === 'short').length;
-                const pnl = calculatePnL(orders);
-
-                document.getElementById('todaySignalsLong').textContent = formatNumber(longSignals, 0);
-                document.getElementById('todaySignalsShort').textContent = formatNumber(shortSignals, 0);
-                document.getElementById('reverseSignalsPending').textContent = formatNumber(pendingReverseSignals, 0);
-                document.getElementById('todayOrdersLong').textContent = formatNumber(longOrders, 0);
-                document.getElementById('todayOrdersShort').textContent = formatNumber(shortOrders, 0);
-                document.getElementById('activePositionsLong').textContent = formatNumber(longPositions, 0);
-                document.getElementById('activePositionsShort').textContent = formatNumber(shortPositions, 0);
-
-                const pnlEl = document.getElementById('todayPnL');
-                if (pnl !== 0) {
-                    pnlEl.textContent = `${pnl > 0 ? '+' : ''}${formatNumber(pnl, 0)}`;
-                } else {
-                    pnlEl.textContent = '-';
-                }
-
-                const totalSignals = longSignals + shortSignals;
-                const totalOrders = longOrders + shortOrders;
-                const totalPositions = longPositions + shortPositions;
-
-                setCardTone('signalsLink', totalSignals > 0 ? 'long' : 'neutral');
-                setCardTone('reverseSignalsLink', pendingReverseSignals > 0 ? 'short' : 'neutral');
-                setCardTone('ordersLink', totalOrders > 0 ? 'long' : 'neutral');
-                setCardTone('positionsLink', totalPositions > 0 ? 'long' : 'neutral');
-                setCardTone('pnlCardLink', pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'));
-
-                renderOverviewMeta(marketDate);
-                renderRecentActivity(ibkrSignals, orders);
-
-                setSectionState('homeOverview', 'ready');
-            } catch (error) {
-                console.error('加载首页总览失败:', error);
-                setSectionState('homeOverview', 'error');
-                setSectionState('homeActivity', 'error');
-                document.getElementById('overviewMeta').textContent = `加载失败: ${error.message || error}`;
-                document.getElementById('activityMeta').textContent = `加载失败: ${error.message || error}`;
-                document.getElementById('activityList').innerHTML = `<div class="home-empty">${escapeHtml(error.message || error)}</div>`;
-                showToast('首页数据加载失败: ' + (error.message || error));
-            }
-        }
-
-        function toNumericOrNull(value) {
-            const num = Number(value);
-            return Number.isFinite(num) ? num : null;
-        }
-
-        function getMetricValue(record, fieldName) {
-            if (!record || typeof record !== 'object') return null;
-            const directValue = toNumericOrNull(record[fieldName]);
-            if (directValue != null) return directValue;
-            const extraValue = toNumericOrNull(record.extra?.[fieldName]);
-            return extraValue != null ? extraValue : null;
-        }
-
-        function getMarketDateFromRecord(record) {
-            const usTime = String(record?.us_time || '').trim();
-            if (usTime) {
-                return usTime.split(' ')[0];
-            }
-            const barTimeMs = Number(record?.bar_time_ms || 0);
-            if (barTimeMs > 0) {
-                return formatBarTimeMsToET(barTimeMs).split(' ')[0];
-            }
-            return '';
-        }
-
-        function computePctChange(currentValue, referenceValue) {
-            const current = toNumericOrNull(currentValue);
-            const reference = toNumericOrNull(referenceValue);
-            if (current == null || reference == null || reference <= 0) return null;
-            return Math.round((((current - reference) / reference) * 100) * 100) / 100;
-        }
-
-        function buildBarFallbackMetrics(currentClose, dailyBars, marketDate) {
-            if (!Array.isArray(dailyBars) || dailyBars.length === 0) {
-                return null;
-            }
-
-            const normalizedHistory = [];
-            const seenDates = new Set();
-            dailyBars.forEach((row) => {
-                const close = toNumericOrNull(row?.close);
-                const date = getMarketDateFromRecord(row);
-                if (close == null || close <= 0 || !date || seenDates.has(date)) {
-                    return;
-                }
-                seenDates.add(date);
-                normalizedHistory.push({ close, date });
-            });
-
-            const history = normalizedHistory.filter((row) => !marketDate || row.date < marketDate);
-            if (!history.length) {
-                return null;
-            }
-
-            return {
-                day_change_pct: computePctChange(currentClose, history[0]?.close),
-                prev_close_change_pct: computePctChange(history[0]?.close, history[1]?.close),
-                change_7d: computePctChange(currentClose, history[4]?.close)
-            };
-        }
-
-        function formatSignedPercent(value) {
-            const num = toNumericOrNull(value);
-            if (num == null) return '--';
-            return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
-        }
-
-        function updateMarketPulse(metrics = [], symbolCount = 0) {
-            const pulseValueEl = document.getElementById('marketPulseValue');
-            const pulseMetaEl = document.getElementById('marketPulseMeta');
-            if (!pulseValueEl || !pulseMetaEl) return;
-
-            let tone = 'neutral';
-            let label = '混合';
-            let detail = symbolCount ? `监控 ${symbolCount} 个标的` : '等待市场数据';
-
-            const vixMetric = metrics.find((item) => item.symbol === 'VIX' && Number.isFinite(item.displayPrice));
-            const directional = metrics.filter((item) => item.changePct != null && item.symbol !== 'VIX');
-            const advances = directional.filter((item) => item.changePct > 0).length;
-            const declines = directional.filter((item) => item.changePct < 0).length;
-
-            if (vixMetric && vixMetric.displayPrice >= 30) {
-                tone = 'short';
-                label = '高波动';
-                detail = `VIX ${vixMetric.displayPrice.toFixed(2)} · 风险优先`;
-            } else if (vixMetric && vixMetric.displayPrice >= 20) {
-                tone = 'neutral';
-                label = '谨慎';
-                detail = `VIX ${vixMetric.displayPrice.toFixed(2)} · 波动偏高`;
-            } else if (advances > declines) {
-                tone = 'long';
-                label = '偏强';
-                detail = `上涨 ${advances} / 下跌 ${declines}`;
-            } else if (declines > advances) {
-                tone = 'short';
-                label = '偏弱';
-                detail = `上涨 ${advances} / 下跌 ${declines}`;
-            } else if (symbolCount) {
-                detail = `监控 ${symbolCount} 个标的 · 方向混合`;
-            }
-
-            pulseValueEl.textContent = label;
-            pulseMetaEl.textContent = detail;
-            setCardTone('marketPulseLink', tone);
-        }
-
-        async function loadMarketIndex() {
-            const container = document.getElementById('marketIndexGrid');
-            if (!container) return;
-
-            try {
-                setSectionState('homeMarket', 'loading');
-                const scopeFilter = currentEnvironment === 'live'
-                    ? '(environment = "live" || environment = "global" || environment = "")'
-                    : `(environment = "${escapeQueryValue(currentEnvironment)}" || environment = "global")`;
-
-                const watchlistResp = await apiFetch('watchlist', {
-                    filter: `${scopeFilter} && symbol_role = "market_monitor"`,
-                    sort: '-updated',
-                    perPage: 100
-                }).catch(() => ({ items: [] }));
-
-                const roleRows = Array.isArray(watchlistResp.items) ? watchlistResp.items : [];
-                const priority = { '': 0, global: 1 };
-                priority[currentEnvironment] = 2;
-
-                const merged = {};
-                const applied = {};
-                roleRows.forEach((item) => {
-                    const symbol = String(item.symbol || '').trim().toUpperCase();
-                    if (!symbol) return;
-                    const env = String(item.environment || '').trim().toLowerCase();
-                    const rank = priority[env] != null ? priority[env] : -1;
-                    if (rank < 0) return;
-                    if (applied[symbol] != null && applied[symbol] > rank) return;
-                    applied[symbol] = rank;
-                    merged[symbol] = item;
-                });
-
-                const symbols = Object.keys(merged).sort();
-                if (!symbols.length) {
-                    setSectionState('homeMarket', 'empty');
-                    document.getElementById('marketSummaryText').textContent = '当前未配置市场监控标的。';
-                    container.innerHTML = '<div class="home-empty">当前未配置市场监控标的。</div>';
-                    updateMarketPulse([], 0);
-                    return;
-                }
-
-                try {
-                    await fetchRealtimeQuotes(symbols, { reset: false });
-                } catch (error) {
-                    console.warn('加载市场监控实时报价失败:', error);
-                }
-
-                const bundles = await Promise.all(symbols.map(async (symbol) => {
-                    try {
-                        const envFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(symbol)}"`;
-                        const [indicatorResp, barResp, dailyResp] = await Promise.all([
-                            apiFetch('ibkr_indicators', {
-                                filter: `${envFilter} && (interval = "5" || interval = "5m")`,
-                                sort: '-bar_time_ms',
-                                perPage: 1
-                            }).catch(() => ({ items: [] })),
-                            apiFetch('ibkr_bars', {
-                                filter: `${envFilter} && interval = "5m"`,
-                                sort: '-bar_time_ms',
-                                perPage: 1
-                            }).catch(() => ({ items: [] })),
-                            apiFetch('ibkr_bars', {
-                                filter: `${envFilter} && interval = "1d"`,
-                                sort: '-bar_time_ms',
-                                perPage: 8
-                            }).catch(() => ({ items: [] }))
-                        ]);
-
-                        return {
-                            symbol,
-                            indicator: Array.isArray(indicatorResp.items) ? indicatorResp.items[0] || null : null,
-                            bar: Array.isArray(barResp.items) ? barResp.items[0] || null : null,
-                            dailyBars: Array.isArray(dailyResp.items) ? dailyResp.items : []
-                        };
-                    } catch (_) {
-                        return { symbol, indicator: null, bar: null, dailyBars: [] };
-                    }
-                }));
-
-                let html = '';
-                let hasData = false;
-                const pulseMetrics = [];
-
-                bundles.forEach((bundle) => {
-                    const symbol = bundle.symbol;
-                    const indicator = bundle.indicator;
-                    const bar = bundle.bar;
-                    const dailyBars = bundle.dailyBars;
-                    const data = indicator || bar || dailyBars[0] || null;
-
-                    if (!data) {
-                        html += `
-                            <div class="home-market-card">
-                                <div class="home-market-symbol">${escapeHtml(symbol)}</div>
-                                <div class="home-market-price">--</div>
-                                <div class="home-market-change">1D --<br>7D --</div>
-                                <div class="home-market-meta">暂无 5m 数据</div>
-                            </div>
-                        `;
-                        return;
-                    }
-
-                    hasData = true;
-                    const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? dailyBars[0]?.close ?? 0);
-                    const quote = getRealtimeQuote(symbol);
-                    const displayPrice = Number(quote?.last_price ?? price ?? 0);
-                    const marketDate = getMarketDateFromRecord(bar || indicator || dailyBars[0] || null);
-                    const fallbackMetrics = buildBarFallbackMetrics(price, dailyBars, marketDate);
-                    const changePct = quote?.day_change_pct ?? getMetricValue(indicator, 'day_change_pct') ?? fallbackMetrics?.day_change_pct ?? null;
-                    const change7d = getMetricValue(indicator, 'change_7d') ?? fallbackMetrics?.change_7d ?? null;
-                    const lastBarMs = Number(data.bar_time_ms || 0) || 0;
-                    const ageMin = lastBarMs ? Math.max(0, Math.round((Date.now() - lastBarMs) / 60000)) : null;
-                    const updateText = data.us_time || '--';
-                    const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
-                    const changeText = formatSignedPercent(changePct);
-                    const change7dText = formatSignedPercent(change7d);
-
-                    let vixBadge = '';
-                    let vixClass = '';
-                    if (symbol === 'VIX') {
-                        if (displayPrice >= 30) {
-                            vixBadge = '恐慌';
-                            vixClass = 'vix-panic';
-                        } else if (displayPrice >= 20) {
-                            vixBadge = '紧张';
-                            vixClass = 'vix-tension';
-                        } else {
-                            vixBadge = '平稳';
-                            vixClass = 'vix-calm';
-                        }
-                    }
-
-                    pulseMetrics.push({
-                        symbol,
-                        displayPrice,
-                        changePct
-                    });
-
-                    const dataSourceText = quote?.last_price != null
-                        ? `RT ${quote.quote_age_s != null ? `${quote.quote_age_s}s` : ''}`.trim()
-                        : indicator
-                            ? 'IND 5m'
-                            : (bar && fallbackMetrics ? 'BAR 5m + 1D' : (bar ? 'BAR 5m' : 'BAR 1D'));
-
-                    const chartUrl = buildPageUrl('/ibkr_chart.html', {
-                        symbol,
-                        interval: '5m'
-                    }, {
-                        environment: currentEnvironment
-                    });
-
-                    html += `
-                        <a class="home-market-card ${vixClass}" href="${chartUrl}">
-                            <div class="home-market-symbol">${escapeHtml(symbol)}${vixBadge ? ` · ${escapeHtml(vixBadge)}` : ''}</div>
-                            <div class="home-market-price">${escapeHtml(formatPrice(displayPrice))}</div>
-                            <div class="home-market-change">
-                                <span class="${changeClass}">1D ${escapeHtml(changeText)}</span><br>
-                                <span class="${change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral')}">7D ${escapeHtml(change7dText)}</span>
-                            </div>
-                            <div class="home-market-meta">${escapeHtml(dataSourceText)} · ${escapeHtml(updateText)}<br>${ageMin == null ? '--' : `${ageMin}m ago`}</div>
-                        </a>
-                    `;
-                });
-
-                updateMarketPulse(pulseMetrics, symbols.length);
-                document.getElementById('marketSummaryText').textContent = hasData
-                    ? `监控 ${symbols.length} 个标的 · 更新 ${formatRefreshClock()}`
-                    : `监控 ${symbols.length} 个标的 · 暂无有效数据`;
-
-                if (!hasData) {
-                    setSectionState('homeMarket', 'empty');
-                    container.innerHTML = '<div class="home-empty">暂无市场监控数据。</div>';
-                    return;
-                }
-
-                setSectionState('homeMarket', 'ready');
-                container.innerHTML = html;
-            } catch (error) {
-                console.error('加载市场脉搏失败:', error);
-                setSectionState('homeMarket', 'error');
-                document.getElementById('marketSummaryText').textContent = `加载失败: ${error.message || error}`;
-                container.innerHTML = '<div class="home-empty">市场数据加载失败。</div>';
-                updateMarketPulse([], 0);
-            }
-        }
-
-        async function refreshHomePage(showSpinner = false) {
-            if (showSpinner) spinPageRefreshButton('homeRefreshBtn');
-            await Promise.all([
-                loadSystemOverview(),
-                loadTodayTargets(),
-                loadDashboard(),
-                loadMarketIndex(),
-            ]);
-        }
-
-        document.addEventListener('DOMContentLoaded', async () => {
-            syncHomeLayoutState();
-            bindResponsiveState();
-            await initAuth();
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🏠 Trading Flight 首页', {
-                subtitle: '执行 / 分析 / 筛选 / 运维 / 系统一体视图',
-                actionsHtml: '<button type="button" class="page-context-action page-context-action-danger" onclick="handleLogout(event)">退出</button>'
-            });
-            syncQuickLinksMeta();
-            bindEnvironmentLinks();
-            document.getElementById('nav').innerHTML = renderNav('/index.html');
-            await withPageLoading(
-                () => refreshHomePage(false),
-                {
-                    title: '首页加载中',
-                    copy: '正在同步目标池、交易概览、系统拓扑和市场脉搏。',
-                }
-            );
-            setInterval(loadTodayTargets, 60000);
-            setInterval(loadDashboard, 60000);
-            setInterval(loadMarketIndex, 60000);
-            setInterval(loadSystemOverview, 60000);
-        });
-
-        window.onEnvironmentChange = function(environment) {
-            currentEnvironment = environment;
-            location.href = buildPageUrl('/index.html', {}, { environment: currentEnvironment });
-        };
-    </script>
-</body>
+      }
+
+      .card {
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 22px;
+      }
+
+      .card p {
+        margin-bottom: 14px;
+        font-size: 16px;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
+
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">Storage + Auth</div>
+      <h1>PocketBase lives here.</h1>
+      <p>
+        `pb.lzw-glory.top` is the PocketBase origin for auth, collections, and admin access.
+        Trading pages and public control APIs have moved to
+        <a href="https://quant.lzw-glory.top">quant.lzw-glory.top</a>.
+      </p>
+      <div class="grid">
+        <section class="card">
+          <h2>Admin</h2>
+          <p>Use the built-in PocketBase admin surface for auth, collections, and operational inspection.</p>
+          <a href="/_/" class="button">Open Admin</a>
+        </section>
+        <section class="card">
+          <h2>Trading Console</h2>
+          <p>The split trading UI, public API, webhooks, and scheduler visibility all live on the quant domain.</p>
+          <a href="https://quant.lzw-glory.top" class="button secondary">Open Quant Console</a>
+        </section>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="/api/health">API Health</a>
+        <a class="button secondary" href="/api/collections/config/records">Collections API</a>
+      </div>
+    </main>
+  </body>
 </html>

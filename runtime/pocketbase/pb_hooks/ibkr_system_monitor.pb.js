@@ -1,3 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-require(`${__hooks}/modules/schedulers/ibkr_system_monitor.js`)
+/**
+ * No-op compatibility shell. System monitor routes and cron migrated to ibkr-api / ibkr-scheduler.
+ * PocketBase now keeps only auth + collections responsibilities.
+ */

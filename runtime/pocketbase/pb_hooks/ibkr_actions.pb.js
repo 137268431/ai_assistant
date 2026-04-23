@@ -1,3 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-require(`${__hooks}/modules/actions/ibkr_actions.js`)
+/**
+ * No-op compatibility shell. IBKR custom action routes migrated to ibkr-api / ibkr-runtime / ibkr-compute.
+ * PocketBase now keeps only auth + collections responsibilities.
+ */

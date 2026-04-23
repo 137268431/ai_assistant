@@ -475,10 +475,6 @@ local_http = {
     "scheduler_status": http_json(f"{SCHEDULER}/status"),
     "console_index": http_json(f"{CONSOLE}/index.html"),
     "pb_health": http_json(f"{PB}/api/health"),
-    "pb_ibkr_healthz": http_json(f"{PB}/api/custom/ibkr/healthz?environment={ENVIRONMENT}"),
-    "pb_ibkr_statusz": http_json(f"{PB}/api/custom/ibkr/statusz?environment={ENVIRONMENT}"),
-    "pb_system_healthz": http_json(f"{PB}/api/custom/system/healthz?environment={ENVIRONMENT}"),
-    "pb_2fa_status": http_json(f"{PB}/api/custom/ibkr/2fa/status?environment={ENVIRONMENT}"),
 }
 
 conn = open_db()
@@ -530,10 +526,6 @@ for name in (
     "scheduler_status",
     "console_index",
     "pb_health",
-    "pb_ibkr_healthz",
-    "pb_ibkr_statusz",
-    "pb_system_healthz",
-    "pb_2fa_status",
 ):
     if not local_http[name].get("ok"):
         failures.append(f"local_http:{name}")
@@ -567,9 +559,6 @@ runtime_payload = (
 api_status_payload = local_http.get("api_status", {}).get("json") or {}
 scheduler_status_payload = local_http.get("scheduler_status", {}).get("json") or {}
 compute_status_payload = local_http.get("compute_status", {}).get("json") or {}
-pb_statusz_payload = local_http.get("pb_ibkr_statusz", {}).get("json") or {}
-pb_healthz_payload = local_http.get("pb_ibkr_healthz", {}).get("json") or {}
-pb_system_healthz_payload = local_http.get("pb_system_healthz", {}).get("json") or {}
 compute_health_payload = local_http.get("compute_health", {}).get("json") or {}
 gateway = runtime_payload.get("gateway") or {}
 session = runtime_payload.get("session") or {}
@@ -583,9 +572,6 @@ runtime_topology = (
     api_status_payload.get("service_topology")
     or scheduler_status_payload.get("service_topology")
     or runtime_payload.get("service_topology")
-    or pb_statusz_payload.get("service_topology")
-    or pb_healthz_payload.get("service_topology")
-    or pb_system_healthz_payload.get("service_topology")
     or compute_status_payload.get("service_topology")
     or {}
 )
@@ -594,8 +580,8 @@ compute_startup_preload = compact_compute_startup_preload(
     extract_compute_startup_preload(
         compute_status_payload,
         compute_health_payload,
-        pb_statusz_payload,
-        pb_healthz_payload,
+        {},
+        {},
     )
 )
 compute_startup_preload_sla = evaluate_compute_startup_preload_sla(
@@ -987,27 +973,13 @@ def fetch_first_ok(urls: list[str], *, expect_json: bool = False, timeout: int =
 def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     pb_base_url = args.pb_base_url.rstrip("/")
     api_public_url = args.api_public_url.rstrip("/")
-    compat_ibkr_healthz = f"{pb_base_url}/api/custom/ibkr/healthz?environment={args.environment}"
-    compat_ibkr_statusz = f"{pb_base_url}/api/custom/ibkr/statusz?environment={args.environment}"
-    compat_system_summaryz = f"{pb_base_url}/api/custom/system/summaryz?lite=1&environment={args.environment}"
 
     compute_public_url = (args.compute_public_url or "").rstrip("/")
     public = {
         "pb_api_health": fetch_url(f"{pb_base_url}/api/health", expect_json=True),
-        "api_public_health": fetch_first_ok(
-            [
-                f"{api_public_url}/health",
-                compat_ibkr_healthz,
-            ],
-            expect_json=True,
-        ),
-        "api_public_status": fetch_first_ok(
-            [
-                f"{api_public_url}/status",
-                compat_ibkr_statusz,
-            ],
-            expect_json=True,
-        ),
+        "pb_root_page": fetch_url(f"{pb_base_url}/"),
+        "api_public_health": fetch_url(f"{api_public_url}/health", expect_json=True),
+        "api_public_status": fetch_url(f"{api_public_url}/status", expect_json=True),
         "console_home_page": fetch_url(
             f"{args.console_base_url.rstrip('/')}/index.html?environment={args.environment}"
         ),
@@ -1017,19 +989,12 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
         "console_system_page": fetch_url(
             f"{args.console_base_url.rstrip('/')}/ibkr_system.html?environment={args.environment}"
         ),
-        "pb_ibkr_healthz": fetch_url(compat_ibkr_healthz, expect_json=True),
-        "api_ibkr_statusz": fetch_first_ok(
-            [
-                f"{api_public_url}/api/custom/ibkr/statusz?environment={args.environment}",
-                compat_ibkr_statusz,
-            ],
+        "api_ibkr_statusz": fetch_url(
+            f"{api_public_url}/api/custom/ibkr/statusz?environment={args.environment}",
             expect_json=True,
         ),
-        "api_system_summaryz": fetch_first_ok(
-            [
-                f"{api_public_url}/api/custom/system/summaryz?lite=1&environment={args.environment}",
-                compat_system_summaryz,
-            ],
+        "api_system_summaryz": fetch_url(
+            f"{api_public_url}/api/custom/system/summaryz?lite=1&environment={args.environment}",
             expect_json=True,
         ),
         "compute_public_health": (
@@ -1043,7 +1008,7 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     failures = payload.setdefault("failures", [])
     warnings = payload.setdefault("warnings", [])
 
-    for name in ("pb_api_health", "api_public_health", "api_public_status", "api_ibkr_statusz", "api_system_summaryz"):
+    for name in ("pb_api_health", "pb_root_page", "api_public_health", "api_public_status", "api_ibkr_statusz", "api_system_summaryz"):
         if not public[name].get("ok"):
             failures.append(f"public:{name}")
     if not public["compute_public_health"].get("ok") and not public["compute_public_health"].get("skipped"):
@@ -1071,7 +1036,7 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     public_compute_startup_preload = extract_compute_startup_preload(
         (public.get("api_system_summaryz", {}).get("json") or {}).get("ibkr_compute") or {},
         public.get("api_ibkr_statusz", {}).get("json") or {},
-        public.get("pb_ibkr_healthz", {}).get("json") or {},
+        {},
         public.get("compute_public_health", {}).get("json") or {},
     )
     public_compute_startup_preload_sla = evaluate_compute_startup_preload_sla(

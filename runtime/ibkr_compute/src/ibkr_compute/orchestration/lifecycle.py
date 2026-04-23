@@ -164,7 +164,7 @@ class TradingServiceLifecycleMixin:
 
     def _runtime_page_url(self) -> str:
         service_mod = _service_mod()
-        base_url = service_mod.PB_PUBLIC_URL or ""
+        base_url = getattr(service_mod, "CONSOLE_BASE_URL", "") or service_mod.PB_PUBLIC_URL or ""
         if not base_url:
             return ""
         return f"{base_url}/ibkr_runtime.html?environment={service_mod.ENVIRONMENT}"

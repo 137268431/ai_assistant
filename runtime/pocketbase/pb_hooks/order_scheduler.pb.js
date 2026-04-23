@@ -1,3 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-require(`${__hooks}/modules/schedulers/order_scheduler.js`)
+/**
+ * No-op compatibility shell. Order scheduler cron migrated to ibkr-scheduler.
+ * PocketBase now keeps only auth + collections responsibilities.
+ */

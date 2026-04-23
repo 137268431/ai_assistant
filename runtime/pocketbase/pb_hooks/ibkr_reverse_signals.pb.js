@@ -1,3 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-require(`${__hooks}/modules/actions/ibkr_reverse_signals.js`)
+/**
+ * No-op compatibility shell. Reverse signal routes migrated to ibkr-api.
+ * PocketBase now keeps only auth + collections responsibilities.
+ */

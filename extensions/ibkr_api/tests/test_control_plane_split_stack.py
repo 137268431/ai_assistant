@@ -45,6 +45,9 @@ if "flask" not in sys.modules:
 from ibkr_api import api_app as api_app_mod
 from ibkr_api.order_upsert import build_order_upsert_response
 from ibkr_api.signal_ack import build_signal_ack_orders
+from ibkr_api.system.jobs.monitor_alert import build_system_monitor_alert_guard_response
+from ibkr_api.system.jobs.status_heartbeat import build_system_heartbeat_response
+from ibkr_scheduler.cron_registry import build_cron_payload
 from ibkr_scheduler.scheduler_app import (
     BAR_INGEST_CURSOR_STATE_KEY,
     COMPUTE_DISPATCH_CURSOR_STATE_KEY,
@@ -315,6 +318,10 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIn("system/cronz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/event", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/healthz", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("system/jobs/heartbeat", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("system/jobs/monitor_alert_guard", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("system/jobs/scan_summary", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("system/jobs/status_reminder", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/schedulerz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/monitorz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/summaryz", payload["compatibility"]["native_custom_routes"])
@@ -1312,6 +1319,102 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertEqual(job_state["status"], "ok")
         self.assertGreater(int(job_state["last_success_at_ms"]), 0)
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
+
+    def test_scheduler_cron_payload_includes_native_system_visibility_jobs(self):
+        items = build_cron_payload(_FakeConfig(), "live", {})
+        item_ids = {item["id"] for item in items}
+        self.assertIn("system_heartbeat", item_ids)
+        self.assertIn("system_monitor_alert_guard", item_ids)
+        self.assertIn("system_status_reminder", item_ids)
+        self.assertIn("system_scan_summary", item_ids)
+
+    def test_system_heartbeat_job_persists_issue_state(self):
+        states = {}
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True}
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 12:00:00", "cn": "2026-04-24 00:00:00", "date": "2026-04-23"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "degraded",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "degraded"},
+                "today": {"ibkr_bars": 1, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "warning",
+                "runtime": {
+                    "status": "degraded",
+                    "session": {"authenticated": False},
+                    "websocket": {"connected": False},
+                    "gateway": {"running": True},
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 2.5},
+                "service_monitor": {"status_counts": {"running": 5, "degraded": 1}},
+                "flags": [{"code": "session_unauthenticated", "severity": "warning"}],
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["unhealthy"])
+        self.assertEqual(payload["job_id"], "system_heartbeat")
+        self.assertTrue(events)
+        self.assertIn(("system_notify_heartbeat", "live"), states)
+        self.assertTrue(states[("system_notify_heartbeat", "live")]["last_issue_hash"])
+
+    def test_system_monitor_alert_job_emits_on_warning_flags(self):
+        states = {}
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True}
+
+        payload, status_code = build_system_monitor_alert_guard_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 12:05:00", "cn": "2026-04-24 00:05:00", "date": "2026-04-23"},
+            build_system_monitor_payload=lambda environment: {
+                "status": "warning",
+                "flags": [{"code": "websocket_not_ready", "severity": "warning", "title": "WS", "detail": "offline"}],
+                "runtime": {"session": {"authenticated": False}, "websocket": {"connected": False}},
+                "scheduler": {"latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 4.0},
+                "service_monitor": {"status_counts": {"running": 5, "degraded": 1}},
+                "pocketbase": {"disk": {"filesystem": {"used_pct": 10}}},
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(payload["job_id"], "system_monitor_alert_guard")
+        self.assertEqual(events[0]["title"], "IBKR Monitor 告警（1项）")
+        self.assertIn(("system_monitor_alert", "live"), states)
 
 
 if __name__ == "__main__":

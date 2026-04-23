@@ -31,7 +31,12 @@ def build_service_bundle(
     runtime_status_resolver,
 ) -> dict:
     pb_base_url = os.environ.get("PB_BASE_URL", "http://127.0.0.1:8090")
-    pb_public_url = os.environ.get("PB_PUBLIC_URL", pb_base_url)
+    console_base_url = (
+        os.environ.get("CONSOLE_BASE_URL")
+        or os.environ.get("QUANT_BASE_URL")
+        or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
+        or "https://quant.lzw-glory.top"
+    )
     pb_client = PBClient(base_url=pb_base_url)
     config = Config(pb_client=pb_client)
     backtest_service = BacktestService(pb_client)
@@ -45,7 +50,8 @@ def build_service_bundle(
     )
     return {
         "PB_BASE_URL": pb_base_url,
-        "PB_PUBLIC_URL": pb_public_url,
+        "CONSOLE_BASE_URL": console_base_url,
+        "PB_PUBLIC_URL": console_base_url,
         "pb": pb_client,
         "cfg": config,
         "backtest_service": backtest_service,

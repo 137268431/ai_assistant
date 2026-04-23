@@ -1,3 +1,6 @@
 /// <reference path="./pb_data/types.d.ts" />
 
-require(`${__hooks}/modules/integrations/webhook_tv.js`)
+/**
+ * No-op compatibility shell. TradingView webhook migrated to ibkr-api `/webhook/tv`.
+ * PocketBase now keeps only auth + collections responsibilities.
+ */

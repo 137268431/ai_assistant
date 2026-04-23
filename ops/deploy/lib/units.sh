@@ -82,7 +82,7 @@ list_selected_units_for_target() {
 
 unit_local_rel() {
   case "$1" in
-    pb_public) printf '%s\n' runtime/ibkr_console/static ;;
+    pb_public) printf '%s\n' runtime/pocketbase/pb_public ;;
     pb_hooks) printf '%s\n' runtime/pocketbase/pb_hooks ;;
     pb_migrations) printf '%s\n' extensions/pocketbase/migrations ;;
     ibkr_console_static) printf '%s\n' runtime/ibkr_console/static ;;

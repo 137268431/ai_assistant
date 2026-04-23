@@ -13,7 +13,7 @@ DEFAULT_IBKR_REMOTE_ROOT = os.environ.get("IBKR_REMOTE_ROOT", "/opt/ibkr_compute
 DEFAULT_PB_REMOTE_ROOT = os.environ.get("PB_REMOTE_ROOT", "/opt/pocketbase").rstrip("/")
 DEFAULT_REMOTE_PYTHON = os.environ.get("IBKR_REMOTE_PYTHON", f"{DEFAULT_IBKR_REMOTE_ROOT}/venv/bin/python")
 DEFAULT_DB_PATH = os.environ.get("PB_DB_PATH", f"{DEFAULT_PB_REMOTE_ROOT}/pb_data/data.db")
-DEFAULT_PB_LOCAL_URL = os.environ.get("PB_LOCAL_URL", "http://127.0.0.1:8090")
+DEFAULT_API_LOCAL_URL = os.environ.get("IBKR_API_LOCAL_URL", "http://127.0.0.1:5102")
 DEFAULT_COMPUTE_LOCAL_URL = os.environ.get("IBKR_COMPUTE_LOCAL_URL", "http://127.0.0.1:5100")
 
 REMOTE_SCRIPT = r'''
@@ -38,7 +38,7 @@ from ibkr_compute.market.timeframe_utils import classify_session, format_cn_time
 ET = ZoneInfo("America/New_York")
 
 DB = cfg["db_path"]
-PB = cfg["pb_local_url"].rstrip("/")
+API = cfg["api_local_url"].rstrip("/")
 COMPUTE = cfg["compute_local_url"].rstrip("/")
 LOOKBACK_BARS = int(cfg["lookback_bars"])
 SCAN_SYMBOL_LIMIT = int(cfg["scan_symbol_limit"])
@@ -391,7 +391,7 @@ created_paper_state = False
 
 try:
     bars_resp = requests.post(
-        f"{PB}/api/custom/ibkr/bars",
+        f"{API}/api/custom/ibkr/bars",
         json={"environment": "paper", "bars": replay_bars},
         timeout=120,
     )
@@ -436,7 +436,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ibkr-remote-root", default=DEFAULT_IBKR_REMOTE_ROOT)
     parser.add_argument("--remote-python", default=DEFAULT_REMOTE_PYTHON)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
-    parser.add_argument("--pb-local-url", default=DEFAULT_PB_LOCAL_URL)
+    parser.add_argument("--api-local-url", default=DEFAULT_API_LOCAL_URL)
     parser.add_argument("--compute-local-url", default=DEFAULT_COMPUTE_LOCAL_URL)
     parser.add_argument("--symbol", default="")
     parser.add_argument("--signal-bar-ms", type=int, default=0)
@@ -469,7 +469,7 @@ def run_remote(args: argparse.Namespace) -> dict:
     config = {
         "ibkr_src_root": f"{ibkr_remote_root}/src",
         "db_path": args.db_path,
-        "pb_local_url": args.pb_local_url,
+        "api_local_url": args.api_local_url,
         "compute_local_url": args.compute_local_url,
         "symbol": args.symbol,
         "signal_bar_ms": args.signal_bar_ms,

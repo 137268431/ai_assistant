@@ -71,7 +71,7 @@ Options:
   --diff <range>      Git diff range, for example HEAD~1..HEAD
   --plan-only         Print the resolved deployment plan and exit
   --package-name <n>  Override generated package name for package mode
-  --public-only       Deploy only the PocketBase compatibility public tree sourced from runtime/ibkr_console/static
+  --public-only       Deploy only the PocketBase public tree sourced from runtime/pocketbase/pb_public
   --hooks-only        Deploy only runtime/pocketbase/pb_hooks
   --migrations        Deploy extensions/pocketbase/migrations to /opt/pocketbase/extensions/migrations
   --dry-run           Show rsync changes without mutating the remote host

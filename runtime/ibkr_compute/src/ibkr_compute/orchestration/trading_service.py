@@ -72,7 +72,13 @@ logger = logging.getLogger("ibkr_service")
 ET = timezone(timedelta(hours=-4))
 
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://127.0.0.1:8090")
-PB_PUBLIC_URL = os.environ.get("PB_PUBLIC_URL", "").rstrip("/")
+CONSOLE_BASE_URL = (
+    os.environ.get("CONSOLE_BASE_URL")
+    or os.environ.get("QUANT_BASE_URL")
+    or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
+    or "https://quant.lzw-glory.top"
+).rstrip("/")
+PB_PUBLIC_URL = CONSOLE_BASE_URL
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 DEFAULT_SIGNAL_POLL_INTERVAL = 120
 DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
