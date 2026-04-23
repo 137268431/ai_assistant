@@ -9,6 +9,8 @@
 - `integrations/` owns external adapters such as Feishu transport and runtime order-cancel bridging.
 - `callbacks/` owns Feishu callback parsing and dispatch helpers; `callbacks/routes.py` owns the callback entry route.
 - `tradingview/` owns TradingView webhook normalization and `tv_indicators` / `tv_signals` upsert helpers; `tradingview/routes.py` owns the TradingView webhook route.
+- `universe/` owns watchlist / targets CRUD, screener read proxy, today-targets aggregation, and screener-target promotion, instead of leaving those flows in `pb_hooks/modules/actions/ibkr_actions.js`.
+- `data_quality/` owns the read-side summary / list endpoints that were previously aggregated inside PocketBase JS helpers.
 - `signals/` owns signal ingress, signal ACK, signal status notification, signal-related order cancel flow, signal webhook pages, pending/ack API builders, and `signals/routes.py`.
 - `orders/` owns order upsert, detail payloads, group actions, reconcile flow, order webhook pages, shared order value/timestamp/relationship helpers, and `orders/routes.py`.
 - `reverse/` owns reverse-signal query, calculate, dispatch, ack, shared reverse normalization helpers, and `reverse/routes.py`.
@@ -20,14 +22,16 @@
 - `runtime/ibkr_api/src/ibkr_api/state/` now natively owns `state/signals` and `state/orders`, and `runtime/ibkr_api/src/ibkr_api/system/health_report.py` plus `runtime/ibkr_api/src/ibkr_api/system/notify.py` now own `health-report` and `notify`.
 - `runtime/ibkr_api/src/ibkr_api/storage/` now natively owns the core PocketBase-backed write surfaces that were previously stuck in `pb_hooks/modules/actions/ibkr_actions.js`: `ping_write`, `bars`, `indicator`, `indicators`, `scan`, `data_quality/upsert`, and `data_quality/truth_upsert`.
 - Native webhook ownership for `/webhook/tv`, `/webhook/feishu/callback`, `/webhook/signal/confirm`, `/webhook/signal/cancel`, `/webhook/order/cancel`, and `/webhook/order/close` now lives in `ibkr-api`.
-- Generic compatibility fallbacks `/api/custom/*` and `/webhook/*` are exposed from `ibkr-api` and currently proxy remaining PB-owned endpoints during incremental migration.
+- `account/` owns `account_snapshot` enrichment and account-route registration that used to live in PocketBase JS.
+- Generic compatibility fallbacks `/api/custom/*` and `/webhook/*` are exposed from `ibkr-api` and currently proxy only the still-unmigrated PB compatibility shells during incremental cleanup; public callers should now hit them only through `https://quant.lzw-glory.top`.
 - `api_app.py` is now primarily composition glue: env/config wiring, shared adapters, and route registrar assembly. New work should land in feature-owned folders first, not back into one large file.
 - Old import paths like `ibkr_api.signal_webhooks`, `ibkr_api.order_upsert`, and `ibkr_api.reverse_actions` now resolve through `ibkr_api/compat`, so the visible source tree can stay under `signals/`, `orders/`, `reverse/`, and `webhooks/`.
 - Public entrypoints formerly owned by `pb_hooks/modules/actions/ibkr_signal_actions.js`, `order_manage.js`, and `ibkr_reverse_signals.js` now terminate at `ibkr-api` first.
 - Current migration boundary is still mixed:
-  - Native in `ibkr-api`: signal/order/reverse routes, webhook pages, system `healthz|summaryz|monitorz|cronz|schedulerz`, runtime `statusz|healthz|runtime/config|startup/*|2fa/status`, control actions `emergency-stop|recover|reauth`, all current 2FA control routes, state `signals|orders`, `health-report`, `notify`, plus the storage-backed write routes `ping_write|bars|indicator|indicators|scan|data_quality/upsert|data_quality/truth_upsert`.
-  - Still delegated back to PocketBase through `compat/routes.py` fallback: the remaining console-heavy `pb_hooks/modules/actions/ibkr_actions.js` surfaces such as today-targets/watchlist/targets, data-quality summary/list pages, screener composition, quotes/history rebuild, runtime order execution/account views, and `orders/cancel_sync`.
+  - Native in `ibkr-api`: signal/order/reverse routes, webhook pages, system `healthz|summaryz|monitorz|cronz|schedulerz`, runtime `statusz|healthz|runtime/config|startup/*|2fa/status`, control actions `emergency-stop|recover|reauth`, all current 2FA control routes, state `signals|orders`, `health-report`, `notify`, the storage-backed write routes `ping_write|bars|indicator|indicators|scan|data_quality/upsert|data_quality/truth_upsert`, plus `watchlist/upsert|remove`, `targets/upsert|remove`, `screener`, `today-targets`, `account_snapshot`, `screener/targets`, `data_quality/summary|truth_summary|list|truth_list`, and `orders/cancel_sync`.
+  - Remaining PB blocker scope has shrunk to PB-side scheduler piggyback helpers only.
   - Still piggybacked from PocketBase cron wrappers: `system_notify_scheduler.js` and `system_monitor_alert_guard.js` flows that have not yet been moved behind native `ibkr-api` + `ibkr-scheduler` ownership.
+- Public domain split is now strict: `quant.lzw-glory.top` serves console + control/webhook traffic, `pb.lzw-glory.top` serves PocketBase auth/data/admin, and no active `qc.lzw-glory.top` dependency remains in runtime defaults.
 - Internal Python callers should now point custom control-plane traffic at `IBKR_API_INTERNAL_URL`; `PBClient.call_custom_api()` prefers the API service URL instead of assuming PocketBase hosts `/api/custom/*`.
 - `GET /api/custom/ibkr/signals/pending` is now read natively from `ibkr-api` via PocketBase REST instead of executing inside PB hooks.
 - `POST /api/custom/ibkr/signal` and `POST /api/custom/ibkr/signals` are now handled natively in `ibkr-api`; signal-source normalization, bar-level duplicate detection, lifecycle state resolution, and Feishu signal-card sync all live under `signals/`.

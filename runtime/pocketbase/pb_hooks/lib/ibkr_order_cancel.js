@@ -251,7 +251,7 @@ function resolveOrderActionContext(environment, data) {
 
 function cancelBrokerOrder(environment, orderId, data) {
     const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/cancel`
     const brokerOrderId = toText(orderId)
     const payloadBody = {
         order_id: brokerOrderId,

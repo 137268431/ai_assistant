@@ -96,7 +96,10 @@ const configData = [
   cfg('ibkr_console_public_url', 'https://quant.lzw-glory.top', 'https://quant.lzw-glory.top', 'Console 公网地址', '服务接入', 996, '交易系统页面、飞书打开链接与默认 console 入口使用的公网域名'),
   cfg('pb_auth_public_url', 'https://pb.lzw-glory.top', 'https://pb.lzw-glory.top', 'PocketBase Auth 公网地址', '服务接入', 997, 'PocketBase 数据 / 认证专用公网域名；前端登录与直接 auth 请求走这里'),
   cfg('ibkr_api_public_url', 'https://quant.lzw-glory.top', 'https://quant.lzw-glory.top', 'API 公网地址', '服务接入', 998, '交易系统对外 API / webhook 入口；飞书 callback 与 console 默认通过 quant 入口访问'),
-  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 scheduler/native callback 访问的公开 Compute 地址')
+  cfg('ibkr_compute_internal_url', 'http://127.0.0.1:5100', 'http://127.0.0.1:5100', 'Compute 内网地址', '服务接入', 1000, 'ibkr-compute 的系统内 HTTP 地址；不再使用独立公网 compute 域名'),
+  cfg('ibkr_runtime_internal_url', 'http://127.0.0.1:5101', 'http://127.0.0.1:5101', 'Runtime 内网地址', '服务接入', 1001, 'ibkr-runtime 的系统内 HTTP 地址'),
+  cfg('ibkr_api_internal_url', 'http://127.0.0.1:5102', 'http://127.0.0.1:5102', 'API 内网地址', '服务接入', 1002, 'ibkr-api 的系统内 HTTP 地址'),
+  cfg('ibkr_scheduler_internal_url', 'http://127.0.0.1:5103', 'http://127.0.0.1:5103', 'Scheduler 内网地址', '服务接入', 1003, 'ibkr-scheduler 的系统内 HTTP 地址')
 ];
 
 const watchlistData = [

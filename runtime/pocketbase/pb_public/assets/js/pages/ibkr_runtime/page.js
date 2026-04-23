@@ -1066,9 +1066,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 <span class="status-chip ${chip.tone}"><span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}</span>
             `).join('');
 
-            const computeBase = runtimeConfig.find((item) => item.key === 'ibkr_compute_public_url')?.value
-                || summary?.config?.ibkr_compute_public_url
-                || 'https://qc.lzw-glory.top';
+            const computeBase = runtimeConfig.find((item) => item.key === 'ibkr_compute_internal_url')?.value
+                || summary?.config?.ibkr_compute_internal_url
+                || status?.service_topology?.services?.['ibkr-compute']?.internal_url
+                || 'http://127.0.0.1:5100';
             const runtimeService = status?.service_topology?.services?.['ibkr-runtime'] || {};
             document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase} · runtime ${String(runtimeService.runtime_mode || '--')} · ${String(runtimeService.internal_url || '--')}`;
             const effectiveReasonLabel = getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactorState, startup));

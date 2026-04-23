@@ -125,7 +125,7 @@ var signalActionsResolveOrderActionContext = function(environment, targetId) {
 
 var signalActionsCancelBrokerOrder = function(environment, orderId) {
     const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/cancel`
     try {
         const resp = $http.send({
             url: upstream,

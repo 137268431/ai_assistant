@@ -26,9 +26,8 @@
 
   const defaults = {
     API_BASE_URL: deriveDefaultBaseUrl('5102', { publicUrl: DEFAULT_CONSOLE_PUBLIC_URL }),
-    // Default auth requests to the API compatibility layer; override this
-    // when the deployment exposes PocketBase auth on a dedicated origin.
-    PB_AUTH_BASE_URL: deriveDefaultBaseUrl('5102', { publicUrl: DEFAULT_PB_AUTH_PUBLIC_URL }),
+    // PocketBase auth/data stays on the dedicated PB origin even after the split.
+    PB_AUTH_BASE_URL: deriveDefaultBaseUrl('8090', { publicUrl: DEFAULT_PB_AUTH_PUBLIC_URL }),
     CONSOLE_BASE_URL: deriveDefaultBaseUrl('5104', { publicUrl: DEFAULT_CONSOLE_PUBLIC_URL }),
   };
   const existing = (typeof window !== 'undefined' && window.__IBKR_RUNTIME_CONFIG__)

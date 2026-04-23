@@ -1654,7 +1654,7 @@
         }
 
         async function patchSignalRecord(id, payload) {
-            const response = await fetch(`${BASE_URL}/api/collections/ibkr_signals/records/${encodeURIComponent(id)}`, {
+            const response = await fetch(`${PB_AUTH_BASE_URL}/api/collections/ibkr_signals/records/${encodeURIComponent(id)}`, {
                 method: 'PATCH',
                 headers: getSignalActionHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify(payload)

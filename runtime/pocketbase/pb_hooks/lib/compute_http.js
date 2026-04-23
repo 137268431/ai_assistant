@@ -13,7 +13,7 @@ function buildComputeCandidateUrls(environment, path, internalDefault, publicDef
         getIbkrComputeInternalUrl(environment || "live", internalDefault || "http://127.0.0.1:5100") || ""
     ).trim().replace(/\/+$/, "")
     const publicBase = String(
-        getIbkrComputePublicUrl(environment || "live", publicDefault || "https://qc.lzw-glory.top") || ""
+        getIbkrComputePublicUrl(environment || "live", publicDefault || "http://127.0.0.1:5100") || ""
     ).trim().replace(/\/+$/, "")
     const candidates = []
     const seen = {}

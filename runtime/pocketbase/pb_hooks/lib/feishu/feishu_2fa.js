@@ -1482,7 +1482,7 @@ function trigger2faFlow(options) {
     })
     syncStartupAuthProgress(runtimeEnvironment, "triggered", triggerSaved.data || {})
 
-    var computeBaseUrl = envUtils.getIbkrComputePublicUrl(runtimeEnvironment, "https://qc.lzw-glory.top")
+    var computeBaseUrl = envUtils.getIbkrComputePublicUrl(runtimeEnvironment, "http://127.0.0.1:5100")
     try {
         $http.send({
             url: `${computeBaseUrl}/ibkr/stop`,

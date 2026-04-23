@@ -62,10 +62,9 @@
 
 - `runtime/pocketbase/pb_hooks/modules/actions/ibkr_actions.js`
   - 已迁出到 `ibkr-api` 的核心落库写接口：`ping_write`、`bars`、`indicator`、`indicators`、`scan`、`data_quality/upsert`、`data_quality/truth_upsert`
-  - 交易列表与目标聚合：`today-targets`、`contracts/search`、`watchlist/upsert|remove`、`targets/upsert|remove`
-  - 仍未迁出的数据质量与选股读侧：`data_quality/summary|truth_summary|list|truth_list`、`screener`、`screener/targets`、`quotes`、`quotes/forming_bar`
-  - 历史与运行态动作：`ingest/close`、`history/rebuild/start|status`、`account_snapshot`、`rules`
-  - 运行面控制与账户动作：`start|stop`、`gateway/start|stop|restart`、`account`、`positions`、`orders/live|history`、`orders/cancel|cancel_sync|cancel_all|modify|place`、`positions/close`
+  - 已迁出到 `ibkr-api` 的 universe / read-side 接口：`watchlist/upsert|remove`、`targets/upsert|remove`、`screener/targets`、`data_quality/summary|truth_summary|list|truth_list`、`orders/cancel_sync`
+  - 已迁出到 `ibkr-api` 的聚合读接口：`today-targets`、`screener`、`account_snapshot`
+  - 已改成 API 或 upstream 代理、但 PB 兼容壳还没完全删掉的路径：`contracts/search`、`quotes`、`quotes/forming_bar`、`ingest/close`、`history/rebuild/start|status`、`rules`、`start|stop`、`gateway/start|stop|restart`、`account`、`positions`、`orders/live|history`、`orders/cancel|cancel_all|modify|place`、`positions/close`
 - `runtime/pocketbase/pb_hooks/lib/scheduler/system_notify_scheduler.js`
   - 仍在 PocketBase 侧执行 heartbeat、status summary、scan summary、daily report 的通知与状态推进逻辑。
 - `runtime/pocketbase/pb_hooks/lib/system_monitor_alert_guard.js`
@@ -73,7 +72,7 @@
 - `runtime/pocketbase/pb_hooks/lib/feishu/feishu_2fa.js`
   - 仍残留旧 2FA helper；现在 PB 路由侧的 `request|result|respond|takeover|probe|panic-reset` 都已迁到 `runtime/ibkr_api/src/ibkr_api/two_factor/`，但 PB-side auth guard / scheduler 兼容逻辑还在复用这批 helper。
 - `runtime/pocketbase/pb_hooks/lib/trading/*` 与若干 `lib/*`
-  - `ibkr_today_targets.js`、`account_snapshot.js`、`ibkr_data_quality.js`、`ibkr_order_cancel.js` 等仍承载实际业务逻辑，因此 `pb_hooks` 还没有收缩到纯代理状态。
+  - 仍承载实际业务逻辑的核心剩余文件已经收缩到：PB-side 调度通知相关 helper；`ibkr_today_targets.js` 与 `account_snapshot.js` 现在只剩兼容参考实现，不再是主路由 source of truth。
 
 ## what should remain vs remove
 
@@ -103,5 +102,9 @@
 - 可以认为 `pb_hooks` 已完成使命：
   - 所有 `routerAdd` 业务入口都已经迁出 PocketBase，PB 侧只剩代理壳。
   - 所有 `cronAdd` 业务任务都已经迁到 `ibkr_scheduler`，PB 侧不再执行 piggyback 通知或告警守卫逻辑。
-  - 2FA、系统通知、today-targets、account snapshot、data quality、运行面控制等 PB JS 主逻辑都已经迁到对应服务。
+  - 2FA、系统通知、data quality、watchlist/targets CRUD、order cancel sync、运行面控制、`today-targets`、`screener`、`account_snapshot` 等 PB JS 主逻辑都已经迁到对应服务；剩余主要 blocker 收缩为 PB-side piggyback 调度通知。
+- 域名边界已经收敛为：
+  - `quant.lzw-glory.top`：交易系统页面与 API / webhook 公网入口，不再代理 PocketBase collections/auth
+  - `pb.lzw-glory.top`：PocketBase auth / collections / admin，不再承接交易系统控制面兼容入口
+  - `qc.lzw-glory.top`：不再作为活跃拓扑的一部分；系统间交互默认走内网 `http://127.0.0.1:51xx`
   - 外部流量也不再依赖 PocketBase 域名下的兼容业务入口。

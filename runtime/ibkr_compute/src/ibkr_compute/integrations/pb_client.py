@@ -14,7 +14,13 @@ PB_RETRY_STATUS_CODES = {502, 503, 504}
 
 
 class PBClient:
-    def __init__(self, base_url: str = "http://localhost:8090", token: str = ""):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8090",
+        token: str = "",
+        *,
+        prefer_runtime_config_api: bool = True,
+    ):
         self.base_url = base_url.rstrip("/")
         self.custom_api_base_url = str(
             os.environ.get("IBKR_API_INTERNAL_URL")
@@ -22,6 +28,7 @@ class PBClient:
             or self.base_url
         ).rstrip("/")
         self.token = token
+        self.prefer_runtime_config_api = bool(prefer_runtime_config_api)
         self.session = requests.Session()
         if token:
             self.session.headers["Authorization"] = token
@@ -421,18 +428,19 @@ class PBClient:
         if runtime_environment:
             params["environment"] = runtime_environment
 
-        try:
-            payload = self.call_custom_api(
-                "ibkr/runtime/config",
-                method="GET",
-                params=params,
-                timeout=15,
-            )
-            items = payload.get("items") if isinstance(payload, dict) else None
-            if isinstance(items, list):
-                return [item for item in items if isinstance(item, dict)]
-        except Exception:
-            pass
+        if self.prefer_runtime_config_api:
+            try:
+                payload = self.call_custom_api(
+                    "ibkr/runtime/config",
+                    method="GET",
+                    params=params,
+                    timeout=15,
+                )
+                items = payload.get("items") if isinstance(payload, dict) else None
+                if isinstance(items, list):
+                    return [item for item in items if isinstance(item, dict)]
+            except Exception:
+                pass
 
         rows = self.get_all_records("config", sort="sort_order,key", max_pages=20)
         return rows if isinstance(rows, list) else []

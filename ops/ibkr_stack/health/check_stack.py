@@ -22,8 +22,8 @@ DEFAULT_SCHEDULER_LOCAL_URL = os.environ.get("IBKR_SCHEDULER_LOCAL_URL", "http:/
 DEFAULT_CONSOLE_LOCAL_URL = os.environ.get("IBKR_CONSOLE_LOCAL_URL", "http://127.0.0.1:5104")
 DEFAULT_PB_BASE_URL = os.environ.get("PB_BASE_URL", "https://pb.lzw-glory.top")
 DEFAULT_CONSOLE_BASE_URL = os.environ.get("CONSOLE_BASE_URL") or os.environ.get("QUANT_BASE_URL") or "https://quant.lzw-glory.top"
-DEFAULT_COMPUTE_PUBLIC_URL = os.environ.get("IBKR_COMPUTE_PUBLIC_URL", "http://206.119.171.136:5100")
-DEFAULT_API_PUBLIC_URL = os.environ.get("IBKR_API_PUBLIC_URL", "http://206.119.171.136:5102")
+DEFAULT_COMPUTE_PUBLIC_URL = os.environ.get("IBKR_COMPUTE_PUBLIC_URL", "").strip()
+DEFAULT_API_PUBLIC_URL = os.environ.get("IBKR_API_PUBLIC_URL", DEFAULT_CONSOLE_BASE_URL)
 DEFAULT_INDICATOR_MISSING_GRACE_SEC = int(os.environ.get("IBKR_INDICATOR_MISSING_GRACE_SEC", "90"))
 DEFAULT_PRELOAD_WARN_SEC = int(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_WARN_SEC", "300"))
 DEFAULT_PRELOAD_FAIL_SEC = int(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_FAIL_SEC", "900"))
@@ -991,6 +991,7 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     compat_ibkr_statusz = f"{pb_base_url}/api/custom/ibkr/statusz?environment={args.environment}"
     compat_system_summaryz = f"{pb_base_url}/api/custom/system/summaryz?lite=1&environment={args.environment}"
 
+    compute_public_url = (args.compute_public_url or "").rstrip("/")
     public = {
         "pb_api_health": fetch_url(f"{pb_base_url}/api/health", expect_json=True),
         "api_public_health": fetch_first_ok(
@@ -1031,16 +1032,22 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
             ],
             expect_json=True,
         ),
-        "compute_public_health": fetch_url(f"{args.compute_public_url.rstrip('/')}/health", expect_json=True),
+        "compute_public_health": (
+            fetch_url(f"{compute_public_url}/health", expect_json=True)
+            if compute_public_url
+            else {"ok": True, "skipped": True, "reason": "compute_public_url_not_configured"}
+        ),
     }
 
     payload["public"] = public
     failures = payload.setdefault("failures", [])
     warnings = payload.setdefault("warnings", [])
 
-    for name in ("pb_api_health", "api_public_health", "api_public_status", "api_ibkr_statusz", "api_system_summaryz", "compute_public_health"):
+    for name in ("pb_api_health", "api_public_health", "api_public_status", "api_ibkr_statusz", "api_system_summaryz"):
         if not public[name].get("ok"):
             failures.append(f"public:{name}")
+    if not public["compute_public_health"].get("ok") and not public["compute_public_health"].get("skipped"):
+        failures.append("public:compute_public_health")
 
     for name in ("console_home_page", "console_runtime_page", "console_system_page"):
         if not public[name].get("ok"):

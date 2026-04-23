@@ -96,7 +96,7 @@
 - `market_data_views.py`
   市场数据查询、forming bar、官方 close ingest、contract search 响应拼装兼容壳。
 - `market_screener_views.py`
-  screener 参数校验与 PocketBase 代理响应兼容壳。
+  screener 参数校验与本地 payload 组装兼容壳；不再反向依赖 PocketBase `/api/custom/ibkr/screener`。
 - `chart_routes.py`
   chart timeline / compare 路由壳兼容入口。
 - `chart_request.py`

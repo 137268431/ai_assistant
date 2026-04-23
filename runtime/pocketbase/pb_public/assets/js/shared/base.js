@@ -25,12 +25,13 @@ const CONSOLE_BASE_URL = normalizeRuntimeBaseUrl(
   typeof window !== 'undefined' ? window.location.origin : ''
 );
 const BASE_URL = API_BASE_URL;
+const COLLECTIONS_BASE_URL = normalizeRuntimeBaseUrl(PB_AUTH_BASE_URL, API_BASE_URL);
 
-function createPocketBaseClient(baseUrl = API_BASE_URL) {
+function createPocketBaseClient(baseUrl = COLLECTIONS_BASE_URL) {
   if (typeof PocketBase !== 'function') {
     throw new Error('PocketBase SDK is not loaded');
   }
-  return new PocketBase(normalizeRuntimeBaseUrl(baseUrl, API_BASE_URL));
+  return new PocketBase(normalizeRuntimeBaseUrl(baseUrl, COLLECTIONS_BASE_URL));
 }
 
 function createPocketBaseAuthClient(baseUrl = PB_AUTH_BASE_URL) {
@@ -42,6 +43,7 @@ if (typeof window !== 'undefined') {
   window.PB_AUTH_BASE_URL = PB_AUTH_BASE_URL;
   window.CONSOLE_BASE_URL = CONSOLE_BASE_URL;
   window.BASE_URL = BASE_URL;
+  window.COLLECTIONS_BASE_URL = COLLECTIONS_BASE_URL;
   window.createPocketBaseClient = createPocketBaseClient;
   window.createPocketBaseAuthClient = createPocketBaseAuthClient;
 }
@@ -342,7 +344,7 @@ async function apiFetch(collection, params = {}) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  let url = `${BASE_URL}/api/collections/${collection}/records`;
+  let url = `${COLLECTIONS_BASE_URL}/api/collections/${collection}/records`;
 
   // 构建查询参数
   const queryParams = new URLSearchParams();

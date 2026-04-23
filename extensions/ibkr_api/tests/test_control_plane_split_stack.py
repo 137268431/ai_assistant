@@ -219,6 +219,9 @@ def _sample_runtime_status_payload(*, environment="live", authenticated=True):
 
 
 class ControlPlaneSplitStackTest(unittest.TestCase):
+    def test_api_pb_client_reads_runtime_config_directly_from_pocketbase(self):
+        self.assertFalse(api_app_mod.pb.prefer_runtime_config_api)
+
     def test_runtime_config_route_returns_effective_environment_values(self):
         rows = [
             {"key": "alpha", "value": "global", "environment": "global", "updated": "2026-04-22 00:00:00"},
@@ -266,8 +269,17 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIn("ibkr/scan", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/data_quality/upsert", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/data_quality/truth_upsert", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/data_quality/summary", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/data_quality/list", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/account_snapshot", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/healthz", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/screener", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/today-targets", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/watchlist/upsert", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/targets/upsert", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/screener/targets", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/orders/upsert", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/orders/cancel_sync", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/orders/cancel_group", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/reverse/dispatch", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/runtime/config", payload["compatibility"]["native_custom_routes"])
@@ -299,6 +311,7 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertNotIn("signal/confirm", payload["compatibility"]["delegated_pocketbase_webhook_routes"])
         self.assertNotIn("signal/cancel", payload["compatibility"]["delegated_pocketbase_webhook_routes"])
         self.assertIn("ibkr/account", payload["compatibility"]["direct_proxy_routes"])
+        self.assertNotIn("ibkr/account_snapshot", payload["compatibility"]["direct_proxy_routes"])
         self.assertIn("system/cronz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/event", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/healthz", payload["compatibility"]["native_custom_routes"])
@@ -953,6 +966,56 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertEqual(payload["scheduler"]["dispatch_lag_min"], 5.0)
         self.assertEqual(payload["upstream_monitor"]["target_url"], "http://compute/ibkr/monitor")
         self.assertEqual(payload["pocketbase"]["disk"]["data_path"], "/opt/pocketbase/pb_data")
+
+    def test_monitorz_service_map_does_not_mark_compute_offline_for_runtime_auth_issue(self):
+        base_monitor_payload = {
+            "ok": False,
+            "status": "error",
+            "environment": "live",
+            "runtime": {
+                "runtime_phase": "stopped",
+                "session": {"authenticated": False},
+                "websocket": {"connected": False, "ready": False},
+                "gateway": {"running": True, "reachable": True, "managed_by": "ibkr-runtime", "pid": 123},
+            },
+            "compute": {
+                "status": "running",
+                "ready_engines": 0,
+                "total_engines": 0,
+                "compute_count": 0,
+                "tracked_cursors": 0,
+            },
+            "flags": [{"code": "session_unauthenticated"}],
+            "pocketbase": {"disk": {"status": "ready", "data_path": "/opt/pocketbase/pb_data"}},
+            "service_topology": api_app_mod.build_service_topology(),
+        }
+        scheduler_payload = {
+            "ok": True,
+            "status": "running",
+            "environment": "live",
+            "loop_interval_seconds": 30,
+            "ingest_cursor": {},
+            "compute_dispatch_cursor": {},
+            "jobs": {"ibkr_compute_runtime": {"status": "ok"}},
+        }
+        request_results = [
+            {"ok": False, "status_code": 200, "payload": base_monitor_payload, "target_url": "http://compute/ibkr/monitor", "error": ""},
+            {"ok": True, "status_code": 200, "payload": {"code": 200, "message": "OK"}, "target_url": "http://pb/api/health", "error": ""},
+        ]
+
+        with mock.patch.object(api_app_mod.config, "refresh", return_value=None):
+            with mock.patch.object(api_app_mod, "_request_json", side_effect=request_results):
+                with mock.patch.object(api_app_mod, "_scheduler_status", return_value=scheduler_payload):
+                    with mock.patch.object(api_app_mod.pb, "get_runtime_config", return_value=[]):
+                        with mock.patch.object(api_app_mod.pb, "get_records", return_value=[]):
+                            with mock.patch.object(api_app_mod.pb, "get_all_records", return_value=[]):
+                                with mock.patch.object(api_app_mod, "_probe_console_status", return_value={"ok": True, "status_code": 200, "target_url": "http://console/index.html", "error": ""}):
+                                    with mock.patch.object(api_app_mod.request, "args", {"environment": "live"}):
+                                        payload = api_app_mod.custom_system_monitorz()
+
+        service_statuses = payload["service_monitor"]["services"]
+        self.assertEqual(service_statuses["ibkr-compute"]["status"], "running")
+        self.assertEqual(service_statuses["ibkr-runtime"]["status"], "degraded")
 
     def test_summaryz_route_returns_native_split_stack_payload(self):
         compute_health = {

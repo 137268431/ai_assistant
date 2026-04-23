@@ -13,7 +13,7 @@ const ENVIRONMENT_LABELS = {
     global: "GLOBAL",
 }
 
-const DEFAULT_IBKR_COMPUTE_PUBLIC_URL = "https://qc.lzw-glory.top"
+const DEFAULT_IBKR_COMPUTE_PUBLIC_URL = "http://127.0.0.1:5100"
 const DEFAULT_IBKR_COMPUTE_INTERNAL_URL = "http://127.0.0.1:5100"
 const DEFAULT_IBKR_API_PUBLIC_URL = ""
 const DEFAULT_IBKR_API_INTERNAL_URL = "http://127.0.0.1:5102"
@@ -211,8 +211,9 @@ function listEffectiveConfigRecords(environment) {
 
 function getIbkrComputePublicUrl(environment, defaultValue) {
     const fallback = String(defaultValue || DEFAULT_IBKR_COMPUTE_PUBLIC_URL || "").trim() || DEFAULT_IBKR_COMPUTE_PUBLIC_URL
-    const configured = getConfigValue("ibkr_compute_public_url", fallback, environment)
-    return String(configured || fallback).trim().replace(/\/+$/, "") || fallback
+    const publicConfigured = getConfigValue("ibkr_compute_public_url", "", environment)
+    const internalConfigured = getConfigValue("ibkr_compute_internal_url", fallback, environment)
+    return String(publicConfigured || internalConfigured || fallback).trim().replace(/\/+$/, "") || fallback
 }
 
 function getIbkrComputeInternalUrl(environment, defaultValue) {

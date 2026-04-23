@@ -98,7 +98,10 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'system_monitor_ws_message_age_late_session_warn_sec',
   'system_monitor_ws_message_age_late_session_critical_sec',
   'reverse_signal_threshold',
-  'ibkr_compute_public_url',
+  'ibkr_compute_internal_url',
+  'ibkr_runtime_internal_url',
+  'ibkr_api_internal_url',
+  'ibkr_scheduler_internal_url',
   'ibkr_compute_enabled',
   'ibkr_bar_publish_enabled'
 ])
@@ -179,7 +182,10 @@ const CONFIG_META = {
   system_monitor_ws_message_age_late_session_warn_sec: meta('WS 盘后告警秒数', '系统通知', 948, '600', 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
   system_monitor_ws_message_age_late_session_critical_sec: meta('WS 盘后严重秒数', '系统通知', 949, '1200', 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘后告警秒数'),
 
-  ibkr_compute_public_url: meta('Compute 公网地址', '服务接入', 1000, 'https://qc.lzw-glory.top', 'ibkr-api 兼容代理、运行页和 scheduler/native callback 访问的公开 Compute 地址'),
+  ibkr_compute_internal_url: meta('Compute 内网地址', '服务接入', 1000, 'http://127.0.0.1:5100', 'ibkr-compute 的系统内 HTTP 地址；scheduler / api / 兼容壳都走这里，不再暴露独立公网 compute 域名'),
+  ibkr_runtime_internal_url: meta('Runtime 内网地址', '服务接入', 1001, 'http://127.0.0.1:5101', 'ibkr-runtime 的系统内 HTTP 地址'),
+  ibkr_api_internal_url: meta('API 内网地址', '服务接入', 1002, 'http://127.0.0.1:5102', 'ibkr-api 的系统内 HTTP 地址'),
+  ibkr_scheduler_internal_url: meta('Scheduler 内网地址', '服务接入', 1003, 'http://127.0.0.1:5103', 'ibkr-scheduler 的系统内 HTTP 地址'),
 }
 
 const GROUP_ORDER = [
@@ -834,8 +840,8 @@ async function saveAll() {
         payload.key = config.key
       }
       const endpoint = config._editable_id
-        ? `${BASE_URL}/api/collections/config/records/${config._editable_id}`
-        : `${BASE_URL}/api/collections/config/records`
+        ? `${PB_AUTH_BASE_URL}/api/collections/config/records/${config._editable_id}`
+        : `${PB_AUTH_BASE_URL}/api/collections/config/records`
       const res = await fetch(endpoint, {
         method: config._editable_id ? 'PATCH' : 'POST',
         headers: {
@@ -922,8 +928,8 @@ async function resetAll() {
         payload.key = config.key
       }
       const endpoint = config._editable_id
-        ? `${BASE_URL}/api/collections/config/records/${config._editable_id}`
-        : `${BASE_URL}/api/collections/config/records`
+        ? `${PB_AUTH_BASE_URL}/api/collections/config/records/${config._editable_id}`
+        : `${PB_AUTH_BASE_URL}/api/collections/config/records`
       const res = await fetch(endpoint, {
         method: config._editable_id ? 'PATCH' : 'POST',
         headers: {

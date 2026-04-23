@@ -19,6 +19,7 @@ from ibkr_api.callbacks.feishu import (
     dispatch_feishu_signal_callback as _dispatch_feishu_signal_callback_support,
     handle_feishu_callback as _handle_feishu_callback_support,
 )
+from ibkr_api.account.routes import register_account_routes
 from ibkr_api.callbacks.routes import register_callback_routes
 from ibkr_api.compat.routes import register_compat_routes
 from ibkr_api.control.routes import register_control_routes
@@ -28,7 +29,10 @@ from ibkr_api.control.runtime_guard import (
 )
 from ibkr_api.integrations.feishu import feishu_send_interactive, feishu_suppressed, feishu_token, feishu_update_interactive
 from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime as _cancel_broker_order_via_runtime_support
+from ibkr_api.data_quality.routes import register_data_quality_routes
+from ibkr_api.universe.routes import register_universe_routes
 from ibkr_api.orders.routes import register_order_routes
+from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response
 from ibkr_api.orders.group_close import build_order_close_group_response
 from ibkr_api.orders.integrity import build_order_detail_integrity_response
@@ -146,7 +150,8 @@ ENVIRONMENT_LABELS = {
 _FEISHU_TOKEN_CACHE: dict[str, Any] = {"token": "", "expires_at": 0.0}
 
 app = Flask(__name__)
-pb = PBClient(base_url=PB_BASE_URL)
+# Avoid recursively routing runtime-config reads back into this API service.
+pb = PBClient(base_url=PB_BASE_URL, prefer_runtime_config_api=False)
 config = Config(pb_client=pb)
 
 
@@ -168,7 +173,6 @@ DIRECT_PROXY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("POST", "ibkr/orders/place"): (RUNTIME_BASE_URL, "/ibkr/orders/place"),
     ("POST", "ibkr/positions/close"): (RUNTIME_BASE_URL, "/ibkr/positions/close"),
     ("GET", "ibkr/account"): (RUNTIME_BASE_URL, "/ibkr/account"),
-    ("GET", "ibkr/account_snapshot"): (RUNTIME_BASE_URL, "/ibkr/account"),
     ("GET", "ibkr/positions"): (RUNTIME_BASE_URL, "/ibkr/positions"),
     ("GET", "ibkr/orders/live"): (RUNTIME_BASE_URL, "/ibkr/orders/live"),
     ("GET", "ibkr/orders/history"): (RUNTIME_BASE_URL, "/ibkr/orders/history"),
@@ -1117,6 +1121,18 @@ def _derive_monitor_service_map(
     compute = base_payload.get("compute") if isinstance(base_payload.get("compute"), dict) else {}
     monitor_status = str(base_payload.get("status") or "").strip().lower()
 
+    def _normalize_service_status(raw_status: Any, *, fallback_running: bool) -> str:
+        text = str(raw_status or "").strip().lower()
+        if text in {"ok", "running", "healthy", "ready"}:
+            return "running"
+        if text in {"warning", "warn", "degraded", "partial"}:
+            return "degraded"
+        if text == "error":
+            return "degraded" if fallback_running else "offline"
+        if text in {"offline", "down", "stopped"}:
+            return "offline"
+        return "running" if fallback_running else "offline"
+
     def _topology_meta(name: str) -> dict[str, Any]:
         item = services.get(name) if isinstance(services.get(name), dict) else {}
         return dict(item)
@@ -1136,16 +1152,29 @@ def _derive_monitor_service_map(
     elif pb_status != "running" and pb_disk.get("status") == "partial":
         pb_status = "degraded"
 
-    compute_status = "running"
-    if monitor_status in {"offline", "error"}:
-        compute_status = "offline"
-    elif monitor_status in {"warning", "warn", "degraded"}:
+    compute_status = _normalize_service_status(compute.get("status"), fallback_running=bool(compute))
+    ready_engines = int(compute.get("ready_engines") or 0)
+    total_engines = int(compute.get("total_engines") or 0)
+    if total_engines > 0 and ready_engines < total_engines and compute_status == "running":
         compute_status = "degraded"
+    if not compute and monitor_status in {"warning", "warn", "degraded"}:
+        compute_status = "degraded"
+    if not compute and monitor_status in {"offline", "error"}:
+        compute_status = "offline"
 
-    runtime_status = "running" if runtime else "offline"
-    if runtime and not bool(gateway.get("running") or gateway.get("reachable")):
-        runtime_status = "degraded"
-    if not runtime and compute_status != "running":
+    runtime_status = _normalize_service_status(runtime.get("status"), fallback_running=bool(runtime))
+    runtime_phase = str(runtime.get("runtime_phase") or "").strip().lower()
+    session = runtime.get("session") if isinstance(runtime.get("session"), dict) else {}
+    websocket = runtime.get("websocket") if isinstance(runtime.get("websocket"), dict) else {}
+    gateway_reachable = bool(gateway.get("running") or gateway.get("reachable"))
+    websocket_ready = bool(websocket.get("connected") or websocket.get("ready"))
+    session_authenticated = bool(session.get("authenticated"))
+    if runtime:
+        if runtime_phase in {"stopped", "stop_requested", "stopping"}:
+            runtime_status = "degraded" if gateway_reachable or session_authenticated or websocket_ready else "offline"
+        elif not gateway_reachable or not session_authenticated or not websocket_ready:
+            runtime_status = "degraded"
+    elif compute_status != "running":
         runtime_status = "offline"
 
     gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
@@ -1509,6 +1538,65 @@ custom_ibkr_data_quality_upsert = _storage_route_handlers["custom_ibkr_data_qual
 custom_ibkr_data_quality_truth_upsert = _storage_route_handlers["custom_ibkr_data_quality_truth_upsert"]
 
 
+_data_quality_route_handlers = register_data_quality_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+    },
+)
+custom_ibkr_data_quality_summary = _data_quality_route_handlers["custom_ibkr_data_quality_summary"]
+custom_ibkr_data_quality_truth_summary = _data_quality_route_handlers["custom_ibkr_data_quality_truth_summary"]
+custom_ibkr_data_quality_list = _data_quality_route_handlers["custom_ibkr_data_quality_list"]
+custom_ibkr_data_quality_truth_list = _data_quality_route_handlers["custom_ibkr_data_quality_truth_list"]
+
+
+_universe_route_handlers = register_universe_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "escape_filter_string": _escape_filter_string,
+        "time_strings": _time_strings,
+        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
+            method,
+            base_url,
+            path,
+            params=params,
+            json_body=json_body,
+            timeout=timeout,
+        ),
+        "compute_base_url": COMPUTE_BASE_URL,
+    },
+)
+custom_ibkr_watchlist_upsert = _universe_route_handlers["custom_ibkr_watchlist_upsert"]
+custom_ibkr_watchlist_remove = _universe_route_handlers["custom_ibkr_watchlist_remove"]
+custom_ibkr_targets_upsert = _universe_route_handlers["custom_ibkr_targets_upsert"]
+custom_ibkr_targets_remove = _universe_route_handlers["custom_ibkr_targets_remove"]
+custom_ibkr_screener = _universe_route_handlers["custom_ibkr_screener"]
+custom_ibkr_today_targets = _universe_route_handlers["custom_ibkr_today_targets"]
+custom_ibkr_screener_targets = _universe_route_handlers["custom_ibkr_screener_targets"]
+
+
+_account_route_handlers = register_account_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
+            method,
+            base_url,
+            path,
+            params=params,
+            json_body=json_body,
+            timeout=timeout,
+        ),
+        "runtime_base_url": RUNTIME_BASE_URL,
+    },
+)
+custom_ibkr_account_snapshot = _account_route_handlers["custom_ibkr_account_snapshot"]
+
+
 _signal_route_handlers = register_signal_routes(
     app,
     deps={
@@ -1563,6 +1651,7 @@ _order_route_handlers = register_order_routes(
         "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime(environment, order_id, payload),
         "build_order_upsert_response": lambda *args, **kwargs: build_order_upsert_response(*args, **kwargs),
         "build_orders_reconcile_response": lambda *args, **kwargs: build_orders_reconcile_response(*args, **kwargs),
+        "build_order_cancel_sync_response": lambda *args, **kwargs: build_order_cancel_sync_response(*args, **kwargs),
         "build_order_cancel_group_response": lambda *args, **kwargs: build_order_cancel_group_response(*args, **kwargs),
         "build_order_close_group_response": lambda *args, **kwargs: build_order_close_group_response(*args, **kwargs),
         "build_order_cancel_webhook_response": lambda *args, **kwargs: build_order_cancel_webhook_response(*args, **kwargs),
@@ -1571,6 +1660,7 @@ _order_route_handlers = register_order_routes(
 )
 custom_ibkr_orders_upsert = _order_route_handlers["custom_ibkr_orders_upsert"]
 custom_ibkr_orders_reconcile = _order_route_handlers["custom_ibkr_orders_reconcile"]
+custom_ibkr_orders_cancel_sync = _order_route_handlers["custom_ibkr_orders_cancel_sync"]
 custom_ibkr_orders_cancel_group = _order_route_handlers["custom_ibkr_orders_cancel_group"]
 custom_ibkr_orders_close_group = _order_route_handlers["custom_ibkr_orders_close_group"]
 webhook_order_cancel = _order_route_handlers["webhook_order_cancel"]

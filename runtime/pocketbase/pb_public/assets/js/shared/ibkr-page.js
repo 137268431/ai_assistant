@@ -1402,7 +1402,10 @@ function getIbkrRuntimeQuickViewCardModel({
 }
 
 const IBKR_CONFIG_DETAIL_KEYS = [
-    'ibkr_compute_public_url',
+    'ibkr_compute_internal_url',
+    'ibkr_runtime_internal_url',
+    'ibkr_api_internal_url',
+    'ibkr_scheduler_internal_url',
     'ibkr_compute_enabled',
     'pb_scheduler_enabled',
     'ibkr_bar_publish_enabled',
@@ -1531,12 +1534,27 @@ function getIbkrSystemPrimaryConfigItems(summary = {}, configMap = {}) {
 function getIbkrSystemSecondaryConfigItems(configMap = {}) {
     const items = [];
 
-    if (configMap.ibkr_compute_public_url) {
-        items.push({ label: 'COMPUTE URL', value: configMap.ibkr_compute_public_url });
+    if (configMap.ibkr_compute_internal_url) {
+        items.push({ label: 'COMPUTE INTERNAL', value: configMap.ibkr_compute_internal_url });
+    }
+    if (configMap.ibkr_runtime_internal_url) {
+        items.push({ label: 'RUNTIME INTERNAL', value: configMap.ibkr_runtime_internal_url });
+    }
+    if (configMap.ibkr_api_internal_url) {
+        items.push({ label: 'API INTERNAL', value: configMap.ibkr_api_internal_url });
+    }
+    if (configMap.ibkr_scheduler_internal_url) {
+        items.push({ label: 'SCHEDULER INTERNAL', value: configMap.ibkr_scheduler_internal_url });
     }
 
     getOrderedIbkrConfigEntries(configMap).forEach(({ key, value }) => {
-        if (key === 'ibkr_compute_public_url' || IBKR_SYSTEM_PRIMARY_DETAIL_KEYS.has(key)) return;
+        if (
+            key === 'ibkr_compute_internal_url'
+            || key === 'ibkr_runtime_internal_url'
+            || key === 'ibkr_api_internal_url'
+            || key === 'ibkr_scheduler_internal_url'
+            || IBKR_SYSTEM_PRIMARY_DETAIL_KEYS.has(key)
+        ) return;
         items.push({
             label: formatIbkrConfigKeyLabel(key),
             value

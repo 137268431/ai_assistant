@@ -12,18 +12,6 @@ quant.lzw-glory.top {
             }
         }
 
-        # Temporary PB compatibility while callers migrate to PB_AUTH_BASE_URL=https://pb.lzw-glory.top.
-        @pb_compat path /api/batch /api/collections /api/collections/* /api/files /api/files/* /api/health /api/realtime /api/realtime/*
-        reverse_proxy @pb_compat 127.0.0.1:8090 {
-            flush_interval -1
-            header_up X-Real-IP {remote_host}
-            transport http {
-                read_timeout 300s
-                write_timeout 300s
-                dial_timeout 30s
-            }
-        }
-
         @chart_compat path /chart /chart/
         rewrite @chart_compat /chart.html
 

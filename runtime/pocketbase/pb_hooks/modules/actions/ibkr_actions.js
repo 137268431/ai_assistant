@@ -650,7 +650,7 @@ globalThis.ibkrActionsResolveOrderActionContext = ibkrActionsResolveOrderActionC
 
 function ibkrActionsCancelBrokerOrder(environment, orderId, data) {
     const { getIbkrComputePublicUrl } = require(`${__hooks}/lib/environment.js`)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/cancel`
     const brokerOrderId = ibkrActionsToText(orderId)
     const payloadBody = {
         order_id: brokerOrderId,
@@ -2324,7 +2324,7 @@ routerAdd("GET", "/api/custom/ibkr/contracts/search", (c) => {
         }
 
         const encodedQuery = String(q).replace(/%/g, "%25").replace(/ /g, "%20").replace(/\+/g, "%2B").replace(/#/g, "%23").replace(/&/g, "%26")
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/contracts/search?q=${encodedQuery}&limit=${limit}`
+        const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/contracts/search?q=${encodedQuery}&limit=${limit}`
         const parsePayload = function(rawValue) {
             const raw = typeof rawValue === "string" ? rawValue : String(rawValue || "")
             if (!raw) return {}
@@ -3717,7 +3717,7 @@ routerAdd("POST", "/api/custom/ibkr/data_quality/rescan", (c) => {
         const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const dataQuality = require(`${__hooks}/lib/trading/ibkr_data_quality.js`)
         const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/data-quality/scan`
+        const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/data-quality/scan`
         const result = dataQuality.runProxyAction(
             environment,
             "/api/custom/ibkr/data_quality/rescan",
@@ -3739,7 +3739,7 @@ routerAdd("POST", "/api/custom/ibkr/data_quality/repair", (c) => {
         const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const dataQuality = require(`${__hooks}/lib/trading/ibkr_data_quality.js`)
         const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/data-quality/repair`
+        const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/data-quality/repair`
         const result = dataQuality.runProxyAction(
             environment,
             "/api/custom/ibkr/data_quality/repair",
@@ -3761,7 +3761,7 @@ routerAdd("POST", "/api/custom/ibkr/data_quality/truth_audit", (c) => {
         const { getRuntimeEnvironmentFromData, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
         const dataQuality = require(`${__hooks}/lib/trading/ibkr_data_quality.js`)
         const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-        const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/data-quality/truth-audit`
+        const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/data-quality/truth-audit`
         const result = dataQuality.runProxyAction(
             environment,
             "/api/custom/ibkr/data_quality/truth_audit",
@@ -4772,7 +4772,7 @@ routerAdd("GET", "/api/custom/ibkr/account_snapshot", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const { enrichAccountSnapshot } = require(`${__hooks}/lib/account_snapshot.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/account`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/account`
     const fallbackUpstream = "http://127.0.0.1:5100/ibkr/account"
     try {
         let payload = {}
@@ -4901,7 +4901,7 @@ routerAdd("POST", "/api/custom/ibkr/start", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/start`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/start`
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
         if (environmentInfo.runtime_environment_mismatch) {
@@ -4943,7 +4943,7 @@ routerAdd("POST", "/api/custom/ibkr/gateway/start", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/gateway/start`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/gateway/start`
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
         if (environmentInfo.runtime_environment_mismatch) {
@@ -4985,7 +4985,7 @@ routerAdd("POST", "/api/custom/ibkr/gateway/stop", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/gateway/stop`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/gateway/stop`
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
         if (environmentInfo.runtime_environment_mismatch) {
@@ -5027,7 +5027,7 @@ routerAdd("POST", "/api/custom/ibkr/gateway/restart", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/gateway/restart`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/gateway/restart`
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
         if (environmentInfo.runtime_environment_mismatch) {
@@ -5092,7 +5092,7 @@ routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/stop`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/stop`
     try {
         const environmentInfo = inspectRequestedRuntimeEnvironment(environment)
         if (environmentInfo.runtime_environment_mismatch) {
@@ -5131,7 +5131,7 @@ routerAdd("POST", "/api/custom/ibkr/stop", (c) => {
 routerAdd("GET", "/api/custom/ibkr/account", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/account`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/account`
     try {
         const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
         let payload = {}
@@ -5161,7 +5161,7 @@ routerAdd("GET", "/api/custom/ibkr/account", (c) => {
 routerAdd("GET", "/api/custom/ibkr/positions", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/positions`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/positions`
     try {
         const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
         let payload = {}
@@ -5191,7 +5191,7 @@ routerAdd("GET", "/api/custom/ibkr/positions", (c) => {
 routerAdd("GET", "/api/custom/ibkr/orders/live", (c) => {
     const { getRuntimeEnvironmentFromRequest, getIbkrComputePublicUrl, LIVE_ENVIRONMENT } = require(`${__hooks}/lib/environment.js`)
     const environment = getRuntimeEnvironmentFromRequest(c, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/live`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/live`
     try {
         const resp = $http.send({ url: upstream, method: "GET", timeout: 20 })
         let payload = {}
@@ -5227,7 +5227,7 @@ routerAdd("GET", "/api/custom/ibkr/orders/history", (c) => {
     } catch (_) {
         days = "1"
     }
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/history?days=${encodeURIComponent(days)}`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/history?days=${encodeURIComponent(days)}`
     try {
         const resp = $http.send({ url: upstream, method: "GET", timeout: 25 })
         let payload = {}
@@ -5259,7 +5259,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/cancel", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/cancel`
     try {
         const resp = $http.send({
             url: upstream,
@@ -5457,7 +5457,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/cancel_all", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/cancel_all`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/cancel_all`
     try {
         const resp = $http.send({
             url: upstream,
@@ -5495,7 +5495,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/modify", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/modify`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/modify`
     try {
         const resp = $http.send({
             url: upstream,
@@ -5533,7 +5533,7 @@ routerAdd("POST", "/api/custom/ibkr/orders/place", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/orders/place`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/orders/place`
     try {
         const resp = $http.send({
             url: upstream,
@@ -5571,7 +5571,7 @@ routerAdd("POST", "/api/custom/ibkr/positions/close", (c) => {
     const reqInfo = c.requestInfo()
     const d = reqInfo.body || reqInfo.data || {}
     const environment = getRuntimeEnvironmentFromData(d, LIVE_ENVIRONMENT)
-    const upstream = `${getIbkrComputePublicUrl(environment, "https://qc.lzw-glory.top")}/ibkr/positions/close`
+    const upstream = `${getIbkrComputePublicUrl(environment, "http://127.0.0.1:5100")}/ibkr/positions/close`
     try {
         const resp = $http.send({
             url: upstream,

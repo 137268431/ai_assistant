@@ -74,6 +74,18 @@ class PBClientBatchUpsertTest(unittest.TestCase):
         request_mock.assert_called_once()
         self.assertEqual("http://api.test/api/custom/ibkr/statusz", request_mock.call_args.args[1])
 
+    def test_runtime_config_can_skip_custom_api_to_avoid_self_proxy_recursion(self):
+        client = PBClient(base_url="http://pb.test", prefer_runtime_config_api=False)
+        rows = [{"key": "alpha", "value": "1", "environment": "live"}]
+
+        with mock.patch.object(client, "call_custom_api") as call_custom_api:
+            with mock.patch.object(client, "get_all_records", return_value=rows) as get_all_records:
+                payload = client.get_runtime_config(scope="all", environment="live")
+
+        self.assertEqual(rows, payload)
+        call_custom_api.assert_not_called()
+        get_all_records.assert_called_once_with("config", sort="sort_order,key", max_pages=20)
+
 
 if __name__ == "__main__":
     unittest.main()

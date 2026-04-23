@@ -2,7 +2,7 @@ const { chromium } = require('playwright');
 
 const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
 const PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
-const COMPUTE_BASE = process.env.IBKR_COMPUTE_BASE || 'https://qc.lzw-glory.top';
+const COMPUTE_BASE = process.env.IBKR_COMPUTE_BASE || 'http://127.0.0.1:5100';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 const ENVIRONMENT = 'live';

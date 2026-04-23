@@ -97,7 +97,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const token = getToken();
       const headers = {};
       if (token) headers.Authorization = `Bearer ${token}`;
-      const response = await fetch(`${BASE_URL}/api/collections/${collection}/records/${recordId}`, {
+      const response = await fetch(`${PB_AUTH_BASE_URL}/api/collections/${collection}/records/${recordId}`, {
         method: 'DELETE',
         headers
       });
