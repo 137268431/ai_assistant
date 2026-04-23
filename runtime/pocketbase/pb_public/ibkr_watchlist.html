@@ -8,12 +8,13 @@
   <script>
     (function redirectToCombinedPage() {
       const current = new URL(window.location.href);
-      const next = new URL('/ibkr_screener.html', window.location.origin);
+      const consoleBase = window.CONSOLE_BASE_URL || window.location.origin;
+      const next = new URL('/ibkr_screener.html', consoleBase);
       current.searchParams.forEach((value, key) => {
         next.searchParams.set(key, value);
       });
       next.searchParams.set('tab', 'watchlist');
-      window.location.replace(`${next.pathname}${next.search}`);
+      window.location.replace(next.toString());
     })();
   </script>
 </head>

@@ -39,7 +39,7 @@
 ### 1. Entry Submitted
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_entry",
@@ -73,7 +73,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
 ### 2. TP Submitted（由 Entry Filled 激活）
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_take_profit",
@@ -107,7 +107,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
 ### 3. TP Filled
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_take_profit",
@@ -143,7 +143,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
 ### 4. SL Counterpart Canceled
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/orders/upsert" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/orders/upsert" \
   -H "Content-Type: application/json" \
   -d '{
     "unique_id": "test_AAPL_20260331_093000_sig_stop_loss",

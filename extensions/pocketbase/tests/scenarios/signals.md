@@ -53,7 +53,7 @@
 ## 请求示例
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/signals/ack" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/signals/ack" \
   -H "Content-Type: application/json" \
   -d '{
     "signal_id": "AAPL_20260331_093000_sig",

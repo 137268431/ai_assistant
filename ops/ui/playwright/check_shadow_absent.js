@@ -1,15 +1,16 @@
 const { chromium } = require('playwright');
 
-const base = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const consoleBase = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const pbBase = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const email = process.env.PB_EMAIL || '137268431@qq.com';
 const password = process.env.PB_PASSWORD || 'Asd@2750066';
 const targets = [
-  base + '/ibkr_runtime.html?environment=live',
-  base + '/ibkr_system.html?environment=live',
+  consoleBase + '/ibkr_runtime.html?environment=live',
+  consoleBase + '/ibkr_system.html?environment=live',
 ];
 
 (async () => {
-  const authResp = await fetch(base + '/api/collections/_superusers/auth-with-password', {
+  const authResp = await fetch(pbBase + '/api/collections/_superusers/auth-with-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identity: email, password }),

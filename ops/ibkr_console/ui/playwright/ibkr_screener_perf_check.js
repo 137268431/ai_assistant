@@ -2,14 +2,15 @@ const { chromium, request } = require('playwright');
 
 const DEFAULT_EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const DEFAULT_PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
-const DEFAULT_BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const DEFAULT_CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const DEFAULT_PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const NAV_TIMEOUT_MS = Number(process.env.PB_SMOKE_NAV_TIMEOUT_MS || 20000);
 const READY_TIMEOUT_MS = Number(process.env.PB_SCREENER_PERF_READY_TIMEOUT_MS || 30000);
 const POST_READY_SETTLE_MS = Number(process.env.PB_SCREENER_PERF_SETTLE_MS || 800);
 
 const DEFAULT_TARGETS = [
-  `${DEFAULT_BASE}/ibkr_screener.html?environment=live&tab=screener&view=current`,
-  `${DEFAULT_BASE}/ibkr_screener.html?environment=live&tab=screener&view=universe`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=current`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=universe`,
 ];
 
 function parseArgs(argv) {
@@ -38,7 +39,7 @@ function parseArgs(argv) {
 
 async function fetchToken() {
   const api = await request.newContext({
-    baseURL: DEFAULT_BASE,
+    baseURL: DEFAULT_PB_BASE,
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: { 'Content-Type': 'application/json' },
   });

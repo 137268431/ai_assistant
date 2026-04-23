@@ -6,8 +6,7 @@
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var reverseUtils = require(`${__hooks}/lib/reverse_utils.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
-
-var PB_HOST = "https://pb.lzw-glory.top"
+var publicUrls = require(`${__hooks}/lib/feishu/public_urls.js`)
 
 function extractDateFromIdentifier(value) {
     var match = String(value || "").match(/(?:^|_)(20\d{6})(?:_|$)/)
@@ -117,7 +116,8 @@ function formatDirection(direction) {
 
 function buildReversePageUrl(reverse) {
     if (!reverse.id) return ""
-    var url = PB_HOST + "/ibkr_reverse_signals.html?reverse_id=" + encodeURIComponent(reverse.id)
+    var runtimeEnvironment = reverse.environment || envUtils.LIVE_ENVIRONMENT
+    var url = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_reverse_signals.html?reverse_id=" + encodeURIComponent(reverse.id)
     if (reverse.environment) {
         url += "&environment=" + encodeURIComponent(reverse.environment)
     }
@@ -131,7 +131,8 @@ function buildReversePageUrl(reverse) {
 function buildSignalPageUrl(reverse) {
     var signalId = reverse.signal_id || reverse.origin_signal_id
     if (!signalId) return ""
-    var url = PB_HOST + "/ibkr_signals.html?signal_id=" + encodeURIComponent(signalId)
+    var runtimeEnvironment = reverse.environment || envUtils.LIVE_ENVIRONMENT
+    var url = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_signals.html?signal_id=" + encodeURIComponent(signalId)
     if (reverse.environment) {
         url += "&environment=" + encodeURIComponent(reverse.environment)
     }
@@ -143,9 +144,10 @@ function buildSignalPageUrl(reverse) {
 }
 
 function buildOrderPageUrl(reverse) {
+    var runtimeEnvironment = reverse.environment || envUtils.LIVE_ENVIRONMENT
     var pageDate = resolvePageDate(reverse)
     if (reverse.trade_group_id) {
-        var detailUrl = PB_HOST + "/ibkr_order_details.html?trade_group_id=" + encodeURIComponent(reverse.trade_group_id)
+        var detailUrl = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_order_details.html?trade_group_id=" + encodeURIComponent(reverse.trade_group_id)
         if (reverse.signal_id || reverse.origin_signal_id) {
             detailUrl += "&signal_id=" + encodeURIComponent(reverse.signal_id || reverse.origin_signal_id)
         }
@@ -158,7 +160,7 @@ function buildOrderPageUrl(reverse) {
         return detailUrl
     }
     if (reverse.signal_id || reverse.origin_signal_id) {
-        var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(reverse.signal_id || reverse.origin_signal_id)
+        var listUrl = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/orders.html?signal_id=" + encodeURIComponent(reverse.signal_id || reverse.origin_signal_id)
         if (reverse.environment) {
             listUrl += "&environment=" + encodeURIComponent(reverse.environment)
         }

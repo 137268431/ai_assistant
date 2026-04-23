@@ -38,13 +38,30 @@
 </div>
 
 <script>
-const BASE = (window.__IBKR_RUNTIME_CONFIG__ && window.__IBKR_RUNTIME_CONFIG__.PB_AUTH_BASE_URL)
-  || window.location.origin
+const RUNTIME_CONFIG = window.__IBKR_RUNTIME_CONFIG__ || {}
+const BASE = RUNTIME_CONFIG.PB_AUTH_BASE_URL || window.location.origin
+const CONSOLE_BASE = String(RUNTIME_CONFIG.CONSOLE_BASE_URL || window.location.origin || '').replace(/\/+$/, '')
+
+function normalizeRedirectTarget(target) {
+  const value = String(target || '').trim() || '/ibkr_signals.html'
+  try {
+    return new URL(value, `${CONSOLE_BASE || window.location.origin}/`).toString()
+  } catch (_) {
+    return value
+  }
+}
+
+if (CONSOLE_BASE && CONSOLE_BASE !== String(window.location.origin || '').replace(/\/+$/, '')) {
+  const handoff = new URL('/login.html', `${CONSOLE_BASE}/`)
+  const from = new URLSearchParams(location.search).get('from') || ''
+  if (from) handoff.searchParams.set('from', from)
+  location.replace(handoff.toString())
+}
 
 // 已有 token 直接跳转，失效由目标页的 401/403 处理
 if (localStorage.getItem('pb_token')) {
   const redirect = new URLSearchParams(location.search).get('from') || '/ibkr_signals.html'
-  location.href = redirect
+  location.href = normalizeRedirectTarget(redirect)
 }
 
 // 回车触发登录
@@ -96,7 +113,7 @@ async function login() {
 
     // 跳转到来源页或默认信号页
     const redirect = new URLSearchParams(location.search).get('from') || '/ibkr_signals.html'
-    location.href = redirect
+    location.href = normalizeRedirectTarget(redirect)
 
   } catch(e) {
     showError('连接失败，请检查网络')

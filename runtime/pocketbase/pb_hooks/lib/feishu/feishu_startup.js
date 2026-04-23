@@ -1,12 +1,12 @@
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
+var publicUrls = require(`${__hooks}/lib/feishu/public_urls.js`)
 var timeUtils = require(`${__hooks}/lib/time_utils.js`)
 var systemEvents = require(`${__hooks}/lib/system_events.js`)
 
 var STARTUP_STATE_KEY = "ibkr_runtime_startup"
 var STARTUP_STATE_DATE = "global"
 var STARTUP_CHAT_ID = "oc_cc5d0a950797b1c2c010953e14bceeff"
-var DEFAULT_PB_PUBLIC_URL = "https://pb.lzw-glory.top"
 
 var STEP_ORDER = [
     "service_boot",
@@ -588,7 +588,7 @@ function resolveCurrentStepLabel(state) {
 }
 
 function getPbPublicBaseUrl(environment) {
-    return envUtils.getConfigValue("pb_public_url", DEFAULT_PB_PUBLIC_URL, environment).replace(/\/+$/, "")
+    return publicUrls.getConsolePublicUrl(environment)
 }
 
 function buildOpenButton(label, url, type) {
@@ -613,7 +613,7 @@ function build2faTriggerButton(environment) {
         width: "fill",
         text: { tag: "plain_text", content: "开始 2FA 验证" },
         action_type: "request",
-        url: getPbPublicBaseUrl(environment) + "/webhook/feishu/callback",
+        url: publicUrls.getFeishuCallbackUrl(environment),
         value: {
             action: "ibkr_2fa_start",
             environment: environment,

@@ -1,4 +1,4 @@
-const BASE_URL = 'https://pb.lzw-glory.top';
+const BASE_URL = 'https://pb.lzw-glory.top'; // PocketBase data/auth origin
 const token = localStorage.getItem('pb_token');
 
 if (!token) {
@@ -92,7 +92,11 @@ const configData = [
   cfg('system_monitor_ws_message_age_late_session_warn_sec', '600', '600', 'WS 盘后告警秒数', '系统通知', 948, 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
   cfg('system_monitor_ws_message_age_late_session_critical_sec', '1200', '1200', 'WS 盘后严重秒数', '系统通知', 949, 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘后告警秒数'),
 
-  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 PB cron 回调访问的公开 Compute 地址')
+  cfg('pb_public_url', 'https://quant.lzw-glory.top', 'https://quant.lzw-glory.top', 'Console 公网地址(兼容)', '服务接入', 995, '兼容旧 pb_public_url key，当前固定指向交易系统的 quant 公网入口，而不是 PocketBase auth/data 域名'),
+  cfg('ibkr_console_public_url', 'https://quant.lzw-glory.top', 'https://quant.lzw-glory.top', 'Console 公网地址', '服务接入', 996, '交易系统页面、飞书打开链接与默认 console 入口使用的公网域名'),
+  cfg('pb_auth_public_url', 'https://pb.lzw-glory.top', 'https://pb.lzw-glory.top', 'PocketBase Auth 公网地址', '服务接入', 997, 'PocketBase 数据 / 认证专用公网域名；前端登录与直接 auth 请求走这里'),
+  cfg('ibkr_api_public_url', 'https://quant.lzw-glory.top', 'https://quant.lzw-glory.top', 'API 公网地址', '服务接入', 998, '交易系统对外 API / webhook 入口；飞书 callback 与 console 默认通过 quant 入口访问'),
+  cfg('ibkr_compute_public_url', 'https://qc.lzw-glory.top', 'https://qc.lzw-glory.top', 'Compute 公网地址', '服务接入', 1000, 'PocketBase 代理、运行页和 scheduler/native callback 访问的公开 Compute 地址')
 ];
 
 const watchlistData = [

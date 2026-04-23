@@ -16,6 +16,11 @@ PB_RETRY_STATUS_CODES = {502, 503, 504}
 class PBClient:
     def __init__(self, base_url: str = "http://localhost:8090", token: str = ""):
         self.base_url = base_url.rstrip("/")
+        self.custom_api_base_url = str(
+            os.environ.get("IBKR_API_INTERNAL_URL")
+            or os.environ.get("IBKR_API_BASE_URL")
+            or self.base_url
+        ).rstrip("/")
         self.token = token
         self.session = requests.Session()
         if token:
@@ -121,7 +126,7 @@ class PBClient:
         params: Optional[Dict[str, Any]] = None,
         timeout: int = 15,
     ) -> Dict[str, Any]:
-        url = f"{self.base_url}/api/custom/{endpoint}"
+        url = f"{self.custom_api_base_url}/api/custom/{endpoint}"
         if method.upper() == "GET":
             resp = self._request("GET", url, params=params or {}, timeout=timeout)
         else:

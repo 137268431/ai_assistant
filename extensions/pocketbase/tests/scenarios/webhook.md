@@ -13,7 +13,9 @@
 
 | 属性 | 值 |
 |------|-----|
-| **URL** | `POST https://pb.lzw-glory.top/webhook/tv` |
+| **URL** | `POST https://quant.lzw-glory.top/webhook/tv` |
+| **交易系统入口域名** | `https://quant.lzw-glory.top` |
+| **PocketBase/auth/collections 域名** | `https://pb.lzw-glory.top` |
 | **认证** | 无需认证 |
 | **频率限制** | TradingView 建议 1-5秒/次 |
 
@@ -39,7 +41,7 @@ TradingView 发送交易信号时使用。
 ### 请求示例
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
+curl -X POST "https://quant.lzw-glory.top/webhook/tv" \
     -H "Content-Type: application/json" \
     -d '{
       "type": "signal",
@@ -142,7 +144,7 @@ TradingView 发送技术指标数据时使用。
 
 **AAPL 股票指标：**
 ```bash
-curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
+curl -X POST "https://quant.lzw-glory.top/webhook/tv" \
     -H "Content-Type: application/json" \
     -d '{
       "type": "indicator",
@@ -201,7 +203,7 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
 
 **SPY 大盘指标：**
 ```bash
-curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
+curl -X POST "https://quant.lzw-glory.top/webhook/tv" \
     -H "Content-Type: application/json" \
     -d '{
       "type": "indicator",
@@ -260,7 +262,7 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
 
 **QQQ 纳指指标：**
 ```bash
-curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
+curl -X POST "https://quant.lzw-glory.top/webhook/tv" \
     -H "Content-Type: application/json" \
     -d '{
       "type": "indicator",
@@ -319,7 +321,7 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
 
 **VIX 恐慌指数：**
 ```bash
-curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
+curl -X POST "https://quant.lzw-glory.top/webhook/tv" \
     -H "Content-Type: application/json" \
     -d '{
       "type": "indicator",

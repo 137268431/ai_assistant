@@ -1,7 +1,9 @@
 const { chromium, devices } = require("playwright");
 
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+
 async function login(page) {
-  await page.goto("https://pb.lzw-glory.top/login.html", { waitUntil: "domcontentloaded" });
+  await page.goto(`${CONSOLE_BASE}/login.html`, { waitUntil: "domcontentloaded" });
   if (page.url().includes("/ibkr_") || page.url().includes("/index.html")) return;
   const email = page.locator('input[type="email"], input[name="identity"]');
   const password = page.locator('input[type="password"]');
@@ -57,9 +59,9 @@ async function inspectPage(browser, url, deviceName = null) {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const results = [];
-  results.push(await inspectPage(browser, "https://pb.lzw-glory.top/ibkr_runtime.html?environment=live"));
-  results.push(await inspectPage(browser, "https://pb.lzw-glory.top/ibkr_system.html?environment=live"));
-  results.push(await inspectPage(browser, "https://pb.lzw-glory.top/ibkr_runtime.html?environment=live", "iPhone 12"));
+  results.push(await inspectPage(browser, `${CONSOLE_BASE}/ibkr_runtime.html?environment=live`));
+  results.push(await inspectPage(browser, `${CONSOLE_BASE}/ibkr_system.html?environment=live`));
+  results.push(await inspectPage(browser, `${CONSOLE_BASE}/ibkr_runtime.html?environment=live`, "iPhone 12"));
   console.log(JSON.stringify(results, null, 2));
   await browser.close();
 })();

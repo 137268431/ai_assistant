@@ -1,6 +1,6 @@
 const { chromium, devices } = require('playwright');
 
-const BASE = 'https://pb.lzw-glory.top';
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 
@@ -17,7 +17,7 @@ function attachErrors(page) {
 }
 
 async function login(page) {
-  await page.goto(`${BASE}/login.html`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${CONSOLE_BASE}/login.html`, { waitUntil: 'domcontentloaded' });
   const email = page.locator('input[type="email"], input[name="identity"]');
   if (!(await email.count())) return;
   await email.first().fill(EMAIL);
@@ -31,7 +31,7 @@ async function checkStats(browser, mobile) {
   const page = await context.newPage();
   const errors = attachErrors(page);
   await login(page);
-  await page.goto(`${BASE}/ibkr_stats.html?environment=live`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${CONSOLE_BASE}/ibkr_stats.html?environment=live`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(2500);
   const result = {
     test: mobile ? 'stats-mobile' : 'stats-desktop',
@@ -54,7 +54,7 @@ async function checkBridge(browser, path) {
   const page = await context.newPage();
   const errors = attachErrors(page);
   await login(page);
-  await page.goto(`${BASE}${path}?environment=live`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${CONSOLE_BASE}${path}?environment=live`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1800);
   await page.locator('.page-bridge-link', { hasText: '统计' }).first().click();
   await page.waitForTimeout(1800);

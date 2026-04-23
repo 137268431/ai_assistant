@@ -1,6 +1,6 @@
 const { chromium, devices } = require('playwright');
 
-const BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 
@@ -14,7 +14,7 @@ function shouldIgnoreRequestFailure(req) {
 async function login(page, targetUrl) {
   const target = new URL(targetUrl);
   const redirectPath = `${target.pathname}${target.search}`;
-  await page.goto(`${BASE}/login.html?from=${encodeURIComponent(redirectPath)}`, {
+  await page.goto(`${CONSOLE_BASE}/login.html?from=${encodeURIComponent(redirectPath)}`, {
     waitUntil: 'domcontentloaded',
     timeout: 20000,
   });
@@ -129,9 +129,9 @@ async function collect(deviceName, deviceConfig) {
   });
 
   try {
-    await login(page, `${BASE}/ibkr_screener.html?environment=live`);
+    await login(page, `${CONSOLE_BASE}/ibkr_screener.html?environment=live`);
 
-    await gotoStable(page, `${BASE}/ibkr_screener.html?environment=live`);
+    await gotoStable(page, `${CONSOLE_BASE}/ibkr_screener.html?environment=live`);
     await page.waitForSelector('#pageBridge .domain-tab', { timeout: 20000 });
     await page.waitForSelector('#summaryGrid .summary-card', { timeout: 20000 });
     await page.waitForSelector('#screenerViewTabs .subview-tab', { timeout: 20000 });
@@ -164,12 +164,12 @@ async function collect(deviceName, deviceConfig) {
     result.watchlist_tab_url = page.url();
     result.watchlist_meta = await page.locator('#listMeta').innerText().catch(() => '');
 
-    await gotoStable(page, `${BASE}/ibkr_watchlist.html?environment=live`);
+    await gotoStable(page, `${CONSOLE_BASE}/ibkr_watchlist.html?environment=live`);
     await page.waitForURL(/ibkr_screener\.html/, { timeout: 20000 });
     await waitForWatchlistTab(page, deviceName);
     result.watchlist_redirect_url = page.url();
 
-    await gotoStable(page, `${BASE}/ibkr_targets.html?environment=live&date=2026-04-07`);
+    await gotoStable(page, `${CONSOLE_BASE}/ibkr_targets.html?environment=live&date=2026-04-07`);
     await page.waitForURL(/ibkr_screener\.html/, { timeout: 20000 });
     await waitForTargetsTab(page, deviceName);
     await page.waitForFunction(() => {
@@ -178,7 +178,7 @@ async function collect(deviceName, deviceConfig) {
     }, { timeout: 20000 });
     result.targets_redirect_url = page.url();
 
-    await gotoStable(page, `${BASE}/ibkr_signals.html?environment=live`);
+    await gotoStable(page, `${CONSOLE_BASE}/ibkr_signals.html?environment=live`);
     await page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout: 20000 });
     await page.waitForSelector('#latencySummary .pipeline-strip-shell', { timeout: 20000 });
     result.signals_pipeline_metric_count = await page.locator('#latencySummary .pipeline-metric-card').count().catch(() => 0);
@@ -186,9 +186,9 @@ async function collect(deviceName, deviceConfig) {
 
     result.system_bridges = {};
     const bridgeTargets = {
-      runtime: `${BASE}/ibkr_runtime.html?environment=live`,
-      account: `${BASE}/ibkr_account.html?environment=live`,
-      quality: `${BASE}/ibkr_data_quality.html?environment=live`,
+      runtime: `${CONSOLE_BASE}/ibkr_runtime.html?environment=live`,
+      account: `${CONSOLE_BASE}/ibkr_account.html?environment=live`,
+      quality: `${CONSOLE_BASE}/ibkr_data_quality.html?environment=live`,
     };
 
     for (const [key, url] of Object.entries(bridgeTargets)) {

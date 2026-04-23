@@ -6,8 +6,7 @@
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var orderEvents = require(`${__hooks}/lib/order_events.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
-
-var PB_HOST = "https://pb.lzw-glory.top"
+var publicUrls = require(`${__hooks}/lib/feishu/public_urls.js`)
 
 function formatDateToken(dateToken) {
     if (!dateToken || !/^\d{8}$/.test(String(dateToken))) return ""
@@ -414,7 +413,8 @@ function getTradeGroupPageDate(group) {
 
 function buildSignalPageUrl(signalId, pageDate, environment) {
     if (!signalId) return ""
-    var url = PB_HOST + "/ibkr_signals.html?signal_id=" + encodeURIComponent(signalId)
+    var runtimeEnvironment = environment || envUtils.LIVE_ENVIRONMENT
+    var url = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_signals.html?signal_id=" + encodeURIComponent(signalId)
     if (environment) {
         url += "&environment=" + encodeURIComponent(environment)
     }
@@ -427,8 +427,9 @@ function buildSignalPageUrl(signalId, pageDate, environment) {
 function buildOrderPageUrl(group, pageDate) {
     if (!group) return ""
     var signalId = group.primary && group.primary.signal_id ? group.primary.signal_id : ""
+    var runtimeEnvironment = group.primary && group.primary.environment ? group.primary.environment : envUtils.LIVE_ENVIRONMENT
     if (group.trade_group_id) {
-        var detailUrl = PB_HOST + "/ibkr_order_details.html?trade_group_id=" + encodeURIComponent(group.trade_group_id)
+        var detailUrl = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_order_details.html?trade_group_id=" + encodeURIComponent(group.trade_group_id)
         if (signalId) {
             detailUrl += "&signal_id=" + encodeURIComponent(signalId)
         }
@@ -441,7 +442,7 @@ function buildOrderPageUrl(group, pageDate) {
         return detailUrl
     }
     if (signalId) {
-        var listUrl = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(signalId)
+        var listUrl = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/orders.html?signal_id=" + encodeURIComponent(signalId)
         if (group.primary && group.primary.environment) {
             listUrl += "&environment=" + encodeURIComponent(group.primary.environment)
         }
@@ -643,7 +644,7 @@ function buildOrderActionElements(group) {
                     type: "danger",
                     width: "fill",
                     action_type: "request",
-                    url: PB_HOST + "/webhook/feishu/callback",
+                    url: publicUrls.getFeishuCallbackUrl(primary.environment || envUtils.LIVE_ENVIRONMENT),
                     value: { action: "cancel", order_id: actionTargetId, environment: primary.environment || envUtils.LIVE_ENVIRONMENT }
                 }]
             }]
@@ -664,7 +665,7 @@ function buildOrderActionElements(group) {
                     type: "primary",
                     width: "fill",
                     action_type: "request",
-                    url: PB_HOST + "/webhook/feishu/callback",
+                    url: publicUrls.getFeishuCallbackUrl(primary.environment || envUtils.LIVE_ENVIRONMENT),
                     value: { action: "close", order_id: actionTargetId, environment: primary.environment || envUtils.LIVE_ENVIRONMENT }
                 }]
             }]

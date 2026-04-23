@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 
-const BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const COMPUTE_BASE = process.env.IBKR_COMPUTE_BASE || 'https://qc.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
@@ -29,7 +30,7 @@ function escapeFilterValue(text) {
 }
 
 async function login(page, targetUrl) {
-  const auth = await fetchJson(`${BASE}/api/collections/_superusers/auth-with-password`, {
+  const auth = await fetchJson(`${PB_BASE}/api/collections/_superusers/auth-with-password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -44,7 +45,7 @@ async function login(page, targetUrl) {
     throw new Error('PocketBase auth token missing');
   }
 
-  await page.goto(`${BASE}/login.html`, {
+  await page.goto(`${CONSOLE_BASE}/login.html`, {
     waitUntil: 'domcontentloaded',
     timeout: 20000,
   });
@@ -97,7 +98,7 @@ async function pbList(token, collection, filter, extraParams = {}) {
     ...extraParams,
   });
   if (filter) params.set('filter', filter);
-  const url = `${BASE}/api/collections/${collection}/records?${params.toString()}`;
+  const url = `${PB_BASE}/api/collections/${collection}/records?${params.toString()}`;
   return fetchJson(url, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -119,7 +120,7 @@ async function pbRecords(token, collection, filter, perPage = 50) {
 }
 
 async function postCustom(token, route, body) {
-  return fetchJson(`${BASE}${route}`, {
+  return fetchJson(`${CONSOLE_BASE}${route}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -212,7 +213,7 @@ async function waitForCondition(label, fn, timeoutMs = 120000, intervalMs = 3000
 }
 
 async function waitForTargetsPage(page) {
-  await page.goto(`${BASE}/ibkr_screener.html?environment=${ENVIRONMENT}&tab=targets`, {
+  await page.goto(`${CONSOLE_BASE}/ibkr_screener.html?environment=${ENVIRONMENT}&tab=targets`, {
     waitUntil: 'domcontentloaded',
     timeout: 20000,
   });
@@ -400,7 +401,7 @@ async function main() {
       throw new Error('Missing market date from runtime status');
     }
 
-    token = await login(page, `${BASE}/ibkr_screener.html?environment=${ENVIRONMENT}&tab=targets`);
+    token = await login(page, `${CONSOLE_BASE}/ibkr_screener.html?environment=${ENVIRONMENT}&tab=targets`);
     await waitForTargetsPage(page);
     if (!token) {
       throw new Error('PocketBase token missing after login');

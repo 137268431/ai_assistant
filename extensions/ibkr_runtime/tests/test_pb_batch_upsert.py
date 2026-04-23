@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -63,6 +64,15 @@ class PBClientBatchUpsertTest(unittest.TestCase):
         self.assertEqual(create_request["method"], "POST")
         self.assertEqual(create_request["url"], "/api/collections/ibkr_bars/records")
         self.assertEqual(create_request["body"]["symbol"], "MSFT")
+
+    def test_call_custom_api_prefers_ibkr_api_internal_url(self):
+        with mock.patch.dict(os.environ, {"IBKR_API_INTERNAL_URL": "http://api.test"}, clear=False):
+            client = PBClient(base_url="http://pb.test")
+        with mock.patch.object(client, "_request", return_value=mock.Mock(json=lambda: {"ok": True})) as request_mock:
+            payload = client.call_custom_api("ibkr/statusz", method="GET", params={"environment": "live"})
+        self.assertEqual({"ok": True}, payload)
+        request_mock.assert_called_once()
+        self.assertEqual("http://api.test/api/custom/ibkr/statusz", request_mock.call_args.args[1])
 
 
 if __name__ == "__main__":

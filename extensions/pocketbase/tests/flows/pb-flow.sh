@@ -10,7 +10,8 @@ set -e
 # ============================================================
 # 配置
 # ============================================================
-BASE_URL="${PB_BASE_URL:-https://pb.lzw-glory.top}"
+BASE_URL="${BASE_URL:-${CONSOLE_BASE_URL:-https://quant.lzw-glory.top}}"
+PB_BASE_URL="${PB_BASE_URL:-https://pb.lzw-glory.top}"
 
 # 配置缓存文件
 CONFIG_CACHE="/tmp/pb_flow_config.sh"
@@ -169,7 +170,8 @@ show_banner() {
     echo -e "${CYAN}║          信号/订单/逆向信号 完整流程测试              ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${CYAN}API地址:${NC}   ${GREEN}${BASE_URL}${NC}"
+    echo -e "  ${CYAN}交易系统:${NC}   ${GREEN}${BASE_URL}${NC}"
+    echo -e "  ${CYAN}PocketBase:${NC} ${GREEN}${PB_BASE_URL}${NC}"
     echo -e "  ${CYAN}测试时间:${NC}   ${GREEN}${TEST_DATE} ${TEST_TIME}${NC}"
     echo -e "  ${CYAN}测试标的:${NC}   ${GREEN}${TEST_SYMBOL}${NC}"
     echo -e "  ${CYAN}测试方向:${NC}   ${GREEN}${TEST_DIRECTION}${NC}"
@@ -277,23 +279,23 @@ check_today_test_data() {
     local us_date=$(get_us_date)
 
     # 查询信号
-    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "检查-查询信号")
+    local sig_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_signals/records?filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "检查-查询信号")
     local sig_count=$(echo "$sig_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询订单
-    local ord_response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100" "" "检查-查询订单")
+    local ord_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&&symbol='${TEST_SYMBOL}'&perPage=100" "" "检查-查询订单")
     local ord_count=$(echo "$ord_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询订单详情
-    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=100" "" "检查-查询订单详情")
+    local det_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=100" "" "检查-查询订单详情")
     local det_count=$(echo "$det_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询反转信号
-    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_reverse_signals/records?filter=date='${us_date}'&perPage=100" "" "检查-查询反转信号")
+    local rev_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_reverse_signals/records?filter=date='${us_date}'&perPage=100" "" "检查-查询反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     # 查询指标
-    local ind_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_indicators/records?filter=(script_tag~'pb_flow_indicator_'&&symbol='${TEST_SYMBOL}'&&us_time~'${us_date}')&perPage=100" "" "检查-查询指标")
+    local ind_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_indicators/records?filter=(script_tag~'pb_flow_indicator_'&&symbol='${TEST_SYMBOL}'&&us_time~'${us_date}')&perPage=100" "" "检查-查询指标")
     local ind_count=$(echo "$ind_response" | jq '.items | length' 2>/dev/null || echo "0")
 
     if [ "$sig_count" -gt 0 ] || [ "$ord_count" -gt 0 ] || [ "$det_count" -gt 0 ] || [ "$rev_count" -gt 0 ] || [ "$ind_count" -gt 0 ]; then
@@ -315,7 +317,7 @@ cleanup_today_data() {
     echo -e "${YELLOW}═══ 清理所有测试数据（不限日期）══════${NC}"
 
     # ── 信号 ──
-    local sig_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?filter=(script_tag~'test'||signal_id~'_sig')&perPage=200" "" "清理-查询所有信号")
+    local sig_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_signals/records?filter=(script_tag~'test'||signal_id~'_sig')&perPage=200" "" "清理-查询所有信号")
     local sig_count=$(echo "$sig_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_sig=0
 
@@ -329,13 +331,13 @@ cleanup_today_data() {
                 [ -n "$sid" ] && echo -e "    ${RED}✗${NC} $sid"
             done
             for sig_id in $deleted_sig_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_signals/records/${sig_id}" "" "删除信号" > /dev/null 2>&1
+                curl_exec "DELETE" "${PB_BASE_URL}/api/collections/ibkr_signals/records/${sig_id}" "" "删除信号" > /dev/null 2>&1
             done
         fi
     fi
 
     # ── 订单 ──
-    local ord_response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&perPage=200" "" "清理-查询所有订单")
+    local ord_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/orders/records?filter=(unique_id~'_sig'||unique_id~'_test')&perPage=200" "" "清理-查询所有订单")
     local ord_count=$(echo "$ord_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_ord=0
 
@@ -349,13 +351,13 @@ cleanup_today_data() {
                 [ -n "$uid" ] && echo -e "    ${RED}✗${NC} $uid"
             done
             for ord_id in $deleted_ord_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/orders/records/${ord_id}" "" "删除订单" > /dev/null 2>&1
+                curl_exec "DELETE" "${PB_BASE_URL}/api/collections/orders/records/${ord_id}" "" "删除订单" > /dev/null 2>&1
             done
         fi
     fi
 
     # ── 订单详情（ibkr_order_details）──
-    local det_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=200" "" "清理-查询所有订单详情")
+    local det_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_order_details/records?filter=(order_id~'_sig'||order_id~'_test')&perPage=200" "" "清理-查询所有订单详情")
     local det_count=$(echo "$det_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_det=0
 
@@ -369,13 +371,13 @@ cleanup_today_data() {
                 [ -n "$oid" ] && echo -e "    ${RED}✗${NC} $oid"
             done
             for det_id in $deleted_det_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_order_details/records/${det_id}" "" "删除订单详情" > /dev/null 2>&1
+                curl_exec "DELETE" "${PB_BASE_URL}/api/collections/ibkr_order_details/records/${det_id}" "" "删除订单详情" > /dev/null 2>&1
             done
         fi
     fi
 
     # ── 反转信号 ──
-    local rev_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_reverse_signals/records?perPage=200" "" "清理-查询所有反转信号")
+    local rev_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_reverse_signals/records?perPage=200" "" "清理-查询所有反转信号")
     local rev_count=$(echo "$rev_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_rev=0
 
@@ -389,13 +391,13 @@ cleanup_today_data() {
                 [ -n "$rid" ] && echo -e "    ${RED}✗${NC} $rid"
             done
             for rev_id in $deleted_rev_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_reverse_signals/records/${rev_id}" "" "删除反转信号" > /dev/null 2>&1
+                curl_exec "DELETE" "${PB_BASE_URL}/api/collections/ibkr_reverse_signals/records/${rev_id}" "" "删除反转信号" > /dev/null 2>&1
             done
         fi
     fi
 
     # ── 指标 ──
-    local ind_response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_indicators/records?filter=(script_tag~'pb_flow_indicator_')&perPage=200" "" "清理-查询所有指标")
+    local ind_response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_indicators/records?filter=(script_tag~'pb_flow_indicator_')&perPage=200" "" "清理-查询所有指标")
     local ind_count=$(echo "$ind_response" | jq '.items | length' 2>/dev/null || echo "0")
     local deleted_ind=0
 
@@ -409,7 +411,7 @@ cleanup_today_data() {
                 [ -n "$iid" ] && echo -e "    ${RED}✗${NC} $iid"
             done
             for ind_id in $deleted_ind_ids; do
-                curl_exec "DELETE" "${BASE_URL}/api/collections/ibkr_indicators/records/${ind_id}" "" "删除指标" > /dev/null 2>&1
+                curl_exec "DELETE" "${PB_BASE_URL}/api/collections/ibkr_indicators/records/${ind_id}" "" "删除指标" > /dev/null 2>&1
             done
         fi
     fi
@@ -659,7 +661,7 @@ test_2_query_signals() {
     log_info "查询 ${TEST_DATE} (US: ${us_date}) 的待确认/等待执行测试信号..."
 
     # 使用 collection API 直接查询（只查询 pending 或 awaiting_confirm 状态的测试信号）
-    response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?sort=-created&filter=(status='pending'||status='awaiting_confirm')&&(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询待确认/等待执行测试信号")
+    response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_signals/records?sort=-created&filter=(status='pending'||status='awaiting_confirm')&&(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询待确认/等待执行测试信号")
 
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 
@@ -1880,7 +1882,7 @@ test_e_list_signals() {
     local us_date=$(get_us_date)
     log_info "查询 ${TEST_DATE} (US: ${us_date}) 测试信号（script_tag~test 或 signal_id~_sig）"
     # 过滤：script_tag 包含 test 或 signal_id 包含 _sig
-    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/ibkr_signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询测试信号")
+    local response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/ibkr_signals/records?sort=-created&filter=(script_tag~'test'||signal_id~'_sig')&&date='${us_date}'&perPage=100" "" "查询测试信号")
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 
@@ -1896,7 +1898,7 @@ test_f_list_orders() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     # 过滤：unique_id 包含 _sig 或 symbol = TEST_SYMBOL
-    local response=$(curl_exec "GET" "${BASE_URL}/api/collections/orders/records?sort=-created&filter=((unique_id~'_sig'||unique_id~'_test'||trade_group_id~'_sig'||entry_order_unique_id~'_sig')&&symbol='${TEST_SYMBOL}')&perPage=100" "" "查询测试订单")
+    local response=$(curl_exec "GET" "${PB_BASE_URL}/api/collections/orders/records?sort=-created&filter=((unique_id~'_sig'||unique_id~'_test'||trade_group_id~'_sig'||entry_order_unique_id~'_sig')&&symbol='${TEST_SYMBOL}')&perPage=100" "" "查询测试订单")
     echo "$response" | jq '.' 2>/dev/null || echo "$response"
 }
 

@@ -2,8 +2,8 @@ const fs = require('fs');
 const { chromium, devices, request } = require('playwright');
 const { waitForHomeOverviewReady, collectHomeOverviewIssues } = require('./home_overview_checks');
 
-const BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
-const PAGE_BASE = process.env.PB_PAGE_BASE_URL || BASE;
+const PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const PAGE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 const TIMEOUT_MS = Number(process.env.PB_SMOKE_NAV_TIMEOUT_MS || 20000);
@@ -93,7 +93,7 @@ const MOBILE_TARGETS = new Set(['index', 'signals']);
 
 async function fetchToken() {
   const api = await request.newContext({
-    baseURL: BASE,
+    baseURL: PB_BASE,
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: { 'Content-Type': 'application/json' },
   });

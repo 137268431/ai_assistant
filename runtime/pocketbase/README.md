@@ -61,9 +61,9 @@
 ## current blockers before pb_hooks deletion
 
 - `runtime/pocketbase/pb_hooks/modules/actions/ibkr_actions.js`
-  - 数据落库与采集相关：`ping_write`、`bars`、`indicator`、`indicators`、`scan`
+  - 已迁出到 `ibkr-api` 的核心落库写接口：`ping_write`、`bars`、`indicator`、`indicators`、`scan`、`data_quality/upsert`、`data_quality/truth_upsert`
   - 交易列表与目标聚合：`today-targets`、`contracts/search`、`watchlist/upsert|remove`、`targets/upsert|remove`
-  - 数据质量与选股视图：`data_quality/*`、`screener`、`screener/targets`、`quotes`、`quotes/forming_bar`
+  - 仍未迁出的数据质量与选股读侧：`data_quality/summary|truth_summary|list|truth_list`、`screener`、`screener/targets`、`quotes`、`quotes/forming_bar`
   - 历史与运行态动作：`ingest/close`、`history/rebuild/start|status`、`account_snapshot`、`rules`
   - 运行面控制与账户动作：`start|stop`、`gateway/start|stop|restart`、`account`、`positions`、`orders/live|history`、`orders/cancel|cancel_sync|cancel_all|modify|place`、`positions/close`
 - `runtime/pocketbase/pb_hooks/lib/scheduler/system_notify_scheduler.js`

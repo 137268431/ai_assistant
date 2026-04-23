@@ -7,6 +7,9 @@ from flask import Response, jsonify, request
 
 
 NATIVE_CUSTOM_ROUTES = [
+    "ibkr/bars",
+    "ibkr/data_quality/truth_upsert",
+    "ibkr/data_quality/upsert",
     "ibkr/2fa/request",
     "ibkr/2fa/respond",
     "ibkr/2fa/result",
@@ -14,6 +17,8 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/2fa/takeover",
     "ibkr/2fa/probe",
     "ibkr/2fa/panic-reset",
+    "ibkr/indicator",
+    "ibkr/indicators",
     "ibkr/emergency-stop",
     "ibkr/health-report",
     "ibkr/healthz",
@@ -22,6 +27,7 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/orders/close_group",
     "ibkr/orders/reconcile",
     "ibkr/orders/upsert",
+    "ibkr/ping_write",
     "ibkr/recover",
     "ibkr/reauth",
     "ibkr/state/orders",
@@ -32,6 +38,7 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/reverse/list",
     "ibkr/reverse/pending",
     "ibkr/runtime/config",
+    "ibkr/scan",
     "ibkr/signal",
     "ibkr/signals",
     "ibkr/signals/ack",

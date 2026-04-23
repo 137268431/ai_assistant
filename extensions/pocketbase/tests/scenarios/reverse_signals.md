@@ -112,7 +112,7 @@
 页面不再直接更新 `reverse_signals` 表，而是统一走：
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/reverse/dispatch" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/reverse/dispatch" \
   -H "Content-Type: application/json" \
   -d '{
     "reverse_id": "reverse_record_id",
@@ -133,7 +133,7 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/reverse/dispatch" \
 IBKR 完成后统一回写：
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/reverse/ack" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/reverse/ack" \
   -H "Content-Type: application/json" \
   -d '{
     "signal_id": "reverse_record_id",

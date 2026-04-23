@@ -74,6 +74,7 @@ from ibkr_api.startup.progress import (
     startup_chat_id as _startup_chat_id_support,
 )
 from ibkr_api.startup.routes import register_startup_routes
+from ibkr_api.storage.routes import register_storage_routes
 from ibkr_api.state.routes import register_state_routes
 from ibkr_api.system.events import (
     build_system_event_card as _build_system_event_card_support,
@@ -114,7 +115,12 @@ IBKR_2FA_STATE_DATE = "global"
 IBKR_STARTUP_STATE_KEY = "ibkr_runtime_startup"
 IBKR_STARTUP_STATE_DATE = "global"
 IBKR_DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
-DEFAULT_CONSOLE_BASE_URL = str(os.environ.get("CONSOLE_BASE_URL") or os.environ.get("PB_PUBLIC_URL") or "https://pb.lzw-glory.top").rstrip("/")
+DEFAULT_CONSOLE_BASE_URL = str(
+    os.environ.get("CONSOLE_BASE_URL")
+    or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
+    or os.environ.get("PB_PUBLIC_URL")
+    or "https://quant.lzw-glory.top"
+).rstrip("/")
 DEFAULT_FEISHU_APP_ID = str(os.environ.get("FEISHU_APP_ID") or "cli_a936b8d2cc79dccb").strip()
 DEFAULT_FEISHU_APP_SECRET = str(os.environ.get("FEISHU_APP_SECRET") or "ZZySOkZPaKBVkNhhk4upvfROPnXcSsry").strip()
 DEFAULT_FEISHU_SYSTEM_CHAT_ID = str(os.environ.get("FEISHU_SYSTEM_CHAT_ID") or "oc_b7b52fc28816d90e27ce50ca7922a9ac").strip()
@@ -437,7 +443,12 @@ def _add_environment_to_detail(detail: Any, environment: str) -> dict[str, Any]:
 
 
 def _console_base_url() -> str:
-    return str(os.environ.get("CONSOLE_BASE_URL") or os.environ.get("PB_PUBLIC_URL") or DEFAULT_CONSOLE_BASE_URL).rstrip("/")
+    return str(
+        os.environ.get("CONSOLE_BASE_URL")
+        or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
+        or os.environ.get("PB_PUBLIC_URL")
+        or DEFAULT_CONSOLE_BASE_URL
+    ).rstrip("/")
 
 
 def _runtime_page_url(environment: str) -> str:
@@ -1060,7 +1071,12 @@ def _build_system_summary_payload(environment: str, *, lite_mode: bool) -> dict[
 
 
 def _probe_console_status() -> dict[str, Any]:
-    console_base_url = str(os.environ.get("CONSOLE_BASE_URL") or os.environ.get("PB_PUBLIC_URL") or "").rstrip("/")
+    console_base_url = str(
+        os.environ.get("CONSOLE_BASE_URL")
+        or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
+        or os.environ.get("PB_PUBLIC_URL")
+        or DEFAULT_CONSOLE_BASE_URL
+    ).rstrip("/")
     if not console_base_url:
         return {
             "ok": False,
@@ -1473,6 +1489,24 @@ _startup_route_handlers = register_startup_routes(
 )
 custom_ibkr_startup_progress = _startup_route_handlers["custom_ibkr_startup_progress"]
 custom_ibkr_startup_status = _startup_route_handlers["custom_ibkr_startup_status"]
+
+
+_storage_route_handlers = register_storage_routes(
+    app,
+    deps={
+        "pb": pb,
+        "normalize_environment": _normalize_environment,
+        "parse_boolean": _parse_boolean,
+        "config_value": _config_value,
+    },
+)
+custom_ibkr_ping_write = _storage_route_handlers["custom_ibkr_ping_write"]
+custom_ibkr_bars = _storage_route_handlers["custom_ibkr_bars"]
+custom_ibkr_indicator = _storage_route_handlers["custom_ibkr_indicator"]
+custom_ibkr_indicators = _storage_route_handlers["custom_ibkr_indicators"]
+custom_ibkr_scan = _storage_route_handlers["custom_ibkr_scan"]
+custom_ibkr_data_quality_upsert = _storage_route_handlers["custom_ibkr_data_quality_upsert"]
+custom_ibkr_data_quality_truth_upsert = _storage_route_handlers["custom_ibkr_data_quality_truth_upsert"]
 
 
 _signal_route_handlers = register_signal_routes(

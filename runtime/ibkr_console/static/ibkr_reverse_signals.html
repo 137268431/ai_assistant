@@ -121,7 +121,8 @@
         }
 
         function buildApiUrl(path, params = {}) {
-            const url = new URL(path, location.origin);
+            const baseUrl = window.API_BASE_URL || location.origin;
+            const url = new URL(path, baseUrl);
             if (currentEnvironment && !Object.prototype.hasOwnProperty.call(params, 'environment')) {
                 url.searchParams.set('environment', currentEnvironment);
             }

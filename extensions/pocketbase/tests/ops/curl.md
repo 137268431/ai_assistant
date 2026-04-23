@@ -39,7 +39,7 @@
 ### 1. 测试 Webhook 连接
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
+curl -X POST "https://quant.lzw-glory.top/webhook/tv" \
     -H "Content-Type: application/json" \
     -d '{
       "type": "signal",
@@ -55,13 +55,13 @@ curl -X POST "https://pb.lzw-glory.top/webhook/tv" \
 ### 2. 拉取待确认信号
 
 ```bash
-curl -X GET "https://pb.lzw-glory.top/api/custom/ibkr/signals/pending"
+curl -X GET "https://quant.lzw-glory.top/api/custom/ibkr/signals/pending"
 ```
 
 ### 3. 确认信号
 
 ```bash
-curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/signals/ack" \
+curl -X POST "https://quant.lzw-glory.top/api/custom/ibkr/signals/ack" \
     -H "Content-Type: application/json" \
     -d '{
       "signal_id": "test_001",
@@ -75,7 +75,8 @@ curl -X POST "https://pb.lzw-glory.top/api/custom/ibkr/signals/ack" \
 
 | 属性 | 值 |
 |------|-----|
-| **API 域名** | `https://pb.lzw-glory.top` |
+| **交易系统入口域名** | `https://quant.lzw-glory.top` |
+| **PocketBase/auth/collections 域名** | `https://pb.lzw-glory.top` |
 | **Webhook** | `/webhook/tv` |
 | **认证** | 暂时关闭，以后可能会加 |
 

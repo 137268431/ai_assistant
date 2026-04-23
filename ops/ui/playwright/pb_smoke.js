@@ -6,7 +6,8 @@ const { runWheelScrollSurfaceCheck } = require('./wheel_scroll_surface_check');
 
 const DEFAULT_EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const DEFAULT_PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
-const DEFAULT_BASE = process.env.CONSOLE_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const DEFAULT_CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const DEFAULT_PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const NAV_TIMEOUT_MS = Number(process.env.PB_SMOKE_NAV_TIMEOUT_MS || 20000);
 const SETTLE_MS = Number(process.env.PB_SMOKE_SETTLE_MS || 2200);
 const AUTH_TIMEOUT_MS = Number(process.env.PB_SMOKE_AUTH_TIMEOUT_MS || 15000);
@@ -14,24 +15,24 @@ const PAGE_MAX_SPREAD_PX = Number(process.env.PB_SMOKE_PANEL_SPREAD_MAX || 24);
 const BRIDGE_MAX_SPREAD_PX = Number(process.env.PB_SMOKE_BRIDGE_SPREAD_MAX || 12);
 const PANEL_ROW_HEIGHT_MAX_PX = Number(process.env.PB_SMOKE_PANEL_HEIGHT_MAX || 1400);
 const DEFAULT_TARGETS = [
-  `${DEFAULT_BASE}/index.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_system.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_runtime.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_config.html?environment=global`,
-  `${DEFAULT_BASE}/ibkr_monitor.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_warmup.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_data_quality.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_history_rebuild.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_screener.html?environment=live&tab=screener&view=current`,
-  `${DEFAULT_BASE}/ibkr_signals.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_reverse_signals.html?environment=live`,
-  `${DEFAULT_BASE}/orders.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_order_details.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_account.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_indicators.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_chart.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_stats.html?environment=live`,
-  `${DEFAULT_BASE}/ibkr_backtests.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/index.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_system.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_runtime.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_config.html?environment=global`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_monitor.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_warmup.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_data_quality.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_history_rebuild.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=current`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_signals.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_reverse_signals.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/orders.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_order_details.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_account.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_indicators.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_chart.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_stats.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_backtests.html?environment=live`,
 ];
 const ARTIFACT_DIR = process.env.PB_SMOKE_ARTIFACT_DIR || '/tmp/ai_assistant_pb_smoke';
 const HELP_TEXT = `Usage: node pb_smoke.js [options]
@@ -126,7 +127,7 @@ function normalizeIndicatorTraceScenario(output) {
   }
   return {
     name: 'indicator_trace_surface',
-    url: `${DEFAULT_BASE}/ibkr_indicators.html?environment=live#indicator_trace_surface`,
+    url: `${DEFAULT_CONSOLE_BASE}/ibkr_indicators.html?environment=live#indicator_trace_surface`,
     final_url: result?.trace?.final_url || result?.seed?.symbol || '',
     device: 'scenario',
     title: 'indicator_trace_surface_check',
@@ -186,7 +187,7 @@ function normalizeWheelScrollScenarios(output) {
     const scenario = buildScenarioShell(
       'wheel_scroll_surface',
       'wheel_scroll_surface_check',
-      `${DEFAULT_BASE}/ibkr_chart.html?environment=live#wheel_scroll_surface`,
+      `${DEFAULT_CONSOLE_BASE}/ibkr_chart.html?environment=live#wheel_scroll_surface`,
     );
     scenario.errors = [output?.error || 'wheel_scroll_surface_failed'];
     scenario.scenario = output;
@@ -201,7 +202,7 @@ function normalizeWheelScrollScenarios(output) {
     const scenario = buildScenarioShell(
       name,
       `${name}_check`,
-      item?.url || `${DEFAULT_BASE}/ibkr_chart.html?environment=live`,
+      item?.url || `${DEFAULT_CONSOLE_BASE}/ibkr_chart.html?environment=live`,
     );
     const issues = [];
     if (item?.zoomChanged) issues.push('zoom_changed_on_wheel');
@@ -291,7 +292,7 @@ function printRunSummary(results, opts) {
 
 async function fetchToken() {
   const api = await request.newContext({
-    baseURL: DEFAULT_BASE,
+    baseURL: DEFAULT_PB_BASE,
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: { 'Content-Type': 'application/json' },
   });

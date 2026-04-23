@@ -2,6 +2,7 @@ var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var feishuSystem = require(`${__hooks}/lib/feishu_system.js`)
 var feishuStartup = require(`${__hooks}/lib/feishu/feishu_startup.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
+var publicUrls = require(`${__hooks}/lib/feishu/public_urls.js`)
 var timeUtils = require(`${__hooks}/lib/time_utils.js`)
 var systemEvents = require(`${__hooks}/lib/system_events.js`)
 var deadlineUtils = require(`${__hooks}/lib/runtime/ibkr_2fa_deadlines.js`)
@@ -9,7 +10,6 @@ var usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
 
 var IBKR_2FA_STATE_KEY = "ibkr_2fa"
 var IBKR_2FA_STATE_DATE = "global"
-var PB_HOST = "https://pb.lzw-glory.top"
 var DEFAULT_TWO_FA_CHAT_ID = "oc_c48c10447685e80cfea0c003864aa51f"
 var CARD_UPDATE_COOLDOWN_MS = 15000
 var REQUEST_RENOTIFY_COOLDOWN_MS = 900000
@@ -977,7 +977,7 @@ function buildActionButton(stateData, environment) {
         width: "fill",
         text: { tag: "plain_text", content: cfg.button },
         action_type: "request",
-        url: PB_HOST + "/webhook/feishu/callback",
+        url: publicUrls.getFeishuCallbackUrl(runtimeEnvironment),
         value: {
             action: "ibkr_2fa_start",
             environment: environment,
@@ -1010,8 +1010,9 @@ function build2faCard(stateData, environment) {
     var detailMarkdown = buildDetailMarkdown(effectiveState.detail)
     var previousCycle = effectiveState.previous_cycle && typeof effectiveState.previous_cycle === "object" ? effectiveState.previous_cycle : null
     var currentCycleActive = isCurrentCycleActiveStatus(effectiveState.status)
-    var runtimeUrl = PB_HOST + "/ibkr_runtime.html?environment=" + encodeURIComponent(runtimeEnvironment)
-    var systemUrl = PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment)
+    var consoleBaseUrl = publicUrls.getConsolePublicUrl(runtimeEnvironment)
+    var runtimeUrl = consoleBaseUrl + "/ibkr_runtime.html?environment=" + encodeURIComponent(runtimeEnvironment)
+    var systemUrl = consoleBaseUrl + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment)
     var metaLines = [
         "**环境**: " + envUtils.getEnvironmentTag(runtimeEnvironment),
         "**当前用途**: " + reasonLabel,

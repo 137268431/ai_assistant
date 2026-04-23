@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 
-const BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 const ENVIRONMENT = process.env.IBKR_ENVIRONMENT || 'live';
@@ -8,7 +9,7 @@ const NAV_TIMEOUT = 60000;
 const SETTLE_MS = 2500;
 
 async function auth() {
-  const resp = await fetch(`${BASE}/api/collections/_superusers/auth-with-password`, {
+  const resp = await fetch(`${PB_BASE}/api/collections/_superusers/auth-with-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identity: EMAIL, password: PASSWORD }),
@@ -39,7 +40,7 @@ async function auth() {
     }
   });
 
-  const accountUrl = `${BASE}/ibkr_account.html?environment=${ENVIRONMENT}`;
+  const accountUrl = `${CONSOLE_BASE}/ibkr_account.html?environment=${ENVIRONMENT}`;
   await page.goto(accountUrl, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT });
 
   // Wait for snapshot data to load (refreshInfo stops saying 加载中)

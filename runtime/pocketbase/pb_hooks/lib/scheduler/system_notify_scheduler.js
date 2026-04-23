@@ -14,7 +14,6 @@ const RUNTIME_KEYS = ["ibkr_compute_enabled", "ibkr_trading_enabled", "pb_schedu
 const SCAN_SUMMARY_STATE_KEY = "system_notify_scan_summary"
 const SCAN_SUMMARY_HOUR = 5
 const SCAN_SUMMARY_MINUTE = 55
-const PB_HOST = "https://pb.lzw-glory.top"
 const MARKET_OPEN_REMINDER_HOUR = 9
 const MARKET_OPEN_REMINDER_MINUTE = 20
 const MARKET_CLOSE_REMINDER_HOUR = 16
@@ -22,6 +21,7 @@ const MARKET_CLOSE_REMINDER_MINUTE = 5
 const HOOKS_ROOT = typeof __hooks !== "undefined"
     ? __hooks
     : String(__dirname || "").replace(/[\\/]lib[\\/]scheduler$/, "")
+const publicUrls = require(`${HOOKS_ROOT}/lib/feishu/public_urls.js`)
 const usEasternTime = require(`${HOOKS_ROOT}/lib/runtime/us_eastern_time.js`)
 
 function toNumber(value, fallback) {
@@ -1582,7 +1582,8 @@ function runSystemStatusReminderTick(logPrefix, cronId) {
 function buildScanSummaryUrl(environment, marketDate) {
     const runtimeEnvironment = String(environment || "live").trim().toLowerCase() || "live"
     const dateToken = String(marketDate || "").trim()
-    return `${PB_HOST}/ibkr_screener.html?environment=${encodeURIComponent(runtimeEnvironment)}&tab=screener&view=current&date=${encodeURIComponent(dateToken)}&market_date=${encodeURIComponent(dateToken)}`
+    const consoleBaseUrl = publicUrls.getConsolePublicUrl(runtimeEnvironment)
+    return `${consoleBaseUrl}/ibkr_screener.html?environment=${encodeURIComponent(runtimeEnvironment)}&tab=screener&view=current&date=${encodeURIComponent(dateToken)}&market_date=${encodeURIComponent(dateToken)}`
 }
 
 function buildScanSummaryLines(payload) {

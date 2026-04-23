@@ -1,5 +1,6 @@
 
 const { chromium, devices } = require('playwright');
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
 (async () => {
   const targets = [
     { name: 'desktop', opts: {} },
@@ -14,7 +15,7 @@ const { chromium, devices } = require('playwright');
     page.on('console', msg => { if (msg.type() === 'error') errors.push(`console:${msg.text()}`); });
     page.on('pageerror', err => errors.push(`page:${err.message}`));
     page.on('response', res => { if (res.status() >= 400) errors.push(`http:${res.status()} ${res.url()}`); });
-    await page.goto('https://pb.lzw-glory.top/ibkr_system.html?environment=live', { waitUntil: 'networkidle', timeout: 90000 });
+    await page.goto(`${CONSOLE_BASE}/ibkr_system.html?environment=live`, { waitUntil: 'networkidle', timeout: 90000 });
     results.push({
       device: target.name,
       title: await page.title(),

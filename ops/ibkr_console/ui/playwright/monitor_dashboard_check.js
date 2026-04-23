@@ -1,10 +1,10 @@
 const { chromium, devices } = require("playwright");
 
-const BASE = process.env.PB_BASE || "https://pb.lzw-glory.top";
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
 const ENVIRONMENT = process.env.IBKR_ENVIRONMENT || "live";
 
 async function login(page) {
-  await page.goto(`${BASE}/login.html`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${CONSOLE_BASE}/login.html`, { waitUntil: "domcontentloaded" });
   if (page.url().includes("/ibkr_") || page.url().includes("/index.html")) return;
   const email = page.locator('input[type="email"], input[name="identity"]');
   const password = page.locator('input[type="password"]');
@@ -35,7 +35,7 @@ async function inspectMonitor(browser, deviceName = null) {
   });
 
   await login(page);
-  const target = `${BASE}/ibkr_monitor.html?environment=${encodeURIComponent(ENVIRONMENT)}`;
+  const target = `${CONSOLE_BASE}/ibkr_monitor.html?environment=${encodeURIComponent(ENVIRONMENT)}`;
   await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForTimeout(1800);
 

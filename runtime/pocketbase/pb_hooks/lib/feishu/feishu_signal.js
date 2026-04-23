@@ -5,7 +5,7 @@
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
-var PB_HOST = "https://pb.lzw-glory.top"
+var publicUrls = require(`${__hooks}/lib/feishu/public_urls.js`)
 
 function formatDateToken(dateToken) {
     if (!dateToken || !/^\d{8}$/.test(String(dateToken))) return ""
@@ -53,7 +53,8 @@ function buildOpenLinkButton(label, url) {
 
 function buildSignalPageUrl(d) {
     if (!d || !d.signal_id) return ""
-    var url = PB_HOST + "/ibkr_signals.html?signal_id=" + encodeURIComponent(d.signal_id)
+    var runtimeEnvironment = d.environment || envUtils.LIVE_ENVIRONMENT
+    var url = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_signals.html?signal_id=" + encodeURIComponent(d.signal_id)
     if (d.page_date) {
         url += "&date=" + encodeURIComponent(d.page_date)
     }
@@ -62,7 +63,8 @@ function buildSignalPageUrl(d) {
 
 function buildSignalOrdersPageUrl(d) {
     if (!d || !d.signal_id) return ""
-    var url = PB_HOST + "/orders.html?signal_id=" + encodeURIComponent(d.signal_id)
+    var runtimeEnvironment = d.environment || envUtils.LIVE_ENVIRONMENT
+    var url = publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/orders.html?signal_id=" + encodeURIComponent(d.signal_id)
     if (d.page_date) {
         url += "&date=" + encodeURIComponent(d.page_date)
     }

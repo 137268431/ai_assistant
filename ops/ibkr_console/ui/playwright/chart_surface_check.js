@@ -1,11 +1,12 @@
 const { chromium, devices } = require('playwright');
 
-const BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 
 async function auth() {
-  const resp = await fetch(`${BASE}/api/collections/_superusers/auth-with-password`, {
+  const resp = await fetch(`${PB_BASE}/api/collections/_superusers/auth-with-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identity: EMAIL, password: PASSWORD }),
@@ -28,7 +29,7 @@ async function pbList(token, collection, params = {}) {
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
   });
-  const resp = await fetch(`${BASE}/api/collections/${collection}/records?${query.toString()}`, {
+  const resp = await fetch(`${PB_BASE}/api/collections/${collection}/records?${query.toString()}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   const json = await resp.json();
@@ -154,7 +155,7 @@ async function clickFirstChartButton(page, errors) {
   for (const mobile of [false, true]) {
     results.push({
       name: 'chart_surface',
-      ...(await withPage(browser, token, mobile, (page) => inspectChartSurface(page, `${BASE}/ibkr_chart.html?environment=live`))),
+      ...(await withPage(browser, token, mobile, (page) => inspectChartSurface(page, `${CONSOLE_BASE}/ibkr_chart.html?environment=live`))),
     });
   }
 
@@ -162,7 +163,7 @@ async function clickFirstChartButton(page, errors) {
     results.push({
       name: 'account_to_chart',
       ...(await withPage(browser, token, mobile, async (page) => {
-        const url = `${BASE}/ibkr_account.html?environment=live`;
+        const url = `${CONSOLE_BASE}/ibkr_account.html?environment=live`;
         await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
         await page.waitForTimeout(2500);
         if (latestSignal?.symbol) {
@@ -207,7 +208,7 @@ async function clickFirstChartButton(page, errors) {
   }
 
   if (latestSignal) {
-    const signalUrl = `${BASE}/ibkr_signals.html?environment=live&date=${deriveDate(latestSignal)}`;
+    const signalUrl = `${CONSOLE_BASE}/ibkr_signals.html?environment=live&date=${deriveDate(latestSignal)}`;
     results.push({
       name: 'signal_to_chart_layers',
       ...(await withPage(browser, token, false, async (page) => {

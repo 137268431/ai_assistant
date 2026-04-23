@@ -1,11 +1,11 @@
 const { chromium } = require('playwright');
-const base = 'https://pb.lzw-glory.top';
+const consoleBase = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
 const email = '137268431@qq.com';
 const password = 'Asd@2750066';
 const runName = 'UI Batch Smoke 1775261917932';
 
 async function login(page) {
-  await page.goto(`${base}/login.html`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`${consoleBase}/login.html`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const emailInput = page.locator('input[type="email"], input[name="identity"]');
   if (!(await emailInput.count())) return;
   await emailInput.first().fill(email);
@@ -22,7 +22,7 @@ async function login(page) {
   page.on('console', (msg) => { if (['error', 'warning'].includes(msg.type())) errors.push(`console:${msg.type()}:${msg.text()}`); });
   page.on('response', (resp) => { if (resp.status() >= 400) errors.push(`response:${resp.status()}:${resp.url()}`); });
   await login(page);
-  await page.goto(`${base}/ibkr_backtests.html`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`${consoleBase}/ibkr_backtests.html`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForTimeout(3000);
   await page.evaluate(() => { window.confirm = () => true; });
   await page.locator('button:has-text("清理 Experiment")').first().click();

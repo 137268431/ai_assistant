@@ -8,9 +8,9 @@
 
 var feishuApp = require(`${__hooks}/lib/feishu_app.js`)
 var envUtils = require(`${__hooks}/lib/environment.js`)
+var publicUrls = require(`${__hooks}/lib/feishu/public_urls.js`)
 var usEasternTime = require(`${__hooks}/lib/runtime/us_eastern_time.js`)
 
-var PB_HOST = "https://pb.lzw-glory.top"
 var SYSTEM_CHAT_ID = "oc_b7b52fc28816d90e27ce50ca7922a9ac"
 var TWO_FA_CHAT_ID = "oc_c48c10447685e80cfea0c003864aa51f"
 var ALERT_CHAT_ID = "oc_91aa4f84bc6fedb125b1a263d91d4104"
@@ -90,7 +90,7 @@ function buildSystemCard(level, source, title, detailFields, environment, option
             tag: "button",
             text: { tag: "plain_text", content: "📊 查看系统状态" },
             type: "default",
-            multi_url: { url: PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
+            multi_url: { url: publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
         }]
     })
 
@@ -150,7 +150,7 @@ function buildSimpleCard(level, source, title, detailFields, environment, option
             tag: "button",
             text: { tag: "plain_text", content: "📊 查看系统状态" },
             type: "default",
-            multi_url: { url: PB_HOST + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
+            multi_url: { url: publicUrls.getConsolePublicUrl(runtimeEnvironment) + "/ibkr_system.html?environment=" + encodeURIComponent(runtimeEnvironment) }
         }]
     })
 

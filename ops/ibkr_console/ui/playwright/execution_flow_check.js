@@ -1,11 +1,12 @@
 const { chromium } = require('playwright');
 
-const BASE = process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
+const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const PB_BASE = process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top';
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
 
 async function auth() {
-  const resp = await fetch(`${BASE}/api/collections/_superusers/auth-with-password`, {
+  const resp = await fetch(`${PB_BASE}/api/collections/_superusers/auth-with-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identity: EMAIL, password: PASSWORD }),
@@ -20,7 +21,7 @@ async function pbList(token, collection, params = {}) {
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
   });
-  const resp = await fetch(`${BASE}/api/collections/${collection}/records?${query.toString()}`, {
+  const resp = await fetch(`${PB_BASE}/api/collections/${collection}/records?${query.toString()}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   const json = await resp.json();
