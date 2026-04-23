@@ -11,6 +11,11 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 from ibkr_api.two_factor.request import build_two_factor_request_response
 from ibkr_api.two_factor.respond import build_two_factor_respond_response
 from ibkr_api.two_factor.result import build_two_factor_result_response
+from ibkr_api.two_factor.runtime_actions import (
+    build_two_factor_panic_reset_response,
+    build_two_factor_probe_response,
+    build_two_factor_takeover_response,
+)
 
 
 class _FakePB:
@@ -195,6 +200,120 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.assertEqual("AB12", payload["state"]["response_code"])
         self.assertEqual("received", payload["state"]["response_status"])
         self.assertEqual("msg-3", payload["message_id"])
+
+    def test_takeover_builder_returns_runtime_normalized_state(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {
+                        "status": "waiting_response",
+                        "message_id": "msg-4",
+                        "challenge_code": "XYZ123",
+                    },
+                }
+            ]
+        )
+        runtime_status = {
+            **copy.deepcopy(self.runtime_status),
+            "payload": {
+                **copy.deepcopy(self.runtime_status["payload"]),
+                "auth_recovery": {
+                    "manual_takeover_active": True,
+                    "manual_takeover_started_at": "2026-04-23 09:40:00",
+                    "manual_takeover_until": "2026-04-23 09:50:00",
+                },
+            },
+        }
+        payload, status_code = build_two_factor_takeover_response(
+            pb,
+            payload={"environment": "live", "enabled": True, "ttl_sec": 120},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=self.request_json_request,
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: runtime_status,
+            inspect_runtime_environment=self.inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["enabled"])
+        self.assertTrue(payload["state"]["manual_takeover_active"])
+        self.assertEqual("manual_takeover", payload["state"]["operator_action"])
+
+    def test_probe_builder_uses_runtime_probe_path(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {"status": "recovering"},
+                }
+            ]
+        )
+        captured = {}
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            captured.update({
+                "method": method,
+                "base_url": base_url,
+                "path": path,
+                "json_body": copy.deepcopy(json_body),
+                "timeout": timeout,
+            })
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {"ok": True, "probe_started": True},
+                "target_url": f"{base_url}{path}",
+                "error": "",
+            }
+
+        payload, status_code = build_two_factor_probe_response(
+            pb,
+            payload={"environment": "live", "reason": "manual_probe", "source": "runtime_page"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: self.runtime_status,
+            inspect_runtime_environment=self.inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("/ibkr/2fa/probe", captured["path"])
+        self.assertEqual("manual_probe", captured["json_body"]["reason"])
+
+    def test_panic_reset_builder_rejects_runtime_environment_mismatch(self):
+        pb = _FakePB()
+        payload, status_code = build_two_factor_panic_reset_response(
+            pb,
+            payload={"environment": "paper"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=self.request_json_request,
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: self.runtime_status,
+            inspect_runtime_environment=lambda environment: {
+                "requested_environment": environment,
+                "actual_runtime_environment": "live",
+                "runtime_environment_mismatch": True,
+            },
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+        )
+
+        self.assertEqual(409, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["runtime_environment_mismatch"])
 
 
 if __name__ == "__main__":

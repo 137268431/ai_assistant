@@ -49,6 +49,7 @@
     - `modules/actions/order_manage.js`
     - `modules/actions/ibkr_reverse_signals.js`
     - `modules/actions/ibkr_actions.js` 里的 `2fa/request|result|respond`
+    - `modules/actions/ibkr_actions.js` 里的 `2fa/takeover|probe|panic-reset`
     - `modules/actions/ibkr_actions.js` 里的 `state/signals|state/orders|health-report|notify`
     - `modules/integrations/webhook_tv.js`
     - `modules/integrations/feishu.js`
@@ -65,13 +66,12 @@
   - 数据质量与选股视图：`data_quality/*`、`screener`、`screener/targets`、`quotes`、`quotes/forming_bar`
   - 历史与运行态动作：`ingest/close`、`history/rebuild/start|status`、`account_snapshot`、`rules`
   - 运行面控制与账户动作：`start|stop`、`gateway/start|stop|restart`、`account`、`positions`、`orders/live|history`、`orders/cancel|cancel_sync|cancel_all|modify|place`、`positions/close`
-  - 剩余 2FA 运行面动作：`2fa/takeover|probe|panic-reset`
 - `runtime/pocketbase/pb_hooks/lib/scheduler/system_notify_scheduler.js`
   - 仍在 PocketBase 侧执行 heartbeat、status summary、scan summary、daily report 的通知与状态推进逻辑。
 - `runtime/pocketbase/pb_hooks/lib/system_monitor_alert_guard.js`
   - 仍在 PocketBase 侧执行系统监控告警守卫逻辑，并由 `ibkr_system_monitor.js` 的 cron 兼容壳直接调用。
 - `runtime/pocketbase/pb_hooks/lib/feishu/feishu_2fa.js`
-  - 仍残留旧 2FA helper；`request|result|respond` 已迁到 `runtime/ibkr_api/src/ibkr_api/two_factor/`，但 `takeover|probe|panic-reset` 及相关兼容辅助逻辑还没彻底清掉。
+  - 仍残留旧 2FA helper；现在 PB 路由侧的 `request|result|respond|takeover|probe|panic-reset` 都已迁到 `runtime/ibkr_api/src/ibkr_api/two_factor/`，但 PB-side auth guard / scheduler 兼容逻辑还在复用这批 helper。
 - `runtime/pocketbase/pb_hooks/lib/trading/*` 与若干 `lib/*`
   - `ibkr_today_targets.js`、`account_snapshot.js`、`ibkr_data_quality.js`、`ibkr_order_cancel.js` 等仍承载实际业务逻辑，因此 `pb_hooks` 还没有收缩到纯代理状态。
 

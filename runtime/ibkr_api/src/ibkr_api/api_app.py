@@ -166,9 +166,6 @@ DIRECT_PROXY_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("GET", "ibkr/positions"): (RUNTIME_BASE_URL, "/ibkr/positions"),
     ("GET", "ibkr/orders/live"): (RUNTIME_BASE_URL, "/ibkr/orders/live"),
     ("GET", "ibkr/orders/history"): (RUNTIME_BASE_URL, "/ibkr/orders/history"),
-    ("POST", "ibkr/2fa/takeover"): (RUNTIME_BASE_URL, "/ibkr/2fa/takeover"),
-    ("POST", "ibkr/2fa/probe"): (RUNTIME_BASE_URL, "/ibkr/2fa/probe"),
-    ("POST", "ibkr/2fa/panic-reset"): (RUNTIME_BASE_URL, "/ibkr/panic-reset"),
     ("GET", "ibkr/history/rebuild/status"): (COMPUTE_BASE_URL, "/ibkr/history/rebuild/status"),
     ("POST", "ibkr/history/rebuild/start"): (COMPUTE_BASE_URL, "/ibkr/history/rebuild/start"),
     ("GET", "ibkr/backtest/status"): (COMPUTE_BASE_URL, "/backtest/status"),
@@ -1642,6 +1639,9 @@ _two_factor_route_handlers = register_two_factor_routes(
 custom_ibkr_two_factor_request = _two_factor_route_handlers["custom_ibkr_two_factor_request"]
 custom_ibkr_two_factor_result = _two_factor_route_handlers["custom_ibkr_two_factor_result"]
 custom_ibkr_two_factor_respond = _two_factor_route_handlers["custom_ibkr_two_factor_respond"]
+custom_ibkr_two_factor_takeover = _two_factor_route_handlers["custom_ibkr_two_factor_takeover"]
+custom_ibkr_two_factor_probe = _two_factor_route_handlers["custom_ibkr_two_factor_probe"]
+custom_ibkr_two_factor_panic_reset = _two_factor_route_handlers["custom_ibkr_two_factor_panic_reset"]
 
 
 _callback_route_handlers = register_callback_routes(

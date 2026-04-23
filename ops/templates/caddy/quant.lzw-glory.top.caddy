@@ -1,7 +1,6 @@
 # Managed by ai_assistant/ops/deploy/deploy_ibkr_public_proxy.sh
-pb.lzw-glory.top {
+quant.lzw-glory.top {
     route {
-        # Keep legacy control/webhook paths working on the PB host while callers move to quant.lzw-glory.top.
         @api_control path /api/custom /api/custom/* /webhook /webhook/* /health /healthz /status /statusz /monitorz /monitorz/*
         reverse_proxy @api_control 127.0.0.1:5102 {
             flush_interval -1
@@ -13,9 +12,9 @@ pb.lzw-glory.top {
             }
         }
 
-        # PocketBase stays the canonical auth/data origin.
-        @pb_api path /api/* /_/ /_/*
-        reverse_proxy @pb_api 127.0.0.1:8090 {
+        # Temporary PB compatibility while callers migrate to PB_AUTH_BASE_URL=https://pb.lzw-glory.top.
+        @pb_compat path /api/batch /api/collections /api/collections/* /api/files /api/files/* /api/health /api/realtime /api/realtime/*
+        reverse_proxy @pb_compat 127.0.0.1:8090 {
             flush_interval -1
             header_up X-Real-IP {remote_host}
             transport http {
@@ -25,8 +24,18 @@ pb.lzw-glory.top {
             }
         }
 
-        # The trading UI now lives on quant.lzw-glory.top instead of the PocketBase host.
-        redir https://quant.lzw-glory.top{uri} 308
+        @chart_compat path /chart /chart/
+        rewrite @chart_compat /chart.html
+
+        reverse_proxy 127.0.0.1:5104 {
+            flush_interval -1
+            header_up X-Real-IP {remote_host}
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+                dial_timeout 30s
+            }
+        }
     }
 
     header {
