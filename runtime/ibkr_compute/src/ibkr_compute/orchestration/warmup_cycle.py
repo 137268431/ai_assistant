@@ -156,6 +156,7 @@ class TradingServiceWarmupCycleMixin:
         symbols: list[str] | None,
         *,
         hydrate_signal_state: bool = False,
+        persist_latest_indicator: bool = True,
     ) -> dict:
         service_mod = _service_mod()
         if self._warmup_uses_remote_compute_service():
@@ -167,6 +168,7 @@ class TradingServiceWarmupCycleMixin:
             symbols or [],
             service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
             hydrate_signal_state=hydrate_signal_state,
+            persist_latest_indicator=persist_latest_indicator,
         )
 
     def _collect_remote_warmup_readiness(self, snapshot: dict) -> dict:

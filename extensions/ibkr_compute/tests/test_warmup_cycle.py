@@ -1,6 +1,9 @@
 import sys
+import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -68,6 +71,54 @@ class WarmupCycleStartupReleaseTest(unittest.TestCase):
         self.assertEqual(
             detail["后续动作"],
             "交易链路已开放，剩余 monitor / integrity repair 在后台继续。",
+        )
+
+    def test_local_warmup_materialization_seeds_latest_indicator(self):
+        cycle = DummyWarmupCycle()
+        fake_server = types.ModuleType("ibkr_compute.api.server")
+        call_log = []
+
+        def materialize_engines_from_storage(
+            environment,
+            symbols,
+            interval,
+            hydrate_signal_state=True,
+            persist_latest_indicator=False,
+        ):
+            call_log.append(
+                (
+                    environment,
+                    tuple(symbols),
+                    interval,
+                    hydrate_signal_state,
+                    persist_latest_indicator,
+                )
+            )
+            return {"AAPL": {"is_ready": True, "indicator_seeded": True}}
+
+        fake_server.materialize_engines_from_storage = materialize_engines_from_storage
+
+        with mock.patch.dict(sys.modules, {"ibkr_compute.api.server": fake_server}):
+            with mock.patch(
+                "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                return_value=False,
+            ):
+                with mock.patch(
+                    "ibkr_compute.orchestration.warmup_cycle._service_mod",
+                    return_value=SimpleNamespace(
+                        ENVIRONMENT="live",
+                        DEFAULT_WARMUP_REQUIRED_INTERVAL="5m",
+                    ),
+                ):
+                    result = cycle._materialize_warmup_compute_symbols(
+                        ["AAPL"],
+                        hydrate_signal_state=False,
+                    )
+
+        self.assertEqual(result, {"AAPL": {"is_ready": True, "indicator_seeded": True}})
+        self.assertEqual(
+            call_log,
+            [("live", ("AAPL",), "5m", False, True)],
         )
 
 

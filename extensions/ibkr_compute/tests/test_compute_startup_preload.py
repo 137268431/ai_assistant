@@ -92,10 +92,29 @@ class ComputeStartupPreloadTest(unittest.TestCase):
 
         engines = {}
 
-        def bootstrap_engine_state(environment, symbol, interval, target_ms, inclusive=True):
-            call_log.append(("bootstrap", environment, interval, symbol, target_ms, inclusive))
-            engines[(environment, symbol, interval)] = SimpleNamespace(is_ready=lambda: True)
-            return 1
+        def materialize_engines_from_storage(
+            environment,
+            symbols,
+            interval,
+            hydrate_signal_state=True,
+            persist_latest_indicator=False,
+        ):
+            normalized_symbols = tuple(symbols)
+            call_log.append(
+                (
+                    "materialize",
+                    environment,
+                    normalized_symbols,
+                    interval,
+                    hydrate_signal_state,
+                    persist_latest_indicator,
+                )
+            )
+            results = {}
+            for symbol in normalized_symbols:
+                engines[(environment, symbol, interval)] = SimpleNamespace(is_ready=lambda: True)
+                results[symbol] = {"is_ready": True, "indicator_seeded": True}
+            return results
 
         fake_app = SimpleNamespace(
             cfg=SimpleNamespace(refresh=lambda: call_log.append(("cfg_refresh",))),
@@ -104,7 +123,8 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             load_persisted_compute_cursors=load_persisted_compute_cursors,
             collect_environment_cursor_map=collect_environment_cursor_map,
             parse_compute_cursor_key=parse_compute_cursor_key,
-            bootstrap_engine_state=bootstrap_engine_state,
+            bootstrap_engine_state=lambda *args, **kwargs: 0,
+            materialize_engines_from_storage=materialize_engines_from_storage,
             pb=SimpleNamespace(get_all_records=lambda *args, **kwargs: []),
             engines=engines,
             DEFAULT_COMPUTE_ENVIRONMENTS=["live", "paper"],
@@ -130,23 +150,27 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertEqual(result["symbol_total"], 4)
         self.assertEqual(result["symbol_completed"], 4)
         self.assertEqual(result["ready_count"], 4)
+        self.assertEqual(result["indicator_seeded"], 4)
         self.assertEqual(result["environments"], ["live", "paper"])
         self.assertEqual(result["results"]["live"]["cursor_applied"], 3)
         self.assertEqual(result["results"]["live"]["cursor_count"], 3)
         self.assertEqual(result["results"]["live"]["status"], "completed")
         self.assertEqual(result["results"]["live"]["symbol_total"], 3)
         self.assertEqual(result["results"]["live"]["symbol_completed"], 3)
+        self.assertEqual(result["results"]["live"]["indicator_seeded"], 3)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_count"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_completed"], 2)
+        self.assertEqual(result["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["1h"]["symbol_count"], 1)
+        self.assertEqual(result["results"]["paper"]["indicator_seeded"], 1)
         self.assertEqual(result["results"]["paper"]["intervals"]["5m"]["ready_count"], 1)
         self.assertIn(("cfg_refresh",), call_log)
         self.assertIn(("metadata", True), call_log)
         self.assertIn(("daily_close", ("live", "paper"), True), call_log)
-        self.assertIn(("bootstrap", "live", "5m", "AAPL", 100, True), call_log)
-        self.assertIn(("bootstrap", "live", "5m", "MSFT", 80, True), call_log)
-        self.assertIn(("bootstrap", "live", "1h", "AAPL", 90, True), call_log)
-        self.assertIn(("bootstrap", "paper", "5m", "TSLA", 70, True), call_log)
+        self.assertIn(("materialize", "live", ("AAPL",), "5m", True, True), call_log)
+        self.assertIn(("materialize", "live", ("MSFT",), "5m", True, True), call_log)
+        self.assertIn(("materialize", "live", ("AAPL",), "1h", True, True), call_log)
+        self.assertIn(("materialize", "paper", ("TSLA",), "5m", True, True), call_log)
 
         state = startup_preload.get_compute_startup_preload_state(fake_app)
         self.assertEqual(state["status"], "completed")
@@ -155,7 +179,9 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertEqual(state["symbol_total"], 4)
         self.assertEqual(state["symbol_completed"], 4)
         self.assertEqual(state["ready_count"], 4)
+        self.assertEqual(state["indicator_seeded"], 4)
         self.assertEqual(state["results"]["live"]["intervals"]["5m"]["ready_count"], 2)
+        self.assertEqual(state["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 2)
         self.assertIsNotNone(state["started_at"])
         self.assertIsNotNone(state["finished_at"])
 
@@ -255,11 +281,14 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertEqual(result["symbol_total"], 2)
         self.assertEqual(result["symbol_completed"], 2)
         self.assertEqual(result["ready_count"], 1)
+        self.assertEqual(result["indicator_seeded"], 1)
         self.assertEqual(result["results"]["live"]["storage_fallback_symbols"], 2)
         self.assertEqual(result["results"]["live"]["storage_fallback_indicator_seeded"], 1)
+        self.assertEqual(result["results"]["live"]["indicator_seeded"], 1)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_count"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_completed"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["ready_count"], 1)
+        self.assertEqual(result["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 1)
         self.assertIn(("materialize", "live", ("AAPL",), "5m", True, True), call_log)
         self.assertIn(("materialize", "live", ("MSFT",), "5m", True, True), call_log)
 

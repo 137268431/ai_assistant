@@ -37,6 +37,7 @@ def _new_startup_preload_state() -> dict:
         "symbol_total": 0,
         "symbol_completed": 0,
         "ready_count": 0,
+        "indicator_seeded": 0,
         "started_at": 0.0,
         "finished_at": 0.0,
         "reason": "",
@@ -195,6 +196,56 @@ def _resolve_preload_watchlist_symbols(api_app, environment: str) -> list[str]:
     )
 
 
+def _preload_symbol_indicator_state(
+    api_app,
+    environment: str,
+    symbol: str,
+    interval: str,
+    target_ms: int,
+) -> dict:
+    normalized_environment = str(environment or "live").strip().lower() or "live"
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_interval = str(interval or "").strip().lower()
+
+    if hasattr(api_app, "materialize_engines_from_storage"):
+        try:
+            results = api_app.materialize_engines_from_storage(
+                normalized_environment,
+                [normalized_symbol],
+                normalized_interval,
+                hydrate_signal_state=True,
+                persist_latest_indicator=True,
+            )
+            result = dict((results or {}).get(normalized_symbol) or {})
+            if result:
+                result.setdefault("indicator_seeded", False)
+                return result
+        except Exception:
+            LOGGER.exception(
+                "Compute startup preload materialize failed: env=%s interval=%s symbol=%s",
+                normalized_environment,
+                normalized_interval,
+                normalized_symbol,
+            )
+
+    processed = api_app.bootstrap_engine_state(
+        normalized_environment,
+        normalized_symbol,
+        normalized_interval,
+        int(target_ms or 0),
+        inclusive=True,
+    )
+    engine = api_app.engines.get((normalized_environment, normalized_symbol, normalized_interval))
+    return {
+        "processed": processed,
+        "bar_count": int(getattr(engine, "bar_count", 0) or 0) if engine else 0,
+        "last_bar_time_ms": int(getattr(engine, "last_bar_time_ms", 0) or 0) if engine else 0,
+        "is_ready": bool(engine and engine.is_ready()),
+        "indicator_seeded": False,
+        "reason": "bootstrapped" if processed > 0 else "already_materialized",
+    }
+
+
 def get_compute_startup_preload_state(api_app=None) -> dict:
     api_app = api_app or _api_app()
     snapshot = _read_startup_preload_state(api_app)
@@ -268,6 +319,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
         "symbol_total": 0,
         "symbol_completed": 0,
         "ready_count": 0,
+        "indicator_seeded": 0,
         "started_at": time.time(),
         "finished_at": 0.0,
         "reason": "",
@@ -320,12 +372,14 @@ def run_compute_startup_preload(api_app=None) -> dict:
                 "symbol_total": sum(len(targets or {}) for targets in interval_targets.values()),
                 "symbol_completed": 0,
                 "ready_count": 0,
+                "indicator_seeded": 0,
                 "intervals": {
                     interval: {
                         "status": "pending",
                         "symbol_count": len(targets or {}),
                         "symbol_completed": 0,
                         "ready_count": 0,
+                        "indicator_seeded": 0,
                     }
                     for interval, targets in interval_targets.items()
                 },
@@ -354,6 +408,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
                         "symbol_count": 0,
                         "symbol_completed": 0,
                         "ready_count": 0,
+                        "indicator_seeded": 0,
                     },
                 )
                 interval_state["symbol_count"] = int(interval_state.get("symbol_count", 0) or 0) + len(fallback_symbols)
@@ -371,23 +426,27 @@ def run_compute_startup_preload(api_app=None) -> dict:
                         "symbol_count": len(targets or {}),
                         "symbol_completed": 0,
                         "ready_count": 0,
+                        "indicator_seeded": 0,
                     },
                 )
                 interval_state["status"] = "running" if targets else "completed"
                 _publish_startup_preload_state(api_app, summary)
                 for symbol, target_ms in targets.items():
-                    api_app.bootstrap_engine_state(
+                    preload_result = _preload_symbol_indicator_state(
+                        api_app,
                         environment,
                         symbol,
                         interval,
                         target_ms,
-                        inclusive=True,
                     )
-                    engine = api_app.engines.get((environment, symbol, interval))
-                    if engine and engine.is_ready():
+                    if bool(preload_result.get("is_ready")):
                         interval_state["ready_count"] += 1
                         env_result["ready_count"] += 1
                         summary["ready_count"] += 1
+                    if bool(preload_result.get("indicator_seeded")):
+                        interval_state["indicator_seeded"] += 1
+                        env_result["indicator_seeded"] += 1
+                        summary["indicator_seeded"] += 1
                     interval_state["symbol_completed"] += 1
                     env_result["symbol_completed"] += 1
                     summary["symbol_completed"] += 1
@@ -404,6 +463,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
                         "symbol_count": len(fallback_symbols),
                         "symbol_completed": 0,
                         "ready_count": 0,
+                        "indicator_seeded": 0,
                     },
                 )
                 interval_state["status"] = "running"
@@ -424,6 +484,9 @@ def run_compute_startup_preload(api_app=None) -> dict:
                         summary["ready_count"] += 1
                     if bool(result.get("indicator_seeded")):
                         indicator_seeded += 1
+                        interval_state["indicator_seeded"] += 1
+                        env_result["indicator_seeded"] += 1
+                        summary["indicator_seeded"] += 1
                     interval_state["symbol_completed"] += 1
                     env_result["symbol_completed"] += 1
                     summary["symbol_completed"] += 1

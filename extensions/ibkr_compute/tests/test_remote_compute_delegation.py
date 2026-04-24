@@ -1,4 +1,6 @@
 import sys
+import threading
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +32,23 @@ class _DummyWarmupCycle(TradingServiceWarmupCycleMixin):
 
 
 class _DummyRuntimePipeline(TradingServiceRuntimePipelineMixin):
-    pass
+    def __init__(self):
+        self._interval_prime_lock = threading.Lock()
+        self._interval_prime_state = {
+            "running": False,
+            "completed_intervals": [],
+            "symbol_count": 0,
+            "last_started_at": "",
+            "last_finished_at": "",
+            "last_duration_s": 0.0,
+            "last_error": "",
+            "last_source": "",
+        }
+        self._interval_prime_thread = None
+        self._running = True
+
+    def _now_iso(self) -> str:
+        return "2026-04-25T10:00:00Z"
 
 
 class RemoteWarmupReadinessTest(unittest.TestCase):
@@ -140,6 +158,78 @@ class RemoteRealtimeComputeTriggerTest(unittest.TestCase):
                 "environments": ["live"],
                 "symbols": ["AAPL", "MSFT"],
             }
+        )
+
+    def test_schedule_interval_prime_seeds_indicators_for_materialized_intervals(self):
+        pipeline = _DummyRuntimePipeline()
+        call_log = []
+        fake_server = types.ModuleType("ibkr_compute.api.server")
+        fake_server.compute_lock = threading.Lock()
+        fake_server.load_persisted_compute_cursors = lambda environment: 0
+
+        def materialize_engines_from_storage(
+            environment,
+            symbols,
+            interval,
+            hydrate_signal_state=True,
+            persist_latest_indicator=False,
+        ):
+            call_log.append(
+                (
+                    environment,
+                    tuple(symbols),
+                    interval,
+                    hydrate_signal_state,
+                    persist_latest_indicator,
+                )
+            )
+            return {}
+
+        fake_server.materialize_engines_from_storage = materialize_engines_from_storage
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+                self._alive = False
+                del daemon, name
+
+            def start(self):
+                self._alive = True
+                if self._target:
+                    self._target()
+                self._alive = False
+
+            def is_alive(self):
+                return self._alive
+
+        with mock.patch.dict(sys.modules, {"ibkr_compute.api.server": fake_server}):
+            with mock.patch(
+                "ibkr_compute.orchestration.runtime_pipeline.threading.Thread",
+                _ImmediateThread,
+            ):
+                with mock.patch(
+                    "ibkr_compute.orchestration.runtime_pipeline._service_mod",
+                    return_value=SimpleNamespace(
+                        ENVIRONMENT="live",
+                        STARTUP_BACKGROUND_PRIME_INTERVALS=["1h", "4h"],
+                        STARTUP_BACKGROUND_PRIME_CHUNK_SIZE=2,
+                        logger=mock.Mock(),
+                    ),
+                ):
+                    scheduled = pipeline._schedule_interval_prime(
+                        ["AAPL", "MSFT", "TSLA"],
+                        source="startup_ready",
+                    )
+
+        self.assertTrue(scheduled)
+        self.assertEqual(
+            call_log,
+            [
+                ("live", ("AAPL", "MSFT"), "1h", True, True),
+                ("live", ("TSLA",), "1h", True, True),
+                ("live", ("AAPL", "MSFT"), "4h", True, True),
+                ("live", ("TSLA",), "4h", True, True),
+            ],
         )
 
 

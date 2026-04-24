@@ -188,6 +188,7 @@ class TradingServiceRuntimePipelineMixin:
                                 service_mod.ENVIRONMENT,
                                 chunk,
                                 interval,
+                                persist_latest_indicator=True,
                             )
                     completed_intervals.append(interval)
                     service_mod.logger.info(
