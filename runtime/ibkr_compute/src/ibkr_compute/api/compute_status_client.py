@@ -51,6 +51,7 @@ def get_remote_compute_status(*, force_refresh: bool = False) -> dict:
     try:
         response = requests.get(
             f"{get_compute_internal_url()}/status",
+            params={"full": "1"},
             timeout=COMPUTE_STATUS_TIMEOUT_SECONDS,
         )
         if response.ok:

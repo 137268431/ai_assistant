@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable
 
 import requests
@@ -22,6 +23,115 @@ BuildServiceTopology = Callable[[], dict[str, Any]]
 ProbeConsoleStatus = Callable[[str], dict[str, Any]]
 RequestsGet = Callable[..., requests.Response]
 
+
+def _monitor_builder_error(stage: str, exc: Any, *, severity: str = "warning") -> dict[str, str]:
+    detail = str(exc or "").strip() or "unknown_error"
+    return {
+        "stage": str(stage or "unknown").strip() or "unknown",
+        "severity": str(severity or "warning").strip().lower() or "warning",
+        "detail": detail,
+    }
+
+
+def _monitor_builder_flag(error: dict[str, Any]) -> dict[str, str]:
+    stage = str(error.get("stage") or "unknown").strip() or "unknown"
+    severity = str(error.get("severity") or "warning").strip().lower() or "warning"
+    detail = str(error.get("detail") or "unknown_error").strip() or "unknown_error"
+    return {
+        "severity": severity,
+        "code": f"monitor_builder_{stage}",
+        "title": f"Monitor aggregation degraded ({stage})",
+        "detail": detail,
+    }
+
+
+def _fallback_scheduler_payload(environment: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "offline",
+        "environment": environment,
+        "jobs": {},
+        "ingest_cursor": {},
+        "compute_dispatch_cursor": {},
+    }
+
+
+def _fallback_scheduler_summary(environment: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "offline",
+        "environment": environment,
+        "loop_interval_seconds": 0.0,
+        "job_count": 0,
+        "job_status_counts": {},
+        "jobs": {},
+        "ingest_cursor": {},
+        "compute_dispatch_cursor": {},
+        "latest_ingested_bar_time_ms": 0,
+        "latest_dispatched_bar_time_ms": 0,
+        "last_dispatch_at_ms": 0,
+        "dispatch_lag_ms": 0,
+        "dispatch_lag_min": 0.0,
+        "enabled_job_count": 0,
+        "native_job_count": 0,
+        "compatibility_job_count": 0,
+    }
+
+
+def _fallback_service_monitor(environment: str, topology: dict[str, Any]) -> dict[str, Any]:
+    services = topology.get("services") if isinstance(topology.get("services"), dict) else {}
+    service_map: dict[str, dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    for name, raw_item in services.items():
+        item = dict(raw_item) if isinstance(raw_item, dict) else {}
+        status = str(item.get("status") or "unknown").strip().lower() or "unknown"
+        item["status"] = status
+        service_map[str(name)] = item
+        counts[status] = counts.get(status, 0) + 1
+    return {
+        "environment": environment,
+        "services": service_map,
+        "status_counts": counts,
+    }
+
+
+def _merge_monitor_builder_flags(existing_flags: Any, errors: list[dict[str, str]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in existing_flags if isinstance(existing_flags, list) else []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        if code and code in seen:
+            continue
+        if code:
+            seen.add(code)
+        merged.append(dict(item))
+    for error in errors:
+        flag = _monitor_builder_flag(error)
+        code = str(flag.get("code") or "").strip()
+        if code in seen:
+            continue
+        seen.add(code)
+        merged.append(flag)
+    return merged
+
+
+def _call_console_probe(probe_console_status: ProbeConsoleStatus, console_base_url: str) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(probe_console_status)
+    except (TypeError, ValueError):
+        signature = None
+    if signature is not None:
+        positional_params = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        variadic = any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in signature.parameters.values())
+        if not positional_params and not variadic:
+            return probe_console_status()
+    return probe_console_status(console_base_url)
 
 
 def probe_console_status(console_base_url: str, *, requests_get: RequestsGet = requests.get) -> dict[str, Any]:
@@ -237,15 +347,57 @@ def build_system_monitor_payload(
     service_profile: str = "api",
 ) -> dict[str, Any]:
     runtime_environment = normalize_environment(environment, "live")
+    builder_errors: list[dict[str, str]] = []
     base_monitor_result = fetch_compute_monitor(runtime_environment)
     base_payload = as_dict(base_monitor_result.get("payload"))
-    config_refresh()
-    scheduler_payload = scheduler_status(runtime_environment)
+    if (not bool(base_monitor_result.get("ok"))) and (
+        str(base_monitor_result.get("error") or "").strip() or int(base_monitor_result.get("status_code") or 0) >= 400
+    ):
+        detail = str(base_monitor_result.get("error") or "").strip() or (
+            f"upstream_status={int(base_monitor_result.get('status_code') or 0)} target={base_monitor_result.get('target_url') or ''}"
+        )
+        builder_errors.append(_monitor_builder_error("compute_monitor", detail, severity="error"))
+    try:
+        config_refresh()
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("config_refresh", exc))
+    try:
+        scheduler_payload = scheduler_status(runtime_environment)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("scheduler_status", exc))
+        scheduler_payload = _fallback_scheduler_payload(runtime_environment)
     scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
-    scheduler_items = build_cron_payload(config, runtime_environment, scheduler_jobs)
-    scheduler_summary = augment_scheduler_summary(build_scheduler_summary(runtime_environment, scheduler_payload), scheduler_items)
-    pb_health = request_json(pb_base_url, "/api/health", timeout=5)
-    console_probe_payload = probe_console_status(console_base_url)
+    try:
+        scheduler_items = build_cron_payload(config, runtime_environment, scheduler_jobs)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("scheduler_cronz", exc))
+        scheduler_items = []
+    try:
+        scheduler_summary = augment_scheduler_summary(build_scheduler_summary(runtime_environment, scheduler_payload), scheduler_items)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("scheduler_summary", exc))
+        scheduler_summary = _fallback_scheduler_summary(runtime_environment)
+    try:
+        pb_health = request_json(pb_base_url, "/api/health", timeout=5)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("pocketbase_health", exc))
+        pb_health = {
+            "ok": False,
+            "status_code": 0,
+            "payload": {},
+            "error": str(exc),
+            "target_url": f"{str(pb_base_url or '').rstrip('/')}/api/health",
+        }
+    try:
+        console_probe_payload = _call_console_probe(probe_console_status, console_base_url)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("console_probe", exc))
+        console_probe_payload = {
+            "ok": False,
+            "status_code": 0,
+            "target_url": f"{str(console_base_url or '').rstrip('/')}/index.html",
+            "error": str(exc),
+        }
 
     merged_payload = dict(base_payload)
     merged_payload.setdefault("ok", bool(base_monitor_result.get("ok", False)))
@@ -259,8 +411,16 @@ def build_system_monitor_payload(
     merged_payload["requested_environment"] = runtime_environment
     merged_payload["actual_runtime_environment"] = actual_runtime_environment
     merged_payload["runtime_environment_mismatch"] = actual_runtime_environment != runtime_environment
-    merged_payload["config"] = load_effective_config_map(runtime_environment, monitor_config_keys)
-    merged_payload["recent_events"] = load_recent_system_events(runtime_environment, 20)
+    try:
+        merged_payload["config"] = load_effective_config_map(runtime_environment, monitor_config_keys)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("config_map", exc))
+        merged_payload["config"] = {}
+    try:
+        merged_payload["recent_events"] = load_recent_system_events(runtime_environment, 20)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("recent_events", exc))
+        merged_payload["recent_events"] = []
     merged_payload["source"] = "ibkr-api"
     merged_payload["upstream_monitor"] = {
         "ok": bool(base_monitor_result.get("ok", False)),
@@ -277,16 +437,37 @@ def build_system_monitor_payload(
         },
         "scheduler": scheduler_summary,
     }
-    merged_payload["service_topology"] = merge_service_topology(merged_payload, build_service_topology())
-    merged_payload = enrich_monitor_payload_with_pocketbase_disk(merged_payload)
-    merged_payload["service_monitor"] = derive_monitor_service_map(
-        runtime_environment,
-        merged_payload,
-        scheduler_summary,
-        console_probe=console_probe_payload,
-        pb_health=pb_health,
-        build_service_topology=build_service_topology,
-    )
+    try:
+        merged_payload["service_topology"] = merge_service_topology(merged_payload, build_service_topology())
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("service_topology", exc))
+        merged_payload["service_topology"] = build_service_topology()
+    try:
+        merged_payload = enrich_monitor_payload_with_pocketbase_disk(merged_payload)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("pocketbase_disk", exc))
+    try:
+        merged_payload["service_monitor"] = derive_monitor_service_map(
+            runtime_environment,
+            merged_payload,
+            scheduler_summary,
+            console_probe=console_probe_payload,
+            pb_health=pb_health,
+            build_service_topology=build_service_topology,
+        )
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("service_monitor", exc))
+        merged_payload["service_monitor"] = _fallback_service_monitor(
+            runtime_environment,
+            merged_payload.get("service_topology") if isinstance(merged_payload.get("service_topology"), dict) else build_service_topology(),
+        )
+    if builder_errors:
+        merged_payload["monitor_builder_errors"] = builder_errors
+        merged_payload["flags"] = _merge_monitor_builder_flags(merged_payload.get("flags"), builder_errors)
+        current_status = str(merged_payload.get("status") or "ok").strip().lower() or "ok"
+        if current_status == "ok":
+            merged_payload["status"] = "warning"
+        merged_payload["ok"] = False
     return merged_payload
 
 

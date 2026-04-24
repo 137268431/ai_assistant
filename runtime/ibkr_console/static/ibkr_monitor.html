@@ -1140,7 +1140,7 @@
                 document.getElementById('heroCallout').innerHTML = `<div class="callout error">${escapeHtml(error.message || String(error))}</div>`;
                 ['systemMonitorGrid', 'utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'pocketbaseGrid', 'flagList', 'eventList'].forEach((id) => {
                     const el = document.getElementById(id);
-                    if (el) el.innerHTML = '<div class="empty-state">请求失败，请检查 PocketBase proxy 和 compute monitor 接口。</div>';
+                    if (el) el.innerHTML = '<div class="empty-state">监控聚合失败，请检查 ibkr-api /api/custom/system/monitorz 及其 compute / scheduler / PocketBase upstream。</div>';
                 });
                 const systemMeta = document.getElementById('systemMonitorMeta');
                 if (systemMeta) systemMeta.textContent = 'services --';

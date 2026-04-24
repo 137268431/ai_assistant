@@ -27,7 +27,10 @@ def build_platform_route_deps(
         "serialize_config_rows": globals_dict["_serialize_config_rows"],
         "merge_service_topology": lambda *payloads: globals_dict["_merge_service_topology"](*payloads),
         "fetch_compute_health": lambda environment: globals_dict["_fetch_compute_health"](environment),
-        "fetch_compute_status": lambda environment: globals_dict["_fetch_compute_status"](environment),
+        "fetch_compute_status": lambda environment, include_engines=False: globals_dict["_fetch_compute_status"](
+            environment,
+            include_engines=include_engines,
+        ),
         "fetch_runtime_health": lambda environment: globals_dict["_fetch_runtime_health"](environment),
         "fetch_runtime_status": lambda environment: globals_dict["_fetch_runtime_status"](environment),
         "as_dict": globals_dict["_as_dict"],

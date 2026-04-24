@@ -97,7 +97,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             or include_engines
         )
 
-        compute_result = fetch_compute_status(environment)
+        compute_result = fetch_compute_status(environment, include_engines=include_engines)
         runtime_result = fetch_runtime_status(environment)
         compute_payload = as_dict(compute_result.get("payload"))
         runtime_payload = as_dict(runtime_result.get("payload"))

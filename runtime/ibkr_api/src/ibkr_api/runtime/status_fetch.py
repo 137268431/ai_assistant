@@ -11,12 +11,16 @@ def _request_environment_payload(
     environment: str,
     *,
     request_json: RequestJson,
+    extra_params: list[tuple[str, str]] | None = None,
     timeout: int = 10,
 ) -> dict[str, Any]:
+    params = [("environment", environment)]
+    if extra_params:
+        params.extend(extra_params)
     return request_json(
         base_url,
         path,
-        params=[("environment", environment)],
+        params=params,
         timeout=timeout,
     )
 
@@ -30,12 +34,19 @@ def fetch_compute_monitor(environment: str, *, request_json: RequestJson, comput
     )
 
 
-def fetch_compute_status(environment: str, *, request_json: RequestJson, compute_base_url: str) -> dict[str, Any]:
+def fetch_compute_status(
+    environment: str,
+    *,
+    request_json: RequestJson,
+    compute_base_url: str,
+    include_engines: bool = False,
+) -> dict[str, Any]:
     return _request_environment_payload(
         compute_base_url,
         "/status",
         environment,
         request_json=request_json,
+        extra_params=[("full", "1")] if include_engines else [("lite", "1")],
     )
 
 

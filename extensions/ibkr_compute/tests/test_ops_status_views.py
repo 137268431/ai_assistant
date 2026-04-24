@@ -102,7 +102,7 @@ class OpsStatusViewsTest(unittest.TestCase):
         self.assertEqual(len(engine_items), 2)
         self.assertFalse(fake_app.compute_lock.entered)
 
-    def test_build_status_response_snapshots_engines_before_serializing(self):
+    def test_build_status_response_defaults_to_lite_snapshot(self):
         fake_app = _build_fake_app()
 
         with mock.patch("ibkr_compute.api.ops.status_views.get_app_module", return_value=fake_app):
@@ -111,12 +111,32 @@ class OpsStatusViewsTest(unittest.TestCase):
                     with mock.patch("ibkr_compute.api.ops.status_views.get_runtime_mode", return_value="remote"):
                         with mock.patch("ibkr_compute.api.ops.status_views.get_compute_startup_preload_state", return_value={"status": "idle"}):
                             with mock.patch("ibkr_compute.api.ops.status_views._build_topology_payload", return_value={"services": {}}):
-                                with mock.patch("ibkr_compute.api.ops.status_views.jsonify", side_effect=lambda payload: payload):
-                                    payload = build_status_response()
+                                with mock.patch("ibkr_compute.api.ops.status_views.request", SimpleNamespace(args={})):
+                                    with mock.patch("ibkr_compute.api.ops.status_views.jsonify", side_effect=lambda payload: payload):
+                                        payload = build_status_response()
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["total_engines"], 2)
         self.assertEqual(payload["ready_engines"], 1)
+        self.assertFalse(payload["engines_included"])
+        self.assertEqual(payload["status_mode"], "lite")
+        self.assertEqual(payload["engines"], {})
+
+    def test_build_status_response_includes_engines_when_full_requested(self):
+        fake_app = _build_fake_app()
+
+        with mock.patch("ibkr_compute.api.ops.status_views.get_app_module", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.ops.status_views.get_requested_environment", return_value="live"):
+                with mock.patch("ibkr_compute.api.ops.status_views.get_service_profile", return_value="compute"):
+                    with mock.patch("ibkr_compute.api.ops.status_views.get_runtime_mode", return_value="remote"):
+                        with mock.patch("ibkr_compute.api.ops.status_views.get_compute_startup_preload_state", return_value={"status": "idle"}):
+                            with mock.patch("ibkr_compute.api.ops.status_views._build_topology_payload", return_value={"services": {}}):
+                                with mock.patch("ibkr_compute.api.ops.status_views.request", SimpleNamespace(args={"full": "1"})):
+                                    with mock.patch("ibkr_compute.api.ops.status_views.jsonify", side_effect=lambda payload: payload):
+                                        payload = build_status_response()
+
+        self.assertTrue(payload["engines_included"])
+        self.assertEqual(payload["status_mode"], "full")
         self.assertEqual(payload["engines"]["live/AAPL/5m"]["last_close"], 210.5)
         self.assertEqual(payload["engines"]["live/MSFT/15m"]["bar_count"], 180)
 

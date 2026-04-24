@@ -1258,7 +1258,7 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
             "proxy_upstream": "http://compute/ibkr/status",
             "direct_upstream": "http://runtime/ibkr/status",
         }
-        with mock.patch.object(api_app_mod, "_fetch_compute_status", return_value=compute_result):
+        with mock.patch.object(api_app_mod, "_fetch_compute_status", return_value=compute_result) as fetch_compute_status:
             with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value=runtime_result):
                 with mock.patch.object(api_app_mod, "_load_daily_scan_state", return_value={"market_date": "2026-04-22"}):
                     with mock.patch.object(api_app_mod, "_count_active_today_targets", return_value=1):
@@ -1273,6 +1273,27 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertEqual(payload["runtime"]["market_universe"]["active_target_count"], 1)
         self.assertIn(payload["live_readiness"]["source"], {"compute_engines", "runtime_warmup_snapshot"})
         self.assertIn("ibkr-runtime", payload["service_topology"]["services"])
+        fetch_compute_status.assert_called_once_with("live", include_engines=False)
+
+    def test_statusz_route_requests_full_compute_status_when_full_requested(self):
+        compute_result = {"ok": True, "payload": _sample_compute_status_payload(), "error": ""}
+        runtime_result = {
+            "ok": True,
+            "payload": _sample_runtime_status_payload(authenticated=True),
+            "error": "",
+            "selected_upstream": "http://runtime/ibkr/status",
+            "proxy_upstream": "http://compute/ibkr/status",
+            "direct_upstream": "http://runtime/ibkr/status",
+        }
+        with mock.patch.object(api_app_mod, "_fetch_compute_status", return_value=compute_result) as fetch_compute_status:
+            with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value=runtime_result):
+                with mock.patch.object(api_app_mod, "_load_daily_scan_state", return_value={"market_date": "2026-04-22"}):
+                    with mock.patch.object(api_app_mod, "_count_active_today_targets", return_value=1):
+                        with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "full": "1"}):
+                            payload = api_app_mod.custom_ibkr_statusz()
+
+        self.assertTrue(payload["warmup_details_included"])
+        fetch_compute_status.assert_called_once_with("live", include_engines=True)
 
     def test_healthz_route_returns_merged_compute_runtime_health(self):
         compute_result = {

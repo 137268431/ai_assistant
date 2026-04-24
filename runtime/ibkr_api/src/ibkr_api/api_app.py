@@ -484,11 +484,12 @@ def _count_active_today_targets(environment: str, market_date: str) -> int:
     )
 
 
-def _fetch_compute_status(environment: str) -> dict[str, Any]:
+def _fetch_compute_status(environment: str, include_engines: bool = False) -> dict[str, Any]:
     return _fetch_compute_status_support(
         environment,
         request_json=_request_json,
         compute_base_url=COMPUTE_BASE_URL,
+        include_engines=include_engines,
     )
 
 
