@@ -54,7 +54,7 @@ apply_runtime_restart_policy() {
     esac
   done
   if [[ "$skip_restart_for_runtime_files" -eq 1 ]]; then
-    deploy_log "PocketBase public-only files deploy detected; skipping explicit systemctl restart."
+    deploy_log "PocketBase landing/redirect-only files deploy detected; skipping explicit systemctl restart."
     WAIT_FOR_AUTO_RELOAD=1
     RESTART_SERVICE=0
   fi
@@ -71,7 +71,7 @@ Options:
   --diff <range>      Git diff range, for example HEAD~1..HEAD
   --plan-only         Print the resolved deployment plan and exit
   --package-name <n>  Override generated package name for package mode
-  --public-only       Deploy only the PocketBase public tree sourced from runtime/pocketbase/pb_public
+  --public-only       Deploy only the PocketBase landing tree sourced from runtime/pocketbase/pb_public (including legacy redirect shims)
   --hooks-only        Deploy only runtime/pocketbase/pb_hooks
   --migrations        Deploy extensions/pocketbase/migrations to /opt/pocketbase/extensions/migrations
   --dry-run           Show rsync changes without mutating the remote host

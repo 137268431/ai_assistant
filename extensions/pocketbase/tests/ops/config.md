@@ -162,7 +162,7 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 ## 飞书相关配置
 
-飞书 Webhook URL 在 `feishu.js` 中硬编码，非配置项。
+历史 PocketBase `feishu.js` 已删除；PocketBase 侧只剩 `feishu.pb.js` no-op 壳。下面的 Webhook 分组仅保留为迁移 / 排障参考。
 
 ### Webhook 分组
 

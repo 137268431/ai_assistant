@@ -2,7 +2,7 @@
 #
 # PocketBase API 交互式测试脚本
 # 按执行流程测试：信号流 / 订单流 / 逆向信号流
-# 信号和订单状态由 PB 定时调度自动处理
+# 信号和订单状态现在由 ibkr-api / ibkr-scheduler 接管；PocketBase 只保留 auth/data/admin 与存储能力
 #
 
 set -e

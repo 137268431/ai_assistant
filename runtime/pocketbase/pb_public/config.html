@@ -1,17 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Redirecting to /ibkr_config.html</title>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Config moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
+
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
+
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
+
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
     <script>
-        (function() {
-            var target = '/ibkr_config.html' + (window.location.search || '') + (window.location.hash || '');
-            window.location.replace(target);
-        })();
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
+        }
+        window.location.replace(target);
+      })();
     </script>
-</head>
-<body>
-    <p>Page moved to <a href="/ibkr_config.html">/ibkr_config.html</a>.</p>
-</body>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>Config moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/config.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

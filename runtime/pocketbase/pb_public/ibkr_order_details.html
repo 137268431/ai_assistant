@@ -1,913 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>订单明细</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_order_details/page.css">
-</head>
-<body>
-    <div id="contextBar"></div>
-    <div id="pageBridge"></div>
-    <div id="pageTopSection"></div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR Order Details moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-    <div class="content">
-        <div class="search-row" id="searchRow">
-            <div class="page-toolbar-row">
-                <div id="datePicker" style="flex:1;"></div>
-                <div id="orderDetailsRefreshControl"></div>
-            </div>
-            <input class="search-input" id="searchInput" placeholder="搜索 symbol / trade_group_id / order_id / broker_order_id / signal_id" oninput="onSearchChange()">
-        </div>
+      * {
+        box-sizing: border-box;
+      }
 
-        <div id="detailsContainer">
-            <div class="loading">加载中...</div>
-        </div>
-        <button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreDetails()" style="display:none;">加载更多</button>
-    </div>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-    <div id="nav"></div>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-    <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
+
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
+
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
     <script>
-        const pb = createPocketBaseClient();
-        const ORDER_STATUS_TEXT = {
-            Init: '初始化',
-            Submitted: '已提交',
-            Filled: '已成交',
-            Canceled: '已取消',
-            Closed: '已平仓'
-        };
-        const ROLE_TEXT = {
-            entry: '主单',
-            take_profit: '止盈',
-            stop_loss: '止损',
-            repair_tp: '修复止盈',
-            repair_sl: '修复止损'
-        };
-
-        const params = new URLSearchParams(window.location.search);
-        const filterDetailId = params.get('id');
-        const filterOrderId = params.get('order_id');
-        const filterSignalId = params.get('signal_id');
-        const filterTradeGroupId = params.get('trade_group_id');
-        const contextSignalId = filterSignalId || '';
-
-        let queryMode = 'list';
-        let effectiveFilter = '';
-        if (filterDetailId) {
-            queryMode = 'id';
-            effectiveFilter = filterDetailId;
-        } else if (filterTradeGroupId) {
-            queryMode = 'trade_group_id';
-            effectiveFilter = filterTradeGroupId;
-        } else if (filterOrderId) {
-            queryMode = 'order_id';
-            effectiveFilter = filterOrderId;
-        } else if (filterSignalId) {
-            queryMode = 'signal_id';
-            effectiveFilter = filterSignalId;
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
         }
-
-        function normalizeDateParam(value, fallback = '') {
-            const text = String(value || '').trim();
-            return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
-        }
-
-        function summarizeHeaderValue(value, maxLength = 28) {
-            const text = String(value || '').trim();
-            if (!text) return '';
-            if (text.length <= maxLength) return text;
-            return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
-        }
-
-        let currentDate = normalizeDateParam(params.get('date'), new Date().toISOString().split('T')[0]);
-        let refreshTimer = null;
-        let currentInterval = 30;
-        let currentPage = 1;
-        const itemsPerPage = 20;
-        let totalItems = 0;
-        let hasMore = false;
-        let allDetails = [];
-        let searchDebounceTimer = null;
-        let currentEnvironment = getCurrentRuntimeEnvironment();
-
-        function getOrderDetailsModeLabel() {
-            if (queryMode === 'list') return '列表模式';
-            if (queryMode === 'trade_group_id') return '聚焦交易组';
-            if (queryMode === 'order_id') return '聚焦订单';
-            if (queryMode === 'signal_id') return '聚焦信号';
-            if (queryMode === 'id') return '聚焦明细';
-            return '订单轨迹';
-        }
-
-        function getOrderDetailsResultCount() {
-            if (queryMode === 'list') return totalItems || allDetails.length || 0;
-            return allDetails.length || 0;
-        }
-
-        function buildOrderDetailsExecutionParams() {
-            const executionParams = { date: currentDate };
-            if (contextSignalId) executionParams.signal_id = contextSignalId;
-            if (queryMode === 'trade_group_id' && effectiveFilter) executionParams.trade_group_id = effectiveFilter;
-            if (queryMode === 'order_id' && effectiveFilter) executionParams.order_id = effectiveFilter;
-            return executionParams;
-        }
-
-        function renderOrderDetailsTopSection() {
-            const searchTerm = getSearchTerm();
-            const scopeLines = [];
-            if (queryMode !== 'list' && effectiveFilter) {
-                scopeLines.push(`${queryMode}=${summarizeHeaderValue(effectiveFilter, 22)}`);
-            } else if (searchTerm) {
-                scopeLines.push(`search=${summarizeHeaderValue(searchTerm, 24)}`);
-            } else {
-                scopeLines.push('按日浏览');
-            }
-            if (contextSignalId) {
-                scopeLines.push(`signal_id=${summarizeHeaderValue(contextSignalId, 18)}`);
-            }
-            const metaHtml = `
-                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
-                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
-                <div class="meta-line">上下文 · ${escapeHtml(scopeLines.join(' · '))}</div>
-            `;
-            const statusHtml = `
-                <div class="chip-row">
-                    <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>事件 ${escapeHtml(String(getOrderDetailsResultCount()))}</span>
-                    <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>${escapeHtml(getOrderDetailsModeLabel())}</span>
-                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(queryMode === 'list' ? (searchTerm ? '搜索已生效' : '当天全量') : '上下文锁定')}</span>
-                </div>
-            `;
-            document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
-                kicker: 'Execution Timeline',
-                title: '订单事件时间线',
-                copy: '聚焦订单事件、关系链和 trade group 演进，从这里回看单笔订单如何进入、成交、保护和退出。',
-                metaHtml,
-                statusHtml,
-            });
-        }
-
-        function renderOrderDetailsPageChrome() {
-            document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/ibkr_order_details.html', buildOrderDetailsExecutionParams());
-            renderOrderDetailsTopSection();
-        }
-
-        function parseJsonLike(value) {
-            if (!value) return {};
-            if (typeof value === 'object') return value;
-            try {
-                return JSON.parse(value);
-            } catch (_) {
-                return {};
-            }
-        }
-
-        function escapeHtml(value) {
-            return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }
-
-        function normalizeChartInterval(value, fallback = '5m') {
-            const text = String(value || '').trim().toLowerCase();
-            const map = {
-                '5': '5m',
-                '5m': '5m',
-                '15': '15m',
-                '15m': '15m',
-                '30': '30m',
-                '30m': '30m',
-                '60': '1h',
-                '60m': '1h',
-                '1h': '1h',
-                '1hr': '1h',
-                '240': '4h',
-                '240m': '4h',
-                '4h': '4h',
-                '1d': '1d',
-                'd': '1d',
-                'day': '1d'
-            };
-            return map[text] || fallback;
-        }
-
-        function firstDefined() {
-            for (const value of arguments) {
-                if (value !== undefined && value !== null && value !== '') return value;
-            }
-            return '';
-        }
-
-        function toNumber(value) {
-            if (value === null || value === undefined || value === '') return null;
-            const num = Number(value);
-            return Number.isFinite(num) ? num : null;
-        }
-
-        function formatMoney(value) {
-            const num = toNumber(value);
-            return num === null ? '-' : `$${num.toFixed(2)}`;
-        }
-
-        function formatQty(value) {
-            const num = toNumber(value);
-            return num === null ? '-' : `${num}`;
-        }
-
-        function formatTimePair(record) {
-            const us = record.us_time || (record.bar_time_ms ? formatBarTimeMsToET(record.bar_time_ms) : '');
-            const cn = record.cn_time || '';
-            if (!us && !cn) return '-';
-            if (!cn) return `${us} ET`;
-            return `${us} ET / ${cn} CN`;
-        }
-
-        function escapeFilterValue(value) {
-            return String(value || '')
-                .replace(/\\/g, '\\\\')
-                .replace(/"/g, '\\"');
-        }
-
-        function initAuth() {
-            const token = getToken();
-            if (!token) {
-                location.href = `/login.html?from=${encodeURIComponent(window.location.pathname + window.location.search)}`;
-                return false;
-            }
-            pb.authStore.save(token, null);
-            return true;
-        }
-
-        function roleClass(role) {
-            if (role === 'entry') return 'role-entry';
-            if (role === 'take_profit') return 'role-take-profit';
-            if (role === 'repair_tp') return 'role-repair-tp';
-            if (role === 'stop_loss') return 'role-stop-loss';
-            if (role === 'repair_sl') return 'role-repair-sl';
-            return 'role-other';
-        }
-
-        function relationClass(status) {
-            if (status === 'active') return 'relation-active';
-            if (status === 'planned') return 'relation-planned';
-            if (status === 'orphaned') return 'relation-orphaned';
-            return 'relation-closed';
-        }
-
-        function statusClass(status) {
-            return `status-${String(status || 'Init').toLowerCase()}`;
-        }
-
-        function typeClass(orderType) {
-            return `type-${String(orderType || '').toLowerCase()}`;
-        }
-
-        function getRoleText(role, orderType) {
-            return ROLE_TEXT[role] || orderType || '-';
-        }
-
-        function normalizeDetail(raw) {
-            const extra = parseJsonLike(raw.extra);
-            const orderType = firstDefined(raw.order_type, extra.order_type, 'Entry');
-            const role = firstDefined(
-                raw.role,
-                extra.role,
-                orderType === 'Entry' ? 'entry' : orderType === 'TakeProfit' ? 'take_profit' : orderType === 'StopLoss' ? 'stop_loss' : ''
-            );
-            const orderId = firstDefined(raw.order_id, extra.order_id, '');
-            const entryOrderUniqueId = firstDefined(raw.entry_order_unique_id, extra.entry_order_unique_id, role === 'entry' ? orderId : '', orderId);
-            const tradeGroupId = firstDefined(raw.trade_group_id, extra.trade_group_id, entryOrderUniqueId, orderId);
-            const barTimeMs = toNumber(firstDefined(raw.bar_time_ms, extra.bar_time_ms));
-
-            return {
-                ...raw,
-                extra,
-                order_type: orderType,
-                order_id: orderId,
-                broker_order_id: firstDefined(raw.broker_order_id, extra.broker_order_id, ''),
-                signal_id: firstDefined(raw.signal_id, extra.signal_id, ''),
-                role,
-                relation_status: firstDefined(
-                    raw.relation_status,
-                    extra.relation_status,
-                    role !== 'entry' && raw.status === 'Init' ? 'planned' : '',
-                    ['Canceled', 'Closed'].includes(raw.status) ? 'closed' : 'active'
-                ),
-                direction: firstDefined(raw.position_side, raw.direction, extra.position_side, extra.direction, ''),
-                trade_group_id: tradeGroupId,
-                entry_order_unique_id: entryOrderUniqueId,
-                parent_order_unique_id: firstDefined(raw.parent_order_unique_id, extra.parent_order_unique_id, role !== 'entry' ? entryOrderUniqueId : ''),
-                sibling_order_unique_id: firstDefined(raw.sibling_order_unique_id, extra.sibling_order_unique_id, ''),
-                quantity: toNumber(firstDefined(raw.quantity, extra.quantity)),
-                filled_qty: toNumber(firstDefined(raw.filled_qty, extra.filled_qty)),
-                limit_price: toNumber(firstDefined(raw.limit_price, extra.limit_price)),
-                fill_price: toNumber(firstDefined(raw.fill_price, extra.fill_price)),
-                tp_price: toNumber(firstDefined(raw.tp_price, extra.tp_price)),
-                sl_price: toNumber(firstDefined(raw.sl_price, extra.sl_price)),
-                sequence: toNumber(firstDefined(raw.sequence, extra.sequence)),
-                reason: firstDefined(raw.reason, extra.reason, ''),
-                us_time: firstDefined(raw.us_time, extra.us_time, ''),
-                cn_time: firstDefined(raw.cn_time, extra.cn_time, ''),
-                bar_time_ms: barTimeMs,
-                created: firstDefined(raw.created, ''),
-                time_key: barTimeMs || Date.parse(firstDefined(raw.us_time, raw.created, '')) || Date.now()
-            };
-        }
-
-        function getSearchTerm() {
-            return (document.getElementById('searchInput')?.value || '').trim();
-        }
-
-        function buildDetailsFilter(searchTerm = '') {
-            const environmentFilter = `environment = "${escapeFilterValue(currentEnvironment)}"`;
-            if (queryMode === 'id') {
-                return `${environmentFilter} && id = "${escapeFilterValue(effectiveFilter)}"`;
-            }
-            if (queryMode === 'trade_group_id') {
-                return `${environmentFilter} && trade_group_id = "${escapeFilterValue(effectiveFilter)}"`;
-            }
-            if (queryMode === 'order_id') {
-                const safe = escapeFilterValue(effectiveFilter);
-                return `${environmentFilter} && (order_id = "${safe}" || broker_order_id = "${safe}")`;
-            }
-            if (queryMode === 'signal_id') {
-                return `${environmentFilter} && signal_id = "${escapeFilterValue(effectiveFilter)}"`;
-            }
-
-            if (searchTerm) {
-                const safe = escapeFilterValue(searchTerm);
-                return `${environmentFilter} && (
-                    symbol ~ "${safe}" ||
-                    order_id ~ "${safe}" ||
-                    broker_order_id ~ "${safe}" ||
-                    signal_id ~ "${safe}" ||
-                    trade_group_id ~ "${safe}" ||
-                    entry_order_unique_id ~ "${safe}" ||
-                    parent_order_unique_id ~ "${safe}" ||
-                    sibling_order_unique_id ~ "${safe}" ||
-                    id ~ "${safe}"
-                )`;
-            }
-
-            const startTime = `${currentDate} 00:00:00`;
-            const endTime = `${currentDate} 23:59:59`;
-            const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
-            const endTimeMs = startTimeMs + 24 * 60 * 60 * 1000;
-            return `${environmentFilter} && ((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`;
-        }
-
-        const loadDetails = guardedLoader(async function() {
-            try {
-                currentPage = 1;
-                const perPage = queryMode === 'list' ? itemsPerPage : 300;
-                const result = await pb.collection('ibkr_order_details').getList(1, perPage, {
-                    filter: buildDetailsFilter(getSearchTerm()),
-                    sort: '-bar_time_ms,-created',
-                    $autoCancel: false
-                });
-                allDetails = (result.items || []).map(normalizeDetail);
-                totalItems = result.totalItems || allDetails.length;
-                hasMore = queryMode === 'list' && allDetails.length < totalItems;
-                renderOrderDetailsPageChrome();
-                renderContent();
-                updateLoadMoreButton();
-            } catch (error) {
-                console.error('加载订单明细失败:', error);
-                if (error.status === 401 || error.status === 403) {
-                    handleAuthError();
-                    return;
-                }
-                document.getElementById('detailsContainer').innerHTML = `
-                    <div class="empty">
-                        <div class="empty-icon">⚠️</div>
-                        <div class="empty-text">加载失败: ${escapeHtml(error.message || 'unknown error')}</div>
-                    </div>
-                `;
-            }
-        }, '加载中...');
-
-        async function loadMoreDetails() {
-            if (!hasMore || queryMode !== 'list') return;
-            try {
-                const nextPage = currentPage + 1;
-                const result = await pb.collection('ibkr_order_details').getList(nextPage, itemsPerPage, {
-                    filter: buildDetailsFilter(getSearchTerm()),
-                    sort: '-bar_time_ms,-created',
-                    $autoCancel: false
-                });
-                allDetails = [...allDetails, ...(result.items || []).map(normalizeDetail)];
-                totalItems = result.totalItems || allDetails.length;
-                currentPage = nextPage;
-                hasMore = allDetails.length < totalItems;
-                renderOrderDetailsTopSection();
-                renderContent();
-                updateLoadMoreButton();
-            } catch (error) {
-                console.error('加载更多失败:', error);
-            }
-        }
-
-        function updateLoadMoreButton() {
-            const btn = document.getElementById('loadMoreBtn');
-            if (queryMode !== 'list') {
-                btn.style.display = 'none';
-                btn.disabled = true;
-                return;
-            }
-            const more = allDetails.length < totalItems;
-            btn.style.display = more ? 'block' : 'none';
-            btn.textContent = more ? `加载更多 (${allDetails.length}/${totalItems})` : `已加载全部 (${allDetails.length})`;
-            btn.disabled = !more;
-        }
-
-        function buildSnapshots(details) {
-            const grouped = new Map();
-            details.forEach((detail) => {
-                const key = detail.order_id || detail.broker_order_id || detail.id;
-                if (!grouped.has(key)) grouped.set(key, []);
-                grouped.get(key).push(detail);
-            });
-
-            return Array.from(grouped.entries()).map(([orderId, events]) => {
-                const sorted = [...events].sort((left, right) => left.time_key - right.time_key);
-                const latest = sorted[sorted.length - 1];
-                return {
-                    order_id: orderId,
-                    events: sorted,
-                    latest,
-                    role: latest.role,
-                    status: latest.status,
-                    time_key: latest.time_key
-                };
-            }).sort((left, right) => {
-                const rolePriority = {
-                    entry: 0,
-                    take_profit: 1,
-                    repair_tp: 1,
-                    stop_loss: 2,
-                    repair_sl: 2
-                };
-                const roleDiff = (rolePriority[left.role] ?? 9) - (rolePriority[right.role] ?? 9);
-                if (roleDiff !== 0) return roleDiff;
-                return right.time_key - left.time_key;
-            });
-        }
-
-        function pickPrimarySnapshot(snapshots) {
-            return snapshots.find((snapshot) => snapshot.role === 'entry')
-                || snapshots.find((snapshot) => snapshot.order_id === snapshot.latest.entry_order_unique_id)
-                || snapshots[0]
-                || null;
-        }
-
-        function buildFocusedSummary(snapshots, orderedTimeline) {
-            const primarySnapshot = pickPrimarySnapshot(snapshots);
-            const primary = primarySnapshot?.latest || orderedTimeline[orderedTimeline.length - 1] || allDetails[0];
-            const latestEvent = orderedTimeline[orderedTimeline.length - 1] || primary;
-            const latestSnapshots = snapshots.map((snapshot) => snapshot.latest);
-            const activeChildren = latestSnapshots.filter((detail) => detail.role !== 'entry' && detail.relation_status === 'active');
-            const plannedChildren = latestSnapshots.filter((detail) => detail.role !== 'entry' && detail.relation_status === 'planned');
-            const exitDetail = latestSnapshots.find((detail) => detail.role !== 'entry' && detail.status === 'Filled') || null;
-            const primaryFilledQty = Number(primary?.filled_qty || 0);
-
-            let currentStateText = '交易组初始化';
-            let currentStateTone = 'Init';
-            let currentStateDetail = plannedChildren.length > 0
-                ? `主单与保护单已初始化，待激活保护单 ${plannedChildren.length} 个`
-                : '主单与保护单已初始化';
-
-            if (primary?.status === 'Canceled') {
-                currentStateText = '交易组已取消';
-                currentStateTone = 'Canceled';
-                currentStateDetail = '主单已取消，保护单已收尾';
-            } else if (primary?.status === 'Closed') {
-                currentStateText = '交易组已平仓';
-                currentStateTone = 'Closed';
-                currentStateDetail = '交易组已平仓';
-            } else if (exitDetail) {
-                const exitedByTp = ['take_profit', 'repair_tp'].includes(exitDetail.role);
-                currentStateText = exitedByTp ? '止盈成交退出' : '止损成交退出';
-                currentStateTone = 'Filled';
-                currentStateDetail = `交易组已由${getRoleText(exitDetail.role, exitDetail.order_type)}成交退出`;
-            } else if (primary?.status === 'Filled') {
-                currentStateText = '持仓中';
-                currentStateTone = 'Filled';
-                currentStateDetail = activeChildren.length > 0
-                    ? `主单已成交，保护单已激活 ${activeChildren.length} 个`
-                    : plannedChildren.length > 0
-                        ? `主单已成交，保护单待激活 ${plannedChildren.length} 个`
-                        : '主单已成交';
-            } else if (primary?.status === 'Submitted' && (primaryFilledQty > 0 || activeChildren.length > 0)) {
-                currentStateText = '部分成交';
-                currentStateTone = 'Submitted';
-                currentStateDetail = `主单已部分成交，保护单已激活 ${activeChildren.length} 个`;
-            } else if (primary?.status === 'Submitted') {
-                currentStateText = '主单待成交';
-                currentStateTone = 'Submitted';
-                currentStateDetail = plannedChildren.length > 0
-                    ? `主单已提交，保护单已预创建 ${plannedChildren.length} 个`
-                    : '主单已提交，等待成交';
-            }
-
-            const latestEventText = latestEvent
-                ? `${getRoleText(latestEvent.role, latestEvent.order_type)} · ${ORDER_STATUS_TEXT[latestEvent.status] || latestEvent.status || '-'}`
-                : '-';
-            const latestEventDetail = latestEvent
-                ? `${latestEvent.order_id || '-'} · ${formatTimePair(latestEvent)}${latestEvent.reason ? ` · ${latestEvent.reason}` : ''}`
-                : '-';
-            const protectionText = exitDetail
-                ? `${getRoleText(exitDetail.role, exitDetail.order_type)} 已成交`
-                : `active=${activeChildren.length} / planned=${plannedChildren.length}`;
-
-            return {
-                primary,
-                latestEvent,
-                currentStateText,
-                currentStateTone,
-                currentStateDetail,
-                latestEventText,
-                latestEventDetail,
-                protectionText,
-                activeChildCount: activeChildren.length,
-                plannedChildCount: plannedChildren.length,
-                exitDetail
-            };
-        }
-
-        function renderMetric(label, value) {
-            return `<div class="metric-card"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${value}</div></div>`;
-        }
-
-        function renderDetail(label, value) {
-            return `<div class="detail-item"><div class="detail-label">${escapeHtml(label)}</div><div class="detail-value">${value}</div></div>`;
-        }
-
-        function renderSnapshot(snapshot) {
-            const latest = snapshot.latest;
-            return `
-                <div class="snapshot-card">
-                    <div class="snapshot-head">
-                        <div>
-                            <div class="snapshot-id">${escapeHtml(snapshot.order_id || '-')}</div>
-                            <div class="snapshot-sub">broker=${escapeHtml(latest.broker_order_id || '-')}</div>
-                        </div>
-                        <div class="badge-row">
-                            <span class="type-badge ${typeClass(latest.order_type)}">${escapeHtml(latest.order_type || '-')}</span>
-                            <span class="role-badge ${roleClass(latest.role)}">${escapeHtml(getRoleText(latest.role, latest.order_type))}</span>
-                            <span class="status-badge ${statusClass(latest.status)}">${escapeHtml(ORDER_STATUS_TEXT[latest.status] || latest.status || '-')}</span>
-                            <span class="relation-badge ${relationClass(latest.relation_status)}">${escapeHtml(latest.relation_status || '-')}</span>
-                        </div>
-                    </div>
-                    <div class="grid">
-                        ${renderDetail('Qty / Filled', `${escapeHtml(formatQty(latest.quantity))} / ${escapeHtml(formatQty(latest.filled_qty))}`)}
-                        ${renderDetail('Limit / Fill', `${escapeHtml(formatMoney(latest.limit_price))} / ${escapeHtml(formatMoney(latest.fill_price))}`)}
-                        ${renderDetail('parent_order', escapeHtml(latest.parent_order_unique_id || '-'))}
-                        ${renderDetail('sibling_order', escapeHtml(latest.sibling_order_unique_id || '-'))}
-                        ${renderDetail('events', escapeHtml(snapshot.events.length))}
-                        ${renderDetail('last_time', escapeHtml(formatTimePair(latest)))}
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderTimelineEvent(detail) {
-            return `
-                <div class="timeline-item">
-                    <div class="timeline-dot dot-${String(detail.status || 'Init').toLowerCase()}"></div>
-                    <div class="event-card">
-                        <div class="event-head">
-                            <div>
-                                <div class="badge-row">
-                                    <span class="type-badge ${typeClass(detail.order_type)}">${escapeHtml(detail.order_type || '-')}</span>
-                                    <span class="role-badge ${roleClass(detail.role)}">${escapeHtml(getRoleText(detail.role, detail.order_type))}</span>
-                                    <span class="status-badge ${statusClass(detail.status)}">${escapeHtml(ORDER_STATUS_TEXT[detail.status] || detail.status || '-')}</span>
-                                </div>
-                                <div class="snapshot-sub" style="margin-top:8px;">order_id=${escapeHtml(detail.order_id || '-')}</div>
-                            </div>
-                            <div class="event-time">${escapeHtml(formatTimePair(detail))}${detail.sequence !== null ? `<br>#${escapeHtml(detail.sequence)}` : ''}</div>
-                        </div>
-                        <div class="grid">
-                            ${renderDetail('trade_group_id', escapeHtml(detail.trade_group_id || '-'))}
-                            ${renderDetail('broker_order_id', escapeHtml(detail.broker_order_id || '-'))}
-                            ${renderDetail('Qty / Filled', `${escapeHtml(formatQty(detail.quantity))} / ${escapeHtml(formatQty(detail.filled_qty))}`)}
-                            ${renderDetail('Limit / Fill', `${escapeHtml(formatMoney(detail.limit_price))} / ${escapeHtml(formatMoney(detail.fill_price))}`)}
-                            ${renderDetail('entry_order', escapeHtml(detail.entry_order_unique_id || '-'))}
-                            ${renderDetail('parent / sibling', `${escapeHtml(detail.parent_order_unique_id || '-')} / ${escapeHtml(detail.sibling_order_unique_id || '-')}`)}
-                        </div>
-                        ${detail.reason ? `<div class="event-note">${escapeHtml(detail.reason)}</div>` : ''}
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderFocusedView() {
-            const container = document.getElementById('detailsContainer');
-            if (allDetails.length === 0) {
-                container.innerHTML = `
-                    <div class="empty">
-                        <div class="empty-icon">📭</div>
-                        <div class="empty-text">没有匹配的订单事件</div>
-                    </div>
-                `;
-                return;
-            }
-
-            const snapshots = buildSnapshots(allDetails);
-            const orderedTimeline = [...allDetails].sort((left, right) => left.time_key - right.time_key);
-            const summary = buildFocusedSummary(snapshots, orderedTimeline);
-            const primary = summary.primary;
-            const latestEvent = summary.latestEvent || primary;
-
-            container.innerHTML = `
-                <div class="focus-card">
-                    <div class="focus-head">
-                        <div>
-                            <div class="focus-symbol">${escapeHtml(primary.symbol || '-')}</div>
-                            <div class="badge-row" style="margin-top:8px;">
-                                <span class="direction-badge ${escapeHtml(primary.direction || 'long')}">${escapeHtml((primary.direction || '-').toUpperCase())}</span>
-                                <span class="status-badge ${statusClass(summary.currentStateTone)}">${escapeHtml(summary.currentStateText)}</span>
-                                <span class="role-badge ${roleClass(primary.role)}">${escapeHtml(getRoleText(primary.role, primary.order_type))}</span>
-                                <span class="type-badge ${typeClass(latestEvent.order_type)}">最新事件</span>
-                            </div>
-                        </div>
-                        <div class="focus-head-side">
-                            <div class="event-time">当前组最近事件<br>${escapeHtml(formatTimePair(latestEvent))}</div>
-                            <div class="snapshot-sub">主单状态=${escapeHtml(ORDER_STATUS_TEXT[primary.status] || primary.status || '-')}</div>
-                        </div>
-                    </div>
-
-                    <div class="focus-summary-grid">
-                        <div class="focus-summary-card">
-                            <div class="focus-summary-title">当前组状态</div>
-                            <div class="focus-summary-value">${escapeHtml(summary.currentStateText)}</div>
-                            <div class="focus-summary-sub">${escapeHtml(summary.currentStateDetail)}</div>
-                        </div>
-                        <div class="focus-summary-card">
-                            <div class="focus-summary-title">最新事件</div>
-                            <div class="focus-summary-value">${escapeHtml(summary.latestEventText)}</div>
-                            <div class="focus-summary-sub">${escapeHtml(summary.latestEventDetail)}</div>
-                        </div>
-                    </div>
-
-                    <div class="chip-row">
-                        <span class="chip">trade_group_id=${escapeHtml(primary.trade_group_id || '-')}</span>
-                        <span class="chip">entry=${escapeHtml(primary.entry_order_unique_id || '-')}</span>
-                        <span class="chip">signal_id=${escapeHtml(primary.signal_id || '-')}</span>
-                    </div>
-
-                    <div class="grid">
-                        ${renderMetric('Events', escapeHtml(allDetails.length))}
-                        ${renderMetric('Orders', escapeHtml(snapshots.length))}
-                        ${renderMetric('Primary IBKR / Broker', `${escapeHtml(primary.order_id || '-')}<br><span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;">${escapeHtml(primary.broker_order_id || '-')}</span>`)}
-                        ${renderMetric('Protection', escapeHtml(summary.protectionText))}
-                        ${renderMetric('Primary Qty / Fill', `${escapeHtml(formatQty(primary.quantity))} / ${escapeHtml(formatQty(primary.filled_qty))}`)}
-                        ${renderMetric('Latest Qty / Fill', `${escapeHtml(formatQty(latestEvent.quantity))} / ${escapeHtml(formatQty(latestEvent.filled_qty))}`)}
-                    </div>
-                </div>
-
-                <div class="section-title">Order Relationship Tree</div>
-                <div class="relationship-board">
-                    ${snapshots.map(renderSnapshot).join('')}
-                </div>
-
-                <div class="section-title">Event Timeline</div>
-                <div class="timeline">
-                    ${orderedTimeline.map(renderTimelineEvent).join('')}
-                </div>
-
-                <div class="action-row">
-                    ${primary.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(primary.signal_id)}')">📡 查看信号</button>` : ''}
-                    ${primary.symbol ? `<button class="action-btn btn-secondary" onclick="openDetailChart('${encodeURIComponent(primary.id || primary.order_id || primary.trade_group_id || '')}')">📉 图表页</button>` : ''}
-                    ${primary.trade_group_id ? `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(primary.trade_group_id)}', '${encodeURIComponent(primary.signal_id || contextSignalId)}')">🔁 刷新本交易组</button>` : ''}
-                </div>
-            `;
-        }
-
-        function renderListCard(detail) {
-            return `
-                <div class="list-card">
-                    <div class="list-card-head">
-                        <div>
-                            <div class="list-title">${escapeHtml(detail.symbol || '-')}</div>
-                            <div class="badge-row" style="margin-top:8px;">
-                                <span class="direction-badge ${escapeHtml(detail.direction || 'long')}">${escapeHtml((detail.direction || '-').toUpperCase())}</span>
-                                <span class="type-badge ${typeClass(detail.order_type)}">${escapeHtml(detail.order_type || '-')}</span>
-                                <span class="role-badge ${roleClass(detail.role)}">${escapeHtml(getRoleText(detail.role, detail.order_type))}</span>
-                                <span class="status-badge ${statusClass(detail.status)}">${escapeHtml(ORDER_STATUS_TEXT[detail.status] || detail.status || '-')}</span>
-                            </div>
-                        </div>
-                        <div class="event-time">${escapeHtml(formatTimePair(detail))}</div>
-                    </div>
-
-                    <div class="chip-row">
-                        <span class="chip">trade_group_id=${escapeHtml(detail.trade_group_id || '-')}</span>
-                        <span class="chip">order_id=${escapeHtml(detail.order_id || '-')}</span>
-                        <span class="chip">broker=${escapeHtml(detail.broker_order_id || '-')}</span>
-                    </div>
-
-                    <div class="grid">
-                        ${renderDetail('signal_id', escapeHtml(detail.signal_id || '-'))}
-                        ${renderDetail('relation', `${escapeHtml(detail.relation_status || '-')} / ${escapeHtml(detail.parent_order_unique_id || '-')}`)}
-                        ${renderDetail('Qty / Filled', `${escapeHtml(formatQty(detail.quantity))} / ${escapeHtml(formatQty(detail.filled_qty))}`)}
-                        ${renderDetail('Limit / Fill', `${escapeHtml(formatMoney(detail.limit_price))} / ${escapeHtml(formatMoney(detail.fill_price))}`)}
-                    </div>
-
-                    ${detail.reason ? `<div class="event-note">${escapeHtml(detail.reason)}</div>` : ''}
-
-                    <div class="action-row">
-                        <button class="action-btn btn-secondary" onclick="openDetailChart('${encodeURIComponent(detail.id || detail.order_id || detail.trade_group_id || '')}')">📉 图表页</button>
-                        <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(detail.trade_group_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">📜 交易组</button>
-                        <button class="action-btn btn-secondary" onclick="viewOrder('${encodeURIComponent(detail.order_id || detail.broker_order_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">🔎 订单轨迹</button>
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderContent() {
-            if (queryMode === 'list') {
-                const container = document.getElementById('detailsContainer');
-                if (allDetails.length === 0) {
-                    container.innerHTML = `
-                        <div class="empty">
-                            <div class="empty-icon">📭</div>
-                            <div class="empty-text">暂无订单事件</div>
-                        </div>
-                    `;
-                    return;
-                }
-                container.innerHTML = allDetails.map(renderListCard).join('');
-                return;
-            }
-            renderFocusedView();
-        }
-
-        function onSearchChange() {
-            if (queryMode !== 'list') return;
-            renderOrderDetailsTopSection();
-            if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-            searchDebounceTimer = setTimeout(loadDetails, 180);
-        }
-
-        function renderModeHeader() {
-            if (queryMode === 'list') return;
-            const row = document.getElementById('searchRow');
-            const signalContext = contextSignalId || '';
-            const backUrl = queryMode === 'signal_id'
-                ? buildPageUrl('/ibkr_signals.html', { signal_id: effectiveFilter, date: currentDate })
-                : signalContext
-                    ? buildPageUrl('/orders.html', { signal_id: signalContext, date: currentDate })
-                    : buildPageUrl('/orders.html', { date: currentDate });
-            row.innerHTML = `
-                <div class="page-toolbar-row">
-                    <a class="back-btn" href="${backUrl}">← 返回</a>
-                    ${renderPageRefreshControl({
-                        mode: 'polling',
-                        buttonId: 'refreshBtn',
-                        intervalId: 'refreshInterval',
-                        defaultSeconds: currentInterval || 30,
-                    })}
-                </div>
-                <div class="query-note">当前查询: ${escapeHtml(queryMode)} = ${escapeHtml(effectiveFilter)}</div>
-            `;
-        }
-
-        function buildDetailChartParams(detail) {
-            if (!detail) return null;
-            const extra = detail.extra || {};
-            const symbol = String(detail.symbol || extra.symbol || '').trim().toUpperCase();
-            if (!symbol) return null;
-            return {
-                symbol,
-                interval: normalizeChartInterval(detail.interval || extra.interval || extra.chart_tf || extra.timeframe, '5m'),
-                bar_time_ms: Number(detail.bar_time_ms || extra.bar_time_ms || 0) || '',
-                indicator_id: String(extra.indicator_id || '').trim()
-            };
-        }
-
-        function openDetailChart(detailRef) {
-            const decoded = decodeURIComponent(detailRef || '');
-            const detail = allDetails.find((item) =>
-                String(item.id || '') === decoded
-                || String(item.order_id || '') === decoded
-                || String(item.broker_order_id || '') === decoded
-                || String(item.trade_group_id || '') === decoded
-            );
-            const params = buildDetailChartParams(detail);
-            if (!params) {
-                showToast('暂无图表上下文');
-                return;
-            }
-            location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
-        }
-
-        function viewSignal(signalId) {
-            const decoded = decodeURIComponent(signalId);
-            location.href = buildPageUrl('/ibkr_signals.html', { signal_id: decoded, date: currentDate });
-        }
-
-        function viewTradeGroup(groupId, signalId = '') {
-            const decoded = decodeURIComponent(groupId);
-            const decodedSignalId = signalId ? decodeURIComponent(signalId) : contextSignalId;
-            location.href = buildPageUrl('/ibkr_order_details.html', {
-                trade_group_id: decoded,
-                signal_id: decodedSignalId,
-                date: currentDate
-            });
-        }
-
-        function viewOrder(orderId, signalId = '') {
-            const decoded = decodeURIComponent(orderId);
-            const decodedSignalId = signalId ? decodeURIComponent(signalId) : contextSignalId;
-            location.href = buildPageUrl('/ibkr_order_details.html', {
-                order_id: decoded,
-                signal_id: decodedSignalId,
-                date: currentDate
-            });
-        }
-
-        function manualRefresh() {
-            spinPageRefreshButton('refreshBtn');
-            loadDetails();
-        }
-
-        function changeRefreshInterval(seconds) {
-            currentInterval = Number(seconds) || 0;
-            if (refreshTimer) {
-                clearInterval(refreshTimer);
-                refreshTimer = null;
-            }
-            if (currentInterval > 0) {
-                refreshTimer = setInterval(loadDetails, currentInterval * 1000);
-            }
-        }
-
-        window.onDateChange = function(startDate) {
-            currentDate = startDate;
-            renderOrderDetailsPageChrome();
-            loadDetails();
-        };
-
-        document.addEventListener('DOMContentLoaded', async () => {
-            if (!initAuth()) return;
-
-            if (queryMode === 'list') {
-                document.getElementById('orderDetailsRefreshControl').innerHTML = renderPageRefreshControl({
-                    mode: 'polling',
-                    buttonId: 'refreshBtn',
-                    intervalId: 'refreshInterval',
-                    defaultSeconds: 30,
-                });
-            }
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📜 IBKR 订单明细', {
-                subtitle: '事件关系 / detail / trade group / order replay',
-            });
-            document.getElementById('nav').innerHTML = renderNav('/ibkr_order_details.html');
-            document.getElementById('datePicker').innerHTML = renderDatePicker();
-            const dateInput = document.getElementById('customDate');
-            if (dateInput) dateInput.value = currentDate;
-            if (queryMode !== 'list') renderModeHeader();
-            renderOrderDetailsPageChrome();
-
-            await withPageLoading(
-                () => loadDetails(),
-                {
-                    title: '订单明细页加载中',
-                    copy: '正在同步订单事件关系、trade group 关联和时间线详情。',
-                }
-            );
-            changeRefreshInterval(30);
-
-            let isLoadingMore = false;
-            window.addEventListener('scroll', () => {
-                if (queryMode !== 'list' || !hasMore || isLoadingMore) return;
-                const scrollTop = window.scrollY || document.documentElement.scrollTop;
-                const scrollHeight = document.documentElement.scrollHeight;
-                const clientHeight = document.documentElement.clientHeight;
-                if (scrollTop + clientHeight >= scrollHeight - 200) {
-                    isLoadingMore = true;
-                    loadMoreDetails().finally(() => { isLoadingMore = false; });
-                }
-            });
-        });
-
-        window.onEnvironmentChange = function(environment) {
-            currentEnvironment = environment;
-            location.href = buildPageUrl('/ibkr_order_details.html', {
-                id: filterDetailId,
-                order_id: filterOrderId,
-                signal_id: filterSignalId,
-                trade_group_id: filterTradeGroupId,
-                date: currentDate
-            });
-        };
+        window.location.replace(target);
+      })();
     </script>
-</body>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR Order Details moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_order_details.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

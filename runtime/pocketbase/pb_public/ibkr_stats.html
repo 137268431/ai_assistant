@@ -1,771 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IBKR 统计 - Trading Flight</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_stats/page.css">
-</head>
-<body>
-    <div id="contextBar"></div>
-    <div id="pageBridge"></div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR Stats moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-    <div class="content">
-        <div class="stats-toolbar">
-            <div class="page-toolbar-row">
-                <div class="date-range-selector">
-                    <button class="date-range-btn" data-range="7days">近7天</button>
-                    <button class="date-range-btn active" data-range="30days">近30天</button>
-                    <button class="date-range-btn" data-range="90days">近90天</button>
-                    <button class="date-range-btn" data-range="all">全部</button>
-                </div>
-                <div class="date-inputs">
-                    <input type="date" class="date-input" id="startDate" title="开始日期">
-                    <span style="color: #94a3b8;">至</span>
-                    <input type="date" class="date-input" id="endDate" title="结束日期">
-                    <button class="apply-date-btn" onclick="applyCustomDate()">应用</button>
-                </div>
-                <div id="statsRefreshControl"></div>
-            </div>
-        </div>
+      * {
+        box-sizing: border-box;
+      }
 
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">总订单数</div>
-                <div class="stat-value" id="totalOrders">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">平仓次数</div>
-                <div class="stat-value" id="totalTrades">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">总盈亏</div>
-                <div class="stat-value" id="totalPnL">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">总手续费</div>
-                <div class="stat-value" id="totalCommission">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">胜率</div>
-                <div class="stat-value" id="winRate">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">平均盈亏比</div>
-                <div class="stat-value" id="avgRR">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">盈利次数</div>
-                <div class="stat-value positive" id="wins">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">亏损次数</div>
-                <div class="stat-value negative" id="losses">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">总信号数</div>
-                <div class="stat-value" id="totalSignals">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">多头信号</div>
-                <div class="stat-value positive" id="signalsLong">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">空头信号</div>
-                <div class="stat-value negative" id="signalsShort">-</div>
-            </div>
-        </div>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-        <div class="chart-grid">
-            <div class="chart-container">
-                <div class="chart-title">📈 收益曲线</div>
-                <div class="chart-canvas-wrap"><canvas id="pnlChart"></canvas></div>
-            </div>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-            <div class="chart-container">
-                <div class="chart-title">📊 每日盈亏明细</div>
-                <div class="chart-canvas-wrap"><canvas id="dailyChart"></canvas></div>
-            </div>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-            <div class="chart-container">
-                <div class="chart-title">🎯 信号曲线 (累计信号数)</div>
-                <div class="chart-canvas-wrap"><canvas id="signalChart"></canvas></div>
-            </div>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
 
-            <div class="chart-container">
-                <div class="chart-title">📦 订单曲线 (累计订单数)</div>
-                <div class="chart-canvas-wrap"><canvas id="orderChart"></canvas></div>
-            </div>
-        </div>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-        <div class="detail-section">
-            <div class="section-title">📋 平仓订单明细</div>
-            <div class="data-table-wrap">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>日期</th>
-                            <th>标的</th>
-                            <th>方向</th>
-                            <th>类型</th>
-                            <th>入场价</th>
-                            <th>平仓价</th>
-                            <th>数量</th>
-                            <th>盈亏</th>
-                            <th>盈亏比</th>
-                            <th>手续费</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tradesTable"></tbody>
-                </table>
-            </div>
-            <div class="pagination" id="pagination"></div>
-        </div>
-    </div>
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
-    <div id="nav"></div>
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
+
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
     <script>
-        let currentRange = '30days';
-        let customStartDate = null;
-        let customEndDate = null;
-        let currentEnvironment = getCurrentRuntimeEnvironment();
-        let pnlChart = null;
-        let dailyChart = null;
-        let signalChart = null;
-        let orderChart = null;
-        let currentPage = 1;
-        const pageSize = 20;
-        let allTrades = [];
-
-        // Cache last loaded data so resize can redraw charts without refetching.
-        let cachedOrders = null;
-        let cachedSignals = null;
-        let cachedStartDate = null;
-        let cachedEndDate = null;
-
-        function getChartHeight() {
-            const width = window.innerWidth;
-            if (width < 480) return 168;
-            if (width < 768) return 188;
-            if (width < 1200) return 200;
-            return 220;
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
         }
-
-        function setChartHeights() {
-            const height = `${getChartHeight()}px`;
-            document.querySelectorAll('.chart-canvas-wrap').forEach((node) => {
-                node.style.height = height;
-            });
-        }
-
-        function buildChartOptions() {
-            const compact = window.innerWidth < 768;
-            const tiny = window.innerWidth < 480;
-            return {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        labels: {
-                            color: '#e0e6ed',
-                            boxWidth: tiny ? 8 : 10,
-                            boxHeight: tiny ? 8 : 10,
-                            font: { size: tiny ? 9 : 10 }
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        ticks: {
-                            color: '#94a3b8',
-                            maxRotation: 0,
-                            autoSkip: true,
-                            maxTicksLimit: compact ? 6 : 10,
-                            font: { size: tiny ? 9 : 10 }
-                        },
-                        grid: { color: 'rgba(148, 163, 184, 0.1)' }
-                    },
-                    y: {
-                        ticks: {
-                            color: '#94a3b8',
-                            maxTicksLimit: compact ? 5 : 7,
-                            font: { size: tiny ? 9 : 10 }
-                        },
-                        grid: { color: 'rgba(148, 163, 184, 0.1)' }
-                    }
-                }
-            };
-        }
-
-        async function initAuth() {
-            requireAuth(`${window.location.pathname}${window.location.search}`);
-        }
-
-        async function fetchPageWithRetry(collection, params, maxRetries = 2) {
-            let lastError = null;
-            for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-                try {
-                    return await apiFetch(collection, params);
-                } catch (error) {
-                    lastError = error;
-                    const message = String(error?.message || error || '');
-                    const retryable = message.includes('502') || message.includes('Failed to fetch');
-                    if (!retryable || attempt === maxRetries) break;
-                    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
-                }
-            }
-            throw lastError || new Error(`Failed to fetch ${collection}`);
-        }
-
-        async function fetchAllRecords(collection, { filter, sort = '-created', perPage = 200, maxPages = 20 }) {
-            const items = [];
-            for (let page = 1; page <= maxPages; page += 1) {
-                const response = await fetchPageWithRetry(collection, { filter, sort, perPage, page });
-                const batch = Array.isArray(response?.items) ? response.items : [];
-                items.push(...batch);
-                const totalPages = Number(response?.totalPages || 0) || 0;
-                if (!batch.length || (totalPages && page >= totalPages) || batch.length < perPage) break;
-            }
-            return items;
-        }
-
-        async function loadStats() {
-            try {
-                setChartHeights();
-                const endDate = new Date();
-                let startDate = new Date();
-                const softErrors = [];
-
-                // 优先使用自定义日期
-                if (customStartDate && customEndDate) {
-                    startDate = new Date(customStartDate);
-                    endDate.setTime(new Date(customEndDate).getTime() + 86400000); // 加一天包含结束日期
-                } else if (currentRange === '7days') {
-                    startDate.setDate(endDate.getDate() - 7);
-                } else if (currentRange === '30days') {
-                    startDate.setDate(endDate.getDate() - 30);
-                } else if (currentRange === '90days') {
-                    startDate.setDate(endDate.getDate() - 90);
-                } else {
-                    startDate = new Date('2020-01-01');
-                }
-
-                const startTimeMs = startDate.getTime();
-                const endTimeMs = endDate.getTime();
-                const timeFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
-
-                let orders = [];
-                let ibkr_signals = [];
-
-                try {
-                    // 分页拉取，避免单次请求过大触发 502。
-                    orders = await fetchAllRecords('orders', {
-                        filter: timeFilter,
-                        sort: '-created',
-                        perPage: 200,
-                        maxPages: 12
-                    });
-                } catch (error) {
-                    softErrors.push(`orders: ${error.message || error}`);
-                }
-
-                try {
-                    ibkr_signals = await fetchAllRecords('ibkr_signals', {
-                        filter: timeFilter,
-                        sort: '-created',
-                        perPage: 200,
-                        maxPages: 12
-                    });
-                } catch (error) {
-                    softErrors.push(`ibkr_signals: ${error.message || error}`);
-                }
-
-                const stats = calculateStats(orders);
-                renderStats(stats, ibkr_signals);
-                renderCharts(orders, ibkr_signals, startDate, endDate);
-                renderTradesTable(orders);
-
-                // Cache for resize redraw (no network requests on scroll).
-                cachedOrders = orders;
-                cachedSignals = ibkr_signals;
-                cachedStartDate = startDate;
-                cachedEndDate = endDate;
-
-                if (softErrors.length) {
-                    console.warn('统计部分数据降级加载:', softErrors.join(' | '));
-                    showError('部分统计数据暂未完整返回，当前已展示可用数据');
-                }
-            } catch (error) {
-                console.error('加载失败:', error);
-                showError('加载数据失败: ' + error.message);
-            }
-        }
-
-        function calculateStats(orders) {
-            const entryOrders = {};
-            let totalPnL = 0;
-            let wins = 0;
-            let losses = 0;
-            let totalCommission = 0;
-            let rrSum = 0;
-            let rrCount = 0;
-            const trades = [];
-
-            orders.forEach(order => {
-                const uniqueId = order.unique_id || '';
-                const parts = uniqueId.split('_');
-
-                if (parts.length < 5) return;
-
-                const baseId = parts.slice(0, 4).join('_');
-                const orderType = parts[4];
-
-                if (orderType === 'Entry' && order.status === 'Filled') {
-                    entryOrders[baseId] = order;
-                } else if ((orderType === 'TakeProfit' || orderType === 'StopLoss') && order.status === 'Filled') {
-                    const entry = entryOrders[baseId];
-                    if (entry) {
-                        const direction = order.direction;
-                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
-                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
-                        const quantity = parseFloat(order.filled_qty || order.quantity);
-
-                        let pnl = 0;
-                        if (direction === 'long') {
-                            pnl = (exitPrice - entryPrice) * quantity;
-                        } else {
-                            pnl = (entryPrice - exitPrice) * quantity;
-                        }
-
-                        totalPnL += pnl;
-
-                        const commission = parseFloat(order.commission) || 0;
-                        totalCommission += commission;
-
-                        const rr = parseFloat(order.rr_ratio) || 0;
-                        if (rr > 0) {
-                            rrSum += rr;
-                            rrCount++;
-                        }
-
-                        if (pnl > 0) wins++;
-                        else if (pnl < 0) losses++;
-
-                        trades.push({
-                            date: order.created.split(' ')[0],
-                            symbol: order.symbol,
-                            direction: direction,
-                            orderType: orderType === 'TakeProfit' ? '止盈' : '止损',
-                            entryPrice: entryPrice,
-                            exitPrice: exitPrice,
-                            quantity: quantity,
-                            pnl: pnl,
-                            rr: rr,
-                            commission: commission
-                        });
-                    }
-                }
-            });
-
-            const totalTrades = wins + losses;
-            const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
-            const avgRR = rrCount > 0 ? rrSum / rrCount : 0;
-
-            return {
-                totalOrders: orders.length,
-                totalTrades: totalTrades,
-                totalPnL: totalPnL,
-                totalCommission: totalCommission,
-                winRate: winRate,
-                avgRR: avgRR,
-                wins: wins,
-                losses: losses,
-                trades: trades
-            };
-        }
-
-        function renderStats(stats, ibkr_signals = []) {
-            document.getElementById('totalOrders').textContent = stats.totalOrders;
-            document.getElementById('totalTrades').textContent = stats.totalTrades;
-
-            const pnlEl = document.getElementById('totalPnL');
-            pnlEl.textContent = `$${stats.totalPnL.toFixed(2)}`;
-            pnlEl.className = 'stat-value ' + (stats.totalPnL >= 0 ? 'positive' : 'negative');
-
-            const commEl = document.getElementById('totalCommission');
-            commEl.textContent = `$${stats.totalCommission.toFixed(2)}`;
-            commEl.className = 'stat-value';
-
-            document.getElementById('winRate').textContent = stats.winRate + '%';
-            document.getElementById('avgRR').textContent = stats.avgRR > 0 ? stats.avgRR.toFixed(2) : '-';
-            document.getElementById('wins').textContent = stats.wins;
-            document.getElementById('losses').textContent = stats.losses;
-
-            // 信号统计
-            document.getElementById('totalSignals').textContent = ibkr_signals.length;
-            const signalsLong = ibkr_signals.filter(s => s.direction === 'long').length;
-            const signalsShort = ibkr_signals.filter(s => s.direction === 'short').length;
-            document.getElementById('signalsLong').textContent = signalsLong;
-            document.getElementById('signalsShort').textContent = signalsShort;
-        }
-
-        function renderCharts(orders, ibkr_signals, startDate, endDate) {
-            const dailyPnL = {};
-            const entryOrders = {};
-
-            // 每日信号统计（区分多空）
-            const dailySignalsLong = {};
-            const dailySignalsShort = {};
-
-            // 每日订单统计（区分多空）
-            const dailyOrdersLong = {};
-            const dailyOrdersShort = {};
-
-            orders.forEach(order => {
-                const date = order.created.split(' ')[0];
-                const uniqueId = order.unique_id || '';
-                const parts = uniqueId.split('_');
-
-                // 统计订单数
-                const orderDirection = order.direction;
-                if (orderDirection === 'long') {
-                    dailyOrdersLong[date] = (dailyOrdersLong[date] || 0) + 1;
-                } else if (orderDirection === 'short') {
-                    dailyOrdersShort[date] = (dailyOrdersShort[date] || 0) + 1;
-                }
-
-                if (parts.length < 5) return;
-
-                const baseId = parts.slice(0, 4).join('_');
-                const orderType = parts[4];
-
-                if (orderType === 'Entry' && order.status === 'Filled') {
-                    entryOrders[baseId] = order;
-                } else if ((orderType === 'TakeProfit' || orderType === 'StopLoss') && order.status === 'Filled') {
-                    const entry = entryOrders[baseId];
-                    if (entry) {
-                        const direction = order.direction;
-                        const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
-                        const exitPrice = parseFloat(order.fill_price || order.limit_price);
-                        const quantity = parseFloat(order.filled_qty || order.quantity);
-
-                        let pnl = 0;
-                        if (direction === 'long') {
-                            pnl = (exitPrice - entryPrice) * quantity;
-                        } else {
-                            pnl = (entryPrice - exitPrice) * quantity;
-                        }
-
-                        dailyPnL[date] = (dailyPnL[date] || 0) + pnl;
-                    }
-                }
-            });
-
-            // 统计信号数
-            console.log('Signals data:', ibkr_signals);
-            ibkr_signals.forEach(signal => {
-                const date = signal.created.split(' ')[0];
-                const direction = signal.direction;
-                console.log('Signal:', signal.symbol, direction, date);
-                if (direction === 'long') {
-                    dailySignalsLong[date] = (dailySignalsLong[date] || 0) + 1;
-                } else if (direction === 'short') {
-                    dailySignalsShort[date] = (dailySignalsShort[date] || 0) + 1;
-                }
-            });
-            console.log('Daily ibkr_signals long:', dailySignalsLong);
-            console.log('Daily ibkr_signals short:', dailySignalsShort);
-
-            // 生成日期标签
-            const labels = [];
-            const currentDate = new Date(startDate);
-            while (currentDate <= endDate) {
-                labels.push(currentDate.toISOString().split('T')[0]);
-                currentDate.setDate(currentDate.getDate() + 1);
-            }
-
-            // 收益曲线
-            let cumulative = 0;
-            const pnlData = labels.map(dateStr => {
-                cumulative += (dailyPnL[dateStr] || 0);
-                return cumulative;
-            });
-
-            const ctx = document.getElementById('pnlChart').getContext('2d');
-            if (pnlChart) pnlChart.destroy();
-
-            pnlChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '累计盈亏 ($)',
-                        data: pnlData,
-                        borderColor: '#3b82f6',
-                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }]
-                },
-                options: buildChartOptions()
-            });
-
-            // 每日盈亏柱状图
-            const dailyData = labels.map(date => dailyPnL[date] || 0);
-            const barColors = dailyData.map(pnl => pnl >= 0 ? '#10b981' : '#ef4444');
-
-            const ctx2 = document.getElementById('dailyChart').getContext('2d');
-            if (dailyChart) dailyChart.destroy();
-
-            dailyChart = new Chart(ctx2, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '每日盈亏 ($)',
-                        data: dailyData,
-                        backgroundColor: barColors
-                    }]
-                },
-                options: buildChartOptions()
-            });
-
-            // 信号曲线（区分多空）
-            let cumLong = 0, cumShort = 0;
-            const signalLongData = [];
-            const signalShortData = [];
-            labels.forEach(dateStr => {
-                cumLong += (dailySignalsLong[dateStr] || 0);
-                cumShort += (dailySignalsShort[dateStr] || 0);
-                signalLongData.push(cumLong);
-                signalShortData.push(cumShort);
-            });
-
-            const ctx3 = document.getElementById('signalChart').getContext('2d');
-            if (signalChart) signalChart.destroy();
-
-            signalChart = new Chart(ctx3, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: '做多信号',
-                            data: signalLongData,
-                            borderColor: '#10b981',
-                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        },
-                        {
-                            label: '做空信号',
-                            data: signalShortData,
-                            borderColor: '#ef4444',
-                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }
-                    ]
-                },
-                options: buildChartOptions()
-            });
-
-            // 订单曲线（区分多空）
-            let orderLongCum = 0, orderShortCum = 0;
-            const orderLongData = [];
-            const orderShortData = [];
-            labels.forEach(dateStr => {
-                orderLongCum += (dailyOrdersLong[dateStr] || 0);
-                orderShortCum += (dailyOrdersShort[dateStr] || 0);
-                orderLongData.push(orderLongCum);
-                orderShortData.push(orderShortCum);
-            });
-
-            const ctx4 = document.getElementById('orderChart').getContext('2d');
-            if (orderChart) orderChart.destroy();
-
-            orderChart = new Chart(ctx4, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: '做多订单',
-                            data: orderLongData,
-                            borderColor: '#10b981',
-                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        },
-                        {
-                            label: '做空订单',
-                            data: orderShortData,
-                            borderColor: '#ef4444',
-                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }
-                    ]
-                },
-                options: buildChartOptions()
-            });
-        }
-
-        function renderTradesTable(orders) {
-            const stats = calculateStats(orders);
-            allTrades = stats.trades;
-            currentPage = 1;
-            renderTradesPage();
-        }
-
-        function renderTradesPage() {
-            const tbody = document.getElementById('tradesTable');
-            const paginationEl = document.getElementById('pagination');
-
-            if (allTrades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无平仓记录</td></tr>';
-                paginationEl.innerHTML = '';
-                return;
-            }
-
-            const totalPages = Math.ceil(allTrades.length / pageSize);
-            const start = (currentPage - 1) * pageSize;
-            const end = Math.min(start + pageSize, allTrades.length);
-            const pageTrades = allTrades.slice(start, end);
-
-            tbody.innerHTML = pageTrades.map(trade => `
-                <tr>
-                    <td>${trade.date}</td>
-                    <td>${trade.symbol}</td>
-                    <td>${trade.direction === 'long' ? '做多' : '做空'}</td>
-                    <td>${trade.orderType}</td>
-                    <td>$${trade.entryPrice.toFixed(2)}</td>
-                    <td>$${trade.exitPrice.toFixed(2)}</td>
-                    <td>${trade.quantity}</td>
-                    <td class="${trade.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">$${trade.pnl.toFixed(2)}</td>
-                    <td>${trade.rr > 0 ? trade.rr.toFixed(2) : '-'}</td>
-                    <td>$${trade.commission.toFixed(2)}</td>
-                </tr>
-            `).join('');
-
-            // 渲染分页
-            let html = '';
-            html += `<button onclick="goPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>上一页</button>`;
-
-            for (let i = 1; i <= totalPages; i++) {
-                if (totalPages <= 7 || Math.abs(i - currentPage) <= 2 || i === 1 || i === totalPages) {
-                    html += `<button class="${i === currentPage ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
-                } else if (Math.abs(i - currentPage) === 3) {
-                    html += `<span class="page-info">...</span>`;
-                }
-            }
-
-            html += `<button onclick="goPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>下一页</button>`;
-            html += `<span class="page-info">${allTrades.length} 条</span>`;
-            paginationEl.innerHTML = html;
-        }
-
-        function goPage(page) {
-            const totalPages = Math.ceil(allTrades.length / pageSize);
-            if (page < 1 || page > totalPages) return;
-            currentPage = page;
-            renderTradesPage();
-            document.querySelector('.detail-section').scrollIntoView({ behavior: 'smooth' });
-        }
-
-        function showError(message) {
-            const errorDiv = document.createElement('div');
-            errorDiv.className = 'error';
-            errorDiv.textContent = message;
-            document.body.insertBefore(errorDiv, document.body.firstChild);
-            setTimeout(() => errorDiv.remove(), 5000);
-        }
-
-        function applyCustomDate() {
-            const startInput = document.getElementById('startDate').value;
-            const endInput = document.getElementById('endDate').value;
-
-            if (!startInput || !endInput) {
-                showError('请选择开始日期和结束日期');
-                return;
-            }
-
-            if (new Date(startInput) > new Date(endInput)) {
-                showError('开始日期不能晚于结束日期');
-                return;
-            }
-
-            // 清除快捷按钮选中状态
-            document.querySelectorAll('.date-range-btn').forEach(b => b.classList.remove('active'));
-
-            // 设置自定义日期
-            customStartDate = startInput;
-            customEndDate = endInput;
-
-            loadStats();
-        }
-
-        document.querySelectorAll('.date-range-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.date-range-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentRange = btn.dataset.range;
-                loadStats();
-            });
-        });
-
-        function manualRefresh() {
-            spinPageRefreshButton('statsRefreshBtn');
-            loadStats();
-        }
-
-        document.addEventListener('DOMContentLoaded', async () => {
-            await initAuth();
-            document.getElementById('statsRefreshControl').innerHTML = renderPageRefreshControl({
-                mode: 'manual',
-                buttonId: 'statsRefreshBtn',
-                buttonLabel: '↻ 刷新',
-                buttonTitle: '刷新统计',
-                onClick: 'manualRefresh()',
-            });
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📈 IBKR 统计', {
-                subtitle: '收益 / 信号 / 订单 / 平仓明细',
-            });
-            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_stats.html');
-            document.getElementById('nav').innerHTML = renderNav('/ibkr_stats.html');
-            setChartHeights();
-            await withPageLoading(
-                () => loadStats(),
-                {
-                    title: '统计页加载中',
-                    copy: '正在同步收益、信号、订单和平仓统计图表。',
-                }
-            );
-
-            // iOS Safari scroll can trigger resize when the address bar shows/hides.
-            // Only redraw charts when width changes (orientation / desktop resize).
-            let lastInnerWidth = window.innerWidth;
-            window.addEventListener('resize', () => {
-                if (window.innerWidth === lastInnerWidth) return;
-                lastInnerWidth = window.innerWidth;
-
-                setChartHeights();
-                if (cachedOrders && cachedSignals && cachedStartDate && cachedEndDate) {
-                    renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate);
-                }
-            });
-        });
-
-        window.onEnvironmentChange = function(environment) {
-            currentEnvironment = environment;
-            location.href = buildPageUrl('/ibkr_stats.html', {}, { environment: currentEnvironment });
-        };
+        window.location.replace(target);
+      })();
     </script>
-</body>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR Stats moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_stats.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

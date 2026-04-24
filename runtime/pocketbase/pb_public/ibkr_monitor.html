@@ -1,1206 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IBKR Monitor - Trading Flight</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css">
-</head>
-<body>
-    <div id="nav"></div>
-    <div id="contextBar"></div>
-    <div id="pageBridge"></div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR Monitor moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-    <div class="page-shell">
-        <section class="hero">
-            <div class="hero-head">
-                <div>
-                    <div class="hero-kicker">IBKR Monitor Dashboard</div>
-                    <div class="hero-title">请求、订阅与<span class="accent">主机健康</span>放到同一层</div>
-                    <div class="hero-copy" id="heroCopy">正在同步当前 environment 的 runtime / API utilization / host snapshot ...</div>
-                </div>
-                <div class="hero-actions">
-                    <button class="refresh-btn page-refresh-trigger" id="refreshBtn" type="button" onclick="loadMonitorData(true)">↻ 手动刷新</button>
-                    <div class="hero-meta" id="heroMeta">最近刷新 --</div>
-                </div>
-            </div>
-            <div class="chip-row" id="heroChips"></div>
-            <div id="heroCallout"></div>
-        </section>
+      * {
+        box-sizing: border-box;
+      }
 
-        <section class="section">
-            <div class="section-header">
-                <div>
-                    <div class="section-title">Split-Stack 系统状态</div>
-                    <div class="section-copy">console / api / scheduler / compute / runtime / gateway / pocketbase 放在同一排，明确看当前故障域。</div>
-                </div>
-                <div class="section-meta" id="systemMonitorMeta">services --</div>
-            </div>
-            <div class="section-body">
-                <div class="metric-grid" id="systemMonitorGrid"></div>
-            </div>
-        </section>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-        <section class="section">
-            <div class="section-header">
-                <div>
-                    <div class="section-title">IBKR API 利用率</div>
-                    <div class="section-copy">订阅占用、回填请求、节流、WebSocket 消息和订单更新都在这里看。</div>
-                </div>
-                <div class="section-meta" id="utilMeta">limit --</div>
-            </div>
-            <div class="section-body">
-                <div class="metric-grid" id="utilGrid"></div>
-            </div>
-        </section>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-        <section class="section">
-            <div class="section-header">
-                <div>
-                    <div class="section-title">订阅视图</div>
-                    <div class="section-copy">trade / monitor / stale symbol 一眼分开，方便判断当前池子是否跑偏。</div>
-                </div>
-                <div class="section-meta" id="subscriptionMeta">active --</div>
-            </div>
-            <div class="section-body">
-                <div class="sample-grid" id="subscriptionSamples"></div>
-                <div class="table-wrap" id="subscriptionTableWrap"></div>
-            </div>
-        </section>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-        <div class="split-grid">
-            <section class="section">
-                <div class="section-header">
-                    <div>
-                        <div class="section-title">服务性能</div>
-                        <div class="section-copy">close / compute / queue / warmup / tracker 这些运行态指标聚在一起。</div>
-                    </div>
-                    <div class="section-meta" id="serviceMeta">runtime --</div>
-                </div>
-                <div class="section-body">
-                    <div class="metric-grid" id="serviceGrid"></div>
-                </div>
-            </section>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
 
-            <section class="section">
-                <div class="section-header">
-                    <div>
-                        <div class="section-title">主机健康</div>
-                        <div class="section-copy">当前只看 Compute / Gateway 所在机器，不纳入 PocketBase 主机。</div>
-                    </div>
-                    <div class="section-meta" id="hostMeta">host --</div>
-                </div>
-                <div class="section-body">
-                    <div class="metric-grid" id="hostGrid"></div>
-                </div>
-            </section>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-            <section class="section">
-                <div class="section-header">
-                    <div>
-                        <div class="section-title">PocketBase 磁盘</div>
-                        <div class="section-copy">单独看 PB 主机的 `pb_data` 占用和所在文件系统余量，避免和 compute 主机混在一起。</div>
-                    </div>
-                    <div class="section-meta" id="pocketbaseMeta">pb --</div>
-                </div>
-                <div class="section-body">
-                    <div class="metric-grid" id="pocketbaseGrid"></div>
-                </div>
-            </section>
-        </div>
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
-        <div class="split-grid">
-            <section class="section">
-                <div class="section-header">
-                    <div>
-                        <div class="section-title">当前告警</div>
-                        <div class="section-copy">这里优先显示服务端已经归纳好的 flags，避免前端重复猜状态。</div>
-                    </div>
-                    <div class="section-meta" id="flagMeta">flags --</div>
-                </div>
-                <div class="section-body">
-                    <div class="flag-list" id="flagList"></div>
-                </div>
-            </section>
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
 
-            <section class="section">
-                <div class="section-header">
-                    <div>
-                        <div class="section-title">最近事件</div>
-                        <div class="section-copy">复用 PocketBase `system_events`，便于把实时状态和最近异常放在一起看。</div>
-                    </div>
-                    <div class="section-meta" id="eventMeta">events --</div>
-                </div>
-                <div class="section-body">
-                    <div class="event-list" id="eventList"></div>
-                </div>
-            </section>
-        </div>
-    </div>
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
 
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
     <script>
-        let currentEnvironment = getCurrentRuntimeEnvironment();
-        let refreshTimer = null;
-        let latestMonitorLoadId = 0;
-        let lastCounterSnapshot = null;
-        let symbolPagerState = {};
-
-        const DELTA_KEYS = [
-            'request_count',
-            'retry_count',
-            'throttle_count',
-            'websocket_message_count',
-            'order_update_count',
-        ];
-
-        function initMonitorAuth() {
-            const token = getToken();
-            if (!token) {
-                redirectToLogin(`${location.pathname}${location.search}`);
-                return false;
-            }
-            return true;
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
         }
-
-        function escapeHtml(value) {
-            return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }
-
-        function getAuthHeaders(extra = {}) {
-            const headers = { ...extra };
-            const token = getToken();
-            if (token) headers.Authorization = `Bearer ${token}`;
-            return headers;
-        }
-
-        function chunkSymbolPages(value, pageSize = 18) {
-            const text = String(value ?? '').trim() || '--';
-            if (text.length <= pageSize) return [text];
-            const tokens = text.split(/([._:/\-\s]+)/).filter((item) => item !== '');
-            const pages = [];
-            let current = '';
-            tokens.forEach((token) => {
-                if (token.length > pageSize) {
-                    if (current) {
-                        pages.push(current);
-                        current = '';
-                    }
-                    for (let index = 0; index < token.length; index += pageSize) {
-                        pages.push(token.slice(index, index + pageSize));
-                    }
-                    return;
-                }
-                if (!current || (current + token).length <= pageSize) {
-                    current += token;
-                    return;
-                }
-                pages.push(current);
-                current = token;
-            });
-            if (current) pages.push(current);
-            const normalizedPages = pages.map((item) => item.trim()).filter(Boolean);
-            return normalizedPages.length ? normalizedPages : [text];
-        }
-
-        function renderPagedSymbol(value, key) {
-            const text = String(value ?? '').trim() || '--';
-            const pages = chunkSymbolPages(text);
-            if (pages.length <= 1) {
-                delete symbolPagerState[key];
-                return `<div class="symbol-page-text" title="${escapeHtml(text)}">${escapeHtml(text)}</div>`;
-            }
-            symbolPagerState[key] = { pages, index: 0 };
-            return `
-                <div class="symbol-pager" data-symbol-pager-key="${escapeHtml(key)}">
-                    <button class="symbol-page-btn" type="button" data-role="prev" onclick="stepSymbolPage('${escapeHtml(key)}', -1)" disabled aria-label="上一段">‹</button>
-                    <div class="symbol-page-body">
-                        <div class="symbol-page-text" data-role="text" title="${escapeHtml(text)}">${escapeHtml(pages[0])}</div>
-                        <div class="symbol-page-meta" data-role="meta">1 / ${pages.length}</div>
-                    </div>
-                    <button class="symbol-page-btn" type="button" data-role="next" onclick="stepSymbolPage('${escapeHtml(key)}', 1)" ${pages.length <= 1 ? 'disabled' : ''} aria-label="下一段">›</button>
-                </div>
-            `;
-        }
-
-        function syncSymbolPager(key) {
-            const state = symbolPagerState[key];
-            if (!state || !Array.isArray(state.pages) || !state.pages.length) return;
-            state.index = Math.max(0, Math.min(state.pages.length - 1, Number(state.index || 0)));
-            const root = document.querySelector(`[data-symbol-pager-key="${key}"]`);
-            if (!root) return;
-            const textEl = root.querySelector('[data-role="text"]');
-            const metaEl = root.querySelector('[data-role="meta"]');
-            const prevBtn = root.querySelector('[data-role="prev"]');
-            const nextBtn = root.querySelector('[data-role="next"]');
-            if (textEl) textEl.textContent = state.pages[state.index];
-            if (metaEl) metaEl.textContent = `${state.index + 1} / ${state.pages.length}`;
-            if (prevBtn) prevBtn.disabled = state.index <= 0;
-            if (nextBtn) nextBtn.disabled = state.index >= state.pages.length - 1;
-        }
-
-        function stepSymbolPage(key, delta) {
-            const state = symbolPagerState[key];
-            if (!state) return;
-            state.index = Number(state.index || 0) + Number(delta || 0);
-            syncSymbolPager(key);
-        }
-
-        function formatTimeLabel(value) {
-            if (value === undefined || value === null || value === '') return '--';
-            const text = String(value).trim();
-            if (!text) return '--';
-            if (/^\d{10,13}$/.test(text)) {
-                const timestamp = text.length === 10 ? Number(text) * 1000 : Number(text);
-                return formatBarTimeMsToET(timestamp);
-            }
-            if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
-                return formatTime(text, 'America/New_York', 'default');
-            }
-            if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text;
-            return text;
-        }
-
-        function parseIsoMs(value) {
-            const text = String(value || '').trim();
-            if (!text) return 0;
-            const ms = Date.parse(text);
-            return Number.isFinite(ms) ? ms : 0;
-        }
-
-        function formatAgo(value) {
-            const ms = parseIsoMs(value);
-            if (!ms) return '--';
-            const deltaSeconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
-            if (deltaSeconds < 60) return `${deltaSeconds}s ago`;
-            if (deltaSeconds < 3600) return `${Math.round(deltaSeconds / 60)}m ago`;
-            return `${Math.round(deltaSeconds / 3600)}h ago`;
-        }
-
-        function ageSecondsFromIso(value) {
-            const ms = parseIsoMs(value);
-            return ms ? Math.max(0, Math.round((Date.now() - ms) / 1000)) : null;
-        }
-
-        function formatNumber(value, digits = 0) {
-            const num = Number(value);
-            return Number.isFinite(num) ? num.toFixed(digits) : '--';
-        }
-
-        function formatInteger(value) {
-            const num = Number(value);
-            return Number.isFinite(num) ? new Intl.NumberFormat('en-US').format(num) : '--';
-        }
-
-        function formatPercent(value, digits = 1) {
-            const num = Number(value);
-            return Number.isFinite(num) ? `${num.toFixed(digits)}%` : '--';
-        }
-
-        function formatSeconds(value) {
-            const num = Number(value);
-            if (!Number.isFinite(num)) return '--';
-            if (num >= 3600) return `${(num / 3600).toFixed(1)}h`;
-            if (num >= 60) return `${(num / 60).toFixed(1)}m`;
-            return `${num.toFixed(num >= 10 ? 0 : 1)}s`;
-        }
-
-        function formatBytes(value) {
-            const num = Number(value);
-            if (!Number.isFinite(num) || num < 0) return '--';
-            if (num === 0) return '0 B';
-            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-            let size = num;
-            let unitIndex = 0;
-            while (size >= 1024 && unitIndex < units.length - 1) {
-                size /= 1024;
-                unitIndex += 1;
-            }
-            const digits = size >= 100 ? 0 : (size >= 10 ? 1 : 2);
-            return `${size.toFixed(digits)} ${units[unitIndex]}`;
-        }
-
-        function severityClass(severity) {
-            const text = String(severity || '').trim().toLowerCase();
-            if (text === 'error') return 'chip-error';
-            if (text === 'warning' || text === 'warn') return 'chip-warn';
-            return 'chip-ok';
-        }
-
-        function deriveDataStatus(payload) {
-            const samples = payload?.samples || {};
-            const activeBars = Array.isArray(samples.active_bar_symbols) ? samples.active_bar_symbols : [];
-            const activeSubscriptions = Array.isArray(samples.active_subscriptions) ? samples.active_subscriptions : [];
-            if (!activeSubscriptions.length && !activeBars.length) {
-                return { tone: 'chip-muted', label: 'IDLE', copy: '当前没有 active subscriptions' };
-            }
-            if (!activeBars.length) {
-                return { tone: 'chip-error', label: 'OFFLINE', copy: 'active subscriptions 存在，但 bar aggregator 为空' };
-            }
-            const maxAge = Math.max(...activeBars.map((item) => Number(item?.last_update_age_s || 0) || 0));
-            const ageMin = maxAge / 60;
-            if (ageMin > 15) {
-                return { tone: 'chip-error', label: 'OFFLINE', copy: `最慢活跃 symbol ${ageMin.toFixed(1)}m 未更新` };
-            }
-            if (ageMin > 5) {
-                return { tone: 'chip-warn', label: 'DELAYED', copy: `最慢活跃 symbol ${ageMin.toFixed(1)}m 未更新` };
-            }
-            return { tone: 'chip-ok', label: 'ONLINE', copy: `最慢活跃 symbol ${ageMin.toFixed(1)}m 未更新` };
-        }
-
-        function deriveHostStatus(payload) {
-            const flags = Array.isArray(payload?.flags) ? payload.flags : [];
-            const hostFlags = flags.filter((item) => String(item?.code || '').startsWith('host_'));
-            const hasError = hostFlags.some((item) => String(item?.severity || '').toLowerCase() === 'error');
-            const hasWarn = hostFlags.some((item) => String(item?.severity || '').toLowerCase() === 'warning');
-            if (hasError) return { tone: 'chip-error', label: 'ERROR' };
-            if (hasWarn) return { tone: 'chip-warn', label: 'WARN' };
-            return { tone: 'chip-ok', label: 'OK' };
-        }
-
-        function derivePocketBaseStatus(payload) {
-            const flags = Array.isArray(payload?.flags) ? payload.flags : [];
-            const pbFlags = flags.filter((item) => String(item?.code || '').startsWith('pb_'));
-            const hasError = pbFlags.some((item) => String(item?.severity || '').toLowerCase() === 'error');
-            const hasWarn = pbFlags.some((item) => String(item?.severity || '').toLowerCase() === 'warning');
-            if (hasError) return { tone: 'chip-error', label: 'ERROR' };
-            if (hasWarn) return { tone: 'chip-warn', label: 'WARN' };
-
-            const disk = payload?.pocketbase?.disk || {};
-            if (disk?.status === 'partial') return { tone: 'chip-warn', label: 'PARTIAL' };
-            if (disk?.status === 'unavailable') return { tone: 'chip-muted', label: 'UNKNOWN' };
-            if (disk?.data_exists || disk?.filesystem?.available) return { tone: 'chip-ok', label: 'OK' };
-            return { tone: 'chip-muted', label: 'UNKNOWN' };
-        }
-
-        function deriveAsyncPullStatus(payload) {
-            const runtime = payload?.runtime || {};
-            const marketUniverse = runtime?.market_universe || {};
-            const orderTracker = runtime?.order_tracker || {};
-            const signalRouter = runtime?.signal_router || {};
-            const gateway = runtime?.gateway || {};
-            const session = runtime?.session || {};
-            const refreshSec = Math.max(15, Number(payload?.config?.ibkr_target_refresh_sec || 0) || 60);
-            const orderPollSec = Math.max(5, Number(orderTracker?.active_poll_interval_s || orderTracker?.idle_poll_interval_s || 0) || 15);
-            const targetAgeS = ageSecondsFromIso(marketUniverse?.last_target_refresh);
-            const orderAgeS = ageSecondsFromIso(orderTracker?.last_poll);
-            const signalAgeS = ageSecondsFromIso(signalRouter?.last_poll);
-            const observed = [targetAgeS, orderAgeS, signalAgeS].filter((item) => item != null);
-            const runtimeStarting = Boolean(runtime?.starting);
-            const runtimeOnline = Boolean(
-                gateway?.running
-                || gateway?.reachable
-                || session?.running
-                || orderTracker?.running
-                || signalRouter?.running
-            );
-            const copyParts = [
-                `target ${marketUniverse?.last_target_refresh ? formatAgo(marketUniverse.last_target_refresh) : '--'}`,
-                `order ${orderTracker?.last_poll ? formatAgo(orderTracker.last_poll) : '--'}`,
-                signalRouter?.last_poll ? `signal ${formatAgo(signalRouter.last_poll)}` : ''
-            ].filter(Boolean);
-            if (!observed.length) {
-                if (runtimeStarting) {
-                    return {
-                        tone: 'chip-warn',
-                        label: 'STARTING',
-                        copy: 'runtime 仍在启动，拉取轮询尚未稳定',
-                        summary: 'pull starting',
-                    };
-                }
-                if (!runtimeOnline) {
-                    return {
-                        tone: 'chip-error',
-                        label: 'ERROR',
-                        copy: 'runtime 当前离线，目标刷新 / 轮询未在运行',
-                        summary: 'pull down',
-                    };
-                }
-                return {
-                    tone: 'chip-muted',
-                    label: 'UNKNOWN',
-                    copy: '还没有目标刷新 / 轮询时间戳',
-                    summary: 'pull --',
-                };
-            }
-
-            const hasError = (
-                (targetAgeS != null && targetAgeS > Math.max(refreshSec * 4, 300))
-                || (orderAgeS != null && orderAgeS > Math.max(orderPollSec * 8, 180))
-                || (signalAgeS != null && signalAgeS > 360)
-            );
-            const hasWarn = (
-                (targetAgeS != null && targetAgeS > Math.max(refreshSec * 2, 120))
-                || (orderAgeS != null && orderAgeS > Math.max(orderPollSec * 4, 60))
-                || (signalAgeS != null && signalAgeS > 180)
-            );
-
-            return {
-                tone: hasError ? 'chip-error' : (hasWarn ? 'chip-warn' : 'chip-ok'),
-                label: hasError ? 'ERROR' : (hasWarn ? 'SLOW' : 'OK'),
-                copy: copyParts.join(' · '),
-                summary: copyParts.slice(0, 2).join(' · '),
-            };
-        }
-
-        function deriveWebSocketPushStatus(payload) {
-            const runtime = payload?.runtime || {};
-            const websocket = runtime?.websocket || {};
-            const apiUtilization = payload?.api_utilization || {};
-            const activeSubscriptionCount = Number(apiUtilization?.active_subscription_count || 0) || 0;
-            const lastMessageAgeS = apiUtilization?.last_message_age_s == null
-                ? Number.NaN
-                : Number(apiUtilization.last_message_age_s);
-            const pingIntervalS = Math.max(15, Number(websocket?.ping_interval_s || 0) || 45);
-            const wsSilenceEnabled = apiUtilization?.ws_silence_enabled !== false;
-            const wsSilencePolicy = String(apiUtilization?.ws_silence_policy || '').trim().toLowerCase() || 'regular';
-            const configuredWarnSec = Number(apiUtilization?.ws_silence_warn_sec);
-            const configuredCriticalSec = Number(apiUtilization?.ws_silence_critical_sec);
-            const warnSec = Number.isFinite(configuredWarnSec) && configuredWarnSec > 0
-                ? configuredWarnSec
-                : (pingIntervalS * 2);
-            const criticalSec = Number.isFinite(configuredCriticalSec) && configuredCriticalSec > warnSec
-                ? configuredCriticalSec
-                : (pingIntervalS * 4);
-            const copy = [
-                `msg ${formatSeconds(apiUtilization?.last_message_age_s)}`,
-                `tic ${formatSeconds(apiUtilization?.last_tic_age_s)}`,
-                `subs ${formatInteger(apiUtilization?.ws_subscribed_count || activeSubscriptionCount)}`
-            ].join(' · ');
-
-            if (!websocket.connected || !websocket.ready) {
-                return {
-                    tone: 'chip-error',
-                    label: 'ERROR',
-                    copy: `connected ${websocket.connected ? 'yes' : 'no'} · ready ${websocket.ready ? 'yes' : 'no'} · ${copy}`,
-                    summary: `push ${websocket.ready ? 'partial' : 'down'}`,
-                };
-            }
-            if (!activeSubscriptionCount) {
-                return {
-                    tone: 'chip-muted',
-                    label: 'IDLE',
-                    copy,
-                    summary: 'push idle',
-                };
-            }
-            if (!wsSilenceEnabled) {
-                return {
-                    tone: 'chip-muted',
-                    label: 'OFF',
-                    copy: `${copy} · session ${wsSilencePolicy === 'disabled' ? 'closed' : wsSilencePolicy}`,
-                    summary: 'push off-hours',
-                };
-            }
-            if (!Number.isFinite(lastMessageAgeS)) {
-                return {
-                    tone: 'chip-warn',
-                    label: 'UNKNOWN',
-                    copy,
-                    summary: 'push --',
-                };
-            }
-
-            const hasError = lastMessageAgeS > criticalSec;
-            const hasWarn = lastMessageAgeS > warnSec;
-            return {
-                tone: hasError ? 'chip-error' : (hasWarn ? 'chip-warn' : 'chip-ok'),
-                label: hasError ? 'ERROR' : (hasWarn ? 'SLOW' : 'OK'),
-                copy: `${copy} · threshold ${formatSeconds(warnSec)}/${formatSeconds(criticalSec)}`,
-                summary: `msg ${formatSeconds(lastMessageAgeS)} / ${formatSeconds(warnSec)}`,
-            };
-        }
-
-        function deriveRefreshDelta(apiUtilization) {
-            const deltas = {};
-            const nextSnapshot = {};
-            DELTA_KEYS.forEach((key) => {
-                const nextValue = Number(apiUtilization?.[key] || 0) || 0;
-                const previousValue = lastCounterSnapshot ? Number(lastCounterSnapshot[key] || 0) || 0 : null;
-                nextSnapshot[key] = nextValue;
-                deltas[key] = previousValue != null && nextValue >= previousValue ? (nextValue - previousValue) : 0;
-            });
-            lastCounterSnapshot = nextSnapshot;
-            return deltas;
-        }
-
-        async function requestMonitorJson(path) {
-            const response = await fetchWithRetry(buildPageUrl(path, {}, { environment: currentEnvironment }), {
-                headers: getAuthHeaders()
-            }, {
-                attempts: 3,
-                retryDelayMs: 500
-            });
-            if (response.status === 401 || response.status === 403) {
-                handleAuthError();
-                throw new Error('Authentication failed');
-            }
-            const text = await response.text();
-            let data = {};
-            try {
-                data = text ? JSON.parse(text) : {};
-            } catch (_) {
-                data = { ok: false, raw: text };
-            }
-            if (!response.ok) {
-                throw new Error(data.error || data.message || `Request failed (${response.status})`);
-            }
-            return data;
-        }
-
-        function renderMetricCard({ label, value, copy, delta = null, toneClass = '' }) {
-            const badge = delta == null
-                ? ''
-                : `<span class="delta-badge${Number(delta) > 0 ? '' : ' muted'}">+${escapeHtml(String(delta))}</span>`;
-            return `
-                <div class="metric-card ${escapeHtml(toneClass)}">
-                    <div class="metric-label">
-                        <span>${escapeHtml(label)}</span>
-                        ${badge}
-                    </div>
-                    <div class="metric-value">${escapeHtml(value)}</div>
-                    <div class="metric-copy">${escapeHtml(copy)}</div>
-                </div>
-            `;
-        }
-
-        function getSystemServiceTone(status) {
-            const text = String(status || '').trim().toLowerCase();
-            if (['running', 'ok', 'online', 'ready', 'success'].includes(text)) return 'is-ok';
-            if (['warning', 'warn', 'pending', 'degraded', 'idle', 'disabled', 'embedded', 'expected_remote', 'peer', 'external'].includes(text)) return 'is-warn';
-            if (['error', 'offline', 'failed'].includes(text)) return 'is-error';
-            return 'is-neutral';
-        }
-
-        function getSystemServiceSeverity(status) {
-            const tone = getSystemServiceTone(status);
-            if (tone === 'is-error') return 'error';
-            if (tone === 'is-warn') return 'warning';
-            return 'info';
-        }
-
-        function renderSystemMonitor(payload) {
-            const metaEl = document.getElementById('systemMonitorMeta');
-            const gridEl = document.getElementById('systemMonitorGrid');
-            if (!metaEl || !gridEl) return;
-
-            const serviceMonitor = payload?.service_monitor || {};
-            const services = serviceMonitor?.services && typeof serviceMonitor.services === 'object'
-                ? serviceMonitor.services
-                : {};
-            const orderedNames = ['ibkr-console', 'ibkr-api', 'ibkr-scheduler', 'ibkr-compute', 'ibkr-runtime', 'ibkr-gateway', 'pocketbase'];
-            const items = [];
-            orderedNames.forEach((name) => {
-                if (!services[name]) return;
-                items.push({ key: name, ...(services[name] || {}) });
-            });
-            Object.keys(services).sort().forEach((name) => {
-                if (orderedNames.includes(name)) return;
-                items.push({ key: name, ...(services[name] || {}) });
-            });
-
-            const counts = serviceMonitor?.status_counts && typeof serviceMonitor.status_counts === 'object'
-                ? Object.entries(serviceMonitor.status_counts)
-                    .filter(([, count]) => Number(count || 0) > 0)
-                    .map(([status, count]) => `${String(status).toUpperCase()} ${Number(count || 0)}`)
-                    .join(' · ')
-                : '';
-            metaEl.textContent = [
-                `services ${items.length}`,
-                counts,
-                `env ${String(serviceMonitor.environment || payload?.requested_environment || currentEnvironment).toUpperCase()}`
-            ].filter(Boolean).join(' · ');
-
-            if (!items.length) {
-                gridEl.innerHTML = '<div class="empty-state">当前没有 split-stack 服务状态。</div>';
-                return;
-            }
-
-            gridEl.innerHTML = items.map((service) => {
-                const status = String(service.status || '--').trim().toUpperCase() || '--';
-                const detail = String(service.detail || service.responsibility || '--').trim() || '--';
-                const responsibility = String(service.responsibility || '').trim();
-                const endpoint = String(service.internal_url || service.public_url || service.upstream || '').trim();
-                const footer = [
-                    service.fault_domain ? `fault ${service.fault_domain}` : '',
-                    endpoint ? endpoint : '',
-                    responsibility ? responsibility : '',
-                ].filter(Boolean).join(' · ');
-                return `
-                    <div class="metric-card ${getSystemServiceTone(service.status)}">
-                        <div class="metric-label">
-                            <span>${escapeHtml(service.service_name || service.key || '--')}</span>
-                            <span class="severity ${escapeHtml(getSystemServiceSeverity(service.status))}">${escapeHtml(status)}</span>
-                        </div>
-                        <div class="metric-value">${escapeHtml(status)}</div>
-                        <div class="metric-copy">${escapeHtml(detail)}</div>
-                        <div class="metric-copy">${escapeHtml(footer || '--')}</div>
-                    </div>
-                `;
-            }).join('');
-        }
-
-        function renderHero(payload) {
-            const runtime = payload?.runtime || {};
-            const compute = payload?.compute || {};
-            const apiUtilization = payload?.api_utilization || {};
-            const host = payload?.host || {};
-            const serviceMonitor = payload?.service_monitor || {};
-            const monitorServices = serviceMonitor?.services && typeof serviceMonitor.services === 'object'
-                ? serviceMonitor.services
-                : {};
-            const apiServiceStatus = String((monitorServices['ibkr-api'] || {}).status || 'running').trim().toUpperCase() || 'RUNNING';
-            const schedulerServiceStatus = String((monitorServices['ibkr-scheduler'] || {}).status || (payload?.scheduler?.status || '--')).trim().toUpperCase() || '--';
-            const consoleServiceStatus = String((monitorServices['ibkr-console'] || {}).status || '--').trim().toUpperCase() || '--';
-            const schedulerLagLabel = payload?.scheduler?.dispatch_lag_min != null
-                ? formatSeconds(Number(payload.scheduler.dispatch_lag_min || 0) * 60)
-                : '--';
-            const gatewayActive = Boolean(runtime?.gateway?.running || runtime?.gateway?.reachable);
-            const sessionAuthed = Boolean(runtime?.session?.authenticated);
-            const wsReady = Boolean(runtime?.websocket?.connected && runtime?.websocket?.ready);
-            const dataStatus = deriveDataStatus(payload);
-            const hostStatus = deriveHostStatus(payload);
-            const pocketbaseStatus = derivePocketBaseStatus(payload);
-            const pullStatus = deriveAsyncPullStatus(payload);
-            const pushStatus = deriveWebSocketPushStatus(payload);
-            const monitorTone = payload?.status === 'error'
-                ? 'chip-error'
-                : (payload?.status === 'warning' ? 'chip-warn' : 'chip-ok');
-            const chips = [
-                { label: `Monitor ${String(payload?.status || 'ok').toUpperCase()}`, tone: monitorTone },
-                { label: `Gateway ${gatewayActive ? 'ACTIVE' : 'OFFLINE'}`, tone: gatewayActive ? 'chip-ok' : 'chip-error' },
-                { label: `Session ${sessionAuthed ? 'AUTHED' : 'PENDING'}`, tone: sessionAuthed ? 'chip-ok' : 'chip-warn' },
-                { label: `WebSocket ${wsReady ? 'READY' : 'PENDING'}`, tone: wsReady ? 'chip-ok' : 'chip-error' },
-                { label: `Pull ${pullStatus.label}`, tone: pullStatus.tone },
-                { label: `WS Push ${pushStatus.label}`, tone: pushStatus.tone },
-                { label: `Data ${dataStatus.label}`, tone: dataStatus.tone },
-                { label: `API ${apiServiceStatus}`, tone: getSystemServiceTone(apiServiceStatus) === 'is-error' ? 'chip-error' : 'chip-ok' },
-                { label: `Scheduler ${schedulerServiceStatus}`, tone: getSystemServiceTone(schedulerServiceStatus) === 'is-error' ? 'chip-error' : (getSystemServiceTone(schedulerServiceStatus) === 'is-warn' ? 'chip-warn' : 'chip-ok') },
-                { label: `Console ${consoleServiceStatus}`, tone: getSystemServiceTone(consoleServiceStatus) === 'is-error' ? 'chip-error' : (getSystemServiceTone(consoleServiceStatus) === 'is-warn' ? 'chip-warn' : 'chip-ok') },
-                { label: `Host ${hostStatus.label}`, tone: hostStatus.tone },
-                { label: `PB ${pocketbaseStatus.label}`, tone: pocketbaseStatus.tone },
-                { label: `Env ${String(payload?.requested_environment || currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
-            ];
-            document.getElementById('heroChips').innerHTML = chips.map((chip) => `
-                <span class="status-chip ${chip.tone}">
-                    <span class="dot" style="background:currentColor"></span>
-                    ${escapeHtml(chip.label)}
-                </span>
-            `).join('');
-
-            document.getElementById('heroCopy').textContent = [
-                `subscription ${apiUtilization.active_subscription_count || 0}/${apiUtilization.subscription_limit || 0}`,
-                `ws ${apiUtilization.ws_subscribed_count || 0} subscribed`,
-                `scheduler ${schedulerServiceStatus}${schedulerLagLabel !== '--' ? ` / lag ${schedulerLagLabel}` : ''}`,
-                pullStatus.summary,
-                pushStatus.summary,
-                `pb_data ${formatBytes(payload?.pocketbase?.disk?.data_size_bytes)}`,
-                `host ${host.hostname || '--'}`,
-                dataStatus.copy
-            ].filter(Boolean).join(' · ');
-
-            document.getElementById('heroMeta').innerHTML = [
-                `fetched ${formatTimeLabel(payload?.fetched_at)}`,
-                `compute last ${formatAgo(compute.last_compute)}`,
-                `actual env ${String(payload?.actual_runtime_environment || payload?.environment || currentEnvironment).toUpperCase()}`,
-                `host ${host.hostname || '--'}`
-            ].join('<br>');
-
-            const callout = document.getElementById('heroCallout');
-            if (payload?.runtime_environment_mismatch) {
-                callout.innerHTML = `<div class="callout error">请求的是 ${escapeHtml(String(payload.requested_environment || currentEnvironment).toUpperCase())}，但当前真正跑起来的是 ${escapeHtml(String(payload.actual_runtime_environment || '--').toUpperCase())}。下面所有指标都以实际运行环境为准。</div>`;
-                return;
-            }
-            const flags = Array.isArray(payload?.flags) ? payload.flags : [];
-            const firstFlag = flags.find((item) => String(item?.severity || '').toLowerCase() === 'error')
-                || flags.find((item) => String(item?.severity || '').toLowerCase() === 'warning')
-                || flags[0];
-            if (firstFlag) {
-                const tone = String(firstFlag.severity || '').toLowerCase() === 'error'
-                    ? 'error'
-                    : (String(firstFlag.severity || '').toLowerCase() === 'warning' ? 'warn' : 'ok');
-                callout.innerHTML = `<div class="callout ${tone}">${escapeHtml(firstFlag.title || '--')} · ${escapeHtml(firstFlag.detail || '--')}</div>`;
-            } else {
-                callout.innerHTML = '';
-            }
-        }
-
-        function renderUtilization(payload, deltas) {
-            const apiUtilization = payload?.api_utilization || {};
-            const config = payload?.config || {};
-            document.getElementById('utilMeta').textContent = [
-                `limit ${apiUtilization.subscription_limit || 0}`,
-                `spacing ${config.ibkr_history_request_spacing || apiUtilization.request_spacing_s || '--'}s`,
-                `refresh ${config.ibkr_target_refresh_sec || '--'}s`
-            ].join(' · ');
-
-            const cards = [
-                {
-                    label: 'Subscription Util',
-                    value: `${apiUtilization.active_subscription_count || 0}/${apiUtilization.subscription_limit || 0}`,
-                    copy: `utilization ${formatPercent(apiUtilization.utilization_pct, 2)} · trade ${apiUtilization.active_trade_symbol_count || 0}`,
-                },
-                {
-                    label: 'WS Subscribed',
-                    value: formatInteger(apiUtilization.ws_subscribed_count || 0),
-                    copy: `pending ${apiUtilization.pending_subscription_count || 0} · last msg ${apiUtilization.last_message || '--'}`,
-                },
-                {
-                    label: 'History Requests',
-                    value: formatInteger(apiUtilization.request_count || 0),
-                    copy: `spacing ${formatNumber(apiUtilization.request_spacing_s, 2)}s · max concurrency ${apiUtilization.max_concurrency || 0}`,
-                    delta: deltas.request_count,
-                },
-                {
-                    label: 'History Retry',
-                    value: formatInteger(apiUtilization.retry_count || 0),
-                    copy: `watchlist backfill ${payload?.config?.ibkr_watchlist_backfill_interval_min || '--'}m`,
-                    delta: deltas.retry_count,
-                },
-                {
-                    label: 'Throttle Count',
-                    value: formatInteger(apiUtilization.throttle_count || 0),
-                    copy: '节流次数只增不减，重点看本页内 delta',
-                    delta: deltas.throttle_count,
-                },
-                {
-                    label: 'WS Messages',
-                    value: formatInteger(apiUtilization.websocket_message_count || 0),
-                    copy: `age ${formatSeconds(apiUtilization.last_message_age_s)} · last tic ${apiUtilization.last_tic || '--'}`,
-                    delta: deltas.websocket_message_count,
-                },
-                {
-                    label: 'Order Updates',
-                    value: formatInteger(apiUtilization.order_update_count || 0),
-                    copy: `ws order stream ${payload?.runtime?.websocket?.order_updates_subscribed ? 'subscribed' : 'pending'}`,
-                    delta: deltas.order_update_count,
-                },
-                {
-                    label: 'Pending Subs',
-                    value: formatInteger(apiUtilization.pending_subscription_count || 0),
-                    copy: '如果这里持续不归零，先看 session / ws / target refresh',
-                }
-            ];
-            document.getElementById('utilGrid').innerHTML = cards.map(renderMetricCard).join('');
-        }
-
-        function renderSubscriptionView(payload) {
-            const samples = payload?.samples || {};
-            const activeSubscriptions = Array.isArray(samples.active_subscriptions) ? samples.active_subscriptions : [];
-            symbolPagerState = {};
-            const tradeCount = activeSubscriptions.filter((item) => item.role === 'trade').length;
-            const monitorCount = activeSubscriptions.filter((item) => item.role === 'market_monitor').length;
-            document.getElementById('subscriptionMeta').textContent = `active ${activeSubscriptions.length} · trade ${tradeCount} · monitor ${monitorCount}`;
-
-            const sampleBlocks = [
-                {
-                    title: 'Pending Symbols',
-                    content: (Array.isArray(samples.pending_symbols) && samples.pending_symbols.length)
-                        ? `<div class="tag-cloud">${samples.pending_symbols.slice(0, 18).map((symbol) => `
-                            <span class="mini-tag"><span class="label">PEND</span>${escapeHtml(symbol)}</span>
-                        `).join('')}</div>`
-                        : '<div class="sample-empty">当前没有 warmup pending symbol。</div>'
-                },
-                {
-                    title: 'Stale Symbols',
-                    content: (Array.isArray(samples.stale_symbols) && samples.stale_symbols.length)
-                        ? `<div class="tag-cloud">${samples.stale_symbols.slice(0, 18).map((symbol) => `
-                            <span class="mini-tag"><span class="label">STALE</span>${escapeHtml(symbol)}</span>
-                        `).join('')}</div>`
-                        : '<div class="sample-empty">当前没有 stale active symbol。</div>'
-                },
-                {
-                    title: 'Repair Reasons',
-                    content: (Array.isArray(samples.repair_reasons) && samples.repair_reasons.length)
-                        ? `<div class="tag-cloud">${samples.repair_reasons.slice(0, 10).map((item) => `
-                            <span class="mini-tag"><span class="label">${escapeHtml(item.symbol || '--')}</span>${escapeHtml(item.reason || '--')}</span>
-                        `).join('')}</div>`
-                        : '<div class="sample-empty">最近没有 active repair reason。</div>'
-                }
-            ];
-            document.getElementById('subscriptionSamples').innerHTML = sampleBlocks.map((block) => `
-                <div class="sample-card">
-                    <div class="sample-title">${escapeHtml(block.title)}</div>
-                    ${block.content}
-                </div>
-            `).join('');
-
-            if (!activeSubscriptions.length) {
-                document.getElementById('subscriptionTableWrap').innerHTML = '<div class="empty-state">当前没有 active subscriptions。一般先看 target refresh、session 和 websocket 是否已经恢复。</div>';
-                return;
-            }
-
-            const rows = activeSubscriptions.slice().sort((left, right) => {
-                const staleDiff = Number(Boolean(left?.stale)) - Number(Boolean(right?.stale));
-                if (staleDiff) return staleDiff;
-                const roleWeight = { trade: 0, market_monitor: 1, subscription: 2 };
-                const roleDiff = (roleWeight[left?.role] ?? 9) - (roleWeight[right?.role] ?? 9);
-                if (roleDiff) return roleDiff;
-                return String(left?.symbol || '').localeCompare(String(right?.symbol || ''));
-            }).map((item, index) => {
-                const stateText = item.stale ? 'STALE' : (item.visible ? 'ACTIVE' : 'PENDING');
-                const stateClass = item.stale ? 'state-stale' : (item.visible ? 'state-active' : 'state-pending');
-                const symbolPagerKey = `subscription-symbol-${index}`;
-                return `
-                    <tr>
-                        <td class="mono">${renderPagedSymbol(item.symbol || '--', symbolPagerKey)}</td>
-                        <td><span class="table-pill ${escapeHtml(item.role || 'subscription')}">${escapeHtml(item.role || 'subscription')}</span></td>
-                        <td class="mono">${escapeHtml(String(item.conid ?? '--'))}</td>
-                        <td>${escapeHtml(formatSeconds(item.last_update_age_s))}</td>
-                        <td>${escapeHtml(String(item.tick_count ?? 0))}</td>
-                        <td>${escapeHtml(String(item.volume_updates ?? 0))}</td>
-                        <td class="${stateClass}">${escapeHtml(stateText)}</td>
-                    </tr>
-                `;
-            }).join('');
-
-            document.getElementById('subscriptionTableWrap').innerHTML = `
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Symbol</th>
-                            <th>Role</th>
-                            <th>Conid</th>
-                            <th>Tick Age</th>
-                            <th>Ticks</th>
-                            <th>Volume Updates</th>
-                            <th>State</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
-            `;
-        }
-
-        function renderServicePerformance(payload) {
-            const compute = payload?.compute || {};
-            const runtime = payload?.runtime || {};
-            const samples = payload?.samples || {};
-            const pullStatus = deriveAsyncPullStatus(payload);
-            const pushStatus = deriveWebSocketPushStatus(payload);
-            const activeBars = Array.isArray(samples.active_bar_symbols) ? samples.active_bar_symbols : [];
-            const realtime = runtime?.realtime_compute || {};
-            const lastBarCloseMs = parseIsoMs(realtime.last_bar_close);
-            const lastRunMs = parseIsoMs(realtime.last_run);
-            const closeDelaySeconds = lastBarCloseMs
-                ? ((new Date(lastBarCloseMs).getUTCMinutes() % 5) * 60 + new Date(lastBarCloseMs).getUTCSeconds())
-                : null;
-            const computeAfterCloseSeconds = lastRunMs && lastBarCloseMs && lastRunMs >= lastBarCloseMs
-                ? (lastRunMs - lastBarCloseMs) / 1000
-                : null;
-            const maxTickAge = activeBars.length
-                ? Math.max(...activeBars.map((item) => Number(item?.last_update_age_s || 0) || 0))
-                : null;
-
-            document.getElementById('serviceMeta').textContent = [
-                `phase ${runtime?.runtime_phase || '--'}`,
-                `queue ${runtime?.realtime_compute?.queue_size || 0}`,
-                `warmup ${runtime?.warmup?.phase || '--'}`
-            ].join(' · ');
-
-            const cards = [
-                {
-                    label: 'Ready Engines',
-                    value: `${compute.ready_engines || 0}/${compute.total_engines || 0}`,
-                    copy: `tracked cursors ${compute.tracked_cursors || 0} · compute count ${compute.compute_count || 0}`,
-                },
-                {
-                    label: 'Async Pull',
-                    value: pullStatus.label,
-                    copy: pullStatus.copy,
-                },
-                {
-                    label: 'WS Push',
-                    value: pushStatus.label,
-                    copy: pushStatus.copy,
-                },
-                {
-                    label: 'Close Delay',
-                    value: formatSeconds(closeDelaySeconds),
-                    copy: realtime.last_bar_close ? `last close ${formatTimeLabel(realtime.last_bar_close)}` : 'last close --',
-                },
-                {
-                    label: 'Compute After Close',
-                    value: formatSeconds(computeAfterCloseSeconds),
-                    copy: realtime.last_run ? `last run ${formatTimeLabel(realtime.last_run)}` : 'last run --',
-                },
-                {
-                    label: 'Compute Queue',
-                    value: formatInteger(realtime.queue_size || 0),
-                    copy: `last elapsed ${formatSeconds(runtime?.realtime_compute?.last_result?.elapsed_s ?? realtime.last_elapsed_s)}`,
-                },
-                {
-                    label: 'Backfill Total',
-                    value: formatInteger(runtime?.data_backfill?.total_backfilled || 0),
-                    copy: `requests ${runtime?.data_backfill?.request_count || 0} · retry ${runtime?.data_backfill?.retry_count || 0}`,
-                },
-                {
-                    label: 'Order Tracker',
-                    value: formatInteger(runtime?.order_tracker?.tracked_orders || 0),
-                    copy: `last poll ${formatTimeLabel(runtime?.order_tracker?.last_poll)}`,
-                },
-                {
-                    label: 'Signal Positions',
-                    value: formatInteger(runtime?.signal_processor?.active_positions || 0),
-                    copy: `gate ${runtime?.signal_processor?.trading_gate_open ? 'OPEN' : (runtime?.signal_processor?.trading_gate_reason || 'CLOSED')}`,
-                },
-                {
-                    label: 'Active Tick Lag',
-                    value: formatSeconds(maxTickAge),
-                    copy: activeBars.length ? `${activeBars.length} visible active bars` : 'active bars --',
-                }
-            ];
-            document.getElementById('serviceGrid').innerHTML = cards.map(renderMetricCard).join('');
-        }
-
-        function renderHostHealth(payload) {
-            const host = payload?.host || {};
-            const cpu = host?.cpu || {};
-            const loadavg = host?.loadavg || {};
-            const memory = host?.memory || {};
-            const disk = host?.disk || {};
-            const process = host?.process || {};
-            document.getElementById('hostMeta').textContent = `${host.hostname || '--'} · pid ${process.pid || '--'} · ${host.platform || '--'}`;
-
-            const cards = [
-                {
-                    label: 'CPU Used',
-                    value: cpu.used_pct != null ? formatPercent(cpu.used_pct, 2) : '--',
-                    copy: cpu.used_pct != null
-                        ? `sample ${formatSeconds(cpu.sample_span_s)} · idle ${formatPercent(cpu.idle_pct, 2)}`
-                        : (cpu.source || 'unavailable'),
-                },
-                {
-                    label: 'Load / CPU',
-                    value: loadavg.per_cpu_1 != null ? formatNumber(loadavg.per_cpu_1, 3) : '--',
-                    copy: `load1 ${formatNumber(loadavg['1'], 2)} · cpu ${host.cpu_count || '--'}`,
-                },
-                {
-                    label: 'Memory Used',
-                    value: memory.used_pct != null ? formatPercent(memory.used_pct, 2) : '--',
-                    copy: `${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)} · ${memory.source || 'unknown'}`,
-                },
-                {
-                    label: 'Disk Used',
-                    value: disk.used_pct != null ? formatPercent(disk.used_pct, 2) : '--',
-                    copy: `${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} · ${disk.path || '--'}`,
-                },
-                {
-                    label: 'Process RSS',
-                    value: formatBytes(process.rss_bytes),
-                    copy: `uptime ${formatSeconds(process.uptime_s)}`,
-                },
-                {
-                    label: 'Threads',
-                    value: formatInteger(process.threads || 0),
-                    copy: `fd ${process.fd_count ?? '--'}`,
-                },
-                {
-                    label: 'Availability',
-                    value: memory.source === 'unavailable' ? 'PARTIAL' : 'READY',
-                    copy: memory.source === 'unavailable'
-                        ? '非 Linux /proc 环境下，部分主机指标不可用'
-                        : 'host snapshot 来自 compute 主机',
-                }
-            ];
-            document.getElementById('hostGrid').innerHTML = cards.map(renderMetricCard).join('');
-        }
-
-        function renderPocketBaseDisk(payload) {
-            const disk = payload?.pocketbase?.disk || {};
-            const filesystem = disk?.filesystem || {};
-            const topEntries = Array.isArray(disk?.top_entries) ? disk.top_entries : [];
-            const largest = topEntries[0] || null;
-            const availability = disk?.status === 'unavailable'
-                ? 'UNKNOWN'
-                : (disk?.status === 'partial' ? 'PARTIAL' : 'READY');
-
-            document.getElementById('pocketbaseMeta').textContent = [
-                disk?.data_path || '--',
-                filesystem?.mount_path ? `mount ${filesystem.mount_path}` : '',
-                `sample ${formatTimeLabel(disk?.collected_at)}`
-            ].filter(Boolean).join(' · ');
-
-            const cards = [
-                {
-                    label: 'PB Data',
-                    value: formatBytes(disk?.data_size_bytes),
-                    copy: `db ${formatBytes(disk?.db_size_bytes)} · storage ${formatBytes(disk?.storage_size_bytes)}`,
-                },
-                {
-                    label: 'PB Volume',
-                    value: filesystem?.used_pct != null ? formatPercent(filesystem.used_pct, 2) : '--',
-                    copy: `${formatBytes(filesystem?.used_bytes)} / ${formatBytes(filesystem?.total_bytes)} · free ${formatBytes(filesystem?.available_bytes)}`,
-                },
-                {
-                    label: 'DB Auto Backups',
-                    value: formatBytes(disk?.db_backup_size_bytes),
-                    copy: `${formatInteger(disk?.db_backup_file_count || 0)} files · ${disk?.db_backup_glob || 'data.db.backup.*'}`,
-                },
-                {
-                    label: 'PB Storage',
-                    value: formatBytes(disk?.storage_size_bytes),
-                    copy: `backups/ ${formatBytes(disk?.backups_size_bytes)} · aux ${formatBytes(disk?.aux_size_bytes)}`,
-                },
-                {
-                    label: 'PB Database',
-                    value: formatBytes(disk?.db_size_bytes),
-                    copy: disk?.db_path || '--',
-                },
-                {
-                    label: 'Largest Entry',
-                    value: largest?.name || '--',
-                    copy: largest ? `${formatBytes(largest.size_bytes)} · ${largest.path || '--'}` : (disk?.scan_error || 'pb_data 目录扫描正常'),
-                },
-                {
-                    label: 'Availability',
-                    value: availability,
-                    copy: disk?.scan_error || `cache ${formatSeconds(disk?.cache_ttl_s)} · ${disk?.source || 'unknown'}`,
-                }
-            ];
-            document.getElementById('pocketbaseGrid').innerHTML = cards.map(renderMetricCard).join('');
-        }
-
-        function renderFlags(payload) {
-            const flags = Array.isArray(payload?.flags) ? payload.flags : [];
-            document.getElementById('flagMeta').textContent = `flags ${flags.length}`;
-            if (!flags.length) {
-                document.getElementById('flagList').innerHTML = '<div class="empty-state">当前没有 flags。</div>';
-                return;
-            }
-            document.getElementById('flagList').innerHTML = flags.map((item) => `
-                <div class="flag-item">
-                    <div class="flag-head">
-                        <div class="flag-title">${escapeHtml(item.title || item.code || '--')}</div>
-                        <span class="severity ${escapeHtml(String(item.severity || 'info').toLowerCase())}">${escapeHtml(item.severity || 'info')}</span>
-                    </div>
-                    <div class="flag-detail">${escapeHtml(item.detail || '--')}</div>
-                </div>
-            `).join('');
-        }
-
-        function renderRecentEvents(payload) {
-            const events = Array.isArray(payload?.recent_events) ? payload.recent_events : [];
-            document.getElementById('eventMeta').textContent = `events ${events.length}`;
-            if (!events.length) {
-                document.getElementById('eventList').innerHTML = '<div class="empty-state">当前环境没有最近 system events。</div>';
-                return;
-            }
-            document.getElementById('eventList').innerHTML = events.map((item) => `
-                <div class="event-item">
-                    <div class="event-head">
-                        <div>
-                            <div class="event-title">${escapeHtml(item.title || item.event_type || '--')}</div>
-                            <div class="event-copy">${escapeHtml(`${item.source || '--'} · ${item.level || '--'} · ${item.environment || currentEnvironment}`)}</div>
-                        </div>
-                        <div class="event-time">${escapeHtml(formatTimeLabel(item.us_time || item.created))}</div>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        function setRefreshState(active) {
-            const button = document.getElementById('refreshBtn');
-            if (!button) return;
-            button.disabled = Boolean(active);
-            button.textContent = active ? '↻ 刷新中...' : '↻ 手动刷新';
-        }
-
-        async function loadMonitorData(showToastOnSuccess = false) {
-            if (!initMonitorAuth()) return;
-            const loadId = ++latestMonitorLoadId;
-            setRefreshState(true);
-            try {
-                const payload = await requestMonitorJson('/api/custom/system/monitorz');
-                if (loadId !== latestMonitorLoadId) return;
-                const deltas = deriveRefreshDelta(payload?.api_utilization || {});
-                renderHero(payload);
-                renderSystemMonitor(payload);
-                renderUtilization(payload, deltas);
-                renderSubscriptionView(payload);
-                renderServicePerformance(payload);
-                renderHostHealth(payload);
-                renderPocketBaseDisk(payload);
-                renderFlags(payload);
-                renderRecentEvents(payload);
-                if (showToastOnSuccess) {
-                    showToast(`监控大盘已刷新 · ${String(payload?.actual_runtime_environment || currentEnvironment).toUpperCase()}`);
-                }
-            } catch (error) {
-                if (loadId !== latestMonitorLoadId) return;
-                document.getElementById('heroCopy').textContent = `监控数据加载失败：${error.message || error}`;
-                document.getElementById('heroCallout').innerHTML = `<div class="callout error">${escapeHtml(error.message || String(error))}</div>`;
-                ['systemMonitorGrid', 'utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'pocketbaseGrid', 'flagList', 'eventList'].forEach((id) => {
-                    const el = document.getElementById(id);
-                    if (el) el.innerHTML = '<div class="empty-state">请求失败，请检查 PocketBase proxy 和 compute monitor 接口。</div>';
-                });
-                const systemMeta = document.getElementById('systemMonitorMeta');
-                if (systemMeta) systemMeta.textContent = 'services --';
-                if (showToastOnSuccess) {
-                    showToast(`刷新失败：${error.message || error}`);
-                }
-            } finally {
-                if (loadId === latestMonitorLoadId) {
-                    setRefreshState(false);
-                }
-            }
-        }
-
-        function startPolling() {
-            stopPolling();
-            refreshTimer = setInterval(() => {
-                if (document.hidden) return;
-                loadMonitorData(false);
-            }, 15000);
-        }
-
-        function stopPolling() {
-            if (refreshTimer) {
-                clearInterval(refreshTimer);
-                refreshTimer = null;
-            }
-        }
-
-        window.onEnvironmentChange = function(environment) {
-            currentEnvironment = environment;
-            window.location.href = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
-        };
-
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                stopPolling();
-                return;
-            }
-            loadMonitorData(false);
-            startPolling();
-        });
-
-        document.addEventListener('DOMContentLoaded', async () => {
-            if (!initMonitorAuth()) return;
-            document.getElementById('nav').innerHTML = renderNav('/ibkr_monitor.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📊 IBKR 监控大盘', {
-                subtitle: '请求 / 订阅 / 主机健康',
-            });
-            document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_monitor.html');
-            await withPageLoading(
-                () => loadMonitorData(false),
-                {
-                    title: '监控页加载中',
-                    copy: '正在同步请求利用率、订阅状态、服务性能和主机健康快照。',
-                }
-            );
-            startPolling();
-        });
-
-        window.loadMonitorData = loadMonitorData;
+        window.location.replace(target);
+      })();
     </script>
-</body>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR Monitor moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_monitor.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

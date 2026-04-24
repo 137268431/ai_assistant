@@ -1,440 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>历史重建 - Trading Flight</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_history_rebuild/page.css">
-</head>
-<body>
-    <div id="nav"></div>
-    <div class="page-shell">
-        <div id="contextBar"></div>
-        <div id="pageBridge"></div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR History Rebuild moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-        <section class="hero">
-            <div class="hero-head">
-                <div>
-                    <div class="hero-kicker">Rebuild Summary</div>
-                    <div class="hero-title">当前任务与重建范围</div>
-                    <div class="hero-copy">
-                        这个页面会顺序执行 <span class="mono">purge → backfill_bars → rollup_intervals → materialize_indicators → run_daily_scan → verify</span>。
-                        适合在确认旧 <span class="mono">bar / indicator / signal / targets</span> 不可信后，重建一份干净的 live 历史。
-                    </div>
-                </div>
-                <div class="hero-meta">
-                    <button id="refreshStatusButton" class="btn page-refresh-trigger" type="button">刷新状态</button>
-                    <div class="hero-meta-line" id="heroEnvironment">环境 --</div>
-                    <div class="hero-meta-line" id="heroUpdatedAt">最近更新 --</div>
-                    <div class="hero-meta-line">来源 /api/custom/ibkr/history/rebuild/status</div>
-                </div>
-            </div>
-        </section>
+      * {
+        box-sizing: border-box;
+      }
 
-        <div id="errorBanner" class="banner"></div>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-        <section class="panel">
-            <div class="panel-head">
-                <div>
-                    <div class="panel-kicker">Control</div>
-                    <div class="panel-title">重建参数</div>
-                    <div class="panel-copy">默认清空当前环境的 live 历史链，然后回拉最近 N 天的 5m bars；最后重建当日 scan / targets，并把状态持续写到 <span class="mono">ibkr_state.ibkr_history_rebuild_job</span>。</div>
-                </div>
-                <div class="panel-tools">
-                    <div id="statusPill" class="status-pill status-idle"><span class="status-dot"></span><span>IDLE</span></div>
-                    <button id="todayButton" class="btn" type="button">仅重建今日</button>
-                    <button id="startButton" class="btn primary" type="button">全量清除并重建</button>
-                </div>
-            </div>
-            <div class="form-grid" style="margin-top:16px;">
-                <div class="field">
-                    <label for="lookbackDays">Lookback Days</label>
-                    <input id="lookbackDays" type="number" min="1" max="365" step="1" value="14">
-                </div>
-                <div class="field">
-                    <label for="computeBatchSize">Compute Batch</label>
-                    <input id="computeBatchSize" type="number" min="1" max="12" step="1" value="4">
-                </div>
-                <div class="field span-2">
-                    <label>动作</label>
-                    <div class="checkbox-row">
-                        <input id="scanAfterRebuild" type="checkbox" checked>
-                        <span>完成后自动重新执行当日盘前筛选，重建 <span class="mono">ibkr_targets</span></span>
-                    </div>
-                </div>
-            </div>
-        </section>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-        <div class="metric-grid">
-            <div class="metric-card">
-                <div class="metric-label">Stage</div>
-                <div class="metric-value" id="metricStage">--</div>
-                <div class="metric-copy" id="metricMessage">等待任务启动</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Progress</div>
-                <div class="metric-value" id="metricProgress">0%</div>
-                <div class="metric-copy" id="metricTimeline">job idle</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Universe</div>
-                <div class="metric-value" id="metricSymbols">0</div>
-                <div class="metric-copy" id="metricSymbolsCopy">symbols queued</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">5m Refilled</div>
-                <div class="metric-value" id="metricBars">0</div>
-                <div class="metric-copy" id="metricBarsCopy">authority 5m rows</div>
-            </div>
-        </div>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-        <div class="dual-grid">
-            <section class="panel">
-                <div class="panel-head">
-                    <div>
-                        <div class="panel-kicker">Pipeline</div>
-                        <div class="panel-title">阶段进度</div>
-                        <div class="panel-copy">重导期间这里会显示当前阶段、任务消息、开始/结束时间和 compute batch 进展。</div>
-                    </div>
-                    <div class="panel-tools">
-                        <div class="status-pill status-idle" id="runtimePill"><span class="status-dot"></span><span>Runtime --</span></div>
-                    </div>
-                </div>
-                <div class="progress-shell">
-                    <div class="progress-track"><span id="progressFill" class="progress-fill"></span></div>
-                    <div class="progress-meta">
-                        <div id="progressMetaLeft">stage idle</div>
-                        <div id="progressMetaRight">0%</div>
-                    </div>
-                </div>
-                <div class="key-grid" style="margin-top:14px;">
-                    <div class="key-item">
-                        <div class="list-label">Compute</div>
-                        <div class="metric-value" style="font-size:22px;" id="computeBatchStat">0 / 0</div>
-                        <div class="key-copy" id="computeBatchCopy">processed 0 bars</div>
-                    </div>
-                    <div class="key-item">
-                        <div class="list-label">Rollup</div>
-                        <div class="metric-value" style="font-size:22px;" id="rollupStat">0</div>
-                        <div class="key-copy">higher timeframe bars rebuilt</div>
-                    </div>
-                    <div class="key-item">
-                        <div class="list-label">Targets</div>
-                        <div class="metric-value" style="font-size:22px;" id="targetsStat">--</div>
-                        <div class="key-copy" id="targetsCopy">scan pending</div>
-                    </div>
-                    <div class="key-item">
-                        <div class="list-label">Range</div>
-                        <div class="metric-value" style="font-size:18px;" id="rangeStat">--</div>
-                        <div class="key-copy">refill 5m import window</div>
-                    </div>
-                </div>
-            </section>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
 
-            <section class="panel">
-                <div class="panel-head">
-                    <div>
-                        <div class="panel-kicker">Verification</div>
-                        <div class="panel-title">结果摘要</div>
-                        <div class="panel-copy">展示清理前后计数、5m canonical 校验和各 interval 当前落库规模。</div>
-                    </div>
-                </div>
-                <div id="summaryList" class="summary-list">
-                    <div class="empty">等待任务状态...</div>
-                </div>
-            </section>
-        </div>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-        <section class="panel">
-            <div class="panel-head">
-                <div>
-                    <div class="panel-kicker">Logs</div>
-                    <div class="panel-title">重建日志</div>
-                    <div class="panel-copy">最近 40 条作业日志，适合观察当前卡在哪个 symbol、哪个阶段以及是否失败。</div>
-                </div>
-            </div>
-            <div id="logList" class="log-list">
-                <div class="empty">当前还没有日志。</div>
-            </div>
-        </section>
-    </div>
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
+
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
     <script>
-        requireAuth('/ibkr_history_rebuild.html');
-
-        let currentEnvironment = getCurrentRuntimeEnvironment();
-        let pollTimer = null;
-        let activeStatus = null;
-        let statusPollFailureCount = 0;
-
-        function authHeaders() {
-            const token = getToken();
-            return token ? { Authorization: token } : {};
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
         }
-
-        async function requestJson(path, options = {}) {
-            const response = await fetch(path, {
-                method: options.method || 'GET',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...authHeaders(),
-                    ...(options.headers || {})
-                },
-                body: options.body ? JSON.stringify(options.body) : undefined
-            });
-            const rawText = await response.text();
-            let payload = {};
-            try {
-                payload = rawText ? JSON.parse(rawText) : {};
-            } catch (_) {
-                payload = rawText ? { raw: rawText } : {};
-            }
-            if (!response.ok && payload.ok !== true) {
-                const error = new Error(payload.message || payload.error || payload.raw || `HTTP ${response.status}`);
-                error.status = response.status;
-                error.payload = payload;
-                throw error;
-            }
-            return payload;
-        }
-
-        function buildErrorMessage(error, fallback = '请求失败') {
-            const payload = error?.payload || {};
-            return String(
-                payload.message
-                || payload.error
-                || error?.message
-                || fallback
-            ).trim() || fallback;
-        }
-
-        function handleStatusLoadError(error, fallback = '状态拉取失败') {
-            statusPollFailureCount += 1;
-            const shouldPausePolling = statusPollFailureCount >= 3;
-            const message = buildErrorMessage(error, fallback);
-            if (shouldPausePolling && pollTimer) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-            }
-            setError(shouldPausePolling ? `${message}（已暂停自动轮询，请刷新后重试）` : message);
-        }
-
-        function setError(message) {
-            const banner = document.getElementById('errorBanner');
-            const text = String(message || '').trim();
-            banner.style.display = text ? 'block' : 'none';
-            banner.textContent = text;
-        }
-
-        function formatTimeLabel(value) {
-            if (!value) return '--';
-            try {
-                return formatTime(value, 'Asia/Shanghai', 'full');
-            } catch (_) {
-                return String(value);
-            }
-        }
-
-        function escapeHtml(value) {
-            return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }
-
-        function renderStatusPill(status) {
-            const normalized = String(status?.status || 'idle').toLowerCase();
-            const pill = document.getElementById('statusPill');
-            let cls = 'status-idle';
-            let label = normalized.toUpperCase();
-            if (normalized === 'running' || normalized === 'queued') cls = 'status-running';
-            if (normalized === 'completed') cls = 'status-completed';
-            if (normalized === 'failed') cls = 'status-failed';
-            pill.className = `status-pill ${cls}`;
-            pill.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(label)}</span>`;
-        }
-
-        function renderRuntimePill(runtimeCheck) {
-            const pill = document.getElementById('runtimePill');
-            if (!runtimeCheck || Object.keys(runtimeCheck).length === 0) {
-                pill.className = 'status-pill status-idle';
-                pill.innerHTML = '<span class="status-dot"></span><span>Runtime --</span>';
-                return;
-            }
-            const busy = Boolean(runtimeCheck.busy);
-            pill.className = `status-pill ${busy ? 'status-failed' : 'status-completed'}`;
-            pill.innerHTML = `<span class="status-dot"></span><span>${busy ? 'Runtime Busy' : 'Runtime Stopped'}</span>`;
-        }
-
-        function renderMetrics(status) {
-            const verification = status?.verification || {};
-            document.getElementById('metricStage').textContent = String(status?.stage || '--').toUpperCase();
-            document.getElementById('metricMessage').textContent = status?.message || '等待任务启动';
-            document.getElementById('metricProgress').textContent = `${Number(status?.progress || 0)}%`;
-            document.getElementById('metricTimeline').textContent = `job ${status?.job_id || '--'} · ${formatTimeLabel(status?.updated_at_ms ? new Date(Number(status.updated_at_ms)).toISOString() : '')}`;
-            document.getElementById('metricSymbols').textContent = `${Number(status?.processed_symbols || 0)} / ${Number(status?.symbol_total || 0)}`;
-            document.getElementById('metricSymbolsCopy').textContent = status?.requested_symbols?.length
-                ? `manual universe ${status.requested_symbols.length}`
-                : 'watchlist pool + configured market ws universe';
-            document.getElementById('metricBars').textContent = String(Number(status?.fetched_5m_bars || 0));
-            document.getElementById('metricBarsCopy').textContent = `canonical 5m ${Number(verification.canonical_5m || 0)} / ${Number(verification.total_5m || 0)}`;
-
-            document.getElementById('progressFill').style.width = `${Math.max(0, Math.min(100, Number(status?.progress || 0)))}%`;
-            document.getElementById('progressMetaLeft').textContent = `${status?.stage || 'idle'} · ${status?.message || '等待任务启动'}`;
-            document.getElementById('progressMetaRight').textContent = `${Number(status?.progress || 0)}%`;
-            document.getElementById('computeBatchStat').textContent = `${Number(status?.compute_batches_completed || 0)} / ${Number(status?.compute_batches_total || 0)}`;
-            document.getElementById('computeBatchCopy').textContent = `processed ${Number(status?.compute_processed || 0)} bars`;
-            document.getElementById('rollupStat').textContent = String(Number(status?.rolled_bars || 0));
-            document.getElementById('targetsStat').textContent = status?.scan_result
-                ? String(Number(status.scan_result.candidates || 0))
-                : '--';
-            document.getElementById('targetsCopy').textContent = status?.scan_result
-                ? `scanned ${Number(status.scan_result.scanned || 0)} symbols`
-                : 'scan pending';
-            document.getElementById('rangeStat').textContent = status?.start_us_time && status?.end_us_time
-                ? `${status.start_us_time} -> ${status.end_us_time}`
-                : '--';
-        }
-
-        function renderSummary(status) {
-            const before = status?.counts_before || {};
-            const after = status?.counts_after || {};
-            const verification = status?.verification || {};
-            const intervalCounts = verification.interval_counts || {};
-            const rows = [
-                ['Before', Object.entries(before).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
-                ['Purged', Object.entries(status?.purged || {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
-                ['After', Object.entries(after).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
-                ['5m Canonical', verification.total_5m != null ? `${verification.canonical_5m || 0} / ${verification.total_5m || 0} · noncanonical ${verification.noncanonical_5m || 0}` : '--'],
-                ['Intervals', Object.entries(intervalCounts).map(([key, value]) => `${key}: ${value}`).join(' · ') || '--'],
-                ['Finished', status?.finished_at ? formatTimeLabel(status.finished_at) : '--']
-            ];
-            const summary = document.getElementById('summaryList');
-            summary.innerHTML = rows.map(([label, value]) => `
-                <div class="summary-row">
-                    <div class="list-label">${escapeHtml(label)}</div>
-                    <div class="summary-value">${escapeHtml(String(value || '--'))}</div>
-                </div>
-            `).join('');
-        }
-
-        function renderLogs(status) {
-            const rows = Array.isArray(status?.logs) ? status.logs : [];
-            const list = document.getElementById('logList');
-            if (!rows.length) {
-                list.innerHTML = '<div class="empty">当前还没有日志。</div>';
-                return;
-            }
-            list.innerHTML = rows.slice().reverse().map((row) => `
-                <div class="log-row">
-                    <div class="log-time">${escapeHtml(String(row.time || '--'))}</div>
-                    <div class="log-message">${escapeHtml(String(row.message || ''))}</div>
-                </div>
-            `).join('');
-        }
-
-        function applyStatus(status) {
-            activeStatus = status || {};
-            document.getElementById('heroEnvironment').textContent = `环境 ${getEnvironmentLabel(currentEnvironment)}`;
-            document.getElementById('heroUpdatedAt').textContent = `最近更新 ${formatTimeLabel(activeStatus?.updated_at_ms ? new Date(Number(activeStatus.updated_at_ms)).toISOString() : '')}`;
-            renderStatusPill(activeStatus);
-            renderRuntimePill(activeStatus?.runtime_check || {});
-            renderMetrics(activeStatus);
-            renderSummary(activeStatus);
-            renderLogs(activeStatus);
-            document.getElementById('startButton').disabled = Boolean(activeStatus?.running);
-            document.getElementById('todayButton').disabled = Boolean(activeStatus?.running);
-        }
-
-        async function loadStatus() {
-            const payload = await requestJson(`/api/custom/ibkr/history/rebuild/status?environment=${encodeURIComponent(currentEnvironment)}`);
-            statusPollFailureCount = 0;
-            setError('');
-            applyStatus(payload);
-            return payload;
-        }
-
-        async function startRebuild(mode = 'full_reset_rebuild', overrides = {}) {
-            setError('');
-            const payload = {
-                environment: currentEnvironment,
-                mode,
-                lookback_days: Number(document.getElementById('lookbackDays').value || 14),
-                compute_batch_size: Number(document.getElementById('computeBatchSize').value || 4),
-                scan_after_rebuild: document.getElementById('scanAfterRebuild').checked,
-                ...overrides
-            };
-            try {
-                const result = await requestJson('/api/custom/ibkr/history/rebuild/start', {
-                    method: 'POST',
-                    body: payload
-                });
-                statusPollFailureCount = 0;
-                showToast('历史重建已启动');
-                applyStatus(result);
-            } catch (error) {
-                const message = buildErrorMessage(error, '启动失败');
-                setError(message);
-                if (error?.payload) {
-                    applyStatus(error.payload);
-                }
-            }
-        }
-
-        function startPolling() {
-            if (pollTimer) clearInterval(pollTimer);
-            pollTimer = setInterval(async () => {
-                try {
-                    await loadStatus();
-                } catch (error) {
-                    handleStatusLoadError(error, '状态拉取失败');
-                }
-            }, 2000);
-        }
-
-        async function refreshHistoryRebuildStatus(notify = false) {
-            spinPageRefreshButton('refreshStatusButton');
-            try {
-                await loadStatus();
-                if (notify) showToast('历史重建状态已刷新');
-            } catch (error) {
-                handleStatusLoadError(error, '状态拉取失败');
-            }
-        }
-
-        window.onEnvironmentChange = function(nextEnvironment) {
-            currentEnvironment = normalizeRuntimeEnvironment(nextEnvironment, 'live');
-            window.location.href = buildPageUrl('/ibkr_history_rebuild.html', {}, { environment: currentEnvironment });
-        };
-
-        document.addEventListener('DOMContentLoaded', async () => {
-            document.getElementById('nav').innerHTML = renderNav('/ibkr_history_rebuild.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🧱 历史重建', { subtitle: 'purge / backfill / rollup / recompute' });
-            document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_history_rebuild.html');
-            document.getElementById('startButton').addEventListener('click', () => startRebuild('full_reset_rebuild'));
-            document.getElementById('todayButton').addEventListener('click', () => startRebuild('rebuild_today', { lookback_days: 1 }));
-            document.getElementById('refreshStatusButton').addEventListener('click', () => refreshHistoryRebuildStatus(true));
-            await withPageLoading(
-                async () => {
-                    try {
-                        await loadStatus();
-                    } catch (error) {
-                        handleStatusLoadError(error, '状态初始化失败');
-                    }
-                },
-                {
-                    title: '历史重建页加载中',
-                    copy: '正在同步作业状态、阶段进度和最近日志。',
-                }
-            );
-            startPolling();
-        });
+        window.location.replace(target);
+      })();
     </script>
-</body>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR History Rebuild moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_history_rebuild.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

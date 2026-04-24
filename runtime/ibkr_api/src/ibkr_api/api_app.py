@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import partial
-import json
 import os
 import re
 import time
@@ -12,6 +11,33 @@ from zoneinfo import ZoneInfo
 import requests
 from flask import Flask, Response, jsonify, request
 
+from ibkr_api.app_core.config_store import (
+    load_effective_config_map as _load_effective_config_map_support,
+    load_effective_config_rows as _load_effective_config_rows_support,
+    load_recent_system_events as _load_recent_system_events_support,
+    pick_effective_config_rows as _pick_effective_config_rows_support,
+    serialize_config_rows as _serialize_config_rows_support,
+)
+from ibkr_api.app_core.compat_registrar import register_compat_proxy_routes
+from ibkr_api.app_core.http import (
+    build_response_from_upstream as _build_response_from_upstream_support,
+    feishu_callback_response as _feishu_callback_response_support,
+    json_response as _json_response_support,
+    request_json as _request_json_support,
+    request_json_request as _request_json_request_support,
+)
+from ibkr_api.app_core.platform_registrar import register_platform_routes
+from ibkr_api.app_core.trading_registrar import register_trading_routes
+from ibkr_api.app_core.value_utils import (
+    as_dict as _as_dict_support,
+    escape_filter_string as _escape_filter_string_support,
+    normalize_environment as _normalize_environment_support,
+    normalize_symbol_list as _normalize_symbol_list_support,
+    parse_boolean as _parse_boolean_support,
+    parse_time_ms as _parse_time_ms_support,
+    trim_array as _trim_array_support,
+    trim_object_entries as _trim_object_entries_support,
+)
 from ibkr_api.callbacks.feishu import (
     callback_toast as _callback_toast_support,
     dispatch_feishu_2fa_callback as _dispatch_feishu_2fa_callback_support,
@@ -19,20 +45,13 @@ from ibkr_api.callbacks.feishu import (
     dispatch_feishu_signal_callback as _dispatch_feishu_signal_callback_support,
     handle_feishu_callback as _handle_feishu_callback_support,
 )
-from ibkr_api.account.routes import register_account_routes
-from ibkr_api.callbacks.routes import register_callback_routes
-from ibkr_api.compat.routes import register_compat_routes
-from ibkr_api.control.routes import register_control_routes
 from ibkr_api.control.runtime_guard import (
     build_runtime_environment_mismatch_payload,
     inspect_requested_runtime_environment,
 )
 from ibkr_api.integrations.feishu import feishu_send_interactive, feishu_suppressed, feishu_token, feishu_update_interactive
 from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime as _cancel_broker_order_via_runtime_support
-from ibkr_api.data_quality.routes import register_data_quality_routes
-from ibkr_api.universe.routes import register_universe_routes
 from ibkr_api.universe.today_targets import build_today_targets_response
-from ibkr_api.orders.routes import register_order_routes
 from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response
 from ibkr_api.orders.group_close import build_order_close_group_response
@@ -41,14 +60,11 @@ from ibkr_api.orders.webhooks import build_order_cancel_webhook_response, build_
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.reconcile import build_orders_reconcile_response
 from ibkr_api.reverse.actions import build_reverse_ack_response, build_reverse_dispatch_response
-from ibkr_api.reverse.routes import register_reverse_routes
 from ibkr_api.reverse.calculate import build_reverse_calculate_response
 from ibkr_api.reverse.queries import build_reverse_list_response, build_reverse_pending_response
 from ibkr_api.signals.expiry import build_signal_expiry_response
-from ibkr_api.signals.routes import register_signal_routes
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
 from ibkr_api.signals.webhooks import build_signal_cancel_webhook_response, build_signal_confirm_webhook_response
-from ibkr_api.runtime.routes import register_runtime_routes
 from ibkr_api.runtime.status_support import (
     build_statusz_compute_payload as _build_statusz_compute_payload_support,
     build_statusz_live_readiness as _build_statusz_live_readiness_support,
@@ -78,9 +94,6 @@ from ibkr_api.startup.progress import (
     resolve_startup_step_label as _resolve_startup_step_label,
     startup_chat_id as _startup_chat_id_support,
 )
-from ibkr_api.startup.routes import register_startup_routes
-from ibkr_api.storage.routes import register_storage_routes
-from ibkr_api.state.routes import register_state_routes
 from ibkr_api.system.events import (
     build_system_event_card as _build_system_event_card_support,
     deliver_system_event_notification as _deliver_system_event_notification_support,
@@ -102,7 +115,6 @@ from ibkr_api.system.monitor_support import (
     derive_monitor_service_map as _derive_monitor_service_map_support,
     probe_console_status as _probe_console_status_support,
 )
-from ibkr_api.system.routes import register_system_routes
 from ibkr_api.system.scheduler_support import (
     augment_scheduler_summary as _augment_scheduler_summary_support,
     build_scheduler_summary as _build_scheduler_summary_support,
@@ -111,9 +123,7 @@ from ibkr_api.system.scheduler_support import (
     scheduler_status as _scheduler_status_support,
 )
 from ibkr_api.system.summary_support import build_system_summary_payload as _build_system_summary_payload_support
-from ibkr_api.two_factor.routes import register_two_factor_routes
 from ibkr_api.tradingview.ingest import upsert_tv_indicator as _upsert_tv_indicator_support, upsert_tv_signal as _upsert_tv_signal_support
-from ibkr_api.tradingview.routes import register_tradingview_routes
 from ibkr_compute.api.service_topology import build_service_topology
 from ibkr_scheduler.cron_registry import build_cron_payload
 from ibkr_compute.core.config import Config
@@ -221,198 +231,59 @@ EXCLUDED_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-enc
 FORWARDED_REQUEST_HEADERS = {"Accept", "Authorization", "Content-Type"}
 
 
-def _normalize_environment(value: Any, default: str = "live") -> str:
-    text = str(value or "").strip().lower()
-    return text or default
-
-
-def _parse_boolean(value: Any, default: bool = False) -> bool:
-    if value is None or value == "":
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    normalized = str(value or "").strip().lower()
-    if normalized in {"true", "1", "yes", "y", "on"}:
-        return True
-    if normalized in {"false", "0", "no", "n", "off"}:
-        return False
-    return bool(default)
-
-
-def _escape_filter_string(value: Any) -> str:
-    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return {}
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return {}
-        return dict(parsed) if isinstance(parsed, dict) else {}
-    return {}
-
-
-def _normalize_symbol_list(values: Any) -> list[str]:
-    source = values if isinstance(values, list) else [values]
-    items: list[str] = []
-    seen: set[str] = set()
-
-    def _append_symbol(raw: Any) -> None:
-        symbol = str(raw or "").strip().upper()
-        if not symbol or symbol in seen:
-            return
-        seen.add(symbol)
-        items.append(symbol)
-
-    for value in source:
-        if isinstance(value, list):
-            for nested in value:
-                _append_symbol(nested)
-            continue
-        _append_symbol(value)
-    return items
-
-
-def _trim_array(values: Any, limit: int) -> list[Any]:
-    if not isinstance(values, list):
-        return []
-    max_items = max(0, int(limit or 0))
-    return list(values[:max_items]) if max_items > 0 else []
-
-
-def _trim_object_entries(value: Any, limit: int) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    max_items = max(0, int(limit or 0))
-    if max_items <= 0 or len(value) <= max_items:
-        return dict(value)
-    trimmed: dict[str, Any] = {}
-    for key, item in list(value.items())[:max_items]:
-        trimmed[str(key)] = item
-    return trimmed
+_normalize_environment = _normalize_environment_support
+_parse_boolean = _parse_boolean_support
+_escape_filter_string = _escape_filter_string_support
+_as_dict = _as_dict_support
+_normalize_symbol_list = _normalize_symbol_list_support
+_trim_array = _trim_array_support
+_trim_object_entries = _trim_object_entries_support
 
 
 def _parse_et_time_ms(value: Any) -> int:
-    text = str(value or "").strip()
-    if not text:
-        return 0
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=ET)
-        return int(parsed.timestamp() * 1000)
-    except Exception:
-        pass
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            parsed = datetime.strptime(text, fmt).replace(tzinfo=ET)
-            return int(parsed.timestamp() * 1000)
-        except Exception:
-            continue
-    return 0
+    return _parse_time_ms_support(value, default_tz=ET)
 
 
 def _pick_effective_config_rows(rows: list[dict[str, Any]], environment: str) -> list[dict[str, Any]]:
-    runtime_environment = _normalize_environment(environment)
-    priority = {"": 0, "global": 1, runtime_environment: 2}
-    selected: dict[str, dict[str, Any]] = {}
-
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        key = str(row.get("key") or "").strip()
-        if not key:
-            continue
-        row_environment = str(row.get("environment") or "").strip().lower()
-        row_priority = priority.get(row_environment, -1)
-        current = selected.get(key)
-        current_priority = priority.get(str((current or {}).get("environment") or "").strip().lower(), -1)
-        if current is None or row_priority >= current_priority:
-            selected[key] = row
-
-    return [selected[key] for key in sorted(selected)]
+    return _pick_effective_config_rows_support(rows, environment, normalize_environment=_normalize_environment)
 
 
 def _serialize_config_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    items = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        items.append(
-            {
-                "key": str(row.get("key") or ""),
-                "value": row.get("value") or "",
-                "environment": str(row.get("environment") or ""),
-                "updated": row.get("updated") or "",
-            }
-        )
-    return items
+    return _serialize_config_rows_support(rows)
 
 
 def _load_effective_config_rows(environment: str) -> list[dict[str, Any]]:
-    runtime_environment = _normalize_environment(environment, "live")
-    rows: list[dict[str, Any]] = []
-    try:
-        rows = pb.get_runtime_config(scope="all", environment=runtime_environment)
-    except Exception:
-        rows = []
-    if not rows:
-        try:
-            rows = pb.get_all_records("config", sort="sort_order,key", max_pages=20)
-        except Exception:
-            rows = []
-    return _pick_effective_config_rows(rows, runtime_environment)
+    return _load_effective_config_rows_support(
+        pb,
+        environment,
+        normalize_environment=_normalize_environment,
+        pick_effective_config_rows_fn=_pick_effective_config_rows,
+    )
 
 
 def _load_effective_config_map(environment: str, selected_keys: tuple[str, ...] | list[str] | set[str] | None = None) -> dict[str, str]:
-    allowed = {str(key or "").strip() for key in (selected_keys or []) if str(key or "").strip()}
-    config_map: dict[str, str] = {}
-    for row in _load_effective_config_rows(environment):
-        key = str(row.get("key") or "").strip()
-        if not key or (allowed and key not in allowed):
-            continue
-        config_map[key] = str(row.get("value") or "")
-    return config_map
+    return _load_effective_config_map_support(
+        pb,
+        environment,
+        normalize_environment=_normalize_environment,
+        load_effective_config_rows_fn=lambda pb_client, runtime_environment: _load_effective_config_rows_support(
+            pb_client,
+            runtime_environment,
+            normalize_environment=_normalize_environment,
+            pick_effective_config_rows_fn=_pick_effective_config_rows,
+        ),
+        selected_keys=selected_keys,
+    )
 
 
 def _load_recent_system_events(environment: str, limit: int = 20) -> list[dict[str, Any]]:
-    runtime_environment = _normalize_environment(environment, "live")
-    safe_limit = max(1, min(200, int(limit or 20)))
-    filter_expr = f'environment = "{_escape_filter_string(runtime_environment)}"'
-    rows: list[dict[str, Any]] = []
-    try:
-        get_records = getattr(pb, "get_records", None)
-        if callable(get_records):
-            rows = get_records("system_events", filter=filter_expr, sort="-created", per_page=safe_limit, page=1)
-        else:
-            rows = (pb.get_all_records("system_events", filter=filter_expr, sort="-created", max_pages=1) or [])[:safe_limit]
-    except Exception:
-        rows = []
-
-    items: list[dict[str, Any]] = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        items.append(
-            {
-                "id": str(row.get("id") or ""),
-                "event_type": str(row.get("event_type") or ""),
-                "level": str(row.get("level") or ""),
-                "source": str(row.get("source") or ""),
-                "environment": str(row.get("environment") or runtime_environment),
-                "title": str(row.get("title") or ""),
-                "notified": bool(row.get("notified")),
-                "us_time": row.get("us_time") or "",
-                "created": row.get("created") or "",
-            }
-        )
-    return items
+    return _load_recent_system_events_support(
+        pb,
+        environment,
+        limit=limit,
+        normalize_environment=_normalize_environment,
+        escape_filter_string=_escape_filter_string,
+    )
 
 
 def _is_enabled_text(value: Any) -> bool:
@@ -656,60 +527,34 @@ _deliver_startup_progress_card = partial(
 
 
 def _json_response(payload: dict[str, Any], status_code: int = 200, headers: dict[str, str] | None = None):
-    response = jsonify(payload)
-    if hasattr(response, "headers") and isinstance(headers, dict):
-        for key, value in headers.items():
-            response.headers[str(key)] = str(value)
-    if hasattr(response, "headers"):
-        return response, int(status_code or 200)
-    if int(status_code or 200) == 200:
-        return payload
-    return payload, int(status_code or 200)
+    return _json_response_support(jsonify_fn=jsonify, payload=payload, status_code=status_code, headers=headers)
 
 
 def _feishu_callback_response(payload: dict[str, Any], *, update_token: str = "", status_code: int = 200):
-    headers = {"update_card_token": update_token} if update_token else {}
-    return _json_response(payload, status_code=status_code, headers=headers)
+    return _feishu_callback_response_support(
+        jsonify_fn=jsonify,
+        payload=payload,
+        update_token=update_token,
+        status_code=status_code,
+    )
 
 
 def _build_response_from_upstream(response: requests.Response) -> Response:
-    headers = [
-        (key, value)
-        for key, value in response.headers.items()
-        if key.lower() not in EXCLUDED_RESPONSE_HEADERS
-    ]
-    return Response(response.content, status=response.status_code, headers=headers)
+    return _build_response_from_upstream_support(
+        response=response,
+        response_class=Response,
+        excluded_headers=EXCLUDED_RESPONSE_HEADERS,
+    )
 
 
 def _request_json(base_url: str, path: str, *, params: list[tuple[str, str]] | None = None, timeout: float = 5.0) -> dict[str, Any]:
-    target_url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
-    try:
-        response = requests.get(
-            target_url,
-            params=params,
-            timeout=max(1.0, float(timeout or 0)),
-        )
-    except requests.RequestException as exc:
-        return {
-            "ok": False,
-            "status_code": 0,
-            "payload": {},
-            "error": str(exc),
-            "target_url": target_url,
-        }
-
-    payload: Any = {}
-    try:
-        payload = response.json() if response.content else {}
-    except Exception:
-        payload = {}
-    return {
-        "ok": bool(response.ok),
-        "status_code": int(response.status_code),
-        "payload": payload if isinstance(payload, dict) else {},
-        "target_url": target_url,
-        "error": "",
-    }
+    return _request_json_support(
+        requests_module=requests,
+        base_url=base_url,
+        path=path,
+        params=params,
+        timeout=timeout,
+    )
 
 
 def _request_json_request(
@@ -721,36 +566,15 @@ def _request_json_request(
     json_body: Any = None,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    target_url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
-    try:
-        response = requests.request(
-            method=method.upper(),
-            url=target_url,
-            params=params,
-            json=json_body,
-            timeout=max(1.0, float(timeout or 0)),
-        )
-    except requests.RequestException as exc:
-        return {
-            "ok": False,
-            "status_code": 0,
-            "payload": {},
-            "error": str(exc),
-            "target_url": target_url,
-        }
-
-    payload: Any = {}
-    try:
-        payload = response.json() if response.content else {}
-    except Exception:
-        payload = {}
-    return {
-        "ok": bool(response.ok),
-        "status_code": int(response.status_code),
-        "payload": payload if isinstance(payload, dict) else {},
-        "target_url": target_url,
-        "error": "",
-    }
+    return _request_json_request_support(
+        requests_module=requests,
+        method=method,
+        base_url=base_url,
+        path=path,
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
+    )
 
 
 def _get_state_payload(state_key: str, environment: str, *, date: str = "global") -> dict[str, Any]:
@@ -1014,23 +838,65 @@ def _build_system_monitor_payload(environment: str) -> dict[str, Any]:
     )
 
 
-_system_route_handlers = register_system_routes(
+_platform_route_handlers = register_platform_routes(
     app,
     deps={
         "pb": pb,
         "config": config,
+        "build_service_topology": build_service_topology,
         "normalize_environment": _normalize_environment,
         "parse_boolean": _parse_boolean,
         "escape_filter_string": _escape_filter_string,
+        "pick_effective_config_rows": _pick_effective_config_rows,
+        "serialize_config_rows": _serialize_config_rows,
+        "merge_service_topology": lambda *payloads: _merge_service_topology(*payloads),
+        "fetch_compute_health": lambda environment: _fetch_compute_health(environment),
+        "fetch_compute_status": lambda environment: _fetch_compute_status(environment),
+        "fetch_runtime_health": lambda environment: _fetch_runtime_health(environment),
+        "fetch_runtime_status": lambda environment: _fetch_runtime_status(environment),
+        "as_dict": _as_dict,
+        "load_daily_scan_state": lambda environment: _load_daily_scan_state(environment),
+        "count_active_today_targets": lambda environment, market_date: _count_active_today_targets(environment, market_date),
+        "build_statusz_compute_payload": lambda compute_payload, include_engines: _build_statusz_compute_payload(compute_payload, include_engines),
+        "build_statusz_live_readiness": lambda compute_payload, runtime_payload: _build_statusz_live_readiness(compute_payload, runtime_payload),
+        "build_statusz_runtime_payload": (
+            lambda runtime_payload, include_warmup_details, *, live_readiness, fallback_state=None: _build_statusz_runtime_payload(
+                runtime_payload,
+                include_warmup_details,
+                live_readiness=live_readiness,
+                fallback_state=fallback_state,
+            )
+        ),
+        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
+        "normalize_two_factor_state_with_runtime": lambda state_data, runtime_status: _normalize_two_factor_state_with_runtime(
+            state_data,
+            runtime_status,
+        ),
+        "ibkr_2fa_state_key": IBKR_2FA_STATE_KEY,
+        "ibkr_2fa_state_date": IBKR_2FA_STATE_DATE,
+        "compute_base_url": COMPUTE_BASE_URL,
+        "time_strings": _time_strings,
+        "normalize_startup_state": lambda value, environment: _normalize_startup_state(value, environment),
+        "build_startup_cycle_id": lambda environment: _build_startup_cycle_id(environment),
+        "build_startup_label": lambda environment, startup_seq, started_at: _build_startup_label(environment, startup_seq, started_at),
+        "startup_chat_id": lambda environment: _startup_chat_id(environment),
+        "default_startup_steps": _default_startup_steps,
+        "normalize_startup_fields": _normalize_startup_fields,
+        "merge_startup_steps": _merge_startup_steps,
+        "deliver_startup_progress_card": lambda state, environment: _deliver_startup_progress_card(state, environment),
+        "resolve_startup_step_label": lambda state: _resolve_startup_step_label(state),
+        "write_system_event_record": lambda *args, **kwargs: _write_system_event_record(*args, **kwargs),
+        "ibkr_startup_state_key": IBKR_STARTUP_STATE_KEY,
+        "ibkr_startup_state_date": IBKR_STARTUP_STATE_DATE,
         "config_value": _config_value,
         "signal_chat_id": _signal_chat_id,
         "console_base_url": _console_base_url,
         "feishu_send_interactive": _feishu_send_interactive,
         "feishu_update_interactive": _feishu_update_interactive,
+        "request_two_factor_approval": _request_two_factor_approval,
         "emit_system_event": _emit_system_event,
         "label_title_with_environment": _label_title_with_environment,
         "add_environment_to_detail": _add_environment_to_detail,
-        "write_system_event_record": lambda *args, **kwargs: _write_system_event_record(*args, **kwargs),
         "deliver_system_event_notification": lambda *args, **kwargs: _deliver_system_event_notification(*args, **kwargs),
         "build_cron_payload": build_cron_payload,
         "scheduler_status": lambda environment: _scheduler_status(environment),
@@ -1038,12 +904,6 @@ _system_route_handlers = register_system_routes(
         "augment_scheduler_summary": lambda summary, items: _augment_scheduler_summary(summary, items),
         "build_system_monitor_payload": lambda environment: _build_system_monitor_payload(environment),
         "build_system_summary_payload": lambda environment, lite_mode=False: _build_system_summary_payload(environment, lite_mode=lite_mode),
-        "build_service_topology": build_service_topology,
-        "time_strings": _time_strings,
-        "get_state_payload": _get_state_payload,
-        "normalize_two_factor_state_with_runtime": _normalize_two_factor_state_with_runtime,
-        "fetch_runtime_status": _fetch_runtime_status,
-        "request_two_factor_approval": _request_two_factor_approval,
         "build_signal_expiry_response": lambda *args, **kwargs: build_signal_expiry_response(*args, **kwargs),
         "build_order_detail_integrity_response": lambda *args, **kwargs: build_order_detail_integrity_response(*args, **kwargs),
         "build_today_targets_response": lambda payload: build_today_targets_response(
@@ -1062,31 +922,18 @@ _system_route_handlers = register_system_routes(
             normalize_environment=_normalize_environment,
             as_dict=_as_dict,
         ),
+        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
+            method,
+            base_url,
+            path,
+            params=params,
+            json_body=json_body,
+            timeout=timeout,
+        ),
+        "runtime_base_url": RUNTIME_BASE_URL,
     },
 )
-custom_ibkr_health_report = _system_route_handlers["custom_ibkr_health_report"]
-custom_ibkr_notify = _system_route_handlers["custom_ibkr_notify"]
-custom_system_event = _system_route_handlers["custom_system_event"]
-custom_system_cronz = _system_route_handlers["custom_system_cronz"]
-custom_system_healthz = _system_route_handlers["custom_system_healthz"]
-custom_system_schedulerz = _system_route_handlers["custom_system_schedulerz"]
-custom_system_summaryz = _system_route_handlers["custom_system_summaryz"]
-custom_system_monitorz = _system_route_handlers["custom_system_monitorz"]
-custom_system_job_signal_expiry = _system_route_handlers["custom_system_job_signal_expiry"]
-custom_system_job_order_detail_integrity = _system_route_handlers["custom_system_job_order_detail_integrity"]
-custom_system_job_order_expiry = _system_route_handlers["custom_system_job_order_expiry"]
-custom_system_job_auth_edge_guard = _system_route_handlers["custom_system_job_auth_edge_guard"]
-custom_system_job_auth_pending_guard = _system_route_handlers["custom_system_job_auth_pending_guard"]
-custom_system_job_data_gap_guard = _system_route_handlers["custom_system_job_data_gap_guard"]
-custom_system_job_two_factor_hourly_check = _system_route_handlers["custom_system_job_two_factor_hourly_check"]
-custom_system_job_weekly_reauth_reminder = _system_route_handlers["custom_system_job_weekly_reauth_reminder"]
-custom_system_job_weekly_reauth_followup = _system_route_handlers["custom_system_job_weekly_reauth_followup"]
-custom_system_job_market_open_reminder = _system_route_handlers["custom_system_job_market_open_reminder"]
-custom_system_job_heartbeat = _system_route_handlers["custom_system_job_heartbeat"]
-custom_system_job_status_reminder = _system_route_handlers["custom_system_job_status_reminder"]
-custom_system_job_scan_summary = _system_route_handlers["custom_system_job_scan_summary"]
-custom_system_job_monitor_alert_guard = _system_route_handlers["custom_system_job_monitor_alert_guard"]
-custom_system_job_daily_report = _system_route_handlers["custom_system_job_daily_report"]
+globals().update(_platform_route_handlers)
 
 
 _callback_toast = _callback_toast_support
@@ -1162,150 +1009,7 @@ def _cancel_broker_order_via_runtime(environment: str, order_id: str, payload: d
     )
 
 
-_runtime_route_handlers = register_runtime_routes(
-    app,
-    deps={
-        "pb": pb,
-        "build_service_topology": build_service_topology,
-        "normalize_environment": _normalize_environment,
-        "parse_boolean": _parse_boolean,
-        "pick_effective_config_rows": _pick_effective_config_rows,
-        "serialize_config_rows": _serialize_config_rows,
-        "merge_service_topology": lambda *payloads: _merge_service_topology(*payloads),
-        "fetch_compute_health": lambda environment: _fetch_compute_health(environment),
-        "fetch_compute_status": lambda environment: _fetch_compute_status(environment),
-        "fetch_runtime_health": lambda environment: _fetch_runtime_health(environment),
-        "fetch_runtime_status": lambda environment: _fetch_runtime_status(environment),
-        "as_dict": _as_dict,
-        "load_daily_scan_state": lambda environment: _load_daily_scan_state(environment),
-        "count_active_today_targets": lambda environment, market_date: _count_active_today_targets(environment, market_date),
-        "build_statusz_compute_payload": lambda compute_payload, include_engines: _build_statusz_compute_payload(compute_payload, include_engines),
-        "build_statusz_live_readiness": lambda compute_payload, runtime_payload: _build_statusz_live_readiness(compute_payload, runtime_payload),
-        "build_statusz_runtime_payload": (
-            lambda runtime_payload, include_warmup_details, *, live_readiness, fallback_state=None: _build_statusz_runtime_payload(
-                runtime_payload,
-                include_warmup_details,
-                live_readiness=live_readiness,
-                fallback_state=fallback_state,
-            )
-        ),
-        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
-        "normalize_two_factor_state_with_runtime": lambda state_data, runtime_status: _normalize_two_factor_state_with_runtime(state_data, runtime_status),
-        "ibkr_2fa_state_key": IBKR_2FA_STATE_KEY,
-        "ibkr_2fa_state_date": IBKR_2FA_STATE_DATE,
-        "compute_base_url": COMPUTE_BASE_URL,
-    },
-)
-custom_ibkr_runtime_config = _runtime_route_handlers["custom_ibkr_runtime_config"]
-custom_ibkr_healthz = _runtime_route_handlers["custom_ibkr_healthz"]
-custom_ibkr_statusz = _runtime_route_handlers["custom_ibkr_statusz"]
-custom_ibkr_two_factor_status = _runtime_route_handlers["custom_ibkr_two_factor_status"]
-
-
-_startup_route_handlers = register_startup_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "time_strings": _time_strings,
-        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
-        "normalize_startup_state": lambda value, environment: _normalize_startup_state(value, environment),
-        "build_startup_cycle_id": lambda environment: _build_startup_cycle_id(environment),
-        "build_startup_label": lambda environment, startup_seq, started_at: _build_startup_label(environment, startup_seq, started_at),
-        "startup_chat_id": lambda environment: _startup_chat_id(environment),
-        "default_startup_steps": _default_startup_steps,
-        "normalize_startup_fields": _normalize_startup_fields,
-        "merge_startup_steps": _merge_startup_steps,
-        "deliver_startup_progress_card": lambda state, environment: _deliver_startup_progress_card(state, environment),
-        "resolve_startup_step_label": lambda state: _resolve_startup_step_label(state),
-        "write_system_event_record": lambda *args, **kwargs: _write_system_event_record(*args, **kwargs),
-        "ibkr_startup_state_key": IBKR_STARTUP_STATE_KEY,
-        "ibkr_startup_state_date": IBKR_STARTUP_STATE_DATE,
-        "as_dict": _as_dict,
-    },
-)
-custom_ibkr_startup_progress = _startup_route_handlers["custom_ibkr_startup_progress"]
-custom_ibkr_startup_status = _startup_route_handlers["custom_ibkr_startup_status"]
-
-
-_storage_route_handlers = register_storage_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "parse_boolean": _parse_boolean,
-        "config_value": _config_value,
-    },
-)
-custom_ibkr_ping_write = _storage_route_handlers["custom_ibkr_ping_write"]
-custom_ibkr_bars = _storage_route_handlers["custom_ibkr_bars"]
-custom_ibkr_indicator = _storage_route_handlers["custom_ibkr_indicator"]
-custom_ibkr_indicators = _storage_route_handlers["custom_ibkr_indicators"]
-custom_ibkr_scan = _storage_route_handlers["custom_ibkr_scan"]
-custom_ibkr_data_quality_upsert = _storage_route_handlers["custom_ibkr_data_quality_upsert"]
-custom_ibkr_data_quality_truth_upsert = _storage_route_handlers["custom_ibkr_data_quality_truth_upsert"]
-
-
-_data_quality_route_handlers = register_data_quality_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-    },
-)
-custom_ibkr_data_quality_summary = _data_quality_route_handlers["custom_ibkr_data_quality_summary"]
-custom_ibkr_data_quality_truth_summary = _data_quality_route_handlers["custom_ibkr_data_quality_truth_summary"]
-custom_ibkr_data_quality_list = _data_quality_route_handlers["custom_ibkr_data_quality_list"]
-custom_ibkr_data_quality_truth_list = _data_quality_route_handlers["custom_ibkr_data_quality_truth_list"]
-
-
-_universe_route_handlers = register_universe_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "escape_filter_string": _escape_filter_string,
-        "time_strings": _time_strings,
-        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
-            method,
-            base_url,
-            path,
-            params=params,
-            json_body=json_body,
-            timeout=timeout,
-        ),
-        "compute_base_url": COMPUTE_BASE_URL,
-    },
-)
-custom_ibkr_watchlist_upsert = _universe_route_handlers["custom_ibkr_watchlist_upsert"]
-custom_ibkr_watchlist_remove = _universe_route_handlers["custom_ibkr_watchlist_remove"]
-custom_ibkr_targets_upsert = _universe_route_handlers["custom_ibkr_targets_upsert"]
-custom_ibkr_targets_remove = _universe_route_handlers["custom_ibkr_targets_remove"]
-custom_ibkr_screener = _universe_route_handlers["custom_ibkr_screener"]
-custom_ibkr_today_targets = _universe_route_handlers["custom_ibkr_today_targets"]
-custom_ibkr_screener_targets = _universe_route_handlers["custom_ibkr_screener_targets"]
-
-
-_account_route_handlers = register_account_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
-            method,
-            base_url,
-            path,
-            params=params,
-            json_body=json_body,
-            timeout=timeout,
-        ),
-        "runtime_base_url": RUNTIME_BASE_URL,
-    },
-)
-custom_ibkr_account_snapshot = _account_route_handlers["custom_ibkr_account_snapshot"]
-
-
-_signal_route_handlers = register_signal_routes(
+_trading_route_handlers = register_trading_routes(
     app,
     deps={
         "pb": pb,
@@ -1316,7 +1020,11 @@ _signal_route_handlers = register_signal_routes(
         "signal_chat_id": _signal_chat_id,
         "feishu_send_interactive": _feishu_send_interactive,
         "feishu_update_interactive": _feishu_update_interactive,
-        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime(environment, order_id, payload),
+        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime(
+            environment,
+            order_id,
+            payload,
+        ),
         "build_signal_ingest_response": lambda *args, **kwargs: build_signal_ingest_response(*args, **kwargs),
         "build_signals_ingest_response": lambda *args, **kwargs: build_signals_ingest_response(*args, **kwargs),
         "build_signals_pending_response": lambda *args, **kwargs: build_signals_pending_response(*args, **kwargs),
@@ -1325,92 +1033,21 @@ _signal_route_handlers = register_signal_routes(
         "build_signal_confirm_webhook_response": lambda *args, **kwargs: build_signal_confirm_webhook_response(*args, **kwargs),
         "build_signal_cancel_webhook_response": lambda *args, **kwargs: build_signal_cancel_webhook_response(*args, **kwargs),
         "config_value": _config_value,
-    },
-)
-custom_ibkr_signal = _signal_route_handlers["custom_ibkr_signal"]
-custom_ibkr_signals = _signal_route_handlers["custom_ibkr_signals"]
-custom_ibkr_signals_pending = _signal_route_handlers["custom_ibkr_signals_pending"]
-custom_ibkr_signals_ack = _signal_route_handlers["custom_ibkr_signals_ack"]
-webhook_signal_confirm = _signal_route_handlers["webhook_signal_confirm"]
-webhook_signal_cancel = _signal_route_handlers["webhook_signal_cancel"]
-
-
-_state_route_handlers = register_state_routes(
-    app,
-    deps={
-        "normalize_environment": _normalize_environment,
         "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
         "upsert_state": lambda state_key, environment, data, date="global": pb.upsert_state(state_key, environment, data, date=date),
-        "as_dict": _as_dict,
-    },
-)
-custom_ibkr_state_signals_get = _state_route_handlers["custom_ibkr_state_signals_get"]
-custom_ibkr_state_signals_post = _state_route_handlers["custom_ibkr_state_signals_post"]
-custom_ibkr_state_orders_get = _state_route_handlers["custom_ibkr_state_orders_get"]
-custom_ibkr_state_orders_post = _state_route_handlers["custom_ibkr_state_orders_post"]
-
-
-_order_route_handlers = register_order_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "escape_filter_string": _escape_filter_string,
-        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime(environment, order_id, payload),
-        "build_order_upsert_response": lambda *args, **kwargs: build_order_upsert_response(*args, **kwargs),
         "build_orders_reconcile_response": lambda *args, **kwargs: build_orders_reconcile_response(*args, **kwargs),
         "build_order_cancel_sync_response": lambda *args, **kwargs: build_order_cancel_sync_response(*args, **kwargs),
         "build_order_cancel_group_response": lambda *args, **kwargs: build_order_cancel_group_response(*args, **kwargs),
         "build_order_close_group_response": lambda *args, **kwargs: build_order_close_group_response(*args, **kwargs),
         "build_order_cancel_webhook_response": lambda *args, **kwargs: build_order_cancel_webhook_response(*args, **kwargs),
         "build_order_close_webhook_response": lambda *args, **kwargs: build_order_close_webhook_response(*args, **kwargs),
-    },
-)
-custom_ibkr_orders_upsert = _order_route_handlers["custom_ibkr_orders_upsert"]
-custom_ibkr_orders_reconcile = _order_route_handlers["custom_ibkr_orders_reconcile"]
-custom_ibkr_orders_cancel_sync = _order_route_handlers["custom_ibkr_orders_cancel_sync"]
-custom_ibkr_orders_cancel_group = _order_route_handlers["custom_ibkr_orders_cancel_group"]
-custom_ibkr_orders_close_group = _order_route_handlers["custom_ibkr_orders_close_group"]
-webhook_order_cancel = _order_route_handlers["webhook_order_cancel"]
-webhook_order_close = _order_route_handlers["webhook_order_close"]
-
-
-_reverse_route_handlers = register_reverse_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "escape_filter_string": _escape_filter_string,
         "build_reverse_list_response": lambda *args, **kwargs: build_reverse_list_response(*args, **kwargs),
         "build_reverse_calculate_response": lambda *args, **kwargs: build_reverse_calculate_response(*args, **kwargs),
         "build_reverse_pending_response": lambda *args, **kwargs: build_reverse_pending_response(*args, **kwargs),
         "build_reverse_dispatch_response": lambda *args, **kwargs: build_reverse_dispatch_response(*args, **kwargs),
         "build_reverse_ack_response": lambda *args, **kwargs: build_reverse_ack_response(*args, **kwargs),
-    },
-)
-custom_ibkr_reverse_list = _reverse_route_handlers["custom_ibkr_reverse_list"]
-custom_ibkr_reverse_calculate = _reverse_route_handlers["custom_ibkr_reverse_calculate"]
-custom_ibkr_reverse_pending = _reverse_route_handlers["custom_ibkr_reverse_pending"]
-custom_ibkr_reverse_dispatch = _reverse_route_handlers["custom_ibkr_reverse_dispatch"]
-custom_ibkr_reverse_ack = _reverse_route_handlers["custom_ibkr_reverse_ack"]
-
-
-_tradingview_route_handlers = register_tradingview_routes(
-    app,
-    deps={
         "upsert_tv_indicator": lambda payload: _upsert_tv_indicator(payload),
         "upsert_tv_signal": lambda payload: _upsert_tv_signal(payload),
-    },
-)
-webhook_tv = _tradingview_route_handlers["webhook_tv"]
-
-
-_control_route_handlers = register_control_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "escape_filter_string": _escape_filter_string,
         "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
             method,
             base_url,
@@ -1428,71 +1065,29 @@ _control_route_handlers = register_control_routes(
         ),
         "build_runtime_environment_mismatch_payload": build_runtime_environment_mismatch_payload,
         "emit_system_event": _emit_system_event,
-        "as_dict": _as_dict,
-    },
-)
-custom_ibkr_emergency_stop = _control_route_handlers["custom_ibkr_emergency_stop"]
-custom_ibkr_recover = _control_route_handlers["custom_ibkr_recover"]
-custom_ibkr_reauth = _control_route_handlers["custom_ibkr_reauth"]
-
-
-_two_factor_route_handlers = register_two_factor_routes(
-    app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "as_dict": _as_dict,
-        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
-            method,
-            base_url,
-            path,
-            params=params,
-            json_body=json_body,
-            timeout=timeout,
-        ),
-        "runtime_base_url": RUNTIME_BASE_URL,
         "fetch_runtime_status": lambda environment: _fetch_runtime_status(environment),
-        "inspect_runtime_environment": lambda environment: inspect_requested_runtime_environment(
-            environment,
-            normalize_environment=_normalize_environment,
-            fetch_runtime_status=_fetch_runtime_status,
-            as_dict=_as_dict,
-        ),
-        "build_runtime_environment_mismatch_payload": build_runtime_environment_mismatch_payload,
-        "console_base_url": _console_base_url,
-        "config_value": _config_value,
-        "feishu_send_interactive": _feishu_send_interactive,
-        "feishu_update_interactive": _feishu_update_interactive,
-        "emit_system_event": _emit_system_event,
         "merge_startup_steps": _merge_startup_steps,
         "deliver_startup_progress_card": lambda state, environment: _deliver_startup_progress_card(state, environment),
-    },
-)
-custom_ibkr_two_factor_request = _two_factor_route_handlers["custom_ibkr_two_factor_request"]
-custom_ibkr_two_factor_result = _two_factor_route_handlers["custom_ibkr_two_factor_result"]
-custom_ibkr_two_factor_respond = _two_factor_route_handlers["custom_ibkr_two_factor_respond"]
-custom_ibkr_two_factor_takeover = _two_factor_route_handlers["custom_ibkr_two_factor_takeover"]
-custom_ibkr_two_factor_probe = _two_factor_route_handlers["custom_ibkr_two_factor_probe"]
-custom_ibkr_two_factor_panic_reset = _two_factor_route_handlers["custom_ibkr_two_factor_panic_reset"]
-
-
-_callback_route_handlers = register_callback_routes(
-    app,
-    deps={
         "handle_feishu_callback": _handle_feishu_callback_support,
-        "as_dict": _as_dict,
-        "normalize_environment": _normalize_environment,
         "dispatch_feishu_2fa_callback": lambda action, environment: _dispatch_feishu_2fa_callback(action, environment),
-        "dispatch_feishu_order_callback": lambda action, order_id, environment: _dispatch_feishu_order_callback(action, order_id, environment),
-        "dispatch_feishu_signal_callback": lambda action, signal_id, environment: _dispatch_feishu_signal_callback(action, signal_id, environment),
+        "dispatch_feishu_order_callback": lambda action, order_id, environment: _dispatch_feishu_order_callback(
+            action,
+            order_id,
+            environment,
+        ),
+        "dispatch_feishu_signal_callback": lambda action, signal_id, environment: _dispatch_feishu_signal_callback(
+            action,
+            signal_id,
+            environment,
+        ),
         "callback_toast": _callback_toast,
         "callback_response": _feishu_callback_response,
     },
 )
-webhook_feishu_callback = _callback_route_handlers["webhook_feishu_callback"]
+globals().update(_trading_route_handlers)
 
 
-_compat_route_handlers = register_compat_routes(
+_compat_route_handlers = register_compat_proxy_routes(
     app,
     deps={
         "pb_base_url": PB_BASE_URL,
@@ -1521,9 +1116,4 @@ _compat_route_handlers = register_compat_routes(
         "proxy_webhook_to_pb": lambda subpath: _proxy_webhook_to_pb(subpath),
     },
 )
-health = _compat_route_handlers["health"]
-status = _compat_route_handlers["status"]
-collections_proxy = _compat_route_handlers["collections_proxy"]
-custom_ibkr_proxy = _compat_route_handlers["custom_ibkr_proxy"]
-custom_proxy = _compat_route_handlers["custom_proxy"]
-webhook_proxy = _compat_route_handlers["webhook_proxy"]
+globals().update(_compat_route_handlers)

@@ -19,4 +19,6 @@ fi
 echo "ibkr-console and PocketBase public trees are intentionally decoupled."
 echo "- console source: $SOURCE_DIR"
 echo "- pocketbase landing: $PB_PUBLIC_DIR"
-echo "No sync performed. Use deploy_ibkr_console.sh for console assets and deploy_pocketbase_runtime.sh --public-only for PB landing updates."
+echo "No sync performed. PocketBase keeps only its landing/admin tree plus redirect-only legacy URL shims."
+echo "The old pb_public/common.js and pb_public/assets/** bundle should stay absent."
+echo "Use deploy_ibkr_console.sh for console assets and deploy_pocketbase_runtime.sh --public-only for PB landing updates."

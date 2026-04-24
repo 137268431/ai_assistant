@@ -1,288 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IBKR Console - Trading Flight</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css">
-</head>
-<body>
-    <div class="page-loading-overlay" id="pageLoading">
-        <div class="page-loading-card">
-            <div class="page-loading-title" id="pageLoadingTitle">控制台加载中</div>
-            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 runtime 状态、2FA、链路表和最近事件，请稍候。</div>
-            <div class="page-loading-bars">
-                <div class="page-loading-bar"></div>
-                <div class="page-loading-bar"></div>
-                <div class="page-loading-bar"></div>
-            </div>
-        </div>
-    </div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR Runtime moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-    <div id="nav"></div>
+      * {
+        box-sizing: border-box;
+      }
 
-    <div class="page-shell">
-        <div id="contextBar"></div>
-        <div id="pageBridge"></div>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-        <section class="hero">
-            <div class="hero-title-row">
-                <div>
-                    <div class="hero-kicker">Runtime Workbench</div>
-                    <div class="hero-title">当前 <span class="accent">runtime</span>、2FA 与链路动作</div>
-                    <div class="hero-copy">这里聚合 compute 服务状态、最新 bars / signals / orders / system events，并直接触发计算、扫描、重算、Gateway 启停与重登。页面默认按当前环境过滤，方便检查 live / paper / backtest 的流转是否连续。</div>
-                </div>
-                <div class="hero-meta">
-                    <div class="hero-meta-line" id="refreshInfo">等待加载...</div>
-                    <div class="hero-meta-line" id="computeBaseInfo">Runtime bootstrap</div>
-                    <div class="hero-meta-line" id="authInfo">Session bootstrap</div>
-                </div>
-            </div>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-            <div class="auth-banner is-hidden" id="authActionBanner"></div>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-            <div class="hero-badges" id="heroBadges">
-                <span class="status-chip chip-muted"><span class="dot" style="background:currentColor"></span>等待状态</span>
-            </div>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
 
-            <div class="action-section" id="actionSection">
-                <button class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction('start')">
-                    <span class="action-label">启动 IBKR 服务</span>
-                    <span class="action-copy">创建新的启动卡片；手动启动默认会先重启 Gateway，再等待你人工点击 2FA 按钮继续。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="stop" onclick="handleRuntimeAction('stop')">
-                    <span class="action-label">停止 IBKR 服务</span>
-                    <span class="action-copy">停止当前运行中的 IBKR 服务线程，便于重新触发 2FA。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="reauth" onclick="handleRuntimeAction('reauth')">
-                    <span class="action-label">请求 / 复用 2FA 卡片</span>
-                    <span class="action-copy">优先复用飞书里的当前卡片；如果已有 active 轮次，请继续当前轮次，不要重复触发。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="reauth_force_new" onclick="handleRuntimeAction('reauth_force_new')">
-                    <span class="action-label">开始新一轮 2FA</span>
-                    <span class="action-copy">仅在当前没有 active 轮次时使用；如果当前轮次已经乱掉，改用“放弃当前轮次并干净重开”。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="takeover_on" onclick="handleRuntimeAction('takeover_on')">
-                    <span class="action-label">开始人工接管</span>
-                    <span class="action-copy">你要去真实账户里查挂单时先点这个，系统会暂停把当前轮次误判为锁死，但仍持续静默探测。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="takeover_off" onclick="handleRuntimeAction('takeover_off')">
-                    <span class="action-label">结束人工接管并探测</span>
-                    <span class="action-copy">结束人工查看后立即恢复静默探测；如果会话其实已经恢复，页面会自动转成 success。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
-                    <span class="action-label">立即静默探测</span>
-                    <span class="action-copy">不 stop/start，不新开 2FA，只快速确认当前 Gateway 会话是否已经恢复。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="compute" onclick="handleRuntimeAction('compute')">
-                    <span class="action-label">执行 Compute</span>
-                    <span class="action-copy">通过 `ibkr-api` 兼容控制面触发 `/compute`，检查 bars → indicators → signals。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="scan" onclick="handleRuntimeAction('scan')">
-                    <span class="action-label">执行 Scan</span>
-                    <span class="action-copy">触发盘前扫描，把候选标的写入 `ibkr_targets`。</span>
-                </button>
-                <button class="action-btn" data-action="recompute" onclick="handleRuntimeAction('recompute')">
-                    <span class="action-label">重算历史缓存</span>
-                    <span class="action-copy">清空内存引擎缓存后重新跑 compute，用于核对链路回放。</span>
-                </button>
-                <button class="action-btn" onclick="window.location.href = buildPageUrl('/ibkr_data_quality.html', {}, { environment: currentEnvironment })">
-                    <span class="action-label">打开数据质量</span>
-                    <span class="action-copy">查看 watchlist / active targets 的 bars 缺口、重复、坏 OHLC 与修复结果。</span>
-                </button>
-                <button class="action-btn" onclick="loadRuntimeData(true)">
-                    <span class="action-label">手动刷新</span>
-                    <span class="action-copy">重新抓取 healthz / statusz / summaryz 与最近几张表的数据。</span>
-                </button>
-            </div>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-            <div class="last-action" style="margin-top:12px" id="startupStrategyInfo">
-                启动策略加载中...
-            </div>
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
-            <div class="last-action" style="margin-top:12px">
-                Gateway 控制：网关按钮只管理 `ibkr_gateway`；其中“重启 Gateway”在运行中或当前已有启动轮次时，会自动进入新的启动卡片和 fresh 2FA 流程。
-            </div>
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
 
-            <div class="action-section" id="gatewaySection">
-                <button class="action-btn action-accent" data-action="gateway_start" onclick="handleRuntimeAction('gateway_start')">
-                    <span class="action-label">启动 Gateway</span>
-                    <span class="action-copy">只启动 `ibkr_gateway`，不自动恢复 Runtime，也不会自动触发新的 2FA。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="gateway_stop" onclick="handleRuntimeAction('gateway_stop')">
-                    <span class="action-label">停止 Gateway</span>
-                    <span class="action-copy">手动关闭 `ibkr_gateway`；如果当前有运行线程或启动轮次，会同时把当前轮次中断。</span>
-                </button>
-                <button class="action-btn action-accent" data-action="gateway_restart" onclick="handleRuntimeAction('gateway_restart')">
-                    <span class="action-label">重启 Gateway</span>
-                    <span class="action-copy">运行中或当前已有启动轮次时，会创建新的启动卡片并要求 fresh 2FA；这是 Gateway 层的推荐重启动作。</span>
-                </button>
-            </div>
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
 
-            <div class="last-action" style="margin-top:12px">
-                紧急控制：用于快速降载和止损，不直接删除数据；其中“全部急停”会关闭 compute / trading / bars publish / IBKR Scheduler，并请求停止当前 runtime。
-            </div>
-
-            <div class="action-section" id="emergencySection">
-                <button class="action-btn action-danger" data-action="emergency_runtime" onclick="handleRuntimeAction('emergency_runtime')">
-                    <span class="action-label">急停运行线程</span>
-                    <span class="action-copy">只停止当前 IBKR runtime，适合重新认证或排查网关问题。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="emergency_compute" onclick="handleRuntimeAction('emergency_compute')">
-                    <span class="action-label">关闭计算调度</span>
-                    <span class="action-copy">关闭自动 compute / scan，降低 PocketBase 和 compute 的持续负载。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="emergency_publish" onclick="handleRuntimeAction('emergency_publish')">
-                    <span class="action-label">关闭 Bars 写入</span>
-                    <span class="action-copy">停止新的 `ibkr_bars` 写入，适合快速止血排查数据库压力。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="emergency_scheduler" onclick="handleRuntimeAction('emergency_scheduler')">
-                    <span class="action-label">关闭 Scheduler</span>
-                    <span class="action-copy">暂停 IBKR Scheduler，避免继续触发 compute / heartbeat / 清理任务。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="emergency_trading" onclick="handleRuntimeAction('emergency_trading')">
-                    <span class="action-label">关闭交易执行</span>
-                    <span class="action-copy">保留观测链路，但禁止继续下新单。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="emergency_all" onclick="handleRuntimeAction('emergency_all')">
-                    <span class="action-label">全部急停</span>
-                    <span class="action-copy">一次关闭计算、交易、K线写入、IBKR Scheduler，并停止当前 runtime。</span>
-                </button>
-                <button class="action-btn action-danger" data-action="panic_reset_2fa" onclick="handleRuntimeAction('panic_reset_2fa')">
-                    <span class="action-label">放弃当前轮次并干净重开</span>
-                    <span class="action-copy">这是唯一推荐的强制重开方式；会终止当前 2FA、清空旧 Challenge / Response，并重新拉起一轮全新验证。</span>
-                </button>
-            </div>
-
-            <div class="last-action" id="lastAction">最近动作：尚未执行。</div>
-        </section>
-
-        <section class="ops-grid" id="opsGrid"></section>
-
-        <section class="panel service-topology-section">
-            <div class="panel-header">
-                <div>
-                    <div class="panel-title">服务拓扑</div>
-                    <div class="panel-subtitle">split runtime + compute + gateway + pocketbase</div>
-                </div>
-            </div>
-            <div class="panel-body" id="serviceTopologyArea">
-                <div class="table-empty">等待加载服务拓扑...</div>
-            </div>
-        </section>
-
-        <section class="metric-grid" id="metricGrid"></section>
-
-        <section class="panel-grid">
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">2FA 控制台</div>
-                        <div class="panel-subtitle">push / challenge / response</div>
-                    </div>
-                </div>
-                <div class="panel-body" id="twoFactorPanel"></div>
-            </div>
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">运行详情</div>
-                        <div class="panel-subtitle">healthz + statusz</div>
-                    </div>
-                </div>
-                <div class="panel-body" id="runtimeDetail"></div>
-            </div>
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">关键配置</div>
-                        <div class="panel-subtitle">summaryz + runtime/config + schedulerz</div>
-                    </div>
-                    <a id="configLink" href="/ibkr_config.html" class="panel-subtitle" style="text-decoration:none;color:var(--accent)">配置页 →</a>
-                </div>
-                <div class="panel-body" id="configDetail"></div>
-            </div>
-        </section>
-
-        <section class="panel-grid">
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">链路体检</div>
-                        <div class="panel-subtitle">bars -> indicators -> signals</div>
-                    </div>
-                </div>
-                <div class="panel-body" id="pipelinePanel"></div>
-            </div>
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">计算引擎</div>
-                        <div class="panel-subtitle" id="engineHint">等待数据</div>
-                    </div>
-                </div>
-                <div class="panel-body data-table-wrap" id="engineTable"></div>
-            </div>
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">最新 Bars</div>
-                        <div class="panel-subtitle">`ibkr_bars` + `extra` 写入时间</div>
-                    </div>
-                </div>
-                <div class="panel-body data-table-wrap" id="barsTable"></div>
-            </div>
-        </section>
-
-        <section class="table-grid">
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">最近 Indicators</div>
-                        <div class="panel-subtitle">`ibkr_indicators`</div>
-                    </div>
-                </div>
-                <div class="panel-body data-table-wrap" id="indicatorsTable"></div>
-            </div>
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">最近 Signals</div>
-                        <div class="panel-subtitle">`ibkr_signals`</div>
-                    </div>
-                </div>
-                <div class="panel-body data-table-wrap" id="signalsTable"></div>
-            </div>
-        </section>
-
-        <section class="table-grid">
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">最近 Orders</div>
-                        <div class="panel-subtitle">`orders`</div>
-                    </div>
-                </div>
-                <div class="panel-body data-table-wrap" id="ordersTable"></div>
-            </div>
-        </section>
-
-        <section class="panel">
-            <div class="panel-header">
-                <div>
-                    <div class="panel-title">最近系统事件</div>
-                    <div class="panel-subtitle">`system_events`</div>
-                </div>
-            </div>
-            <div class="panel-body data-table-wrap" id="eventsTable"></div>
-        </section>
-    </div>
-
-    <script src="/assets/js/shared/ibkr-page.js"></script>
-    <script src="/assets/js/pages/ibkr_runtime/page.js"></script>
-</body>
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
+    <script>
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
+        }
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR Runtime moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_runtime.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

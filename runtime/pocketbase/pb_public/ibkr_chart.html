@@ -1,152 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IBKR 图表 - Trading Flight</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_chart/page.css">
-</head>
-<body>
-    <div id="contextBar"></div>
-    <div id="pageBridge"></div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR Chart moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-    <section class="workspace">
-        <div class="panel chart-panel">
-            <div class="workspace-head">
-                <div class="workspace-head-top">
-                    <div class="workspace-title-group">
-                        <div class="hero-title" id="heroTitle">当前图表工作区</div>
-                        <div class="workspace-copy">主图展示 K 线 / EMA / VWAP / 标准差通道 / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。眉头负责页面身份，这里只保留当前标的、周期和分析操作本身。</div>
-                    </div>
-                    <div class="hero-status" id="heroStatus"></div>
-                </div>
-                <div class="toolbar">
-                    <div class="symbol-form">
-                        <input id="chartSymbolInput" class="symbol-input" type="text" placeholder="AAPL" maxlength="12">
-                        <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
-                        <button class="toolbar-btn" id="compareBtn" type="button" onclick="runIbkrCompare()">IBKR 对比</button>
-                        <button class="toolbar-btn" id="clearCompareBtn" type="button" onclick="clearIbkrCompare()">清空对比</button>
-                        <button class="toolbar-btn page-refresh-trigger" type="button" onclick="reloadChartPage()">刷新图表</button>
-                    </div>
-                    <div class="toolbar-filters">
-                        <div class="filter-block">
-                            <div class="toolbar-label">周期</div>
-                            <div class="tf-group" id="timeframeGroup"></div>
-                        </div>
-                        <div class="filter-block">
-                            <div class="toolbar-label">时间范围</div>
-                            <div class="range-group" id="rangeGroup"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="summary-strip" id="summaryStrip"></div>
-                <div class="layer-strip" id="layerStrip"></div>
-                <div class="cursor-strip" id="cursorStrip"></div>
-            </div>
-            <div class="panel-header">
-                <div>
-                    <div class="panel-title" id="chartPanelTitle">图表加载中</div>
-                    <div class="panel-copy">当前工作区只保留一套控制与状态条，数据缺失时会使用占位骨架，避免页面高度跳变。</div>
-                </div>
-                <div class="panel-meta" id="chartMeta">--</div>
-            </div>
-            <div class="chart-shell">
-                <div class="tv-toolbar" id="chartToolbar"></div>
-                <div class="chart-stage-shell">
-                    <div class="chart-stage-overlay">
-                        <div class="tv-floating-legend" id="chartFloatingLegend"></div>
-                        <div class="tv-watermark" id="chartWatermark">Trading Flight<br><span id="chartWatermarkSymbol">--</span></div>
-                    </div>
-                    <div id="chartCanvas" class="chart-stage"></div>
-                </div>
-                <div class="chart-bottom-bar">
-                    <div class="chart-bottom-status" id="chartBottomStatus"></div>
-                    <div class="chart-shortcut-strip" id="chartShortcutStrip"></div>
-                </div>
-            </div>
-            <div class="chart-note" id="chartNote">等待基于 bars 实时重算图表 ...</div>
-            <div class="trace-panel-shell" id="tracePanelShell"></div>
-        </div>
+      * {
+        box-sizing: border-box;
+      }
 
-        <div class="rail-shell">
-            <div class="rail-nav" id="railNav"></div>
-            <div class="rail" id="infoRail"></div>
-        </div>
-    </section>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-    <div class="detail-drawer" id="signalDetailDrawer" aria-hidden="true">
-        <div class="detail-drawer-backdrop" onclick="closeSignalDrawer()"></div>
-        <div class="detail-drawer-card" role="dialog" aria-modal="true" aria-label="信号详情抽屉">
-            <div id="signalDetailContent"></div>
-        </div>
-    </div>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-    <div class="mobile-dock" id="mobileDock"></div>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-    <div class="mobile-quick-panel" id="mobileQuickPanel" aria-hidden="true">
-        <div class="mobile-quick-backdrop" onclick="closeMobileQuickPanel()"></div>
-        <div class="mobile-quick-card" role="dialog" aria-modal="true" aria-label="移动端快捷面板">
-            <div class="mobile-quick-grabber"></div>
-            <div class="mobile-quick-head">
-                <div class="mobile-quick-title">快捷设置</div>
-                <button class="mobile-quick-close" type="button" onclick="closeMobileQuickPanel()">×</button>
-            </div>
-            <div class="mobile-quick-section">
-                <div class="mobile-quick-label">图层</div>
-                <div class="mobile-quick-grid" id="mobileQuickLayerGroup"></div>
-            </div>
-            <div class="mobile-quick-section">
-                <div class="mobile-quick-label">周期</div>
-                <div class="mobile-quick-grid" id="mobileQuickTimeframeGroup"></div>
-            </div>
-            <div class="mobile-quick-section">
-                <div class="mobile-quick-label">范围</div>
-                <div class="mobile-quick-grid" id="mobileQuickRangeGroup"></div>
-            </div>
-            <div class="mobile-quick-section">
-                <div class="mobile-quick-label">视图</div>
-                <div class="mobile-quick-grid" id="mobileQuickViewGroup"></div>
-            </div>
-        </div>
-    </div>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
 
-    <div class="inspector-drawer" id="inspectorDrawer" aria-hidden="true">
-        <div class="inspector-drawer-backdrop" onclick="closeInspectorDrawer()"></div>
-        <div class="inspector-drawer-card" role="dialog" aria-modal="true" aria-label="图表检查面板">
-            <div class="drawer-head">
-                <div>
-                    <div class="drawer-kicker">Inspector</div>
-                    <div class="drawer-title" id="inspectorDrawerTitle">Chart Inspector</div>
-                    <div class="drawer-sub" id="inspectorDrawerSub">在焦点模式下也能快速查看分析卡和信号列表。</div>
-                </div>
-                <button class="drawer-close" type="button" onclick="closeInspectorDrawer()">×</button>
-            </div>
-            <div class="inspector-drawer-body" id="inspectorDrawerBody"></div>
-        </div>
-    </div>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-    <div class="mobile-gesture-hint" id="mobileGestureHint" aria-hidden="true">
-        <div class="mobile-gesture-card">
-            <div class="mobile-gesture-head">
-                <div class="mobile-gesture-title">触控提示</div>
-                <button class="mobile-gesture-close" type="button" onclick="dismissMobileGestureHint()">知道了</button>
-            </div>
-            <div class="mobile-gesture-strip">
-                <span class="mobile-gesture-chip">长按 锁定光标</span>
-                <span class="mobile-gesture-chip">轻扫 左右切 bar</span>
-                <span class="mobile-gesture-chip">双击 回到最新</span>
-                <span class="mobile-gesture-chip">Info 打开检查面板</span>
-            </div>
-        </div>
-    </div>
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
-    <div id="nav"></div>
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
 
-    <script src="/assets/js/pages/ibkr_chart/page.js"></script>
-</body>
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
+
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
+    <script>
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
+        }
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR Chart moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_chart.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

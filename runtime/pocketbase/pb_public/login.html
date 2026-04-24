@@ -1,133 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>登录</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/css/common.css">
-<link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-<link rel="stylesheet" href="/assets/css/pages/login/page.css">
-<script src="/assets/js/shared/runtime-config.js"></script>
-</head>
-<body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Login moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-<div class="card">
-  <div class="logo">
-    <span class="logo-label">TRADING FLIGHT</span>
-    <span class="logo-title">管理登录</span>
-  </div>
+      * {
+        box-sizing: border-box;
+      }
 
-  <div class="field">
-    <label>邮箱</label>
-    <input type="email" id="email" placeholder="admin@example.com" autocomplete="email">
-  </div>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-  <div class="field">
-    <label>密码</label>
-    <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
-  </div>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-  <button class="btn-login" id="loginBtn" onclick="login()">登录</button>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-  <div class="error" id="error"></div>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
 
-  <div class="hint">
-    登录后 token 保存在本地<br>无需重复登录
-  </div>
-</div>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-<script>
-const RUNTIME_CONFIG = window.__IBKR_RUNTIME_CONFIG__ || {}
-const BASE = RUNTIME_CONFIG.PB_AUTH_BASE_URL || window.location.origin
-const CONSOLE_BASE = String(RUNTIME_CONFIG.CONSOLE_BASE_URL || window.location.origin || '').replace(/\/+$/, '')
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
-function normalizeRedirectTarget(target) {
-  const value = String(target || '').trim() || '/ibkr_signals.html'
-  try {
-    return new URL(value, `${CONSOLE_BASE || window.location.origin}/`).toString()
-  } catch (_) {
-    return value
-  }
-}
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
 
-if (CONSOLE_BASE && CONSOLE_BASE !== String(window.location.origin || '').replace(/\/+$/, '')) {
-  const handoff = new URL('/login.html', `${CONSOLE_BASE}/`)
-  const from = new URLSearchParams(location.search).get('from') || ''
-  if (from) handoff.searchParams.set('from', from)
-  location.replace(handoff.toString())
-}
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
 
-// 已有 token 直接跳转，失效由目标页的 401/403 处理
-if (localStorage.getItem('pb_token')) {
-  const redirect = new URLSearchParams(location.search).get('from') || '/ibkr_signals.html'
-  location.href = normalizeRedirectTarget(redirect)
-}
-
-// 回车触发登录
-document.addEventListener('keydown', e => {
-  if (e.key === 'Enter') login()
-})
-
-async function login() {
-  const email    = document.getElementById('email').value.trim()
-  const password = document.getElementById('password').value
-  const btn      = document.getElementById('loginBtn')
-  const errEl    = document.getElementById('error')
-
-  if (!email || !password) {
-    showError('请填写邮箱和密码')
-    return
-  }
-
-  btn.disabled = true
-  btn.textContent = '登录中...'
-  errEl.style.display = 'none'
-
-  try {
-    // PocketBase 0.36+ 使用新的认证端点
-    const res = await fetch(`${BASE}/api/collections/_superusers/auth-with-password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identity: email, password })
-    })
-
-    const data = await res.json()
-    console.log('[login] status:', res.status, 'data:', JSON.stringify(data))
-
-    if (!res.ok) {
-      showError(data.message || '邮箱或密码错误')
-      return
-    }
-
-    // PocketBase 0.36+ 返回 data.token
-    const token = data.token
-    if (!token) {
-      showError('登录响应异常：' + JSON.stringify(data))
-      return
-    }
-
-    // 保存 token（前端会在请求时加 Bearer 前缀）
-    localStorage.setItem('pb_token', token)
-    console.log('[login] token saved:', token.slice(0, 30) + '...')
-
-    // 跳转到来源页或默认信号页
-    const redirect = new URLSearchParams(location.search).get('from') || '/ibkr_signals.html'
-    location.href = normalizeRedirectTarget(redirect)
-
-  } catch(e) {
-    showError('连接失败，请检查网络')
-  } finally {
-    btn.disabled = false
-    btn.textContent = '登录'
-  }
-}
-
-function showError(msg) {
-  const el = document.getElementById('error')
-  el.textContent = msg
-  el.style.display = 'block'
-}
-</script>
-</body>
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
+    <script>
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
+        }
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>Login moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/login.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

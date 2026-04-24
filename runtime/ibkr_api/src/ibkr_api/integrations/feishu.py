@@ -26,6 +26,19 @@ def _resolved_app_secret(app_secret: str | None = None) -> str:
 
 
 
+def _payload_code(payload: Any, *, default: int = -1) -> int:
+    if not isinstance(payload, dict):
+        return int(default)
+    code = payload.get("code")
+    if code in (None, ""):
+        return int(default)
+    try:
+        return int(code)
+    except Exception:
+        return int(default)
+
+
+
 def feishu_suppressed(environment: str, *, normalize_environment: NormalizeEnvironment) -> bool:
     return normalize_environment(environment, "live") == "paper"
 
@@ -61,7 +74,7 @@ def feishu_token(
     except Exception:
         return ""
 
-    if not response.ok or not isinstance(payload, dict) or int(payload.get("code") or -1) != 0:
+    if not response.ok or _payload_code(payload) != 0:
         return ""
 
     token = str(payload.get("app_access_token") or "")
@@ -114,7 +127,7 @@ def feishu_send_interactive(
     except Exception as exc:
         return {"success": False, "message_id": "", "error": str(exc)}
 
-    if not response.ok or not isinstance(payload, dict) or int(payload.get("code") or -1) != 0:
+    if not response.ok or _payload_code(payload) != 0:
         return {
             "success": False,
             "message_id": "",
@@ -165,7 +178,7 @@ def feishu_update_interactive(
     except Exception as exc:
         return {"success": False, "message_id": str(message_id or ""), "error": str(exc)}
 
-    if not response.ok or not isinstance(payload, dict) or int(payload.get("code") or -1) != 0:
+    if not response.ok or _payload_code(payload) != 0:
         return {
             "success": False,
             "message_id": str(message_id or ""),

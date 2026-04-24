@@ -1,154 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IBKR Overview - Trading Flight</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
-    <script>document.write(getCommonStyles());</script>
-    <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <script src="/assets/js/shared/ibkr-page.js"></script>
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_system/page.css">
-</head>
-<body>
-    <div class="page-loading-overlay" id="pageLoading">
-        <div class="page-loading-card">
-            <div class="page-loading-title" id="pageLoadingTitle">系统概览加载中</div>
-            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 healthz / statusz / scheduler / freshness / events / 回测统计，请稍候。</div>
-            <div class="page-loading-bars">
-                <div class="page-loading-bar"></div>
-                <div class="page-loading-bar"></div>
-                <div class="page-loading-bar"></div>
-            </div>
-        </div>
-    </div>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR System moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
+      }
 
-    <div id="nav"></div>
+      * {
+        box-sizing: border-box;
+      }
 
-    <div class="page-shell">
-        <div id="contextBar"></div>
-        <div id="pageBridge"></div>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
+      }
 
-        <div class="content-area">
-            <div class="system-meta-row">
-                <div class="refresh-info" id="refreshInfo">加载中...</div>
-            </div>
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
+      }
 
-            <div class="status-bar" id="statusBar">
-                <div class="status-card">
-                    <div class="status-label">IBKR DATA</div>
-                    <div class="status-value" id="dataStatus">
-                        <div class="status-main"><span class="status-dot dot-gray"></span><span class="status-main-text">--</span></div>
-                        <div class="status-sub is-empty">--</div>
-                    </div>
-                </div>
-                <div class="status-card">
-                    <div class="status-label">IBKR COMPUTE</div>
-                    <div class="status-value" id="computeStatus">
-                        <div class="status-main"><span class="status-dot dot-gray"></span><span class="status-main-text">--</span></div>
-                        <div class="status-sub is-empty">--</div>
-                    </div>
-                </div>
-                <div class="status-card">
-                    <div class="status-label">RUNTIME</div>
-                    <div class="status-value" id="runtimeStatus">
-                        <div class="status-main"><span class="status-dot dot-gray"></span><span class="status-main-text">--</span></div>
-                        <div class="status-sub is-empty">--</div>
-                    </div>
-                </div>
-                <div class="status-card">
-                    <div class="status-label">SCHEDULER</div>
-                    <div class="status-value" id="schedulerStatus">
-                        <div class="status-main"><span class="status-dot dot-gray"></span><span class="status-main-text">--</span></div>
-                        <div class="status-sub is-empty">--</div>
-                    </div>
-                </div>
-            </div>
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
 
-            <div class="section">
-                <div class="section-header">🧩 Service Topology</div>
-                <div class="section-body" id="serviceTopologyArea">
-                    <div class="loading-text">加载中...</div>
-                </div>
-            </div>
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
 
-            <div class="section">
-                <div class="section-header">⏱ IBKR Scheduler</div>
-                <div class="section-body" id="schedulerArea">
-                    <div class="loading-text">加载中...</div>
-                </div>
-            </div>
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-            <div class="section" id="todayStatsSection">
-                <div class="section-header">📊 今日统计</div>
-                <div class="section-body">
-                    <div class="stats-mini" id="todayStats">
-                        <div class="stat-mini"><div class="stat-mini-label">ORDERS</div><div class="stat-mini-value">-</div></div>
-                        <div class="stat-mini"><div class="stat-mini-label">IBKR BARS</div><div class="stat-mini-value">-</div></div>
-                        <div class="stat-mini"><div class="stat-mini-label">IBKR IND</div><div class="stat-mini-value">-</div></div>
-                        <div class="stat-mini"><div class="stat-mini-label">IBKR SIG</div><div class="stat-mini-value">-</div></div>
-                        <div class="stat-mini"><div class="stat-mini-label">TARGETS</div><div class="stat-mini-value">-</div></div>
-                        <div class="stat-mini"><div class="stat-mini-label">EVENTS</div><div class="stat-mini-value">-</div></div>
-                    </div>
-                </div>
-            </div>
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
-            <div class="section">
-                <div class="section-header">📡 数据延迟</div>
-                <div class="section-body" id="freshnessArea">
-                    <div class="loading-text">加载中...</div>
-                </div>
-            </div>
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
 
-            <div class="section">
-                <div class="section-header">
-                    <span>🔧 配置</span>
-                    <a id="configLink" href="/ibkr_config.html" style="font-size:10px;color:var(--accent);text-decoration:none;font-family:'JetBrains Mono',monospace">编辑 →</a>
-                </div>
-                <div class="section-body" id="configArea">
-                    <div class="loading-text">加载中...</div>
-                </div>
-            </div>
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
 
-            <div class="overview-columns">
-                <div class="overview-column">
-                    <div class="section">
-                        <div class="section-header">
-                            <span>⚙️ 计算引擎</span>
-                            <span id="engineCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
-                        </div>
-                        <div class="section-body section-scroll engine-scroll" id="engineArea">
-                            <div class="loading-text">加载中...</div>
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <div class="section-header">
-                            <span>🧪 最近回测统计</span>
-                            <span id="backtestCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
-                        </div>
-                        <div class="section-body" id="backtestArea">
-                            <div class="loading-text">加载中...</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="overview-column">
-                    <div class="section">
-                        <div class="section-header">
-                            <span>📋 最近事件</span>
-                            <span id="eventCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
-                        </div>
-                        <div class="section-body section-scroll event-scroll" id="eventArea">
-                            <div class="loading-text">加载中...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="/assets/js/pages/ibkr_system/page.js"></script>
-</body>
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
+    <script>
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
+        }
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR System moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_system.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>

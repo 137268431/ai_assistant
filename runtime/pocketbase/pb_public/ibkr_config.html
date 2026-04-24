@@ -1,983 +1,142 @@
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>配置管理</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
-<script src="common.js"></script>
-<script>document.write(getCommonStyles())</script>
-<link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-<link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css">
-</head>
-<body>
-<div class="page-shell">
-  <div id="configEnvironmentBar"></div>
-  <div id="pageBridge"></div>
-</div>
-
-<div class="config-action-bar">
-  <div class="config-action-copy">
-    当前环境配置统一在这里查看和编辑。改动会先标记本地差异，确认后再一次性保存。
-  </div>
-  <div class="config-action-buttons">
-    <button class="refresh-btn page-refresh-trigger" id="configRefreshBtn" type="button" onclick="manualReloadConfig()">↻ 刷新配置</button>
-    <button class="reset-all-btn" id="resetAllBtn" onclick="resetAll()" disabled>重置全部</button>
-    <button class="save-btn" id="saveBtn" onclick="saveAll()" disabled>保存配置</button>
-  </div>
-</div>
-
-<!-- Content -->
-<div class="content" id="configContainer">
-  <div class="loading">LOADING...</div>
-</div>
-
-<!-- Bottom Nav -->
-<div id="navContainer"></div>
-
-<script>
-// ── 初始化 ──
-requireAuth('/ibkr_config.html')
-
-let configs = []
-let configRecords = []
-let pbCronDefinitions = []
-let originalValues = {}
-let modifiedKeys = new Set()
-let activeTab = localStorage.getItem('config_active_tab') || 'all'
-if (activeTab === 'PB Cron 调度') {
-  activeTab = 'IBKR Scheduler'
-  localStorage.setItem('config_active_tab', activeTab)
-}
-let configEnvironment = getCurrentConfigEnvironment()
-const LEGACY_KEY_REDIRECTS = {
-  health_check_email: 'health_check_notify_enabled'
-}
-const ACTIVE_CONFIG_KEYS = new Set([
-  'ibkr_trading_enabled',
-  'ibkr_signal_source',
-  'signal_manual_confirm_enabled',
-  'position_limit_max',
-  'eod_close_time',
-  'eod_keep_symbols',
-  'watchlist_interval_min',
-  'ibkr_target_refresh_sec',
-  'ibkr_daily_scan_time_et',
-  'ibkr_daily_scan_min_avg_10d_volume',
-  'ibkr_daily_scan_min_premarket_volume',
-  'ibkr_daily_scan_min_atr_pct',
-  'ibkr_daily_scan_min_abs_day_change_pct',
-  'ibkr_target_subscription_limit',
-  'ibkr_total_subscription_limit',
-  'ibkr_active_repair_interval_min',
-  'ibkr_watchlist_backfill_interval_min',
-  'ibkr_watchlist_backfill_batch_size',
-  'ibkr_watchlist_backfill_stale_min',
-  'ibkr_watchlist_integrity_enabled',
-  'ibkr_watchlist_integrity_batch_size',
-  'trade_window_start_time',
-  'trade_window_end_time',
-  'order_window_end_time',
-  'signal_validity_minutes',
-  'order_validity_minutes',
-  'pb_scheduler_enabled',
-  'signal_poll_interval_sec',
-  'system_status_chat_id',
-  'system_alert_chat_id',
-  'signal_chat_id',
-  'order_chat_id',
-  'reverse_chat_id',
-  'status_notify_enabled',
-  'daily_summary_notify_enabled',
-  'manual_stop_notify_enabled',
-  'health_check_notify_enabled',
-  'inspection_notify_enabled',
-  'system_monitor_host_load_consecutive_count',
-  'system_monitor_ws_message_age_regular_warn_sec',
-  'system_monitor_ws_message_age_regular_critical_sec',
-  'system_monitor_ws_message_age_late_session_warn_sec',
-  'system_monitor_ws_message_age_late_session_critical_sec',
-  'reverse_signal_threshold',
-  'ibkr_compute_internal_url',
-  'ibkr_runtime_internal_url',
-  'ibkr_api_internal_url',
-  'ibkr_scheduler_internal_url',
-  'ibkr_compute_enabled',
-  'ibkr_bar_publish_enabled'
-])
-
-function meta(displayName, groupName, sortOrder, defaultValue = '', description = '') {
-  return {
-    display_name: displayName,
-    group_name: groupName,
-    sort_order: sortOrder,
-    default_value: defaultValue,
-    description
-  }
-}
-
-const CONFIG_META = {
-  ibkr_trading_enabled: meta('交易总开关', '运行总控', 100, 'TRUE', 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
-  ibkr_compute_enabled: meta('Compute 调度开关', '运行总控', 110, 'TRUE', '控制自动 compute / scan 调度；关闭后不再自动计算指标和执行盘前扫描'),
-  pb_scheduler_enabled: meta('Scheduler 总开关', '运行总控', 120, 'TRUE', '控制 IBKR Scheduler；关闭后信号过期、订单过期、健康巡检、状态提醒等定时任务都会停止'),
-
-  ibkr_signal_source: meta('信号来源', '信号与反转', 200, 'both', 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
-  signal_manual_confirm_enabled: meta('人工确认开关', '信号与反转', 205, 'TRUE', 'TRUE 时新 ibkr_signals 先进入 awaiting_confirm 并发送飞书卡片；FALSE 时信号直接进入 pending，允许 Compute 自动执行'),
-  signal_poll_interval_sec: meta('信号轮询秒数', '信号与反转', 210, '120', 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
-  signal_validity_minutes: meta('信号有效期', '信号与反转', 220, '30', '超过此时间的 pending / awaiting_confirm 信号将被自动标记为 expired'),
-  reverse_signal_threshold: meta('反转通知阈值', '信号与反转', 230, '6', '仅当反转评分达到该阈值时发送反转卡片通知'),
-
-  trade_window_start_time: meta('交易开始时间', '交易窗口', 300, '09:35', '信号允许进入交易校验的开始时间，ET 时区'),
-  trade_window_end_time: meta('交易结束时间', '交易窗口', 310, '15:30', '超过该时间后不再接受新交易信号，ET 时区'),
-  order_window_end_time: meta('下单截止时间', '交易窗口', 320, '15:00', '超过该时间后新信号不再进入下单环节，ET 时区'),
-
-  position_limit_max: meta('当日持仓上限', '交易风控', 400, '3', '当日成功下单计数达到该上限后，新的交易信号将被拒绝'),
-  order_validity_minutes: meta('订单有效期', '交易风控', 410, '30', 'Init / Submitted 状态的订单超过此时间自动标记为 Canceled'),
-
-  eod_close_time: meta('EOD 平仓时间', '日终规则', 500, '15:55', '到达该 ET 时间后自动执行日终平仓'),
-  eod_keep_symbols: meta('EOD 保留标的', '日终规则', 510, 'BOXX,IBKR', '日终平仓时跳过这些标的，逗号分隔；默认保留 BOXX 与 IBKR'),
-
-  watchlist_interval_min: meta('标的同步间隔', '标的订阅', 600, '5', '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
-  ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '标的订阅', 610, '60', '按 ibkr_targets 刷新当日实时订阅列表'),
-  ibkr_daily_scan_time_et: meta('日筛触发时间', '标的订阅', 612, '09:20', '每日自动初筛触发时间，ET 时区；当前设计为 09:20 盘前初筛'),
-  ibkr_daily_scan_min_avg_10d_volume: meta('日筛最小10D均量', '标的订阅', 614, '100000', '自动日筛硬门槛：10 日平均成交量至少达到该值'),
-  ibkr_daily_scan_min_premarket_volume: meta('日筛最小盘前量', '标的订阅', 616, '5000', '自动日筛硬门槛：盘前累计成交量至少达到该值'),
-  ibkr_daily_scan_min_atr_pct: meta('日筛最小 ATR%', '标的订阅', 618, '0.15', '自动日筛硬门槛：ATR 百分比至少达到该值'),
-  ibkr_daily_scan_min_abs_day_change_pct: meta('日筛最小日涨跌%', '标的订阅', 619, '1.0', '自动日筛硬门槛：当日涨跌幅绝对值至少达到该值'),
-  ibkr_target_subscription_limit: meta('Trade 订阅上限', '标的订阅', 620, '80', 'trade 标的单独上限；实际 trade 可用预算会再与总订阅上限扣除 monitor 预留后的余额取更小值'),
-  ibkr_total_subscription_limit: meta('总订阅上限', '标的订阅', 625, '80', 'WS 总订阅上限，包含 trade targets 与 market monitor 订阅'),
-  ibkr_market_ws_enabled: meta('默认市场 WS 开关', '标的订阅', 630, 'TRUE', '启用后会为默认市场体验符号维持实时 WS，不参与默认交易'),
-  ibkr_market_ws_symbols: meta('默认市场 WS 标的', '标的订阅', 640, 'SPY,QQQ,VIX', '用于首页/监控页的默认实时大盘符号，逗号分隔'),
-
-  ibkr_bar_publish_enabled: meta('K线发布开关', '行情链路', 700, 'TRUE', '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
-  ibkr_active_repair_interval_min: meta('活跃修复间隔', '行情链路', 705, '5', '当前实时订阅标的的缺口 / rollup 异常巡检间隔，按 5m 链路优先修复'),
-  ibkr_live_warmup_days: meta('启动预热天数', '行情链路', 708, '14', '启动或全量重建时默认补齐并预热最近多少天的 5m bars'),
-  ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '行情链路', 710, '30', '非目标标的按批次执行 5m 增量回补的间隔'),
-  ibkr_watchlist_backfill_batch_size: meta('底池回补批次', '行情链路', 720, '12', '每轮底池回补最多处理多少个非目标标的'),
-  ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '行情链路', 730, '20', '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
-  ibkr_watchlist_integrity_enabled: meta('底池完整性巡检', '行情链路', 740, 'TRUE', '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
-  ibkr_watchlist_integrity_batch_size: meta('底池巡检批次', '行情链路', 750, '8', '每轮底池完整性巡检最多处理多少个非目标标的'),
-  ibkr_restart_overlap_days: meta('重启重叠回补天数', '行情链路', 760, '1', '每次重启时从最近 N 天的 overlap 区间重新拉取 5m history，覆盖修正 recent bars'),
-  ibkr_manual_start_restart_gateway: meta('手动启动先重启 Gateway', '启动策略', 770, 'TRUE', '开启后，Runtime 页面“启动 IBKR 服务”会先重启 ibkr_gateway、清空旧 Session，再创建新的启动轮次；这是 live 默认推荐模式'),
-  ibkr_weekly_reauth_restart_gateway: meta('每周重验先重启 Gateway', '启动策略', 772, 'TRUE', '开启后，每周重验会先重启 ibkr_gateway，再进入新的人工 2FA 轮次'),
-  ibkr_server_boot_resume_only: meta('服务重启仅做 Resume', '启动策略', 774, 'TRUE', '开启后，ibkr-compute / deploy / server_boot 自动恢复不会先重启 gateway，也不会强制 fresh 2FA；适合正常发布和进程重启'),
-  ibkr_server_boot_publish_startup_card: meta('服务重启发送启动卡片', '启动策略', 776, 'FALSE', '关闭时，server_boot / auto_restore 不新建启动卡片；开启后，即使只是 deploy 恢复，也会在启动群里单独发出当前轮次卡片'),
-
-  system_status_chat_id: meta('状态群 Chat ID', '通知路由', 600, 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '正常状态提醒与日常运行反馈默认发送到这里'),
-  system_startup_chat_id: meta('启动群 Chat ID', '通知路由', 602, 'oc_cc5d0a950797b1c2c010953e14bceeff', '所有启动轮次卡片统一发送到这里；每次新的启动 / 干净重开都会生成独立卡片并持续更新当前轮次'),
-  system_2fa_chat_id: meta('2FA 群 Chat ID', '通知路由', 605, 'oc_c48c10447685e80cfea0c003864aa51f', '所有 2FA 卡片、2FA 超时/失败/待确认、Session 失效与运行态未认证提醒统一发送到这里'),
-  system_alert_chat_id: meta('告警群 Chat ID', '通知路由', 610, 'oc_91aa4f84bc6fedb125b1a263d91d4104', '所有非 2FA 的 warning / error 级别且影响系统运行的异常默认发送到这里'),
-  signal_chat_id: meta('信号群 Chat ID', '通知路由', 620, 'oc_edb26dcc52938b7833ac9f32ae6b1620', '新信号卡片默认发送到这里'),
-  order_chat_id: meta('订单群 Chat ID', '通知路由', 630, 'oc_5ca4585e1fd108c2c662dfc358684945', '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
-  reverse_chat_id: meta('反转群 Chat ID', '通知路由', 640, 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转信号与反转执行卡片默认发送到这里'),
-
-  status_notify_enabled: meta('状态摘要通知', '系统通知', 900, 'TRUE', '开盘前 09:20、重启和 :00 / :30 的状态摘要通知；半点和整点会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
-  daily_summary_notify_enabled: meta('日报通知', '系统通知', 910, 'TRUE', '收盘后发送当日交易汇总；周末或非交易日也会发送闭市汇总'),
-  manual_stop_notify_enabled: meta('手动停止通知', '系统通知', 920, 'TRUE', '手动停止算法时发送通知'),
-  health_check_notify_enabled: meta('兜底心跳通知', '系统通知', 930, 'TRUE', '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),
-  inspection_notify_enabled: meta('巡检告警', '系统通知', 940, 'TRUE', '孤立持仓、恢复异常、数据缺口等巡检告警'),
-  system_monitor_host_load_consecutive_count: meta('Load 连续命中次数', '系统通知', 945, '2', '仅对 host_load_high / host_load_critical 生效；Monitor Cron 每 5 分钟检查一次，默认需连续 2 次命中才发告警'),
-  system_monitor_ws_message_age_regular_warn_sec: meta('WS 盘中告警秒数', '系统通知', 946, '60', 'regular session 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
-  system_monitor_ws_message_age_regular_critical_sec: meta('WS 盘中严重秒数', '系统通知', 947, '180', 'regular session 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘中告警秒数'),
-  system_monitor_ws_message_age_late_session_warn_sec: meta('WS 盘后告警秒数', '系统通知', 948, '600', 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 warning'),
-  system_monitor_ws_message_age_late_session_critical_sec: meta('WS 盘后严重秒数', '系统通知', 949, '1200', 'close_transition / afterhours 下最近一条 WebSocket 消息超过多少秒后触发 critical；必须大于盘后告警秒数'),
-
-  ibkr_compute_internal_url: meta('Compute 内网地址', '服务接入', 1000, 'http://127.0.0.1:5100', 'ibkr-compute 的系统内 HTTP 地址；scheduler / api / 兼容壳都走这里，不再暴露独立公网 compute 域名'),
-  ibkr_runtime_internal_url: meta('Runtime 内网地址', '服务接入', 1001, 'http://127.0.0.1:5101', 'ibkr-runtime 的系统内 HTTP 地址'),
-  ibkr_api_internal_url: meta('API 内网地址', '服务接入', 1002, 'http://127.0.0.1:5102', 'ibkr-api 的系统内 HTTP 地址'),
-  ibkr_scheduler_internal_url: meta('Scheduler 内网地址', '服务接入', 1003, 'http://127.0.0.1:5103', 'ibkr-scheduler 的系统内 HTTP 地址'),
-}
-
-const GROUP_ORDER = [
-  '运行总控',
-  'IBKR Scheduler',
-  '信号与反转',
-  '交易窗口',
-  '交易风控',
-  '日终规则',
-  '标的订阅',
-  '行情链路',
-  '通知路由',
-  '系统通知',
-  '服务接入',
-  '其他 / 未归类'
-]
-
-const BOOLEAN_CONFIG_KEYS = new Set([
-  'ibkr_trading_enabled',
-  'signal_manual_confirm_enabled',
-  'status_notify_enabled',
-  'daily_summary_notify_enabled',
-  'manual_stop_notify_enabled',
-  'health_check_notify_enabled',
-  'inspection_notify_enabled',
-  'pb_scheduler_enabled',
-  'ibkr_compute_enabled',
-  'ibkr_bar_publish_enabled',
-  'ibkr_market_ws_enabled'
-])
-
-const NUMERIC_CONFIG_RULES = {
-  position_limit_max: { min: '1', max: '20', step: '1' },
-  watchlist_interval_min: { min: '1', max: '60', step: '1' },
-  ibkr_target_refresh_sec: { min: '15', max: '300', step: '15' },
-  ibkr_daily_scan_min_avg_10d_volume: { min: '0', max: '50000000', step: '1000' },
-  ibkr_daily_scan_min_premarket_volume: { min: '0', max: '5000000', step: '1000' },
-  ibkr_daily_scan_min_atr_pct: { min: '0', max: '10', step: '0.01' },
-  ibkr_daily_scan_min_abs_day_change_pct: { min: '0', max: '50', step: '0.1' },
-  ibkr_target_subscription_limit: { min: '1', max: '200', step: '1' },
-  ibkr_total_subscription_limit: { min: '1', max: '200', step: '1' },
-  ibkr_live_warmup_days: { min: '1', max: '90', step: '1' },
-  ibkr_active_repair_interval_min: { min: '5', max: '120', step: '5' },
-  ibkr_watchlist_backfill_interval_min: { min: '5', max: '240', step: '5' },
-  ibkr_watchlist_backfill_batch_size: { min: '1', max: '100', step: '1' },
-  ibkr_watchlist_backfill_stale_min: { min: '5', max: '240', step: '5' },
-  ibkr_watchlist_integrity_batch_size: { min: '1', max: '100', step: '1' },
-  ibkr_restart_overlap_days: { min: '1', max: '14', step: '1' },
-  signal_validity_minutes: { min: '5', max: '120', step: '5' },
-  order_validity_minutes: { min: '5', max: '120', step: '5' },
-  signal_poll_interval_sec: { min: '15', max: '600', step: '15' },
-  reverse_signal_threshold: { min: '1', max: '10', step: '1' },
-  system_monitor_host_load_consecutive_count: { min: '1', max: '12', step: '1' },
-  system_monitor_ws_message_age_regular_warn_sec: { min: '15', max: '900', step: '15' },
-  system_monitor_ws_message_age_regular_critical_sec: { min: '30', max: '3600', step: '30' },
-  system_monitor_ws_message_age_late_session_warn_sec: { min: '60', max: '3600', step: '60' },
-  system_monitor_ws_message_age_late_session_critical_sec: { min: '120', max: '7200', step: '60' }
-}
-
-const SELECT_CONFIGS = {
-  ibkr_signal_source: [
-    { value: 'both', label: 'both (全部)' },
-    { value: 'tradingview', label: 'tradingview (仅 TV)' },
-    { value: 'ibkr_compute', label: 'ibkr_compute (仅 Compute)' }
-  ]
-}
-
-function normalizeBooleanText(value, fallback = 'TRUE') {
-  const text = String(value ?? fallback).trim().toUpperCase()
-  if (!text) return String(fallback || 'TRUE').trim().toUpperCase()
-  return text
-}
-
-function isTruthyConfigValue(value, fallback = 'TRUE') {
-  const text = normalizeBooleanText(value, fallback)
-  return !(text === 'FALSE' || text === '0' || text === 'OFF' || text === 'NO')
-}
-
-function applyPbCronConfigMeta(definitions) {
-  if (!Array.isArray(definitions) || definitions.length === 0) return
-
-  if (!GROUP_ORDER.includes('IBKR Scheduler')) {
-    GROUP_ORDER.splice(1, 0, 'IBKR Scheduler')
-  }
-
-  definitions.forEach((definition) => {
-    if (!definition?.config_key) return
-    ACTIVE_CONFIG_KEYS.add(definition.config_key)
-    BOOLEAN_CONFIG_KEYS.add(definition.config_key)
-    CONFIG_META[definition.config_key] = meta(
-      definition.config_display_name || definition.display_name || definition.config_key,
-      definition.group_name || 'IBKR Scheduler',
-      Number(definition.sort_order || 9999),
-      definition.default_value ?? 'TRUE',
-      definition.config_description || definition.function_summary || ''
-    )
-  })
-}
-
-async function loadPbCronDefinitions() {
-  try {
-    const token = getToken()
-    const headers = { 'Content-Type': 'application/json' }
-    if (token) headers.Authorization = `Bearer ${token}`
-    const res = await fetch(`${BASE_URL}/api/custom/system/cronz`, { headers })
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`)
-    }
-    const payload = await res.json()
-    return Array.isArray(payload?.items) ? payload.items : []
-  } catch (err) {
-    console.error('[Config] 加载 IBKR Scheduler 定义失败:', err)
-    return []
-  }
-}
-
-// ── 渲染导航 ──
-document.getElementById('navContainer').innerHTML = renderNav('/ibkr_config.html')
-document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_config.html')
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function normalizeConfigRecordEnvironment(record) {
-  return String(record?.environment || '').trim().toLowerCase()
-}
-
-function getConfigScopeLabel(environment) {
-  return getEnvironmentLabel(environment || 'global', true)
-}
-
-function buildConfigView(records) {
-  const byKey = new Map()
-
-  records.forEach((record) => {
-    if (!record?.key) return
-    if (!byKey.has(record.key)) byKey.set(record.key, [])
-    byKey.get(record.key).push(record)
-  })
-
-  Object.entries(CONFIG_META).forEach(([key, metaInfo]) => {
-    if (byKey.has(key)) return
-    byKey.set(key, [{
-      key,
-      id: '',
-      environment: configEnvironment === 'global' ? 'global' : '',
-      value: metaInfo.default_value ?? '',
-      default_value: metaInfo.default_value ?? '',
-      display_name: metaInfo.display_name || key,
-      group_name: metaInfo.group_name || '其他 / 未归类',
-      sort_order: metaInfo.sort_order ?? 9999
-    }])
-  })
-
-  return Array.from(byKey.entries()).map(([key, keyRecords]) => {
-    const selectedRecord = keyRecords.find((record) => normalizeConfigRecordEnvironment(record) === configEnvironment) || null
-    const globalRecord = keyRecords.find((record) => {
-      const environment = normalizeConfigRecordEnvironment(record)
-      return environment === 'global' || environment === ''
-    }) || null
-    const sourceRecord = selectedRecord || globalRecord || keyRecords[0]
-    const editableRecord = configEnvironment === 'global'
-      ? (globalRecord || selectedRecord || sourceRecord)
-      : selectedRecord
-
-    return {
-      ...sourceRecord,
-      id: editableRecord?.id || '',
-      value: sourceRecord?.value ?? '',
-      _source_environment: normalizeConfigRecordEnvironment(sourceRecord) || 'global',
-      _editable_environment: configEnvironment,
-      _editable_id: editableRecord?.id || '',
-      _has_override: Boolean(selectedRecord),
-    }
-  })
-}
-
-function renderConfigEnvironmentBar() {
-  document.getElementById('configEnvironmentBar').innerHTML = renderPageContextBar(
-    '⚙️ 配置管理',
-    {
-      allowGlobal: true,
-      subtitle: '统一查看与编辑 global / live / paper / backtest 运行配置。'
-    }
-  )
-}
-
-function findConfig(key) {
-  return configs.find(c => c.key === key)
-}
-
-function getVisibleConfigs() {
-  const keySet = new Set(configs.map(c => c.key))
-
-  return configs
-    .filter(config => {
-      if (!ACTIVE_CONFIG_KEYS.has(config.key)) return false
-      const redirectKey = LEGACY_KEY_REDIRECTS[config.key]
-      return !(redirectKey && keySet.has(redirectKey))
-    })
-    .map(config => {
-      const fallbackMeta = CONFIG_META[config.key] || meta(config.key, '其他 / 未归类', 9999)
-      const metaSortOrder = Number(fallbackMeta.sort_order)
-      const recordSortOrder = Number(config.sort_order)
-      const sortOrder = Number.isFinite(metaSortOrder)
-        ? metaSortOrder
-        : (Number.isFinite(recordSortOrder) ? recordSortOrder : 9999)
-
-      config._display_name = fallbackMeta.display_name || config.display_name || config.key
-      config._group_name = fallbackMeta.group_name || config.group_name || '其他 / 未归类'
-      config._sort_order = sortOrder
-      config._description = fallbackMeta.description || config.description || ''
-      config._default_value = fallbackMeta.default_value ?? config.default_value ?? ''
-      config.default_value = config._default_value
-      return config
-    })
-    .sort((a, b) => {
-      if (a._sort_order !== b._sort_order) return a._sort_order - b._sort_order
-      return String(a.key || '').localeCompare(String(b.key || ''))
-    })
-}
-
-function getGroupedConfigs() {
-  const visibleConfigs = getVisibleConfigs()
-  const groups = new Map()
-
-  visibleConfigs.forEach(config => {
-    const groupName = config._group_name || '其他 / 未归类'
-    if (!groups.has(groupName)) groups.set(groupName, [])
-    groups.get(groupName).push(config)
-  })
-
-  return Array.from(groups.entries()).sort((a, b) => {
-    const aIndex = GROUP_ORDER.includes(a[0]) ? GROUP_ORDER.indexOf(a[0]) : GROUP_ORDER.length
-    const bIndex = GROUP_ORDER.includes(b[0]) ? GROUP_ORDER.indexOf(b[0]) : GROUP_ORDER.length
-    if (aIndex !== bIndex) return aIndex - bIndex
-    return String(a[0] || '').localeCompare(String(b[0] || ''), 'zh-Hans-CN')
-  })
-}
-
-function getTabs(groupedConfigs) {
-  return [
-    { id: 'all', label: '全部', count: groupedConfigs.reduce((sum, [, items]) => sum + items.length, 0) },
-    ...groupedConfigs.map(([groupName, items]) => ({
-      id: groupName,
-      label: groupName,
-      count: items.length
-    }))
-  ]
-}
-
-function renderTabs(tabs) {
-  const activeTabInfo = tabs.find(tab => tab.id === activeTab)
-  return `
-    <div class="config-toolbar">
-      <div class="config-tabs">
-        ${tabs.map(tab => `
-          <button
-            type="button"
-            class="config-tab ${activeTab === tab.id ? 'active' : ''}"
-            onclick="setConfigTab('${tab.id.replace(/'/g, "\\'")}')"
-          >
-            <span>${tab.label}</span>
-            <span class="config-tab-count">${tab.count}</span>
-          </button>
-        `).join('')}
-      </div>
-      <div class="config-tab-summary">
-        ${activeTab === 'all'
-          ? `当前显示全部功能配置，共 ${tabs[0]?.count || 0} 项`
-          : `当前功能页：${activeTab} · ${activeTabInfo?.count || 0} 项`}
-      </div>
-    </div>
-  `
-}
-
-// ── 加载配置 ──
-async function load() {
-  try {
-    const [data, cronDefs] = await Promise.all([
-      apiFetch('config', {
-        perPage: 500,
-        sort: 'key,-updated'
-      }),
-      loadPbCronDefinitions()
-    ])
-
-    pbCronDefinitions = cronDefs
-    applyPbCronConfigMeta(pbCronDefinitions)
-    configRecords = data.items || []
-    configs = buildConfigView(configRecords)
-    originalValues = {}
-    modifiedKeys.clear()
-
-    configs.forEach(c => {
-      originalValues[c.key] = c.value
-    })
-
-    render()
-  } catch (err) {
-    console.error('[Config] 加载失败:', err)
-    document.getElementById('configContainer').innerHTML = `
-      <div class="empty">
-        <div class="empty-icon">⚠️</div>
-        <div class="empty-text">连接失败，请检查网络</div>
-      </div>
-    `
-  }
-}
-
-// ── 渲染 ──
-function render() {
-  const container = document.getElementById('configContainer')
-  const groupedConfigs = getGroupedConfigs()
-  const visibleConfigs = groupedConfigs.flatMap(([, items]) => items)
-
-  if (visibleConfigs.length === 0) {
-    container.innerHTML = '<div class="empty"><div class="empty-text">暂无配置</div></div>'
-    updateSaveButton()
-    return
-  }
-
-  const tabs = getTabs(groupedConfigs)
-  if (!tabs.some(tab => tab.id === activeTab)) {
-    activeTab = 'all'
-    localStorage.setItem('config_active_tab', activeTab)
-  }
-
-  const displayGroups = activeTab === 'all'
-    ? groupedConfigs
-    : groupedConfigs.filter(([groupName]) => groupName === activeTab)
-  const showSectionHeader = activeTab === 'all' || displayGroups.length > 1
-
-  let html = ''
-  html += renderTabs(tabs)
-  html += renderCronOverview()
-
-  for (const [groupName, groupItems] of displayGroups) {
-    html += `<div class="config-section">`
-    if (showSectionHeader) {
-      html += `
-        <div class="section-title">
-          <span>${groupName}</span>
-          <span class="section-count">${groupItems.length} 项</span>
-        </div>
-      `
-    }
-
-    for (const config of groupItems) {
-      const key = config.key
-
-      const isModified = modifiedKeys.has(key)
-      const modifiedClass = isModified ? 'modified' : ''
-
-      // 检查是否可以重置
-      const canReset = config.value !== config.default_value && config.default_value !== null && config.default_value !== ''
-      const resetDisabled = canReset ? '' : 'disabled'
-
-      html += `
-        <div class="config-item ${modifiedClass}" data-key="${key}">
-          <div class="config-header">
-            <div class="config-title-wrap">
-              <div class="config-name">${config._display_name}</div>
-              <div class="config-key">${key} · 来源 ${getConfigScopeLabel(config._source_environment)}${config._has_override ? '' : (configEnvironment === 'global' ? '' : ' · 继承')}</div>
-            </div>
-            <div class="config-default">默认: ${config.default_value ?? '-'}</div>
-          </div>
-          <div class="config-desc">${config._description || ''}</div>
-          ${renderControl(config)}
-          <div style="margin-top: 8px; text-align: right;">
-            <button class="reset-btn" onclick="resetOne('${key}')" ${resetDisabled}>重置</button>
-          </div>
-        </div>
-      `
-    }
-
-    html += `</div>`
-  }
-
-  container.innerHTML = html
-  updateSaveButton()
-}
-
-function getConfigEffectiveValue(key, fallback = '') {
-  const config = findConfig(key)
-  if (!config) return fallback
-  return config.value ?? config.default_value ?? fallback
-}
-
-function getCronEffectiveState(definition) {
-  const schedulerValue = getConfigEffectiveValue('pb_scheduler_enabled', 'TRUE')
-  const cronValue = getConfigEffectiveValue(definition.config_key, definition.default_value ?? 'TRUE')
-  const schedulerEnabled = isTruthyConfigValue(schedulerValue, 'TRUE')
-  const cronEnabled = isTruthyConfigValue(cronValue, definition.default_value ?? 'TRUE')
-  return {
-    schedulerEnabled,
-    cronEnabled,
-    effectiveEnabled: schedulerEnabled && cronEnabled
-  }
-}
-
-function renderCronOverview() {
-  if (!Array.isArray(pbCronDefinitions) || pbCronDefinitions.length === 0) return ''
-  if (activeTab !== 'all' && activeTab !== 'IBKR Scheduler') return ''
-
-  return `
-    <div class="cron-overview">
-      <div class="cron-overview-head">
-        <div>
-          <div class="cron-overview-title">IBKR Scheduler 总览</div>
-          <div class="cron-overview-subtitle">
-            当前作用域 ${getConfigScopeLabel(configEnvironment)} 下默认展示北京时间，展开后可查看 UTC / 美东时间，以及功能、绑定开关和实际生效状态。
-          </div>
-        </div>
-        <div class="cron-overview-badge">${pbCronDefinitions.length} 个 Cron</div>
-      </div>
-      <div class="cron-grid">
-        ${pbCronDefinitions.map((definition) => {
-          const state = getCronEffectiveState(definition)
-          return `
-            <div class="cron-card">
-              <div class="cron-card-header">
-                <div>
-                  <div class="cron-card-title">${escapeHtml(definition.display_name || definition.config_display_name || definition.id || 'Scheduler Job')}</div>
-                  <div class="cron-card-id">${escapeHtml(definition.id || '-')}</div>
-                </div>
-                <div class="cron-state ${state.effectiveEnabled ? 'on' : 'off'}">${state.effectiveEnabled ? 'ENABLED' : 'DISABLED'}</div>
-              </div>
-              <div class="cron-meta">
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">时区</div>
-                  <div class="cron-meta-value">
-                    <details class="cron-time-details">
-                      <summary class="cron-time-summary">
-                        <span class="cron-time-primary">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '-')}</span>
-                        <span class="cron-time-toggle">UTC / ET</span>
-                      </summary>
-                      <div class="cron-time-list">
-                        <div class="cron-time-item">
-                          <span class="cron-time-name">UTC</span>
-                          <span class="cron-time-text">${escapeHtml(definition.cycle_label || '-')}</span>
-                        </div>
-                        <div class="cron-time-item">
-                          <span class="cron-time-name">ET</span>
-                          <span class="cron-time-text">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '-')}</span>
-                        </div>
-                      </div>
-                    </details>
-                  </div>
-                </div>
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">Cron</div>
-                  <div class="cron-meta-value">
-                    <details class="cron-exp-details">
-                      <summary class="cron-exp-summary">查看表达式</summary>
-                      <div class="cron-exp-text">${escapeHtml(definition.cron_expr || '-')}</div>
-                    </details>
-                  </div>
-                </div>
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">窗口</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.window_label || '-')}</div>
-                </div>
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">功能</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.function_summary || '-')}</div>
-                </div>
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">开关</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.config_key || '-')}</div>
-                </div>
-                <div class="cron-meta-row">
-                  <div class="cron-meta-label">备注</div>
-                  <div class="cron-meta-value">${escapeHtml(definition.note || '受当前作用域配置控制')}</div>
-                </div>
-              </div>
-              <div class="cron-tags">
-                <span class="cron-tag">Scheduler 总开关: ${state.schedulerEnabled ? 'ON' : 'OFF'}</span>
-                <span class="cron-tag">当前 Cron: ${state.cronEnabled ? 'ON' : 'OFF'}</span>
-                <span class="cron-tag">作用域: ${escapeHtml(getConfigScopeLabel(configEnvironment))}</span>
-              </div>
-            </div>
-          `
-        }).join('')}
-      </div>
-    </div>
-  `
-}
-
-window.setConfigTab = async function(tabId) {
-  activeTab = tabId
-  localStorage.setItem('config_active_tab', activeTab)
-  await load()
-}
-
-// ── 渲染控件 ──
-function renderControl(config) {
-  const key = config.key
-  const value = config.value ?? config.default_value ?? ''
-  const normalizedValue = String(value).toUpperCase()
-
-  // 布尔值 - Toggle
-  if (BOOLEAN_CONFIG_KEYS.has(key) || normalizedValue === 'TRUE' || normalizedValue === 'FALSE') {
-    const isActive = normalizedValue === 'TRUE'
-    return `
-      <div class="toggle-container">
-        <div class="toggle ${isActive ? 'active' : ''}" onclick="toggleBool('${key}', this)"></div>
-        <span class="toggle-label">${isActive ? '开启' : '关闭'}</span>
-      </div>
-    `
-  }
-
-  if (SELECT_CONFIGS[key]) {
-    return `
-      <select class="config-select" onchange="updateValue('${key}', this.value)">
-        ${SELECT_CONFIGS[key].map(option => `
-          <option value="${option.value}" ${value === option.value ? 'selected' : ''}>${option.label}</option>
-        `).join('')}
-      </select>
-    `
-  }
-
-  // 时间类 - Time Input (如 09:20, 15:30)
-  if (key.endsWith('_time')) {
-    return `<input type="time" class="config-input" value="${value}" onchange="updateValue('${key}', this.value)">`
-  }
-
-  const numericRule = NUMERIC_CONFIG_RULES[key]
-  if (numericRule) {
-    const min = numericRule.min || '0'
-    const max = numericRule.max || '9999'
-    const stepVal = numericRule.step || '1'
-
-    // 自然整数使用步进按钮，其他用普通输入框
-    if (stepVal === '1') {
-      return `
-        <div class="stepper-container">
-          <button class="stepper-btn" onclick="stepValue('${key}', -${stepVal})">−</button>
-          <input type="number" step="${stepVal}" min="${min}" max="${max}" class="config-input stepper-input" value="${value}" oninput="updateValue('${key}', this.value)">
-          <button class="stepper-btn" onclick="stepValue('${key}', ${stepVal})">+</button>
-        </div>
-      `
-    }
-
-    return `<input type="number" step="${stepVal}" min="${min}" max="${max}" class="config-input" value="${value}" oninput="updateValue('${key}', this.value)">`
-  }
-
-  // 文本 - Text Input
-  return `<input type="text" class="config-input" value="${value}" oninput="updateValue('${key}', this.value)">`
-}
-
-// ── 步进数值 ──
-window.stepValue = function(key, delta) {
-  const config = findConfig(key)
-  if (!config) return
-
-  const currentVal = parseFloat(config.value) || 0
-  const newVal = Math.round((currentVal + delta) * 100) / 100
-
-  updateValue(key, String(newVal))
-
-  // 直接更新该 input 的值，不重新渲染整个页面
-  const input = document.querySelector(`.config-item[data-key="${key}"] .stepper-input`)
-  if (input) {
-    input.value = String(newVal)
-  }
-}
-
-// ── Toggle 布尔值 ──
-window.toggleBool = function(key, el) {
-  const isActive = el.classList.contains('active')
-  const newValue = isActive ? 'FALSE' : 'TRUE'
-
-  el.classList.toggle('active')
-  const label = el.nextElementSibling
-  label.textContent = isActive ? '关闭' : '开启'
-  label.style.color = isActive ? 'var(--muted)' : 'var(--long)'
-
-  updateValue(key, newValue)
-}
-
-// ── 更新值 ──
-window.updateValue = function(key, newValue) {
-  const config = findConfig(key)
-  if (!config) return
-
-  config.value = newValue
-
-  if (newValue !== originalValues[key]) {
-    modifiedKeys.add(key)
-  } else {
-    modifiedKeys.delete(key)
-  }
-
-  // 更新 modified 样式
-  const item = document.querySelector(`.config-item[data-key="${key}"]`)
-  if (item) {
-    if (modifiedKeys.has(key)) {
-      item.classList.add('modified')
-    } else {
-      item.classList.remove('modified')
-    }
-  }
-
-  updateSaveButton()
-}
-
-// ── 更新保存按钮 ──
-function updateSaveButton() {
-  const btn = document.getElementById('saveBtn')
-  const resetAllBtn = document.getElementById('resetAllBtn')
-  const visibleConfigs = getVisibleConfigs()
-  btn.disabled = modifiedKeys.size === 0
-  btn.textContent = modifiedKeys.size > 0 ? `保存配置 (${modifiedKeys.size})` : '保存配置'
-
-  // 检查是否有可重置的配置（当前值与默认值不同）
-  const hasResettable = visibleConfigs.some(c => c.value !== c.default_value && c.default_value !== null)
-  resetAllBtn.disabled = !hasResettable
-}
-
-// ── 保存所有修改 ──
-async function saveAll() {
-  const btn = document.getElementById('saveBtn')
-  btn.disabled = true
-  btn.textContent = '保存中...'
-
-  let success = 0
-  let failed = 0
-
-  for (const key of modifiedKeys) {
-    const config = findConfig(key)
-    if (!config) continue
-
-    try {
-      const token = getToken()
-      const payload = {
-        value: config.value,
-        default_value: config.default_value ?? '',
-        description: config._description || config.description || '',
-        display_name: config._display_name || config.display_name || '',
-        group_name: config._group_name || config.group_name || '',
-        sort_order: config._sort_order ?? config.sort_order ?? 0,
-        environment: configEnvironment
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBKR Config moved to Quant</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f0e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6d655c;
+        --line: #d8cfc3;
+        --accent: #8f3d2f;
+        --accent-soft: #ead2ca;
       }
-      if (!config._editable_id) {
-        payload.key = config.key
+
+      * {
+        box-sizing: border-box;
       }
-      const endpoint = config._editable_id
-        ? `${PB_AUTH_BASE_URL}/api/collections/config/records/${config._editable_id}`
-        : `${PB_AUTH_BASE_URL}/api/collections/config/records`
-      const res = await fetch(endpoint, {
-        method: config._editable_id ? 'PATCH' : 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(payload)
-      })
 
-      if (res.ok) {
-        originalValues[key] = config.value
-        success++
-      } else {
-        failed++
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(143, 61, 47, 0.12), transparent 34%),
+          linear-gradient(135deg, #f7f2ea, var(--bg));
       }
-    } catch (err) {
-      console.error(`[Config] 保存 ${key} 失败:`, err)
-      failed++
-    }
-  }
 
-  modifiedKeys.clear()
-
-  if (failed === 0) {
-    showToast(`✅ 成功保存 ${success} 项配置`)
-  } else {
-    showToast(`⚠️ 保存完成: 成功 ${success}, 失败 ${failed}`)
-  }
-
-  await load()
-}
-
-// ── 重置单个配置 ──
-window.resetOne = function(key) {
-  const config = findConfig(key)
-  if (!config || config.default_value === null || config.default_value === undefined) return
-
-  config.value = config.default_value
-
-  if (config.value !== originalValues[key]) {
-    modifiedKeys.add(key)
-  } else {
-    modifiedKeys.delete(key)
-  }
-
-  render()
-  showToast(`已重置 ${config._display_name || key} 为默认值`)
-}
-
-// ── 重置全部配置 ──
-async function resetAll() {
-  const resettableConfigs = getVisibleConfigs().filter(c =>
-    c.default_value !== null &&
-    c.default_value !== undefined &&
-    c.default_value !== '' &&
-    c.value !== c.default_value
-  )
-
-  if (resettableConfigs.length === 0) {
-    showToast('没有可重置的配置')
-    return
-  }
-
-  if (!confirm(`确定要重置 ${resettableConfigs.length} 项配置为默认值吗？`)) {
-    return
-  }
-
-  let success = 0
-  let failed = 0
-
-  for (const config of resettableConfigs) {
-    try {
-      const token = getToken()
-      const payload = {
-        value: config.default_value,
-        default_value: config.default_value ?? '',
-        description: config._description || config.description || '',
-        display_name: config._display_name || config.display_name || '',
-        group_name: config._group_name || config.group_name || '',
-        sort_order: config._sort_order ?? config.sort_order ?? 0,
-        environment: configEnvironment
+      main {
+        width: min(760px, calc(100vw - 40px));
+        margin: 48px auto;
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: color-mix(in srgb, var(--panel) 94%, white);
+        box-shadow: 0 28px 60px rgba(31, 29, 26, 0.12);
       }
-      if (!config._editable_id) {
-        payload.key = config.key
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
       }
-      const endpoint = config._editable_id
-        ? `${PB_AUTH_BASE_URL}/api/collections/config/records/${config._editable_id}`
-        : `${PB_AUTH_BASE_URL}/api/collections/config/records`
-      const res = await fetch(endpoint, {
-        method: config._editable_id ? 'PATCH' : 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(payload)
-      })
 
-      if (res.ok) {
-        config.value = config.default_value
-        originalValues[config.key] = config.default_value
-        modifiedKeys.delete(config.key)
-        success++
-      } else {
-        failed++
+      h1 {
+        margin: 18px 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
       }
-    } catch (err) {
-      console.error(`[Config] 重置 ${config.key} 失败:`, err)
-      failed++
-    }
-  }
 
-  if (failed === 0) {
-    showToast(`✅ 成功重置 ${success} 项配置`)
-  } else {
-    showToast(`⚠️ 重置完成: 成功 ${success}, 失败 ${failed}`)
-  }
+      p {
+        margin: 0 0 16px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
 
-render()
-}
+      code {
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(143, 61, 47, 0.08);
+        color: var(--accent);
+      }
 
-function manualReloadConfig() {
-  spinPageRefreshButton('configRefreshBtn')
-  return load()
-}
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
 
-// ── 初始加载 ──
-renderConfigEnvironmentBar()
-withPageLoading(() => load(), {
-  title: '配置页加载中',
-  copy: '正在同步配置项、作用域覆盖关系和 IBKR Scheduler 定义。',
-})
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid var(--accent);
+        color: white;
+        background: var(--accent);
+      }
 
-window.onEnvironmentChange = function(environment) {
-  configEnvironment = environment
-  location.href = buildPageUrl('/ibkr_config.html', { environment }, { allowGlobal: true })
-}
-</script>
-</body>
+      .button.secondary {
+        color: var(--accent);
+        background: transparent;
+      }
+    </style>
+    <!-- pb-legacy-redirect -->
+    <script>
+      (function redirectLegacyPocketBaseRoute() {
+        var targetBase = 'https://quant.lzw-glory.top';
+        var currentOrigin = String(window.location.origin || '').replace(/\/+$/, '');
+        var target = targetBase + window.location.pathname + window.location.search + window.location.hash;
+        window.__PB_LEGACY_REDIRECT_TARGET__ = target;
+        if (currentOrigin && currentOrigin === targetBase) {
+          return;
+        }
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body>
+    <main data-pb-legacy-redirect="quant-console">
+      <div class="eyebrow">Legacy PB Route</div>
+      <h1>IBKR Config moved to quant.</h1>
+      <p>
+        <code>pb.lzw-glory.top</code> now stays dedicated to PocketBase auth, data, and admin surfaces.
+        Legacy console routes forward to the split quant entry.
+      </p>
+      <p>
+        If your browser does not redirect automatically, use the button below to open the same path on the quant domain.
+      </p>
+      <div class="actions">
+        <a id="openQuantLink" class="button" href="https://quant.lzw-glory.top/ibkr_config.html">Open Quant Console</a>
+        <a class="button secondary" href="/">PocketBase Landing</a>
+        <a class="button secondary" href="/_/">PocketBase Admin</a>
+      </div>
+    </main>
+    <script>
+      (function syncRedirectLink() {
+        var link = document.getElementById('openQuantLink');
+        var target = window.__PB_LEGACY_REDIRECT_TARGET__ || ('https://quant.lzw-glory.top' + window.location.pathname + window.location.search + window.location.hash);
+        if (link) {
+          link.href = target;
+        }
+      })();
+    </script>
+  </body>
 </html>
