@@ -16,6 +16,46 @@ def _service_mod():
 
 
 class TradingServiceRuntimePipelineMixin:
+    def _load_persisted_compute_cursor_map(self, environment: str) -> dict[str, int]:
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        try:
+            record = self.pb.get_state("compute_cursors", runtime_environment, date="global")
+        except Exception:
+            return {}
+
+        payload = (record or {}).get("data") if isinstance(record, dict) else {}
+        cursors = payload.get("cursors") if isinstance(payload, dict) else {}
+        if not isinstance(cursors, dict):
+            return {}
+
+        cursor_map = {}
+        for raw_key, raw_value in cursors.items():
+            key = str(raw_key or "").strip()
+            bar_ms = int(raw_value or 0)
+            if key and bar_ms > 0:
+                cursor_map[key] = bar_ms
+        return cursor_map
+
+    def _official_5m_due_compute_symbols(
+        self,
+        environment: str,
+        symbols: list[str],
+        due_bucket_ms: int,
+    ) -> list[str]:
+        if due_bucket_ms <= 0:
+            return []
+
+        cursor_map = self._load_persisted_compute_cursor_map(environment)
+        due_symbols = []
+        for symbol in (symbols or []):
+            normalized_symbol = str(symbol or "").strip().upper()
+            if not normalized_symbol:
+                continue
+            cursor_ms = int(cursor_map.get(f"{normalized_symbol}|5m", 0) or 0)
+            if cursor_ms < due_bucket_ms:
+                due_symbols.append(normalized_symbol)
+        return due_symbols
+
     def _official_5m_enabled(self) -> bool:
         service_mod = _service_mod()
         return self.config.get_bool_for_environment("ibkr_official_5m_enabled", service_mod.ENVIRONMENT, True)
@@ -652,10 +692,15 @@ class TradingServiceRuntimePipelineMixin:
             symbol for symbol in symbols
             if symbol not in next_pending_symbols
         ]
-        if written_bars > 0 and compute_symbols:
+        due_compute_symbols = self._official_5m_due_compute_symbols(
+            service_mod.ENVIRONMENT,
+            compute_symbols,
+            due_bucket_ms,
+        )
+        if due_compute_symbols:
             self._last_bar_close_at = time.time()
             self.data_writer.flush()
-            self._queue_compute_event("canonical_close", bar_count=written_bars, symbols=compute_symbols)
+            self._queue_compute_event("canonical_close", bar_count=written_bars, symbols=due_compute_symbols)
 
         blocking_pending_symbols = self._non_monitor_pending_symbols(
             next_pending_symbols,

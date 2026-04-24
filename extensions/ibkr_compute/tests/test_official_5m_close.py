@@ -117,6 +117,21 @@ class _FakeBackfill:
         }
 
 
+class _FakePB:
+    def __init__(self, cursor_map=None):
+        self.cursor_map = dict(cursor_map or {})
+
+    def get_state(self, key: str, environment: str, date: str = "global") -> dict:
+        del environment, date
+        if key != "compute_cursors":
+            return {}
+        return {
+            "data": {
+                "cursors": dict(self.cursor_map),
+            }
+        }
+
+
 class _DummyPipeline(TradingServiceRuntimePipelineMixin):
     def __init__(
         self,
@@ -124,6 +139,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         last_completed_bucket_ms: int,
         data_writer: _FakeWriter,
         data_backfill: _FakeBackfill,
+        pb=None,
     ):
         self._running = True
         self._starting = False
@@ -153,6 +169,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         self._due_bucket_ms = due_bucket_ms
         self.data_writer = data_writer
         self.data_backfill = data_backfill
+        self.pb = pb or _FakePB()
         self.compute_events = []
 
     def _official_5m_enabled(self) -> bool:
@@ -261,6 +278,38 @@ class Official5mCloseFlushTest(unittest.TestCase):
                     due_bucket_ms,
                 ]
             ),
+        )
+
+    def test_dispatches_compute_when_persisted_due_bucket_is_ahead_of_compute_cursor(self):
+        due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
+        previous_bucket_ms = due_bucket_ms - STEP_MS
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(
+            writer,
+            initial_rows=[_bar("AAPL", due_bucket_ms)],
+            incremental_rows=[],
+            repair_rows=[],
+        )
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_bucket_ms,
+            last_completed_bucket_ms=previous_bucket_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            pb=_FakePB(cursor_map={"AAPL|5m": previous_bucket_ms}),
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_official_5m_close_cycle()
+
+        self.assertEqual(
+            pipeline.compute_events,
+            [
+                {
+                    "source": "canonical_close",
+                    "bar_count": 0,
+                    "symbols": ["AAPL"],
+                }
+            ],
         )
 
 

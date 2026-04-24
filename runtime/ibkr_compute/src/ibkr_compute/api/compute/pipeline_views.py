@@ -28,17 +28,33 @@ def build_compute_response(payload=None):
         signals_found = 0
         errors = 0
         indicator_batch = []
+        indicator_cursor_updates = {}
         signal_batch = []
         captured_signals = []
         dirty_cursor_environments = set()
 
+        def commit_cursor_updates(cursor_updates: dict[tuple[str, str, str], int]):
+            for key, bar_ms in (cursor_updates or {}).items():
+                environment = str(key[0] or "").strip().lower()
+                next_bar_ms = int(bar_ms or 0)
+                if not environment or next_bar_ms <= 0:
+                    continue
+                api_app.last_processed_ms[key] = max(
+                    int(api_app.last_processed_ms.get(key, 0) or 0),
+                    next_bar_ms,
+                )
+                dirty_cursor_environments.add(environment)
+
         def flush_pending_indicators():
-            nonlocal errors, indicator_batch
+            nonlocal errors, indicator_batch, indicator_cursor_updates
             if not indicator_batch:
                 return
             result = api_app.flush_indicator_batch(indicator_batch)
             errors += int(result.get("errors", 0) or 0)
+            if int(result.get("errors", 0) or 0) == 0:
+                commit_cursor_updates(indicator_cursor_updates)
             indicator_batch = []
+            indicator_cursor_updates = {}
 
         def flush_pending_signals():
             nonlocal errors, signals_found, signal_batch
@@ -97,6 +113,7 @@ def build_compute_response(payload=None):
                         signal_generator = api_app.signal_gens.get((environment, symbol, interval))
                         key = (environment, symbol, interval)
                         last_ms = int(api_app.last_processed_ms.get(key, 0) or 0)
+                        force_bootstrap_rebuild = int(getattr(engine, "last_bar_time_ms", 0) or 0) > last_ms
                         bootstrap_target_ms = last_ms
                         bootstrap_inclusive = True
                         if bootstrap_target_ms <= 0 and bars:
@@ -109,6 +126,7 @@ def build_compute_response(payload=None):
                                 interval,
                                 bootstrap_target_ms,
                                 inclusive=bootstrap_inclusive,
+                                force_rebuild=force_bootstrap_rebuild,
                                 hydrate_signal_state=plan["persist_signals"],
                             )
                             last_ms = int(api_app.last_processed_ms.get(key, 0) or 0)
@@ -129,15 +147,18 @@ def build_compute_response(payload=None):
                                 "cn_time": bar.get("cn_time", ""),
                                 "session_type": bar.get("session_type", "regular"),
                             })
-                            api_app.last_processed_ms[key] = bar_ms
                             last_ms = bar_ms
-                            dirty_cursor_environments.add(environment)
                             processed += 1
 
                             if not snapshot or not engine.is_ready():
+                                commit_cursor_updates({key: bar_ms})
                                 continue
 
                             indicator_batch.append(api_app.build_indicator_payload(environment, symbol, interval, bar, engine, snapshot))
+                            indicator_cursor_updates[key] = max(
+                                int(indicator_cursor_updates.get(key, 0) or 0),
+                                bar_ms,
+                            )
                             if len(indicator_batch) >= api_app.INDICATOR_BATCH_SIZE:
                                 flush_pending_indicators()
 
