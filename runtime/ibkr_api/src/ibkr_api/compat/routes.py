@@ -92,6 +92,21 @@ NATIVE_WEBHOOK_ROUTES = [
 ]
 
 
+def _build_unmatched_route_response(*, route_family: str, subpath: str):
+    return (
+        jsonify(
+            {
+                "ok": False,
+                "error": f"unsupported_{route_family}_route",
+                "route_family": route_family,
+                "subpath": subpath,
+                "source": "ibkr-api",
+            }
+        ),
+        404,
+    )
+
+
 def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb_base_url = deps["pb_base_url"]
     compute_base_url = deps["compute_base_url"]
@@ -158,8 +173,10 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                         "custom": "/api/custom/*",
                         "webhook": "/webhook/*",
                     },
-                    "fallback_to_pocketbase_custom": True,
-                    "fallback_to_pocketbase_webhooks": True,
+                    "fallback_to_pocketbase_custom": False,
+                    "fallback_to_pocketbase_webhooks": False,
+                    "unmatched_custom_route_behavior": "404_from_ibkr_api",
+                    "unmatched_webhook_route_behavior": "404_from_ibkr_api",
                 },
                 "scheduler_jobs": scheduler_jobs,
                 "scheduler": augment_scheduler_summary(build_scheduler_summary(environment, scheduler_payload), scheduler_items),
@@ -193,12 +210,12 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         if direct_target:
             base_url, target_path = direct_target
             return forward_request(base_url, target_path)
-        return proxy_custom_to_pb(subpath)
+        return _build_unmatched_route_response(route_family="custom", subpath=subpath)
     exports["custom_proxy"] = custom_proxy
 
     @app.route("/webhook/<path:subpath>", methods=["GET", "POST", "PATCH", "PUT", "DELETE"])
     def webhook_proxy(subpath: str) -> Response:
-        return proxy_webhook_to_pb(subpath)
+        return _build_unmatched_route_response(route_family="webhook", subpath=subpath)
     exports["webhook_proxy"] = webhook_proxy
 
     return exports

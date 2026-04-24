@@ -26,6 +26,7 @@ from ibkr_api.app_core.http import (
     request_json as _request_json_support,
     request_json_request as _request_json_request_support,
 )
+from ibkr_api.app_core.platform_route_deps import build_platform_route_deps
 from ibkr_api.app_core.platform_registrar import register_platform_routes
 from ibkr_api.app_core.presentation import (
     add_environment_to_detail as _add_environment_to_detail_support,
@@ -50,6 +51,7 @@ from ibkr_api.app_core.state_access import (
     get_state_payload as _get_state_payload_support,
     load_daily_scan_state as _load_daily_scan_state_support,
 )
+from ibkr_api.app_core.trading_route_deps import build_trading_route_deps
 from ibkr_api.app_core.trading_registrar import register_trading_routes
 from ibkr_api.app_core.value_utils import (
     as_dict as _as_dict_support,
@@ -67,6 +69,11 @@ from ibkr_api.callbacks.feishu import (
     dispatch_feishu_order_callback as _dispatch_feishu_order_callback_support,
     dispatch_feishu_signal_callback as _dispatch_feishu_signal_callback_support,
     handle_feishu_callback as _handle_feishu_callback_support,
+)
+from ibkr_api.callbacks.runtime_dispatch import (
+    build_dispatch_feishu_2fa_callback,
+    build_dispatch_feishu_order_callback,
+    build_dispatch_feishu_signal_callback,
 )
 from ibkr_api.control.runtime_guard import (
     build_runtime_environment_mismatch_payload,
@@ -138,6 +145,18 @@ from ibkr_api.system.monitor_support import (
     derive_monitor_service_map as _derive_monitor_service_map_support,
     probe_console_status as _probe_console_status_support,
 )
+from ibkr_api.system.runtime_events import build_emit_system_event, build_request_two_factor_approval
+from ibkr_api.system.runtime_monitor import (
+    build_augment_scheduler_summary,
+    build_derive_monitor_service_map,
+    build_extract_cursor_interval,
+    build_probe_console_status,
+    build_scheduler_job_states,
+    build_scheduler_status,
+    build_scheduler_summary,
+    build_system_monitor_payload,
+    build_system_summary_payload,
+)
 from ibkr_api.system.scheduler_support import (
     augment_scheduler_summary as _augment_scheduler_summary_support,
     build_scheduler_summary as _build_scheduler_summary_support,
@@ -147,6 +166,7 @@ from ibkr_api.system.scheduler_support import (
 )
 from ibkr_api.system.summary_support import build_system_summary_payload as _build_system_summary_payload_support
 from ibkr_api.tradingview.ingest import upsert_tv_indicator as _upsert_tv_indicator_support, upsert_tv_signal as _upsert_tv_signal_support
+from ibkr_api.tradingview.runtime_adapters import build_upsert_tv_indicator, build_upsert_tv_signal
 from ibkr_compute.api.service_topology import build_service_topology
 from ibkr_scheduler.cron_registry import build_cron_payload
 from ibkr_compute.core.config import Config
@@ -456,60 +476,8 @@ _write_system_event_record = partial(
     label_title_with_environment=_label_title_with_environment,
     add_environment_to_detail=_add_environment_to_detail,
 )
-
-
-def _emit_system_event(
-    *,
-    event_type: str,
-    level: str,
-    source: str,
-    title: str,
-    detail: Any,
-    environment: str,
-    message_id: str = "",
-) -> dict[str, Any]:
-    delivery = _deliver_system_event_notification(
-        event_type,
-        level,
-        source,
-        title,
-        detail,
-        environment,
-        message_id=message_id,
-    )
-    notified = bool(delivery.get("success")) and not bool(delivery.get("suppressed"))
-    persisted = bool(_write_system_event_record(event_type, level, source, title, detail, environment, notified))
-    return {
-        "ok": True,
-        "notified": notified,
-        "persisted": persisted,
-        "message_id": str(delivery.get("message_id") or message_id),
-        "updated": bool(delivery.get("updated")),
-        "skipped": bool(delivery.get("skipped")),
-        "suppressed": bool(delivery.get("suppressed")),
-        "error": str(delivery.get("error") or ""),
-    }
-
-
-def _request_two_factor_approval(
-    *,
-    environment: str,
-    reason: str,
-    source: str,
-    message: str,
-    detail: dict[str, Any] | None = None,
-    force_reset: bool = False,
-    force_new: bool = False,
-) -> dict[str, Any]:
-    return pb.request_ibkr_2fa(
-        reason=reason,
-        detail=detail or {},
-        source=source,
-        environment=environment,
-        message=message,
-        force_reset=force_reset,
-        force_new=force_new,
-    )
+_emit_system_event = build_emit_system_event(globals_dict=globals())
+_request_two_factor_approval = build_request_two_factor_approval(pb=pb)
 
 _normalize_startup_step_status = normalize_startup_step_status
 _startup_chat_id = partial(
@@ -746,264 +714,76 @@ def _proxy_webhook_to_pb(subpath: str) -> Response:
     )
 
 
-def _extract_cursor_interval(cursor_payload: dict[str, Any], interval: str = "5m") -> dict[str, Any]:
-    return _extract_cursor_interval_support(cursor_payload, interval)
-
-
-
-def _build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any]) -> dict[str, Any]:
-    return _build_scheduler_summary_support(environment, scheduler_payload)
-
-
-
-def _scheduler_status(environment: str = "live") -> dict[str, Any]:
-    return _scheduler_status_support(
-        environment,
-        request_json=_request_json,
-        scheduler_base_url=SCHEDULER_BASE_URL,
-    )
-
-
-
-def _scheduler_job_states(environment: str = "live") -> dict[str, Any]:
-    return _scheduler_job_states_support(environment, scheduler_status_fn=_scheduler_status)
-
-
-
-def _augment_scheduler_summary(summary: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
-    return _augment_scheduler_summary_support(summary, items)
-
-
-
-def _build_system_summary_payload(environment: str, *, lite_mode: bool) -> dict[str, Any]:
-    return _build_system_summary_payload_support(
-        environment,
-        lite_mode=lite_mode,
-        normalize_environment=_normalize_environment,
-        load_effective_config_map=_load_effective_config_map,
-        is_enabled_text=_is_enabled_text,
-        fetch_compute_health=_fetch_compute_health,
-        fetch_compute_status=_fetch_compute_status,
-        fetch_runtime_status=_fetch_runtime_status,
-        as_dict=_as_dict,
-        merge_service_topology=_merge_service_topology,
-        load_recent_system_events=_load_recent_system_events,
-        time_strings=_time_strings,
-    )
-
-
-
-def _probe_console_status() -> dict[str, Any]:
-    return _probe_console_status_support(_console_base_url())
-
-
-
-def _derive_monitor_service_map(
-    environment: str,
-    base_payload: dict[str, Any],
-    scheduler_summary: dict[str, Any],
-    *,
-    console_probe: dict[str, Any],
-    pb_health: dict[str, Any],
-    build_service_topology_fn=None,
-    build_service_topology: Any = None,
-) -> dict[str, Any]:
-    topology_builder = build_service_topology_fn or build_service_topology or globals().get("build_service_topology")
-    return _derive_monitor_service_map_support(
-        environment,
-        base_payload,
-        scheduler_summary,
-        console_probe=console_probe,
-        pb_health=pb_health,
-        build_service_topology=topology_builder,
-    )
-
-
-
-def _build_system_monitor_payload(environment: str) -> dict[str, Any]:
-    return _build_system_monitor_payload_support(
-        environment,
-        normalize_environment=_normalize_environment,
-        fetch_compute_monitor=_fetch_compute_monitor,
-        as_dict=_as_dict,
-        config_refresh=config.refresh,
-        scheduler_status=_scheduler_status,
-        build_cron_payload=build_cron_payload,
-        config=config,
-        build_scheduler_summary=_build_scheduler_summary,
-        augment_scheduler_summary=_augment_scheduler_summary,
-        request_json=_request_json,
-        pb_base_url=PB_BASE_URL,
-        console_base_url=_console_base_url(),
-        probe_console_status=_probe_console_status_support,
-        load_effective_config_map=_load_effective_config_map,
-        monitor_config_keys=MONITOR_CONFIG_KEYS,
-        load_recent_system_events=_load_recent_system_events,
-        enrich_monitor_payload_with_pocketbase_disk=_enrich_monitor_payload_with_pocketbase_disk,
-        derive_monitor_service_map=_derive_monitor_service_map,
-        merge_service_topology=_merge_service_topology,
-        build_service_topology=build_service_topology,
-        service_profile=str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
-    )
+_extract_cursor_interval = build_extract_cursor_interval(support=_extract_cursor_interval_support)
+_build_scheduler_summary = build_scheduler_summary(support=_build_scheduler_summary_support)
+_scheduler_status = build_scheduler_status(
+    globals_dict=globals(),
+    scheduler_base_url=SCHEDULER_BASE_URL,
+    support=_scheduler_status_support,
+)
+_scheduler_job_states = build_scheduler_job_states(globals_dict=globals(), support=_scheduler_job_states_support)
+_augment_scheduler_summary = build_augment_scheduler_summary(support=_augment_scheduler_summary_support)
+_build_system_summary_payload = build_system_summary_payload(globals_dict=globals(), support=_build_system_summary_payload_support)
+_probe_console_status = build_probe_console_status(globals_dict=globals(), support=_probe_console_status_support)
+_derive_monitor_service_map = build_derive_monitor_service_map(
+    globals_dict=globals(),
+    support=_derive_monitor_service_map_support,
+)
+_build_system_monitor_payload = build_system_monitor_payload(
+    globals_dict=globals(),
+    config=config,
+    build_cron_payload=build_cron_payload,
+    build_service_topology=build_service_topology,
+    pb_base_url=PB_BASE_URL,
+    monitor_config_keys=MONITOR_CONFIG_KEYS,
+    support=_build_system_monitor_payload_support,
+)
 
 
 _platform_route_handlers = register_platform_routes(
     app,
-    deps={
-        "pb": pb,
-        "config": config,
-        "build_service_topology": build_service_topology,
-        "normalize_environment": _normalize_environment,
-        "parse_boolean": _parse_boolean,
-        "escape_filter_string": _escape_filter_string,
-        "pick_effective_config_rows": _pick_effective_config_rows,
-        "serialize_config_rows": _serialize_config_rows,
-        "merge_service_topology": lambda *payloads: _merge_service_topology(*payloads),
-        "fetch_compute_health": lambda environment: _fetch_compute_health(environment),
-        "fetch_compute_status": lambda environment: _fetch_compute_status(environment),
-        "fetch_runtime_health": lambda environment: _fetch_runtime_health(environment),
-        "fetch_runtime_status": lambda environment: _fetch_runtime_status(environment),
-        "as_dict": _as_dict,
-        "load_daily_scan_state": lambda environment: _load_daily_scan_state(environment),
-        "count_active_today_targets": lambda environment, market_date: _count_active_today_targets(environment, market_date),
-        "build_statusz_compute_payload": lambda compute_payload, include_engines: _build_statusz_compute_payload(compute_payload, include_engines),
-        "build_statusz_live_readiness": lambda compute_payload, runtime_payload: _build_statusz_live_readiness(compute_payload, runtime_payload),
-        "build_statusz_runtime_payload": (
-            lambda runtime_payload, include_warmup_details, *, live_readiness, fallback_state=None: _build_statusz_runtime_payload(
-                runtime_payload,
-                include_warmup_details,
-                live_readiness=live_readiness,
-                fallback_state=fallback_state,
-            )
-        ),
-        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
-        "normalize_two_factor_state_with_runtime": lambda state_data, runtime_status: _normalize_two_factor_state_with_runtime(
-            state_data,
-            runtime_status,
-        ),
-        "ibkr_2fa_state_key": IBKR_2FA_STATE_KEY,
-        "ibkr_2fa_state_date": IBKR_2FA_STATE_DATE,
-        "compute_base_url": COMPUTE_BASE_URL,
-        "time_strings": _time_strings,
-        "normalize_startup_state": lambda value, environment: _normalize_startup_state(value, environment),
-        "build_startup_cycle_id": lambda environment: _build_startup_cycle_id(environment),
-        "build_startup_label": lambda environment, startup_seq, started_at: _build_startup_label(environment, startup_seq, started_at),
-        "startup_chat_id": lambda environment: _startup_chat_id(environment),
-        "default_startup_steps": _default_startup_steps,
-        "normalize_startup_fields": _normalize_startup_fields,
-        "merge_startup_steps": _merge_startup_steps,
-        "deliver_startup_progress_card": lambda state, environment: _deliver_startup_progress_card(state, environment),
-        "resolve_startup_step_label": lambda state: _resolve_startup_step_label(state),
-        "write_system_event_record": lambda *args, **kwargs: _write_system_event_record(*args, **kwargs),
-        "ibkr_startup_state_key": IBKR_STARTUP_STATE_KEY,
-        "ibkr_startup_state_date": IBKR_STARTUP_STATE_DATE,
-        "config_value": _config_value,
-        "signal_chat_id": _signal_chat_id,
-        "console_base_url": _console_base_url,
-        "feishu_send_interactive": _feishu_send_interactive,
-        "feishu_update_interactive": _feishu_update_interactive,
-        "request_two_factor_approval": _request_two_factor_approval,
-        "emit_system_event": _emit_system_event,
-        "label_title_with_environment": _label_title_with_environment,
-        "add_environment_to_detail": _add_environment_to_detail,
-        "deliver_system_event_notification": lambda *args, **kwargs: _deliver_system_event_notification(*args, **kwargs),
-        "build_cron_payload": build_cron_payload,
-        "scheduler_status": lambda environment: _scheduler_status(environment),
-        "build_scheduler_summary": lambda environment, payload: _build_scheduler_summary(environment, payload),
-        "augment_scheduler_summary": lambda summary, items: _augment_scheduler_summary(summary, items),
-        "build_system_monitor_payload": lambda environment: _build_system_monitor_payload(environment),
-        "build_system_summary_payload": lambda environment, lite_mode=False: _build_system_summary_payload(environment, lite_mode=lite_mode),
-        "build_signal_expiry_response": lambda *args, **kwargs: build_signal_expiry_response(*args, **kwargs),
-        "build_order_detail_integrity_response": lambda *args, **kwargs: build_order_detail_integrity_response(*args, **kwargs),
-        "build_today_targets_response": lambda payload: build_today_targets_response(
-            pb,
-            payload=payload,
-            normalize_environment=_normalize_environment,
-            time_strings=_time_strings,
-        ),
-        "system_status_chat_id": _system_status_chat_id,
-        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime_support(
-            environment,
-            order_id,
-            payload,
-            request_json_request=_request_json_request,
-            runtime_base_url=RUNTIME_BASE_URL,
-            normalize_environment=_normalize_environment,
-            as_dict=_as_dict,
-        ),
-        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
-            method,
-            base_url,
-            path,
-            params=params,
-            json_body=json_body,
-            timeout=timeout,
-        ),
-        "runtime_base_url": RUNTIME_BASE_URL,
-    },
+    deps=build_platform_route_deps(
+        globals_dict=globals(),
+        pb=pb,
+        config=config,
+        build_service_topology=build_service_topology,
+        compute_base_url=COMPUTE_BASE_URL,
+        runtime_base_url=RUNTIME_BASE_URL,
+        ibkr_2fa_state_key=IBKR_2FA_STATE_KEY,
+        ibkr_2fa_state_date=IBKR_2FA_STATE_DATE,
+        ibkr_startup_state_key=IBKR_STARTUP_STATE_KEY,
+        ibkr_startup_state_date=IBKR_STARTUP_STATE_DATE,
+    ),
 )
 globals().update(_platform_route_handlers)
 
 
 _callback_toast = _callback_toast_support
-
-
-def _upsert_tv_indicator(payload: dict[str, Any]):
-    return _upsert_tv_indicator_support(
-        payload,
-        pb=pb,
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        jsonify_fn=jsonify,
-    )
-
-
-def _upsert_tv_signal(payload: dict[str, Any]):
-    return _upsert_tv_signal_support(
-        payload,
-        pb=pb,
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        jsonify_fn=jsonify,
-        time_strings=_time_strings,
-    )
-
-
-def _dispatch_feishu_2fa_callback(action: str, environment: str) -> dict[str, Any]:
-    return _dispatch_feishu_2fa_callback_support(
-        action,
-        environment,
-        request_json_request=_request_json_request,
-        pb_base_url=PB_BASE_URL,
-        as_dict=_as_dict,
-        callback_toast_fn=_callback_toast,
-    )
-
-
-def _dispatch_feishu_signal_callback(action: str, signal_id: str, environment: str) -> tuple[dict[str, Any], int]:
-    return _dispatch_feishu_signal_callback_support(
-        action,
-        signal_id,
-        environment,
-        pb=pb,
-        escape_filter_string=_escape_filter_string,
-        callback_toast_fn=_callback_toast,
-    )
-
-
-def _dispatch_feishu_order_callback(action: str, order_id: str, environment: str) -> tuple[dict[str, Any], int]:
-    return _dispatch_feishu_order_callback_support(
-        action,
-        order_id,
-        environment,
-        pb=pb,
-        normalize_environment=_normalize_environment,
-        escape_filter_string=_escape_filter_string,
-        cancel_broker_order=_cancel_broker_order_via_runtime,
-        build_order_cancel_group_response_fn=build_order_cancel_group_response,
-        build_order_close_group_response_fn=build_order_close_group_response,
-        callback_toast_fn=_callback_toast,
-    )
+_upsert_tv_indicator = build_upsert_tv_indicator(
+    globals_dict=globals(),
+    pb=pb,
+    support=_upsert_tv_indicator_support,
+)
+_upsert_tv_signal = build_upsert_tv_signal(
+    globals_dict=globals(),
+    pb=pb,
+    support=_upsert_tv_signal_support,
+)
+_dispatch_feishu_2fa_callback = build_dispatch_feishu_2fa_callback(
+    globals_dict=globals(),
+    pb_base_url=PB_BASE_URL,
+    support=_dispatch_feishu_2fa_callback_support,
+)
+_dispatch_feishu_signal_callback = build_dispatch_feishu_signal_callback(
+    globals_dict=globals(),
+    pb=pb,
+    support=_dispatch_feishu_signal_callback_support,
+)
+_dispatch_feishu_order_callback = build_dispatch_feishu_order_callback(
+    globals_dict=globals(),
+    pb=pb,
+    support=_dispatch_feishu_order_callback_support,
+)
 
 
 def _cancel_broker_order_via_runtime(environment: str, order_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1020,78 +800,11 @@ def _cancel_broker_order_via_runtime(environment: str, order_id: str, payload: d
 
 _trading_route_handlers = register_trading_routes(
     app,
-    deps={
-        "pb": pb,
-        "normalize_environment": _normalize_environment,
-        "escape_filter_string": _escape_filter_string,
-        "as_dict": _as_dict,
-        "console_base_url": _console_base_url,
-        "signal_chat_id": _signal_chat_id,
-        "feishu_send_interactive": _feishu_send_interactive,
-        "feishu_update_interactive": _feishu_update_interactive,
-        "cancel_broker_order": lambda environment, order_id, payload=None: _cancel_broker_order_via_runtime(
-            environment,
-            order_id,
-            payload,
-        ),
-        "build_signal_ingest_response": lambda *args, **kwargs: build_signal_ingest_response(*args, **kwargs),
-        "build_signals_ingest_response": lambda *args, **kwargs: build_signals_ingest_response(*args, **kwargs),
-        "build_signals_pending_response": lambda *args, **kwargs: build_signals_pending_response(*args, **kwargs),
-        "build_signals_ack_response": lambda *args, **kwargs: build_signals_ack_response(*args, **kwargs),
-        "build_order_upsert_response": lambda *args, **kwargs: build_order_upsert_response(*args, **kwargs),
-        "build_signal_confirm_webhook_response": lambda *args, **kwargs: build_signal_confirm_webhook_response(*args, **kwargs),
-        "build_signal_cancel_webhook_response": lambda *args, **kwargs: build_signal_cancel_webhook_response(*args, **kwargs),
-        "config_value": _config_value,
-        "get_state_payload": lambda state_key, environment, date="global": _get_state_payload(state_key, environment, date=date),
-        "upsert_state": lambda state_key, environment, data, date="global": pb.upsert_state(state_key, environment, data, date=date),
-        "build_orders_reconcile_response": lambda *args, **kwargs: build_orders_reconcile_response(*args, **kwargs),
-        "build_order_cancel_sync_response": lambda *args, **kwargs: build_order_cancel_sync_response(*args, **kwargs),
-        "build_order_cancel_group_response": lambda *args, **kwargs: build_order_cancel_group_response(*args, **kwargs),
-        "build_order_close_group_response": lambda *args, **kwargs: build_order_close_group_response(*args, **kwargs),
-        "build_order_cancel_webhook_response": lambda *args, **kwargs: build_order_cancel_webhook_response(*args, **kwargs),
-        "build_order_close_webhook_response": lambda *args, **kwargs: build_order_close_webhook_response(*args, **kwargs),
-        "build_reverse_list_response": lambda *args, **kwargs: build_reverse_list_response(*args, **kwargs),
-        "build_reverse_calculate_response": lambda *args, **kwargs: build_reverse_calculate_response(*args, **kwargs),
-        "build_reverse_pending_response": lambda *args, **kwargs: build_reverse_pending_response(*args, **kwargs),
-        "build_reverse_dispatch_response": lambda *args, **kwargs: build_reverse_dispatch_response(*args, **kwargs),
-        "build_reverse_ack_response": lambda *args, **kwargs: build_reverse_ack_response(*args, **kwargs),
-        "upsert_tv_indicator": lambda payload: _upsert_tv_indicator(payload),
-        "upsert_tv_signal": lambda payload: _upsert_tv_signal(payload),
-        "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: _request_json_request(
-            method,
-            base_url,
-            path,
-            params=params,
-            json_body=json_body,
-            timeout=timeout,
-        ),
-        "runtime_base_url": RUNTIME_BASE_URL,
-        "inspect_runtime_environment": lambda environment: inspect_requested_runtime_environment(
-            environment,
-            normalize_environment=_normalize_environment,
-            fetch_runtime_status=_fetch_runtime_status,
-            as_dict=_as_dict,
-        ),
-        "build_runtime_environment_mismatch_payload": build_runtime_environment_mismatch_payload,
-        "emit_system_event": _emit_system_event,
-        "fetch_runtime_status": lambda environment: _fetch_runtime_status(environment),
-        "merge_startup_steps": _merge_startup_steps,
-        "deliver_startup_progress_card": lambda state, environment: _deliver_startup_progress_card(state, environment),
-        "handle_feishu_callback": _handle_feishu_callback_support,
-        "dispatch_feishu_2fa_callback": lambda action, environment: _dispatch_feishu_2fa_callback(action, environment),
-        "dispatch_feishu_order_callback": lambda action, order_id, environment: _dispatch_feishu_order_callback(
-            action,
-            order_id,
-            environment,
-        ),
-        "dispatch_feishu_signal_callback": lambda action, signal_id, environment: _dispatch_feishu_signal_callback(
-            action,
-            signal_id,
-            environment,
-        ),
-        "callback_toast": _callback_toast,
-        "callback_response": _feishu_callback_response,
-    },
+    deps=build_trading_route_deps(
+        globals_dict=globals(),
+        pb=pb,
+        runtime_base_url=RUNTIME_BASE_URL,
+    ),
 )
 globals().update(_trading_route_handlers)
 

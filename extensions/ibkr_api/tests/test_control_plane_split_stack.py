@@ -328,20 +328,26 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIn("ibkr-api", payload["service_topology"]["services"])
         self.assertEqual(payload["compatibility"]["pocketbase_proxy_routes"]["custom"], "/api/custom/*")
         self.assertEqual(payload["compatibility"]["pocketbase_proxy_routes"]["webhook"], "/webhook/*")
+        self.assertFalse(payload["compatibility"]["fallback_to_pocketbase_custom"])
+        self.assertFalse(payload["compatibility"]["fallback_to_pocketbase_webhooks"])
+        self.assertEqual(payload["compatibility"]["unmatched_custom_route_behavior"], "404_from_ibkr_api")
+        self.assertEqual(payload["compatibility"]["unmatched_webhook_route_behavior"], "404_from_ibkr_api")
 
-    def test_generic_custom_proxy_falls_back_to_pocketbase(self):
-        sentinel = {"ok": True, "source": "pb"}
-        with mock.patch.object(api_app_mod, "_proxy_custom_to_pb", return_value=sentinel) as proxy_mock:
-            payload = api_app_mod.custom_proxy("ibkr/legacy_fallback")
-        self.assertIs(payload, sentinel)
-        proxy_mock.assert_called_once_with("ibkr/legacy_fallback")
+    def test_generic_custom_proxy_rejects_unmatched_routes_in_api(self):
+        payload, status_code = api_app_mod.custom_proxy("ibkr/legacy_fallback")
+        self.assertEqual(status_code, 404)
+        self.assertEqual(payload["error"], "unsupported_custom_route")
+        self.assertEqual(payload["route_family"], "custom")
+        self.assertEqual(payload["subpath"], "ibkr/legacy_fallback")
+        self.assertEqual(payload["source"], "ibkr-api")
 
-    def test_generic_webhook_proxy_falls_back_to_pocketbase(self):
-        sentinel = {"ok": True, "source": "pb-webhook"}
-        with mock.patch.object(api_app_mod, "_forward_request", return_value=sentinel) as forward_mock:
-            payload = api_app_mod.webhook_proxy("signal/confirm")
-        self.assertIs(payload, sentinel)
-        forward_mock.assert_called_once_with(api_app_mod.PB_BASE_URL, "/webhook/signal/confirm")
+    def test_generic_webhook_proxy_rejects_unmatched_routes_in_api(self):
+        payload, status_code = api_app_mod.webhook_proxy("legacy/hook")
+        self.assertEqual(status_code, 404)
+        self.assertEqual(payload["error"], "unsupported_webhook_route")
+        self.assertEqual(payload["route_family"], "webhook")
+        self.assertEqual(payload["subpath"], "legacy/hook")
+        self.assertEqual(payload["source"], "ibkr-api")
 
     def test_signals_pending_route_reads_native_pb_records_and_enriches_indicator(self):
         signal_rows = [

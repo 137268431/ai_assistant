@@ -2,7 +2,7 @@
 
 - Source-owned control-plane API code lives under `runtime/ibkr_api/src/ibkr_api`.
 - This service hosts compatibility routes, control actions, webhook entrypoints, and topology/status aggregation.
-- `compat/routes.py` owns the service shell routes (`/health`, `/status`, `/api/collections/*`, generic `/api/custom/*`, generic `/webhook/*`) so PB compatibility fallback is isolated from feature code.
+- `compat/routes.py` owns the service shell routes (`/health`, `/status`, `/api/collections/*`, generic `/api/custom/*`, generic `/webhook/*`) so compatibility ownership stays isolated from feature code; unmatched generic custom/webhook requests now terminate with an `ibkr-api` 404 instead of delegating back to PocketBase.
 - `runtime/routes.py`, `runtime/status_support.py`, and `runtime/two_factor.py` own runtime/status/2FA status payload shaping; `status_support.py` is now only a compatibility barrel over `status_fetch.py`, `status_compute.py`, `status_live_readiness.py`, `status_runtime_sections.py`, `status_runtime_warmup.py`, and `status_runtime_payload.py`, while `two_factor/` owns the active 2FA request/result/respond flow instead of leaving those state machines embedded in `api_app.py`.
 - `two_factor/request.py` is now only a compatibility barrel; request entry flow is split into `request_shared.py`, `request_approval.py`, `request_trigger.py`, and `request_response.py` so card reuse, runtime trigger, and response shaping stay separated inside the 2FA slice.
 - `system/` owns topology/status/monitor/cron helpers plus API-side system-event and PocketBase disk support.
@@ -14,8 +14,10 @@
 - `universe/today_targets.py` is now just the response builder shell over `today_targets_shared.py` and `today_targets_workflow.py`, so data loading, workflow shaping, and filter/sort logic stay split inside the universe slice.
 - `data_quality/` owns the read-side summary / list endpoints that were previously aggregated inside PocketBase JS helpers.
 - `signals/` owns signal ingress, signal ACK, signal status notification, signal-related order cancel flow, signal webhook pages, pending/ack API builders, and `signals/routes.py`.
+- `signals/ingest.py` is now the ingress orchestration shell; payload normalization, duplicate-bar detection, lifecycle resolution, and PB upsert diffing are split into `signals/ingest_payloads.py`, `signals/ingest_dedupe.py`, `signals/ingest_lifecycle.py`, and `signals/ingest_store.py`.
 - `orders/` owns order upsert, detail payloads, group actions, reconcile flow, order webhook pages, shared order value/timestamp/relationship helpers, and `orders/routes.py`.
 - `reverse/` owns reverse-signal query, calculate, dispatch, ack, shared reverse normalization helpers, and `reverse/routes.py`.
+- `reverse/common.py` is now only a compatibility barrel; shared values, normalization, indicator helpers, order-context helpers, and PB-backed reverse-record persistence now live in `reverse/shared.py`, `reverse/normalize.py`, `reverse/indicator_support.py`, `reverse/order_support.py`, and `reverse/repository.py`.
 - `webhooks/` owns reusable webhook page rendering helpers.
 - `system/healthz` / `system/summaryz` / `system/monitorz` / `system/cronz` now have native ownership in `ibkr-api`; PocketBase no longer registers these business routes.
 - Native scheduler-triggered system jobs now live under `runtime/ibkr_api/src/ibkr_api/system/jobs/` and `runtime/ibkr_api/src/ibkr_api/system/routes.py`, including `order_expiry`, auth/session guards, data-gap guard, heartbeat, monitor-alert guard, status reminder, scan summary, and open/close reminder dispatch.
@@ -27,7 +29,7 @@
 - Native webhook ownership for `/webhook/tv`, `/webhook/feishu/callback`, `/webhook/signal/confirm`, `/webhook/signal/cancel`, `/webhook/order/cancel`, and `/webhook/order/close` now lives in `ibkr-api`.
 - `account/` owns `account_snapshot` enrichment and account-route registration that used to live in PocketBase JS.
 - `account/snapshot.py` is now the thin response/enrichment composer over `snapshot_shared.py`, `snapshot_live_orders.py`, and `snapshot_relations.py`, so broker-order normalization, PB matching, and relation inference stay separated inside the account slice.
-- Generic compatibility fallbacks `/api/custom/*` and `/webhook/*` are exposed from `ibkr-api`; PocketBase host is no longer part of the public control-plane path.
+- Generic compatibility entrypoints `/api/custom/*` and `/webhook/*` are exposed from `ibkr-api`; PocketBase host is no longer part of the public control-plane path, and unmatched requests now fail in `ibkr-api` instead of proxying to PocketBase.
 - `api_app.py` is now primarily composition glue: env/config wiring, shared adapters, and route registrar assembly. New work should land in feature-owned folders first, not back into one large file.
 - `app_core/` now owns the shared API composition helpers for config selection, request/response wrappers, normalization utilities, route-registrar assembly, presentation helpers, state access, and proxy forwarding that used to bloat `api_app.py`.
 - `api_app.py` now wires feature folders through `app_core/platform_registrar.py`, `app_core/trading_registrar.py`, and `app_core/compat_registrar.py` so route registration can keep shrinking without rebuilding another monolith.
@@ -49,7 +51,7 @@
 - `GET /api/custom/ibkr/reverse/list`, `GET /api/custom/ibkr/reverse/pending`, `POST /api/custom/ibkr/reverse/dispatch`, `POST /api/custom/ibkr/reverse/ack`, and `POST /api/custom/ibkr/reverse/calculate` are now handled natively in `ibkr-api`; PocketBase no longer keeps route-level JS implementations for them.
 - PocketBase compatibility has been reduced to no-op `pb_hooks/*.pb.js` entry shells; the old action/scheduler JS files no longer ship in the repo.
 - Deletion bar for PocketBase compatibility from the API point of view:
-  - `compat/routes.py` should eventually stop delegating business routes back to PocketBase.
+  - Generic unmatched `/api/custom/*` and `/webhook/*` traffic no longer delegates business routes back to PocketBase.
   - `api_app.py` should keep shrinking toward registrar wiring plus shared adapters, not reclaim business code from the feature folders.
 - `orders_api.py` is now only a thin compatibility export so route code and tests can move gradually while the real order logic stays split by function.
 - Legacy `ibkr_compute.control_plane.*` modules remain only as compatibility wrappers.

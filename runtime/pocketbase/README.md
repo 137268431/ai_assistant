@@ -42,6 +42,7 @@
 - `pb_hooks`
   - 顶层 `*.pb.js` 入口文件都已降为 no-op，不再向 PocketBase 注册自定义业务路由或 cron。
   - 历史 `lib/**` 与 `modules/**` 已经从仓库删除，避免继续暗示 PocketBase 还保留业务逻辑或 proxy 实现。
+  - 未匹配的 `/api/custom/*` 与 `/webhook/*` 兼容流量现在也会直接在 `ibkr-api` 返回 404，不再回退到 PocketBase 兜底。
 
 ## current blockers before pb_hooks deletion
 
@@ -80,6 +81,7 @@
 - 可以认为 `pb_hooks` 已完成使命：
   - 所有 `routerAdd` / `cronAdd` 业务入口都已经停止注册。
   - 所有业务 API、cron、系统通知与监控守卫都已经由 `ibkr-api` / `ibkr-scheduler` 原生接管。
+  - 未匹配的 control-plane `/api/custom/*` 与 `/webhook/*` 请求已由 `ibkr-api` 直接拒绝，不再委托 PocketBase。
   - 仓库里的 `pb_hooks` 只剩 no-op 入口壳，不再保留可执行业务 JS 模块。
 - 域名边界已经收敛为：
   - `quant.lzw-glory.top`：交易系统页面与 API / webhook 公网入口，不再代理 PocketBase collections/auth

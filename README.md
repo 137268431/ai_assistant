@@ -20,7 +20,7 @@ This repo is split by responsibility instead of by product history.
 ## ibkr-api Feature Slices
 
 - `runtime/ibkr_api/src/ibkr_api/compat`
-  - Service shell routes and PB compatibility fallback (`/health`, `/status`, `/api/collections/*`, generic `/api/custom/*`, generic `/webhook/*`).
+  - Service shell routes plus explicit compatibility ownership (`/health`, `/status`, `/api/collections/*`, generic `/api/custom/*`, generic `/webhook/*`); unmatched custom/webhook paths now fail in `ibkr-api` instead of falling back to PocketBase.
 - `runtime/ibkr_api/src/ibkr_api/runtime`
   - Runtime/status/2FA route registrars plus runtime payload-shaping helpers.
   - `status_support.py` is a compatibility barrel; the real runtime status shaping now lives in `status_fetch.py`, `status_compute.py`, `status_live_readiness.py`, `status_runtime_sections.py`, `status_runtime_warmup.py`, and `status_runtime_payload.py`.
@@ -40,6 +40,8 @@ This repo is split by responsibility instead of by product history.
   - TradingView webhook normalization, `tv_indicators` / `tv_signals` ingestion helpers, and route registration.
 - `runtime/ibkr_api/src/ibkr_api/signals`, `runtime/ibkr_api/src/ibkr_api/orders`, `runtime/ibkr_api/src/ibkr_api/reverse`, `runtime/ibkr_api/src/ibkr_api/webhooks`
   - API-owned domain slices and route registrars that should keep growing instead of `api_app.py`.
+  - `reverse/common.py` is now a compatibility barrel; the live reverse-signal helpers are split across `reverse/shared.py`, `reverse/normalize.py`, `reverse/indicator_support.py`, `reverse/order_support.py`, and `reverse/repository.py`.
+  - `signals/ingest.py` is now the signal-ingest orchestration shell; payload normalization, bar-dedupe helpers, lifecycle resolution, and record diff/upsert logic now live in `signals/ingest_payloads.py`, `signals/ingest_dedupe.py`, `signals/ingest_lifecycle.py`, and `signals/ingest_store.py`.
 - `runtime/ibkr_api/src/ibkr_api/account`, `runtime/ibkr_api/src/ibkr_api/universe`
   - Feature slices that now also split large builders into smaller service-local modules such as `snapshot_live_orders.py`, `snapshot_relations.py`, `today_targets_shared.py`, and `today_targets_workflow.py`.
 - `runtime/ibkr_api/src/ibkr_api/app_core`
