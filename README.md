@@ -15,7 +15,7 @@ This repo is split by responsibility instead of by product history.
 - `ibkr_compute`
   - Owns compute, recompute, scan, backtest, history rebuild, and shared compute libraries under `runtime/ibkr_compute/src/ibkr_compute`.
 - `pocketbase`
-  - Owns collections, auth, the minimal `pb_public` landing/admin surface, and temporary no-op `pb_hooks` shells; final target is storage/auth/admin only, with the redirect shims and shell files removable after cutover confidence is high.
+  - Owns collections, auth, admin, the minimal `pb_public` landing surface, and inert `pb_hooks` compatibility shells; it no longer owns cron, business APIs, or runtime control.
 
 ## ibkr-api Feature Slices
 
@@ -106,7 +106,7 @@ This repo is split by responsibility instead of by product history.
 
 - PocketBase runtime:
   - `runtime/pocketbase/pb_public` -> `/opt/pocketbase/pb_public`
-  - `runtime/pocketbase/pb_hooks` -> `/opt/pocketbase/pb_hooks`
+  - `runtime/pocketbase/pb_hooks` -> `/opt/pocketbase/pb_hooks` (inert compatibility shims only)
 - IBKR Console runtime:
   - `runtime/ibkr_console/static` -> `/opt/ibkr_console/static`
   - `runtime/ibkr_console/systemd/ibkr-console.service` -> `/etc/systemd/system/ibkr-console.service`
@@ -178,7 +178,7 @@ Large change, package publish:
 
 ```bash
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode package --diff HEAD~5..HEAD --ops-tools
-bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh --mode package --file runtime/ibkr_console/static/index.html --package-name pb-ui-refresh
+bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh --mode package --file runtime/pocketbase/pb_public/index.html --package-name pb-landing-refresh
 bash ai_assistant/ops/deploy/deploy_ibkr_console.sh --mode package --file runtime/ibkr_console/static/index.html --package-name console-ui-refresh
 ```
 
@@ -208,8 +208,8 @@ python3 ai_assistant/ops/ibkr_console/validate/check_console_static_sync.py
 - PocketBase public deploys from `runtime/pocketbase/pb_public`, not from `runtime/ibkr_console/static`.
 - `ops/dev/sync_console_static.sh` is now a boundary reminder only; it no longer mirrors console files into `runtime/pocketbase/pb_public`.
 - `runtime/pocketbase/pb_public` is no longer a console mirror; it now contains the PB landing plus legacy redirect-only html shims.
-- PocketBase runtime business logic should stay out of `pb_hooks`; the repo copy now only keeps no-op `*.pb.js` compatibility shells.
-- `runtime/pocketbase/pb_hooks` cannot be deleted yet because deploy/docs still treat it as an explicit compatibility unit, even though its old JS internals are gone.
+- PocketBase runtime business logic and cron ownership stay out of `pb_hooks`; the repo copy now only keeps no-op `*.pb.js` compatibility shells.
+- `runtime/pocketbase/pb_hooks` remains a bundled compatibility payload in normal PocketBase deploys, but `--hooks-only` is no longer advertised as a meaningful operational mode.
 - `runtime/ibkr_api/src`, `runtime/ibkr_scheduler/src`, and `runtime/ibkr_runtime/src` are the source-of-truth service-owned split-stack entrypoints.
 - `runtime/ibkr_compute/src` now holds shared compute/runtime libraries plus compatibility wrappers for legacy imports.
 - `extensions/ibkr_api/tests`, `extensions/ibkr_scheduler/tests`, and `extensions/ibkr_runtime/tests` are the source-of-truth split-stack test homes; legacy `extensions/ibkr_compute/tests/*` wrappers stay only for compatibility.

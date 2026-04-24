@@ -65,6 +65,95 @@ class PBClientBatchUpsertTest(unittest.TestCase):
         self.assertEqual(create_request["url"], "/api/collections/ibkr_bars/records")
         self.assertEqual(create_request["body"]["symbol"], "MSFT")
 
+    def test_upsert_bars_falls_back_to_sequential_requests_when_batch_api_disabled(self):
+        client = PBClient(base_url="http://pb.test")
+        bars = [
+            {
+                "symbol": "aapl",
+                "interval": "5m",
+                "bar_time_ms": 1000,
+                "environment": "live",
+                "open": 1,
+                "high": 2,
+                "low": 1,
+                "close": 2,
+            },
+            {
+                "symbol": "msft",
+                "interval": "5m",
+                "bar_time_ms": 2000,
+                "environment": "live",
+                "open": 3,
+                "high": 4,
+                "low": 3,
+                "close": 4,
+            },
+        ]
+        existing = {
+            ("AAPL", "5m", 1000, "live"): {"id": "row_existing"},
+        }
+        calls = []
+
+        def fake_request(method, url, timeout=15, **kwargs):
+            calls.append((method, url, kwargs.get("json")))
+            if url.endswith("/api/batch"):
+                raise RuntimeError(
+                    "pb_request_failed:POST:http://pb.test/api/batch:status=403:body="
+                    '{"code":403,"message":"Batch requests are not allowed."}'
+                )
+            return mock.Mock(json=lambda: {"ok": True})
+
+        with mock.patch.object(client, "_find_existing_records", return_value=existing):
+            with mock.patch.object(client, "_request", side_effect=fake_request):
+                result = client.upsert_bars(bars)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["created"])
+        self.assertEqual(1, result["updated"])
+        self.assertEqual(False, client._batch_requests_supported)
+        self.assertEqual(
+            [
+                ("POST", "http://pb.test/api/batch"),
+                ("PATCH", "http://pb.test/api/collections/ibkr_bars/records/row_existing"),
+                ("POST", "http://pb.test/api/collections/ibkr_bars/records"),
+            ],
+            [(method, url) for method, url, _ in calls],
+        )
+        self.assertEqual("AAPL", calls[1][2]["symbol"])
+        self.assertEqual("MSFT", calls[2][2]["symbol"])
+
+    def test_upsert_bars_skips_batch_api_after_it_has_been_marked_unsupported(self):
+        client = PBClient(base_url="http://pb.test")
+        client._batch_requests_supported = False
+        bars = [
+            {
+                "symbol": "aapl",
+                "interval": "5m",
+                "bar_time_ms": 1000,
+                "environment": "live",
+                "open": 1,
+                "high": 2,
+                "low": 1,
+                "close": 2,
+            }
+        ]
+        calls = []
+
+        def fake_request(method, url, timeout=15, **kwargs):
+            calls.append((method, url, kwargs.get("json")))
+            return mock.Mock(json=lambda: {"ok": True})
+
+        with mock.patch.object(client, "_find_existing_records", return_value={}):
+            with mock.patch.object(client, "_request", side_effect=fake_request):
+                result = client.upsert_bars(bars)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            [("POST", "http://pb.test/api/collections/ibkr_bars/records")],
+            [(method, url) for method, url, _ in calls],
+        )
+        self.assertEqual("AAPL", calls[0][2]["symbol"])
+
     def test_call_custom_api_prefers_ibkr_api_internal_url(self):
         with mock.patch.dict(os.environ, {"IBKR_API_INTERNAL_URL": "http://api.test"}, clear=False):
             client = PBClient(base_url="http://pb.test")

@@ -22,4 +22,4 @@
   - `ibkr_weekly_reauth_followup`
   - `system_market_open_reminder`
   - `system_daily_report`
-- PocketBase cron files now keep only thin compatibility forwarding for the migrated jobs above; remaining PB-owned cron logic is mostly limited to piggyback heartbeat / status-summary / scan-summary helpers that still ride on top of scheduler-owned cron slots.
+- PocketBase no longer owns business cron. The repo `pb_hooks` cron files are inert compatibility shims, and all live job scheduling, cursor advancement, and scheduler health ownership now stays in `ibkr_scheduler`.

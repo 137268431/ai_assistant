@@ -3,6 +3,7 @@
 list_all_units_for_target() {
   case "$1" in
     pocketbase)
+      # PocketBase deploys still carry pb_hooks as an inert compatibility payload.
       printf '%s\n' pb_public pb_hooks pb_migrations
       ;;
     console|ibkr_console)
@@ -30,6 +31,7 @@ list_selected_units_for_target() {
   case "$1" in
     pocketbase)
       [[ "${DEPLOY_PUBLIC:-1}" -eq 1 ]] && printf '%s\n' pb_public
+      # pb_hooks are no-op shims now, but we still sync them with the standard PB runtime payload.
       [[ "${DEPLOY_HOOKS:-1}" -eq 1 ]] && printf '%s\n' pb_hooks
       [[ "${DEPLOY_MIGRATIONS:-0}" -eq 1 ]] && printf '%s\n' pb_migrations
       return 0

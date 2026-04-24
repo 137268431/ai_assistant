@@ -1,9 +1,58 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 
-def build_emit_system_event(*, globals_dict: dict[str, Any]):
+def emit_system_event(
+    *,
+    deliver_system_event_notification: Callable[..., dict[str, Any]],
+    write_system_event_record: Callable[..., Any],
+    event_type: str,
+    level: str,
+    source: str,
+    title: str,
+    detail: Any,
+    environment: str,
+    message_id: str = "",
+) -> dict[str, Any]:
+    delivery = deliver_system_event_notification(
+        event_type,
+        level,
+        source,
+        title,
+        detail,
+        environment,
+        message_id=message_id,
+    )
+    notified = bool(delivery.get("success")) and not bool(delivery.get("suppressed"))
+    persisted = bool(
+        write_system_event_record(
+            event_type,
+            level,
+            source,
+            title,
+            detail,
+            environment,
+            notified,
+        )
+    )
+    return {
+        "ok": True,
+        "notified": notified,
+        "persisted": persisted,
+        "message_id": str(delivery.get("message_id") or message_id),
+        "updated": bool(delivery.get("updated")),
+        "skipped": bool(delivery.get("skipped")),
+        "suppressed": bool(delivery.get("suppressed")),
+        "error": str(delivery.get("error") or ""),
+    }
+
+
+def build_emit_system_event(
+    *,
+    deliver_system_event_notification: Callable[..., dict[str, Any]],
+    write_system_event_record: Callable[..., Any],
+):
     def _emit_system_event(
         *,
         event_type: str,
@@ -14,37 +63,17 @@ def build_emit_system_event(*, globals_dict: dict[str, Any]):
         environment: str,
         message_id: str = "",
     ) -> dict[str, Any]:
-        delivery = globals_dict["_deliver_system_event_notification"](
-            event_type,
-            level,
-            source,
-            title,
-            detail,
-            environment,
+        return emit_system_event(
+            deliver_system_event_notification=deliver_system_event_notification,
+            write_system_event_record=write_system_event_record,
+            event_type=event_type,
+            level=level,
+            source=source,
+            title=title,
+            detail=detail,
+            environment=environment,
             message_id=message_id,
         )
-        notified = bool(delivery.get("success")) and not bool(delivery.get("suppressed"))
-        persisted = bool(
-            globals_dict["_write_system_event_record"](
-                event_type,
-                level,
-                source,
-                title,
-                detail,
-                environment,
-                notified,
-            )
-        )
-        return {
-            "ok": True,
-            "notified": notified,
-            "persisted": persisted,
-            "message_id": str(delivery.get("message_id") or message_id),
-            "updated": bool(delivery.get("updated")),
-            "skipped": bool(delivery.get("skipped")),
-            "suppressed": bool(delivery.get("suppressed")),
-            "error": str(delivery.get("error") or ""),
-        }
 
     return _emit_system_event
 
@@ -74,6 +103,7 @@ def build_request_two_factor_approval(*, pb: Any):
 
 
 __all__ = [
+    "emit_system_event",
     "build_emit_system_event",
     "build_request_two_factor_approval",
 ]

@@ -21,6 +21,7 @@ PACKAGE_NAME=""
 DIFF_RANGE=""
 FILE_ARGS=()
 DEPLOY_IGNORE_UNMANAGED="${DEPLOY_IGNORE_UNMANAGED:-0}"
+HOOKS_ONLY_REQUESTED=0
 
 source "$LIB_ROOT/common.sh"
 source "$LIB_ROOT/cli.sh"
@@ -41,11 +42,7 @@ apply_runtime_restart_policy() {
   [[ ${#PLAN_UNITS[@]} -gt 0 ]] || return 0
   for unit in "${PLAN_UNITS[@]}"; do
     case "$unit" in
-      pb_public)
-        ;;
-      pb_hooks)
-        skip_restart_for_runtime_files=0
-        break
+      pb_public|pb_hooks)
         ;;
       *)
         skip_restart_for_runtime_files=0
@@ -54,9 +51,22 @@ apply_runtime_restart_policy() {
     esac
   done
   if [[ "$skip_restart_for_runtime_files" -eq 1 ]]; then
-    deploy_log "PocketBase landing/redirect-only files deploy detected; skipping explicit systemctl restart."
+    deploy_log "PocketBase landing/compat-shim files deploy detected; skipping explicit systemctl restart."
     WAIT_FOR_AUTO_RELOAD=1
     RESTART_SERVICE=0
+  fi
+}
+
+normalize_pocketbase_selection() {
+  if [[ "${HOOKS_ONLY_REQUESTED:-0}" -eq 1 ]]; then
+    deploy_warn "--hooks-only is deprecated; pb_hooks are inert compatibility shims and now deploy only with the standard PocketBase runtime payload."
+    DEPLOY_PUBLIC=1
+    DEPLOY_HOOKS=1
+  fi
+
+  if [[ "${DEPLOY_PUBLIC:-0}" -eq 0 && "${DEPLOY_HOOKS:-0}" -eq 1 && "${DEPLOY_MIGRATIONS:-0}" -eq 0 ]]; then
+    deploy_warn "Hook-only PocketBase deploys are no longer treated as a standalone operational mode; including pb_public with pb_hooks for a safe runtime sync."
+    DEPLOY_PUBLIC=1
   fi
 }
 
@@ -71,8 +81,7 @@ Options:
   --diff <range>      Git diff range, for example HEAD~1..HEAD
   --plan-only         Print the resolved deployment plan and exit
   --package-name <n>  Override generated package name for package mode
-  --public-only       Deploy only the PocketBase landing tree sourced from runtime/pocketbase/pb_public (including legacy redirect shims)
-  --hooks-only        Deploy only runtime/pocketbase/pb_hooks
+  --public-only       Deploy only the PocketBase landing tree sourced from runtime/pocketbase/pb_public (pb_hooks remain inert compatibility shims in the default deploy)
   --migrations        Deploy extensions/pocketbase/migrations to /opt/pocketbase/extensions/migrations
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote node --check validation
@@ -115,7 +124,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --hooks-only)
-      DEPLOY_PUBLIC=0
+      HOOKS_ONLY_REQUESTED=1
+      DEPLOY_PUBLIC=1
       DEPLOY_HOOKS=1
       shift
       ;;
@@ -155,6 +165,8 @@ if [[ "$STATUS_ONLY" -eq 1 ]]; then
   ssh_run "systemctl is-active pocketbase"
   exit 0
 fi
+
+normalize_pocketbase_selection
 
 if [[ "$DEPLOY_PUBLIC" -eq 0 && "$DEPLOY_HOOKS" -eq 0 && "$DEPLOY_MIGRATIONS" -eq 0 ]]; then
   deploy_error "Nothing selected for deployment."

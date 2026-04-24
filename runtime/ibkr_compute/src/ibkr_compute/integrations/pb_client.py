@@ -30,8 +30,44 @@ class PBClient:
         self.token = token
         self.prefer_runtime_config_api = bool(prefer_runtime_config_api)
         self.session = requests.Session()
+        self._batch_requests_supported: Optional[bool] = None
         if token:
             self.session.headers["Authorization"] = token
+
+    @staticmethod
+    def _is_batch_requests_disabled(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        if "batch requests are not allowed" in text:
+            return True
+        if "/api/batch" not in text:
+            return False
+        return any(token in text for token in ("status=400", "status=403", "status=404", "status=405"))
+
+    def _execute_single_batch_request(
+        self,
+        request_payload: Dict[str, Any],
+        *,
+        timeout: int,
+    ) -> None:
+        method = str(request_payload.get("method") or "POST").strip().upper() or "POST"
+        path = str(request_payload.get("url") or "").strip()
+        if not path:
+            raise RuntimeError("pb_batch_fallback_missing_url")
+        url = f"{self.base_url}{path}" if path.startswith("/") else f"{self.base_url}/{path}"
+        body = request_payload.get("body")
+        kwargs: Dict[str, Any] = {}
+        if body is not None and method not in {"GET", "DELETE"}:
+            kwargs["json"] = body
+        self._request(method, url, timeout=timeout, **kwargs)
+
+    def _execute_batch_requests_sequentially(
+        self,
+        requests_payload: List[Dict[str, Any]],
+        *,
+        timeout: int,
+    ) -> None:
+        for request_payload in requests_payload:
+            self._execute_single_batch_request(request_payload, timeout=timeout)
 
     def _request(
         self,
@@ -197,15 +233,26 @@ class PBClient:
         if not requests_payload:
             return
 
+        if self._batch_requests_supported is False:
+            self._execute_batch_requests_sequentially(requests_payload, timeout=timeout)
+            return
+
         url = f"{self.base_url}/api/batch"
         for start in range(0, len(requests_payload), max(1, int(batch_size or 1))):
             chunk = requests_payload[start:start + max(1, int(batch_size or 1))]
-            self._request(
-                "POST",
-                url,
-                json={"requests": chunk},
-                timeout=timeout,
-            )
+            try:
+                self._request(
+                    "POST",
+                    url,
+                    json={"requests": chunk},
+                    timeout=timeout,
+                )
+                self._batch_requests_supported = True
+            except Exception as exc:
+                if not self._is_batch_requests_disabled(exc):
+                    raise
+                self._batch_requests_supported = False
+                self._execute_batch_requests_sequentially(chunk, timeout=timeout)
 
     def _batch_upsert_records(
         self,

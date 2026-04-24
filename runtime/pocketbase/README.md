@@ -2,7 +2,7 @@
 
 - `PocketBase` 的最终定位仍然是：`storage + auth + admin`。
 - `runtime/pocketbase/pb_public` 现在只保留 PocketBase 自己的 landing/admin 入口；仓库里保留的历史 console HTML 文件也已经降为跳转到 `quant` 的 redirect shim，不再镜像交易系统页面。
-- `runtime/pocketbase/pb_hooks` 现在只保留 no-op 入口文件，停止注册业务 API、业务调度、运行面控制或系统通知。
+- `runtime/pocketbase/pb_hooks` 现在只保留 no-op 入口文件，停止注册业务 API、业务调度、运行面控制或系统通知；这些职责已经迁到 `ibkr-api` / `ibkr-scheduler` / `ibkr-runtime`。
 
 ## pb_public final state
 
@@ -23,6 +23,7 @@
 
 - 过渡期允许保留的能力：
   - 仅保留空入口文件，避免 PocketBase 启动时缺少 hooks 目录结构。
+  - 作为部署兼容载荷随标准 PocketBase runtime 一起同步，但不再单独代表一个运维模式。
 - 最终不应该继续保留的能力：
   - 页面托管和页面业务逻辑。
   - 业务 API 主实现。

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
 import os
 import re
 import time
@@ -79,7 +78,6 @@ from ibkr_api.control.runtime_guard import (
     build_runtime_environment_mismatch_payload,
     inspect_requested_runtime_environment,
 )
-from ibkr_api.integrations.feishu import feishu_send_interactive, feishu_suppressed, feishu_token, feishu_update_interactive
 from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime as _cancel_broker_order_via_runtime_support
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
@@ -108,30 +106,13 @@ from ibkr_api.runtime.status_support import (
 )
 from ibkr_api.runtime.two_factor import normalize_two_factor_state_with_runtime as _normalize_two_factor_state_with_runtime_support
 from ibkr_api.startup.progress import (
-    STARTUP_LEGACY_STEP_KEY_MAP,
-    STARTUP_STEP_LABELS,
-    STARTUP_STEP_ORDER,
-    STARTUP_STEP_STATUS_META,
-    build_startup_card as _build_startup_card_support,
-    build_startup_cycle_id as _build_startup_cycle_id_support,
-    build_startup_label as _build_startup_label_support,
     default_startup_steps as _default_startup_steps,
-    deliver_startup_progress_card as _deliver_startup_progress_card_support,
     merge_startup_steps as _merge_startup_steps,
     normalize_startup_fields as _normalize_startup_fields,
-    normalize_startup_state as _normalize_startup_state_support,
-    normalize_startup_step_status,
     resolve_startup_step_label as _resolve_startup_step_label,
-    startup_chat_id as _startup_chat_id_support,
 )
-from ibkr_api.system.events import (
-    build_system_event_card as _build_system_event_card_support,
-    deliver_system_event_notification as _deliver_system_event_notification_support,
-    system_event_chat_id as _system_event_chat_id_support,
-    system_event_level_meta,
-    should_notify_system_event as _should_notify_system_event_support,
-    write_system_event_record as _write_system_event_record_support,
-)
+from ibkr_api.system.bootstrap import build_system_bootstrap
+from ibkr_api.system.runtime_events import emit_system_event as _emit_system_event_support
 from ibkr_api.system.pocketbase_disk import (
     build_pocketbase_disk_flags as _build_pocketbase_disk_flags,
     collect_pocketbase_disk_snapshot as _collect_pocketbase_disk_snapshot,
@@ -145,7 +126,6 @@ from ibkr_api.system.monitor_support import (
     derive_monitor_service_map as _derive_monitor_service_map_support,
     probe_console_status as _probe_console_status_support,
 )
-from ibkr_api.system.runtime_events import build_emit_system_event, build_request_two_factor_approval
 from ibkr_api.system.runtime_monitor import (
     build_augment_scheduler_summary,
     build_derive_monitor_service_map,
@@ -414,110 +394,60 @@ def _system_status_chat_id(environment: str) -> str:
         default_chat_id=DEFAULT_FEISHU_SYSTEM_CHAT_ID,
     )
 
-
-_feishu_suppressed = partial(feishu_suppressed, normalize_environment=_normalize_environment)
-_feishu_token = partial(
-    feishu_token,
-    app_id=DEFAULT_FEISHU_APP_ID,
-    app_secret=DEFAULT_FEISHU_APP_SECRET,
+_system_bootstrap = build_system_bootstrap(
+    pb=pb,
     requests_module=requests,
-    cache=_FEISHU_TOKEN_CACHE,
-)
-_feishu_send_interactive = partial(
-    feishu_send_interactive,
-    normalize_environment=_normalize_environment,
-    token_loader=_feishu_token,
-    requests_module=requests,
-)
-_feishu_update_interactive = partial(
-    feishu_update_interactive,
-    normalize_environment=_normalize_environment,
-    token_loader=_feishu_token,
-    requests_module=requests,
-)
-
-_system_event_level_meta = system_event_level_meta
-_build_system_event_card = partial(
-    _build_system_event_card_support,
-    normalize_environment=_normalize_environment,
-    add_environment_to_detail=_add_environment_to_detail,
-    time_strings=_time_strings,
-    system_page_url=_system_page_url,
-    label_title_with_environment=_label_title_with_environment,
-)
-_should_notify_system_event = partial(
-    _should_notify_system_event_support,
+    feishu_token_cache=_FEISHU_TOKEN_CACHE,
+    default_feishu_app_id=DEFAULT_FEISHU_APP_ID,
+    default_feishu_app_secret=DEFAULT_FEISHU_APP_SECRET,
+    default_feishu_2fa_chat_id=DEFAULT_FEISHU_2FA_CHAT_ID,
+    default_feishu_alert_chat_id=DEFAULT_FEISHU_ALERT_CHAT_ID,
+    default_feishu_system_chat_id=DEFAULT_FEISHU_SYSTEM_CHAT_ID,
+    default_feishu_startup_chat_id=DEFAULT_FEISHU_STARTUP_CHAT_ID,
     normalize_environment=_normalize_environment,
     config_value=_config_value,
     is_enabled_text=_is_enabled_text,
-)
-_system_event_chat_id = partial(
-    _system_event_chat_id_support,
-    normalize_environment=_normalize_environment,
-    config_value=_config_value,
-    default_2fa_chat_id=DEFAULT_FEISHU_2FA_CHAT_ID,
-    default_alert_chat_id=DEFAULT_FEISHU_ALERT_CHAT_ID,
-    default_system_chat_id=DEFAULT_FEISHU_SYSTEM_CHAT_ID,
-)
-_deliver_system_event_notification = partial(
-    _deliver_system_event_notification_support,
-    normalize_environment=_normalize_environment,
-    should_notify_system_event_fn=_should_notify_system_event,
-    build_system_event_card_fn=_build_system_event_card,
-    system_event_chat_id_fn=_system_event_chat_id,
-    send_interactive=_feishu_send_interactive,
-    update_interactive=_feishu_update_interactive,
-)
-_write_system_event_record = partial(
-    _write_system_event_record_support,
-    pb=pb,
-    normalize_environment=_normalize_environment,
-    time_strings=_time_strings,
-    label_title_with_environment=_label_title_with_environment,
     add_environment_to_detail=_add_environment_to_detail,
-)
-_emit_system_event = build_emit_system_event(globals_dict=globals())
-_request_two_factor_approval = build_request_two_factor_approval(pb=pb)
-
-_normalize_startup_step_status = normalize_startup_step_status
-_startup_chat_id = partial(
-    _startup_chat_id_support,
-    config_value=_config_value,
-    default_chat_id=DEFAULT_FEISHU_STARTUP_CHAT_ID,
-)
-_build_startup_label = partial(
-    _build_startup_label_support,
-    normalize_environment=_normalize_environment,
     time_strings=_time_strings,
-)
-_build_startup_cycle_id = partial(
-    _build_startup_cycle_id_support,
-    normalize_environment=_normalize_environment,
-)
-_normalize_startup_state = partial(
-    _normalize_startup_state_support,
-    normalize_environment=_normalize_environment,
-    startup_chat_id_fn=_startup_chat_id,
-)
-_build_startup_card = partial(
-    _build_startup_card_support,
-    normalize_environment=_normalize_environment,
-    normalize_startup_state_fn=_normalize_startup_state,
-    environment_tag=_environment_tag,
-    label_title_with_environment=_label_title_with_environment,
-    runtime_page_url=_runtime_page_url,
     system_page_url=_system_page_url,
+    label_title_with_environment=_label_title_with_environment,
+    environment_tag=_environment_tag,
+    runtime_page_url=_runtime_page_url,
     console_base_url=_console_base_url,
 )
-_deliver_startup_progress_card = partial(
-    _deliver_startup_progress_card_support,
-    normalize_environment=_normalize_environment,
-    normalize_startup_state_fn=_normalize_startup_state,
-    build_startup_card_fn=_build_startup_card,
-    send_interactive=_feishu_send_interactive,
-    update_interactive=_feishu_update_interactive,
-    startup_chat_id_fn=_startup_chat_id,
-)
+_feishu_send_interactive = _system_bootstrap["_feishu_send_interactive"]
+_feishu_update_interactive = _system_bootstrap["_feishu_update_interactive"]
+_deliver_system_event_notification = _system_bootstrap["_deliver_system_event_notification"]
+_write_system_event_record = _system_bootstrap["_write_system_event_record"]
+_request_two_factor_approval = _system_bootstrap["_request_two_factor_approval"]
+_startup_chat_id = _system_bootstrap["_startup_chat_id"]
+_build_startup_label = _system_bootstrap["_build_startup_label"]
+_build_startup_cycle_id = _system_bootstrap["_build_startup_cycle_id"]
+_normalize_startup_state = _system_bootstrap["_normalize_startup_state"]
+_deliver_startup_progress_card = _system_bootstrap["_deliver_startup_progress_card"]
+
+
+def _emit_system_event(
+    *,
+    event_type: str,
+    level: str,
+    source: str,
+    title: str,
+    detail: Any,
+    environment: str,
+    message_id: str = "",
+) -> dict[str, Any]:
+    return _emit_system_event_support(
+        deliver_system_event_notification=_deliver_system_event_notification,
+        write_system_event_record=_write_system_event_record,
+        event_type=event_type,
+        level=level,
+        source=source,
+        title=title,
+        detail=detail,
+        environment=environment,
+        message_id=message_id,
+    )
 
 
 def _json_response(payload: dict[str, Any], status_code: int = 200, headers: dict[str, str] | None = None):
