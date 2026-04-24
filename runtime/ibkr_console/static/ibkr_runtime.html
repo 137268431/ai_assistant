@@ -60,7 +60,7 @@
                 </button>
                 <button class="action-btn action-accent" data-action="reauth" onclick="handleRuntimeAction('reauth')">
                     <span class="action-label">请求 / 复用 2FA 卡片</span>
-                    <span class="action-copy">优先复用飞书里的当前卡片；如果已有 active 轮次，请继续当前轮次，不要重复触发。</span>
+                    <span class="action-copy">只发 / 复用飞书卡片，不会立刻触发手机 Push；要真正发起验证，请点飞书卡片里的开始按钮，或直接点“开始新一轮 2FA”。</span>
                 </button>
                 <button class="action-btn action-accent" data-action="reauth_force_new" onclick="handleRuntimeAction('reauth_force_new')">
                     <span class="action-label">开始新一轮 2FA</span>

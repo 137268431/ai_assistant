@@ -192,6 +192,8 @@ bash ai_assistant/ops/bootstrap/cleanup_legacy_trading_host.sh --status-only
 bash ai_assistant/ops/bootstrap/cleanup_legacy_trading_host.sh --purge-data
 ```
 
+`cleanup_legacy_trading_host.sh` 现在除了停服务和删旧目录，也会在旧主机上禁用遗留的 `pb.lzw-glory.top` / `quant.lzw-glory.top` / `qc.lzw-glory.top` Caddy site files，避免 stale DNS 继续命中旧交易入口。
+
 Fresh-host bootstrap and PocketBase init:
 
 ```bash

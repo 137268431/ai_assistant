@@ -1962,7 +1962,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         reason: 'manual_reauth',
                         source: 'runtime_page',
                         force_reset: true,
-                        message: '已从 PocketBase Runtime 页面请求 2FA；如果当前已有 active 轮次，请继续当前轮次，不要重复触发。'
+                        message: '已从 Runtime 页面请求 2FA 卡片；这一步不会直接触发手机 Push，请在飞书点击开始验证，或直接使用“开始新一轮 2FA”。'
                     }
                 },
                 reauth_force_new: {

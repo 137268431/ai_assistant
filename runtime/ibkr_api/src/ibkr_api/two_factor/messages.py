@@ -270,19 +270,23 @@ def build_request_response_message(
         remaining_ms = int(result.get("renotify_remaining_ms") or 0)
         remaining_min = (remaining_ms + 59999) // 60000 if remaining_ms > 0 else 0
         if remaining_min > 0:
-            return f"已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证（约 {remaining_min} 分钟内不会再新发提醒）。"
-        return "已复用现有飞书 2FA 卡片，请直接去飞书点击开始验证。"
+            return f"已复用现有飞书 2FA 卡片；这一步不会直接触发手机 Push，请去飞书点击开始验证（约 {remaining_min} 分钟内不会再新发提醒）。"
+        return "已复用现有飞书 2FA 卡片；这一步不会直接触发手机 Push，请直接去飞书点击开始验证。"
     if skipped_reason == "cooldown":
-        return "2FA 卡片刚更新过，请直接使用飞书中的当前卡片。"
+        return "2FA 卡片刚更新过；这一步不会直接触发手机 Push，请直接使用飞书中的当前卡片。"
     if skipped_reason == "delivery_locked":
-        return "2FA 卡片发送仍在处理中，请直接查看飞书中的当前卡片。"
+        return "2FA 卡片发送仍在处理中；这一步不会直接触发手机 Push，请直接查看飞书中的当前卡片。"
 
     if bool(result.get("ok")):
         if weekly_reminder_requested:
             if bool(state.get("business_deadline_overdue")):
                 return "已发送本周重登提醒卡片；当前已晚于美股周一盘前建议完成时间，请尽快在飞书点击开始验证。点击开始后需在 180 秒内完成当前 2FA。"
             return "已发送本周重登提醒卡片；你有空时可在飞书点击开始验证，最晚请于美股周一盘前前完成。点击开始后需在 180 秒内完成当前 2FA。"
-        return "已强制发送新的 2FA 卡片，请在飞书点击按钮触发验证。" if force_new else "已请求 2FA 卡片，请在飞书点击按钮触发验证。"
+        return (
+            "已强制发送新的 2FA 卡片；这一步不会直接触发手机 Push，请在飞书点击按钮触发验证。"
+            if force_new
+            else "已请求 2FA 卡片；这一步不会直接触发手机 Push，请在飞书点击按钮触发验证。"
+        )
 
     error = str(result.get("error") or "").strip()
     return f"2FA 请求失败：{error}" if error else "2FA 请求失败。"

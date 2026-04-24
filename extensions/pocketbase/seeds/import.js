@@ -40,6 +40,7 @@ const configData = [
   cfg('pb_cron_ibkr_history_retention_enabled', 'TRUE', 'TRUE', '历史数据留存', 'Scheduler 调度(兼容 key)', 140, '清理超过留存窗口的 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity 历史数据。Cron: 10 * * * *；周期: 每小时第 10 分钟；时间窗口: 全天。受 Scheduler 总开关、本开关以及 ibkr_history_retention_enabled / ibkr_history_retention_days 配置共同控制；运行态线程会在每小时第 12 分钟做同小时兜底。'),
 
   cfg('ibkr_signal_source', 'both', 'both', '信号来源', '信号与反转', 200, 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
+  cfg('signal_manual_confirm_enabled', 'TRUE', 'TRUE', '手动确认信号', '信号与反转', 205, '开启后，新信号会先进入 awaiting_confirm，由人工确认后再进入正式下单链路'),
   cfg('signal_poll_interval_sec', '120', '120', '信号轮询秒数', '信号与反转', 210, 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
   cfg('signal_validity_minutes', '30', '30', '信号有效期', '信号与反转', 220, '超过此时间的 pending / awaiting_confirm 信号将被自动标记为 expired'),
   cfg('reverse_signal_threshold', '6', '6', '反转通知阈值', '信号与反转', 230, '仅当反转评分达到该阈值时发送反转卡片通知'),
@@ -56,6 +57,7 @@ const configData = [
 
   cfg('watchlist_interval_min', '5', '5', '标的同步间隔', '标的订阅', 600, '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
   cfg('ibkr_target_refresh_sec', '60', '60', '目标订阅刷新秒数', '标的订阅', 610, '按 ibkr_targets 刷新当日实时订阅列表'),
+  cfg('ibkr_scan_schedule', '09:20-10:00', '09:20-10:00', '盘前扫描窗口', '标的订阅', 611, '盘前自动扫描允许触发的 ET 时间窗口；默认 09:20-10:00，供 scan 调度与页面展示使用'),
   cfg('ibkr_daily_scan_time_et', '09:20', '09:20', '日筛触发时间', '标的订阅', 612, '每日自动初筛触发时间，ET 时区；当前设计为 09:20 盘前初筛'),
   cfg('ibkr_daily_scan_min_avg_10d_volume', '100000', '100000', '日筛最小10D均量', '标的订阅', 614, '自动日筛硬门槛：10 日平均成交量至少达到该值'),
   cfg('ibkr_daily_scan_min_premarket_volume', '5000', '5000', '日筛最小盘前量', '标的订阅', 616, '自动日筛硬门槛：盘前累计成交量至少达到该值'),
@@ -63,6 +65,7 @@ const configData = [
   cfg('ibkr_daily_scan_min_abs_day_change_pct', '1.0', '1.0', '日筛最小日涨跌%', '标的订阅', 619, '自动日筛硬门槛：当日涨跌幅绝对值至少达到该值'),
   cfg('ibkr_target_subscription_limit', '80', '80', 'Trade 订阅上限', '标的订阅', 620, 'trade 标的单独上限；实际 trade 可用预算会再与总订阅上限扣除 monitor 预留后的余额取更小值'),
   cfg('ibkr_total_subscription_limit', '80', '80', '总订阅上限', '标的订阅', 625, 'WS 总订阅上限，包含 trade targets 与 market monitor 订阅'),
+  cfg('ibkr_market_ws_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '市场监控标的', '标的订阅', 626, '系统级 WS 市场监控默认订阅标的；用于 monitor / runtime 状态页和行情链路基准观测'),
 
   cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'K线发布开关', '行情链路', 700, '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
   cfg('ibkr_active_repair_interval_min', '5', '5', '活跃修复间隔', '行情链路', 705, '当前实时订阅标的的缺口 / rollup 异常巡检间隔，按 5m 链路优先修复'),
@@ -73,8 +76,11 @@ const configData = [
   cfg('ibkr_watchlist_integrity_batch_size', '8', '8', '底池巡检批次', '行情链路', 750, '每轮底池完整性巡检最多处理多少个非目标标的'),
   cfg('ibkr_history_retention_enabled', 'TRUE', 'TRUE', '历史留存清理', '行情链路', 760, '统一控制历史行情链路数据的留存清理；默认由 ibkr-scheduler 在每小时第 10 分钟触发，运行态线程会在每小时第 12 分钟做同小时兜底；关闭后两条路径都会跳过执行'),
   cfg('ibkr_history_retention_days', '365', '365', '历史留存天数', '行情链路', 770, '历史行情链路数据默认仅保留最近多少天；当前会作用于 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity'),
+  cfg('ibkr_server_boot_resume_only', 'TRUE', 'TRUE', '服务重启仅做 Resume', '启动策略', 774, '开启后，ibkr-compute / deploy / server_boot 自动恢复不会先重启 gateway，也不会强制 fresh 2FA；适合正常发布和进程重启'),
+  cfg('ibkr_server_boot_publish_startup_card', 'TRUE', 'TRUE', '服务重启发送启动卡片', '启动策略', 776, '关闭时，server_boot / auto_restore 不新建启动卡片；开启后，即使只是 deploy 恢复，也会在启动群里单独发出当前轮次卡片'),
 
   cfg('system_status_chat_id', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '状态群 Chat ID', '通知路由', 600, '正常状态提醒与日常运行反馈默认发送到这里'),
+  cfg('system_startup_chat_id', 'oc_cc5d0a950797b1c2c010953e14bceeff', 'oc_cc5d0a950797b1c2c010953e14bceeff', '启动群 Chat ID', '通知路由', 602, '所有启动轮次卡片统一发送到这里；每次新的启动 / 干净重开都会生成独立卡片并持续更新当前轮次'),
   cfg('system_2fa_chat_id', 'oc_c48c10447685e80cfea0c003864aa51f', 'oc_c48c10447685e80cfea0c003864aa51f', '2FA 群 Chat ID', '通知路由', 605, '所有 2FA 卡片、2FA 超时/失败/待确认、Session 失效与运行态未认证提醒统一发送到这里'),
   cfg('system_alert_chat_id', 'oc_91aa4f84bc6fedb125b1a263d91d4104', 'oc_91aa4f84bc6fedb125b1a263d91d4104', '告警群 Chat ID', '通知路由', 610, '所有非 2FA 的 warning / error 级别且影响系统运行的异常默认发送到这里'),
   cfg('signal_chat_id', 'oc_edb26dcc52938b7833ac9f32ae6b1620', 'oc_edb26dcc52938b7833ac9f32ae6b1620', '信号群 Chat ID', '通知路由', 620, '新信号卡片默认发送到这里'),

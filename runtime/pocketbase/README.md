@@ -25,7 +25,7 @@
 - PocketBase schema + minimal state bootstrap（先 `_superusers`，再 schema，最后 `config`）：
   - `bash ai_assistant/ops/pocketbase/migrate/import_schema_remote.sh --email '<pb-superuser-email>' --password '<pb-superuser-password>'`
 - 如果旧机已经清掉、无法再复制 `_superusers` / `config`，可先用 `--skip-superusers --skip-config --keep-temp-superuser` 只导 schema，再用 `python3 ai_assistant/extensions/pocketbase/scripts/data/seed_default_records.py --base-url '<pb-base-url>' --email '<temp-superuser-email>' --password '<temp-superuser-password>'` 回填 repo 默认 `config` / `watchlist`。
-- 旧交易主机清理（停服务 / 删目录，不碰 3xui / openclaw / crs）：
+- 旧交易主机清理（停服务 / 删目录 / 禁用旧交易域名 Caddy 站点，不碰 3xui / openclaw / crs）：
   - `bash ai_assistant/ops/deploy/prune_old_trading_stack_remote.sh --status-only`
   - `bash ai_assistant/ops/deploy/prune_old_trading_stack_remote.sh --purge-data`
 - 公开入口约束：

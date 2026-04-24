@@ -20,7 +20,7 @@ class Config:
         "ibkr_manual_start_restart_gateway": "true",
         "ibkr_weekly_reauth_restart_gateway": "true",
         "ibkr_server_boot_resume_only": "true",
-        "ibkr_server_boot_publish_startup_card": "false",
+        "ibkr_server_boot_publish_startup_card": "true",
         "ibkr_active_repair_interval_min": "5",
         "ibkr_watchlist_backfill_interval_min": "30",
         "ibkr_watchlist_backfill_batch_size": "12",

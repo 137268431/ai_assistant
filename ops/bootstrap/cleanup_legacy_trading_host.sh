@@ -27,6 +27,8 @@ This script targets only the trading-system services and directories:
   /opt/ibkr_console
   /opt/ibc
   /opt/ibgateway
+It also disables the legacy trading public-proxy site files on the old host so stale DNS clients
+can no longer hit outdated `pb.lzw-glory.top` / `quant.lzw-glory.top` behavior there.
 
 Options:
   --host <host>       Override the legacy SSH target
@@ -87,6 +89,11 @@ dirs=(
   /opt/ibc
   /opt/ibgateway
 )
+caddy_site_files=(
+  /etc/caddy/conf.d/pb.lzw-glory.top.caddy
+  /etc/caddy/conf.d/quant.lzw-glory.top.caddy
+  /etc/caddy/conf.d/qc.lzw-glory.top.caddy
+)
 
 show_status() {
   for service in "${services[@]}"; do
@@ -101,6 +108,40 @@ show_status() {
   printf '%s\n' '---'
   printf '%s\n' 'directories:'
   ls -ld "${dirs[@]}" 2>/dev/null || true
+  printf '%s\n' '---'
+  printf '%s\n' 'legacy trading caddy site files:'
+  ls -l "${caddy_site_files[@]}" 2>/dev/null || true
+  printf '%s\n' '---'
+  printf '%s\n' 'caddy service:'
+  systemctl show caddy --property=Id,ActiveState,SubState,MainPID,UnitFileState --no-pager 2>/dev/null || true
+}
+
+disable_legacy_trading_proxy_sites() {
+  command -v caddy >/dev/null 2>&1 || return 0
+  [[ -d /etc/caddy/conf.d ]] || return 0
+
+  local timestamp moved_file site_file
+  local moved_files=()
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+  for site_file in "${caddy_site_files[@]}"; do
+    [[ -f "$site_file" ]] || continue
+    moved_file="${site_file}.disabled.${timestamp}"
+    mv "$site_file" "$moved_file"
+    moved_files+=("$moved_file")
+  done
+
+  [[ ${#moved_files[@]} -gt 0 ]] || return 0
+
+  if ! caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
+    for moved_file in "${moved_files[@]}"; do
+      mv "$moved_file" "${moved_file%.disabled.${timestamp}}"
+    done
+    echo "failed to disable legacy trading caddy sites: caddy validate failed" >&2
+    exit 1
+  fi
+
+  systemctl reload caddy >/dev/null 2>&1 || true
 }
 
 if [[ "$status_only" == "1" ]]; then
@@ -114,6 +155,7 @@ for service in "${services[@]}"; do
   rm -f "/etc/systemd/system/${service}.service"
 done
 systemctl daemon-reload || true
+disable_legacy_trading_proxy_sites
 
 if [[ "$purge_data" == "1" ]]; then
   rm -rf "${dirs[@]}"
