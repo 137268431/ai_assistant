@@ -25,7 +25,7 @@ class PBClient:
         self.custom_api_base_url = str(
             os.environ.get("IBKR_API_INTERNAL_URL")
             or os.environ.get("IBKR_API_BASE_URL")
-            or self.base_url
+            or "http://127.0.0.1:5102"
         ).rstrip("/")
         self.token = token
         self.prefer_runtime_config_api = bool(prefer_runtime_config_api)

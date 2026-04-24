@@ -118,7 +118,7 @@ def bootstrap_engine_state(
         processed += 1
 
     if engine.last_bar_time_ms > 0:
-        api_app.last_processed_ms[key] = int(engine.last_bar_time_ms)
+        # Storage bootstrap warms the engine only; processed cursors move after indicator flush.
         interval_key = (runtime_environment, normalized_interval)
         api_app.last_interval_fetch_ms[interval_key] = max(
             int(api_app.last_interval_fetch_ms.get(interval_key, 0) or 0),
@@ -133,6 +133,7 @@ def materialize_engines_from_storage(
     symbols,
     interval: str = "5m",
     hydrate_signal_state: bool = True,
+    persist_latest_indicator: bool = False,
 ) -> dict:
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
@@ -159,11 +160,13 @@ def materialize_engines_from_storage(
     )
 
     latest_by_symbol = {}
+    latest_row_by_symbol = {}
     for row in rows:
         symbol = str(row.get("symbol", "")).upper()
         bar_ms = int(row.get("bar_time_ms", 0) or 0)
         if symbol and bar_ms > 0 and symbol not in latest_by_symbol:
             latest_by_symbol[symbol] = bar_ms
+            latest_row_by_symbol[symbol] = api_app.normalize_bar_environment(row, runtime_environment)
         if len(latest_by_symbol) >= len(normalized_symbols):
             break
 
@@ -230,12 +233,47 @@ def materialize_engines_from_storage(
                     }
 
     ready_count = sum(1 for item in results.values() if bool((item or {}).get("is_ready")))
+    indicator_seed_written = 0
+    indicator_seed_errors = 0
+    if persist_latest_indicator:
+        indicator_batch = []
+        ready_symbols = []
+        for symbol in normalized_symbols:
+            result = dict(results.get(symbol) or {})
+            if not bool(result.get("is_ready")):
+                continue
+            engine = api_app.engines.get((runtime_environment, symbol, normalized_interval))
+            latest_row = latest_row_by_symbol.get(symbol)
+            snapshot = engine.get_snapshot() if engine and hasattr(engine, "get_snapshot") else {}
+            if not engine or not latest_row or not snapshot:
+                continue
+            indicator_batch.append(
+                api_app.build_indicator_payload(
+                    runtime_environment,
+                    symbol,
+                    normalized_interval,
+                    latest_row,
+                    engine,
+                    snapshot,
+                )
+            )
+            ready_symbols.append(symbol)
+        flush_result = api_app.flush_indicator_batch(indicator_batch)
+        indicator_seed_written = int(flush_result.get("written", 0) or 0)
+        indicator_seed_errors = int(flush_result.get("errors", 0) or 0)
+        indicator_seed_ok = indicator_seed_errors == 0 and indicator_seed_written >= len(ready_symbols)
+        for symbol in ready_symbols:
+            results.setdefault(symbol, {})["indicator_seeded"] = indicator_seed_ok
+        for symbol in normalized_symbols:
+            results.setdefault(symbol, {}).setdefault("indicator_seeded", False)
     api_app.logger.info(
-        "Materialized engines from storage: env=%s interval=%s symbols=%d ready=%d workers=%d elapsed_s=%.3f",
+        "Materialized engines from storage: env=%s interval=%s symbols=%d ready=%d indicator_seed_written=%d indicator_seed_errors=%d workers=%d elapsed_s=%.3f",
         runtime_environment,
         normalized_interval,
         len(normalized_symbols),
         ready_count,
+        indicator_seed_written,
+        indicator_seed_errors,
         worker_count,
         time.perf_counter() - started_at,
     )

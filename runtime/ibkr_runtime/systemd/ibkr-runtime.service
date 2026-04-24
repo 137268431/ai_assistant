@@ -12,6 +12,7 @@ Environment=PYTHONPATH=/opt/ibkr_runtime/src:/opt/ibkr_compute/src
 Environment=PORT=5101
 Environment=IBKR_SERVICE_PROFILE=runtime
 Environment=IBKR_RUNTIME_MODE=remote
+Environment=IBKR_API_INTERNAL_URL=http://127.0.0.1:5102
 Restart=on-failure
 RestartSec=15
 StandardOutput=journal

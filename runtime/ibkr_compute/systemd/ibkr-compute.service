@@ -10,6 +10,7 @@ ExecStart=/opt/ibkr_compute/venv/bin/python -m ibkr_compute.api.server
 EnvironmentFile=/opt/ibkr_compute/.env
 Environment=PYTHONPATH=/opt/ibkr_compute/src
 Environment=IBKR_RUNTIME_MODE=remote
+Environment=IBKR_API_INTERNAL_URL=http://127.0.0.1:5102
 Environment=IBKR_RUNTIME_INTERNAL_URL=http://127.0.0.1:5101
 Restart=on-failure
 RestartSec=15

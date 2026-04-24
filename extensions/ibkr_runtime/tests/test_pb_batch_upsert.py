@@ -163,6 +163,15 @@ class PBClientBatchUpsertTest(unittest.TestCase):
         request_mock.assert_called_once()
         self.assertEqual("http://api.test/api/custom/ibkr/statusz", request_mock.call_args.args[1])
 
+    def test_call_custom_api_defaults_to_split_api_service_when_env_missing(self):
+        with mock.patch.dict(os.environ, {"IBKR_API_INTERNAL_URL": "", "IBKR_API_BASE_URL": ""}, clear=False):
+            client = PBClient(base_url="http://pb.test")
+        with mock.patch.object(client, "_request", return_value=mock.Mock(json=lambda: {"ok": True})) as request_mock:
+            payload = client.call_custom_api("ibkr/indicators", method="POST", data={"items": []})
+        self.assertEqual({"ok": True}, payload)
+        request_mock.assert_called_once()
+        self.assertEqual("http://127.0.0.1:5102/api/custom/ibkr/indicators", request_mock.call_args.args[1])
+
     def test_runtime_config_can_skip_custom_api_to_avoid_self_proxy_recursion(self):
         client = PBClient(base_url="http://pb.test", prefer_runtime_config_api=False)
         rows = [{"key": "alpha", "value": "1", "environment": "live"}]

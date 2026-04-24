@@ -152,6 +152,49 @@ def _collect_preload_interval_targets(api_app, environment: str) -> dict[str, di
     return ordered_groups
 
 
+def _resolve_preload_watchlist_symbols(api_app, environment: str) -> list[str]:
+    try:
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        rows = api_app.pb.get_all_records(
+            "watchlist",
+            filter=(
+                f'environment = "{runtime_environment}" '
+                '|| environment = "global" '
+                '|| environment = ""'
+            ),
+            sort="-updated",
+            max_pages=30,
+        )
+        merged = {}
+        applied = {}
+        priority = {"": 0, "global": 1, runtime_environment: 2}
+        for row in rows:
+            symbol = str((row or {}).get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            row_environment = str((row or {}).get("environment", "") or "").strip().lower()
+            rank = priority.get(row_environment, -1)
+            if rank < 0:
+                continue
+            if symbol in applied and applied[symbol] > rank:
+                continue
+            applied[symbol] = rank
+            merged[symbol] = True
+        if merged:
+            return sorted(merged.keys())
+    except Exception:
+        LOGGER.exception("Compute startup preload watchlist resolve failed: env=%s", environment)
+
+    metadata = getattr(api_app, "symbol_metadata_cache", {}) or {}
+    return sorted(
+        {
+            str(symbol or "").strip().upper()
+            for symbol in metadata.keys()
+            if str(symbol or "").strip()
+        }
+    )
+
+
 def get_compute_startup_preload_state(api_app=None) -> dict:
     api_app = api_app or _api_app()
     snapshot = _read_startup_preload_state(api_app)
@@ -296,6 +339,28 @@ def run_compute_startup_preload(api_app=None) -> dict:
                 cursor_count,
                 len(interval_targets),
             )
+
+            fallback_symbols = [
+                symbol
+                for symbol in _resolve_preload_watchlist_symbols(api_app, environment)
+                if symbol not in set((interval_targets.get("5m") or {}).keys())
+            ]
+            if fallback_symbols:
+                # Fresh environments can have bars but no cursor state yet; warm 5m engines from storage first.
+                interval_state = env_result["intervals"].setdefault(
+                    "5m",
+                    {
+                        "status": "pending",
+                        "symbol_count": 0,
+                        "symbol_completed": 0,
+                        "ready_count": 0,
+                    },
+                )
+                interval_state["symbol_count"] = int(interval_state.get("symbol_count", 0) or 0) + len(fallback_symbols)
+                env_result["symbol_total"] += len(fallback_symbols)
+                summary["symbol_total"] += len(fallback_symbols)
+                env_result["storage_fallback_symbols"] = len(fallback_symbols)
+
             _publish_startup_preload_state(api_app, summary)
 
             for interval, targets in interval_targets.items():
@@ -329,6 +394,44 @@ def run_compute_startup_preload(api_app=None) -> dict:
                     _publish_startup_preload_state(api_app, summary)
                 interval_state["status"] = "completed"
                 env_result["interval_completed"] += 1
+                _publish_startup_preload_state(api_app, summary)
+
+            if fallback_symbols:
+                interval_state = env_result["intervals"].setdefault(
+                    "5m",
+                    {
+                        "status": "pending",
+                        "symbol_count": len(fallback_symbols),
+                        "symbol_completed": 0,
+                        "ready_count": 0,
+                    },
+                )
+                interval_state["status"] = "running"
+                _publish_startup_preload_state(api_app, summary)
+                indicator_seeded = 0
+                for symbol in fallback_symbols:
+                    fallback_results = api_app.materialize_engines_from_storage(
+                        environment,
+                        [symbol],
+                        "5m",
+                        hydrate_signal_state=True,
+                        persist_latest_indicator=True,
+                    )
+                    result = dict((fallback_results or {}).get(symbol) or {})
+                    if bool(result.get("is_ready")):
+                        interval_state["ready_count"] += 1
+                        env_result["ready_count"] += 1
+                        summary["ready_count"] += 1
+                    if bool(result.get("indicator_seeded")):
+                        indicator_seeded += 1
+                    interval_state["symbol_completed"] += 1
+                    env_result["symbol_completed"] += 1
+                    summary["symbol_completed"] += 1
+                    _publish_startup_preload_state(api_app, summary)
+                env_result["storage_fallback_indicator_seeded"] = indicator_seeded
+                if not interval_targets.get("5m"):
+                    env_result["interval_completed"] += 1
+                interval_state["status"] = "completed"
                 _publish_startup_preload_state(api_app, summary)
 
             env_result["status"] = "completed"
