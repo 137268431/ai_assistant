@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_HOST="${PB_SQLITE_HOST:-${IBKR_DEPLOY_HOST:-root@206.119.171.136}}"
+DEFAULT_HOST="${PB_SQLITE_HOST:-${IBKR_DEPLOY_HOST:-root@206.119.171.246}}"
 DEFAULT_PB_ROOT="${PB_REMOTE_ROOT:-/opt/pocketbase}"
 DEFAULT_DB="${PB_DB_PATH:-${DEFAULT_PB_ROOT%/}/pb_data/data.db}"
 HOST="$DEFAULT_HOST"

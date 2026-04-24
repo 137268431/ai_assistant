@@ -9,7 +9,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
-DEFAULT_HOST = os.environ.get("IBKR_DEPLOY_HOST", "root@206.119.171.136")
+DEFAULT_HOST = os.environ.get("IBKR_DEPLOY_HOST", "root@206.119.171.246")
 DEFAULT_IBKR_REMOTE_ROOT = os.environ.get("IBKR_REMOTE_ROOT", "/opt/ibkr_compute").rstrip("/")
 DEFAULT_PB_REMOTE_ROOT = os.environ.get("PB_REMOTE_ROOT", "/opt/pocketbase").rstrip("/")
 DEFAULT_REMOTE_PYTHON = os.environ.get("IBKR_REMOTE_PYTHON", f"{DEFAULT_IBKR_REMOTE_ROOT}/venv/bin/python")
@@ -912,10 +912,13 @@ def fetch_url(url: str, expect_json: bool = False, timeout: int = 10) -> dict:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
+            final_url = getattr(response, "geturl", lambda: url)()
             result = {
                 "ok": 200 <= response.status < 300,
                 "status_code": response.status,
                 "url": url,
+                "final_url": final_url,
+                "redirected": final_url != url,
             }
             content_type = response.headers.get("Content-Type", "")
             if expect_json or "json" in content_type:
@@ -932,6 +935,7 @@ def fetch_url(url: str, expect_json: bool = False, timeout: int = 10) -> dict:
             "ok": False,
             "status_code": exc.code,
             "url": url,
+            "final_url": getattr(exc, "geturl", lambda: url)(),
             "body_snippet": body[:300],
         }
     except Exception as exc:
@@ -1011,6 +1015,9 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     for name in ("pb_api_health", "pb_root_page", "api_public_health", "api_public_status", "api_ibkr_statusz", "api_system_summaryz"):
         if not public[name].get("ok"):
             failures.append(f"public:{name}")
+    pb_root_final_url = str(public.get("pb_root_page", {}).get("final_url") or "")
+    if pb_root_final_url and not pb_root_final_url.startswith(pb_base_url):
+        failures.append("public:pb_root_page:redirected_off_origin")
     if not public["compute_public_health"].get("ok") and not public["compute_public_health"].get("skipped"):
         failures.append("public:compute_public_health")
 

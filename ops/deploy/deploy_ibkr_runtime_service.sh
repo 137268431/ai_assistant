@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AI_ASSISTANT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB_ROOT="$SCRIPT_DIR/lib"
-REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
+REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.246}"
 IBKR_RUNTIME_REMOTE_ROOT="${IBKR_RUNTIME_REMOTE_ROOT:-${IBKR_DEPLOY_RUNTIME_ROOT:-/opt/ibkr_runtime}}"
 IBKR_REMOTE_ROOT="$IBKR_RUNTIME_REMOTE_ROOT"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -124,7 +124,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
-  ssh_run "systemctl is-active ibkr-runtime ibkr-display ibkr-gateway"
+  show_remote_systemd_statuses ibkr-runtime ibkr-display ibkr-gateway
   exit 0
 fi
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
+REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.246}"
 DRY_RUN=0
 
 usage() {

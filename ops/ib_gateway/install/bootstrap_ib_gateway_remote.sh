@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AI_ASSISTANT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
+REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.246}"
 REMOTE_ROOT="${IBKR_RUNTIME_REMOTE_ROOT:-${IBKR_DEPLOY_RUNTIME_ROOT:-/opt/ibkr_runtime}}"
 IBG_INSTALL_ROOT="${IBKR_BOOTSTRAP_IBG_ROOT:-/opt/ibgateway}"
 IBC_HOME="${IBKR_BOOTSTRAP_IBC_HOME:-/opt/ibc}"
@@ -182,13 +182,24 @@ install_packages() {
     xvfb
   )
   local audio_pkg=""
+  local java_pkg=""
   if apt-cache show libasound2t64 >/dev/null 2>&1; then
     audio_pkg="libasound2t64"
   elif apt-cache show libasound2 >/dev/null 2>&1; then
     audio_pkg="libasound2"
   fi
+  if apt-cache show openjdk-17-jre-headless >/dev/null 2>&1; then
+    java_pkg="openjdk-17-jre-headless"
+  elif apt-cache show default-jre-headless >/dev/null 2>&1; then
+    java_pkg="default-jre-headless"
+  elif apt-cache show openjdk-21-jre-headless >/dev/null 2>&1; then
+    java_pkg="openjdk-21-jre-headless"
+  fi
   if [[ -n "$audio_pkg" ]]; then
     packages+=("$audio_pkg")
+  fi
+  if [[ -n "$java_pkg" ]]; then
+    packages+=("$java_pkg")
   fi
   log "Installing system packages"
   DEBIAN_FRONTEND=noninteractive apt-get update -y

@@ -37,7 +37,7 @@ IBKR_CONSOLE_REMOTE_ROOT="${IBKR_CONSOLE_REMOTE_ROOT:-${IBKR_DEPLOY_CONSOLE_ROOT
 SYSTEMD_DIR="/etc/systemd/system"
 OPS_REMOTE_ROOT="$IBKR_REMOTE_ROOT/ops"
 VENV_DIR="$IBKR_REMOTE_ROOT/venv"
-REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
+REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.246}"
 DEPLOY_IGNORE_UNMANAGED=0
 HEALTH_CHECK_ENVIRONMENT="${DEPLOY_HEALTH_ENVIRONMENT:-live}"
 STACK_HEALTH_TIMEOUT_SECONDS="${DEPLOY_STACK_HEALTH_TIMEOUT_SECONDS:-420}"
@@ -145,7 +145,7 @@ done
 if [[ -n "${REMOTE_HOST:-}" ]]; then
   :
 else
-  REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
+  REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.246}"
 fi
 
 declare -a pb_args=()
@@ -347,8 +347,8 @@ for plan_unit in "${PLAN_UNITS[@]}"; do
 done
 
 if [[ "$REQUESTED_MODE" == "scope" && "$HAS_CHANGE_SOURCE" -eq 0 ]]; then
-  run_runtime
   run_compute
+  run_runtime
   run_pb
   run_console
   run_public_proxy
@@ -356,11 +356,11 @@ if [[ "$REQUESTED_MODE" == "scope" && "$HAS_CHANGE_SOURCE" -eq 0 ]]; then
   exit 0
 fi
 
-if array_contains "ibkr_runtime" "${families[@]}"; then
-  DEPLOY_IGNORE_UNMANAGED=1 run_runtime
-fi
 if array_contains "ibkr_compute" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_compute
+fi
+if array_contains "ibkr_runtime" "${families[@]}"; then
+  DEPLOY_IGNORE_UNMANAGED=1 run_runtime
 fi
 if array_contains "pocketbase" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_pb

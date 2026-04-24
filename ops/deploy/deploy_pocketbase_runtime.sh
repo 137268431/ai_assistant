@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AI_ASSISTANT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB_ROOT="$SCRIPT_DIR/lib"
-REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
+REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.246}"
 PB_REMOTE_ROOT="${PB_REMOTE_ROOT:-${IBKR_DEPLOY_PB_ROOT:-/opt/pocketbase}}"
 
 DEPLOY_PUBLIC=1
@@ -59,14 +59,23 @@ apply_runtime_restart_policy() {
 
 normalize_pocketbase_selection() {
   if [[ "${HOOKS_ONLY_REQUESTED:-0}" -eq 1 ]]; then
-    deploy_warn "--hooks-only is deprecated; pb_hooks are inert compatibility shims and now deploy only with the standard PocketBase runtime payload."
+    deploy_warn "--hooks-only is deprecated; pb_hooks is now just an empty placeholder directory and deploys only with the standard PocketBase runtime payload."
     DEPLOY_PUBLIC=1
     DEPLOY_HOOKS=1
   fi
 
   if [[ "${DEPLOY_PUBLIC:-0}" -eq 0 && "${DEPLOY_HOOKS:-0}" -eq 1 && "${DEPLOY_MIGRATIONS:-0}" -eq 0 ]]; then
-    deploy_warn "Hook-only PocketBase deploys are no longer treated as a standalone operational mode; including pb_public with pb_hooks for a safe runtime sync."
+    deploy_warn "Hook-only PocketBase deploys are no longer treated as a standalone operational mode; including pb_public with the pb_hooks placeholder directory for a safe runtime sync."
     DEPLOY_PUBLIC=1
+  fi
+}
+
+preflight_pocketbase_runtime() {
+  [[ "${PLAN_ONLY:-0}" -eq 1 || "${DRY_RUN:-0}" -eq 1 ]] && return 0
+  if [[ "${RESTART_SERVICE:-1}" -eq 1 || "${DEPLOY_MIGRATIONS:-0}" -eq 1 ]]; then
+    if ! ssh_run "test -x '$PB_REMOTE_ROOT/pocketbase'"; then
+      deploy_die "PocketBase binary is missing at $PB_REMOTE_ROOT/pocketbase. Run bash ai_assistant/ops/pocketbase/install/bootstrap_pocketbase_remote.sh first."
+    fi
   fi
 }
 
@@ -81,7 +90,7 @@ Options:
   --diff <range>      Git diff range, for example HEAD~1..HEAD
   --plan-only         Print the resolved deployment plan and exit
   --package-name <n>  Override generated package name for package mode
-  --public-only       Deploy only the PocketBase landing tree sourced from runtime/pocketbase/pb_public (pb_hooks remain inert compatibility shims in the default deploy)
+  --public-only       Deploy only the PocketBase landing tree sourced from runtime/pocketbase/pb_public (systemd still deploys unless skipped by a higher-level wrapper)
   --migrations        Deploy extensions/pocketbase/migrations to /opt/pocketbase/extensions/migrations
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote node --check validation
@@ -162,11 +171,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
-  ssh_run "systemctl is-active pocketbase"
+  show_remote_systemd_statuses pocketbase
   exit 0
 fi
 
 normalize_pocketbase_selection
+preflight_pocketbase_runtime
 
 if [[ "$DEPLOY_PUBLIC" -eq 0 && "$DEPLOY_HOOKS" -eq 0 && "$DEPLOY_MIGRATIONS" -eq 0 ]]; then
   deploy_error "Nothing selected for deployment."

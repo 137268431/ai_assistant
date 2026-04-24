@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AI_ASSISTANT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB_ROOT="$SCRIPT_DIR/lib"
-REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.136}"
+REMOTE_HOST="${IBKR_DEPLOY_HOST:-root@206.119.171.246}"
 QUANT_PUBLIC_BASE_URL="${IBKR_PUBLIC_BASE_URL:-${PUBLIC_BASE_URL:-https://quant.lzw-glory.top}}"
 PB_PUBLIC_BASE_URL="${PB_BASE_URL:-https://pb.lzw-glory.top}"
 CADDY_MAIN_PATH="${IBKR_CADDY_MAIN_PATH:-/etc/caddy/Caddyfile}"
@@ -98,9 +98,9 @@ if [[ "$STATUS_ONLY" -eq 1 ]]; then
       CADDY_SERVICE="$CADDY_SERVICE" \
       QUANT_CADDY_SITE_FILE="$QUANT_CADDY_SITE_FILE" \
       PB_CADDY_SITE_FILE="$PB_CADDY_SITE_FILE" \
-    'bash -s' <<'REMOTE'
+  'bash -s' <<'REMOTE'
 set -euo pipefail
-systemctl is-active "$CADDY_SERVICE"
+systemctl show "$CADDY_SERVICE" --property=Id,ActiveState,SubState,MainPID,UnitFileState --no-pager || true
 printf '%s\n' '---'
 for site_file in "$QUANT_CADDY_SITE_FILE" "$PB_CADDY_SITE_FILE"; do
   if [ -f "$site_file" ]; then
@@ -118,6 +118,12 @@ fi
 
 [[ -f "$LOCAL_QUANT_TEMPLATE_PATH" ]] || deploy_die "Missing local caddy template: $LOCAL_QUANT_TEMPLATE_PATH"
 [[ -f "$LOCAL_PB_TEMPLATE_PATH" ]] || deploy_die "Missing local caddy template: $LOCAL_PB_TEMPLATE_PATH"
+
+if [[ "$PLAN_ONLY" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
+  if ! ssh "$REMOTE_HOST" "command -v caddy >/dev/null 2>&1"; then
+    deploy_die "Caddy is not installed on $REMOTE_HOST. Run bash ai_assistant/ops/bootstrap/install_base_runtime_remote.sh first."
+  fi
+fi
 
 deploy_log "Deployment plan"
 deploy_log "  target: ibkr public proxy"
@@ -245,6 +251,7 @@ from os import environ
 quant_base = environ["QUANT_PUBLIC_BASE_URL"].rstrip("/")
 pb_base = environ["PB_PUBLIC_BASE_URL"].rstrip("/")
 checks = [
+    ("pb_root", f"{pb_base}/", False, True),
     ("quant_console_index", f"{quant_base}/index.html?environment=live", False),
     ("quant_api_health", f"{quant_base}/health", True),
     ("quant_api_runtime_config", f"{quant_base}/api/custom/ibkr/runtime/config?environment=live", True),
@@ -252,13 +259,21 @@ checks = [
     ("pb_health", f"{pb_base}/api/health", True),
 ]
 
-for label, url, expect_json in checks:
+for raw_check in checks:
+    if len(raw_check) == 4:
+        label, url, expect_json, expect_same_origin = raw_check
+    else:
+        label, url, expect_json = raw_check
+        expect_same_origin = False
     req = urllib.request.Request(url, headers={"User-Agent": "codex-ibkr-public-proxy-check"})
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             if resp.status < 200 or resp.status >= 300:
                 raise RuntimeError(f"{label} unexpected status {resp.status}")
+            final_url = getattr(resp, "geturl", lambda: url)()
+            if expect_same_origin and not str(final_url or "").startswith(pb_base):
+                raise RuntimeError(f"{label} redirected away from PocketBase origin: {final_url!r}")
             if expect_json:
                 payload = json.loads(body)
                 if label == "quant_api_runtime_config" and payload.get("source") != "ibkr-api":
@@ -270,7 +285,10 @@ for label, url, expect_json in checks:
                             raise RuntimeError(f"{label} missing service topology entry: {required}")
             else:
                 lower = body.lower()
-                if "trading flight" not in lower and "ibkr console" not in lower:
+                if label == "pb_root":
+                    if "pocketbase" not in lower:
+                        raise RuntimeError(f"{label} missing pocketbase marker")
+                elif "trading flight" not in lower and "ibkr console" not in lower:
                     raise RuntimeError(f"{label} missing console marker")
             print(f"ok:{label}:{url}")
     except (urllib.error.URLError, RuntimeError, json.JSONDecodeError) as exc:
@@ -289,16 +307,10 @@ redirect_req = urllib.request.Request(
 redirect_opener = urllib.request.build_opener(NoRedirect)
 try:
     redirect_opener.open(redirect_req, timeout=20)
-    raise RuntimeError("pb_console_redirect expected redirect response")
+    raise RuntimeError("pb_legacy_console_path expected 404 response")
 except urllib.error.HTTPError as exc:
-    if exc.code not in (301, 302, 307, 308):
-        raise RuntimeError(f"pb_console_redirect unexpected status {exc.code}") from exc
-    location = exc.headers.get("Location", "")
-    expected_prefix = quant_base + "/ibkr_runtime.html"
-    if not location.startswith(expected_prefix):
-        raise RuntimeError(
-            f"pb_console_redirect expected location starting with {expected_prefix!r}, got {location!r}"
-        ) from exc
-    print(f"ok:pb_console_redirect:{location}")
+    if exc.code != 404:
+        raise RuntimeError(f"pb_legacy_console_path unexpected status {exc.code}") from exc
+    print("ok:pb_legacy_console_path:404")
 PY
 fi
