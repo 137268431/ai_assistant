@@ -27,6 +27,29 @@ from ibkr_api.app_core.http import (
     request_json_request as _request_json_request_support,
 )
 from ibkr_api.app_core.platform_registrar import register_platform_routes
+from ibkr_api.app_core.presentation import (
+    add_environment_to_detail as _add_environment_to_detail_support,
+    config_value as _config_value_support,
+    console_base_url as _console_base_url_support,
+    environment_tag as _environment_tag_support,
+    is_enabled_text as _is_enabled_text_support,
+    label_title_with_environment as _label_title_with_environment_support,
+    signal_chat_id as _signal_chat_id_support,
+    system_page_url as _system_page_url_support,
+    system_status_chat_id as _system_status_chat_id_support,
+    time_strings as _time_strings_support,
+    runtime_page_url as _runtime_page_url_support,
+)
+from ibkr_api.app_core.proxying import (
+    forward_request as _forward_request_support,
+    proxy_custom_to_pb as _proxy_custom_to_pb_support,
+    proxy_webhook_to_pb as _proxy_webhook_to_pb_support,
+)
+from ibkr_api.app_core.state_access import (
+    count_active_today_targets as _count_active_today_targets_support,
+    get_state_payload as _get_state_payload_support,
+    load_daily_scan_state as _load_daily_scan_state_support,
+)
 from ibkr_api.app_core.trading_registrar import register_trading_routes
 from ibkr_api.app_core.value_utils import (
     as_dict as _as_dict_support,
@@ -287,7 +310,7 @@ def _load_recent_system_events(environment: str, limit: int = 20) -> list[dict[s
 
 
 def _is_enabled_text(value: Any) -> bool:
-    return str(value or "true").strip().lower() not in {"", "0", "false", "no", "off"}
+    return _is_enabled_text_support(value)
 
 
 def _fetch_compute_monitor(environment: str) -> dict[str, Any]:
@@ -299,74 +322,77 @@ def _fetch_compute_monitor(environment: str) -> dict[str, Any]:
 
 
 def _time_strings(now_ts: float | None = None) -> dict[str, str]:
-    current = float(now_ts if now_ts is not None else time.time())
-    now_et = datetime.fromtimestamp(current, tz=ET)
-    now_cn = datetime.fromtimestamp(current, tz=CN)
-    return {
-        "us": now_et.strftime("%Y-%m-%d %H:%M:%S"),
-        "cn": now_cn.strftime("%Y-%m-%d %H:%M:%S"),
-        "date": now_et.strftime("%Y-%m-%d"),
-    }
+    return _time_strings_support(now_ts=now_ts, et_tz=ET, cn_tz=CN)
 
 
 def _environment_tag(environment: str) -> str:
-    runtime_environment = _normalize_environment(environment, "live")
-    return f"[{ENVIRONMENT_LABELS.get(runtime_environment, runtime_environment.upper())}]"
+    return _environment_tag_support(
+        environment,
+        normalize_environment=_normalize_environment,
+        environment_labels=ENVIRONMENT_LABELS,
+    )
 
 
 def _label_title_with_environment(title: Any, environment: str) -> str:
-    text = str(title or "").strip()
-    tag = _environment_tag(environment)
-    if not text:
-        return tag
-    return text if text.startswith(tag) else f"{tag} {text}"
+    return _label_title_with_environment_support(
+        title,
+        environment,
+        environment_tag_fn=_environment_tag,
+    )
 
 
 def _add_environment_to_detail(detail: Any, environment: str) -> dict[str, Any]:
-    runtime_environment = _normalize_environment(environment, "live")
-    if isinstance(detail, dict):
-        return {"environment": runtime_environment, **detail}
-    if detail is None or detail == "":
-        return {"environment": runtime_environment}
-    return {"environment": runtime_environment, "detail": str(detail)}
+    return _add_environment_to_detail_support(
+        detail,
+        environment,
+        normalize_environment=_normalize_environment,
+    )
 
 
 def _console_base_url() -> str:
-    return str(
-        os.environ.get("CONSOLE_BASE_URL")
-        or os.environ.get("QUANT_BASE_URL")
-        or os.environ.get("IBKR_CONSOLE_PUBLIC_URL")
-        or DEFAULT_CONSOLE_BASE_URL
-    ).rstrip("/")
+    return _console_base_url_support(default_console_base_url=DEFAULT_CONSOLE_BASE_URL)
 
 
 def _runtime_page_url(environment: str) -> str:
-    base_url = _console_base_url()
-    if not base_url:
-        return ""
-    return f"{base_url}/ibkr_runtime.html?environment={_normalize_environment(environment, 'live')}"
+    return _runtime_page_url_support(
+        environment,
+        console_base_url_fn=_console_base_url,
+        normalize_environment=_normalize_environment,
+    )
 
 
 def _system_page_url(environment: str) -> str:
-    base_url = _console_base_url()
-    if not base_url:
-        return ""
-    return f"{base_url}/ibkr_system.html?environment={_normalize_environment(environment, 'live')}"
+    return _system_page_url_support(
+        environment,
+        console_base_url_fn=_console_base_url,
+        normalize_environment=_normalize_environment,
+    )
 
 
 def _config_value(key: str, default: str, environment: str) -> str:
-    try:
-        return str(config.get_for_environment(key, _normalize_environment(environment, "live"), default) or default)
-    except Exception:
-        return default
+    return _config_value_support(
+        config,
+        key,
+        default,
+        environment,
+        normalize_environment=_normalize_environment,
+    )
 
 
 def _signal_chat_id(environment: str) -> str:
-    return _config_value("signal_chat_id", DEFAULT_FEISHU_SIGNAL_CHAT_ID, environment)
+    return _signal_chat_id_support(
+        environment,
+        config_value_fn=_config_value,
+        default_chat_id=DEFAULT_FEISHU_SIGNAL_CHAT_ID,
+    )
 
 
 def _system_status_chat_id(environment: str) -> str:
-    return _config_value("system_status_chat_id", DEFAULT_FEISHU_SYSTEM_CHAT_ID, environment)
+    return _system_status_chat_id_support(
+        environment,
+        config_value_fn=_config_value,
+        default_chat_id=DEFAULT_FEISHU_SYSTEM_CHAT_ID,
+    )
 
 
 _feishu_suppressed = partial(feishu_suppressed, normalize_environment=_normalize_environment)
@@ -578,43 +604,33 @@ def _request_json_request(
 
 
 def _get_state_payload(state_key: str, environment: str, *, date: str = "global") -> dict[str, Any]:
-    runtime_environment = _normalize_environment(environment)
-    try:
-        record = pb.get_state(state_key, runtime_environment, date=date)
-    except Exception:
-        record = None
-    payload = _as_dict((record or {}).get("data") if isinstance(record, dict) else {})
-    record_date = str(((record or {}).get("date") if isinstance(record, dict) else "") or date).strip() or date
-    return {
-        "environment": runtime_environment,
-        "date": record_date,
-        "record": record if isinstance(record, dict) else {},
-        "data": payload,
-    }
+    return _get_state_payload_support(
+        pb,
+        state_key,
+        environment,
+        as_dict=_as_dict,
+        normalize_environment=_normalize_environment,
+        date=date,
+    )
 
 
 def _load_daily_scan_state(environment: str) -> dict[str, Any]:
-    payload = _get_state_payload(IBKR_DAILY_SCAN_STATE_KEY, environment, date="global")
-    data = _as_dict(payload.get("data"))
-    data["result"] = _as_dict(data.get("result"))
-    return data
+    return _load_daily_scan_state_support(
+        environment,
+        as_dict=_as_dict,
+        get_state_payload_fn=_get_state_payload,
+        daily_scan_state_key=IBKR_DAILY_SCAN_STATE_KEY,
+    )
 
 
 def _count_active_today_targets(environment: str, market_date: str) -> int:
-    normalized_market_date = str(market_date or "").strip()
-    if not normalized_market_date:
-        return 0
-    runtime_environment = _normalize_environment(environment)
-    target_filter = (
-        f'date = "{_escape_filter_string(normalized_market_date)}" && '
-        f'environment = "{_escape_filter_string(runtime_environment)}" && '
-        '(status = "candidate" || status = "active")'
+    return _count_active_today_targets_support(
+        pb,
+        environment,
+        market_date,
+        normalize_environment=_normalize_environment,
+        escape_filter_string=_escape_filter_string,
     )
-    try:
-        rows = pb.get_all_records("ibkr_targets", filter=target_filter, max_pages=25)
-    except Exception:
-        return 0
-    return len(rows or [])
 
 
 def _fetch_compute_status(environment: str) -> dict[str, Any]:
@@ -699,42 +715,35 @@ def _build_statusz_runtime_payload(
 
 
 def _forward_request(base_url: str, path: str, *, params: list[tuple[str, str]] | None = None, json_body: Any = None) -> Response:
-    headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key in FORWARDED_REQUEST_HEADERS and value
-    }
-    target_url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
-    try:
-        upstream_response = requests.request(
-            method=request.method,
-            url=target_url,
-            params=params if params is not None else list(request.args.items(multi=True)),
-            data=None if json_body is not None else request.get_data(cache=True),
-            json=json_body,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            allow_redirects=False,
-        )
-    except requests.RequestException as exc:
-        return jsonify(
-            {
-                "ok": False,
-                "status": "offline",
-                "error": str(exc),
-                "upstream": target_url,
-                "service_topology": build_service_topology(),
-            }
-        ), 502
-    return _build_response_from_upstream(upstream_response)
+    return _forward_request_support(
+        requests_module=requests,
+        request_obj=request,
+        jsonify_fn=jsonify,
+        request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+        forwarded_request_headers=FORWARDED_REQUEST_HEADERS,
+        build_response_from_upstream_fn=_build_response_from_upstream,
+        build_service_topology_fn=build_service_topology,
+        base_url=base_url,
+        path=path,
+        params=params,
+        json_body=json_body,
+    )
 
 
 def _proxy_custom_to_pb(subpath: str) -> Response:
-    return _forward_request(PB_BASE_URL, f"/api/custom/{subpath}")
+    return _proxy_custom_to_pb_support(
+        subpath,
+        forward_request_fn=_forward_request,
+        pb_base_url=PB_BASE_URL,
+    )
 
 
 def _proxy_webhook_to_pb(subpath: str) -> Response:
-    return _forward_request(PB_BASE_URL, f"/webhook/{subpath}")
+    return _proxy_webhook_to_pb_support(
+        subpath,
+        forward_request_fn=_forward_request,
+        pb_base_url=PB_BASE_URL,
+    )
 
 
 def _extract_cursor_interval(cursor_payload: dict[str, Any], interval: str = "5m") -> dict[str, Any]:

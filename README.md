@@ -23,8 +23,13 @@ This repo is split by responsibility instead of by product history.
   - Service shell routes and PB compatibility fallback (`/health`, `/status`, `/api/collections/*`, generic `/api/custom/*`, generic `/webhook/*`).
 - `runtime/ibkr_api/src/ibkr_api/runtime`
   - Runtime/status/2FA route registrars plus runtime payload-shaping helpers.
+  - `status_support.py` is a compatibility barrel; the real runtime status shaping now lives in `status_fetch.py`, `status_compute.py`, `status_live_readiness.py`, `status_runtime_sections.py`, `status_runtime_warmup.py`, and `status_runtime_payload.py`.
+- `runtime/ibkr_api/src/ibkr_api/two_factor`
+  - Active 2FA request/result/respond/takeover/probe flows.
+  - `request.py` is now a compatibility barrel; request flow internals live in `request_shared.py`, `request_approval.py`, `request_trigger.py`, and `request_response.py`.
 - `runtime/ibkr_api/src/ibkr_api/system`
   - System summary, monitor, topology, system-event delivery, and PocketBase disk helpers.
+  - `system/jobs/auth.py` is a compatibility barrel; the actual auth/session job logic is split across `auth_shared.py`, `auth_issue.py`, `auth_edge_guard.py`, `auth_pending_guard.py`, and `auth_reminders.py`.
 - `runtime/ibkr_api/src/ibkr_api/startup`
   - Runtime startup progress, startup card payload helpers, and startup route registration.
 - `runtime/ibkr_api/src/ibkr_api/integrations`
@@ -38,7 +43,7 @@ This repo is split by responsibility instead of by product history.
 - `runtime/ibkr_api/src/ibkr_api/account`, `runtime/ibkr_api/src/ibkr_api/universe`
   - Feature slices that now also split large builders into smaller service-local modules such as `snapshot_live_orders.py`, `snapshot_relations.py`, `today_targets_shared.py`, and `today_targets_workflow.py`.
 - `runtime/ibkr_api/src/ibkr_api/app_core`
-  - Shared API composition helpers for config selection, request/response wrappers, and value normalization so `api_app.py` can stay focused on assembly.
+  - Shared API composition helpers for config selection, request/response wrappers, value normalization, registrar assembly, presentation helpers, proxy forwarding, and state access so `api_app.py` can stay focused on assembly.
 - Legacy root import paths like `ibkr_api.order_upsert` now resolve through `runtime/ibkr_api/src/ibkr_api/compat`, so the repo tree can stay folderized without keeping duplicate root files.
 
 ## Directories
