@@ -12,8 +12,6 @@ PB_INDEX = PB_PUBLIC_DIR / "index.html"
 PB_LEGACY_COMMON = PB_PUBLIC_DIR / "common.js"
 PB_LEGACY_ASSETS = PB_PUBLIC_DIR / "assets"
 PB_LANDING_MARKER = "PocketBase lives here."
-PB_REDIRECT_MARKER = 'data-pb-legacy-redirect="quant-console"'
-QUANT_PUBLIC_URL = "https://quant.lzw-glory.top"
 
 
 def main() -> int:
@@ -45,18 +43,15 @@ def main() -> int:
         print(f"unexpected PocketBase legacy assets tree still present: {PB_LEGACY_ASSETS}")
         return 1
 
-    for legacy_page in sorted(PB_PUBLIC_DIR.glob("*.html")):
-        if legacy_page.name == "index.html":
-            continue
-        content = legacy_page.read_text(encoding="utf-8")
-        if PB_REDIRECT_MARKER not in content or QUANT_PUBLIC_URL not in content:
-            print(f"unexpected PocketBase legacy page content: {legacy_page}")
-            return 1
+    extra_html = sorted(path.name for path in PB_PUBLIC_DIR.glob("*.html") if path.name != "index.html")
+    if extra_html:
+        print(f"unexpected PocketBase legacy html pages still present: {extra_html}")
+        return 1
 
     print("console and PocketBase public trees are intentionally decoupled")
     print(f"- console source: {SOURCE_DIR}")
     print(f"- pocketbase landing: {PB_PUBLIC_DIR}")
-    print("- legacy PocketBase HTML routes: redirect-only shims to quant")
+    print("- PocketBase public tree now keeps only the landing/admin-facing root")
     return 0
 
 

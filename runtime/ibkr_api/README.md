@@ -37,7 +37,7 @@
 - Public entrypoints formerly owned by PocketBase hook JS now terminate at `ibkr-api` first.
 - Current migration boundary:
   - Native in `ibkr-api`: signal/order/reverse routes, webhook pages, system `healthz|summaryz|monitorz|cronz|schedulerz`, runtime `statusz|healthz|runtime/config|startup/*|2fa/status`, control actions `emergency-stop|recover|reauth`, all current 2FA control routes, state `signals|orders`, `health-report`, `notify`, the storage-backed write routes `ping_write|bars|indicator|indicators|scan|data_quality/upsert|data_quality/truth_upsert`, plus `watchlist/upsert|remove`, `targets/upsert|remove`, `screener`, `today-targets`, `account_snapshot`, `screener/targets`, `data_quality/summary|truth_summary|list|truth_list`, `orders/cancel_sync`, and all scheduler-owned system jobs.
-  - PocketBase `pb_hooks/*.pb.js` entrypoints are now no-op shells, so the PB host no longer owns live business routes or cron registration.
+  - PocketBase `pb_hooks/` is now only an empty placeholder directory, so the PB host no longer owns live business routes or cron registration.
 - Public domain split is now strict: `quant.lzw-glory.top` serves console + control/webhook traffic, `pb.lzw-glory.top` serves PocketBase auth/data/admin, and no active `qc.lzw-glory.top` dependency remains in runtime defaults.
 - Internal Python callers should now point custom control-plane traffic at `IBKR_API_INTERNAL_URL`; `PBClient.call_custom_api()` prefers the API service URL instead of assuming PocketBase hosts `/api/custom/*`.
 - `GET /api/custom/ibkr/signals/pending` is now read natively from `ibkr-api` via PocketBase REST instead of executing inside PB hooks.
@@ -49,7 +49,7 @@
 - `POST /api/custom/ibkr/orders/upsert`, `POST /api/custom/ibkr/orders/reconcile`, `POST /api/custom/ibkr/orders/cancel_group`, and `POST /api/custom/ibkr/orders/close_group` are now handled natively in `ibkr-api`.
 - `GET /webhook/order/cancel` and `GET /webhook/order/close` are now rendered natively in `ibkr-api` with service-owned landing pages instead of PocketBase hook HTML helpers.
 - `GET /api/custom/ibkr/reverse/list`, `GET /api/custom/ibkr/reverse/pending`, `POST /api/custom/ibkr/reverse/dispatch`, `POST /api/custom/ibkr/reverse/ack`, and `POST /api/custom/ibkr/reverse/calculate` are now handled natively in `ibkr-api`; PocketBase no longer keeps route-level JS implementations for them.
-- PocketBase compatibility has been reduced to no-op `pb_hooks/*.pb.js` entry shells; the old action/scheduler JS files no longer ship in the repo.
+- PocketBase compatibility has been reduced to an empty `pb_hooks/` placeholder directory; the old action/scheduler JS files no longer ship in the repo.
 - Deletion bar for PocketBase compatibility from the API point of view:
   - Generic unmatched `/api/custom/*` and `/webhook/*` traffic no longer delegates business routes back to PocketBase.
   - `api_app.py` should keep shrinking toward registrar wiring plus shared adapters, not reclaim business code from the feature folders.

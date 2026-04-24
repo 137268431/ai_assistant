@@ -8,7 +8,7 @@ Deployment ownership is now split cleanly:
 - `ops/deploy/deploy_pocketbase_runtime.sh --public-only` updates PocketBase's own minimal landing at `/opt/pocketbase/pb_public`
 
 `runtime/pocketbase/pb_public` is no longer a console mirror.
-It belongs to PocketBase and should only contain the PB landing/admin-facing public tree plus redirect-only compatibility shims for old console URLs.
+It belongs to PocketBase and should only contain the PB landing/admin-facing public tree.
 The old `common.js` and `assets/**` console resource tree should not live there anymore.
 New console edits should land in `runtime/ibkr_console/static`, not in `runtime/pocketbase/pb_public`.
 

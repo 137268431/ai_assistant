@@ -1,0 +1,16 @@
+[Unit]
+Description=PocketBase Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pocketbase
+ExecStart=/opt/pocketbase/pocketbase serve --http=0.0.0.0:8090 --dir=/opt/pocketbase/pb_data --publicDir=/opt/pocketbase/pb_public --hooksDir=/opt/pocketbase/pb_hooks
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

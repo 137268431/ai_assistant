@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+def build_compat_proxy_deps(
+    *,
+    pb_base_url: str,
+    compute_base_url: str,
+    runtime_base_url: str,
+    scheduler_base_url: str,
+    build_service_topology,
+    config: Any,
+    normalize_environment,
+    scheduler_status,
+    scheduler_job_states,
+    build_cron_payload,
+    build_scheduler_summary,
+    augment_scheduler_summary,
+    forward_request,
+    proxy_custom_to_pb,
+    proxy_webhook_to_pb,
+) -> dict[str, Any]:
+    direct_proxy_map: dict[tuple[str, str], tuple[str, str]] = {
+        ("GET", "ibkr/rules"): (compute_base_url, "/ibkr/rules"),
+        ("GET", "ibkr/screener"): (compute_base_url, "/screener"),
+        ("GET", "ibkr/contracts/search"): (compute_base_url, "/contracts/search"),
+        ("GET", "ibkr/quotes"): (runtime_base_url, "/ibkr/quotes"),
+        ("GET", "ibkr/quotes/forming_bar"): (runtime_base_url, "/ibkr/quotes/forming_bar"),
+        ("POST", "ibkr/ingest/close"): (runtime_base_url, "/ibkr/ingest/close"),
+        ("POST", "ibkr/start"): (runtime_base_url, "/ibkr/start"),
+        ("POST", "ibkr/stop"): (runtime_base_url, "/ibkr/stop"),
+        ("POST", "ibkr/gateway/start"): (runtime_base_url, "/ibkr/gateway/start"),
+        ("POST", "ibkr/gateway/stop"): (runtime_base_url, "/ibkr/gateway/stop"),
+        ("POST", "ibkr/gateway/restart"): (runtime_base_url, "/ibkr/gateway/restart"),
+        ("POST", "ibkr/orders/cancel"): (runtime_base_url, "/ibkr/orders/cancel"),
+        ("POST", "ibkr/orders/cancel_all"): (runtime_base_url, "/ibkr/orders/cancel_all"),
+        ("POST", "ibkr/orders/modify"): (runtime_base_url, "/ibkr/orders/modify"),
+        ("POST", "ibkr/orders/place"): (runtime_base_url, "/ibkr/orders/place"),
+        ("POST", "ibkr/positions/close"): (runtime_base_url, "/ibkr/positions/close"),
+        ("GET", "ibkr/account"): (runtime_base_url, "/ibkr/account"),
+        ("GET", "ibkr/positions"): (runtime_base_url, "/ibkr/positions"),
+        ("GET", "ibkr/orders/live"): (runtime_base_url, "/ibkr/orders/live"),
+        ("GET", "ibkr/orders/history"): (runtime_base_url, "/ibkr/orders/history"),
+        ("GET", "ibkr/history/rebuild/status"): (compute_base_url, "/ibkr/history/rebuild/status"),
+        ("POST", "ibkr/history/rebuild/start"): (compute_base_url, "/ibkr/history/rebuild/start"),
+        ("GET", "ibkr/backtest/status"): (compute_base_url, "/backtest/status"),
+        ("POST", "ibkr/backtest/run"): (compute_base_url, "/backtest/run"),
+        ("POST", "ibkr/backtest/cancel"): (compute_base_url, "/backtest/cancel"),
+        ("GET", "ibkr/backtest/replay"): (compute_base_url, "/backtest/replay"),
+        ("POST", "ibkr/backtest/cleanup"): (compute_base_url, "/backtest/cleanup"),
+        ("POST", "ibkr/data_quality/rescan"): (compute_base_url, "/ibkr/data-quality/scan"),
+        ("POST", "ibkr/data_quality/repair"): (compute_base_url, "/ibkr/data-quality/repair"),
+        ("POST", "ibkr/data_quality/truth_audit"): (compute_base_url, "/ibkr/data-quality/truth-audit"),
+    }
+    action_proxy_map: dict[str, tuple[str, str]] = {
+        "compute": (compute_base_url, "/compute"),
+        "scan": (compute_base_url, "/scan"),
+        "recompute": (compute_base_url, "/recompute"),
+        "chart/timeline": (compute_base_url, "/chart/timeline"),
+        "chart/compare": (compute_base_url, "/chart/compare"),
+    }
+    return {
+        "pb_base_url": pb_base_url,
+        "compute_base_url": compute_base_url,
+        "runtime_base_url": runtime_base_url,
+        "scheduler_base_url": scheduler_base_url,
+        "direct_proxy_map": direct_proxy_map,
+        "action_proxy_map": action_proxy_map,
+        "delegated_pocketbase_custom_routes": [],
+        "delegated_pocketbase_webhook_routes": [],
+        "build_service_topology": build_service_topology,
+        "config": config,
+        "normalize_environment": normalize_environment,
+        "scheduler_status": scheduler_status,
+        "scheduler_job_states": scheduler_job_states,
+        "build_cron_payload": build_cron_payload,
+        "build_scheduler_summary": build_scheduler_summary,
+        "augment_scheduler_summary": augment_scheduler_summary,
+        "forward_request": forward_request,
+        "proxy_custom_to_pb": proxy_custom_to_pb,
+        "proxy_webhook_to_pb": proxy_webhook_to_pb,
+    }
+
+
+__all__ = ["build_compat_proxy_deps"]

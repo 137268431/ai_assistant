@@ -74,6 +74,7 @@ from ibkr_api.callbacks.runtime_dispatch import (
     build_dispatch_feishu_order_callback,
     build_dispatch_feishu_signal_callback,
 )
+from ibkr_api.compat.bootstrap import build_compat_proxy_deps
 from ibkr_api.control.runtime_guard import (
     build_runtime_environment_mismatch_payload,
     inspect_requested_runtime_environment,
@@ -200,54 +201,6 @@ app = Flask(__name__)
 # Avoid recursively routing runtime-config reads back into this API service.
 pb = PBClient(base_url=PB_BASE_URL, prefer_runtime_config_api=False)
 config = Config(pb_client=pb)
-
-
-DIRECT_PROXY_MAP: dict[tuple[str, str], tuple[str, str]] = {
-    ("GET", "ibkr/rules"): (COMPUTE_BASE_URL, "/ibkr/rules"),
-    ("GET", "ibkr/screener"): (COMPUTE_BASE_URL, "/screener"),
-    ("GET", "ibkr/contracts/search"): (COMPUTE_BASE_URL, "/contracts/search"),
-    ("GET", "ibkr/quotes"): (RUNTIME_BASE_URL, "/ibkr/quotes"),
-    ("GET", "ibkr/quotes/forming_bar"): (RUNTIME_BASE_URL, "/ibkr/quotes/forming_bar"),
-    ("POST", "ibkr/ingest/close"): (RUNTIME_BASE_URL, "/ibkr/ingest/close"),
-    ("POST", "ibkr/start"): (RUNTIME_BASE_URL, "/ibkr/start"),
-    ("POST", "ibkr/stop"): (RUNTIME_BASE_URL, "/ibkr/stop"),
-    ("POST", "ibkr/gateway/start"): (RUNTIME_BASE_URL, "/ibkr/gateway/start"),
-    ("POST", "ibkr/gateway/stop"): (RUNTIME_BASE_URL, "/ibkr/gateway/stop"),
-    ("POST", "ibkr/gateway/restart"): (RUNTIME_BASE_URL, "/ibkr/gateway/restart"),
-    ("POST", "ibkr/orders/cancel"): (RUNTIME_BASE_URL, "/ibkr/orders/cancel"),
-    ("POST", "ibkr/orders/cancel_all"): (RUNTIME_BASE_URL, "/ibkr/orders/cancel_all"),
-    ("POST", "ibkr/orders/modify"): (RUNTIME_BASE_URL, "/ibkr/orders/modify"),
-    ("POST", "ibkr/orders/place"): (RUNTIME_BASE_URL, "/ibkr/orders/place"),
-    ("POST", "ibkr/positions/close"): (RUNTIME_BASE_URL, "/ibkr/positions/close"),
-    ("GET", "ibkr/account"): (RUNTIME_BASE_URL, "/ibkr/account"),
-    ("GET", "ibkr/positions"): (RUNTIME_BASE_URL, "/ibkr/positions"),
-    ("GET", "ibkr/orders/live"): (RUNTIME_BASE_URL, "/ibkr/orders/live"),
-    ("GET", "ibkr/orders/history"): (RUNTIME_BASE_URL, "/ibkr/orders/history"),
-    ("GET", "ibkr/history/rebuild/status"): (COMPUTE_BASE_URL, "/ibkr/history/rebuild/status"),
-    ("POST", "ibkr/history/rebuild/start"): (COMPUTE_BASE_URL, "/ibkr/history/rebuild/start"),
-    ("GET", "ibkr/backtest/status"): (COMPUTE_BASE_URL, "/backtest/status"),
-    ("POST", "ibkr/backtest/run"): (COMPUTE_BASE_URL, "/backtest/run"),
-    ("POST", "ibkr/backtest/cancel"): (COMPUTE_BASE_URL, "/backtest/cancel"),
-    ("GET", "ibkr/backtest/replay"): (COMPUTE_BASE_URL, "/backtest/replay"),
-    ("POST", "ibkr/backtest/cleanup"): (COMPUTE_BASE_URL, "/backtest/cleanup"),
-    ("POST", "ibkr/data_quality/rescan"): (COMPUTE_BASE_URL, "/ibkr/data-quality/scan"),
-    ("POST", "ibkr/data_quality/repair"): (COMPUTE_BASE_URL, "/ibkr/data-quality/repair"),
-    ("POST", "ibkr/data_quality/truth_audit"): (COMPUTE_BASE_URL, "/ibkr/data-quality/truth-audit"),
-}
-
-ACTION_PROXY_MAP: dict[str, tuple[str, str]] = {
-    "compute": (COMPUTE_BASE_URL, "/compute"),
-    "scan": (COMPUTE_BASE_URL, "/scan"),
-    "recompute": (COMPUTE_BASE_URL, "/recompute"),
-    "chart/timeline": (COMPUTE_BASE_URL, "/chart/timeline"),
-    "chart/compare": (COMPUTE_BASE_URL, "/chart/compare"),
-}
-
-DELEGATED_POCKETBASE_CUSTOM_ROUTES = [
-]
-
-DELEGATED_POCKETBASE_WEBHOOK_ROUTES = [
-]
 
 
 EXCLUDED_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-encoding", "connection"}
@@ -741,31 +694,27 @@ globals().update(_trading_route_handlers)
 
 _compat_route_handlers = register_compat_proxy_routes(
     app,
-    deps={
-        "pb_base_url": PB_BASE_URL,
-        "compute_base_url": COMPUTE_BASE_URL,
-        "runtime_base_url": RUNTIME_BASE_URL,
-        "scheduler_base_url": SCHEDULER_BASE_URL,
-        "direct_proxy_map": DIRECT_PROXY_MAP,
-        "action_proxy_map": ACTION_PROXY_MAP,
-        "delegated_pocketbase_custom_routes": DELEGATED_POCKETBASE_CUSTOM_ROUTES,
-        "delegated_pocketbase_webhook_routes": DELEGATED_POCKETBASE_WEBHOOK_ROUTES,
-        "build_service_topology": build_service_topology,
-        "config": config,
-        "normalize_environment": _normalize_environment,
-        "scheduler_status": lambda environment: _scheduler_status(environment),
-        "scheduler_job_states": lambda environment="live": _scheduler_job_states(environment),
-        "build_cron_payload": build_cron_payload,
-        "build_scheduler_summary": lambda environment, payload: _build_scheduler_summary(environment, payload),
-        "augment_scheduler_summary": lambda summary, items: _augment_scheduler_summary(summary, items),
-        "forward_request": lambda base_url, path, params=None, json_body=None: _forward_request(
+    deps=build_compat_proxy_deps(
+        pb_base_url=PB_BASE_URL,
+        compute_base_url=COMPUTE_BASE_URL,
+        runtime_base_url=RUNTIME_BASE_URL,
+        scheduler_base_url=SCHEDULER_BASE_URL,
+        build_service_topology=build_service_topology,
+        config=config,
+        normalize_environment=_normalize_environment,
+        scheduler_status=lambda environment: _scheduler_status(environment),
+        scheduler_job_states=lambda environment="live": _scheduler_job_states(environment),
+        build_cron_payload=build_cron_payload,
+        build_scheduler_summary=lambda environment, payload: _build_scheduler_summary(environment, payload),
+        augment_scheduler_summary=lambda summary, items: _augment_scheduler_summary(summary, items),
+        forward_request=lambda base_url, path, params=None, json_body=None: _forward_request(
             base_url,
             path,
             params=params,
             json_body=json_body,
         ),
-        "proxy_custom_to_pb": lambda subpath: _proxy_custom_to_pb(subpath),
-        "proxy_webhook_to_pb": lambda subpath: _proxy_webhook_to_pb(subpath),
-    },
+        proxy_custom_to_pb=lambda subpath: _proxy_custom_to_pb(subpath),
+        proxy_webhook_to_pb=lambda subpath: _proxy_webhook_to_pb(subpath),
+    ),
 )
 globals().update(_compat_route_handlers)

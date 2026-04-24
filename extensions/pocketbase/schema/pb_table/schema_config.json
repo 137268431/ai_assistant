@@ -1,11 +1,11 @@
 [
     {
         "id": "_pb_config_",
-        "listRule": null,
-        "viewRule": null,
-        "createRule": null,
-        "updateRule": null,
-        "deleteRule": null,
+        "listRule": "",
+        "viewRule": "",
+        "createRule": "",
+        "updateRule": "",
+        "deleteRule": "",
         "name": "config",
         "type": "base",
         "fields": [

@@ -22,4 +22,4 @@
   - `ibkr_weekly_reauth_followup`
   - `system_market_open_reminder`
   - `system_daily_report`
-- PocketBase no longer owns business cron. The repo `pb_hooks` cron files are inert compatibility shims, and all live job scheduling, cursor advancement, and scheduler health ownership now stays in `ibkr_scheduler`.
+- PocketBase no longer owns business cron. The repo `pb_hooks/` tree is now only an empty placeholder directory, and all live job scheduling, cursor advancement, and scheduler health ownership now stays in `ibkr_scheduler`.

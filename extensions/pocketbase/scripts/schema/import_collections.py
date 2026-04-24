@@ -99,7 +99,10 @@ def normalize_collection(item: dict) -> dict:
     collection.setdefault("indexes", [])
     collection.setdefault("options", {})
     for rule_key in ("listRule", "viewRule", "createRule", "updateRule", "deleteRule"):
-        collection.setdefault(rule_key, "")
+        if collection.get(rule_key) is None:
+            collection[rule_key] = ""
+        else:
+            collection.setdefault(rule_key, "")
     collection_id = str(collection.get("id") or "").strip()
     if collection_id and not VALID_COLLECTION_ID.fullmatch(collection_id):
         collection.pop("id", None)

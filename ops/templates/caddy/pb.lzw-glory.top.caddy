@@ -2,7 +2,7 @@
 pb.lzw-glory.top {
     route {
         # PocketBase stays the canonical auth/data/admin origin.
-        @pb_allowed path / /index.html /api/* /_/ /_/*
+        @pb_allowed path / /index.html /api/* /_/ /_/* /favicon.ico
         reverse_proxy @pb_allowed 127.0.0.1:8090 {
             flush_interval -1
             header_up X-Real-IP {remote_host}
@@ -13,7 +13,7 @@ pb.lzw-glory.top {
             }
         }
 
-        redir https://quant.lzw-glory.top{uri} 308
+        respond "Not Found" 404
     }
 
     header {

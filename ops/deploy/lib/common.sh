@@ -114,6 +114,19 @@ ssh_run() {
   ssh "$REMOTE_HOST" "$@"
 }
 
+show_remote_systemd_statuses() {
+  ssh "$REMOTE_HOST" bash -s -- "$@" <<'REMOTE'
+set -euo pipefail
+for service in "$@"; do
+  systemctl show \
+    "$service" \
+    --property=Id,ActiveState,SubState,MainPID,UnitFileState \
+    --no-pager || true
+  printf '%s\n' '---'
+done
+REMOTE
+}
+
 build_rsync_base() {
   RSYNC_CMD=(
     rsync

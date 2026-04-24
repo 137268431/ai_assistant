@@ -3,8 +3,8 @@
 list_all_units_for_target() {
   case "$1" in
     pocketbase)
-      # PocketBase deploys still carry pb_hooks as an inert compatibility payload.
-      printf '%s\n' pb_public pb_hooks pb_migrations
+      # PocketBase deploys still carry the empty pb_hooks placeholder directory.
+      printf '%s\n' pb_public pb_hooks pb_migrations pb_systemd
       ;;
     console|ibkr_console)
       printf '%s\n' ibkr_console_static ibkr_console_systemd
@@ -30,8 +30,11 @@ list_all_units_for_target() {
 list_selected_units_for_target() {
   case "$1" in
     pocketbase)
+      if [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
+        printf '%s\n' pb_systemd
+      fi
       [[ "${DEPLOY_PUBLIC:-1}" -eq 1 ]] && printf '%s\n' pb_public
-      # pb_hooks are no-op shims now, but we still sync them with the standard PB runtime payload.
+      # pb_hooks no longer carries JS entrypoints, but we still sync the placeholder directory.
       [[ "${DEPLOY_HOOKS:-1}" -eq 1 ]] && printf '%s\n' pb_hooks
       [[ "${DEPLOY_MIGRATIONS:-0}" -eq 1 ]] && printf '%s\n' pb_migrations
       return 0
@@ -87,6 +90,7 @@ unit_local_rel() {
     pb_public) printf '%s\n' runtime/pocketbase/pb_public ;;
     pb_hooks) printf '%s\n' runtime/pocketbase/pb_hooks ;;
     pb_migrations) printf '%s\n' extensions/pocketbase/migrations ;;
+    pb_systemd) printf '%s\n' runtime/pocketbase/systemd/pocketbase.service ;;
     ibkr_console_static) printf '%s\n' runtime/ibkr_console/static ;;
     ibkr_console_systemd) printf '%s\n' runtime/ibkr_console/systemd/ibkr-console.service ;;
     ibkr_src) printf '%s\n' runtime/ibkr_compute/src ;;
@@ -112,6 +116,7 @@ unit_remote_path() {
     pb_public) printf '%s\n' "$PB_REMOTE_ROOT/pb_public" ;;
     pb_hooks) printf '%s\n' "$PB_REMOTE_ROOT/pb_hooks" ;;
     pb_migrations) printf '%s\n' "$PB_REMOTE_ROOT/extensions/migrations" ;;
+    pb_systemd) printf '%s\n' "$SYSTEMD_DIR/pocketbase.service" ;;
     ibkr_console_static) printf '%s\n' "${IBKR_CONSOLE_REMOTE_ROOT:-/opt/ibkr_console}/static" ;;
     ibkr_console_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-console.service" ;;
     ibkr_src) printf '%s\n' "$IBKR_REMOTE_ROOT/src" ;;
@@ -137,7 +142,7 @@ unit_type() {
     pb_public|pb_hooks|pb_migrations|ibkr_console_static|ibkr_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
       printf '%s\n' dir
       ;;
-    ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' file
       ;;
     *)
@@ -154,7 +159,7 @@ unit_validator() {
     ibkr_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
       printf '%s\n' python_tree
       ;;
-    ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' none
       ;;
     *)
@@ -165,7 +170,7 @@ unit_validator() {
 
 unit_family() {
   case "$1" in
-    pb_public|pb_hooks|pb_migrations)
+    pb_public|pb_hooks|pb_migrations|pb_systemd)
       printf '%s\n' pocketbase
       ;;
     ibkr_console_static|ibkr_console_systemd)
@@ -194,7 +199,7 @@ unit_category() {
     pb_public|pb_hooks|ibkr_console_static|ibkr_src|ibkr_requirements|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src|ibkr_runtime_requirements)
       printf '%s\n' runtime
       ;;
-    ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' systemd
       ;;
     pb_migrations)
@@ -208,7 +213,7 @@ unit_category() {
 
 unit_restart_group() {
   case "$1" in
-    pb_public|pb_hooks|pb_migrations)
+    pb_public|pb_hooks|pb_migrations|pb_systemd)
       printf '%s\n' pocketbase
       ;;
     ibkr_src|ibkr_requirements|ibkr_systemd)
@@ -243,6 +248,9 @@ unit_restart_group() {
 
 unit_enable_service() {
   case "$1" in
+    pb_systemd)
+      printf '%s\n' pocketbase
+      ;;
     ibkr_systemd)
       printf '%s\n' ibkr-compute
       ;;
@@ -277,7 +285,7 @@ unit_needs_pip_install() {
 
 unit_needs_daemon_reload() {
   case "$1" in
-    ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
       return 0
       ;;
     ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_console_systemd)

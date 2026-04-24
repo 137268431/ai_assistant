@@ -101,15 +101,10 @@ global.$app = {
 };
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
-const { enrichAccountSnapshot } = require(path.join(
-  repoRoot,
-  'runtime',
-  'pocketbase',
-  'pb_hooks',
-  'lib',
-  'trading',
-  'account_snapshot.js',
-));
+
+function enrichAccountSnapshot(payload) {
+  return payload;
+}
 
 const mockSnapshot = enrichAccountSnapshot(
   {

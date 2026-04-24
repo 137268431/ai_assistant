@@ -242,6 +242,34 @@ print_status_for_units() {
   ssh_run "systemctl is-active $joined"
 }
 
+prepare_pocketbase_root_if_needed() {
+  local units=( "$@" )
+  local unit
+  local needs_pocketbase_root=0
+  local pocketbase_root="${PB_REMOTE_ROOT:-/opt/pocketbase}"
+
+  for unit in "${units[@]-}"; do
+    case "$unit" in
+      pb_public|pb_hooks|pb_migrations|pb_systemd)
+        needs_pocketbase_root=1
+        break
+        ;;
+    esac
+  done
+
+  [[ "$needs_pocketbase_root" -eq 1 ]] || return 0
+
+  ssh_run "
+    set -e
+    mkdir -p \
+      '$pocketbase_root' \
+      '$pocketbase_root/pb_data' \
+      '$pocketbase_root/pb_public' \
+      '$pocketbase_root/pb_hooks' \
+      '$pocketbase_root/extensions/migrations'
+  "
+}
+
 prepare_runtime_root_if_needed() {
   local units=( "$@" )
   local unit
@@ -506,6 +534,7 @@ perform_post_actions_for_units() {
   local enable_services=()
   local restart_groups=()
   local wait_groups=()
+  prepare_pocketbase_root_if_needed "${units[@]}"
   prepare_runtime_root_if_needed "${units[@]}"
   prepare_api_root_if_needed "${units[@]}"
   prepare_scheduler_root_if_needed "${units[@]}"
