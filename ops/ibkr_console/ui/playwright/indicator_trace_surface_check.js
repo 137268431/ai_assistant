@@ -164,8 +164,17 @@ async function serveStatic(req, res, origin) {
 
   try {
     let content = fs.readFileSync(sourcePath);
-    if (sourcePath.endsWith(path.join('assets', 'js', 'shared', 'base.js'))) {
-      content = Buffer.from(String(content).replace("const BASE_URL = 'https://pb.lzw-glory.top';", `const BASE_URL = '${origin}';`), 'utf8');
+    if (sourcePath.endsWith(path.join('assets', 'js', 'shared', 'runtime-config.js'))) {
+      const override = [
+        '',
+        ';window.__IBKR_RUNTIME_CONFIG__ = {',
+        `  API_BASE_URL: ${JSON.stringify(origin)},`,
+        `  CONSOLE_BASE_URL: ${JSON.stringify(origin)},`,
+        `  PB_AUTH_BASE_URL: ${JSON.stringify(PB_BASE)},`,
+        '};',
+        '',
+      ].join('\n');
+      content = Buffer.from(`${String(content)}${override}`, 'utf8');
     }
     const contentType = CONTENT_TYPES[path.extname(sourcePath).toLowerCase()] || 'application/octet-stream';
     res.statusCode = 200;

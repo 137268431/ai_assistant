@@ -12,6 +12,7 @@ from ibkr_compute.api.market.screener.scoring import (
     build_tradability_assessment,
 )
 from ibkr_compute.api.market.screener.watchlist import load_effective_watchlist
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 
 
 def parse_market_date_bounds_ms(market_date: str) -> tuple[int, int]:
@@ -25,6 +26,119 @@ def parse_market_date_bounds_ms(market_date: str) -> tuple[int, int]:
     )
     end_dt = start_dt + timedelta(days=1)
     return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
+
+
+def _build_symbol_placeholders(symbols: list[str]) -> tuple[str, list[str]]:
+    normalized = []
+    seen = set()
+    for item in symbols or []:
+        symbol = str(item or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            normalized.append(symbol)
+    if not normalized:
+        return "", []
+    return ", ".join("?" for _ in normalized), normalized
+
+
+def _load_bar_rows_sqlite(
+    *,
+    interval: str,
+    environment: str,
+    symbols: list[str],
+    start_ms: int,
+    end_ms: int,
+    order_by: str,
+) -> list[dict]:
+    placeholders, normalized_symbols = _build_symbol_placeholders(symbols)
+    if not placeholders:
+        return []
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    env_clause = "(environment = ? OR environment = '')" if runtime_environment == "live" else "environment = ?"
+    params = [
+        str(interval or ""),
+        runtime_environment,
+        int(start_ms or 0),
+        int(end_ms or 0),
+        *normalized_symbols,
+    ]
+    order_sql = "bar_time_ms DESC" if str(order_by or "").lower() == "desc" else "bar_time_ms ASC"
+    with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT symbol, exchange, interval, open, high, low, close, volume,
+                   session_type, us_time, cn_time, bar_time_ms, extra, environment,
+                   created, updated
+            FROM ibkr_bars
+            WHERE interval = ?
+              AND {env_clause}
+              AND bar_time_ms >= ?
+              AND bar_time_ms < ?
+              AND symbol IN ({placeholders})
+            ORDER BY {order_sql}
+            """,
+            tuple(params),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _load_indicator_rows_sqlite(
+    *,
+    interval: str,
+    environment: str,
+    symbols: list[str],
+    start_ms: int,
+) -> list[dict]:
+    placeholders, normalized_symbols = _build_symbol_placeholders(symbols)
+    if not placeholders:
+        return []
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    params = [
+        str(interval or ""),
+        runtime_environment,
+        int(start_ms or 0),
+        *normalized_symbols,
+    ]
+    with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, symbol, exchange, interval, script_tag, us_time, cn_time,
+                   bar_index, bar_time_ms, extra, environment, created, updated
+            FROM ibkr_indicators
+            WHERE interval = ?
+              AND environment = ?
+              AND bar_time_ms >= ?
+              AND symbol IN ({placeholders})
+            ORDER BY bar_time_ms DESC
+            """,
+            tuple(params),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _load_rows_with_fallback(sqlite_loader, pb_loader):
+    try:
+        return sqlite_loader()
+    except Exception:
+        return pb_loader()
+
+
+def _build_daily_change_fields(current_close: float, daily_history: list[dict]) -> dict:
+    prev_close = coerce_float(daily_history[-1].get("close")) if len(daily_history) >= 1 else 0.0
+    prev_prev_close = coerce_float(daily_history[-2].get("close")) if len(daily_history) >= 2 else 0.0
+    close_5 = coerce_float(daily_history[-5].get("close")) if len(daily_history) >= 5 else 0.0
+    day_change_pct = ((current_close - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+    prev_close_change_pct = (
+        (prev_close - prev_prev_close) / prev_prev_close * 100.0
+        if prev_prev_close > 0
+        else 0.0
+    )
+    change_7d = ((current_close - close_5) / close_5 * 100.0) if close_5 > 0 else 0.0
+    return {
+        "day_change_pct": round(day_change_pct, 2),
+        "prev_close_change_pct": round(prev_close_change_pct, 2),
+        "change_7d": round(change_7d, 2),
+    }
 
 
 def build_screener_payload(
@@ -41,7 +155,6 @@ def build_screener_payload(
     market_start_ms, market_end_ms = parse_market_date_bounds_ms(market_date)
     now_ms = int(time.time() * 1000)
 
-    api_app.refresh_daily_close_cache([runtime_environment])
     watchlist_map_all = load_effective_watchlist(runtime_environment)
     watchlist_map = {
         symbol: row
@@ -111,11 +224,21 @@ def build_screener_payload(
     ]
     if symbol_filter:
         daily_filter_parts.append(symbol_filter)
-    daily_rows = api_app.pb.get_all_records(
-        "ibkr_bars",
-        filter=" && ".join(daily_filter_parts),
-        sort="bar_time_ms",
-        max_pages=100,
+    daily_rows = _load_rows_with_fallback(
+        lambda: _load_bar_rows_sqlite(
+            interval="1d",
+            environment=runtime_environment,
+            symbols=universe_symbols,
+            start_ms=lookback_daily_ms,
+            end_ms=market_end_ms,
+            order_by="asc",
+        ),
+        lambda: api_app.pb.get_all_records(
+            "ibkr_bars",
+            filter=" && ".join(daily_filter_parts),
+            sort="bar_time_ms",
+            max_pages=100,
+        ),
     )
 
     intraday_filter_parts = [
@@ -126,11 +249,21 @@ def build_screener_payload(
     ]
     if symbol_filter:
         intraday_filter_parts.append(symbol_filter)
-    intraday_rows = api_app.pb.get_all_records(
-        "ibkr_bars",
-        filter=" && ".join(intraday_filter_parts),
-        sort="bar_time_ms",
-        max_pages=400,
+    intraday_rows = _load_rows_with_fallback(
+        lambda: _load_bar_rows_sqlite(
+            interval="5m",
+            environment=runtime_environment,
+            symbols=universe_symbols,
+            start_ms=market_start_ms,
+            end_ms=market_end_ms,
+            order_by="asc",
+        ),
+        lambda: api_app.pb.get_all_records(
+            "ibkr_bars",
+            filter=" && ".join(intraday_filter_parts),
+            sort="bar_time_ms",
+            max_pages=400,
+        ),
     )
 
     indicator_filter_parts = [
@@ -140,11 +273,19 @@ def build_screener_payload(
     ]
     if symbol_filter:
         indicator_filter_parts.append(symbol_filter)
-    indicator_rows = api_app.pb.get_all_records(
-        "ibkr_indicators",
-        filter=" && ".join(indicator_filter_parts),
-        sort="-bar_time_ms",
-        max_pages=120,
+    indicator_rows = _load_rows_with_fallback(
+        lambda: _load_indicator_rows_sqlite(
+            interval=api_app.interval_to_chart_tf("5m"),
+            environment=runtime_environment,
+            symbols=universe_symbols,
+            start_ms=max(0, market_start_ms - api_app.interval_to_ms("1d") * 5),
+        ),
+        lambda: api_app.pb.get_all_records(
+            "ibkr_indicators",
+            filter=" && ".join(indicator_filter_parts),
+            sort="-bar_time_ms",
+            max_pages=120,
+        ),
     )
 
     daily_bars_by_symbol = {}
@@ -234,15 +375,11 @@ def build_screener_payload(
             else 0.0
         )
 
-        daily_fields = (
-            api_app.get_daily_change_fields(runtime_environment, symbol, price, compare_bar_ms)
-            if price > 0
-            else {
-                "day_change_pct": 0.0,
-                "prev_close_change_pct": 0.0,
-                "change_7d": 0.0,
-            }
-        )
+        daily_fields = _build_daily_change_fields(price, daily_history) if price > 0 else {
+            "day_change_pct": 0.0,
+            "prev_close_change_pct": 0.0,
+            "change_7d": 0.0,
+        }
 
         target_status = str((latest_target or {}).get("status") or "").strip().lower()
         direction_bias = str((latest_target or {}).get("direction_bias") or "neutral").strip().lower() or "neutral"

@@ -418,6 +418,33 @@ async function waitForPageReady(page, url) {
       });
       return !document.querySelector('#indicatorsContainer .loading') && !overlayVisible;
     }, { timeout }),
+    '/ibkr_stats.html': () => page.waitForFunction(() => {
+      const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          !node.classList.contains('is-hidden') &&
+          rect.width > 1 &&
+          rect.height > 1
+        );
+      });
+      const textOf = (id) => String(document.getElementById(id)?.textContent || '').trim();
+      const tradesText = String(document.getElementById('tradesTable')?.textContent || '').trim();
+      return (
+        !overlayVisible &&
+        document.querySelectorAll('.stat-card').length >= 8 &&
+        document.querySelectorAll('canvas').length >= 4 &&
+        textOf('totalOrders') !== '' &&
+        textOf('totalOrders') !== '-' &&
+        textOf('totalSignals') !== '' &&
+        textOf('totalSignals') !== '-' &&
+        tradesText !== '' &&
+        !tradesText.includes('加载中')
+      );
+    }, { timeout }),
     '/ibkr_config.html': () => page.waitForFunction(() => !/LOADING/i.test(document.getElementById('configContainer')?.innerText || ''), { timeout }),
   };
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import traceback
-from flask import Response, jsonify
+from datetime import date
+
+from flask import jsonify
 
 from ibkr_compute.api.market.screener.payload import build_screener_payload
 from ibkr_compute.api.route_request import get_query_arg_csv, get_query_arg_int, get_query_arg_text

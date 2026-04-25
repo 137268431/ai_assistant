@@ -1,38 +1,104 @@
 const { chromium, devices } = require('playwright');
 
-const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
+const CONSOLE_BASE = (process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top').replace(/\/+$/, '');
+const PB_BASE = (process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top').replace(/\/+$/, '');
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
+const ENVIRONMENT = process.env.PB_ENVIRONMENT || process.env.IBKR_ENVIRONMENT || 'live';
 
-function attachErrors(page) {
+const ANALYTICS_BRIDGE_SOURCES = [
+  '/ibkr_indicators.html',
+  '/ibkr_chart.html',
+];
+
+function attachErrors(page, origin) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(`pageerror:${err.message}`));
   page.on('console', (msg) => {
     if (['error', 'warning'].includes(msg.type())) errors.push(`console:${msg.type()}:${msg.text()}`);
   });
   page.on('response', (resp) => {
-    if (resp.status() >= 400) errors.push(`response:${resp.status()}:${resp.url()}`);
+    const url = resp.url();
+    if (resp.status() < 400) return;
+    if (url.endsWith('/favicon.ico')) return;
+    if (origin && !url.startsWith(origin) && !url.startsWith(PB_BASE)) return;
+    errors.push(`response:${resp.status()}:${url}`);
+  });
+  page.on('requestfailed', (req) => {
+    const url = req.url();
+    const failureText = req.failure()?.errorText || 'unknown';
+    if (url.endsWith('/favicon.ico')) return;
+    if (failureText.includes('net::ERR_ABORTED')) return;
+    if (origin && !url.startsWith(origin) && !url.startsWith(PB_BASE)) return;
+    errors.push(`requestfailed:${failureText}:${url}`);
   });
   return errors;
 }
 
-async function login(page) {
-  await page.goto(`${CONSOLE_BASE}/login.html`, { waitUntil: 'domcontentloaded' });
-  const email = page.locator('input[type="email"], input[name="identity"]');
-  if (!(await email.count())) return;
-  await email.first().fill(EMAIL);
-  await page.locator('input[type="password"]').first().fill(PASSWORD);
-  await page.locator('button:has-text("登录"), button:has-text("Login"), button[type="submit"]').first().click();
-  await page.waitForTimeout(1800);
+function pageUrl(path) {
+  const url = new URL(path, `${CONSOLE_BASE}/`);
+  url.searchParams.set('environment', ENVIRONMENT);
+  url.searchParams.set('ts', String(Date.now()));
+  return url.toString();
 }
 
-async function checkStats(browser, mobile) {
-  const context = mobile ? await browser.newContext({ ...devices['iPhone 12'] }) : await browser.newContext();
+async function fetchToken() {
+  const resp = await fetch(`${PB_BASE}/api/collections/_superusers/auth-with-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identity: EMAIL, password: PASSWORD }),
+  });
+  const json = await resp.json().catch(() => ({}));
+  if (!resp.ok || !json?.token) throw new Error(`auth_failed:${resp.status}:${JSON.stringify(json)}`);
+  return json.token;
+}
+
+async function createAuthedContext(browser, token, mobile = false) {
+  const context = mobile
+    ? await browser.newContext({ ...devices['iPhone 12'], ignoreHTTPSErrors: true })
+    : await browser.newContext({ viewport: { width: 1440, height: 960 }, ignoreHTTPSErrors: true });
+  await context.addInitScript((savedToken) => {
+    localStorage.setItem('pb_token', savedToken);
+  }, token);
+  return context;
+}
+
+async function waitForStatsReady(page, timeout = 35000) {
+  await page.waitForFunction(() => {
+    const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.opacity !== '0' &&
+        !node.classList.contains('is-hidden') &&
+        rect.width > 1 &&
+        rect.height > 1
+      );
+    });
+    const textOf = (id) => String(document.getElementById(id)?.textContent || '').trim();
+    const tradesText = String(document.getElementById('tradesTable')?.textContent || '').trim();
+    return (
+      !overlayVisible &&
+      document.querySelectorAll('.stat-card').length >= 8 &&
+      document.querySelectorAll('canvas').length >= 4 &&
+      textOf('totalOrders') !== '' &&
+      textOf('totalOrders') !== '-' &&
+      textOf('totalSignals') !== '' &&
+      textOf('totalSignals') !== '-' &&
+      tradesText !== '' &&
+      !tradesText.includes('加载中')
+    );
+  }, null, { timeout });
+}
+
+async function checkStats(browser, token, mobile) {
+  const context = await createAuthedContext(browser, token, mobile);
   const page = await context.newPage();
-  const errors = attachErrors(page);
-  await login(page);
-  await page.goto(`${CONSOLE_BASE}/ibkr_stats.html?environment=live`, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(2500);
+  const errors = attachErrors(page, CONSOLE_BASE);
+  await page.goto(pageUrl('/ibkr_stats.html'), { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await waitForStatsReady(page).catch((error) => errors.push(`stats_ready:${error.message}`));
   const result = {
     test: mobile ? 'stats-mobile' : 'stats-desktop',
     url: page.url(),
@@ -45,24 +111,67 @@ async function checkStats(browser, mobile) {
     total_signals: await page.locator('#totalSignals').innerText().catch(() => 'ERR'),
     errors,
   };
+  result.ok = Boolean(
+    result.errors.length === 0 &&
+    result.stat_cards >= 8 &&
+    result.chart_count >= 4 &&
+    result.total_orders &&
+    result.total_orders !== '-' &&
+    result.total_signals &&
+    result.total_signals !== '-'
+  );
   await context.close();
   return result;
 }
 
-async function checkBridge(browser, path) {
-  const context = await browser.newContext();
+async function checkBridge(browser, token, path) {
+  const context = await createAuthedContext(browser, token, false);
   const page = await context.newPage();
-  const errors = attachErrors(page);
-  await login(page);
-  await page.goto(`${CONSOLE_BASE}${path}?environment=live`, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(1800);
-  await page.locator('.page-bridge-link', { hasText: '统计' }).first().click();
-  await page.waitForTimeout(1800);
+  const errors = attachErrors(page, CONSOLE_BASE);
+  await page.goto(pageUrl(path), { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForFunction(() => document.querySelectorAll('.page-bridge-link').length > 0, null, { timeout: 25000 })
+    .catch((error) => errors.push(`bridge_ready:${error.message}`));
+  const bridgeLinks = await page.locator('.page-bridge-link').evaluateAll((nodes) => nodes.map((node) => ({
+    text: String(node.textContent || '').replace(/\s+/g, ' ').trim(),
+    href: node.getAttribute('href') || '',
+    active: node.classList.contains('active'),
+  }))).catch(() => []);
+  const statsLink = bridgeLinks.find((item) => item.text.includes('统计') && item.href.includes('/ibkr_stats.html'));
+  if (!statsLink) errors.push('missing_stats_bridge_link');
+  if (statsLink) {
+    await page.locator('.page-bridge-link', { hasText: '统计' }).first().click();
+    await page.waitForURL(/\/ibkr_stats\.html/, { timeout: 25000 }).catch((error) => errors.push(`stats_navigation:${error.message}`));
+    await waitForStatsReady(page).catch((error) => errors.push(`stats_ready_after_bridge:${error.message}`));
+  }
   const result = {
     test: `bridge:${path}`,
     url: page.url(),
     title: await page.title(),
-    ok: page.url().includes('/ibkr_stats.html'),
+    bridge_links: bridgeLinks,
+    ok: Boolean(statsLink && page.url().includes('/ibkr_stats.html') && errors.length === 0),
+    errors,
+  };
+  await context.close();
+  return result;
+}
+
+async function checkStatsActiveBridge(browser, token) {
+  const context = await createAuthedContext(browser, token, false);
+  const page = await context.newPage();
+  const errors = attachErrors(page, CONSOLE_BASE);
+  await page.goto(pageUrl('/ibkr_stats.html'), { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await waitForStatsReady(page).catch((error) => errors.push(`stats_ready:${error.message}`));
+  const activeText = await page.locator('.page-bridge-link.active').first().innerText().catch(() => '');
+  const activeHref = await page.locator('.page-bridge-link.active').first().getAttribute('href').catch(() => '');
+  if (!activeText.includes('统计') || !String(activeHref || '').includes('/ibkr_stats.html')) {
+    errors.push(`stats_active_bridge_mismatch:${activeText}:${activeHref}`);
+  }
+  const result = {
+    test: 'bridge:/ibkr_stats.html:active',
+    url: page.url(),
+    active_text: activeText,
+    active_href: activeHref,
+    ok: errors.length === 0,
     errors,
   };
   await context.close();
@@ -70,13 +179,22 @@ async function checkBridge(browser, path) {
 }
 
 (async () => {
+  const token = await fetchToken();
   const browser = await chromium.launch({ headless: true });
   const results = [];
-  results.push(await checkStats(browser, false));
-  results.push(await checkStats(browser, true));
-  results.push(await checkBridge(browser, '/ibkr_runtime.html'));
-  results.push(await checkBridge(browser, '/ibkr_account.html'));
-  results.push(await checkBridge(browser, '/ibkr_system.html'));
-  await browser.close();
+  try {
+    results.push(await checkStats(browser, token, false));
+    results.push(await checkStats(browser, token, true));
+    for (const source of ANALYTICS_BRIDGE_SOURCES) {
+      results.push(await checkBridge(browser, token, source));
+    }
+    results.push(await checkStatsActiveBridge(browser, token));
+  } finally {
+    await browser.close();
+  }
   console.log(JSON.stringify(results, null, 2));
-})();
+  if (results.some((item) => !item.ok)) process.exitCode = 1;
+})().catch((error) => {
+  console.error(JSON.stringify({ ok: false, error: error?.message || String(error), checked_at: new Date().toISOString() }, null, 2));
+  process.exit(1);
+});
