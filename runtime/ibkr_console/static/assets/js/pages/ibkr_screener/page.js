@@ -276,7 +276,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
     function getWatchlistRoleCopy(tab = activeTab) {
       return getWatchlistRoleForTab(tab) === 'market_monitor'
-        ? '市场上下文 / 指数情绪 / 只算指标不进交易'
+        ? '市场上下文 / 只算不交易'
         : 'watchlist / global pool / manual upkeep';
     }
 
@@ -286,13 +286,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           tab: 'screener',
           kicker: 'Screener',
           label: '筛选',
-          copy: 'operable stocks / targets sync'
+          copy: '筛选 / 同步'
         },
         {
           tab: 'targets',
           kicker: 'Daily',
           label: '每日标的',
-          copy: 'ibkr_targets upkeep / fixes / daily control'
+          copy: '维护 / 修正'
         },
         {
           tab: 'watchlist',
@@ -474,24 +474,29 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     function renderScreenerSummary() {
       const summary = screenerPayload.summary || {};
       renderSummaryCards([
-        { label: 'TOTAL', value: summary.total || 0, copy: 'watchlist + 今日 targets 聚合后的总标的数' },
-        { label: 'LIVE BARS', value: summary.with_live_bars || 0, copy: '当日已有 5m bar 的标的数', className: 'teal' },
-        { label: 'OPERABLE', value: summary.operable || 0, copy: '满足轻量可操作条件的标的数', className: 'good' },
-        { label: 'CANDIDATES', value: summary.candidate_targets || 0, copy: '今日 candidate targets 数量', className: 'accent' },
-        { label: 'ACTIVE', value: summary.active_targets || 0, copy: '今日 active targets 数量', className: 'good' },
-        { label: 'AVG PRE', value: formatVolume(summary.avg_premarket_volume || 0), copy: '全表平均盘前量能', className: 'accent' }
+        { label: 'TOTAL', value: summary.total || 0, copy: '标的总数' },
+        { label: 'LIVE BARS', value: summary.with_live_bars || 0, copy: '已有 5m bar', className: 'teal' },
+        { label: 'OPERABLE', value: summary.operable || 0, copy: '可操作标的', className: 'good' },
+        { label: 'CANDIDATES', value: summary.candidate_targets || 0, copy: 'candidate 数', className: 'accent' },
+        { label: 'ACTIVE', value: summary.active_targets || 0, copy: 'active 数', className: 'good' },
+        { label: 'AVG PRE', value: formatVolume(summary.avg_premarket_volume || 0), copy: '平均盘前量', className: 'accent' }
       ]);
     }
 
     function renderCurrentTargetsSummary() {
       const summary = todayTargetsPayload.summary || {};
       renderSummaryCards([
-        { label: 'TOTAL', value: summary.total || 0, copy: '当前交易日 candidate + active 标的数' },
-        { label: 'READY', value: summary.technical_ready_count || 0, copy: '技术状态为 ready 的标的', className: 'good' },
-        { label: 'SIGNALLED', value: summary.signaled_count || 0, copy: '今天已经进入 ibkr_signals 的标的', className: 'teal' },
-        { label: 'NEEDS ACTION', value: (summary.awaiting_confirm_count || 0) + (summary.pending_count || 0), copy: 'awaiting_confirm + pending 的标的', className: 'accent' },
-        { label: 'EXECUTED', value: summary.executed_count || 0, copy: '最新信号状态为 executed 的标的', className: 'good' },
-        { label: 'STALE', value: summary.stale_count || 0, copy: '无当日 bar 或 freshness 超阈值', className: 'accent' }
+        { label: 'TOTAL', value: summary.total || 0, copy: '当日标的数' },
+        { label: 'READY', value: summary.technical_ready_count || 0, copy: 'ready 标的', className: 'good' },
+        { label: 'SIGNALLED', value: summary.signaled_count || 0, copy: '已有信号', className: 'teal' },
+        {
+          label: 'NEEDS ACTION',
+          value: (summary.awaiting_confirm_count || 0) + (summary.pending_count || 0),
+          copy: '待处理',
+          className: 'accent'
+        },
+        { label: 'EXECUTED', value: summary.executed_count || 0, copy: '已执行', className: 'good' },
+        { label: 'STALE', value: summary.stale_count || 0, copy: '数据过期', className: 'accent' }
       ]);
     }
 
@@ -563,10 +568,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const legacyCount = items.filter((item) => !String(item.environment || '').trim()).length;
       const roleLabel = getWatchlistRoleLabel();
       renderSummaryCards([
-        { label: 'VISIBLE', value: items.length, copy: `当前筛选后展示的${roleLabel}记录数` },
-        { label: 'CURRENT ENV', value: currentCount, copy: '当前运行环境命中的记录', className: 'good' },
-        { label: 'GLOBAL', value: globalCount, copy: '全局共享池记录', className: 'teal' },
-        { label: 'LEGACY', value: legacyCount, copy: '历史 environment 为空的记录', className: 'accent' }
+        { label: 'VISIBLE', value: items.length, copy: `可见${roleLabel}数` },
+        { label: 'CURRENT ENV', value: currentCount, copy: '当前环境', className: 'good' },
+        { label: 'GLOBAL', value: globalCount, copy: 'GLOBAL 共享', className: 'teal' },
+        { label: 'LEGACY', value: legacyCount, copy: '旧记录', className: 'accent' }
       ]);
     }
 
@@ -624,11 +629,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         ? (items.reduce((sum, item) => sum + Number(item.score || 0), 0) / items.length).toFixed(1)
         : '0.0';
       renderSummaryCards([
-        { label: 'VISIBLE', value: items.length, copy: '当前日期展示的目标池记录数' },
-        { label: 'ACTIVE', value: active, copy: '状态为 active 的记录', className: 'good' },
-        { label: 'CANDIDATE', value: candidate, copy: '状态为 candidate 的记录', className: 'accent' },
-        { label: 'REMOVED', value: removed, copy: '状态为 removed 的记录', className: 'teal' },
-        { label: 'AVG SCORE', value: avgScore, copy: '当前列表平均 score', className: 'accent' }
+        { label: 'VISIBLE', value: items.length, copy: '可见记录' },
+        { label: 'ACTIVE', value: active, copy: 'active 记录', className: 'good' },
+        { label: 'CANDIDATE', value: candidate, copy: 'candidate 记录', className: 'accent' },
+        { label: 'REMOVED', value: removed, copy: 'removed 记录', className: 'teal' },
+        { label: 'AVG SCORE', value: avgScore, copy: '平均 score', className: 'accent' }
       ]);
     }
 
@@ -637,34 +642,34 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const visible = getFilteredWatchlistItems().length;
         const roleLabel = getWatchlistRoleLabel();
         const isMonitorTab = getWatchlistRoleForTab() === 'market_monitor';
-        document.getElementById('heroTitle').textContent = isMonitorTab ? '维护市场监控标的与 GLOBAL 共享池。' : '维护运行标池与 GLOBAL 共享池。';
+        document.getElementById('heroTitle').textContent = isMonitorTab ? '维护市场监控池。' : '维护运行标池。';
         document.getElementById('heroCopy').textContent = isMonitorTab
-          ? '在同一页里搜索真实 IBKR 合约、写入当前环境或 GLOBAL，并维护只做 bars / indicators / runtime 上下文的市场监控标的。'
-          : '在同一页里搜索真实 IBKR 合约、写入当前环境或 GLOBAL，并直接清理手工加入的标池记录。';
+          ? '搜索 IBKR 合约，写入环境或 GLOBAL。'
+          : '搜索 IBKR 合约，写入环境或 GLOBAL。';
         document.getElementById('marketDateMeta').textContent = `Scope ${getEnvironmentLabel(currentEnvironment)} + GLOBAL`;
         document.getElementById('refreshInfo').textContent = watchlistState.lastRefresh;
         document.getElementById('selectionInfo').textContent = `当前可见 ${visible} 条 · 当前角色 ${roleLabel}`;
         renderWatchlistSummary();
         document.getElementById('watchlistSearchPanelTitle').textContent = isMonitorTab ? '搜索可加入的市场监控标的' : '搜索可加入的标的';
         document.getElementById('watchlistSearchPanelCopy').textContent = isMonitorTab
-          ? '支持 ticker 或公司名。写入后的标的只参与 bars / indicators / runtime 监控，不进入 scan、targets 与交易信号。'
-          : '支持 ticker 或公司名。返回结果来自 IBKR Gateway，不依赖本地缓存前端匹配。';
+          ? '支持 ticker 或公司名；只监控不交易。'
+          : '支持 ticker 或公司名。';
         document.getElementById('watchlistListPanelTitle').textContent = isMonitorTab ? '已有市场监控记录' : '已有 watchlist 记录';
         document.getElementById('watchlistListPanelCopy').textContent = isMonitorTab
-          ? '这里直接管理 PocketBase `watchlist` 中 role=`market_monitor` 的记录，默认支持当前环境与 GLOBAL 共享池一起看。'
-          : '这里直接管理 PocketBase `watchlist` 集合中 role=`trade` 的记录，默认支持当前环境与 GLOBAL 共享池一起看。';
+          ? '管理 market_monitor 记录。'
+          : '管理 trade watchlist 记录。';
         document.getElementById('searchMeta').textContent = isMonitorTab ? '输入后回车或点击搜索，加入市场监控。' : '输入后回车或点击搜索。';
         document.getElementById('batchMeta').textContent = isMonitorTab
-          ? '批量导入会逐个调用 IBKR 搜索并写入当前 scope，角色固定为 market_monitor。'
-          : '批量导入会逐个调用 IBKR 搜索并写入当前 scope。';
+          ? '批量搜索并写入 market_monitor。'
+          : '批量搜索并写入当前 scope。';
         document.getElementById('deleteMeta').textContent = isMonitorTab ? '适合清理一组市场监控标的。' : '适合清理一组手工加入的标的。';
         return;
       }
 
       if (activeTab === 'targets') {
         const visible = getFilteredDailyTargetItems().length;
-        document.getElementById('heroTitle').textContent = '维护每日操作标的与 ibkr_targets。';
-        document.getElementById('heroCopy').textContent = '直接搜索 IBKR 合约并维护当日 ibkr_targets，可手动补录、修正状态和清理错误数据，不再单独跳转到 targets 页面。';
+        document.getElementById('heroTitle').textContent = '维护每日标的。';
+        document.getElementById('heroCopy').textContent = '搜索合约，补录、修正和清理 ibkr_targets。';
         document.getElementById('marketDateMeta').textContent = `Target Date ${getDailyTargetDate()}`;
         document.getElementById('refreshInfo').textContent = dailyTargetsState.lastRefresh;
         document.getElementById('selectionInfo').textContent = `当前 ${visible} 条 · 搜索候选 ${dailyTargetsState.searchResults.length} 个`;
@@ -680,21 +685,21 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const currentPage = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
         const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
         const filteredTotal = Number(todayTargetsPayload.filtered_total || visible || 0) || 0;
-        document.getElementById('heroTitle').textContent = '当前标的工作台：先看榜单，再决定今天的盘中动作。';
-        document.getElementById('heroCopy').textContent = '信号页现在只保留列表与执行详情；这里承接 today targets、技术状态、规则上下文和盘中轻操作，优先定位需要确认、等待执行和 ready 但尚未触发的标的。';
+        document.getElementById('heroTitle').textContent = '当前标的工作台。';
+        document.getElementById('heroCopy').textContent = '聚合 targets、技术状态和待处理信号。';
         document.getElementById('marketDateMeta').textContent = `Market Date ${todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate').value || '--'}`;
         document.getElementById('refreshInfo').textContent = todayTargetsPayload.computed_at_us
           ? `更新: ${todayTargetsPayload.computed_at_us}`
           : '数据未刷新';
-        document.getElementById('selectionInfo').textContent = `第 ${currentPage}/${totalPages} 页 · 本页 ${visible} 条 · ready ${visibleReady} 条 · needs action ${visibleActionable} 条 · 过滤后 ${filteredTotal} / 总 ${summary.total || 0}`;
+        document.getElementById('selectionInfo').textContent = `${currentPage}/${totalPages} 页 · ${visible} 条 · ready ${visibleReady} · action ${visibleActionable} · ${filteredTotal}/${summary.total || 0}`;
         renderCurrentTargetsSummary();
         return;
       }
 
       const selectedRows = (screenerPayload.items || []).filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase()));
       const operableCount = selectedRows.filter((row) => row.is_operable).length;
-      document.getElementById('heroTitle').textContent = '把筛选和标池放进同一工作流，先筛再管。';
-      document.getElementById('heroCopy').textContent = '先看哪些标的有活跃 bars、量能和方向，再在同一页里维护 watchlist 与 GLOBAL 共享池，避免在两个页面来回跳。';
+      document.getElementById('heroTitle').textContent = '先筛选，再入池。';
+      document.getElementById('heroCopy').textContent = '查看 bars、量能和方向，并维护 watchlist。';
       document.getElementById('marketDateMeta').textContent = `Market Date ${screenerPayload.market_date || document.getElementById('marketDate').value || '--'}`;
       document.getElementById('refreshInfo').textContent = screenerPayload.computed_at_us
         ? `更新: ${screenerPayload.computed_at_us}`
@@ -1282,10 +1287,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const scanTimeEt = String(workflow.scan_summary_time_et || '09:20');
       const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt);
       const workflowTimingCopy = scanTimeEt === openCheckTimeEt
-        ? `${scanTimeEt} ET 日筛先产出 candidate / active，并完成盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新`
-        : `${scanTimeEt} ET 日筛先产出 candidate / active，${openCheckTimeEt} ET 盘前状态检查，盘中按 ${workflow.intraday_refresh_rule || '5m close-driven'} 刷新`;
-      meta.textContent = `交易日 ${marketDate} · 第 ${currentPage}/${totalPages} 页 · 本页 ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · needs action ${needsActionCount} · 过滤后 ${filteredTotal} 条 · 全量 ${summary.total || 0}`;
-      metaSecondary.textContent = `过滤后 ready ${filteredSummary.ready_count || 0} 条 · signaled ${filteredSummary.signaled_count || 0} 条 · needs action ${filteredSummary.needs_action_count || 0} 条。${workflowTimingCopy}；当前排序先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。`;
+        ? `${scanTimeEt} ET 日筛；${workflow.intraday_refresh_rule || '5m close-driven'}`
+        : `${scanTimeEt} ET 日筛；${openCheckTimeEt} ET 检查`;
+      meta.textContent = `${marketDate} · ${currentPage}/${totalPages} 页 · ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
+      metaSecondary.textContent = `ready ${filteredSummary.ready_count || 0} · signaled ${filteredSummary.signaled_count || 0} · action ${filteredSummary.needs_action_count || 0}。${workflowTimingCopy}。`;
       renderCurrentTargetPagination();
 
       if (!rows.length) {
@@ -1512,8 +1517,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }).join('');
       renderScreenerCards(filteredRows);
 
-      document.getElementById('tableMeta').textContent = `当前可见 ${filteredRows.length} 条 · 可操作 ${filteredRows.filter((row) => row.is_operable).length} 条 · 已有 live bars ${filteredRows.filter((row) => row.has_live_bar).length} 条`;
-      document.getElementById('tableMetaSecondary').textContent = `可见结果中已选择 ${filteredRows.filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase())).length} 条`;
+      document.getElementById('tableMeta').textContent = `可见 ${filteredRows.length} · 可操作 ${filteredRows.filter((row) => row.is_operable).length} · live bars ${filteredRows.filter((row) => row.has_live_bar).length}`;
+      document.getElementById('tableMetaSecondary').textContent = `已选 ${filteredRows.filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase())).length} 条`;
     }
 
     function applyFilters() {
@@ -2015,7 +2020,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         dailyTargetsState.loaded = true;
         dailyTargetsState.loadedDate = dailyTargetsState.selectedDate;
         dailyTargetsState.lastRefresh = `更新: ${new Date().toLocaleTimeString()}`;
-        document.getElementById('dailyTargetListMeta').textContent = `环境 ${getEnvironmentLabel(currentEnvironment)} / 日期 ${dailyTargetsState.selectedDate} / 原始记录 ${dailyTargetsState.items.length}`;
+        document.getElementById('dailyTargetListMeta').textContent = `${getEnvironmentLabel(currentEnvironment)} / ${dailyTargetsState.selectedDate} / ${dailyTargetsState.items.length} 条`;
         renderDailyTargetRows();
         if (refreshCurrentTargets) {
           await loadTodayTargets(false);
@@ -2299,7 +2304,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const items = getFilteredWatchlistItems();
       const table = document.getElementById('watchlistTable');
       if (!items.length) {
-        table.innerHTML = `<tr><td colspan="9" class="empty-state">当前没有符合条件的 ${escapeHtml(getWatchlistRoleLabel())} 记录。</td></tr>`;
+        table.innerHTML = `<tr><td colspan="9" class="empty-state">暂无 ${escapeHtml(getWatchlistRoleLabel())} 记录。</td></tr>`;
         renderWatchlistCards([]);
       } else {
         table.innerHTML = items.map((item) => `
@@ -2334,7 +2339,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         renderWatchlistCards(items);
       }
 
-      document.getElementById('listMeta').textContent = `已载入 ${watchlistState.items.length} 条原始记录 · 当前可见 ${items.length} 条`;
+      document.getElementById('listMeta').textContent = `载入 ${watchlistState.items.length} · 可见 ${items.length}`;
       if (isWatchlistRoleTab()) {
         renderSearchResults();
         updateHero();
@@ -2584,8 +2589,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('clearBatchBtn').addEventListener('click', () => {
         document.getElementById('batchSymbolsInput').value = '';
         document.getElementById('batchMeta').textContent = getWatchlistRoleForTab() === 'market_monitor'
-          ? '批量导入会逐个调用 IBKR 搜索并写入当前 scope，角色固定为 market_monitor。'
-          : '批量导入会逐个调用 IBKR 搜索并写入当前 scope。';
+          ? '批量搜索并写入 market_monitor。'
+          : '批量搜索并写入当前 scope。';
       });
       document.getElementById('batchDeleteBtn').addEventListener('click', batchDeleteSymbols);
       document.getElementById('refreshListBtn').addEventListener('click', () => loadWatchlist(true));
@@ -2632,8 +2637,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
       document.getElementById('dailyTargetDate').value = dailyTargetsState.selectedDate;
       document.getElementById('nav').innerHTML = renderNav('/ibkr_screener.html');
-      document.getElementById('contextBar').innerHTML = renderPageContextBar('🔎 IBKR 筛选与标池', {
-        subtitle: '筛选 / 每日标的 / 标池 / 市场监控 一体化'
+      document.getElementById('contextBar').innerHTML = renderPageContextBar('🔎 IBKR 筛选', {
+        subtitle: '筛选 / 标的 / 标池'
       });
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();

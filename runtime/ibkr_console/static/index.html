@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Trading Flight - 首页</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
@@ -39,7 +39,6 @@
                                         <span class="home-stack-service-name">LOADING</span>
                                         <span class="home-stack-service-status">WAIT</span>
                                     </div>
-                                    <div class="home-stack-service-copy">同步服务拓扑、职责归属和 startup preload 进度。</div>
                                 </div>
                             </div>
                         </div>
@@ -121,7 +120,7 @@
                         <div>
                             <div class="home-panel-kicker">Targets</div>
                             <div class="home-panel-title">今日目标池</div>
-                            <div class="home-panel-copy">直接看 candidate / active 标的、核心理由和图表跳转。PC 会显示更多条，手机端按优先级压缩。</div>
+                            <div class="home-panel-copy">查看 candidate / active 标的、核心理由和图表入口。</div>
                         </div>
                         <a id="todayTargetsLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-inline-btn">查看当前标的榜</a>
                     </div>
@@ -424,29 +423,6 @@
             document.getElementById('overviewMeta').textContent = `${currentEnvironment.toUpperCase()} · ${marketDate} · 更新 ${formatRefreshClock()}`;
         }
 
-        function formatCompactSeconds(value) {
-            const numeric = Number(value);
-            if (!Number.isFinite(numeric) || numeric <= 0) return '--';
-            if (numeric < 60) return `${numeric.toFixed(1)}s`;
-            const totalSeconds = Math.round(numeric);
-            const hours = Math.floor(totalSeconds / 3600);
-            const minutes = Math.floor((totalSeconds % 3600) / 60);
-            const seconds = totalSeconds % 60;
-            if (hours > 0) return `${hours}h ${minutes}m`;
-            return `${minutes}m ${seconds}s`;
-        }
-
-        function summarizeHomeErrorMessage(value) {
-            const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-            if (!normalized) return '';
-            if (/connection refused/i.test(normalized)) return 'runtime upstream 拒绝连接';
-            if (/timed out|timeout/i.test(normalized)) return 'runtime upstream 超时';
-            if (/502|bad gateway/i.test(normalized)) return 'runtime upstream 502';
-            if (/401|403|auth/i.test(normalized)) return '鉴权失败';
-            if (/watchlist/i.test(normalized)) return 'watchlist 拉取失败';
-            return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
-        }
-
         function normalizeHomePreloadState(payload = {}) {
             const source = payload && typeof payload === 'object' ? payload : {};
             const status = String(source.status || '').trim().toLowerCase()
@@ -467,72 +443,6 @@
                 error: String(source.error || source.reason || '').trim(),
                 results: source.results && typeof source.results === 'object' ? source.results : {}
             };
-        }
-
-        function buildHomeEngineEnvironmentSummary(computeSummary = {}) {
-            const engines = computeSummary?.engines || {};
-            if (!engines || typeof engines !== 'object') return '';
-            const counts = new Map();
-            Object.entries(engines).forEach(([key, engine]) => {
-                const fallbackEnvironment = String(key || '').split(/[/:]/)[0] || '';
-                const environment = String(engine?.environment || fallbackEnvironment).trim().toLowerCase();
-                if (!environment) return;
-                const item = counts.get(environment) || { environment, ready: 0, total: 0 };
-                item.total += 1;
-                if (engine?.is_ready) item.ready += 1;
-                counts.set(environment, item);
-            });
-            const order = ['live', 'paper', 'backtest', ...Array.from(counts.keys()).sort()];
-            const seen = new Set();
-            const parts = [];
-            order.forEach((environment) => {
-                const normalized = String(environment || '').trim().toLowerCase();
-                if (!normalized || seen.has(normalized) || !counts.has(normalized)) return;
-                seen.add(normalized);
-                const item = counts.get(normalized);
-                parts.push(`${normalized.toUpperCase()} ${item.ready}/${item.total}`);
-            });
-            return parts.length > 1 ? parts.join(' · ') : '';
-        }
-
-        function buildHomePreloadEnvironmentSummary(state) {
-            if (!state || !state.results || typeof state.results !== 'object') return '';
-            const order = [
-                ...(Array.isArray(state.environments) ? state.environments : []),
-                'live',
-                'paper',
-                'backtest',
-                ...Object.keys(state.results || {}).sort(),
-            ];
-            const seen = new Set();
-            const parts = [];
-            order.forEach((environment) => {
-                const normalized = String(environment || '').trim().toLowerCase();
-                if (!normalized || seen.has(normalized)) return;
-                seen.add(normalized);
-                const item = state.results?.[normalized] || {};
-                const total = Number(item.symbol_total || 0) || 0;
-                if (total <= 0) return;
-                const ready = Number(item.ready_count || 0) || 0;
-                parts.push(`${normalized.toUpperCase()} 启动时 ${ready}/${total}`);
-            });
-            return parts.length > 1 ? parts.join(' · ') : '';
-        }
-
-        function buildHomePreloadSummary(state) {
-            if (!state || !state.enabled) return 'startup preload 未启用';
-            if (state.status === 'running') return `startup preload ${state.symbolCompleted}/${state.symbolTotal || '--'} · ${formatCompactSeconds(state.elapsedS)}`;
-            if (state.status === 'scheduled') return `startup preload 排队中 · env ${state.envCompleted}/${state.envTotal || '--'}`;
-            if (state.status === 'completed') {
-                const environmentSummary = buildHomePreloadEnvironmentSummary(state);
-                return environmentSummary
-                    ? `startup preload 完成 · ${environmentSummary}`
-                    : `startup preload 完成 · 启动时 ready ${state.readyCount}/${state.symbolTotal || 0}`;
-            }
-            if (state.status === 'failed') return 'startup preload 失败';
-            if (state.status === 'skipped') return 'startup preload 已跳过';
-            if (state.status === 'disabled') return 'startup preload 已禁用';
-            return 'startup preload 等待状态';
         }
 
         function normalizeHomeServiceStatus(status) {
@@ -567,25 +477,16 @@
             const parts = [splitActive ? 'Runtime / Compute / API / Scheduler 已拆分' : 'Split stack 信息不完整'];
             const readyEngines = Number(computeSummary?.ready_engines || 0) || 0;
             const totalEngines = Number(computeSummary?.total_engines || 0) || 0;
-            const environmentReadySummary = buildHomeEngineEnvironmentSummary(computeSummary);
-            if (splitActive) {
-                parts.push(topology?.restart_independent === false
-                    ? '重启仍可能互相影响'
-                    : 'runtime / compute / api / scheduler 可独立重启');
-            }
             if (totalEngines > 0) {
-                parts.push(`engines ready ${readyEngines}/${totalEngines}`);
-            }
-            if (environmentReadySummary) {
-                parts.push(environmentReadySummary);
+                parts.push(`engines ${readyEngines}/${totalEngines}`);
             }
             if (preloadState && preloadState.enabled) {
                 if (preloadState.status === 'running') {
                     parts.push(`preload ${preloadState.symbolCompleted}/${preloadState.symbolTotal || '--'}`);
                 } else if (preloadState.status === 'completed') {
-                    parts.push('preload 已完成');
+                    parts.push('preload done');
                 } else if (preloadState.status === 'scheduled') {
-                    parts.push('preload 排队中');
+                    parts.push('preload queued');
                 } else if (preloadState.status === 'failed') {
                     parts.push('preload failed');
                 }
@@ -611,7 +512,6 @@
             const preloadState = normalizeHomePreloadState(computeSummary.compute_startup_preload || {});
             const readyEngines = Number(computeSummary.ready_engines || 0) || 0;
             const totalEngines = Number(computeSummary.total_engines || 0) || 0;
-            const environmentReadySummary = buildHomeEngineEnvironmentSummary(computeSummary);
             const runtimeRunning = normalizeHomeServiceStatus(runtimeService.status) === 'running';
             const gatewayRunning = normalizeHomeServiceStatus(gatewayService.status) === 'running';
             const runtimeAuthenticated = runtimeService.session_authenticated === true;
@@ -630,13 +530,7 @@
                         : (runtimeRunning ? 'WAIT' : getHomeServiceLabel(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')),
                     tone: runtimeRunning && runtimeAuthenticated && gatewayRunning
                         ? 'running'
-                        : (runtimeRunning ? 'warning' : getHomeServiceTone(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')),
-                    copy: 'IBKR 建联 / gateway / live bars',
-                    meta: [
-                        runtimeService.session_authenticated ? 'session auth' : 'session wait',
-                        gatewayService.status ? `gateway ${String(gatewayService.status).toLowerCase()}` : 'gateway --',
-                        'owner ibkr-runtime'
-                    ]
+                        : (runtimeRunning ? 'warning' : getHomeServiceTone(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown'))
                 },
                 {
                     name: 'Compute',
@@ -648,69 +542,46 @@
                         : (computeWarming ? 'WARMING' : getHomeServiceLabel(computeService.status || computeSummary.status || 'unknown')),
                     tone: preloadState.status === 'failed'
                         ? 'warning'
-                        : (computeWarming ? 'warning' : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown')),
-                    copy: 'scan / engines / signals',
-                    meta: [
-                        totalEngines > 0 ? `engines ${readyEngines}/${totalEngines}` : 'engines --',
-                        environmentReadySummary,
-                        buildHomePreloadSummary(preloadState),
-                        preloadState.status === 'failed' ? summarizeHomeErrorMessage(preloadState.error) : '',
-                        'owner ibkr-compute'
-                    ]
+                        : (computeWarming ? 'warning' : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown'))
                 },
                 {
                     name: 'API',
                     status: apiService.status || 'peer',
-                    label: String(apiService.status || 'peer').toUpperCase(),
+                    label: String(apiService.status || '').trim().toLowerCase() === 'running' || String(apiService.status || '').trim().toLowerCase() === 'peer'
+                        ? 'OK'
+                        : String(apiService.status || 'peer').toUpperCase(),
                     tone: String(apiService.status || '').trim().toLowerCase() === 'running'
                         ? 'running'
-                        : (String(apiService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(apiService.status || 'peer')),
-                    copy: 'compat routes / control APIs / auth proxy',
-                    meta: [
-                        apiService.internal_url || 'internal --',
-                        'api/custom + api/collections',
-                        'owner ibkr-api'
-                    ]
+                        : (String(apiService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(apiService.status || 'peer'))
                 },
                 {
                     name: 'Scheduler',
                     status: schedulerService.status || 'peer',
-                    label: String(schedulerService.status || 'peer').toUpperCase(),
+                    label: String(schedulerService.status || '').trim().toLowerCase() === 'running' || String(schedulerService.status || '').trim().toLowerCase() === 'peer'
+                        ? 'OK'
+                        : String(schedulerService.status || 'peer').toUpperCase(),
                     tone: String(schedulerService.status || '').trim().toLowerCase() === 'running'
                         ? 'running'
-                        : (String(schedulerService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(schedulerService.status || 'peer')),
-                    copy: 'bar cursor dispatch / cron registry / job state',
-                    meta: [
-                        schedulerService.internal_url || 'internal --',
-                        'persisted cursor driven',
-                        'owner ibkr-scheduler'
-                    ]
+                        : (String(schedulerService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(schedulerService.status || 'peer'))
                 },
                 {
                     name: 'PocketBase',
                     status: pocketbaseService.status || 'external',
-                    label: getHomeServiceLabel(pocketbaseService.status || 'external'),
-                    tone: getHomeServiceTone(pocketbaseService.status || 'external'),
-                    copy: 'auth / collections / storage',
-                    meta: [
-                        'auth tokens',
-                        'collections only',
-                        'owner pocketbase'
-                    ]
+                    label: normalizeHomeServiceStatus(pocketbaseService.status || 'external') === 'external'
+                        ? 'EXT'
+                        : getHomeServiceLabel(pocketbaseService.status || 'external'),
+                    tone: getHomeServiceTone(pocketbaseService.status || 'external')
                 }
             ];
 
             rowsEl.innerHTML = rows.map((row) => {
                 const tone = row.tone || getHomeServiceTone(row.status);
-                const metaText = row.meta.filter(Boolean).join(' · ');
                 return `
                     <div class="home-stack-service" data-tone="${escapeHtml(tone)}">
                         <div class="home-stack-service-top">
                             <span class="home-stack-service-name">${escapeHtml(row.name)}</span>
                             <span class="home-stack-service-status">${escapeHtml(row.label || getHomeServiceLabel(row.status))}</span>
                         </div>
-                        <div class="home-stack-service-copy">${escapeHtml(row.copy)}</div>
-                        <div class="home-stack-service-meta">${escapeHtml(metaText)}</div>
                     </div>
                 `;
             }).join('');
@@ -730,18 +601,16 @@
                 renderHomeStackOverview(payload || {});
             } catch (error) {
                 console.error('加载 split stack 摘要失败:', error);
-                cardEl.dataset.ready = 'error';
-                summaryEl.textContent = `系统摘要加载失败: ${error.message || error}`;
-                rowsEl.innerHTML = `
+                cardEl.dataset.ready = 'ready';
+                summaryEl.textContent = 'Runtime / Compute / API / Scheduler 已拆分状态不可用，进入系统总览查看。';
+                rowsEl.innerHTML = ['Runtime', 'Compute', 'API', 'Scheduler', 'PocketBase'].map((name) => `
                     <div class="home-stack-service" data-tone="warning">
                         <div class="home-stack-service-top">
-                            <span class="home-stack-service-name">SUMMARYZ</span>
-                            <span class="home-stack-service-status">ERROR</span>
+                            <span class="home-stack-service-name">${name}</span>
+                            <span class="home-stack-service-status">--</span>
                         </div>
-                        <div class="home-stack-service-copy">首页没有拿到 runtime / compute / pocketbase 拆分摘要。</div>
-                        <div class="home-stack-service-meta">请进入系统总览或稍后刷新重试</div>
                     </div>
-                `;
+                `).join('');
             }
         }
 

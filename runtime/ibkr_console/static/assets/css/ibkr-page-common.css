@@ -1,5 +1,9 @@
 :root {
-    --page-card-radius: 20px;
+    --page-card-radius: var(--radius-xl, 20px);
+    --page-card-radius-compact: var(--radius-lg, 16px);
+    --page-card-padding: var(--card-padding, 14px);
+    --page-panel-min-height: var(--panel-min-height, 300px);
+    --page-panel-scroll-max-height: var(--panel-scroll-max-height, min(46vh, 620px));
     --page-card-border: 1px solid rgba(147, 197, 253, 0.14);
     --page-card-bg: linear-gradient(180deg, rgba(8, 22, 31, 0.98), rgba(7, 16, 24, 0.96));
     --page-card-shadow: 0 22px 48px rgba(0, 0, 0, 0.28);
@@ -137,7 +141,7 @@ body.rules-detail-open {
     letter-spacing: 1.5px;
     text-transform: uppercase;
     color: var(--accent);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
 }
 
 .header-side,
@@ -165,7 +169,7 @@ body.rules-detail-open {
     color: var(--muted);
     font-size: 11px;
     line-height: 1.6;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
 }
 
 .page-actions,
@@ -187,7 +191,7 @@ body.rules-detail-open {
 .page-top-section[data-page-top-section="compact"] {
     margin: 8px 0 14px;
     padding: 16px 18px;
-    border-radius: 18px;
+    border-radius: var(--page-card-radius-compact);
     border: 1px solid rgba(147, 197, 253, 0.12);
     background:
         radial-gradient(circle at right center, rgba(246, 173, 85, 0.10), transparent 34%),
@@ -236,7 +240,7 @@ body.rules-detail-open {
     font-size: 11px;
     line-height: 1.6;
     text-align: right;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
 }
 
 .page-top-section-status {
@@ -244,7 +248,7 @@ body.rules-detail-open {
 }
 
 .page-top-section[data-page-top-section="compact"] .page-top-section-row {
-    gap: 12px;
+    gap: var(--space-3, 12px);
 }
 
 .page-top-section[data-page-top-section="compact"] .page-top-section-main {
@@ -399,13 +403,21 @@ body.rules-detail-open {
 .indicator-card,
 .sample-card,
 .legend-card {
-    padding: 14px;
+    padding: var(--page-card-padding);
 }
 
 .panel,
 .section,
 .group-card {
+    min-width: 0;
     overflow: hidden;
+}
+
+.panel,
+.section {
+    display: flex;
+    flex-direction: column;
+    min-height: var(--page-panel-min-height);
 }
 
 .panel-header,
@@ -416,8 +428,8 @@ body.rules-detail-open {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    gap: 12px;
-    padding: 16px 16px 12px;
+    gap: var(--space-3, 12px);
+    padding: var(--space-4, 16px) var(--space-4, 16px) var(--space-3, 12px);
 }
 
 .panel-header,
@@ -441,12 +453,22 @@ body.rules-detail-open {
     font-size: 11px;
     line-height: 1.6;
     text-align: right;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
 }
 
 .panel-body,
 .section-body {
-    padding: 14px 16px 16px;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: var(--page-card-padding) var(--space-4, 16px) var(--space-4, 16px);
+}
+
+.panel > .panel-body,
+.section > .section-body {
+    overflow: auto;
+    max-height: var(--page-panel-scroll-max-height);
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable both-edges;
 }
 
 .chip-row,
@@ -537,7 +559,7 @@ body.rules-detail-open {
     border: var(--page-button-border);
     background: var(--page-button-bg);
     color: var(--text);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     line-height: 1.2;
     text-decoration: none;
@@ -900,9 +922,14 @@ body.rules-detail-open {
         padding: 14px 14px 10px;
     }
 
+    .panel,
+    .section {
+        min-height: min(var(--page-panel-min-height), 260px);
+    }
+
     .panel-body,
     .section-body {
-        padding: 12px 14px 14px;
+        padding: var(--card-padding-compact, 12px) 14px 14px;
     }
 }
 

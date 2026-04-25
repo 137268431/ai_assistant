@@ -1093,7 +1093,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentFocus = String(new URLSearchParams(window.location.search).get('focus') || '').trim().toLowerCase();
     document.getElementById('nav').innerHTML = renderNav('/ibkr_system.html');
     document.getElementById('contextBar').innerHTML = renderPageContextBar('🖥️ IBKR 总览', {
-        subtitle: '健康 / freshness / 配置总览',
+        subtitle: '健康 / 数据新鲜度 / 配置',
     });
     document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_system.html');
     ensureSystemPageTopSection();

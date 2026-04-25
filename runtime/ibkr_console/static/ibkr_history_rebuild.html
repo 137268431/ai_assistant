@@ -21,10 +21,7 @@
                 <div>
                     <div class="hero-kicker">Rebuild Summary</div>
                     <div class="hero-title">当前任务与重建范围</div>
-                    <div class="hero-copy">
-                        这个页面会顺序执行 <span class="mono">purge → backfill_bars → rollup_intervals → materialize_indicators → run_daily_scan → verify</span>。
-                        适合在确认旧 <span class="mono">bar / indicator / signal / targets</span> 不可信后，重建一份干净的 live 历史。
-                    </div>
+                    <div class="hero-copy">重建 bars、指标、信号与 targets 历史链。</div>
                 </div>
                 <div class="hero-meta">
                     <button id="refreshStatusButton" class="btn page-refresh-trigger" type="button">刷新状态</button>
@@ -42,7 +39,7 @@
                 <div>
                     <div class="panel-kicker">Control</div>
                     <div class="panel-title">重建参数</div>
-                    <div class="panel-copy">默认清空当前环境的 live 历史链，然后回拉最近 N 天的 5m bars；最后重建当日 scan / targets，并把状态持续写到 <span class="mono">ibkr_state.ibkr_history_rebuild_job</span>。</div>
+                    <div class="panel-copy">清空当前环境历史链，回拉 5m bars，并重建 scan / targets。</div>
                 </div>
                 <div class="panel-tools">
                     <div id="statusPill" class="status-pill status-idle"><span class="status-dot"></span><span>IDLE</span></div>

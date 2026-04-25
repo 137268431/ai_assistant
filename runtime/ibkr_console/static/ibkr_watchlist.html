@@ -3,22 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>IBKR 标池管理</title>
+  <title>Redirecting to /ibkr_screener.html</title>
   <script src="/common.js"></script>
   <script>
     (function redirectToCombinedPage() {
       const current = new URL(window.location.href);
       const consoleBase = window.CONSOLE_BASE_URL || window.location.origin;
       const next = new URL('/ibkr_screener.html', consoleBase);
-      current.searchParams.forEach((value, key) => {
-        next.searchParams.set(key, value);
-      });
       next.searchParams.set('tab', 'watchlist');
+      current.searchParams.forEach((value, key) => {
+        if (key !== 'tab') {
+          next.searchParams.set(key, value);
+        }
+      });
       window.location.replace(next.toString());
     })();
   </script>
 </head>
 <body>
-  <p style="padding:16px;font-family:sans-serif;">正在跳转到统一的筛选/标池页...</p>
 </body>
 </html>

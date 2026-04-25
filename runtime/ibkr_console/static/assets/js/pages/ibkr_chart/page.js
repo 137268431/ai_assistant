@@ -1397,13 +1397,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { text: `指标 ${indicators.length}`, className: '', title: '当前窗口成功匹配到的指标快照数量。' },
                 { text: `信号 ${signals.length}`, className: '', title: '当前窗口内的交易信号数量。' },
                 { text: `范围 ${getRangeLabel(currentRangeKey)}`, className: '', title: '当前图表时间窗口。' },
-                { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, className: focusBar ? '' : 'placeholder', title: '当前 focus bar 的时间。' },
-                { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '趋势方向来自当前 focus bar 对应的 trend_dir。' },
-                { text: `EMA 结构 ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
-                { text: `VWAP 偏离 ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '当前收盘价相对 VWAP 的偏离百分比。' },
-                { text: `ATR 波动 ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
-                { text: `SD 通道 ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'SD 通道分为所在区间和通道斜率两部分。' },
-                { text: `分形 ${focusIndicator ? getFractalStateText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '当前 focus bar 是否命中了上分形或下分形。' },
+                { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, className: focusBar ? '' : 'placeholder', title: '焦点时间。' },
+                { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '趋势方向。' },
+                { text: `EMA 结构 ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'EMA 结构。' },
+                { text: `VWAP 偏离 ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'VWAP 偏离。' },
+                { text: `ATR 波动 ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'ATR 波动。' },
+                { text: `SD 通道 ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'SD 区间与斜率。' },
+                { text: `分形 ${focusIndicator ? getFractalStateText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '分形状态。' },
                 { text: realtimeState.text, className: realtimeState.className, title: realtimeState.title },
                 { text: previewState.text, className: previewState.className, title: previewState.title },
                 { text: compareState.text, className: compareState.className, title: compareState.title },
@@ -1434,11 +1434,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { text: `信号 ${signals.length}`, title: '当前窗口内的交易信号数量。' },
                 { text: `范围 ${getRangePreset(currentRangeKey)?.shortLabel || currentRangeKey}`, title: '当前图表时间窗口。' },
                 { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, title: '当前 focus bar 时间。' },
-                { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, title: '趋势方向来自当前 focus bar 对应的 trend_dir。' },
-                { text: `EMA ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, title: 'EMA 结构表示快慢均线当前处于多头、空头还是中性排列。' },
-                { text: `VWAP ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, title: '当前收盘价相对 VWAP 的偏离百分比。' },
-                { text: `ATR ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, title: 'ATR% 用来表示当前 bar 的相对波动强度。' },
-                { text: `SD ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, title: 'SD 通道分为所在区间和通道斜率两部分。' },
+                { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, title: '趋势方向。' },
+                { text: `EMA ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, title: 'EMA 结构。' },
+                { text: `VWAP ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, title: 'VWAP 偏离。' },
+                { text: `ATR ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, title: 'ATR 波动。' },
+                { text: `SD ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, title: 'SD 区间与斜率。' },
                 { text: realtimeState.text, title: realtimeState.title, className: realtimeState.className === 'placeholder' ? 'muted' : '' },
                 { text: previewState.text, title: previewState.title, className: previewState.className === 'placeholder' ? 'muted' : '' },
                 { text: compareState.text, title: compareState.title, className: compareState.className === 'placeholder' ? 'muted' : (compareState.className || '') },
@@ -1929,7 +1929,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const traceCard = chartTracePanelOpen ? `
                 <div class="rail-card">
                     <div class="rail-kicker">Trace</div>
-                    <div class="rail-sub">Inspector 内联 Trace 仅保留当前窗口简版，桌面完整表格请看图表下方。</div>
+                    <div class="rail-sub">Trace 简版；完整表在下方。</div>
                     <div class="trace-panel-summary">${traceBody.chips.join('')}</div>
                     ${traceBody.tableHtml}
                 </div>
@@ -2783,7 +2783,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             </div>
                         `;
                     }).join('')
-                    : '<div class="rail-sub">当前窗口没有发现 bars / indicators / signals 差异。</div>';
+                    : '<div class="rail-sub">当前窗口无差异。</div>';
 
                 document.getElementById('infoRail').innerHTML = `
                     ${buildCompareErrorCard()}
@@ -2847,7 +2847,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                             <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(buildTradeSignalLabel(latestSignal)) : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
                         </div>
-                        <div class="rail-sub">主图仍使用 stored bars 链路；IBKR 对比是临时拉取，不写回库。</div>
+                        <div class="rail-sub">IBKR 对比不写库。</div>
                     </div>
                     <div class="rail-card">
                         <div class="rail-kicker">Recent Signals</div>
@@ -2865,7 +2865,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                                         <span class="signal-badge ${escapeHtml(getSignalBadgeClass(signal))}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
                                     </div>
                                 `;
-                            }).join('') || '<div class="rail-sub">当前窗口暂无实时重算信号。</div>'}
+                            }).join('') || '<div class="rail-sub">暂无重算信号。</div>'}
                         </div>
                     </div>
                 `;
@@ -2895,7 +2895,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         ${orderDetailsUrl ? `<a class="mini-link" href="${orderDetailsUrl}">订单明细</a>` : ''}
                         <a class="mini-link" href="${accountUrl}">账户页</a>
                     </div>
-                    <div class="rail-sub">点击图表 K 线，或点右侧 Recent Signals，可在当前时间窗里切换焦点。图上的信号点来自 bars 实时重算。</div>
+                    <div class="rail-sub">点 K 线或 Recent Signals 切换焦点。</div>
                 </div>
                 <div class="rail-card">
                     <div class="rail-kicker">Snapshot</div>
@@ -2930,7 +2930,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(buildTradeSignalLabel(latestSignal)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
                     </div>
-                    <div class="rail-sub">所有周期都展示价格与技术图层；交易标签和信号散点仍只在 5m 周期叠加。</div>
+                    <div class="rail-sub">交易标签仅 5m 叠加。</div>
                 </div>
                 <div class="rail-card">
                     <div class="rail-kicker">Recent Signals</div>
@@ -3236,10 +3236,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div>O ${escapeHtml(formatPrice(bar.open))} · H ${escapeHtml(formatPrice(bar.high))}</div>
                     <div>L ${escapeHtml(formatPrice(bar.low))} · C ${escapeHtml(formatPrice(bar.close))}</div>
                     <div>Vol ${escapeHtml(formatNumber(bar.volume || 0, 0))}</div>
-                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? 'EMA / VWAP 待当前 5m 收盘后生成正式指标' : `EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))} · EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}`}</div>
-                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Osc / SD / Fractal / Touch / Div 待收盘确认' : `EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator?.vwap))}`}</div>
-                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '当前预览 bar 只有 OHLC / Volume，没有正式指标快照' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))} · OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</div>
-                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? '正式收盘写库后，图表会补齐 EMA / VWAP / CRSI / ATR / SD 等指标' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}`}</div>
+                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? 'EMA / VWAP 待收盘' : `EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))} · EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '指标待收盘确认' : `EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator?.vwap))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '预览 bar 仅 OHLC / Volume' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))} · OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</div>
+                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? '收盘入库后补齐指标' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Preview bar 仅用于盘中参考' : `Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</div>
                     <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
                 </div>
@@ -3291,8 +3291,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 }
                 chartMarkerDensityTier = '';
                 resetChartZoomState();
-                canvas.innerHTML = '<div class="chart-empty">当前没有可绘制的 bars 数据。<br>请先确认 ibkr_bars 已经写入该标的该周期。</div>';
-                note.textContent = '图表指标与信号基于 ibkr_bars 实时重算；如果 bars 为空，图表不会展示。';
+                canvas.innerHTML = '<div class="chart-empty">暂无可绘制 bars。</div>';
+                note.textContent = '图表基于 ibkr_bars 重算。';
                 renderChartWorkspaceChrome(displayPayload);
                 return;
             }
@@ -3469,7 +3469,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const focusMarkPoint = buildFocusMarkPointConfig(focus?.index ?? -1, displayPayload);
             const zoomWindow = getCurrentZoomWindow(sortedBars.length);
 
-            document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)} 图表页`;
+            document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)}`;
             const compareSummary = comparePayload?.comparison?.summary || null;
             const barsMetaText = `${sortedFormalBars.length} bars${previewBar ? ' + live preview' : ''}`;
             document.getElementById('chartMeta').textContent = compareSummary
@@ -3478,7 +3478,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             note.textContent = !indicators.length
                 ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
-                ? `可用上方工具条与键盘在 bars / signals 间导航；当前主图${chartLayerState.tradeSignals ? '已叠加' : '未叠加'}交易标签与实时信号点。`
+                ? `工具条/键盘导航；交易标签${chartLayerState.tradeSignals ? '已开' : '已关'}。`
                 : '当前为非 5m 周期，主图仍展示 bars 实时重算出的价格结构与技术图层，但不叠加交易标签。';
             if (realtimeQuoteSnapshot?.last_price != null) {
                 note.textContent += ' 价格与日内涨幅来自 WS 实时快照。';
@@ -3961,11 +3961,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 chartInstance = null;
             }
             lastPayload = null;
-            document.getElementById('chartPanelTitle').textContent = `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} 图表页`;
+            document.getElementById('chartPanelTitle').textContent = `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`;
             document.getElementById('chartMeta').textContent = '数据加载中';
-            document.getElementById('chartNote').textContent = '正在基于 ibkr_bars 实时重算指标 / 信号 ...';
+            document.getElementById('chartNote').textContent = '正在重算指标 / 信号 ...';
             document.getElementById('chartCanvas').innerHTML = '<div class="chart-empty">图表数据加载中...</div>';
-            document.getElementById('infoRail').innerHTML = '<div class="rail-card"><div class="rail-kicker">Loading</div><div class="rail-sub">正在基于该标的的 ibkr_bars 实时重算图表 ...</div></div>';
+            document.getElementById('infoRail').innerHTML = '<div class="rail-card"><div class="rail-kicker">Loading</div><div class="rail-sub">正在重算图表 ...</div></div>';
             renderRailNav();
             renderHeroStatus(null);
             renderSummaryStrip(null);
@@ -4034,8 +4034,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     chartInstance = null;
                 }
                 document.getElementById('chartMeta').textContent = '加载失败';
-                document.getElementById('chartCanvas').innerHTML = `<div class="chart-empty">加载失败：${escapeHtml(error.message || 'unknown error')}<br>请确认该标的在当前环境已有 <code>ibkr_bars</code> 数据。</div>`;
-                document.getElementById('chartNote').textContent = '图表页只依赖 ibkr_bars；历史指标页和信号页仅作为记录与状态流转使用。';
+                document.getElementById('chartCanvas').innerHTML = `<div class="chart-empty">加载失败：${escapeHtml(error.message || 'unknown error')}<br>请确认当前环境已有 <code>ibkr_bars</code>。</div>`;
+                document.getElementById('chartNote').textContent = '图表只依赖 ibkr_bars。';
                 document.getElementById('infoRail').innerHTML = `<div class="rail-card"><div class="rail-kicker">Load Error</div><div class="rail-sub">${escapeHtml(error.message || 'unknown error')}</div></div>`;
                 renderRailNav();
                 renderHeroStatus(null);
@@ -4399,8 +4399,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_chart.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { subtitle: '全屏分析 / 类 TradingView / bars → indicators → signals' });
-            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_chart.html', { chartParams: { symbol: currentSymbol, interval: currentInterval } });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { subtitle: '全屏分析 / 信号叠加' });
+            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_chart.html', {
+                chartParams: { symbol: currentSymbol, interval: currentInterval }
+            });
 
             document.getElementById('chartSymbolInput').addEventListener('keydown', async (event) => {
                 if (event.key !== 'Enter') return;

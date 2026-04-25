@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IBKR Data Quality</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
@@ -21,7 +22,7 @@
         <div>
           <div class="hero-kicker">Quality Summary</div>
           <div class="hero-title">当前扫描结果与修复状态</div>
-          <div class="hero-copy">观察池和当前交易标的的 5 分钟K线完整性、派生周期同步和修复回写会统一汇总在这里，便于先看问题等级，再决定是否马上重扫或安全修复。</div>
+          <div class="hero-copy">汇总 5m 完整性、派生周期和安全修复状态。</div>
         </div>
         <div class="hero-meta">
           <div class="meta-line" id="refreshInfo">等待加载...</div>
@@ -57,7 +58,7 @@
 
     <section class="panel">
       <div class="panel-title">过滤与动作</div>
-      <div class="panel-copy">支持按环境、日期、范围、状态、标的过滤。没有指定标的时，手动重扫或修复会按当前范围执行；系统平时也会自动补齐安全问题。</div>
+      <div class="panel-copy">按环境、日期、范围、状态和标的过滤，并可立即重扫或修复。</div>
       <div class="filters">
         <div class="field">
           <label for="marketDate">交易日</label>

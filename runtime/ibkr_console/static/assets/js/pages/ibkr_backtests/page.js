@@ -395,7 +395,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return `
                     <div class="detail-card">
                         <div class="subhead">Historical Targets</div>
-                        <div class="empty-state">当前 run 未启用历史盘前选股回放，所以不会生成 <span class="mono">ibkr_backtest_targets</span> 明细。</div>
+                        <div class="empty-state">未启用历史选股回放。</div>
                     </div>
                 `;
             }
@@ -403,7 +403,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return `
                 <div class="detail-card">
                     <div class="subhead">Historical Targets</div>
-                    <div class="foot-note">这里展示历史盘前选股回放落到 <span class="mono">ibkr_backtest_targets</span> 的结果。回测是否允许开仓仍以 run 生成时的 selection plan 为准，这个面板用于审计每日选股和快速回放。</div>
+                    <div class="foot-note">展示历史选股回放结果；开仓以 selection plan 为准。</div>
                     <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
                     <div class="detail-list">
                         <div class="detail-item"><div class="detail-item-label">Collection</div><div class="detail-item-value mono">${escapeHtml(capture.collection || 'ibkr_backtest_targets')}</div></div>
@@ -416,7 +416,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         <div class="detail-item"><div class="detail-item-label">Scan Warmup</div><div class="detail-item-value">${escapeHtml(String(historicalTargeting.scan_warmup_bars || run?.extra?.scan_warmup_bars || '--'))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Saved / Errors</div><div class="detail-item-value">${escapeHtml(String(capture.saved_count || 0))} / ${escapeHtml(String(capture.error_count || 0))}</div></div>
                     </div>
-                    ${selectedTargetsLoading ? '<div class="empty-state" style="margin-top: 14px;">正在读取历史 targets 明细...</div>' : ''}
+                    ${selectedTargetsLoading ? '<div class="empty-state" style="margin-top: 14px;">读取历史 targets ...</div>' : ''}
                     ${!selectedTargetsLoading && groups.length ? groups.map((group) => {
                         const summary = group.summary || {};
                         const first = group.items[0] || {};
@@ -468,7 +468,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                             </div>
                         `;
                     }).join('') : ''}
-                    ${!selectedTargetsLoading && !groups.length ? '<div class="empty-state" style="margin-top: 14px;">当前 run 没有读取到历史盘前 target 明细。</div>' : ''}
+                    ${!selectedTargetsLoading && !groups.length ? '<div class="empty-state" style="margin-top: 14px;">暂无历史 target 明细。</div>' : ''}
                 </div>
             `;
         }
@@ -488,7 +488,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         <div class="detail-item"><div class="detail-item-label">Saved</div><div class="detail-item-value">${escapeHtml(String(capture.saved_count || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Errors</div><div class="detail-item-value">${escapeHtml(String(capture.error_count || 0))}</div></div>
                     </div>
-                    ${errors.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(errors, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 run 的回测指标留痕没有落库错误。</div>'}
+                    ${errors.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(errors, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">暂无落库错误。</div>'}
                 </div>
             `;
         }
@@ -502,7 +502,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return `
                 <div class="detail-card">
                     <div class="subhead">反转验证</div>
-                    <div class="foot-note">这是回测阶段的反转动作留痕，只用于验证持仓后的 <span class="mono">indicator_conflict</span> 场景，不会回写 live <span class="mono">ibkr_reverse_signals</span>。</div>
+                    <div class="foot-note">回测反转留痕，不回写 live。</div>
                     <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
                     <div class="detail-list">
                         <div class="detail-item"><div class="detail-item-label">Collection</div><div class="detail-item-value mono">${escapeHtml(capture.collection || 'ibkr_backtest_reverse_signals')}</div></div>
@@ -512,7 +512,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         <div class="detail-item"><div class="detail-item-label">Action Breakdown</div><div class="detail-item-value">${escapeHtml(formatBreakdown(metrics.backtest_reverse_action_breakdown || {}))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Strength Breakdown</div><div class="detail-item-value">${escapeHtml(formatBreakdown(metrics.backtest_reverse_strength_breakdown || {}))}</div></div>
                     </div>
-                    ${samples.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(samples, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 run 没有记录到反转动作。</div>'}
+                    ${samples.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(samples, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">暂无反转动作。</div>'}
                     ${errors.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(errors, null, 2))}</div>` : ''}
                 </div>
             `;
@@ -548,7 +548,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     </div>
                     ${strengths.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优势</strong><br>${strengthsHtml}</div>` : ''}
                     ${risks.length ? `<div class="note-box" style="margin-top: 14px;"><strong>风险</strong><br>${risksHtml}</div>` : ''}
-                    ${suggestions.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优化建议</strong><br>${suggestionsHtml}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 run 还没有生成优化建议。</div>'}
+                    ${suggestions.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优化建议</strong><br>${suggestionsHtml}</div>` : '<div class="empty-state" style="margin-top: 14px;">暂无优化建议。</div>'}
                 </div>
             `;
         }
@@ -577,7 +577,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         <div class="detail-item"><div class="detail-item-label">Delta vs 2nd Best</div><div class="detail-item-value ${classForValue(comparison.delta_vs_second_best_return_pct || 0)}">${comparison.delta_vs_second_best_return_pct !== undefined ? escapeHtml(formatPct(comparison.delta_vs_second_best_return_pct || 0)) : '--'}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Historical Baseline</div><div class="detail-item-value mono">${escapeHtml(comparison.historical_baseline_run_id || '--')}</div></div>
                     </div>
-                    ${suggestions.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优化方向</strong><br>${suggestionsHtml}</div>` : '<div class="empty-state" style="margin-top: 14px;">当前 experiment 还没有生成优化方向。</div>'}
+                    ${suggestions.length ? `<div class="note-box" style="margin-top: 14px;"><strong>优化方向</strong><br>${suggestionsHtml}</div>` : '<div class="empty-state" style="margin-top: 14px;">暂无优化方向。</div>'}
                 </div>
             `;
         }
@@ -597,7 +597,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return `
                     <div class="detail-card">
                         <div class="subhead">TV 对齐校验</div>
-                        <div class="empty-state">当前 run 没有启用 TradingView 对齐校验。</div>
+                        <div class="empty-state">未启用 TV 对齐校验。</div>
                     </div>
                 `;
             }
@@ -672,9 +672,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                 </tbody>
                             </table>
                         </div>
-                    ` : '<div class="empty-state" style="margin-top: 14px;">当前时间范围没有可用于对齐的 TV reference rows。</div>'}
+                    ` : '<div class="empty-state" style="margin-top: 14px;">暂无可对齐 TV rows。</div>'}
                     <div class="subhead" style="margin-top: 16px;">Sample Drift</div>
-                    ${sampleItems.length ? `<div class="note-box mono">${escapeHtml(JSON.stringify(sampleItems.slice(0, 8), null, 2))}</div>` : '<div class="empty-state">当前 run 没有抓到 sample drift。</div>'}
+                    ${sampleItems.length ? `<div class="note-box mono">${escapeHtml(JSON.stringify(sampleItems.slice(0, 8), null, 2))}</div>` : '<div class="empty-state">暂无 sample drift。</div>'}
                 </div>
             `;
         }
@@ -789,7 +789,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function renderBatches() {
             document.getElementById('batchCountLabel').textContent = `${batchList.length} experiments`;
             if (!batchList.length) {
-                document.getElementById('batchList').innerHTML = '<div class="empty-state">还没有参数扫描 experiment。<br>在 Variants JSON Array 中填多组参数后启动，即可看到这里的排行榜。</div>';
+                document.getElementById('batchList').innerHTML = '<div class="empty-state">暂无参数扫描。<br>填入 Variants 后启动。</div>';
                 return;
             }
             document.getElementById('batchList').innerHTML = batchList.map((batch) => `
@@ -817,7 +817,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function renderBatchDetail() {
             if (!selectedBatch) {
-                document.getElementById('batchDetail').innerHTML = '<div class="empty-state">选择一个 experiment 后，这里会显示最佳参数、排行榜和每个变体的收益表现。</div>';
+                document.getElementById('batchDetail').innerHTML = '<div class="empty-state">选择 experiment 查看参数与排行。</div>';
                 return;
             }
             const leaderboard = Array.isArray(selectedBatch.leaderboard) ? selectedBatch.leaderboard : [];
@@ -873,7 +873,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                 </tbody>
                             </table>
                         </div>
-                    ` : '<div class="empty-state">这个 experiment 还没有形成 leaderboard。</div>'}
+                    ` : '<div class="empty-state">暂无 leaderboard。</div>'}
                 </div>
             `;
         }
@@ -881,7 +881,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function renderRuns() {
             document.getElementById('runCountLabel').textContent = `${runList.length} runs`;
             if (!runList.length) {
-                document.getElementById('runList').innerHTML = '<div class="empty-state">当前来源环境还没有回测记录。<br>先跑一轮，后面就能直接在这里复盘。</div>';
+                document.getElementById('runList').innerHTML = '<div class="empty-state">暂无回测记录。<br>先跑一轮。</div>';
                 return;
             }
             document.getElementById('runList').innerHTML = runList.map((run) => `
@@ -909,7 +909,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function renderMetrics() {
             if (!selectedRun) {
-                document.getElementById('metricsGrid').innerHTML = '<div class="empty-state">选择一个 run 后，这里会出现收益、风险和基准曲线。</div>';
+                document.getElementById('metricsGrid').innerHTML = '<div class="empty-state">选择 run 查看收益与风险。</div>';
                 destroyEquityChart();
                 return;
             }
@@ -1008,7 +1008,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function renderRunDetail() {
             if (!selectedRun) {
                 document.getElementById('selectedRunPill').innerHTML = '';
-                document.getElementById('runDetail').innerHTML = '<div class="empty-state">从左侧选择一个 run，这里会显示参数、质量、月度回报和错误信息。</div>';
+                document.getElementById('runDetail').innerHTML = '<div class="empty-state">选择 run 查看详情。</div>';
                 return;
             }
             document.getElementById('selectedRunPill').innerHTML = detailStatusTag(selectedRun.status);
@@ -1075,7 +1075,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                 </tbody>
                             </table>
                         </div>
-                    ` : '<div class="empty-state">当前 run 没有形成月度权益序列。</div>'}
+                    ` : '<div class="empty-state">暂无月度权益。</div>'}
                 </div>
                 <div class="detail-card">
                     <div class="subhead">Error / Notes</div>
@@ -1133,7 +1133,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return;
             }
             if (!selectedTrades.length) {
-                document.getElementById('tradesPanel').innerHTML = '<div class="empty-state">这个 run 还没有成交记录，可能数据不足或策略条件未触发。</div>';
+                document.getElementById('tradesPanel').innerHTML = '<div class="empty-state">暂无成交记录。</div>';
                 return;
             }
             const tradePreview = getBacktestTablePreview('trades', selectedTrades);
@@ -1185,7 +1185,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             destroyReplayChart();
             const panel = document.getElementById('replayPanel');
             if (!rows.length) {
-                panel.innerHTML = '<div class="empty-state">选择 symbol 后点击 Replay，或从左侧 trade 直接跳转。</div>';
+                panel.innerHTML = '<div class="empty-state">选择 symbol 后 Replay。</div>';
                 const ctx = document.getElementById('replayChart').getContext('2d');
                 ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
                 ctx.font = '12px JetBrains Mono';
@@ -1740,7 +1740,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (!initAuth()) return;
             document.getElementById('nav').innerHTML = renderNav('/ibkr_backtests.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🧪 IBKR 回测工坊', {
-                subtitle: '隔离结果 / 参数覆盖 / replay 验证',
+                subtitle: '结果 / 参数 / replay',
             });
             document.getElementById('pageBridge').innerHTML = renderBacktestsBridge('/ibkr_backtests.html');
             applyDefaultDates();
@@ -1750,7 +1750,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 () => refreshDashboard(false),
                 {
                     title: '回测页加载中',
-                    copy: '正在同步回测批次、Run、Replay 工作台和当前 worker 状态。',
+                    copy: '正在同步回测数据。',
                 }
             );
             refreshTimer = setInterval(() => refreshDashboard(false), 10000);

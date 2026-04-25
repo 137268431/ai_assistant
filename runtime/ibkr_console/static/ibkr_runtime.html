@@ -34,7 +34,7 @@
                 <div>
                     <div class="hero-kicker">Runtime Workbench</div>
                     <div class="hero-title">当前 <span class="accent">runtime</span>、2FA 与链路动作</div>
-                    <div class="hero-copy">这里聚合 compute 服务状态、最新 bars / signals / orders / system events，并直接触发计算、扫描、重算、Gateway 启停与重登。页面默认按当前环境过滤，方便检查 live / paper / backtest 的流转是否连续。</div>
+                    <div class="hero-copy">聚合 runtime、2FA、compute 与 Gateway 操作，按当前环境查看链路。</div>
                 </div>
                 <div class="hero-meta">
                     <div class="hero-meta-line" id="refreshInfo">等待加载...</div>
@@ -64,7 +64,7 @@
                     <div class="action-section">
                         <button class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction('start')">
                             <span class="action-label">启动 IBKR 服务</span>
-                            <span class="action-copy">创建新的启动卡片；手动启动默认会先重启 Gateway，再等待你人工点击 2FA 按钮继续。</span>
+                            <span class="action-copy">重启 Gateway，等待人工 2FA。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="stop" onclick="handleRuntimeAction('stop')">
                             <span class="action-label">停止 IBKR 服务</span>
@@ -72,7 +72,7 @@
                         </button>
                         <button class="action-btn action-accent" data-action="compute" onclick="handleRuntimeAction('compute')">
                             <span class="action-label">执行 Compute</span>
-                            <span class="action-copy">通过 `ibkr-api` 兼容控制面触发 `/compute`，检查 bars → indicators → signals。</span>
+                            <span class="action-copy">触发 compute，检查 bars → indicators → signals。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="scan" onclick="handleRuntimeAction('scan')">
                             <span class="action-label">执行 Scan</span>
@@ -84,7 +84,7 @@
                         </button>
                         <button class="action-btn" onclick="window.location.href = buildPageUrl('/ibkr_data_quality.html', {}, { environment: currentEnvironment })">
                             <span class="action-label">打开数据质量</span>
-                            <span class="action-copy">查看 watchlist / active targets 的 bars 缺口、重复、坏 OHLC 与修复结果。</span>
+                            <span class="action-copy">查看 bars 缺口、重复与修复结果。</span>
                         </button>
                         <button class="action-btn" onclick="loadRuntimeData(true)">
                             <span class="action-label">手动刷新</span>
@@ -104,19 +104,19 @@
                     <div class="action-section">
                         <button class="action-btn action-accent" data-action="reauth" onclick="handleRuntimeAction('reauth')">
                             <span class="action-label">请求 / 复用 2FA 卡片</span>
-                            <span class="action-copy">只发 / 复用飞书卡片，不会立刻触发手机 Push；要真正发起验证，请点飞书卡片里的开始按钮，或直接点“开始新一轮 2FA”。</span>
+                            <span class="action-copy">发出或复用飞书 2FA 卡片。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="reauth_force_new" onclick="handleRuntimeAction('reauth_force_new')">
                             <span class="action-label">开始新一轮 2FA</span>
-                            <span class="action-copy">仅在当前没有 active 轮次时使用；如果当前轮次已经乱掉，改用“放弃当前轮次并干净重开”。</span>
+                            <span class="action-copy">仅在没有 active 轮次时使用。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="takeover_on" onclick="handleRuntimeAction('takeover_on')">
                             <span class="action-label">开始人工接管</span>
-                            <span class="action-copy">你要去真实账户里查挂单时先点这个，系统会暂停把当前轮次误判为锁死，但仍持续静默探测。</span>
+                            <span class="action-copy">查真实账户前启用，避免误判锁死。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="takeover_off" onclick="handleRuntimeAction('takeover_off')">
                             <span class="action-label">结束人工接管并探测</span>
-                            <span class="action-copy">结束人工查看后立即恢复静默探测；如果会话其实已经恢复，页面会自动转成 success。</span>
+                            <span class="action-copy">结束接管并恢复静默探测。</span>
                         </button>
                     </div>
                 </section>
@@ -130,24 +130,24 @@
                         <div class="runtime-control-copy">单独管理 `ibkr_gateway`，并快速确认会话恢复状态。</div>
                     </div>
                     <div class="runtime-note">
-                        网关按钮只管理 `ibkr_gateway`；其中“重启 Gateway”在运行中或当前已有启动轮次时，会自动进入新的启动卡片和 fresh 2FA 流程。
+                        网关按钮只管理 `ibkr_gateway`。
                     </div>
                     <div class="action-section">
                         <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
                             <span class="action-label">立即静默探测</span>
-                            <span class="action-copy">不 stop/start，不新开 2FA，只快速确认当前 Gateway 会话是否已经恢复。</span>
+                            <span class="action-copy">快速确认 Gateway 会话。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="gateway_start" onclick="handleRuntimeAction('gateway_start')">
                             <span class="action-label">启动 Gateway</span>
-                            <span class="action-copy">只启动 `ibkr_gateway`，不自动恢复 Runtime，也不会自动触发新的 2FA。</span>
+                            <span class="action-copy">只启动 `ibkr_gateway`。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="gateway_stop" onclick="handleRuntimeAction('gateway_stop')">
                             <span class="action-label">停止 Gateway</span>
-                            <span class="action-copy">手动关闭 `ibkr_gateway`；如果当前有运行线程或启动轮次，会同时把当前轮次中断。</span>
+                            <span class="action-copy">关闭 `ibkr_gateway` 并中断当前轮次。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="gateway_restart" onclick="handleRuntimeAction('gateway_restart')">
                             <span class="action-label">重启 Gateway</span>
-                            <span class="action-copy">运行中或当前已有启动轮次时，会创建新的启动卡片并要求 fresh 2FA；这是 Gateway 层的推荐重启动作。</span>
+                            <span class="action-copy">重启 Gateway，并进入 fresh 2FA。</span>
                         </button>
                     </div>
                 </section>
@@ -161,24 +161,24 @@
                         <div class="runtime-control-copy">快速降载、止损与强制重开认证。</div>
                     </div>
                     <div class="runtime-note runtime-note-danger">
-                        用于快速降载和止损，不直接删除数据；其中“全部急停”会关闭 compute / trading / bars publish / IBKR Scheduler，并请求停止当前 runtime。
+                        用于快速降载和止损，不删除数据。
                     </div>
                     <div class="action-section">
                         <button class="action-btn action-danger" data-action="emergency_runtime" onclick="handleRuntimeAction('emergency_runtime')">
                             <span class="action-label">急停运行线程</span>
-                            <span class="action-copy">只停止当前 IBKR runtime，适合重新认证或排查网关问题。</span>
+                            <span class="action-copy">停止当前 runtime。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="emergency_compute" onclick="handleRuntimeAction('emergency_compute')">
                             <span class="action-label">关闭计算调度</span>
-                            <span class="action-copy">关闭自动 compute / scan，降低 PocketBase 和 compute 的持续负载。</span>
+                            <span class="action-copy">关闭自动 compute / scan。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="emergency_publish" onclick="handleRuntimeAction('emergency_publish')">
                             <span class="action-label">关闭 Bars 写入</span>
-                            <span class="action-copy">停止新的 `ibkr_bars` 写入，适合快速止血排查数据库压力。</span>
+                            <span class="action-copy">停止新的 `ibkr_bars` 写入。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="emergency_scheduler" onclick="handleRuntimeAction('emergency_scheduler')">
                             <span class="action-label">关闭 Scheduler</span>
-                            <span class="action-copy">暂停 IBKR Scheduler，避免继续触发 compute / heartbeat / 清理任务。</span>
+                            <span class="action-copy">暂停 Scheduler 任务。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="emergency_trading" onclick="handleRuntimeAction('emergency_trading')">
                             <span class="action-label">关闭交易执行</span>
@@ -186,11 +186,11 @@
                         </button>
                         <button class="action-btn action-danger" data-action="emergency_all" onclick="handleRuntimeAction('emergency_all')">
                             <span class="action-label">全部急停</span>
-                            <span class="action-copy">一次关闭计算、交易、K线写入、IBKR Scheduler，并停止当前 runtime。</span>
+                            <span class="action-copy">关闭计算、交易、K线写入和 runtime。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="panic_reset_2fa" onclick="handleRuntimeAction('panic_reset_2fa')">
                             <span class="action-label">放弃当前轮次并干净重开</span>
-                            <span class="action-copy">这是唯一推荐的强制重开方式；会终止当前 2FA、清空旧 Challenge / Response，并重新拉起一轮全新验证。</span>
+                            <span class="action-copy">终止旧 2FA，并重新发起验证。</span>
                         </button>
                     </div>
                 </section>

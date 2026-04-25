@@ -22,7 +22,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             card_ready: '准备 2FA 卡片',
             manual_trigger: '在飞书手动触发 2FA',
             manual_confirm: '完成当前 2FA 验证',
-            runtime_resume: '恢复 Runtime 运行态',
+            runtime_resume: '恢复 Runtime',
             health_check: '启动后健康检查'
         };
 
@@ -480,7 +480,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return {
                 requested,
                 actual,
-                message: `当前 ${getEnvironmentLabel(requested)} 页面没有独立 runtime；实际运行中的是 ${getEnvironmentLabel(actual)}。2FA / start / stop 等动作已阻止，请切到对应环境页面。`
+                message: `${getEnvironmentLabel(requested)} 无独立 runtime；当前运行 ${getEnvironmentLabel(actual)}。请切换环境。`
             };
         }
 
@@ -778,17 +778,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 {
                     label: 'Ready Engines',
                     value: `${status?.ready_engines || 0}/${status?.total_engines || 0}`,
-                    copy: `compute count ${status?.compute_count || 0}`
+                    copy: `compute ${status?.compute_count || 0}`
                 },
                 {
                     label: 'Warmup Gate',
                     value: warmup.gate_open ? 'OPEN' : String(warmup.phase || 'idle').toUpperCase(),
-                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · blocking ${warmup.blocking_pending_symbols_total}`
+                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade`
+                        + ` · block ${warmup.blocking_pending_symbols_total}`
                 },
                 {
                     label: 'Monitor Coverage',
                     value: `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`,
-                    copy: `pending ${warmup.monitor_pending_symbols_total} · not gating`
+                    copy: `pending ${warmup.monitor_pending_symbols_total} · monitor`
                 },
                 {
                     label: 'Today Signals',
@@ -803,27 +804,27 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 {
                     label: 'Compute Status',
                     value: String(computeHealth.status || 'unknown').toUpperCase(),
-                    copy: `last compute ${formatAgo(computeHealth.last_compute)}`
+                    copy: `compute ${formatAgo(computeHealth.last_compute)}`
                 },
                 {
                     label: 'Data Freshness',
                     value: dataHealth.last_bar_age_min != null ? `${dataHealth.last_bar_age_min}m` : '--',
-                    copy: dataHealth.last_bar_time_ms ? `${dataHealth.last_symbol || 'n/a'} · ${dataHealth.last_bar_label}` : 'latest n/a'
+                    copy: dataHealth.last_bar_time_ms ? `${dataHealth.last_symbol || 'n/a'} · ${dataHealth.last_bar_label}` : 'no latest'
                 },
                 {
                     label: 'Close Delay',
                     value: formatSecondsLabel(realtimeMetrics.close_delay_s),
-                    copy: realtimeMetrics.last_bar_close ? `last close ${formatTimeLabel(realtimeMetrics.last_bar_close)}` : 'last close --'
+                    copy: realtimeMetrics.last_bar_close ? `close ${formatTimeLabel(realtimeMetrics.last_bar_close)}` : 'close --'
                 },
                 {
                     label: 'Compute After Close',
                     value: formatSecondsLabel(realtimeMetrics.compute_after_close_s),
-                    copy: realtimeMetrics.last_compute_run ? `last run ${formatTimeLabel(realtimeMetrics.last_compute_run)}` : 'last run --'
+                    copy: realtimeMetrics.last_compute_run ? `run ${formatTimeLabel(realtimeMetrics.last_compute_run)}` : 'run --'
                 },
                 {
                     label: 'Active Tick Lag',
                     value: formatSecondsLabel(realtimeMetrics.active_tick_lag_s),
-                    copy: `${realtimeMetrics.active_symbol_count || 0} active symbols`
+                    copy: `${realtimeMetrics.active_symbol_count || 0} active`
                 }
             ];
             document.getElementById('metricGrid').innerHTML = cards.map((card) => `
@@ -1287,7 +1288,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     ` : panel.showResetCta ? `
                         <label class="response-label">Reset Recommended</label>
                         <div class="response-row">
-                            <button class="response-btn response-danger" onclick="handleRuntimeAction('panic_reset_2fa')">放弃当前轮次并干净重开</button>
+                            <button class="response-btn response-danger" onclick="handleRuntimeAction('panic_reset_2fa')">重开 2FA</button>
                         </div>
                     ` : ''}
                 </div>
@@ -1439,27 +1440,28 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 {
                     label: 'Latest Bar',
                     value: latestBar ? `${latestBar.symbol || '--'} ${formatIbkrIntervalLabel(latestBar.interval)}` : '--',
-                    copy: latestBar ? `${getRecordBarLabel(latestBar)} · ${latestBar.session_type || 'session?'}` : '当前环境没有 bar',
+                    copy: latestBar ? `${getRecordBarLabel(latestBar)} · ${latestBar.session_type || 'session?'}` : '无 bar',
                 },
                 {
                     label: 'Latest Indicator',
                     value: latestIndicator ? `${latestIndicator.symbol || '--'} ${formatIbkrIntervalLabel(latestIndicator.interval)}` : '--',
-                    copy: latestIndicator ? `${getRecordBarLabel(latestIndicator)} · calc ${getComputedTimeLabel(latestIndicator)}` : 'ibkr_indicators 暂无记录',
+                    copy: latestIndicator ? `${getRecordBarLabel(latestIndicator)} · calc ${getComputedTimeLabel(latestIndicator)}` : '无指标',
                 },
                 {
                     label: 'Latest Signal',
                     value: latestSignal ? `${latestSignal.symbol || '--'} ${String(latestSignal.direction || '--').toUpperCase()}` : '--',
-                    copy: latestSignal ? `${getRecordBarLabel(latestSignal)} · ${latestSignal.status || '--'}` : '最近没有新 signal',
+                    copy: latestSignal ? `${getRecordBarLabel(latestSignal)} · ${latestSignal.status || '--'}` : '无新信号',
                 },
                 {
                     label: 'Warmup Gate',
                     value: warmup.gate_open ? 'OPEN' : String(warmup.phase || 'idle').toUpperCase(),
-                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade · blocking ${warmup.blocking_pending_symbols_total}`,
+                    copy: `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} trade`
+                        + ` · block ${warmup.blocking_pending_symbols_total}`,
                 },
                 {
                     label: 'Monitor Coverage',
                     value: `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`,
-                    copy: `pending ${warmup.monitor_pending_symbols_total} · not gating`,
+                    copy: `pending ${warmup.monitor_pending_symbols_total} · monitor`,
                 }
             ];
 
@@ -1474,7 +1476,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 notes.push({ tone: 'error', text: 'bars 已存在但 indicators 为空，说明 compute 尚未真正落库。' });
             }
             if (latestBarMs && latestIndicatorMs && latestIndicatorMs < latestBarMs - 5 * 60 * 1000) {
-                notes.push({ tone: 'warn', text: `indicator 落后最新 bar ${Math.round((latestBarMs - latestIndicatorMs) / 60000)} 分钟，建议执行 compute 或检查定时调度。` });
+                notes.push({ tone: 'warn', text: `indicator 落后 ${Math.round((latestBarMs - latestIndicatorMs) / 60000)} 分钟，请检查 compute。` });
             }
             if (latestBarMs && normalizeIbkrInterval(latestBar?.interval) === '5m') {
                 notes.push({ tone: 'ok', text: '页面展示的是最新已收盘 5m bar，时间标签是 bar 起始时间，不显示正在形成的那根，所以视觉上会慢一根。' });
@@ -1493,20 +1495,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 notes.push({ tone: 'warn', text: 'Gateway 已在线，但 IBKR Session 仍未认证，新的 bars/高周期 bars 不会持续刷新。' });
             }
             if (warmup.phase === 'pending' || warmup.phase === 'running') {
-                notes.push({ tone: 'warn', text: `启动预热进行中：trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · blocking ${warmup.blocking_pending_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。` });
+                notes.push({ tone: 'warn', text: `预热中：trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · block ${warmup.blocking_pending_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。` });
             } else if (warmup.phase === 'failed') {
                 notes.push({ tone: 'error', text: `warmup 失败：${warmup.last_error || '需要检查回填与 compute 日志。'}` });
             } else if (warmup.trade_symbols_total > 0 && !warmup.gate_open) {
-                notes.push({ tone: 'warn', text: `交易闸门关闭：还有 ${(warmup.blocking_pending_symbols || []).join(', ') || '部分目标'} 未完成 ${warmup.required_interval} 预热。` });
+                notes.push({ tone: 'warn', text: `交易闸门关闭：${(warmup.blocking_pending_symbols || []).join(', ') || '部分目标'} 未预热。` });
             } else if (warmupElapsedS != null && warmupElapsedS >= 120) {
-                notes.push({ tone: 'warn', text: `本轮 warmup 总耗时 ${formatDurationCompact(warmupElapsedS)}；这通常来自全量 symbol 的历史修复和 5m 引擎 materialize，不等于页面卡死。` });
+                notes.push({ tone: 'warn', text: `warmup 已耗时 ${formatDurationCompact(warmupElapsedS)}，请等待修复完成。` });
             }
             if (realtimeState.phase === 'stalled') {
-                notes.push({ tone: 'error', text: `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，但 realtime compute 已卡住：${realtimeState.summary}。` });
+                notes.push({ tone: 'error', text: `bar 到 ${String(canonical.last_completed_bucket_us || '--')}，compute 卡住：${realtimeState.summary}。` });
             } else if (realtimeState.phase === 'running') {
-                notes.push({ tone: 'warn', text: `bar 已写到 ${String(canonical.last_completed_bucket_us || '--')}，指标还没追平，因为 realtime compute 仍在运行：${realtimeState.summary}。` });
+                notes.push({ tone: 'warn', text: `bar 到 ${String(canonical.last_completed_bucket_us || '--')}，指标追平中：${realtimeState.summary}。` });
             } else if (realtimeState.phase === 'queued') {
-                notes.push({ tone: 'warn', text: `canonical 5m 已完成到 ${String(canonical.last_completed_bucket_us || '--')}，但 indicators 仍在等待排队计算：${realtimeState.summary}。` });
+                notes.push({ tone: 'warn', text: `5m 到 ${String(canonical.last_completed_bucket_us || '--')}，indicators 排队中：${realtimeState.summary}。` });
             }
             if (latestBar && String(latestBar.environment || '').trim() === '') {
                 notes.push({ tone: 'warn', text: '检测到 legacy 空 environment bars，已需要迁移到 live 才能保证页面与 compute 一致。' });
@@ -1877,7 +1879,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return;
             }
             if (responsePhase.showResetCta) {
-                const message = '当前旧 2FA / Session 状态很可能已失配，请执行“放弃当前轮次并干净重开”。';
+                const message = '2FA / Session 可能失配，请重开 2FA。';
                 document.getElementById('lastAction').textContent = message;
                 showToast(message);
                 return;
@@ -1907,7 +1909,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     retryAttempts: 3
                 });
                 if (input) input.value = '';
-                document.getElementById('lastAction').textContent = `最近动作：已提交 Challenge Response (${payload.status || 'ok'})`;
+                document.getElementById('lastAction').textContent = `最近动作：Challenge 已提交 (${payload.status || 'ok'})`;
                 showToast('Response Code 已收到，等待浏览器提交流程');
                 await loadRuntimeData(false);
             } catch (error) {
@@ -1962,7 +1964,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         reason: 'manual_reauth',
                         source: 'runtime_page',
                         force_reset: true,
-                        message: '已从 Runtime 页面请求 2FA 卡片；这一步不会直接触发手机 Push，请在飞书点击开始验证，或直接使用“开始新一轮 2FA”。'
+                        message: '已请求 2FA 卡片；请在飞书验证。'
                     }
                 },
                 reauth_force_new: {
@@ -1975,7 +1977,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         force_restart: true,
                         trigger_now: true,
                         force_new: true,
-                        message: '已从 PocketBase Runtime 页面开始新一轮 2FA，请立即查看手机通知。'
+                        message: '已开始新一轮 2FA，请查看手机。'
                     }
                 },
                 takeover_on: {
@@ -2121,7 +2123,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     return;
                 }
             }
-            if (action === 'panic_reset_2fa' && !window.confirm('确认执行“放弃当前轮次并干净重开”？这会终止当前 2FA、清空旧 Challenge / Response / 人工接管 / probe 状态，删除本地 gateway cookie，并重新拉起新的验证流程。')) {
+            if (action === 'panic_reset_2fa' && !window.confirm('确认重开 2FA？将清空旧 Challenge / Response / 接管状态，并重启验证。')) {
                 return;
             }
             if (!ensureIbkrPageAuth()) return;
@@ -2147,7 +2149,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 latestRuntimeLoadId += 1;
             });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
-            document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 控制台', { subtitle: '控制 / 调度 / 链路观察 / 跳转账户与统计' });
+            document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 运行时', { subtitle: '控制 / 调度 / 链路' });
             document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_runtime.html');
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
             await loadRuntimeData(false);

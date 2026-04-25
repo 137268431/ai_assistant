@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IBKR 筛选与标池</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
@@ -21,7 +22,7 @@
         <div>
           <div class="hero-kicker">IBKR Selection Workspace</div>
           <div class="hero-title" id="heroTitle">盘中先看当前标的，再决定今天的动作。</div>
-          <div class="hero-copy" id="heroCopy">信号页已经收敛成信号列表；这里承接当前标的榜、规则板和全量筛选，作为盘中工作台使用。</div>
+          <div class="hero-copy" id="heroCopy">当前标的、规则板和全量筛选集中在这里。</div>
         </div>
         <div class="hero-meta">
           <div class="meta-line" id="marketDateMeta">等待加载...</div>
@@ -37,17 +38,17 @@
         <div id="rulesBoard" class="rules-board"></div>
         <section class="panel">
           <div class="panel-title">当前操作视图</div>
-          <div class="panel-copy">默认先看“当前标的榜”。信号页只保留信号列表与状态筛选；需要盘中盯盘、看规则和切回全标池时，在这里完成。</div>
+          <div class="panel-copy">先看当前标的，再切换全量筛选或标池维护。</div>
           <div class="subview-tabs" id="screenerViewTabs">
             <button class="subview-tab active" type="button" data-view="current">
               <div class="subview-tab-kicker">Current</div>
               <div class="subview-tab-label">当前标的榜</div>
-              <div class="subview-tab-copy">candidate / active 的技术状态、今日信号状态与轻操作入口。</div>
+              <div class="subview-tab-copy">技术状态 / 信号 / 操作。</div>
             </button>
             <button class="subview-tab" type="button" data-view="universe">
               <div class="subview-tab-kicker">Universe</div>
               <div class="subview-tab-label">全量筛选</div>
-              <div class="subview-tab-copy">看 watchlist + 今日 targets 的聚合大盘，再批量写回今日目标池。</div>
+              <div class="subview-tab-copy">watchlist + targets 聚合。</div>
             </button>
           </div>
         </section>
@@ -55,7 +56,7 @@
         <div id="currentViewPanel" class="subview-panel active">
           <section class="panel">
             <div class="panel-title">当前标的榜</div>
-            <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。这里是从信号页跳转过来的盘中工作台：把技术满足、今日已出信号、以及需要继续盯的标的放在同一张榜里。</div>
+            <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。</div>
 
             <div class="control-grid current-control-grid current-control-grid-primary">
               <div class="field span-2">
@@ -190,7 +191,7 @@
         <div id="universeViewPanel" class="subview-panel">
         <section class="panel">
           <div class="panel-title">筛选条件</div>
-          <div class="panel-copy">支持按 symbol、交易所、行业、价格、波动、量能、freshness、方向和目标池状态过滤。筛完后可以直接复制可见代码，或把选中的结果写回当天 targets。</div>
+          <div class="panel-copy">按 symbol、市场、价格、波动、量能和目标状态过滤。</div>
 
           <div class="filters">
             <div class="field">
@@ -298,7 +299,7 @@
 
         <section class="panel">
           <div class="panel-title">筛选结果</div>
-          <div class="panel-copy">`tradability_score` 是基于价格区间、10 日均量、盘前量、ATR%、日内波动、bars 新鲜度和现有 target score 做的轻量打分，只作为人工筛选排序依据。</div>
+          <div class="panel-copy">可操作分仅用于人工排序，不直接触发交易。</div>
           <div class="table-header">
             <div class="table-meta" id="tableMeta">等待加载...</div>
             <div class="table-meta" id="tableMetaSecondary"></div>
@@ -335,7 +336,7 @@
       <div class="panel-stack">
         <section class="panel">
           <div class="panel-title">每日操作标的维护</div>
-          <div class="panel-copy">直接维护指定交易日的 <code>ibkr_targets</code>。适合盘前补录、盘中修正 candidate / active / removed，和删除错误目标池记录。</div>
+          <div class="panel-copy">维护指定交易日的 <code>ibkr_targets</code>。</div>
 
           <div class="control-grid">
             <div class="field">
@@ -481,7 +482,7 @@
 
         <section class="panel">
           <div class="panel-title" id="watchlistListPanelTitle">已有 watchlist 记录</div>
-          <div class="panel-copy" id="watchlistListPanelCopy">这里直接管理 PocketBase `watchlist` 集合，默认支持当前环境与 GLOBAL 共享池一起看。</div>
+          <div class="panel-copy" id="watchlistListPanelCopy">管理当前环境与 GLOBAL watchlist。</div>
 
           <div class="control-grid">
             <div class="field">

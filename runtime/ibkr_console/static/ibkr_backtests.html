@@ -21,10 +21,7 @@
                 <div>
                     <div class="hero-kicker">IBKR Replay Lab</div>
                     <div class="hero-title">把 <span class="accent">ibkr_bars</span> 变成可回放、可统计、可清理的回测流转</div>
-                    <div class="hero-copy">
-                        回测只读取缓存好的 <span class="mono">ibkr_bars</span>，运行时重新生成指标与信号，不写入 <span class="mono">ibkr_indicators</span> / <span class="mono">ibkr_signals</span>。
-                        结果只落到隔离的 <span class="mono">ibkr_backtest_runs</span> / <span class="mono">ibkr_backtest_trades</span> / <span class="mono">ibkr_backtest_indicators</span> / <span class="mono">ibkr_backtest_signals</span> / <span class="mono">ibkr_backtest_targets</span> / <span class="mono">ibkr_backtest_reverse_signals</span>，并按 run_id 串联，便于后续参数调优、回放检查和一键清理。
-                    </div>
+                    <div class="hero-copy">读取 <span class="mono">ibkr_bars</span>，隔离生成回测结果，按 run_id 串联回放与清理。</div>
                 </div>
                 <div class="hero-actions">
                     <button class="btn ghost page-refresh-trigger" type="button" onclick="refreshDashboard(true)">刷新面板</button>
@@ -39,7 +36,7 @@
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">新建回测</div>
-                        <div class="panel-copy">支持手动 symbols、当日 <span class="mono">ibkr_targets</span>、watchlist 底池，以及历史盘前选股回放 <span class="mono">daily_scan_replay</span>。如果你选的是历史区间里的 <span class="mono">targets</span>，后端会自动切到 <span class="mono">daily_scan_replay</span>，避免直接误用当前 targets。</div>
+                        <div class="panel-copy">支持 manual、targets、watchlist 与 daily_scan_replay 来源。</div>
                     </div>
                     <div class="panel-tools">
                         <button class="btn primary" id="startButton" type="button" onclick="handleStartBacktest()">启动回测</button>
@@ -172,7 +169,7 @@
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">Experiment Leaderboard</div>
-                        <div class="panel-copy">按收益和 Sharpe 对参数变体排序，可直接打开某个变体的 run 继续查看 trades / replay。</div>
+                        <div class="panel-copy">按收益和 Sharpe 排序，继续查看 run / trades / replay。</div>
                     </div>
                     <div class="panel-tools">
                         <button class="btn ghost" type="button" onclick="refreshSelectedBatch(true)">刷新 Experiment</button>
@@ -227,7 +224,7 @@
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">Replay Timeline</div>
-                        <div class="panel-copy">围绕信号条或交易条回看价格、ATR、结构区和生成的信号，验证 bars → indicators → signals 的一致性。</div>
+                        <div class="panel-copy">按信号或交易回看价格、ATR 与信号链路。</div>
                     </div>
                     <div class="panel-tools">
                         <button class="btn ghost" type="button" onclick="loadReplayForSelection()">加载回放</button>
