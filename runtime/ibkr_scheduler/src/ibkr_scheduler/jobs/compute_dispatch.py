@@ -6,6 +6,23 @@ from typing import Any, Callable
 import requests
 
 
+def _extract_compute_startup_preload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    preload = payload.get("compute_startup_preload")
+    if isinstance(preload, dict) and preload:
+        return dict(preload)
+    compute = payload.get("compute") if isinstance(payload.get("compute"), dict) else {}
+    nested_preload = compute.get("compute_startup_preload") if isinstance(compute, dict) else None
+    return dict(nested_preload) if isinstance(nested_preload, dict) else {}
+
+
+def _is_compute_startup_preload_active(payload: dict[str, Any]) -> bool:
+    preload = _extract_compute_startup_preload(payload)
+    status = str(preload.get("status") or "").strip().lower()
+    return bool(preload.get("running")) or status in {"running", "scheduled"}
+
+
 def build_compute_dispatch_runner(
     *,
     pb: Any,
@@ -38,11 +55,31 @@ def build_compute_dispatch_runner(
                 **detail,
             }
 
+        try:
+            status_response = requests.get(
+                f"{compute_base_url}/health",
+                params={"environment": environment, "lite": "1"},
+                timeout=5,
+            )
+            status_payload = status_response.json() if status_response.content else {}
+        except requests.RequestException:
+            status_payload = {}
+        if _is_compute_startup_preload_active(status_payload):
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "compute_startup_preload_running",
+                "compute_startup_preload": _extract_compute_startup_preload(status_payload),
+                **detail,
+            }
+
         response = requests.post(
             f"{compute_base_url}/compute",
             json={
                 "source": "ibkr_scheduler",
                 "environments": [environment],
+                "intervals": ["5m"],
+                "rollup_intervals": [],
             },
             timeout=60,
         )
@@ -66,7 +103,7 @@ def build_compute_dispatch_runner(
                 "dispatch_source": "ibkr_scheduler",
             },
         }
-        save_dispatch_cursor(
+        saved_dispatch_cursor = save_dispatch_cursor(
             environment,
             {
                 "intervals": dispatch_intervals,
@@ -77,7 +114,11 @@ def build_compute_dispatch_runner(
             "ok": True,
             "skipped": False,
             "compute": payload,
-            **detail,
+            **{
+                **detail,
+                "latest_dispatched_bar_time_ms": int((dispatch_intervals.get("5m") or {}).get("latest_bar_time_ms") or 0),
+                "dispatch_cursor": saved_dispatch_cursor,
+            },
         }
 
     return _run_compute_dispatch

@@ -7,6 +7,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_SRC_ROOT))
 
 from ibkr_api.system.monitor_support import build_system_monitor_payload
+from ibkr_api.system.monitor_support import derive_monitor_service_map
 
 
 def _raise(message):
@@ -14,6 +15,78 @@ def _raise(message):
 
 
 class SystemMonitorSupportTest(unittest.TestCase):
+    def test_scheduler_lag_is_not_degraded_while_compute_preload_active(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 10,
+                    "ready_engines": 10,
+                    "compute_startup_preload": {"status": "running", "running": True},
+                },
+                "service_topology": {"services": {}},
+            },
+            {
+                "status": "running",
+                "dispatch_lag_min": 15.0,
+                "latest_ingested_bar_time_ms": 1713797100000,
+                "loop_interval_seconds": 30,
+                "job_count": 12,
+            },
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        scheduler = service_monitor["services"]["ibkr-scheduler"]
+        self.assertEqual(scheduler["status"], "running")
+        self.assertIn("deferred by compute preload", scheduler["detail"])
+
+    def test_scheduler_lag_degrades_after_compute_preload_completes(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 10,
+                    "ready_engines": 10,
+                    "compute_startup_preload": {"status": "completed", "running": False},
+                },
+                "service_topology": {"services": {}},
+            },
+            {
+                "status": "running",
+                "dispatch_lag_min": 15.0,
+                "latest_ingested_bar_time_ms": 1713797100000,
+                "loop_interval_seconds": 30,
+                "job_count": 12,
+            },
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        scheduler = service_monitor["services"]["ibkr-scheduler"]
+        self.assertEqual(scheduler["status"], "degraded")
+        self.assertNotIn("deferred by compute preload", scheduler["detail"])
+
     def test_monitor_payload_accepts_zero_arg_console_probe_wrapper(self):
         payload = build_system_monitor_payload(
             "live",

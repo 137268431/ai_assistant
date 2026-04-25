@@ -15,6 +15,15 @@ def get_fetch_since_ms(environment: str, interval: str) -> int:
     normalized_interval = normalize_interval(interval)
     key = (environment, normalized_interval)
     last_fetch = int(api_app.last_interval_fetch_ms.get(key, 0) or 0)
+    if last_fetch <= 0:
+        last_fetch = max(
+            (
+                int(bar_ms or 0)
+                for (env, _symbol, interval), bar_ms in api_app.last_processed_ms.items()
+                if env == environment and interval == normalized_interval
+            ),
+            default=0,
+        )
     if last_fetch > 0:
         return max(0, last_fetch - interval_to_ms(normalized_interval) * 2)
     return 0

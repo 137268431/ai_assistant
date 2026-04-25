@@ -112,16 +112,75 @@ class SchedulerJobsTest(unittest.TestCase):
         }
         scheduler = SchedulerService(pb, _FakeConfig())
 
-        with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})):
-            result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+        with mock.patch(
+            "ibkr_scheduler.jobs.compute_dispatch.requests.get",
+            return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
+        ):
+            with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})) as post_mock:
+                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["latest_dispatched_bar_time_ms"], 1713797100000)
+        self.assertEqual(result["dispatch_cursor"]["intervals"]["5m"]["latest_bar_time_ms"], 1713797100000)
         dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
         self.assertEqual(dispatch["intervals"]["5m"]["latest_bar_time_ms"], 1713797100000)
+        self.assertEqual(post_mock.call_args.kwargs["json"]["intervals"], ["5m"])
+        self.assertEqual(post_mock.call_args.kwargs["json"]["rollup_intervals"], [])
         job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_compute_runtime", "live", "global")]["data"]
         self.assertEqual(job_state["status"], "ok")
         self.assertGreater(int(job_state["last_success_at_ms"]), 0)
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
+
+    def test_compute_dispatch_skips_while_compute_startup_preload_running(self):
+        pb = _FakePB()
+        pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713797100000}}}
+        }
+        pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713796800000}}}
+        }
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.compute_dispatch.requests.get",
+            return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "running", "running": True}}),
+        ) as get_mock:
+            with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post") as post_mock:
+                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "compute_startup_preload_running")
+        get_mock.assert_called_once()
+        self.assertTrue(str(get_mock.call_args.args[0]).endswith("/health"))
+        post_mock.assert_not_called()
+        dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
+        self.assertEqual(dispatch["intervals"]["5m"]["latest_bar_time_ms"], 1713796800000)
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_compute_runtime", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "idle")
+
+    def test_compute_dispatch_runs_after_compute_startup_preload_completes(self):
+        pb = _FakePB()
+        pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713797100000}}}
+        }
+        pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713796800000}}}
+        }
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.compute_dispatch.requests.get",
+            return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
+        ):
+            with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})) as post_mock:
+                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["skipped"])
+        post_mock.assert_called_once()
+        dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
+        self.assertEqual(dispatch["intervals"]["5m"]["latest_bar_time_ms"], 1713797100000)
 
     def test_native_api_job_persists_success_state_and_manual_event(self):
         pb = _FakePB()
@@ -225,22 +284,13 @@ class SchedulerJobsTest(unittest.TestCase):
 
         self.assertEqual(len(results), run_job_mock.call_count)
         called_job_ids = {call.args[0] for call in run_job_mock.call_args_list}
-        self.assertEqual(
-            called_job_ids,
-            {
-                "order_expiry_check",
-                "signal_expiry_check",
-                "order_detail_integrity_guard",
-                "ibkr_compute_runtime",
-                "ibkr_scan_runtime",
-                "ibkr_auth_edge_guard",
-                "ibkr_auth_pending_guard",
-                "system_data_gap_guard",
-                "ibkr_data_quality_open_sweep",
-                "system_market_open_reminder",
-                "system_daily_report",
-            },
-        )
+        expected_job_ids = {
+            str(definition.get("id") or "")
+            for definition in scheduler_app_mod.CRON_DEFINITIONS
+            if str(definition.get("runner_kind") or "").strip().lower().startswith("native_")
+            and cron_matches_minute(str(definition.get("cron_expr") or ""), when_utc)
+        }
+        self.assertEqual(called_job_ids, expected_job_ids)
         called_slots = {call.kwargs["scheduled_slot"] for call in run_job_mock.call_args_list}
         self.assertEqual(called_slots, {"2026-04-20T09:40Z"})
 

@@ -201,6 +201,39 @@ def _format_ws_silence_detail(last_message_age_s, runtime_status: dict, ws_silen
     )
 
 
+def _stale_control_symbols(sample_payload: dict) -> tuple[list[str], int]:
+    active_subscriptions = sample_payload.get("active_subscriptions") or []
+    if isinstance(active_subscriptions, list) and active_subscriptions:
+        symbols: list[str] = []
+        monitor_count = 0
+        seen: set[str] = set()
+        for item in active_subscriptions:
+            if not isinstance(item, dict) or not item.get("stale"):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            if role == "market_monitor":
+                monitor_count += 1
+                continue
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+        return symbols, monitor_count
+
+    fallback_symbols = []
+    seen: set[str] = set()
+    for symbol in sample_payload.get("stale_symbols") or []:
+        normalized = str(symbol or "").strip().upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        fallback_symbols.append(normalized)
+    return fallback_symbols, 0
+
+
 def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snapshot: dict, sample_payload: dict) -> list[dict]:
     flags = []
     gateway = runtime_status.get("gateway") or {}
@@ -347,14 +380,21 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
                 f"活跃订阅里最慢的 symbol 已经 {max_active_bar_age_min} 分钟没有更新。",
             )
 
-    stale_symbols = sample_payload.get("stale_symbols") or []
+    stale_symbols, stale_monitor_count = _stale_control_symbols(sample_payload)
     if stale_symbols:
+        monitor_suffix = (
+            f" 另有 {stale_monitor_count} 个 market monitor 缺少实时样本，按监控数据不可用记录，不触发控制面告警。"
+            if stale_monitor_count else ""
+        )
         _append_monitor_flag(
             flags,
             "warning",
             "stale_active_symbols",
             "Stale active symbols",
-            f"当前有 {len(stale_symbols)} 个已订阅 symbol 没有出现在实时样本（quote / active bar / warmup / canonical 5m）中。",
+            (
+                f"当前有 {len(stale_symbols)} 个交易/控制订阅 symbol 没有出现在实时样本"
+                f"（quote / active bar / warmup / canonical 5m）中。{monitor_suffix}"
+            ),
         )
 
     memory_used_pct = (host_snapshot.get("memory") or {}).get("used_pct")

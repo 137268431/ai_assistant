@@ -100,10 +100,12 @@ class ComputeMaterializeTest(unittest.TestCase):
             },
             cfg=None,
             engines={key: engine},
+            last_processed_ms={},
             logger=SimpleNamespace(info=lambda *args, **kwargs: None),
             normalize_bar_environment=lambda row, environment: dict(row, environment=environment),
             normalize_symbols=lambda symbols: [str(symbol).upper() for symbol in symbols],
             pb=SimpleNamespace(get_all_records=lambda *args, **kwargs: [latest_row]),
+            persist_compute_cursors=mock.Mock(return_value=None),
             signal_gens={},
             flush_indicator_batch=lambda batch: seeded_batches.append(list(batch)) or {"ok": True, "written": len(batch), "errors": 0},
         )
@@ -130,6 +132,8 @@ class ComputeMaterializeTest(unittest.TestCase):
         self.assertEqual(len(seeded_batches), 1)
         self.assertEqual(seeded_batches[0][0]["bar_time_ms"], 200)
         self.assertEqual(seeded_batches[0][0]["symbol"], "AAPL")
+        self.assertEqual(fake_app.last_processed_ms[key], 200)
+        fake_app.persist_compute_cursors.assert_called_once_with("live")
 
 
 if __name__ == "__main__":

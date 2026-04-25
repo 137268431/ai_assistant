@@ -80,6 +80,35 @@ class MonitorSamplesVisibilityTest(unittest.TestCase):
         self.assertFalse(vix["stale"])
         self.assertIn("canonical_5m", vix["visibility_sources"])
 
+    def test_market_ws_symbol_is_monitor_even_without_warmup_monitor_symbols(self):
+        service = SimpleNamespace(_active_subscription_map={"VIX": 13455763})
+        runtime_status = {
+            "warmup": {
+                "monitor_symbols": [],
+                "symbol_status": [],
+                "pending_symbols": [],
+            },
+            "market_universe": {
+                "active_trade_symbols": [],
+                "market_ws_symbols": ["VIX"],
+                "last_active_repair_reasons": {},
+            },
+            "bar_aggregator": {"active_bars": {}},
+            "canonical_5m": {
+                "last_completed_bucket_ms": 1776792300000,
+                "written_symbols": [],
+            },
+            "realtime_quotes": {"quotes": {}},
+        }
+
+        payload = self.samples._build_monitor_samples(service, runtime_status)
+        self.assertEqual(payload["stale_symbols"], ["VIX"])
+        self.assertEqual(payload["stale_monitor_symbols"], ["VIX"])
+        self.assertEqual(payload["stale_control_symbols"], [])
+        vix = payload["active_subscriptions"][0]
+        self.assertEqual(vix["role"], "market_monitor")
+        self.assertTrue(vix["stale"])
+
 
 if __name__ == "__main__":
     unittest.main()

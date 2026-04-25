@@ -11,7 +11,8 @@ from .materialize import reset_compute_state_for_symbols
 
 
 def _normalize_target_intervals(api_app, intervals=None) -> list[str]:
-    target_intervals = [normalize_interval(interval) for interval in (intervals or api_app.HIGHER_INTERVALS)]
+    source_intervals = api_app.HIGHER_INTERVALS if intervals is None else intervals
+    target_intervals = [normalize_interval(interval) for interval in source_intervals]
     return [interval for interval in target_intervals if interval in api_app.HIGHER_INTERVALS]
 
 

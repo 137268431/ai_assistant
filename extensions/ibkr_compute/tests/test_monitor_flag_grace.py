@@ -176,6 +176,69 @@ class MonitorFlagGraceTest(unittest.TestCase):
         self.assertNotIn("market_data_silent", flag_codes)
         self.assertNotIn("market_data_silent_critical", flag_codes)
 
+    def test_stale_market_monitor_symbol_does_not_raise_control_warning(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {"active_subscription_count": 1, "pending_subscription_count": 0},
+            {},
+            {
+                "stale_symbols": ["VIX"],
+                "active_subscriptions": [
+                    {"symbol": "VIX", "role": "market_monitor", "stale": True},
+                ],
+            },
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertNotIn("stale_active_symbols", flag_codes)
+
+    def test_stale_trade_symbol_still_raises_control_warning(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {"active_subscription_count": 1, "pending_subscription_count": 0},
+            {},
+            {
+                "stale_symbols": ["AAPL"],
+                "active_subscriptions": [
+                    {"symbol": "AAPL", "role": "trade", "stale": True},
+                ],
+            },
+        )
+
+        warning = next(item for item in flags if item["code"] == "stale_active_symbols")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertIn("当前有 1 个", warning["detail"])
+
+    def test_stale_warning_counts_only_non_monitor_symbols(self):
+        flags = _build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {"active_subscription_count": 2, "pending_subscription_count": 0},
+            {},
+            {
+                "stale_symbols": ["AAPL", "VIX"],
+                "active_subscriptions": [
+                    {"symbol": "AAPL", "role": "trade", "stale": True},
+                    {"symbol": "VIX", "role": "market_monitor", "stale": True},
+                ],
+            },
+        )
+
+        warning = next(item for item in flags if item["code"] == "stale_active_symbols")
+        self.assertIn("当前有 1 个", warning["detail"])
+        self.assertIn("另有 1 个 market monitor", warning["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

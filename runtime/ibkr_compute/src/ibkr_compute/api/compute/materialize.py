@@ -262,10 +262,31 @@ def materialize_engines_from_storage(
         indicator_seed_written = int(flush_result.get("written", 0) or 0)
         indicator_seed_errors = int(flush_result.get("errors", 0) or 0)
         indicator_seed_ok = indicator_seed_errors == 0 and indicator_seed_written >= len(ready_symbols)
+        last_processed_ms = getattr(api_app, "last_processed_ms", None)
+        if not isinstance(last_processed_ms, dict):
+            last_processed_ms = {}
+            setattr(api_app, "last_processed_ms", last_processed_ms)
+        last_interval_fetch_ms = getattr(api_app, "last_interval_fetch_ms", None)
+        if not isinstance(last_interval_fetch_ms, dict):
+            last_interval_fetch_ms = {}
+            setattr(api_app, "last_interval_fetch_ms", last_interval_fetch_ms)
         for symbol in ready_symbols:
             results.setdefault(symbol, {})["indicator_seeded"] = indicator_seed_ok
+            if indicator_seed_ok:
+                key = (runtime_environment, symbol, normalized_interval)
+                latest_bar_ms = int(results.get(symbol, {}).get("last_bar_time_ms", 0) or 0)
+                last_processed_ms[key] = max(
+                    int(last_processed_ms.get(key, 0) or 0),
+                    latest_bar_ms,
+                )
+                last_interval_fetch_ms[(runtime_environment, normalized_interval)] = max(
+                    int(last_interval_fetch_ms.get((runtime_environment, normalized_interval), 0) or 0),
+                    latest_bar_ms,
+                )
         for symbol in normalized_symbols:
             results.setdefault(symbol, {}).setdefault("indicator_seeded", False)
+        if indicator_seed_ok and hasattr(api_app, "persist_compute_cursors"):
+            api_app.persist_compute_cursors(runtime_environment)
     api_app.logger.info(
         "Materialized engines from storage: env=%s interval=%s symbols=%d ready=%d indicator_seed_written=%d indicator_seed_errors=%d workers=%d elapsed_s=%.3f",
         runtime_environment,

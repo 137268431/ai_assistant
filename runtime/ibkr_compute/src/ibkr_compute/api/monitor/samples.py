@@ -74,7 +74,10 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
 
     subscription_map = _copy_active_subscription_map(service)
     trade_symbols = set(_normalize_symbol_list(market_universe.get("active_trade_symbols") or []))
-    monitor_symbols = set(_normalize_symbol_list(warmup.get("monitor_symbols") or []))
+    monitor_symbols = set(
+        _normalize_symbol_list(warmup.get("monitor_symbols") or [])
+        + _normalize_symbol_list(market_universe.get("market_ws_symbols") or [])
+    )
     quote_symbols = set(_normalize_symbol_list(quote_map.keys()))
     active_bar_symbols = set(_normalize_symbol_list(active_bars.keys()))
     warmup_status_map = _build_warmup_symbol_status_map(warmup)
@@ -166,12 +169,24 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
         for item in active_subscriptions
         if item.get("stale")
     ]
+    stale_monitor_symbols = [
+        item["symbol"]
+        for item in active_subscriptions
+        if item.get("stale") and str(item.get("role") or "").strip().lower() == api_app.WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR
+    ]
+    stale_control_symbols = [
+        item["symbol"]
+        for item in active_subscriptions
+        if item.get("stale") and str(item.get("role") or "").strip().lower() != api_app.WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR
+    ]
 
     return {
         "active_subscriptions": active_subscriptions,
         "active_bar_symbols": active_bar_symbols,
         "pending_symbols": _normalize_symbol_list(warmup.get("pending_symbols") or []),
         "stale_symbols": stale_symbols,
+        "stale_monitor_symbols": stale_monitor_symbols,
+        "stale_control_symbols": stale_control_symbols,
         "repair_reasons": repair_reasons,
     }
 

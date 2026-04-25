@@ -210,10 +210,94 @@
         .chip-error { color: #FC8181; }
         .chip-muted { color: #8BA4C4; }
 
-        .action-section {
-            margin-top: 18px;
+        .runtime-control-panel {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 14px;
+            margin-top: 18px;
+        }
+        .runtime-control-group {
+            position: relative;
+            padding: 16px;
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(155deg, rgba(255,255,255,0.045), rgba(255,255,255,0.018));
+            overflow: hidden;
+        }
+        .runtime-control-group::before {
+            content: '';
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 3px;
+            background: rgba(99, 179, 237, 0.55);
+        }
+        .runtime-control-primary::before {
+            background: rgba(72, 187, 120, 0.68);
+        }
+        .runtime-control-auth::before,
+        .runtime-control-gateway::before {
+            background: rgba(99, 179, 237, 0.66);
+        }
+        .runtime-control-danger {
+            border-color: rgba(252, 129, 129, 0.18);
+            background:
+                radial-gradient(circle at top right, rgba(252, 129, 129, 0.08), transparent 38%),
+                linear-gradient(155deg, rgba(255,255,255,0.04), rgba(255,255,255,0.016));
+        }
+        .runtime-control-danger::before {
+            background: rgba(252, 129, 129, 0.78);
+        }
+        .runtime-control-head {
+            position: relative;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+            margin-bottom: 12px;
+        }
+        .runtime-control-kicker {
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 1.1px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .runtime-control-danger .runtime-control-kicker {
+            color: #FC8181;
+        }
+        .runtime-control-title {
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+        .runtime-control-copy {
+            max-width: 420px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.55;
+            text-align: right;
+        }
+        .runtime-note {
+            position: relative;
+            margin-bottom: 12px;
+            padding: 11px 13px;
+            border-radius: 14px;
+            border: 1px solid rgba(99, 179, 237, 0.12);
+            background: rgba(14, 20, 32, 0.56);
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .runtime-note-strategy {
+            border-color: rgba(72, 187, 120, 0.14);
+        }
+        .runtime-note-danger {
+            border-color: rgba(252, 129, 129, 0.22);
+            background: rgba(46, 14, 20, 0.42);
+        }
+        .action-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
             gap: 10px;
         }
         .action-btn {
@@ -914,6 +998,9 @@
         }
 
         @media (max-width: 720px) {
+            .page-shell {
+                padding: 0 12px 72px;
+            }
             .hero {
                 padding: 18px 16px;
             }
@@ -929,11 +1016,46 @@
             .auth-banner-side {
                 min-width: 0;
             }
+            .runtime-control-panel {
+                gap: 12px;
+            }
+            .runtime-control-group {
+                padding: 14px 12px 12px 14px;
+            }
+            .runtime-control-head {
+                display: grid;
+                gap: 8px;
+                margin-bottom: 10px;
+            }
+            .runtime-control-copy {
+                max-width: none;
+                text-align: left;
+            }
+            .runtime-note {
+                margin-bottom: 10px;
+                padding: 10px 12px;
+            }
+            .action-section {
+                grid-template-columns: 1fr;
+            }
+            .action-btn {
+                padding: 12px;
+            }
             .metric-value {
                 font-size: 22px;
             }
             .data-table th,
             .data-table td {
                 padding: 9px 6px;
+            }
+        }
+
+        @media (min-width: 1120px) {
+            .runtime-control-panel {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                align-items: start;
+            }
+            .runtime-control-danger {
+                grid-column: 1 / -1;
             }
         }

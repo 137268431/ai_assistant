@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 
 from ibkr_compute.api.compute import request as compute_request
 from ibkr_compute.api.compute import rollup as compute_rollup
+from ibkr_compute.api.compute.runtime_state import timing as compute_timing
 
 
 class ComputeRollupPlanTest(unittest.TestCase):
@@ -84,8 +85,55 @@ class ComputeRollupPlanTest(unittest.TestCase):
         self.assertFalse(plan["incremental_rollup"])
         self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h", "1d"])
 
+    def test_scheduler_compute_defaults_to_5m_without_rollup(self):
+        fake_app = mock.Mock()
+        fake_app.SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
+        fake_app.DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"]
+        fake_app.SIGNAL_SUPPRESSED_COMPUTE_SOURCES = set()
+        fake_app.normalize_symbols.return_value = []
+        fake_app.cfg.has_environment_override.return_value = False
+        fake_app.cfg.get_bool_for_environment.return_value = True
+
+        with mock.patch.object(compute_request, "_api_app", return_value=fake_app):
+            plan = compute_request.build_compute_execution_plan(
+                {
+                    "source": "ibkr_scheduler",
+                    "environments": ["live"],
+                }
+            )
+
+        self.assertEqual(plan["intervals"], ["5m"])
+        self.assertEqual(plan["rollup_intervals"], [])
+
+    def test_empty_rollup_interval_override_stays_empty(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+
+        self.assertEqual(compute_rollup._normalize_target_intervals(fake_app, []), [])
+        self.assertEqual(
+            compute_rollup._normalize_target_intervals(fake_app, None),
+            ["15m", "30m", "1h", "4h", "1d"],
+        )
+
 
 class IncrementalRollupWindowTest(unittest.TestCase):
+    def test_fetch_since_falls_back_to_processed_cursor_when_interval_fetch_empty(self):
+        fake_app = mock.Mock()
+        fake_app.last_interval_fetch_ms = {}
+        fake_app.last_processed_ms = {
+            ("live", "AAPL", "5m"): 1777056600000,
+            ("live", "MSFT", "5m"): 1777056300000,
+            ("paper", "AAPL", "5m"): 1777057200000,
+            ("live", "AAPL", "15m"): 1777057200000,
+        }
+
+        with mock.patch.object(compute_timing, "_api_app", return_value=fake_app):
+            since_ms = compute_timing.get_fetch_since_ms("live", "5m")
+
+        self.assertEqual(since_ms, 1777056600000 - (2 * 5 * 60 * 1000))
+
     def test_recent_rollup_respects_selected_intervals(self):
         fake_app = mock.Mock()
         fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]

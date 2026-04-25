@@ -48,7 +48,7 @@ def build_status_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
     include_engines = _include_engines_in_status()
-    engine_items = _snapshot_engine_items(app_mod)
+    engine_items = _snapshot_engine_items(app_mod, blocking=include_engines)
     engine_status = _build_engine_status_map(engine_items) if include_engines else {}
     return jsonify(
         {

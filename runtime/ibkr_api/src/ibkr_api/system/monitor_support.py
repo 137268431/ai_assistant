@@ -198,6 +198,20 @@ def derive_monitor_service_map(
         normalized = [str(part).strip() for part in parts if str(part or "").strip()]
         return " · ".join(normalized)
 
+    def _compute_startup_preload_snapshot() -> dict[str, Any]:
+        preload = compute.get("compute_startup_preload") if isinstance(compute.get("compute_startup_preload"), dict) else {}
+        if preload:
+            return dict(preload)
+        root_preload = base_payload.get("compute_startup_preload")
+        if isinstance(root_preload, dict):
+            return dict(root_preload)
+        return {}
+
+    def _compute_startup_preload_active() -> bool:
+        preload = _compute_startup_preload_snapshot()
+        status = str(preload.get("status") or "").strip().lower()
+        return bool(preload.get("running")) or status in {"running", "scheduled"}
+
     console_meta = _topology_meta("ibkr-console")
     console_running = bool(console_probe.get("ok"))
     pb_meta = _topology_meta("pocketbase")
@@ -236,7 +250,8 @@ def derive_monitor_service_map(
 
     gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
     scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "offline"
-    if scheduler_status == "running" and float(scheduler_summary.get("dispatch_lag_min") or 0) >= 10:
+    compute_preload_active = _compute_startup_preload_active()
+    if scheduler_status == "running" and float(scheduler_summary.get("dispatch_lag_min") or 0) >= 10 and not compute_preload_active:
         scheduler_status = "degraded"
 
     service_map = {
@@ -268,6 +283,7 @@ def derive_monitor_service_map(
                     if scheduler_summary.get("latest_ingested_bar_time_ms")
                     else "awaiting bars"
                 ),
+                "deferred by compute preload" if compute_preload_active else "",
                 f"jobs {int(scheduler_summary.get('job_count') or 0)}",
             ),
         },

@@ -59,6 +59,19 @@ def get_rollup_intervals_for_source(source: str) -> list[str]:
     return normalized
 
 
+def _normalize_requested_intervals(values, allowed_intervals: list[str]) -> list[str]:
+    if values is None:
+        return []
+    source = values if isinstance(values, list) else [values]
+    allowed = {str(item or "").strip().lower() for item in allowed_intervals}
+    normalized = []
+    for value in source:
+        interval = str(value or "").strip().lower()
+        if interval and interval in allowed and interval not in normalized:
+            normalized.append(interval)
+    return normalized
+
+
 def get_requested_environments(payload=None, defaults=None):
     api_app = _api_app()
     payload = payload if isinstance(payload, dict) else get_json_payload()
@@ -134,6 +147,10 @@ def build_compute_execution_plan(payload=None) -> dict:
         "targeted_recompute",
         "canonical_close",
     }
+    requested_intervals = _normalize_requested_intervals(payload.get("intervals"), api_app.INTERVALS)
+    requested_rollup_intervals = _normalize_requested_intervals(payload.get("rollup_intervals"), api_app.HIGHER_INTERVALS)
+    default_intervals = ["5m"] if source == "ibkr_scheduler" and "intervals" not in payload else api_app.INTERVALS
+    default_rollup_intervals = [] if source == "ibkr_scheduler" and "rollup_intervals" not in payload else get_rollup_intervals_for_source(source)
     return {
         "payload": payload,
         "source": source,
@@ -147,6 +164,6 @@ def build_compute_execution_plan(payload=None) -> dict:
         "incremental_rollup": bool(requested_symbols) and source == "canonical_close",
         "skip_persisted_cursor": source in {"recompute", "history_repair", "history_rebuild", "targeted_recompute"},
         "force_rollup": force_rollup,
-        "rollup_intervals": get_rollup_intervals_for_source(source),
-        "intervals": api_app.INTERVALS,
+        "rollup_intervals": requested_rollup_intervals if "rollup_intervals" in payload else default_rollup_intervals,
+        "intervals": requested_intervals if "intervals" in payload else default_intervals,
     }

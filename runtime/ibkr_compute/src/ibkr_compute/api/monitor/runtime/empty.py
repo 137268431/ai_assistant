@@ -43,6 +43,8 @@ def _build_empty_monitor_samples() -> dict:
         "active_bar_symbols": [],
         "pending_symbols": [],
         "stale_symbols": [],
+        "stale_monitor_symbols": [],
+        "stale_control_symbols": [],
         "repair_reasons": [],
     }
 
