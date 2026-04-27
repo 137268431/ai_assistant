@@ -48,6 +48,10 @@ def _alertable_symbols(symbols: list[Any]) -> list[str]:
     return [symbol for symbol in _unique_sorted(symbols) if symbol not in GAP_ALERT_EXCLUDED_SYMBOLS]
 
 
+def _is_regular_session(row: dict[str, Any]) -> bool:
+    return _to_text(row.get("session_type")).lower() == "regular"
+
+
 def _get_state_data(pb: Any, state_key: str, environment: str, date_token: str) -> dict[str, Any]:
     try:
         record = pb.get_state(state_key, environment, date=date_token)
@@ -139,9 +143,13 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
 
     latest_bar_time_ms = 0
     latest_bar_symbol = ""
+    ignored_non_regular_symbols: list[str] = []
     for symbol in symbols:
         bucket = _as_dict(latest_bar_by_symbol.get(symbol))
         bar_ms = _to_int(_as_dict(bucket).get("bar_time_ms"), 0)
+        if bar_ms > 0 and not _is_regular_session(bucket):
+            ignored_non_regular_symbols.append(symbol)
+            continue
         if bar_ms > latest_bar_time_ms:
             latest_bar_time_ms = bar_ms
             latest_bar_symbol = symbol
@@ -154,6 +162,8 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
     for symbol in symbols:
         latest_bar = _as_dict(latest_bar_by_symbol.get(symbol))
         bar_ms = _to_int(latest_bar.get("bar_time_ms"), 0)
+        if bar_ms <= 0 or not _is_regular_session(latest_bar):
+            continue
         if latest_bar_time_ms > 0 and bar_ms > 0:
             lag_ms = latest_bar_time_ms - bar_ms
             if lag_ms >= BAR_LAG_ALERT_MS:
@@ -193,6 +203,7 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
         "monitored_symbol_count": len(monitored_symbols),
         "alertable_symbol_count": len(symbols),
         "excluded_gap_symbols": excluded_symbols,
+        "ignored_non_regular_symbols": _unique_sorted(ignored_non_regular_symbols),
         "today_bar_symbol_count": len(latest_bar_by_symbol),
         "latest_bar_time_ms": latest_bar_time_ms,
         "latest_bar_symbol": latest_bar_symbol,
