@@ -131,11 +131,11 @@
             if (contextSignalId) {
                 scopeLines.push(`signal_id=${summarizeHeaderValue(contextSignalId, 18)}`);
             }
-            const metaHtml = `
-                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
-                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
-                <div class="meta-line">上下文 · ${escapeHtml(scopeLines.join(' · '))}</div>
-            `;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '交易日', value: currentDate || '--' },
+                { label: '上下文', value: scopeLines.join(' · ') },
+            ]);
             const statusHtml = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>事件 ${escapeHtml(String(getOrderDetailsResultCount()))}</span>
@@ -147,7 +147,6 @@
                 kicker: 'Execution Timeline',
                 title: '订单事件时间线',
                 copy: '聚焦订单事件、关系链和 trade group 演进，从这里回看单笔订单如何进入、成交、保护和退出。',
-                metaHtml,
                 statusHtml,
             });
         }
@@ -379,6 +378,7 @@
                 renderOrderDetailsPageChrome();
                 renderContent();
                 updateLoadMoreButton();
+                setPageRefreshTime();
             } catch (error) {
                 console.error('加载订单明细失败:', error);
                 if (error.status === 401 || error.status === 403) {

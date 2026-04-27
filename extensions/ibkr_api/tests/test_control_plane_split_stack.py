@@ -1402,8 +1402,131 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertTrue(payload["unhealthy"])
         self.assertEqual(payload["job_id"], "system_heartbeat")
         self.assertTrue(events)
+        detail = events[0]["detail"]
+        self.assertIn("影响", detail)
+        self.assertIn("原因", detail)
+        self.assertIn("建议", detail)
+        self.assertIn("IBKR 会话尚未认证", detail["原因"])
+        self.assertIn("实时行情 WebSocket", detail["影响"])
+        self.assertNotIn("问题码", detail)
+        self.assertIn("诊断码", detail)
         self.assertIn(("system_notify_heartbeat", "live"), states)
         self.assertTrue(states[("system_notify_heartbeat", "live")]["last_issue_hash"])
+
+    def test_system_heartbeat_ignores_nominal_info_flag(self):
+        states = {}
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True}
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 12:01:00", "cn": "2026-04-24 00:01:00", "date": "2026-04-23"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "today": {"ibkr_bars": 1, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                    "gateway": {"running": True, "reachable": True},
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+                "service_monitor": {
+                    "status_counts": {"running": 6, "degraded": 1},
+                    "services": {
+                        "ibkr-compute": {
+                            "status": "degraded",
+                            "detail": "engines 0/354",
+                            "fault_domain": "compute_plane",
+                        },
+                    },
+                },
+                "flags": [{"code": "monitor_nominal", "severity": "info"}],
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["unhealthy"])
+        self.assertEqual(payload["issue_codes"], [])
+        self.assertFalse(events)
+
+    def test_system_heartbeat_reports_actionable_degraded_service_name(self):
+        states = {}
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True}
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 12:02:00", "cn": "2026-04-24 00:02:00", "date": "2026-04-23"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "today": {"ibkr_bars": 1, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                    "gateway": {"running": True, "reachable": True},
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+                "service_monitor": {
+                    "status_counts": {"running": 6, "degraded": 1},
+                    "services": {
+                        "ibkr-scheduler": {
+                            "status": "degraded",
+                            "detail": "lag 12.00m",
+                            "fault_domain": "scheduler",
+                        },
+                    },
+                },
+                "flags": [{"code": "monitor_nominal", "severity": "info"}],
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["unhealthy"])
+        self.assertEqual(payload["issue_codes"], ["services_degraded:1"])
+        self.assertTrue(events)
+        self.assertIn("ibkr-scheduler degraded", events[0]["detail"]["原因"])
 
     def test_system_monitor_alert_job_emits_on_warning_flags(self):
         states = {}

@@ -330,10 +330,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       `).join('');
     }
 
+    function setHeroMetaLine(id, text = '') {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const value = String(text || '').trim();
+      el.textContent = value;
+      el.style.display = value ? '' : 'none';
+    }
+
     function renderRulesCard(panelKey, panel, { actionHref = '', actionLabel = '' } = {}) {
       const chips = Array.isArray(panel?.chips) ? panel.chips : [];
       const sections = Array.isArray(panel?.sections) ? panel.sections : [];
-      const footer = rulesPayload.computed_at_us ? `更新: ${rulesPayload.computed_at_us}` : '';
+      const footer = rulesPayload.computed_at_us ? '规则已加载' : '';
       const expanded = !isPhoneViewport() || expandedRulesPanels.has(panelKey);
       return `
         <section class="panel rules-panel" data-expanded="${expanded ? 'true' : 'false'}">
@@ -646,9 +654,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         document.getElementById('heroCopy').textContent = isMonitorTab
           ? '搜索 IBKR 合约，写入环境或 GLOBAL。'
           : '搜索 IBKR 合约，写入环境或 GLOBAL。';
-        document.getElementById('marketDateMeta').textContent = `Scope ${getEnvironmentLabel(currentEnvironment)} + GLOBAL`;
-        document.getElementById('refreshInfo').textContent = watchlistState.lastRefresh;
-        document.getElementById('selectionInfo').textContent = `当前可见 ${visible} 条 · 当前角色 ${roleLabel}`;
+        setPageContextMeta([
+          { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+          { label: 'Scope', value: `${getEnvironmentLabel(currentEnvironment)} + GLOBAL` },
+          { label: '角色', value: roleLabel },
+          { label: '可见', value: `${visible} 条` },
+        ]);
+        setHeroMetaLine('marketDateMeta');
+        setHeroMetaLine('refreshInfo', watchlistState.lastRefresh);
+        setHeroMetaLine('selectionInfo');
         renderWatchlistSummary();
         document.getElementById('watchlistSearchPanelTitle').textContent = isMonitorTab ? '搜索可加入的市场监控标的' : '搜索可加入的标的';
         document.getElementById('watchlistSearchPanelCopy').textContent = isMonitorTab
@@ -670,9 +684,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const visible = getFilteredDailyTargetItems().length;
         document.getElementById('heroTitle').textContent = '维护每日标的。';
         document.getElementById('heroCopy').textContent = '搜索合约，补录、修正和清理 ibkr_targets。';
-        document.getElementById('marketDateMeta').textContent = `Target Date ${getDailyTargetDate()}`;
-        document.getElementById('refreshInfo').textContent = dailyTargetsState.lastRefresh;
-        document.getElementById('selectionInfo').textContent = `当前 ${visible} 条 · 搜索候选 ${dailyTargetsState.searchResults.length} 个`;
+        setPageContextMeta([
+          { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+          { label: 'Target Date', value: getDailyTargetDate() },
+          { label: '当前', value: `${visible} 条` },
+          { label: '搜索候选', value: `${dailyTargetsState.searchResults.length} 个` },
+        ]);
+        setHeroMetaLine('marketDateMeta');
+        setHeroMetaLine('refreshInfo', dailyTargetsState.lastRefresh);
+        setHeroMetaLine('selectionInfo');
         renderTargetsSummary();
         return;
       }
@@ -687,11 +707,19 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const filteredTotal = Number(todayTargetsPayload.filtered_total || visible || 0) || 0;
         document.getElementById('heroTitle').textContent = '当前标的工作台。';
         document.getElementById('heroCopy').textContent = '聚合 targets、技术状态和待处理信号。';
-        document.getElementById('marketDateMeta').textContent = `Market Date ${todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate').value || '--'}`;
-        document.getElementById('refreshInfo').textContent = todayTargetsPayload.computed_at_us
-          ? `更新: ${todayTargetsPayload.computed_at_us}`
-          : '数据未刷新';
-        document.getElementById('selectionInfo').textContent = `${currentPage}/${totalPages} 页 · ${visible} 条 · ready ${visibleReady} · action ${visibleActionable} · ${filteredTotal}/${summary.total || 0}`;
+        setPageContextMeta([
+          { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+          { label: 'Market Date', value: todayTargetsPayload.market_date || screenerPayload.market_date || document.getElementById('marketDate').value || '--' },
+          { label: '页码', value: `${currentPage}/${totalPages}` },
+          { label: '可见', value: `${visible} 条` },
+          { label: 'ready/action', value: `${visibleReady}/${visibleActionable}` },
+          { label: '过滤', value: `${filteredTotal}/${summary.total || 0}` },
+        ]);
+        setHeroMetaLine('marketDateMeta');
+        setHeroMetaLine('refreshInfo', todayTargetsPayload.computed_at_us
+          ? '数据已加载'
+          : '数据未刷新');
+        setHeroMetaLine('selectionInfo');
         renderCurrentTargetsSummary();
         return;
       }
@@ -700,13 +728,17 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const operableCount = selectedRows.filter((row) => row.is_operable).length;
       document.getElementById('heroTitle').textContent = '先筛选，再入池。';
       document.getElementById('heroCopy').textContent = '查看 bars、量能和方向，并维护 watchlist。';
-      document.getElementById('marketDateMeta').textContent = `Market Date ${screenerPayload.market_date || document.getElementById('marketDate').value || '--'}`;
-      document.getElementById('refreshInfo').textContent = screenerPayload.computed_at_us
-        ? `更新: ${screenerPayload.computed_at_us}`
-        : '数据未刷新';
-      document.getElementById('selectionInfo').textContent = selectedRows.length
-        ? `已选择 ${selectedRows.length} 个标的 · 可操作 ${operableCount} 个`
-        : `已选择 ${selectedSymbols.size} 个标的`;
+      setPageContextMeta([
+        { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+        { label: 'Market Date', value: screenerPayload.market_date || document.getElementById('marketDate').value || '--' },
+        { label: '已选择', value: `${selectedRows.length || selectedSymbols.size} 个` },
+        { label: '可操作', value: `${operableCount} 个` },
+      ]);
+      setHeroMetaLine('marketDateMeta');
+      setHeroMetaLine('refreshInfo', screenerPayload.computed_at_us
+        ? '数据已加载'
+        : '数据未刷新');
+      setHeroMetaLine('selectionInfo');
       renderScreenerSummary();
     }
 
@@ -1289,7 +1321,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const workflowTimingCopy = scanTimeEt === openCheckTimeEt
         ? `${scanTimeEt} ET 日筛；${workflow.intraday_refresh_rule || '5m close-driven'}`
         : `${scanTimeEt} ET 日筛；${openCheckTimeEt} ET 检查`;
-      meta.textContent = `${marketDate} · ${currentPage}/${totalPages} 页 · ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
+      meta.textContent = `${currentPage}/${totalPages} 页 · ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
       metaSecondary.textContent = `ready ${filteredSummary.ready_count || 0} · signaled ${filteredSummary.signaled_count || 0} · action ${filteredSummary.needs_action_count || 0}。${workflowTimingCopy}。`;
       renderCurrentTargetPagination();
 
@@ -1377,7 +1409,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const marketDate = document.getElementById('marketDate').value || getDailyTargetDate() || getUsDate();
       window.clearTimeout(currentTargetState.searchDebounceId);
       const requestToken = ++currentTargetState.requestToken;
-      document.getElementById('currentTargetsMeta').textContent = `交易日 ${marketDate} · 正在加载...`;
+      document.getElementById('currentTargetsMeta').textContent = '正在加载当前标的...';
       document.getElementById('currentTargetsMetaSecondary').textContent = '正在计算技术状态与今日信号聚合...';
       document.getElementById('currentTargetsTable').innerHTML = '<tr><td colspan="6" class="empty-state">加载中...</td></tr>';
       renderMobileCardState('currentTargetsCards', '正在加载当前标的...');
@@ -1397,6 +1429,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         filteredCurrentTargetRows = Array.isArray(todayTargetsPayload.items) ? todayTargetsPayload.items : [];
         renderRulesBoard();
         renderCurrentTargetTable();
+        setPageRefreshTime();
         if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
         void refreshTodayTargetQuotes(items, requestToken);
         if (showToastOnSuccess) showToast('今日交易标的已刷新');
@@ -1653,6 +1686,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         if (loadCurrentTargetsAfter) {
           await loadTodayTargets(false);
         }
+        setPageRefreshTime();
         if (activeTab === 'screener') updateHero();
         if (showToastOnSuccess) showToast('筛选器已刷新');
         return screenerPayload;
@@ -1681,6 +1715,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           await loadTodayTargets(false);
         }
         renderRulesBoard();
+        setPageRefreshTime();
         if (activeTab === 'screener') updateHero();
         void refreshScreenerQuotes(items, loadKey);
         if (showToastOnSuccess) showToast('筛选器已刷新');
@@ -2019,7 +2054,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         dailyTargetsState.items = Array.isArray(response.items) ? response.items : [];
         dailyTargetsState.loaded = true;
         dailyTargetsState.loadedDate = dailyTargetsState.selectedDate;
-        dailyTargetsState.lastRefresh = `更新: ${new Date().toLocaleTimeString()}`;
+        dailyTargetsState.lastRefresh = 'ibkr_targets 已加载';
+        setPageRefreshTime();
         document.getElementById('dailyTargetListMeta').textContent = `${getEnvironmentLabel(currentEnvironment)} / ${dailyTargetsState.selectedDate} / ${dailyTargetsState.items.length} 条`;
         renderDailyTargetRows();
         if (refreshCurrentTargets) {
@@ -2381,7 +2417,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         watchlistState.items = Array.isArray(response.items) ? response.items : [];
         watchlistState.loaded = true;
         watchlistState.loadedRole = getWatchlistRoleForTab();
-        watchlistState.lastRefresh = `更新: ${new Date().toLocaleTimeString()}`;
+        watchlistState.lastRefresh = `${getWatchlistRoleLabel()} 已加载`;
+        setPageRefreshTime();
         renderWatchlistRows();
         if (showToastOnSuccess) showToast(`${getWatchlistRoleLabel()} 已刷新`);
       } catch (error) {

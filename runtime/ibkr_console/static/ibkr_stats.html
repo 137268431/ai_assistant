@@ -296,6 +296,13 @@
                 cachedSignals = ibkr_signals;
                 cachedStartDate = startDate;
                 cachedEndDate = endDate;
+                setPageContextMeta([
+                    { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                    { label: '范围', value: customStartDate && customEndDate ? `${customStartDate} ~ ${customEndDate}` : currentRange },
+                    { label: '订单', value: `${orders.length} 条` },
+                    { label: '信号', value: `${ibkr_signals.length} 条` },
+                ]);
+                setPageRefreshTime();
 
                 if (softErrors.length) {
                     console.warn('统计部分数据降级加载:', softErrors.join(' | '));

@@ -347,11 +347,11 @@
             if (filterSignalId) scopeParts.push(`signal_id=${summarizeHeaderValue(filterSignalId, 18)}`);
             if (currentSearch) scopeParts.push(`search=${summarizeHeaderValue(currentSearch, 24)}`);
             const scopeText = scopeParts.length ? scopeParts.join(' · ') : '无附加过滤';
-            const metaHtml = `
-                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
-                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
-                <div class="meta-line">范围 · ${escapeHtml(scopeText)}</div>
-            `;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '交易日', value: currentDate || '--' },
+                { label: '范围', value: scopeText },
+            ]);
             const statusHtml = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>结果 ${escapeHtml(String(getSignalsResultCount()))}</span>
@@ -363,7 +363,6 @@
                 kicker: 'Execution Signals',
                 title: '主信号池',
                 copy: '聚焦当天主信号、执行状态与订单联动；当前标的工作台和规则上下文统一放到筛选页。',
-                metaHtml,
                 statusHtml,
             });
         }
@@ -737,6 +736,7 @@
                 renderLatencySummary();
                 renderSignals();
                 updateLoadMoreButton();
+                setPageRefreshTime();
 
                 loadRealtimeLatencySnapshot(requestId)
                     .catch((error) => {

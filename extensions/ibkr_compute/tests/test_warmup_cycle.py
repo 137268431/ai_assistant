@@ -112,13 +112,12 @@ class WarmupCycleStartupReleaseTest(unittest.TestCase):
                 ):
                     result = cycle._materialize_warmup_compute_symbols(
                         ["AAPL"],
-                        hydrate_signal_state=False,
                     )
 
         self.assertEqual(result, {"AAPL": {"is_ready": True, "indicator_seeded": True}})
         self.assertEqual(
             call_log,
-            [("live", ("AAPL",), "5m", False, True)],
+            [("live", ("AAPL",), "5m", True, True)],
         )
 
 

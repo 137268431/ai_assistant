@@ -16,6 +16,7 @@
   - `ibkr_history_retention`
   - `ibkr_data_quality_open_sweep`
   - `ibkr_data_quality_close_sweep`
+  - `ibkr_data_quality_premarket_truth_audit`
   - `ibkr_data_quality_truth_audit`
   - `ibkr_2fa_hourly_check`
   - `ibkr_weekly_reauth_reminder`

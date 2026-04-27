@@ -465,6 +465,13 @@
                 renderIndicatorViewToolbar();
                 renderIndicators();
                 updateLoadMoreButton();
+                const range = getSelectedDateRange();
+                setPageContextMeta([
+                    { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                    { label: '日期', value: range.startDate === range.endDate ? range.startDate : `${range.startDate} ~ ${range.endDate}` },
+                    { label: '结果', value: `${totalItems || allIndicators.length} 条` },
+                ]);
+                setPageRefreshTime();
                 refreshRealtimeQuotesForIndicators();
             } catch (error) {
                 console.error('加载失败:', error);

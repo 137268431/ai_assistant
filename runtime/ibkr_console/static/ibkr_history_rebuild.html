@@ -26,7 +26,7 @@
                 <div class="hero-meta">
                     <button id="refreshStatusButton" class="btn page-refresh-trigger" type="button">刷新状态</button>
                     <div class="hero-meta-line" id="heroEnvironment">环境 --</div>
-                    <div class="hero-meta-line" id="heroUpdatedAt">最近更新 --</div>
+                    <div class="hero-meta-line" id="heroUpdatedAt">状态 --</div>
                     <div class="hero-meta-line">来源 /api/custom/ibkr/history/rebuild/status</div>
                 </div>
             </div>
@@ -339,7 +339,17 @@
         function applyStatus(status) {
             activeStatus = status || {};
             document.getElementById('heroEnvironment').textContent = `环境 ${getEnvironmentLabel(currentEnvironment)}`;
-            document.getElementById('heroUpdatedAt').textContent = `最近更新 ${formatTimeLabel(activeStatus?.updated_at_ms ? new Date(Number(activeStatus.updated_at_ms)).toISOString() : '')}`;
+            if (activeStatus?.updated_at_ms) {
+                setPageRefreshTime(Number(activeStatus.updated_at_ms));
+            } else {
+                setPageRefreshTime();
+            }
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '状态', value: String(activeStatus?.status || (activeStatus?.running ? 'running' : 'idle')).toUpperCase() },
+                { label: 'Mode', value: String(activeStatus?.mode || '--') },
+            ]);
+            document.getElementById('heroUpdatedAt').textContent = `状态 ${activeStatus?.running ? '运行中' : '已同步'}`;
             renderStatusPill(activeStatus);
             renderRuntimePill(activeStatus?.runtime_check || {});
             renderMetrics(activeStatus);

@@ -4024,6 +4024,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 pendingFocusBarTimeMs = 0;
                 renderCompareButtons();
                 updateQueryState();
+                setPageContextMeta([
+                    { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                    { label: '标的', value: currentSymbol || '--' },
+                    { label: '周期', value: getIntervalLabel(currentInterval) },
+                    { label: '范围', value: currentRangeKey.toUpperCase() },
+                ]);
+                setPageRefreshTime();
                 startChartRealtimePolling();
             } catch (error) {
                 stopChartRealtimePolling();

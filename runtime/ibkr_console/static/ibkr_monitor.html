@@ -25,7 +25,7 @@
                 </div>
                 <div class="hero-actions">
                     <button class="refresh-btn page-refresh-trigger" id="refreshBtn" type="button" onclick="loadMonitorData(true)">↻ 手动刷新</button>
-                    <div class="hero-meta" id="heroMeta">最近刷新 --</div>
+                    <div class="hero-meta" id="heroMeta">状态 --</div>
                 </div>
             </div>
             <div class="chip-row" id="heroChips"></div>
@@ -707,8 +707,14 @@
                 dataStatus.copy
             ].filter(Boolean).join(' · ');
 
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '实际环境', value: String(payload?.actual_runtime_environment || payload?.environment || currentEnvironment).toUpperCase() },
+                { label: 'Host', value: host.hostname || '--' },
+                { label: 'Services', value: String(payload?.service_topology?.runtime_mode || 'split').toUpperCase() },
+            ]);
+            setPageRefreshTime(payload?.fetched_at || new Date());
             document.getElementById('heroMeta').innerHTML = [
-                `fetched ${formatTimeLabel(payload?.fetched_at)}`,
                 `compute last ${formatAgo(compute.last_compute)}`,
                 `actual env ${String(payload?.actual_runtime_environment || payload?.environment || currentEnvironment).toUpperCase()}`,
                 `host ${host.hostname || '--'}`

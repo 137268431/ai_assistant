@@ -71,6 +71,7 @@ def build_runtime_state_bundle() -> dict:
         "error_count": 0,
         "rollup_bootstrap_checked": set(),
         "engine_bootstrap_checked": set(),
+        "signal_bootstrap_checked": set(),
         "persistent_cursor_envs_loaded": set(),
         "symbol_metadata_cache": {},
         "daily_close_cache": {},

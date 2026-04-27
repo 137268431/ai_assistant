@@ -563,7 +563,14 @@
 
         renderSummary(summaryResp.summary || {});
         renderRows(Array.isArray(listResp.items) ? listResp.items : []);
-        document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()}`;
+        setPageContextMeta([
+          { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+          { label: '交易日', value: filters.market_date || '--' },
+          { label: 'Scope', value: filters.scan_scope || 'manual' },
+          { label: '状态', value: filters.status || 'all' },
+        ]);
+        setPageRefreshTime();
+        document.getElementById('refreshInfo').textContent = '数据已加载';
         if (showToastOnSuccess) showToast('数据质量页面已刷新');
       } catch (error) {
         console.error('loadDataQuality failed:', error);

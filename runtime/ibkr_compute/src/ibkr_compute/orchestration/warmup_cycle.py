@@ -155,7 +155,7 @@ class TradingServiceWarmupCycleMixin:
         self,
         symbols: list[str] | None,
         *,
-        hydrate_signal_state: bool = False,
+        hydrate_signal_state: bool = True,
         persist_latest_indicator: bool = True,
     ) -> dict:
         service_mod = _service_mod()
@@ -492,7 +492,7 @@ class TradingServiceWarmupCycleMixin:
             step_started = time.perf_counter()
             storage_bootstrap = self._materialize_warmup_compute_symbols(
                 snapshot["symbols"],
-                hydrate_signal_state=False,
+                hydrate_signal_state=True,
             )
             warmup_timings["storage_bootstrap_s"] = round(time.perf_counter() - step_started, 3)
             if storage_bootstrap:
@@ -504,7 +504,7 @@ class TradingServiceWarmupCycleMixin:
                 step_started = time.perf_counter()
                 pending_storage_bootstrap = self._materialize_warmup_compute_symbols(
                     readiness["pending_symbols"],
-                    hydrate_signal_state=False,
+                    hydrate_signal_state=True,
                 )
                 warmup_timings["pending_storage_bootstrap_s"] = round(
                     time.perf_counter() - step_started,
@@ -727,7 +727,7 @@ class TradingServiceWarmupCycleMixin:
                 step_started = time.perf_counter()
                 after_backfill_result = self._materialize_warmup_compute_symbols(
                     list(pending_map.keys()),
-                    hydrate_signal_state=False,
+                    hydrate_signal_state=True,
                 )
                 warmup_timings["after_backfill_bootstrap_s"] = round(
                     time.perf_counter() - step_started,

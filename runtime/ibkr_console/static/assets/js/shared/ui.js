@@ -667,6 +667,138 @@ function escapePageUiText(value) {
     .replace(/'/g, '&#39;');
 }
 
+function coerceRefreshDate(value = new Date()) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value === undefined || value === null || value === '') return new Date();
+  if (typeof value === 'number' || /^\d{10,13}$/.test(String(value).trim())) {
+    const raw = Number(value);
+    const ms = String(value).trim().length === 10 ? raw * 1000 : raw;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const text = String(value).trim();
+  if (!text) return new Date();
+  let normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(text) ? text.replace(' ', 'T') : text;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(normalized) && !/(Z|[+-]\d{2}:?\d{2})$/.test(normalized)) {
+    normalized = `${normalized}Z`;
+  }
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatEtRefreshClock(value = new Date()) {
+  const date = coerceRefreshDate(value);
+  if (!date) return '--';
+  const parts = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).forEach((part) => {
+    if (part.type !== 'literal') parts[part.type] = part.value;
+  });
+  return parts.hour && parts.minute && parts.second
+    ? `${parts.hour}:${parts.minute}:${parts.second} ET`
+    : '--';
+}
+
+function formatEtRefreshDateTime(value = new Date()) {
+  const date = coerceRefreshDate(value);
+  if (!date) return '--';
+  const parts = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).forEach((part) => {
+    if (part.type !== 'literal') parts[part.type] = part.value;
+  });
+  return parts.month && parts.day && parts.hour && parts.minute && parts.second
+    ? `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ET`
+    : '--';
+}
+
+function buildPageRefreshTimeText(value = new Date(), label = '更新') {
+  const prefix = String(label || '更新').trim() || '更新';
+  const clock = formatEtRefreshClock(value);
+  return `${prefix} ${clock}`;
+}
+
+function updatePageRefreshClockText(value = new Date(), label = window.__ibkrPageRefreshTimeLabel || '更新') {
+  const text = buildPageRefreshTimeText(value, label);
+  window.__ibkrPageRefreshTimeText = text;
+  window.__ibkrPageRefreshTimeLabel = String(label || '更新').trim() || '更新';
+  document.querySelectorAll('[data-page-refresh-time]').forEach((node) => {
+    node.textContent = text;
+  });
+  return text;
+}
+
+function startPageRefreshClock(label = window.__ibkrPageRefreshTimeLabel || '更新', initialValue = new Date()) {
+  updatePageRefreshClockText(initialValue, label);
+  if (window.__ibkrPageRefreshClockTimer) return window.__ibkrPageRefreshTimeText;
+  window.__ibkrPageRefreshClockTimer = window.setInterval(() => {
+    updatePageRefreshClockText(new Date(), window.__ibkrPageRefreshTimeLabel || label);
+  }, 1000);
+  return window.__ibkrPageRefreshTimeText;
+}
+
+function setPageRefreshTime(value = new Date(), label = '更新') {
+  return startPageRefreshClock(label, value || new Date());
+}
+
+function normalizePageContextMetaItem(item) {
+  if (item === undefined || item === null || item === '') return null;
+  if (typeof item === 'string' || typeof item === 'number') {
+    const text = String(item).trim();
+    return text ? { label: '', value: text } : null;
+  }
+  if (typeof item !== 'object') return null;
+  const label = String(item.label ?? item.name ?? '').trim();
+  const value = String(item.value ?? item.text ?? '').trim();
+  if (!label && !value) return null;
+  return {
+    label,
+    value,
+    tone: String(item.tone || '').trim(),
+  };
+}
+
+function renderPageContextMeta(items = []) {
+  const normalized = (Array.isArray(items) ? items : [])
+    .map(normalizePageContextMetaItem)
+    .filter(Boolean);
+  if (!normalized.length) return '';
+  return normalized.map((item) => {
+    const toneClass = item.tone ? ` is-${escapePageUiText(item.tone)}` : '';
+    return `
+      <span class="page-context-meta-chip${toneClass}">
+        ${item.label ? `<span class="page-context-meta-label">${escapePageUiText(item.label)}</span>` : ''}
+        ${item.value ? `<span class="page-context-meta-value">${escapePageUiText(item.value)}</span>` : ''}
+      </span>
+    `;
+  }).join('');
+}
+
+function setPageContextMeta(items = []) {
+  const normalized = (Array.isArray(items) ? items : [])
+    .map(normalizePageContextMetaItem)
+    .filter(Boolean);
+  window.__ibkrPageContextMetaItems = normalized;
+  const html = renderPageContextMeta(normalized);
+  document.querySelectorAll('[data-page-context-meta]').forEach((node) => {
+    node.innerHTML = html;
+    node.classList.toggle('is-empty', !html);
+  });
+  return normalized;
+}
+
 function renderPageRefreshControl(options = {}) {
   const refreshOptions = options && typeof options === 'object' ? options : {};
   const mode = refreshOptions.mode === 'manual' ? 'manual' : 'polling';
@@ -827,9 +959,16 @@ function renderPageContextBar(title, options = {}) {
   const description = options.description || '';
   const subtitle = options.subtitle || '';
   const actionsHtml = options.actionsHtml || '';
+  const metaItems = Array.isArray(options.metaItems)
+    ? options.metaItems
+    : (Array.isArray(window.__ibkrPageContextMetaItems) ? window.__ibkrPageContextMetaItems : []);
+  const metaHtml = renderPageContextMeta(metaItems);
   const safeTitle = title ? escapePageUiText(title) : '';
   const safeDescription = description ? escapePageUiText(description) : '';
   const safeSubtitle = subtitle ? escapePageUiText(subtitle) : '';
+  const refreshLabel = window.__ibkrPageRefreshTimeLabel || '更新';
+  const refreshText = buildPageRefreshTimeText(new Date(), refreshLabel);
+  window.setTimeout(() => startPageRefreshClock(refreshLabel), 0);
   return `
     <div class="page-context-bar${safeSubtitle ? ' has-subtitle' : ''}">
       <div class="page-context-main">
@@ -839,9 +978,11 @@ function renderPageContextBar(title, options = {}) {
           ${safeDescription ? `<span class="page-context-description">${safeDescription}</span>` : ''}
         </div>
         ${safeSubtitle ? `<div class="page-context-subtitle">${safeSubtitle}</div>` : ''}
+        <div class="page-context-meta${metaHtml ? '' : ' is-empty'}" data-page-context-meta>${metaHtml}</div>
       </div>
       <div class="page-context-tools">
         ${actionsHtml ? `<div class="page-context-actions">${actionsHtml}</div>` : ''}
+        <div class="page-context-refresh-time" data-page-refresh-time>${escapePageUiText(refreshText)}</div>
         ${renderEnvironmentSwitcher({ allowGlobal })}
       </div>
     </div>

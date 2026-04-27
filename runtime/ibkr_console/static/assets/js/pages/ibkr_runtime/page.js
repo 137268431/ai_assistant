@@ -1095,7 +1095,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             document.getElementById('authInfo').textContent = startup.startup_label
                 ? `${authSummary} · ${startup.startup_label}`
                 : authSummary;
-            document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: 'Market Date', value: String(status?.market_universe?.market_date || '--') },
+                { label: 'Runtime', value: String(status?.service_topology?.runtime_mode || '--').toUpperCase() },
+                { label: 'Session', value: sessionAuthenticated ? 'AUTHED' : 'PENDING', tone: sessionAuthenticated ? 'ok' : 'warn' },
+            ]);
+            setPageRefreshTime();
+            document.getElementById('refreshInfo').textContent = '状态已加载';
             const startupStrategyEl = document.getElementById('startupStrategyInfo');
             if (startupStrategyEl) {
                 startupStrategyEl.textContent = `启动策略：${formatStartupStrategySummary(status)}`;

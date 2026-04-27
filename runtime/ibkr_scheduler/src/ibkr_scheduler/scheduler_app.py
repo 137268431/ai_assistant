@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -34,6 +34,10 @@ COMPUTE_DISPATCH_CURSOR_STATE_KEY = "ibkr_compute_dispatch_cursor"
 SCHEDULER_JOB_STATE_PREFIX = "ibkr_scheduler_job_state:"
 US_TZ = ZoneInfo("America/New_York")
 CN_TZ = ZoneInfo("Asia/Shanghai")
+BAR_TRUTH_AUDIT_JOB_IDS = {
+    "ibkr_data_quality_premarket_truth_audit",
+    "ibkr_data_quality_truth_audit",
+}
 
 app = Flask(__name__)
 pb = PBClient(base_url=PB_BASE_URL)
@@ -142,6 +146,29 @@ class SchedulerService:
         self.pb.upsert_state(COMPUTE_DISPATCH_CURSOR_STATE_KEY, environment, state, date="global")
         return state
 
+    @staticmethod
+    def _previous_us_business_date(now_et: datetime | None = None) -> str:
+        current = now_et.astimezone(US_TZ) if isinstance(now_et, datetime) else datetime.now(US_TZ)
+        candidate = current.date() - timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate -= timedelta(days=1)
+        return candidate.isoformat()
+
+    def _native_http_job_payload(self, job_id: str) -> dict[str, Any]:
+        if job_id in BAR_TRUTH_AUDIT_JOB_IDS:
+            now_et = datetime.now(US_TZ)
+            market_date = (
+                self._previous_us_business_date(now_et)
+                if job_id == "ibkr_data_quality_premarket_truth_audit"
+                else now_et.date().isoformat()
+            )
+            return {
+                "scan_scope": "watchlist_full",
+                "persist": True,
+                "market_date": market_date,
+            }
+        return {}
+
     def _run_native_http_job(self, job_id: str, environment: str) -> dict[str, Any]:
         method, path = NATIVE_HTTP_JOB_ENDPOINTS[job_id]
         return run_upstream_http_job(
@@ -150,6 +177,7 @@ class SchedulerService:
             path=path,
             environment=environment,
             timeout_seconds=60,
+            payload=self._native_http_job_payload(job_id),
         )
 
     def _run_native_api_job(self, job_id: str, environment: str) -> dict[str, Any]:
@@ -310,7 +338,11 @@ class SchedulerService:
         slot_token = cron_slot_token(when_utc)
         results: list[dict[str, Any]] = []
         for definition in self._scheduled_jobs():
-            if not cron_matches_minute(str(definition.get("cron_expr") or ""), when_utc):
+            if not cron_matches_minute(
+                str(definition.get("cron_expr") or ""),
+                when_utc,
+                str(definition.get("cron_timezone") or "UTC"),
+            ):
                 continue
             results.append(
                 self.run_job(

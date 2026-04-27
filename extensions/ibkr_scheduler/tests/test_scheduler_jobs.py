@@ -99,8 +99,29 @@ class SchedulerJobsTest(unittest.TestCase):
 
         self.assertTrue(cron_matches_minute("40 9 * * 1-5", monday))
         self.assertTrue(cron_matches_minute("*/5 * * * *", monday))
+        self.assertTrue(
+            cron_matches_minute(
+                "20 8 * * 1-5",
+                datetime(2026, 1, 5, 13, 20, tzinfo=timezone.utc),
+                "America/New_York",
+            )
+        )
+        self.assertTrue(
+            cron_matches_minute(
+                "20 8 * * 1-5",
+                datetime(2026, 4, 20, 12, 20, tzinfo=timezone.utc),
+                "America/New_York",
+            )
+        )
         self.assertFalse(cron_matches_minute("41 9 * * 1-5", monday))
         self.assertFalse(cron_matches_minute("40 9 * * 1-5", weekend))
+        self.assertFalse(
+            cron_matches_minute(
+                "20 8 * * 1-5",
+                datetime(2026, 1, 5, 12, 20, tzinfo=timezone.utc),
+                "America/New_York",
+            )
+        )
 
     def test_compute_dispatch_updates_cursor_from_latest_persisted_bars(self):
         pb = _FakePB()
@@ -204,6 +225,52 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(job_state["status"], "ok")
         self.assertEqual(job_state["last_scheduled_slot"], "2026-04-23T10:00Z")
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
+
+    def test_premarket_truth_audit_cron_scans_full_watchlist(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse({"ok": True, "summary": {"audit_mode": "bar_only"}}),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "ibkr_data_quality_premarket_truth_audit",
+                "live",
+                trigger_source="api_manual",
+                scheduled_slot="2026-04-23T12:20Z",
+            )
+
+        self.assertTrue(result["ok"])
+        request_mock.assert_called_once()
+        request_payload = request_mock.call_args.kwargs["json"]
+        self.assertEqual(request_payload["environment"], "live")
+        self.assertEqual(request_payload["source"], "ibkr_scheduler")
+        self.assertEqual(request_payload["scan_scope"], "watchlist_full")
+        self.assertTrue(request_payload["persist"])
+        self.assertIn("market_date", request_payload)
+
+    def test_postmarket_truth_audit_cron_scans_full_watchlist(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse({"ok": True, "summary": {"audit_mode": "bar_only"}}),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "ibkr_data_quality_truth_audit",
+                "live",
+                trigger_source="api_manual",
+                scheduled_slot="2026-04-23T20:20Z",
+            )
+
+        self.assertTrue(result["ok"])
+        request_mock.assert_called_once()
+        request_payload = request_mock.call_args.kwargs["json"]
+        self.assertEqual(request_payload["scan_scope"], "watchlist_full")
+        self.assertTrue(request_payload["persist"])
+        self.assertIn("market_date", request_payload)
 
     def test_duplicate_slot_is_skipped_without_second_upstream_call(self):
         pb = _FakePB()

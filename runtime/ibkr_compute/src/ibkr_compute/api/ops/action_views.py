@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask import jsonify
 
-from ibkr_compute.api.chart.compare.payload import build_chart_compare_payload
+from ibkr_compute.api.ops.bar_truth_compare import build_bar_truth_compare_payload
 from ibkr_compute.api.ops.common import _resolve_data_quality_symbols
 from ibkr_compute.api.ops.data_quality_truth import (
     TRUTH_AUDIT_INTERVAL,
@@ -187,7 +187,6 @@ def build_ibkr_data_quality_truth_audit_response():
     requested_scan_scope = str(payload.get("scan_scope") or "manual").strip().lower() or "manual"
     symbols = _resolve_data_quality_symbols(service, payload)
     persist = coerce_request_bool(payload.get("persist"), True)
-    include_signals = coerce_request_bool(payload.get("include_signals"), False)
     chunk_size = coerce_request_int(payload.get("chunk_size"), 20, minimum=1)
     runtime_environment = app_mod._ibkr_service_environment(service)
     market_date = str(payload.get("market_date") or getattr(service, "_bar_integrity_market_date", lambda: app_mod.current_market_date())()).strip()
@@ -213,13 +212,12 @@ def build_ibkr_data_quality_truth_audit_response():
         batch = symbols[start:start + max(1, chunk_size)]
         for symbol in batch:
             try:
-                compare_payload = build_chart_compare_payload(
+                compare_payload = build_bar_truth_compare_payload(
                     runtime_environment,
                     symbol,
                     TRUTH_AUDIT_INTERVAL,
                     start_ms=int(window["start_ms"]),
                     end_ms=int(window["end_ms"]),
-                    include_signals=include_signals,
                 )
                 comparison = compare_payload.get("comparison") or {}
                 row = build_truth_audit_row(
@@ -233,7 +231,7 @@ def build_ibkr_data_quality_truth_audit_response():
                     mismatch_examples=comparison.get("mismatch_examples") or [],
                     source_meta={
                         "requested_scan_scope": requested_scan_scope,
-                        "include_signals": bool(include_signals),
+                        "audit_mode": "bar_only",
                         "stored": compare_payload.get("meta", {}).get("stored") or {},
                         "ibkr": compare_payload.get("meta", {}).get("ibkr") or {},
                     },
@@ -252,7 +250,7 @@ def build_ibkr_data_quality_truth_audit_response():
                     mismatch_examples=[],
                     source_meta={
                         "requested_scan_scope": requested_scan_scope,
-                        "include_signals": bool(include_signals),
+                        "audit_mode": "bar_only",
                     },
                     error=error_text,
                     last_checked_at=service._now_iso() if hasattr(service, "_now_iso") else "",
@@ -269,6 +267,7 @@ def build_ibkr_data_quality_truth_audit_response():
     summary = build_truth_audit_summary(rows, expected_symbols=symbols)
     summary["market_date"] = market_date
     summary["scan_scope"] = requested_scan_scope
+    summary["audit_mode"] = "bar_only"
     summary["window_start_ms"] = int(window["start_ms"])
     summary["window_end_ms"] = int(window["end_ms"])
     summary["error_count"] = len(errors)
@@ -277,6 +276,7 @@ def build_ibkr_data_quality_truth_audit_response():
             "ok": True,
             "symbols": symbols,
             "scan_scope": requested_scan_scope,
+            "audit_mode": "bar_only",
             "market_date": market_date,
             "rows": rows,
             "summary": summary,

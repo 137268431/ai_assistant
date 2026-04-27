@@ -30,6 +30,8 @@ def reset_compute_runtime_state():
     api_app.daily_close_cache_date = ""
     api_app.rollup_bootstrap_checked.clear()
     api_app.engine_bootstrap_checked.clear()
+    if hasattr(api_app, "signal_bootstrap_checked"):
+        api_app.signal_bootstrap_checked.clear()
     api_app.persistent_cursor_envs_loaded.clear()
 
 

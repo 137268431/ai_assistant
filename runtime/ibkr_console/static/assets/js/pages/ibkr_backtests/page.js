@@ -1428,6 +1428,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ]);
                 await refreshSelectedBatch(false);
                 await refreshSelectedRun(false);
+                setPageContextMeta([
+                    { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                    { label: '批次', value: selectedBatchId || '未选择' },
+                    { label: 'Run', value: selectedRunId || '未选择' },
+                ]);
+                setPageRefreshTime();
                 if (showToastOnSuccess) showToast('回测面板已刷新');
             } catch (error) {
                 console.error('refreshDashboard failed:', error);

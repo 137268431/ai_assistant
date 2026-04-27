@@ -6,6 +6,10 @@ from typing import Any, Callable
 
 HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
 HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+ALERT_FLAG_SEVERITIES = {"warning", "error"}
+CONNECTION_ISSUE_CODES = {"gateway_offline", "session_unauthenticated", "websocket_not_ready"}
+DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
+OFFLINE_SERVICE_STATUSES = {"offline", "error"}
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -35,6 +39,75 @@ def _normalized_status(value: Any) -> str:
     return _to_text(value).lower() or "unknown"
 
 
+def _is_alert_flag(flag: dict[str, Any]) -> bool:
+    return _normalized_status(flag.get("severity")) in ALERT_FLAG_SEVERITIES
+
+
+def _issue_base_code(value: Any) -> str:
+    return _to_text(value).split(":", 1)[0]
+
+
+def _issue_code_set(snapshot: dict[str, Any]) -> set[str]:
+    return {_issue_base_code(item) for item in snapshot.get("issue_codes") or [] if _issue_base_code(item)}
+
+
+def _append_unique(items: list[str], value: str) -> None:
+    text = _to_text(value)
+    if text and text not in items:
+        items.append(text)
+
+
+def _join_human(items: list[str], fallback: str) -> str:
+    return "；".join(item for item in items if _to_text(item)) or fallback
+
+
+def _service_status_items(services: dict[str, Any], statuses: set[str]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for name, raw in sorted(services.items()):
+        service = _as_dict(raw)
+        status = _normalized_status(service.get("status"))
+        if status not in statuses:
+            continue
+        items.append(
+            {
+                "name": _to_text(name),
+                "status": status,
+                "detail": _to_text(service.get("detail") or service.get("reason")),
+                "fault_domain": _to_text(service.get("fault_domain")),
+            }
+        )
+    return items
+
+
+def _format_service_items(items: list[dict[str, str]], *, limit: int = 3) -> str:
+    parts: list[str] = []
+    for item in items[:limit]:
+        name = _to_text(item.get("name"))
+        status = _to_text(item.get("status"))
+        detail = _to_text(item.get("detail"))
+        label = f"{name} {status}".strip()
+        parts.append(f"{label} ({detail})" if detail else label)
+    if len(items) > limit:
+        parts.append(f"另有 {len(items) - limit} 项")
+    return "；".join(parts)
+
+
+def _actionable_degraded_services(
+    degraded_services: list[dict[str, str]],
+    *,
+    alert_flags: list[dict[str, Any]],
+    monitor_status: str,
+    summary_status: str,
+) -> list[dict[str, str]]:
+    if not degraded_services:
+        return []
+    if alert_flags or monitor_status not in {"ok", "running"} or summary_status not in {"ok", "running"}:
+        return degraded_services
+    # Compute can report a transient engine-count mismatch before daily targets are ready.
+    # If the monitor is otherwise nominal, keep it visible on the page but do not page.
+    return [item for item in degraded_services if _to_text(item.get("name")) != "ibkr-compute"]
+
+
 def _runtime_health_snapshot(
     *,
     environment: str,
@@ -43,7 +116,7 @@ def _runtime_health_snapshot(
 ) -> dict[str, Any]:
     summary = _as_dict(build_system_summary_payload(environment, lite_mode=True))
     monitor = _as_dict(build_system_monitor_payload(environment))
-    runtime = _as_dict(summary.get("ibkr_runtime") or monitor.get("runtime"))
+    runtime = {**_as_dict(summary.get("ibkr_runtime")), **_as_dict(monitor.get("runtime"))}
     compute = _as_dict(summary.get("ibkr_compute") or monitor.get("compute"))
     scheduler = _as_dict(monitor.get("scheduler"))
     service_monitor = _as_dict(monitor.get("service_monitor"))
@@ -53,20 +126,34 @@ def _runtime_health_snapshot(
         for item in (monitor.get("flags") or [])
         if isinstance(item, dict) and _to_text(item.get("code"))
     ]
+    alert_flags = [item for item in flags if _is_alert_flag(item)]
     counts = _as_dict(service_monitor.get("status_counts"))
     degraded_count = _to_int(counts.get("degraded"), 0) + _to_int(counts.get("warning"), 0)
     offline_count = _to_int(counts.get("offline"), 0) + _to_int(counts.get("error"), 0)
+    degraded_services = _service_status_items(services, DEGRADED_SERVICE_STATUSES)
+    offline_services = _service_status_items(services, OFFLINE_SERVICE_STATUSES)
     session = _as_dict(runtime.get("session"))
     websocket = _as_dict(runtime.get("websocket"))
     gateway = _as_dict(runtime.get("gateway"))
     daily_scan = _as_dict(runtime.get("daily_scan") or summary.get("daily_scan"))
     today = _as_dict(summary.get("today"))
     issue_codes: list[str] = []
-    for flag in flags[:8]:
+    for flag in [item for item in flags if _is_alert_flag(item)][:8]:
         issue_codes.append(_to_text(flag.get("code")))
     monitor_status = _normalized_status(monitor.get("status"))
     summary_status = _normalized_status(summary.get("status"))
     runtime_status = _normalized_status(runtime.get("status"))
+    actionable_degraded_services = _actionable_degraded_services(
+        degraded_services,
+        alert_flags=alert_flags,
+        monitor_status=monitor_status,
+        summary_status=summary_status,
+    )
+    actionable_degraded_count = len(actionable_degraded_services)
+    if degraded_count > 0 and not degraded_services and (
+        alert_flags or monitor_status not in {"ok", "running"} or summary_status not in {"ok", "running"}
+    ):
+        actionable_degraded_count = degraded_count
     if monitor_status not in {"ok", "running"}:
         issue_codes.append(f"monitor:{monitor_status}")
     if summary_status not in {"ok", "running"}:
@@ -79,8 +166,8 @@ def _runtime_health_snapshot(
         issue_codes.append("websocket_not_ready")
     if not bool(gateway.get("running") or gateway.get("reachable")):
         issue_codes.append("gateway_offline")
-    if degraded_count > 0:
-        issue_codes.append(f"services_degraded:{degraded_count}")
+    if actionable_degraded_count > 0:
+        issue_codes.append(f"services_degraded:{actionable_degraded_count}")
     if offline_count > 0:
         issue_codes.append(f"services_offline:{offline_count}")
     seen: set[str] = set()
@@ -104,6 +191,9 @@ def _runtime_health_snapshot(
         "scheduler": scheduler,
         "service_monitor": service_monitor,
         "services": services,
+        "degraded_services": degraded_services,
+        "actionable_degraded_services": actionable_degraded_services,
+        "offline_services": offline_services,
         "flags": flags,
         "today": today,
         "daily_scan": daily_scan,
@@ -132,37 +222,149 @@ def _heartbeat_fingerprint(snapshot: dict[str, Any]) -> str:
     )
 
 
-def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[str, Any]:
+def _status_overview(snapshot: dict[str, Any]) -> tuple[str, str]:
     runtime = _as_dict(snapshot.get("runtime"))
     compute = _as_dict(snapshot.get("compute"))
     scheduler = _as_dict(snapshot.get("scheduler"))
     session = _as_dict(snapshot.get("session"))
     websocket = _as_dict(snapshot.get("websocket"))
     gateway = _as_dict(snapshot.get("gateway"))
+    service_line = " | ".join(
+        [
+            f"Compute {_to_text(compute.get('status')) or 'unknown'}",
+            f"Runtime {_to_text(runtime.get('status')) or 'unknown'}",
+            f"Scheduler {_to_text(scheduler.get('status')) or 'unknown'}",
+        ]
+    )
+    connection_line = " | ".join(
+        [
+            f"Gateway {'running' if gateway.get('running') or gateway.get('reachable') else 'offline'}",
+            f"Session {'authenticated' if session.get('authenticated') else 'pending'}",
+            f"WebSocket {'connected' if websocket.get('connected') or websocket.get('ready') else 'offline'}",
+        ]
+    )
+    return service_line, connection_line
+
+
+def _human_issue_detail(snapshot: dict[str, Any]) -> dict[str, str]:
+    codes = _issue_code_set(snapshot)
+    impacts: list[str] = []
+    reasons: list[str] = []
+    advice: list[str] = []
+    connection_issue = bool(codes & CONNECTION_ISSUE_CODES)
+
+    if "gateway_offline" in codes:
+        _append_unique(impacts, "实时行情、信号生成和自动下单会暂停")
+        _append_unique(reasons, "IB Gateway/TWS 不可达")
+        _append_unique(advice, "等待自动恢复；若持续 5-10 分钟，检查 Gateway 进程、登录状态和网络")
+    if "session_unauthenticated" in codes:
+        _append_unique(impacts, "IBKR 订阅与交易链路降级，可能需要 2FA")
+        _append_unique(reasons, "IBKR 会话尚未认证")
+        _append_unique(advice, "查看飞书 2FA 卡片或 IBKR 手机验证，完成后等待 Session 恢复")
+    if "websocket_not_ready" in codes:
+        _append_unique(impacts, "实时行情 WebSocket 暂不可用")
+        _append_unique(reasons, "行情 WebSocket 未连接或未进入 ready")
+        _append_unique(advice, "Gateway 和 Session 恢复后通常会自动重连")
+    if "services_offline" in codes:
+        offline_text = _format_service_items([_as_dict(item) for item in snapshot.get("offline_services") or []])
+        _append_unique(impacts, "部分系统服务不可用")
+        _append_unique(reasons, f"离线服务: {offline_text}" if offline_text else "至少一个服务处于 offline/error")
+        _append_unique(advice, "打开系统状态页定位故障域，必要时重启对应服务")
+    if "services_degraded" in codes:
+        degraded_text = _format_service_items(
+            [_as_dict(item) for item in snapshot.get("actionable_degraded_services") or snapshot.get("degraded_services") or []]
+        )
+        _append_unique(impacts, "部分服务降级，但主服务可能仍在运行")
+        _append_unique(reasons, f"降级服务: {degraded_text}" if degraded_text else "至少一个服务处于 degraded/warning")
+        _append_unique(advice, "查看系统状态页里的故障域统计和最近事件")
+
+    for code in sorted(item for item in codes if item in {"monitor", "summary", "runtime"}):
+        raw = next((_to_text(item) for item in snapshot.get("issue_codes") or [] if _issue_base_code(item) == code), code)
+        _append_unique(reasons, f"{code} 状态异常（{raw}）")
+        _append_unique(impacts, "控制面或运行态状态异常")
+        _append_unique(advice, "查看系统状态页的 Monitor / Summary / Runtime 详情")
+
+    known = CONNECTION_ISSUE_CODES | {"services_offline", "services_degraded", "monitor", "summary", "runtime"}
+    alert_flags = [
+        item for item in snapshot.get("flags") or []
+        if _is_alert_flag(_as_dict(item)) and _issue_base_code(_as_dict(item).get("code")) not in known
+    ]
+    for flag in alert_flags[:3]:
+        flag_dict = _as_dict(flag)
+        title = _to_text(flag_dict.get("title") or flag_dict.get("code"))
+        detail = _to_text(flag_dict.get("detail"))
+        _append_unique(reasons, f"{title}: {detail}" if detail else title)
+    if alert_flags:
+        _append_unique(impacts, "监控阈值触发，相关链路可能降级")
+        _append_unique(advice, "按触发项检查资源、订阅、数据新鲜度或回填节流")
+
+    if not snapshot.get("unhealthy"):
+        return {
+            "结论": "系统与 IBKR 连接正常。",
+            "影响": "未发现影响交易链路的问题",
+            "原因": "服务、Session 与 WebSocket 均处于可用状态",
+            "建议": "无需处理",
+        }
+    conclusion = "系统服务存活，但 IBKR 交易/行情链路未就绪。" if connection_issue else "发现系统状态异常，请按建议处理。"
+    return {
+        "结论": conclusion,
+        "影响": _join_human(impacts, "影响范围待进一步确认"),
+        "原因": _join_human(reasons, "检测到健康检查异常"),
+        "建议": _join_human(advice, "打开系统状态页查看详情"),
+    }
+
+
+def _compact_issue_codes(snapshot: dict[str, Any]) -> str:
+    codes = list(snapshot.get("issue_codes") or [])
+    if not codes:
+        return ""
+    shown = [_to_text(item) for item in codes[:4] if _to_text(item)]
+    suffix = " ..." if len(codes) > len(shown) else ""
+    return ", ".join(shown) + suffix
+
+
+def _heartbeat_title(snapshot: dict[str, Any], *, reminder: bool) -> str:
+    if not snapshot.get("unhealthy"):
+        return "IBKR 系统状态摘要" if reminder else "IBKR 系统心跳（native）"
+    codes = _issue_code_set(snapshot)
+    if codes & CONNECTION_ISSUE_CODES:
+        return "IBKR 连接未就绪" if reminder else "IBKR 连接链路未就绪"
+    return "IBKR 系统状态需关注" if reminder else "IBKR 系统心跳异常"
+
+
+def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[str, Any]:
+    runtime = _as_dict(snapshot.get("runtime"))
+    scheduler = _as_dict(snapshot.get("scheduler"))
     daily_scan = _as_dict(snapshot.get("daily_scan"))
     today = _as_dict(snapshot.get("today"))
     counts = _as_dict(_as_dict(snapshot.get("service_monitor")).get("status_counts"))
+    human = _human_issue_detail(snapshot)
+    services_line, connection_line = _status_overview(snapshot)
     detail = {
         "检查时间": timestamp_us,
-        "总体状态": _to_text(snapshot.get("monitor_status") or snapshot.get("summary_status")) or "unknown",
-        "Compute": _to_text(compute.get("status")) or "unknown",
-        "Runtime": _to_text(runtime.get("status")) or "unknown",
-        "Scheduler": _to_text(scheduler.get("status")) or "unknown",
-        "Gateway": "running" if gateway.get("running") or gateway.get("reachable") else "offline",
-        "Session": "authenticated" if session.get("authenticated") else "pending",
-        "WebSocket": "connected" if websocket.get("connected") or websocket.get("ready") else "offline",
+        "结论": human["结论"],
+        "影响": human["影响"],
+        "原因": human["原因"],
+        "建议": human["建议"],
+        "系统服务": services_line,
+        "IBKR链路": connection_line,
+        "状态": _to_text(snapshot.get("monitor_status") or snapshot.get("summary_status")) or "unknown",
         "DispatchLag": (
             f"{float(scheduler.get('dispatch_lag_min') or 0):.2f}m"
             if scheduler.get("latest_ingested_bar_time_ms")
             else "awaiting bars"
         ),
-        "问题码": ", ".join(list(snapshot.get("issue_codes") or [])[:6]) or "none",
-        "今日bars": str(_to_int(today.get("ibkr_bars"), 0)),
-        "今日signals": str(_to_int(today.get("ibkr_signals"), 0)),
-        "今日orders": str(_to_int(today.get("orders"), 0)),
-        "日筛状态": _to_text(daily_scan.get("status")) or "unknown",
+        "数据": (
+            f"bars {_to_int(today.get('ibkr_bars'), 0)} | "
+            f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
+            f"orders {_to_int(today.get('orders'), 0)} | "
+            f"日筛 {_to_text(daily_scan.get('status')) or 'unknown'}"
+        ),
         "故障域统计": ", ".join(f"{key}:{value}" for key, value in sorted(counts.items())) if counts else "n/a",
     }
+    compact_codes = _compact_issue_codes(snapshot)
+    if compact_codes:
+        detail["诊断码"] = compact_codes
     last_bar_us = _to_text(_as_dict(runtime.get("latest_bar")).get("us_time"))
     if last_bar_us:
         detail["最新5m"] = last_bar_us
@@ -218,7 +420,7 @@ def build_system_heartbeat_response(
                 event_type="heartbeat",
                 level=_to_text(snapshot.get("severity")) or "warning",
                 source="ibkr-api",
-                title="IBKR 系统心跳异常",
+                title=_heartbeat_title(snapshot, reminder=False),
                 detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
                 environment=environment,
             )
@@ -285,9 +487,7 @@ def build_system_status_reminder_response(
         build_system_summary_payload=build_system_summary_payload,
         build_system_monitor_payload=build_system_monitor_payload,
     )
-    title = "IBKR 系统状态摘要"
-    if snapshot.get("unhealthy"):
-        title = "IBKR 系统状态摘要（需关注）"
+    title = _heartbeat_title(snapshot, reminder=True)
     event = emit_system_event(
         event_type="status_change",
         level="warning" if snapshot.get("unhealthy") else "info",

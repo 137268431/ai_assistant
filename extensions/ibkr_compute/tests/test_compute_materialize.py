@@ -35,6 +35,20 @@ class _FakeEngine:
         return dict(self._snapshot)
 
 
+class _FakeSignalGenerator:
+    def __init__(self):
+        self.reset_count = 0
+        self.updated_bar_times = []
+
+    def daily_reset(self):
+        self.reset_count += 1
+        self.updated_bar_times = []
+
+    def update(self, snapshot):
+        self.updated_bar_times.append(int(snapshot.get("bar_time_ms", 0) or 0))
+        return None
+
+
 class ComputeMaterializeTest(unittest.TestCase):
     def test_bootstrap_does_not_advance_processed_cursor(self):
         engine = _FakeEngine()
@@ -70,6 +84,60 @@ class ComputeMaterializeTest(unittest.TestCase):
         self.assertEqual(fake_app.last_processed_ms[key], 123)
         self.assertEqual(fake_app.last_interval_fetch_ms[("live", "5m")], 200)
         self.assertIn(key, fake_app.engine_bootstrap_checked)
+
+    def test_bootstrap_rehydrates_signal_state_when_engine_was_already_checked(self):
+        engine = _FakeEngine()
+        engine.last_bar_time_ms = 200
+        key = ("live", "AAPL", "5m")
+        signal_generator = _FakeSignalGenerator()
+        query_count = {"value": 0}
+
+        def get_records(*args, **kwargs):
+            del args, kwargs
+            query_count["value"] += 1
+            return [
+                {"symbol": "AAPL", "bar_time_ms": 200, "open": 2, "high": 2, "low": 2, "close": 2, "volume": 2},
+                {"symbol": "AAPL", "bar_time_ms": 150, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+            ]
+
+        fake_app = SimpleNamespace(
+            BOOTSTRAP_LOOKBACK_BARS={"5m": 8},
+            build_bar_environment_filter=lambda environment, include_legacy_empty=True: f'environment = "{environment}"',
+            cfg=None,
+            engine_bootstrap_checked={key},
+            signal_bootstrap_checked=set(),
+            last_interval_fetch_ms={},
+            last_processed_ms={},
+            normalize_bar_environment=lambda row, environment: dict(row, environment=environment),
+            pb=SimpleNamespace(get_all_records=get_records),
+            signal_gens={key: signal_generator},
+        )
+
+        with mock.patch("ibkr_compute.api.compute.materialize._api_app", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.compute.materialize.get_or_create_engine", return_value=engine):
+                processed = materialize.bootstrap_engine_state(
+                    "live",
+                    "AAPL",
+                    "5m",
+                    200,
+                    inclusive=True,
+                    hydrate_signal_state=True,
+                )
+                skipped = materialize.bootstrap_engine_state(
+                    "live",
+                    "AAPL",
+                    "5m",
+                    200,
+                    inclusive=True,
+                    hydrate_signal_state=True,
+                )
+
+        self.assertEqual(processed, 2)
+        self.assertEqual(skipped, 0)
+        self.assertEqual(query_count["value"], 1)
+        self.assertEqual(signal_generator.reset_count, 1)
+        self.assertEqual(signal_generator.updated_bar_times, [150, 200])
+        self.assertIn(key, fake_app.signal_bootstrap_checked)
 
     def test_materialize_can_seed_latest_indicator_payloads(self):
         engine = _FakeEngine()

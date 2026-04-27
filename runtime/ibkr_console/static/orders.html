@@ -457,12 +457,12 @@
             if (currentSearch) scopeParts.push(`search=${summarizeHeaderValue(currentSearch, 24)}`);
             if (resolvedLegacySearch) scopeParts.push(`resolved_from=${summarizeHeaderValue(resolvedLegacySearch, 18)}`);
             const scopeText = scopeParts.length ? scopeParts.join(' · ') : '无附加过滤';
-            const metaHtml = `
-                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
-                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
-                <div class="meta-line">范围 · ${escapeHtml(scopeText)}</div>
-                <div class="meta-line">数据源 · ${escapeHtml(getOrdersSourceLabel())}</div>
-            `;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '交易日', value: currentDate || '--' },
+                { label: '范围', value: scopeText },
+                { label: '数据源', value: getOrdersSourceLabel() },
+            ]);
             const statusHtml = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>交易组 ${escapeHtml(formatCountValue(visibleGroups.length))}</span>
@@ -475,7 +475,6 @@
                 kicker: 'Execution Orders',
                 title: '订单链工作台',
                 copy: '聚焦 trade group、bracket 链路和 broker / PB 对账状态，从这里继续钻取订单明细与账户动作。',
-                metaHtml,
                 statusHtml,
             });
         }
@@ -978,6 +977,7 @@
             updateDirectionTabCounts();
             renderGroups();
             updateLoadMoreButton();
+            setPageRefreshTime();
         }
 
         async function loadOrderDetailsFallback(requestId) {

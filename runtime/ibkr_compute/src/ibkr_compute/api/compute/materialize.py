@@ -54,14 +54,25 @@ def bootstrap_engine_state(
     engine = get_or_create_engine(runtime_environment, symbol, normalized_interval)
     signal_generator = api_app.signal_gens.get(key)
     target_ms = int(before_bar_time_ms or 0)
+    signal_bootstrap_checked = getattr(api_app, "signal_bootstrap_checked", None)
+    if signal_bootstrap_checked is None:
+        signal_bootstrap_checked = set()
+        setattr(api_app, "signal_bootstrap_checked", signal_bootstrap_checked)
+    requires_signal_hydration = bool(
+        hydrate_signal_state
+        and normalized_interval == "5m"
+        and signal_generator
+    )
 
     if force_rebuild:
         api_app.engine_bootstrap_checked.discard(key)
+        signal_bootstrap_checked.discard(key)
 
     if (
         not force_rebuild
         and key in api_app.engine_bootstrap_checked
         and (target_ms <= 0 or engine.last_bar_time_ms >= target_ms)
+        and (not requires_signal_hydration or key in signal_bootstrap_checked)
     ):
         return 0
 
@@ -117,8 +128,11 @@ def bootstrap_engine_state(
             signal_generator.update(snapshot)
         processed += 1
 
+    if requires_signal_hydration and engine.is_ready():
+        signal_bootstrap_checked.add(key)
+
     if engine.last_bar_time_ms > 0:
-        # Storage bootstrap warms the engine only; processed cursors move after indicator flush.
+        # Storage bootstrap primes in-memory state; processed cursors move after indicator flush.
         interval_key = (runtime_environment, normalized_interval)
         api_app.last_interval_fetch_ms[interval_key] = max(
             int(api_app.last_interval_fetch_ms.get(interval_key, 0) or 0),
@@ -306,7 +320,7 @@ def reset_compute_state_for_symbols(environment: str, symbols, intervals=None) -
     runtime_environment = str(environment or "live").strip().lower() or "live"
     normalized_symbols = set(api_app.normalize_symbols(symbols))
     interval_filter = {normalize_interval(interval) for interval in (intervals or api_app.INTERVALS)}
-    removed = {"engines": 0, "signal_gens": 0, "cursors": 0, "bootstraps": 0}
+    removed = {"engines": 0, "signal_gens": 0, "cursors": 0, "bootstraps": 0, "signal_bootstraps": 0}
 
     if not normalized_symbols:
         return removed
@@ -334,5 +348,12 @@ def reset_compute_state_for_symbols(environment: str, symbols, intervals=None) -
         if env == runtime_environment and symbol in normalized_symbols and interval in interval_filter:
             api_app.engine_bootstrap_checked.discard(key)
             removed["bootstraps"] += 1
+
+    signal_bootstrap_checked = getattr(api_app, "signal_bootstrap_checked", set())
+    for key in list(signal_bootstrap_checked):
+        env, symbol, interval = key
+        if env == runtime_environment and symbol in normalized_symbols and interval in interval_filter:
+            signal_bootstrap_checked.discard(key)
+            removed["signal_bootstraps"] += 1
 
     return removed

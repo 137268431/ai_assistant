@@ -295,15 +295,6 @@
             }).format(date);
         }
 
-        function formatRefreshClock() {
-            return new Intl.DateTimeFormat('zh-CN', {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: false
-            }).format(new Date());
-        }
-
         function setSectionState(id, state) {
             const el = document.getElementById(id);
             if (el) {
@@ -420,7 +411,12 @@
         }
 
         function renderOverviewMeta(marketDate) {
-            document.getElementById('overviewMeta').textContent = `${currentEnvironment.toUpperCase()} · ${marketDate} · 更新 ${formatRefreshClock()}`;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '交易日', value: marketDate || '--' },
+                { label: '视图', value: '首页总览' },
+            ]);
+            document.getElementById('overviewMeta').textContent = 'Split Stack 状态';
         }
 
         function normalizeHomePreloadState(payload = {}) {
@@ -684,7 +680,7 @@
             renderTargetSummary(summary, marketDate, todayTargetsUrl);
             renderTodayTargetsTimeTip(latestTodayTargetsPayload);
 
-            metaEl.textContent = `交易日 ${marketDate} · 共 ${summary.total || 0} 条 · active ${summary.active_count || 0} · candidate ${summary.candidate_count || 0}`;
+            metaEl.textContent = `共 ${summary.total || 0} 条 · active ${summary.active_count || 0} · candidate ${summary.candidate_count || 0}`;
 
             if (!items.length) {
                 setSectionState('homeTargets', 'empty');
@@ -753,7 +749,7 @@
             try {
                 setSectionState('homeTargets', 'loading');
                 const marketDate = getUsDate();
-                document.getElementById('todayTargetsMeta').textContent = `交易日 ${marketDate} · 正在加载...`;
+                document.getElementById('todayTargetsMeta').textContent = '正在加载目标池...';
                 renderTodayTargetsTimeTip({ market_date: marketDate });
                 const payload = await requestJson(`/api/custom/ibkr/today-targets?environment=${encodeURIComponent(currentEnvironment)}&market_date=${encodeURIComponent(marketDate)}`);
                 renderTodayTargets(payload || { items: [], summary: {}, market_date: marketDate });
@@ -841,7 +837,7 @@
                 }))
             ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 6);
 
-            document.getElementById('activityMeta').textContent = `最近 ${activities.length} 条 · 更新 ${formatRefreshClock()}`;
+            document.getElementById('activityMeta').textContent = `最近 ${activities.length} 条`;
 
             if (!activities.length) {
                 setSectionState('homeActivity', 'empty');
@@ -1222,7 +1218,7 @@
 
                 updateMarketPulse(pulseMetrics, symbols.length);
                 document.getElementById('marketSummaryText').textContent = hasData
-                    ? `监控 ${symbols.length} 个标的 · 更新 ${formatRefreshClock()}`
+                    ? `监控 ${symbols.length} 个标的 · 数据已加载`
                     : `监控 ${symbols.length} 个标的 · 暂无有效数据`;
 
                 if (!hasData) {
@@ -1250,6 +1246,7 @@
                 loadDashboard(),
                 loadMarketIndex(),
             ]);
+            setPageRefreshTime();
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
@@ -1273,7 +1270,9 @@
             setInterval(loadTodayTargets, 60000);
             setInterval(loadDashboard, 60000);
             setInterval(loadMarketIndex, 60000);
-            setInterval(loadSystemOverview, 60000);
+            setInterval(() => {
+                loadSystemOverview().then(() => setPageRefreshTime()).catch(() => null);
+            }, 60000);
         });
 
         window.onEnvironmentChange = function(environment) {

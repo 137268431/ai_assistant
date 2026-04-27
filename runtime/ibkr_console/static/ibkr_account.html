@@ -361,12 +361,11 @@
         function renderAccountTopSection(snapshot = latestSnapshot, orderMetrics = null) {
             const counts = snapshot?.counts || {};
             const metrics = orderMetrics || getAccountOrderMetrics(snapshot);
-            const metaHtml = `
-                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
-                <div class="meta-line">会话 · ${escapeHtml(getAccountSessionLabel(snapshot))}</div>
-                <div class="meta-line">刷新 · ${escapeHtml(formatTimeLabel(snapshot?.fetched_at))}</div>
-                <div class="meta-line">订单过滤 · ${escapeHtml(getAccountFilterSummary())}</div>
-            `;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '会话', value: getAccountSessionLabel(snapshot) },
+                { label: '订单过滤', value: getAccountFilterSummary() },
+            ]);
             const statusHtml = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>Net Liq ${escapeHtml(getAccountNetLiqLabel(snapshot))}</span>
@@ -379,7 +378,6 @@
                 kicker: 'Execution Account',
                 title: '账户总览与交易入口',
                 copy: '把账户净值、真实持仓、实时挂单和直接下单入口集中在一页里，遇到 2FA 或 runtime 异常再切回控制台处理。',
-                metaHtml,
                 statusHtml,
             });
         }
@@ -1000,7 +998,7 @@
             const allPositions = Array.isArray(snapshot?.positions) ? snapshot.positions.slice() : [];
             const positions = allPositions.filter((position) => Number(position?.quantity || 0) !== 0);
             positions.sort((a, b) => Math.abs(Number(b.market_value || 0)) - Math.abs(Number(a.market_value || 0)));
-            document.getElementById('positionsMeta').textContent = `${positions.length} open · updated ${formatTimeLabel(snapshot?.fetched_at)}`;
+            document.getElementById('positionsMeta').textContent = `${positions.length} open · Gateway snapshot`;
             const area = document.getElementById('positionsArea');
             if (!positions.length) {
                 area.innerHTML = '<div class="empty-state">当前没有打开仓位。这里显示的是 Gateway 直接返回的真实仓位。</div>';
@@ -1326,7 +1324,8 @@
                 renderPositions(snapshot);
                 renderOrders(snapshot);
                 renderTicketPreview();
-                refreshInfo.textContent = `上次刷新：${formatTimeLabel(snapshot.fetched_at)}`;
+                setPageRefreshTime(snapshot.fetched_at || new Date());
+                refreshInfo.textContent = '账户状态已加载';
                 if (showFeedback) showToast('账户状态已刷新');
             } catch (error) {
                 renderBlocker({ errors: { summary: error.message } });
@@ -1354,7 +1353,8 @@
                     renderPositions(payload.snapshot);
                     renderOrders(payload.snapshot);
                     renderTicketPreview();
-                    document.getElementById('refreshInfo').textContent = `上次刷新：${formatTimeLabel(payload.snapshot.fetched_at)}`;
+                    setPageRefreshTime(payload.snapshot.fetched_at || new Date());
+                    document.getElementById('refreshInfo').textContent = '账户状态已加载';
                 }
                 showToast(successMessage || `${label} 已执行`);
                 return true;

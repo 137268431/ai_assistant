@@ -382,9 +382,10 @@ async function loadSystemData(showToastOnSuccess = false) {
             setIbkrPageLoading(false);
         }
 
+        setPageRefreshTime();
         document.getElementById('refreshInfo').textContent = coreErrors.length
-            ? `更新: ${new Date().toLocaleTimeString()} · 核心已加载，补充中`
-            : `更新: ${new Date().toLocaleTimeString()} · 核心已加载`;
+            ? '核心已加载，补充中'
+            : '核心已加载';
 
         const marketDate = String(
             computeStatus?.runtime?.market_universe?.market_date
@@ -392,6 +393,11 @@ async function loadSystemData(showToastOnSuccess = false) {
             || ''
         ).trim() || String(summaryLite?.timestamp || '').slice(0, 10);
         const todayDate = marketDate || new Date().toISOString().slice(0, 10);
+        setPageContextMeta([
+            { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+            { label: '交易日', value: todayDate || '--' },
+            { label: '视图', value: currentFocus === 'stats' ? '统计聚焦' : '系统总览' },
+        ]);
         const todayStart = `${todayDate} 00:00:00`;
         const todayFilterBase = `created >= "${escapeQueryValue(todayStart)}" && ${envFilterBase}`;
         const targetDateFilter = `date = "${escapeQueryValue(todayDate)}" && ${envFilterBase}`;
@@ -452,17 +458,19 @@ async function loadSystemData(showToastOnSuccess = false) {
         );
         renderEvents(Array.isArray(eventsResp?.items) ? eventsResp.items : []);
 
-        document.getElementById('refreshInfo').textContent = `更新: ${new Date().toLocaleTimeString()} · 细节已加载`;
+        setPageRefreshTime();
+        document.getElementById('refreshInfo').textContent = '细节已加载';
 
         const softErrors = coreErrors.concat(secondaryErrors);
         if (softErrors.length) {
             console.warn('[ibkr_system] soft errors', softErrors);
         }
-        let refreshLabel = `更新: ${new Date().toLocaleTimeString()}`;
+        setPageRefreshTime();
+        let refreshLabel = '细节已加载';
         if (coreErrors.length) {
-            refreshLabel = `更新: ${new Date().toLocaleTimeString()} · 核心降级`;
+            refreshLabel = '核心降级';
         } else if (secondaryErrors.length) {
-            refreshLabel = `更新: ${new Date().toLocaleTimeString()} · 核心已加载`;
+            refreshLabel = '核心已加载';
         }
         document.getElementById('refreshInfo').textContent = refreshLabel;
         if (showToastOnSuccess) showToast('System 数据已刷新');

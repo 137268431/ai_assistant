@@ -506,7 +506,14 @@
                 document.getElementById('heroCopy').textContent =
                     '展示 startup trade warmup、完整性阻塞和 monitor coverage；live readiness 暂不可用时会保留启动期快照。';
             }
-            document.getElementById('refreshInfo').textContent = `更新于 ${new Date().toLocaleTimeString()}`;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: 'Runtime', value: runtimePhase.toUpperCase(), tone: runtimeTone },
+                { label: 'Trade', value: liveTradeLabel, tone: liveTone },
+                { label: 'Gate', value: gateOpen ? 'OPEN' : 'CLOSED', tone: gateTone },
+            ]);
+            setPageRefreshTime();
+            document.getElementById('refreshInfo').textContent = '状态已加载';
             document.getElementById('sourceInfo').textContent =
                 `来源 /api/custom/ibkr/statusz?warmup=1 · ${status?.warmup_details_included ? 'warmup full' : 'warmup lite'} · live readiness ${describeLiveReadinessSource(live)}`;
         }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 def _match_part(part: str, value: int) -> bool:
@@ -31,17 +32,28 @@ def _match_field(field_expr: str, value: int) -> bool:
     return any(_match_part(part, value) for part in str(field_expr or "").split(","))
 
 
-def cron_matches_minute(cron_expr: str, when_utc: datetime) -> bool:
+def _resolve_timezone(timezone_name: str):
+    text = str(timezone_name or "UTC").strip() or "UTC"
+    if text.upper() in {"UTC", "Z"}:
+        return timezone.utc
+    try:
+        return ZoneInfo(text)
+    except Exception:
+        return timezone.utc
+
+
+def cron_matches_minute(cron_expr: str, when_utc: datetime, timezone_name: str = "UTC") -> bool:
     parts = str(cron_expr or "").split()
     if len(parts) != 5:
         return False
+    current = when_utc.astimezone(_resolve_timezone(timezone_name))
     minute, hour, day_of_month, month, day_of_week = parts
-    weekday = (when_utc.weekday() + 1) % 7
+    weekday = (current.weekday() + 1) % 7
     return (
-        _match_field(minute, when_utc.minute)
-        and _match_field(hour, when_utc.hour)
-        and _match_field(day_of_month, when_utc.day)
-        and _match_field(month, when_utc.month)
+        _match_field(minute, current.minute)
+        and _match_field(hour, current.hour)
+        and _match_field(day_of_month, current.day)
+        and _match_field(month, current.month)
         and _match_field(day_of_week, weekday)
     )
 

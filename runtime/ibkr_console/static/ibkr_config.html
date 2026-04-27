@@ -491,6 +491,12 @@ async function load() {
     })
 
     render()
+    setPageContextMeta([
+      { label: '环境', value: getEnvironmentLabel(configEnvironment, true), tone: configEnvironment },
+      { label: '配置项', value: `${configs.length} 条` },
+      { label: 'Scope', value: configEnvironment === 'global' ? 'GLOBAL' : `${getEnvironmentLabel(configEnvironment)} + GLOBAL` },
+    ])
+    setPageRefreshTime()
   } catch (err) {
     console.error('[Config] 加载失败:', err)
     document.getElementById('configContainer').innerHTML = `

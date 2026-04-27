@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 
-ET = timezone(timedelta(hours=-4))
+ET = ZoneInfo("America/New_York")
 TRUTH_AUDIT_INTERVAL = "5m"
 TRUTH_AUDIT_WINDOW_START = (9, 30)
 TRUTH_AUDIT_WINDOW_END = (15, 55)
@@ -12,8 +13,6 @@ TRUTH_AUDIT_ERROR_FIELDS = (
     "missing_stored_bar_count",
     "missing_ibkr_bar_count",
     "bar_mismatch_count",
-    "indicator_mismatch_count",
-    "signal_mismatch_count",
 )
 
 

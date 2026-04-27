@@ -92,6 +92,13 @@ def reset_daily_runtime_state(environments=None, reason: str = "new_day") -> dic
             signal_generator.daily_reset()
             reset_count += 1
 
+        signal_bootstrap_checked = getattr(api_app, "signal_bootstrap_checked", None)
+        if signal_bootstrap_checked is not None:
+            for key in list(signal_bootstrap_checked):
+                environment = str(key[0] if isinstance(key, tuple) and key else "").strip().lower()
+                if environment in runtime_environments:
+                    signal_bootstrap_checked.discard(key)
+
         api_app.daily_close_cache = {}
         api_app.daily_close_cache_date = ""
 

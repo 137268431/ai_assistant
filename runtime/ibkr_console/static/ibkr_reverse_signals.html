@@ -193,11 +193,11 @@
             const scopeText = currentSearch
                 ? `search=${summarizeHeaderValue(currentSearch, 26)}`
                 : '无附加过滤';
-            const metaHtml = `
-                <div class="meta-line">环境 · ${escapeHtml(getEnvironmentLabel(currentEnvironment))}</div>
-                <div class="meta-line">交易日 · ${escapeHtml(currentDate || '--')}</div>
-                <div class="meta-line">范围 · ${escapeHtml(scopeText)}</div>
-            `;
+            setPageContextMeta([
+                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: '交易日', value: currentDate || '--' },
+                { label: '范围', value: scopeText },
+            ]);
             const statusHtml = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>结果 ${escapeHtml(String(getFilteredSignals().length))}</span>
@@ -210,7 +210,6 @@
                 kicker: 'Execution Reverse',
                 title: '反向信号队列',
                 copy: '聚焦平仓、取消和调整流转，快速串起主信号、trade group 与订单回查。',
-                metaHtml,
                 statusHtml,
             });
         }
@@ -323,6 +322,7 @@
                 renderReversePageChrome();
                 renderSignals();
                 updateLoadMoreButton();
+                setPageRefreshTime();
             } catch (error) {
                 console.error('加载失败:', error);
                 showToast('加载失败: ' + error.message);

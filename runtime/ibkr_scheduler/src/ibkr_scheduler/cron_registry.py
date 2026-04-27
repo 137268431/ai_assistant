@@ -19,6 +19,7 @@ def _definition(
     window_label: str = "",
     hook_file: str = "",
     runner_kind: str = "compatibility_pending",
+    cron_timezone: str = "UTC",
 ) -> dict[str, Any]:
     return {
         "id": cron_id,
@@ -29,6 +30,7 @@ def _definition(
         "sort_order": sort_order,
         "default_value": "TRUE",
         "cron_expr": cron_expr,
+        "cron_timezone": str(cron_timezone or "UTC").strip() or "UTC",
         "cycle_label": cycle_label,
         "beijing_cycle_label": beijing_cycle_label,
         "et_cycle_label": et_cycle_label,
@@ -231,17 +233,32 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         runner_kind="native_http",
     ),
     _definition(
-        "ibkr_data_quality_truth_audit",
-        "pb_cron_ibkr_data_quality_truth_audit_enabled",
-        "收盘后 IBKR 真值审计 Cron",
-        "收盘后 IBKR 真值审计",
-        136.4,
-        "20 20 * * 1-5",
-        "工作日 UTC 20:20",
-        "对全观察池执行一次 stored bars vs IBKR authoritative history 真值审计。",
-        "兼容读取 pb_scheduler_enabled 和原有 pb_cron_* 开关。",
+        "ibkr_data_quality_premarket_truth_audit",
+        "pb_cron_ibkr_data_quality_premarket_truth_audit_enabled",
+        "盘前 IBKR 真值审计 Cron",
+        "盘前 IBKR 真值审计",
+        136.35,
+        "20 8 * * 1-5",
+        "工作日 ET 08:20",
+        "盘前对全观察池执行一次 stored bars vs IBKR authoritative history 真值审计，默认检查上一交易日。",
+        "使用 America/New_York 时区匹配，自动覆盖 DST；兼容读取 pb_scheduler_enabled 和原有 pb_cron_* 开关。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
+        cron_timezone="America/New_York",
+    ),
+    _definition(
+        "ibkr_data_quality_truth_audit",
+        "pb_cron_ibkr_data_quality_truth_audit_enabled",
+        "盘后 IBKR 真值审计 Cron",
+        "盘后 IBKR 真值审计",
+        136.4,
+        "20 16 * * 1-5",
+        "工作日 ET 16:20",
+        "盘后对全观察池执行一次 stored bars vs IBKR authoritative history 真值审计，默认检查当天。",
+        "使用 America/New_York 时区匹配，自动覆盖 DST；兼容读取 pb_scheduler_enabled 和原有 pb_cron_* 开关。",
+        hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_http",
+        cron_timezone="America/New_York",
     ),
     _definition(
         "ibkr_weekly_reauth_reminder",
@@ -329,6 +346,7 @@ NATIVE_HTTP_JOB_ENDPOINTS: dict[str, tuple[str, str]] = {
     "ibkr_history_retention": ("POST", "/retention/cleanup"),
     "ibkr_data_quality_open_sweep": ("POST", "/ibkr/data-quality/repair"),
     "ibkr_data_quality_close_sweep": ("POST", "/ibkr/data-quality/repair"),
+    "ibkr_data_quality_premarket_truth_audit": ("POST", "/ibkr/data-quality/truth-audit"),
     "ibkr_data_quality_truth_audit": ("POST", "/ibkr/data-quality/truth-audit"),
 }
 
@@ -374,7 +392,7 @@ def build_effective_cron_definition(definition: dict[str, Any], config, environm
         "effective_enabled": scheduler_enabled and cron_enabled,
         "job_state": state,
         "config_description": (
-            f"{definition['function_summary']} Cron: {definition['cron_expr']}；UTC 周期: {definition['cycle_label']} "
+            f"{definition['function_summary']} Cron: {definition['cron_expr']}；时区: {definition.get('cron_timezone') or 'UTC'}；周期: {definition['cycle_label']} "
             f"{definition['note']}"
         ).strip(),
     }
