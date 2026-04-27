@@ -117,6 +117,21 @@ function getEnvironmentLabel(environment, allowGlobal = false) {
   return ENVIRONMENT_LABELS[normalized] || normalized.toUpperCase();
 }
 
+function getCurrentEtDateString(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(safeDate);
+  } catch (_) {
+    return safeDate.toISOString().slice(0, 10);
+  }
+}
+
 function getPendingEnvironment(allowGlobal = false) {
   const pending = typeof window !== 'undefined' ? String(window[PENDING_ENVIRONMENT_WINDOW_KEY] || '').trim() : '';
   if (!pending) return '';

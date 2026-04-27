@@ -12,7 +12,7 @@ from ibkr_compute.api.service_topology import get_compute_internal_url
 
 COMPUTE_STATUS_TIMEOUT_SECONDS = max(
     0.5,
-    float(os.environ.get("IBKR_COMPUTE_STATUS_TIMEOUT_SEC", "2.0")),
+    float(os.environ.get("IBKR_COMPUTE_STATUS_TIMEOUT_SEC", "8.0")),
 )
 COMPUTE_STATUS_CACHE_TTL_SECONDS = max(
     0.0,

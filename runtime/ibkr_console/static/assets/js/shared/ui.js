@@ -770,10 +770,104 @@ function normalizePageContextMetaItem(item) {
   };
 }
 
-function renderPageContextMeta(items = []) {
+function normalizePageContextMetaLabel(label) {
+  return String(label ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function extractPageContextDateToken(value) {
+  const text = String(value ?? '').trim();
+  if (!text || text === '--' || text === '-') return '';
+  const dateMatch = text.match(/\b\d{4}-\d{2}-\d{2}\b/);
+  return dateMatch ? dateMatch[0] : text;
+}
+
+function isPageContextTradingDateLabel(label) {
+  const normalized = normalizePageContextMetaLabel(label);
+  return [
+    '交易日',
+    'date',
+    'marketdate',
+    'targetdate',
+    'tradingdate',
+    'tradingday',
+  ].includes(normalized);
+}
+
+function getPageContextUrlTradingDate() {
+  if (typeof window === 'undefined') return '';
+  const params = new URLSearchParams(window.location.search);
+  return extractPageContextDateToken(
+    params.get('date')
+      || params.get('market_date')
+      || params.get('marketDate')
+      || params.get('trading_date')
+      || ''
+  );
+}
+
+function getPageContextDomTradingDate() {
+  if (typeof document === 'undefined') return '';
+  const ids = ['dailyTargetDate', 'marketDate', 'customDate'];
+  for (const id of ids) {
+    const value = document.getElementById(id)?.value || '';
+    const date = extractPageContextDateToken(value);
+    if (date) return date;
+  }
+  return '';
+}
+
+function getPageContextFallbackTradingDate() {
+  if (typeof getCurrentEtDateString === 'function') {
+    return getCurrentEtDateString();
+  }
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  } catch (_) {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function resolvePageContextTradingDate(items = []) {
   const normalized = (Array.isArray(items) ? items : [])
     .map(normalizePageContextMetaItem)
     .filter(Boolean);
+  for (const item of normalized) {
+    if (!isPageContextTradingDateLabel(item.label)) continue;
+    const date = extractPageContextDateToken(item.value);
+    if (date) return date;
+  }
+  return getPageContextUrlTradingDate()
+    || getPageContextDomTradingDate()
+    || getPageContextFallbackTradingDate()
+    || '--';
+}
+
+function resolvePageContextEnvironment(allowGlobal = false) {
+  try {
+    return allowGlobal ? getCurrentConfigEnvironment() : getCurrentRuntimeEnvironment();
+  } catch (_) {
+    return allowGlobal ? 'global' : 'live';
+  }
+}
+
+function buildPageContextMetaItems(items = [], options = {}) {
+  const pageAllowGlobal = typeof window !== 'undefined' ? window.__ibkrPageContextAllowGlobal : false;
+  const allowGlobal = Boolean(options.allowGlobal ?? pageAllowGlobal);
+  const environment = resolvePageContextEnvironment(allowGlobal);
+  const tradingDate = resolvePageContextTradingDate(items);
+  return [
+    { label: '环境', value: getEnvironmentLabel(environment, allowGlobal), tone: environment },
+    { label: '交易日', value: tradingDate || '--' },
+  ];
+}
+
+function renderPageContextMeta(items = [], options = {}) {
+  const normalized = buildPageContextMetaItems(items, options);
   if (!normalized.length) return '';
   return normalized.map((item) => {
     const toneClass = item.tone ? ` is-${escapePageUiText(item.tone)}` : '';
@@ -787,9 +881,7 @@ function renderPageContextMeta(items = []) {
 }
 
 function setPageContextMeta(items = []) {
-  const normalized = (Array.isArray(items) ? items : [])
-    .map(normalizePageContextMetaItem)
-    .filter(Boolean);
+  const normalized = buildPageContextMetaItems(items);
   window.__ibkrPageContextMetaItems = normalized;
   const html = renderPageContextMeta(normalized);
   document.querySelectorAll('[data-page-context-meta]').forEach((node) => {
@@ -956,13 +1048,16 @@ function spinPageRefreshButton(buttonId = 'refreshBtn') {
 
 function renderPageContextBar(title, options = {}) {
   const allowGlobal = Boolean(options.allowGlobal);
+  window.__ibkrPageContextAllowGlobal = allowGlobal;
   const description = options.description || '';
   const subtitle = options.subtitle || '';
   const actionsHtml = options.actionsHtml || '';
   const metaItems = Array.isArray(options.metaItems)
     ? options.metaItems
     : (Array.isArray(window.__ibkrPageContextMetaItems) ? window.__ibkrPageContextMetaItems : []);
-  const metaHtml = renderPageContextMeta(metaItems);
+  const normalizedMetaItems = buildPageContextMetaItems(metaItems, { allowGlobal });
+  window.__ibkrPageContextMetaItems = normalizedMetaItems;
+  const metaHtml = renderPageContextMeta(normalizedMetaItems, { allowGlobal });
   const safeTitle = title ? escapePageUiText(title) : '';
   const safeDescription = description ? escapePageUiText(description) : '';
   const safeSubtitle = subtitle ? escapePageUiText(subtitle) : '';

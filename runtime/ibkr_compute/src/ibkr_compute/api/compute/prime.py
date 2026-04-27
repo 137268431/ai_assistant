@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import threading
 import time
 from typing import Any
 
@@ -22,6 +24,12 @@ PRIME_INTERVALS = ("15m", "30m", "1h")
 READINESS_INTERVALS = ("5m", "15m", "30m", "1h")
 READINESS_SOFT_INTERVALS = ("15m", "30m", "1h")
 READINESS_MAX_MISSING_SYMBOLS = 20
+READINESS_CACHE_TTL_SECONDS = max(
+    0.0,
+    float(os.environ.get("IBKR_MULTI_TIMEFRAME_READINESS_CACHE_TTL_SEC", "15.0")),
+)
+_readiness_cache_lock = threading.Lock()
+_readiness_cache: dict[tuple, tuple[float, dict]] = {}
 
 
 def _api_app():
@@ -44,6 +52,22 @@ def _normalize_interval_list(values, default_intervals=PRIME_INTERVALS, allowed_
         if interval in allowed and interval not in normalized:
             normalized.append(interval)
     return normalized
+
+
+def _unsupported_interval_values(values, allowed_intervals=PRIME_INTERVALS) -> list[str]:
+    if values is None:
+        return []
+    source = values if isinstance(values, (list, tuple, set)) else [values]
+    allowed = {normalize_interval(interval) for interval in allowed_intervals}
+    unsupported = []
+    for value in source:
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            continue
+        interval = normalize_interval(value)
+        if interval not in allowed and raw_value not in unsupported:
+            unsupported.append(raw_value)
+    return unsupported
 
 
 def _requested_interval_values(payload: dict) -> list:
@@ -113,6 +137,8 @@ def build_multi_timeframe_readiness(
     environment: str = "live",
     symbols: list[str] | None = None,
     intervals: list[str] | None = None,
+    use_cache: bool = True,
+    include_storage: bool = True,
 ) -> dict:
     api_app = api_app or _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
@@ -127,35 +153,79 @@ def build_multi_timeframe_readiness(
         target_symbols = sorted(
             {
                 str(symbol or "").strip().upper()
-                for env, symbol, interval in getattr(api_app, "engines", {}).keys()
+                for key in getattr(api_app, "engines", {}).keys()
+                if isinstance(key, tuple)
+                and len(key) >= 3
+                for env, symbol, interval in [key[:3]]
                 if env == runtime_environment and interval == "5m" and str(symbol or "").strip()
             }
         )
+    if not target_symbols:
+        return {
+            "environment": runtime_environment,
+            "status": "unknown",
+            "reason": "no_target_symbols",
+            "hard_gate_interval": "5m",
+            "soft_gate_intervals": list(READINESS_SOFT_INTERVALS),
+            "symbols_total": 0,
+            "intervals": {},
+            "checked_at_ms": int(time.time() * 1000),
+        }
+
+    cache_key = (runtime_environment, tuple(target_symbols), tuple(target_intervals), bool(include_storage))
+    now = time.time()
+    if use_cache and READINESS_CACHE_TTL_SECONDS > 0:
+        with _readiness_cache_lock:
+            cached = _readiness_cache.get(cache_key)
+            if cached and now < cached[0]:
+                return dict(cached[1])
 
     by_interval: dict[str, Any] = {}
     overall_status = "ready"
     for interval in target_intervals:
         engines = _engine_status_by_symbol(api_app, runtime_environment, interval, target_symbols)
-        bar_rows = _collect_latest_rows_by_symbol(api_app, "ibkr_bars", runtime_environment, interval, target_symbols)
-        indicator_rows = _collect_latest_rows_by_symbol(
-            api_app,
-            "ibkr_indicators",
-            runtime_environment,
-            interval,
-            target_symbols,
-        )
-
         ready_symbols = sorted(symbol for symbol, item in engines.items() if bool(item.get("ready")))
-        bar_symbols = sorted(bar_rows.keys())
-        indicator_symbols = sorted(indicator_rows.keys())
+        if include_storage:
+            bar_rows = _collect_latest_rows_by_symbol(api_app, "ibkr_bars", runtime_environment, interval, target_symbols)
+            indicator_rows = _collect_latest_rows_by_symbol(
+                api_app,
+                "ibkr_indicators",
+                runtime_environment,
+                interval,
+                target_symbols,
+            )
+            bar_symbols = sorted(bar_rows.keys())
+            indicator_symbols = sorted(indicator_rows.keys())
+            latest_bar_ms = max((int((row or {}).get("bar_time_ms", 0) or 0) for row in bar_rows.values()), default=0)
+            latest_indicator_ms = max(
+                (int((row or {}).get("bar_time_ms", 0) or 0) for row in indicator_rows.values()),
+                default=0,
+            )
+            readiness_source = "storage"
+        else:
+            bar_symbols = sorted(
+                symbol
+                for symbol, item in engines.items()
+                if int((item or {}).get("last_bar_time_ms", 0) or 0) > 0
+                or int((item or {}).get("bar_count", 0) or 0) > 0
+            )
+            indicator_symbols = list(ready_symbols)
+            latest_bar_ms = max(
+                (int((item or {}).get("last_bar_time_ms", 0) or 0) for item in engines.values()),
+                default=0,
+            )
+            latest_indicator_ms = max(
+                (
+                    int((item or {}).get("last_bar_time_ms", 0) or 0)
+                    for item in engines.values()
+                    if bool((item or {}).get("ready"))
+                ),
+                default=0,
+            )
+            readiness_source = "engine"
         missing_bar_symbols = sorted(set(target_symbols) - set(bar_symbols))
         missing_ready_symbols = sorted(set(target_symbols) - set(ready_symbols))
         missing_indicator_symbols = sorted(set(target_symbols) - set(indicator_symbols))
-        latest_bar_ms = max((int((row or {}).get("bar_time_ms", 0) or 0) for row in bar_rows.values()), default=0)
-        latest_indicator_ms = max(
-            (int((row or {}).get("bar_time_ms", 0) or 0) for row in indicator_rows.values()),
-            default=0,
-        )
 
         interval_status = _readiness_status(
             interval=interval,
@@ -171,6 +241,8 @@ def build_multi_timeframe_readiness(
             "status": interval_status,
             "hard_gate": interval == "5m",
             "soft_gate": interval in READINESS_SOFT_INTERVALS,
+            "storage_checked": bool(include_storage),
+            "readiness_source": readiness_source,
             "symbols_total": len(target_symbols),
             "bar_symbols": len(bar_symbols),
             "ready_symbols": len(ready_symbols),
@@ -185,7 +257,7 @@ def build_multi_timeframe_readiness(
             "missing_indicator_symbols_total": len(missing_indicator_symbols),
         }
 
-    return {
+    payload = {
         "environment": runtime_environment,
         "status": overall_status,
         "hard_gate_interval": "5m",
@@ -194,6 +266,10 @@ def build_multi_timeframe_readiness(
         "intervals": by_interval,
         "checked_at_ms": int(time.time() * 1000),
     }
+    if use_cache and READINESS_CACHE_TTL_SECONDS > 0:
+        with _readiness_cache_lock:
+            _readiness_cache[cache_key] = (time.time() + READINESS_CACHE_TTL_SECONDS, dict(payload))
+    return payload
 
 
 def _summarize_prime_interval(materialize_result: dict) -> dict:
@@ -225,7 +301,9 @@ def build_compute_prime_response(payload=None):
         environment for environment in requested_environments if is_environment_compute_enabled(environment)
     ]
     requested_symbols = get_requested_symbols(request_payload)
-    intervals = _normalize_interval_list(_requested_interval_values(request_payload))
+    requested_interval_values = _requested_interval_values(request_payload)
+    intervals = _normalize_interval_list(requested_interval_values)
+    unsupported_intervals = _unsupported_interval_values(requested_interval_values)
 
     if not requested_symbols:
         return jsonify(
@@ -236,12 +314,13 @@ def build_compute_prime_response(payload=None):
                 "environments": enabled_environments,
             }
         ), 400
-    if not intervals:
+    if unsupported_intervals or not intervals:
         return jsonify(
             {
                 "ok": False,
                 "error": "unsupported_prime_intervals",
                 "allowed_intervals": list(PRIME_INTERVALS),
+                "unsupported_intervals": unsupported_intervals,
                 "requested_environments": requested_environments,
                 "environments": enabled_environments,
                 "symbols": requested_symbols,
@@ -315,6 +394,8 @@ def build_compute_prime_response(payload=None):
                 environment=environment,
                 symbols=requested_symbols,
                 intervals=["5m", *intervals],
+                use_cache=False,
+                include_storage=True,
             )
             results[environment] = env_result
 

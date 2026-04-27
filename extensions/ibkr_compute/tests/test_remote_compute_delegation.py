@@ -172,6 +172,55 @@ class RemoteWarmupReadinessTest(unittest.TestCase):
         self.assertEqual(readiness["trading_gate_reason"], "ready")
         self.assertEqual(readiness["symbol_status"][0]["source"], "remote_compute_status")
 
+    def test_collect_warmup_readiness_falls_back_to_remote_readiness_summary(self):
+        cycle = _DummyWarmupCycle()
+        snapshot = {
+            "symbols": ["AAPL", "AMD"],
+            "scan_symbols": ["AMD"],
+            "subscription_symbols": ["AAPL", "AMD"],
+            "trade_symbols": ["AAPL"],
+            "trade_symbols_total": 1,
+            "monitor_symbols": [],
+            "monitor_symbols_total": 0,
+        }
+        remote_status = {
+            "service_profile": "compute",
+            "engines": {},
+            "multi_timeframe_readiness": {
+                "intervals": {
+                    "5m": {
+                        "status": "ready",
+                        "latest_indicator_time_ms": 1776793800000,
+                        "missing_ready_symbols_total": 0,
+                        "missing_indicator_symbols_total": 0,
+                    }
+                }
+            },
+        }
+
+        with mock.patch(
+            "ibkr_compute.orchestration.warmup_cycle._service_mod",
+            return_value=SimpleNamespace(
+                ENVIRONMENT="live",
+                DEFAULT_WARMUP_REQUIRED_INTERVAL="5m",
+            ),
+        ):
+            with mock.patch(
+                "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                return_value=True,
+            ):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.get_remote_compute_status",
+                    return_value=remote_status,
+                ):
+                    readiness = cycle._collect_warmup_readiness(snapshot)
+
+        self.assertEqual(readiness["ready_symbols"], 2)
+        self.assertEqual(readiness["ready_trade_symbols"], 1)
+        self.assertTrue(readiness["trading_gate_open"])
+        self.assertEqual(readiness["pending_symbols"], [])
+        self.assertEqual(readiness["symbol_status"][0]["source"], "remote_compute_readiness")
+
     def test_remote_warmup_skips_local_cursor_and_materialize_bootstrap(self):
         cycle = _DummyWarmupCycle()
 
@@ -226,6 +275,97 @@ class RemoteRealtimeComputeTriggerTest(unittest.TestCase):
                 "symbols": ["AAPL", "MSFT"],
             }
         )
+
+    def test_trigger_realtime_compute_can_suppress_startup_signals(self):
+        pipeline = _DummyRuntimePipeline()
+
+        with mock.patch(
+            "ibkr_compute.orchestration.runtime_pipeline._service_mod",
+            return_value=SimpleNamespace(ENVIRONMENT="live", logger=mock.Mock()),
+        ):
+            with mock.patch(
+                "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                return_value=True,
+            ):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.trigger_remote_compute",
+                    return_value={"ok": True},
+                ) as trigger_mock:
+                    pipeline._trigger_realtime_compute(
+                        source="canonical_close",
+                        symbols=["AAPL"],
+                        persist_signals=False,
+                    )
+
+        trigger_mock.assert_called_once_with(
+            {
+                "source": "canonical_close",
+                "environments": ["live"],
+                "persist_signals": False,
+                "symbols": ["AAPL"],
+            }
+        )
+
+    def test_schedule_interval_prime_delegates_to_remote_compute_service(self):
+        pipeline = _DummyRuntimePipeline()
+        calls = []
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+                self._alive = False
+                del daemon, name
+
+            def start(self):
+                self._alive = True
+                if self._target:
+                    self._target()
+                self._alive = False
+
+            def is_alive(self):
+                return self._alive
+
+        def trigger_remote_prime(payload):
+            calls.append(dict(payload))
+            return {"ok": True}
+
+        with mock.patch(
+            "ibkr_compute.orchestration.runtime_pipeline.threading.Thread",
+            _ImmediateThread,
+        ):
+            with mock.patch(
+                "ibkr_compute.orchestration.runtime_pipeline._service_mod",
+                return_value=SimpleNamespace(
+                    ENVIRONMENT="live",
+                    STARTUP_BACKGROUND_PRIME_INTERVALS=["15m", "30m"],
+                    STARTUP_BACKGROUND_PRIME_CHUNK_SIZE=2,
+                    logger=mock.Mock(),
+                ),
+            ):
+                with mock.patch(
+                    "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                    return_value=True,
+                ):
+                    with mock.patch(
+                        "ibkr_compute.api.compute_status_client.trigger_remote_prime",
+                        side_effect=trigger_remote_prime,
+                    ):
+                        scheduled = pipeline._schedule_interval_prime(
+                            ["AAPL", "MSFT", "TSLA"],
+                            source="startup_ready",
+                        )
+
+        self.assertTrue(scheduled)
+        self.assertEqual(
+            calls,
+            [
+                {"environments": ["live"], "symbols": ["AAPL", "MSFT"], "intervals": ["15m"]},
+                {"environments": ["live"], "symbols": ["TSLA"], "intervals": ["15m"]},
+                {"environments": ["live"], "symbols": ["AAPL", "MSFT"], "intervals": ["30m"]},
+                {"environments": ["live"], "symbols": ["TSLA"], "intervals": ["30m"]},
+            ],
+        )
+        self.assertEqual(pipeline._interval_prime_state["completed_intervals"], ["15m", "30m"])
 
     def test_schedule_interval_prime_seeds_indicators_for_materialized_intervals(self):
         pipeline = _DummyRuntimePipeline()
@@ -283,10 +423,14 @@ class RemoteRealtimeComputeTriggerTest(unittest.TestCase):
                         logger=mock.Mock(),
                     ),
                 ):
-                    scheduled = pipeline._schedule_interval_prime(
-                        ["AAPL", "MSFT", "TSLA"],
-                        source="startup_ready",
-                    )
+                    with mock.patch(
+                        "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                        return_value=False,
+                    ):
+                        scheduled = pipeline._schedule_interval_prime(
+                            ["AAPL", "MSFT", "TSLA"],
+                            source="startup_ready",
+                        )
 
         self.assertTrue(scheduled)
         self.assertEqual(

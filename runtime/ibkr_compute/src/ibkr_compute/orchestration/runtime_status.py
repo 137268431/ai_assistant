@@ -114,6 +114,19 @@ class TradingServiceRuntimeStatusMixin:
             if last_run_at > 0 and lag_since_last_run_s <= 90 and not stalled
             else "stale"
         )
+        multi_timeframe_readiness = {}
+        try:
+            from ibkr_compute.api.service_topology import uses_remote_compute_service
+
+            if uses_remote_compute_service():
+                from ibkr_compute.api.compute_status_client import get_remote_compute_status
+
+                compute_status = get_remote_compute_status(force_refresh=False)
+                candidate = compute_status.get("multi_timeframe_readiness")
+                if isinstance(candidate, dict):
+                    multi_timeframe_readiness = dict(candidate)
+        except Exception:
+            multi_timeframe_readiness = {}
 
         return {
             "gateway_control_available": True,
@@ -141,6 +154,7 @@ class TradingServiceRuntimeStatusMixin:
             "signal_processor": self.signal_processor.status(),
             "warmup": warmup_state,
             "daily_scan": daily_scan_state,
+            "multi_timeframe_readiness": multi_timeframe_readiness,
             "realtime_compute": {
                 "runs": self._realtime_compute_runs,
                 "queue_size": queue_size,
@@ -220,6 +234,7 @@ class TradingServiceRuntimeStatusMixin:
                     "stall_reason": stall_reason,
                     "inflight_timeout_threshold_s": inflight_timeout_threshold_s,
                 },
+                "multi_timeframe_readiness": multi_timeframe_readiness,
                 "last_watchlist_refresh": (
                     datetime.fromtimestamp(self._last_watchlist_refresh_at, service_mod.ET).isoformat()
                     if self._last_watchlist_refresh_at else None

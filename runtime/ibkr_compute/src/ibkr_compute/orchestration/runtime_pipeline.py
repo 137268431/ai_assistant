@@ -257,10 +257,17 @@ class TradingServiceRuntimePipelineMixin:
         self._interval_prime_thread.start()
         return True
 
-    def _trigger_realtime_compute(self, source: str = "bar_close", symbols: list[str] | None = None) -> dict:
+    def _trigger_realtime_compute(
+        self,
+        source: str = "bar_close",
+        symbols: list[str] | None = None,
+        persist_signals: bool | None = None,
+    ) -> dict:
         service_mod = _service_mod()
         try:
             payload = {"source": source, "environments": [service_mod.ENVIRONMENT]}
+            if persist_signals is not None:
+                payload["persist_signals"] = bool(persist_signals)
             normalized_symbols = sorted(
                 {str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()}
             )
@@ -543,7 +550,19 @@ class TradingServiceRuntimePipelineMixin:
                 due_bucket_ms,
                 request_period,
             )
-            return
+            restored_state = self._copy_official_5m_state()
+            restored_pending_symbols = sorted(
+                {
+                    str(symbol or "").strip().upper()
+                    for symbol in (restored_state.get("pending_symbols") or [])
+                    if str(symbol or "").strip()
+                }
+            )
+            if not restored_pending_symbols:
+                return
+            last_completed_bucket_ms = int(restored_state.get("last_completed_bucket_ms", 0) or 0)
+            pending_set = set(restored_pending_symbols)
+            symbols = [symbol for symbol in symbols if symbol in pending_set]
 
         if not symbols:
             self._set_official_5m_state(
@@ -800,21 +819,7 @@ class TradingServiceRuntimePipelineMixin:
     def _compute_loop(self):
         service_mod = _service_mod()
         service_mod.logger.info("Realtime close-driven compute loop started")
-        startup_wait_logged_at = 0.0
         while self._running or not self._compute_queue.empty():
-            if self._starting:
-                queue_size = int(self._compute_queue.qsize())
-                now = time.time()
-                if queue_size > 0 and (now - startup_wait_logged_at) >= 15:
-                    service_mod.logger.info(
-                        "Realtime compute deferred while startup warmup is active: queue=%d",
-                        queue_size,
-                    )
-                    startup_wait_logged_at = now
-                time.sleep(1)
-                continue
-
-            startup_wait_logged_at = 0.0
             try:
                 first_item = self._compute_queue.get(timeout=1)
             except queue.Empty:
@@ -849,11 +854,13 @@ class TradingServiceRuntimePipelineMixin:
                     merged_event["source"] = "canonical_close"
 
             try:
+                startup_compute = bool(self._starting)
                 self._last_realtime_compute_started_at = time.time()
                 self.data_writer.flush()
                 result = self._trigger_realtime_compute(
                     source=str(merged_event.get("source") or "bar_close"),
                     symbols=list(merged_event.get("symbols") or []),
+                    persist_signals=False if startup_compute else None,
                 )
                 self._realtime_compute_runs += 1
                 self._last_realtime_compute_at = time.time()

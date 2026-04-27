@@ -312,6 +312,44 @@ class Official5mCloseFlushTest(unittest.TestCase):
             ],
         )
 
+    def test_startup_cycle_fetches_missing_official_bars_instead_of_restoring_only(self):
+        session_start_ms = int(datetime(2026, 4, 17, 9, 30, tzinfo=ET).timestamp() * 1000)
+        previous_bucket_ms = int(datetime(2026, 4, 17, 10, 30, tzinfo=ET).timestamp() * 1000)
+        due_bucket_ms = int(datetime(2026, 4, 17, 10, 40, tzinfo=ET).timestamp() * 1000)
+        initial_rows = [
+            _bar("AAPL", bar_time_ms)
+            for bar_time_ms in range(session_start_ms, previous_bucket_ms + STEP_MS, STEP_MS)
+        ]
+        missing_rows = [
+            _bar("AAPL", previous_bucket_ms + STEP_MS),
+            _bar("AAPL", due_bucket_ms),
+        ]
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(
+            writer,
+            initial_rows=initial_rows,
+            incremental_rows=missing_rows,
+            repair_rows=[],
+        )
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_bucket_ms,
+            last_completed_bucket_ms=0,
+            data_writer=writer,
+            data_backfill=backfill,
+        )
+        pipeline._starting = True
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_official_5m_close_cycle()
+
+        state = pipeline._copy_official_5m_state()
+        self.assertEqual(state["pending_symbols_total"], 0)
+        self.assertEqual(state["last_completed_bucket_ms"], due_bucket_ms)
+        self.assertEqual(
+            sorted(int(row["bar_time_ms"]) for row in writer.flushed_rows),
+            sorted(int(row["bar_time_ms"]) for row in missing_rows),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

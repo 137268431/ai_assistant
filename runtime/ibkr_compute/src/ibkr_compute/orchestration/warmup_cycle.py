@@ -181,18 +181,37 @@ class TradingServiceWarmupCycleMixin:
         required_interval = service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL
         payload = get_remote_compute_status(force_refresh=True)
         engines = payload.get("engines") if is_compute_status_payload(payload) else {}
+        readiness_interval = (
+            ((payload.get("multi_timeframe_readiness") or {}).get("intervals") or {}).get(required_interval)
+            if is_compute_status_payload(payload)
+            else {}
+        )
+        readiness_all_ready = (
+            isinstance(readiness_interval, dict)
+            and str(readiness_interval.get("status") or "").strip().lower() == "ready"
+            and int(readiness_interval.get("missing_ready_symbols_total", 0) or 0) == 0
+            and int(readiness_interval.get("missing_indicator_symbols_total", 0) or 0) == 0
+        )
         status_by_symbol = {}
         if isinstance(engines, dict):
             for symbol in snapshot["symbols"]:
                 engine_state = dict(
                     engines.get(f"{service_mod.ENVIRONMENT}/{symbol}/{required_interval}") or {}
                 )
-                status_by_symbol[symbol] = {
-                    "ready": bool(engine_state.get("is_ready")),
-                    "bar_count": int(engine_state.get("bar_count", 0) or 0),
-                    "last_bar_time_ms": int(engine_state.get("last_bar_time_ms", 0) or 0),
-                    "source": "remote_compute_status",
-                }
+                if engine_state:
+                    status_by_symbol[symbol] = {
+                        "ready": bool(engine_state.get("is_ready")),
+                        "bar_count": int(engine_state.get("bar_count", 0) or 0),
+                        "last_bar_time_ms": int(engine_state.get("last_bar_time_ms", 0) or 0),
+                        "source": "remote_compute_status",
+                    }
+                elif readiness_all_ready:
+                    status_by_symbol[symbol] = {
+                        "ready": True,
+                        "bar_count": 0,
+                        "last_bar_time_ms": int(readiness_interval.get("latest_indicator_time_ms", 0) or 0),
+                        "source": "remote_compute_readiness",
+                    }
         return self._build_warmup_readiness(
             snapshot,
             status_by_symbol,

@@ -49,6 +49,7 @@
       formatEtRefreshDateTime: (...args) => pick('formatEtRefreshDateTime')(...args),
       setPageRefreshTime: (...args) => pick('setPageRefreshTime')(...args),
       setPageContextMeta: (...args) => pick('setPageContextMeta')(...args),
+      getCurrentEtDateString: (...args) => pick('getCurrentEtDateString')(...args),
       formatRelativeTime: (...args) => pick('formatRelativeTime')(...args),
       formatTime: (...args) => pick('formatTime')(...args),
       showLoading: (...args) => pick('showLoading')(...args),

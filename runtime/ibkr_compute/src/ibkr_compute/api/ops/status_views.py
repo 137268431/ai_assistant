@@ -31,6 +31,7 @@ def _safe_multi_timeframe_readiness(app_mod, requested_environment: str) -> dict
         return build_multi_timeframe_readiness(
             app_mod,
             environment=requested_environment,
+            include_storage=False,
         )
     except Exception as exc:
         return {
