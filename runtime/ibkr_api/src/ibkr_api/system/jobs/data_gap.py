@@ -9,6 +9,7 @@ BAR_LAG_ALERT_MS = 10 * 60 * 1000
 INDICATOR_LAG_ALERT_MS = 10 * 60 * 1000
 GAP_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 GAP_MONITOR_STATE_KEY = "system_gap_monitor"
+GAP_ALERT_EXCLUDED_SYMBOLS = {"VIX"}
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -41,6 +42,10 @@ def _unique_sorted(values: list[Any]) -> list[str]:
         output.append(item)
     output.sort()
     return output
+
+
+def _alertable_symbols(symbols: list[Any]) -> list[str]:
+    return [symbol for symbol in _unique_sorted(symbols) if symbol not in GAP_ALERT_EXCLUDED_SYMBOLS]
 
 
 def _get_state_data(pb: Any, state_key: str, environment: str, date_token: str) -> dict[str, Any]:
@@ -123,11 +128,19 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
     latest_bar_by_symbol = _as_dict(bars.get("latest_by_symbol"))
     latest_indicator_by_symbol = _as_dict(indicators.get("latest_by_symbol"))
     monitored_symbols = target_symbols or list(latest_bar_by_symbol.keys())
-    symbols = _unique_sorted(list(monitored_symbols) + list(latest_bar_by_symbol.keys()))
+    symbols = _alertable_symbols(list(monitored_symbols) + list(latest_bar_by_symbol.keys()))
+    excluded_symbols = _unique_sorted(
+        [
+            symbol
+            for symbol in list(monitored_symbols) + list(latest_bar_by_symbol.keys())
+            if _to_text(symbol).upper() in GAP_ALERT_EXCLUDED_SYMBOLS
+        ]
+    )
 
     latest_bar_time_ms = 0
     latest_bar_symbol = ""
-    for symbol, bucket in latest_bar_by_symbol.items():
+    for symbol in symbols:
+        bucket = _as_dict(latest_bar_by_symbol.get(symbol))
         bar_ms = _to_int(_as_dict(bucket).get("bar_time_ms"), 0)
         if bar_ms > latest_bar_time_ms:
             latest_bar_time_ms = bar_ms
@@ -178,6 +191,8 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
         "watchlist_count": len(watchlist_symbols),
         "target_count": len(target_symbols),
         "monitored_symbol_count": len(monitored_symbols),
+        "alertable_symbol_count": len(symbols),
+        "excluded_gap_symbols": excluded_symbols,
         "today_bar_symbol_count": len(latest_bar_by_symbol),
         "latest_bar_time_ms": latest_bar_time_ms,
         "latest_bar_symbol": latest_bar_symbol,

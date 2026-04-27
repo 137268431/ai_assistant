@@ -45,6 +45,7 @@ if "flask" not in sys.modules:
 from ibkr_api import api_app as api_app_mod
 from ibkr_api.order_upsert import build_order_upsert_response
 from ibkr_api.signal_ack import build_signal_ack_orders
+from ibkr_api.system.jobs.data_gap import build_data_gap_guard_response
 from ibkr_api.system.jobs.monitor_alert import build_system_monitor_alert_guard_response
 from ibkr_api.system.jobs.status_heartbeat import build_system_heartbeat_response
 from ibkr_scheduler.cron_registry import build_cron_payload
@@ -1565,6 +1566,69 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertEqual(payload["job_id"], "system_monitor_alert_guard")
         self.assertEqual(events[0]["title"], "IBKR Monitor 告警（1项）")
         self.assertIn(("system_monitor_alert", "live"), states)
+
+    def test_data_gap_guard_ignores_vix_bar_gap(self):
+        class FakeGapPB:
+            def __init__(self):
+                self.states = {}
+
+            def get_state(self, state_key, environment, date="global"):
+                return self.states.get((state_key, environment, date))
+
+            def upsert_state(self, state_key, environment, data, date="global"):
+                self.states[(state_key, environment, date)] = {"data": dict(data)}
+                return self.states[(state_key, environment, date)]
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                if collection in {"watchlist", "ibkr_targets"}:
+                    return []
+                if collection == "ibkr_bars":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5m",
+                            "bar_time_ms": 1713864300000,
+                            "us_time": "2026-04-23 04:05:00",
+                            "session_type": "regular",
+                        },
+                        {
+                            "environment": "live",
+                            "symbol": "VIX",
+                            "interval": "5m",
+                            "bar_time_ms": 1713863400000,
+                            "us_time": "2026-04-23 03:50:00",
+                            "session_type": "regular",
+                        },
+                    ]
+                if collection == "ibkr_indicators":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5",
+                            "bar_time_ms": 1713864300000,
+                            "us_time": "2026-04-23 04:05:00",
+                            "session_type": "regular",
+                        }
+                    ]
+                return []
+
+        events = []
+        payload, status_code = build_data_gap_guard_response(
+            FakeGapPB(),
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 04:10:00", "cn": "2026-04-23 16:10:00", "date": "2026-04-23"},
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["summary"]["market_activity_detected"])
+        self.assertFalse(payload["summary"]["has_issue"])
+        self.assertEqual(payload["summary"]["excluded_gap_symbols"], ["VIX"])
+        self.assertEqual(payload["summary"]["bar_lag_symbols"], [])
+        self.assertFalse(events)
 
 
 if __name__ == "__main__":
