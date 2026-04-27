@@ -16,7 +16,31 @@ try:
     import flask  # noqa: F401
 except ModuleNotFoundError:
     fake_flask = types.ModuleType("flask")
-    fake_flask.request = types.SimpleNamespace(get_json=lambda silent=True: {}, args={}, values={})
+
+    class _FakeFlask:
+        def __init__(self, name, *args, **kwargs):
+            self.name = name
+
+        def route(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def add_url_rule(self, *args, **kwargs):
+            return None
+
+    fake_flask.Flask = _FakeFlask
+    fake_flask.Response = object
+    fake_flask.jsonify = lambda payload: payload
+    fake_flask.redirect = lambda url, code=302: {"redirect": url, "code": code}
+    fake_flask.request = types.SimpleNamespace(
+        get_json=lambda silent=True: {},
+        get_data=lambda cache=True: b"",
+        args={},
+        headers={},
+        method="GET",
+        values={},
+    )
     sys.modules["flask"] = fake_flask
 
 from ibkr_compute.api.compute import request as compute_request

@@ -58,6 +58,7 @@ def _json(response):
 class ScreenerViewsTest(unittest.TestCase):
     def setUp(self):
         request.args = _FakeArgs()
+        screener_views.jsonify = lambda payload: _FakeJsonResponse(payload)
         self.fake_app = SimpleNamespace(
             SUPPORTED_COMPUTE_ENVIRONMENTS={"live", "paper", "backtest"},
             current_market_date=lambda: "2026-04-24",

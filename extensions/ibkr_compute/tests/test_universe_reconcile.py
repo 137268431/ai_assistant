@@ -91,6 +91,7 @@ class DeleteSymbolRuntimeDataTest(unittest.TestCase):
             CREATE TABLE ibkr_indicators (symbol TEXT, environment TEXT);
             CREATE TABLE ibkr_reverse_signals (symbol TEXT, environment TEXT);
             CREATE TABLE ibkr_bar_integrity (symbol TEXT, environment TEXT);
+            CREATE TABLE ibkr_bar_truth_audit (symbol TEXT, environment TEXT);
             CREATE TABLE ibkr_signals (symbol TEXT, environment TEXT, status TEXT, signal_id TEXT);
             CREATE TABLE orders (symbol TEXT, environment TEXT, signal_id TEXT);
             """
@@ -117,6 +118,10 @@ class DeleteSymbolRuntimeDataTest(unittest.TestCase):
             [("AAPL", "live"), ("AAPL", ""), ("MSFT", "live")],
         )
         self.conn.executemany(
+            "INSERT INTO ibkr_bar_truth_audit(symbol, environment) VALUES(?, ?)",
+            [("AAPL", "live"), ("AAPL", ""), ("MSFT", "live")],
+        )
+        self.conn.executemany(
             "INSERT INTO ibkr_signals(symbol, environment, status, signal_id) VALUES(?, ?, ?, ?)",
             [
                 ("AAPL", "live", "pending", "SIG_DELETE"),
@@ -136,6 +141,7 @@ class DeleteSymbolRuntimeDataTest(unittest.TestCase):
         self.assertEqual(result["deleted"]["ibkr_indicators"], 2)
         self.assertEqual(result["deleted"]["ibkr_reverse_signals"], 2)
         self.assertEqual(result["deleted"]["ibkr_bar_integrity"], 2)
+        self.assertEqual(result["deleted"]["ibkr_bar_truth_audit"], 2)
         self.assertEqual(result["deleted"]["ibkr_signals"], 1)
         self.assertEqual(result["deleted_signal_ids"], ["SIG_DELETE"])
         self.assertEqual(result["preserved_signal_ids"], ["SIG_LINKED"])

@@ -337,7 +337,6 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
     scheduler = _as_dict(snapshot.get("scheduler"))
     daily_scan = _as_dict(snapshot.get("daily_scan"))
     today = _as_dict(snapshot.get("today"))
-    counts = _as_dict(_as_dict(snapshot.get("service_monitor")).get("status_counts"))
     human = _human_issue_detail(snapshot)
     services_line, connection_line = _status_overview(snapshot)
     detail = {
@@ -360,8 +359,13 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
             f"orders {_to_int(today.get('orders'), 0)} | "
             f"日筛 {_to_text(daily_scan.get('status')) or 'unknown'}"
         ),
-        "故障域统计": ", ".join(f"{key}:{value}" for key, value in sorted(counts.items())) if counts else "n/a",
     }
+    if snapshot.get("unhealthy"):
+        offline_text = _format_service_items([_as_dict(item) for item in snapshot.get("offline_services") or []])
+        degraded_text = _format_service_items([_as_dict(item) for item in snapshot.get("actionable_degraded_services") or []])
+        abnormal_services = "；".join(item for item in [offline_text, degraded_text] if item)
+        if abnormal_services:
+            detail["异常服务"] = abnormal_services
     compact_codes = _compact_issue_codes(snapshot)
     if compact_codes:
         detail["诊断码"] = compact_codes

@@ -11,9 +11,31 @@ if str(SRC_ROOT) not in sys.path:
 
 if "flask" not in sys.modules:
     flask_stub = types.ModuleType("flask")
+
+    class _FakeFlask:
+        def __init__(self, name, *args, **kwargs):
+            self.name = name
+
+        def route(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def add_url_rule(self, *args, **kwargs):
+            return None
+
+    flask_stub.Flask = _FakeFlask
     flask_stub.jsonify = lambda payload: payload
-    flask_stub.request = SimpleNamespace(args={}, headers={}, get_json=lambda silent=True: {})
     flask_stub.Response = object
+    flask_stub.redirect = lambda url, code=302: {"redirect": url, "code": code}
+    flask_stub.request = SimpleNamespace(
+        args={},
+        headers={},
+        method="GET",
+        values={},
+        get_data=lambda cache=True: b"",
+        get_json=lambda silent=True: {},
+    )
     sys.modules["flask"] = flask_stub
 
 from ibkr_compute.api.monitor.runtime.compute import _build_compute_summary

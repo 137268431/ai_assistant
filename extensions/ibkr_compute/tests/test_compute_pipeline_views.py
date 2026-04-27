@@ -8,13 +8,33 @@ from unittest import mock
 
 if "flask" not in sys.modules:
     flask_stub = types.ModuleType("flask")
+
+    class _FakeFlask:
+        def __init__(self, name, *args, **kwargs):
+            self.name = name
+
+        def route(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def add_url_rule(self, *args, **kwargs):
+            return None
+
+    flask_stub.Flask = _FakeFlask
+    flask_stub.Response = object
     flask_stub.jsonify = lambda payload: payload
+    flask_stub.redirect = lambda url, code=302: {"redirect": url, "code": code}
     flask_stub.request = SimpleNamespace(
         get_json=lambda silent=True: {},
+        get_data=lambda cache=True: b"",
         args=SimpleNamespace(
             get=lambda name, default=None: default,
             getlist=lambda name: [],
         ),
+        headers={},
+        method="GET",
+        values={},
     )
     sys.modules["flask"] = flask_stub
 

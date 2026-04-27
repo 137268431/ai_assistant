@@ -11,13 +11,38 @@ try:
     import flask  # noqa: F401
 except ModuleNotFoundError:
     fake_flask = types.ModuleType("flask")
+
+    class _FakeFlask:
+        def __init__(self, name, *args, **kwargs):
+            self.name = name
+
+        def route(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def add_url_rule(self, *args, **kwargs):
+            return None
+
+    def fake_jsonify(*args, **kwargs):
+        if len(args) == 1 and not kwargs:
+            return args[0]
+        if args and kwargs:
+            return {"args": args, **kwargs}
+        if args:
+            return {"args": args}
+        return kwargs
+
+    fake_flask.Flask = _FakeFlask
     fake_flask.Response = object
-    fake_flask.jsonify = lambda *args, **kwargs: {"args": args, "kwargs": kwargs}
+    fake_flask.jsonify = fake_jsonify
+    fake_flask.redirect = lambda url, code=302: {"redirect": url, "code": code}
     fake_flask.request = types.SimpleNamespace(
         headers={},
         method="GET",
         args={},
         get_data=lambda: b"",
+        get_json=lambda silent=True: {},
     )
     sys.modules["flask"] = fake_flask
 

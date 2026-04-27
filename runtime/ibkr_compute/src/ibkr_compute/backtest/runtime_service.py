@@ -35,7 +35,7 @@ from ibkr_compute.market.timeframe_utils import (
     ms_to_et,
     normalize_interval,
 )
-from ibkr_compute.workflows.daily_scanner import DailyScanner
+from ibkr_compute.workflows.daily_scanner import DailyScanner, _load_scan_settings
 
 BACKTEST_ENVIRONMENT = "backtest"
 RUN_COLLECTION = "ibkr_backtest_runs"
@@ -2119,6 +2119,7 @@ class BacktestService:
         symbol: str,
         source_environment: str,
         *,
+        interval: str = "5m",
         start_ms: int | None = None,
         end_ms: int | None = None,
         before_bar_time_ms: int | None = None,
@@ -2131,10 +2132,10 @@ class BacktestService:
 
         conditions = [
             "symbol = ?",
-            "interval = '5m'",
+            "interval = ?",
             "environment = ?",
         ]
-        params: list[Any] = [symbol, source_environment]
+        params: list[Any] = [symbol, normalize_interval(interval), source_environment]
         if start_ms is not None:
             conditions.append("bar_time_ms >= ?")
             params.append(int(start_ms))
@@ -2453,15 +2454,24 @@ class BacktestService:
         normalized_interval = normalize_interval(interval)
         if end_bar_time_ms <= 0 or limit <= 0:
             return []
-        rows = self.pb.get_all_records(
-            "ibkr_bars",
-            filter=(
-                f'symbol = "{symbol}" && interval = "{normalized_interval}" && environment = "{source_environment}" '
-                f"&& bar_time_ms <= {end_bar_time_ms}"
-            ),
-            sort="-bar_time_ms",
-            max_pages=max(4, min(20, math.ceil(limit / 200) + 2)),
+        rows = self._load_bar_rows_from_sqlite(
+            symbol,
+            source_environment,
+            interval=normalized_interval,
+            end_ms=end_bar_time_ms,
+            descending=True,
+            limit=max(limit + 20, limit),
         )
+        if not rows and self.pb:
+            rows = self.pb.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{symbol}" && interval = "{normalized_interval}" && environment = "{source_environment}" '
+                    f"&& bar_time_ms <= {end_bar_time_ms}"
+                ),
+                sort="-bar_time_ms",
+                max_pages=max(4, min(20, math.ceil(limit / 200) + 2)),
+            )
         normalized = []
         seen = set()
         for row in rows:
@@ -2492,6 +2502,213 @@ class BacktestService:
                 break
         normalized.sort(key=lambda item: int(item["bar_time_ms"]))
         return normalized
+
+    def _build_historical_scan_metric_row(
+        self,
+        symbol: str,
+        trade_date: str,
+        request: dict,
+        cutoff_ms: int,
+        engines: dict | None = None,
+    ) -> dict:
+        source_environment = str(request.get("source_environment") or "live").strip().lower() or "live"
+        day_start_ms = int(datetime.strptime(trade_date, "%Y-%m-%d").replace(tzinfo=ET).timestamp() * 1000)
+        intraday_rows = self._load_bar_rows_from_sqlite(
+            symbol,
+            source_environment,
+            interval="5m",
+            start_ms=day_start_ms,
+            end_ms=cutoff_ms,
+            descending=False,
+        )
+        if not intraday_rows and not os.path.exists(str(BACKTEST_SQLITE_PATH or "")):
+            intraday_rows = [
+                row
+                for row in self._load_interval_bars_before(
+                    symbol,
+                    source_environment,
+                    "5m",
+                    cutoff_ms,
+                    "extended",
+                    240,
+                )
+                if ms_to_et(int(row.get("bar_time_ms", 0) or 0)).strftime("%Y-%m-%d") == trade_date
+            ]
+
+        premarket_volume = 0.0
+        latest_close = 0.0
+        exchange = ""
+        for row in intraday_rows:
+            bar_ms = int(row.get("bar_time_ms", 0) or 0)
+            if bar_ms <= 0 or bar_ms > cutoff_ms:
+                continue
+            session_type = str(row.get("session_type", "") or classify_session(bar_time_ms=bar_ms)).strip().lower()
+            if session_type == "premarket":
+                premarket_volume += float(row.get("volume", 0) or 0)
+            latest_close = float(row.get("close", 0) or latest_close or 0)
+            if not exchange:
+                exchange = str(row.get("exchange", "") or "").strip().upper()
+
+        daily_rows = self._load_bar_rows_from_sqlite(
+            symbol,
+            source_environment,
+            interval="1d",
+            end_ms=max(0, day_start_ms - 1),
+            descending=True,
+            limit=16,
+        )
+        daily_rows = [
+            row
+            for row in daily_rows
+            if ms_to_et(int(row.get("bar_time_ms", 0) or 0)).strftime("%Y-%m-%d") < trade_date
+        ]
+        daily_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+        if not daily_rows:
+            lookback_start_ms = max(0, day_start_ms - interval_to_ms("1d") * 20)
+            prior_5m = self._load_bar_rows_from_sqlite(
+                symbol,
+                source_environment,
+                interval="5m",
+                start_ms=lookback_start_ms,
+                end_ms=max(0, day_start_ms - 1),
+                descending=False,
+            )
+            grouped: dict[str, dict] = {}
+            for row in prior_5m:
+                bar_ms = int(row.get("bar_time_ms", 0) or 0)
+                if bar_ms <= 0:
+                    continue
+                date_key = ms_to_et(bar_ms).strftime("%Y-%m-%d")
+                bucket = grouped.setdefault(date_key, {"bar_time_ms": bar_ms, "close": 0.0, "volume": 0.0})
+                bucket["bar_time_ms"] = bar_ms
+                bucket["close"] = float(row.get("close", 0) or bucket.get("close", 0) or 0)
+                bucket["volume"] = float(bucket.get("volume", 0) or 0) + float(row.get("volume", 0) or 0)
+            daily_rows = [grouped[key] for key in sorted(grouped.keys())][-16:]
+
+        last_10_daily = daily_rows[-10:]
+        avg_10d_volume = (
+            sum(float(row.get("volume", 0) or 0) for row in last_10_daily) / len(last_10_daily)
+            if last_10_daily
+            else 0.0
+        )
+        prev_close = float(daily_rows[-1].get("close", 0) or 0) if daily_rows else 0.0
+        if latest_close <= 0:
+            latest_close = prev_close
+        day_change_pct = ((latest_close - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+
+        atr_pct = 0.0
+        engine = (engines or {}).get((source_environment, symbol, "5m"))
+        if engine is not None and engine.is_ready():
+            snapshot = engine.get_snapshot() or {}
+            atr_pct = abs(float(snapshot.get("atr_pct", 0) or 0))
+            if atr_pct <= 0 and latest_close > 0:
+                atr_pct = abs(float(snapshot.get("atr", 0) or 0)) / latest_close * 100.0
+        else:
+            atr_pct = self._load_historical_scan_atr_pct(symbol, source_environment, cutoff_ms, latest_close)
+
+        return {
+            "symbol": symbol,
+            "exchange": exchange,
+            "price": round(float(latest_close or 0), 4),
+            "avg_10d_volume": round(float(avg_10d_volume or 0), 2),
+            "premarket_volume": round(float(premarket_volume or 0), 2),
+            "atr_pct": round(float(atr_pct or 0), 4),
+            "day_change_pct": round(float(day_change_pct or 0), 4),
+            "latest_bar_time_ms": int(intraday_rows[-1].get("bar_time_ms", 0) or 0) if intraday_rows else 0,
+        }
+
+    def _load_historical_scan_atr_pct(
+        self,
+        symbol: str,
+        source_environment: str,
+        cutoff_ms: int,
+        latest_close: float = 0.0,
+    ) -> float:
+        db_path = str(BACKTEST_SQLITE_PATH or "").strip()
+        if not db_path or not os.path.exists(db_path) or cutoff_ms <= 0:
+            return 0.0
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT extra
+                    FROM ibkr_indicators
+                    WHERE symbol = ?
+                      AND interval = ?
+                      AND environment = ?
+                      AND bar_time_ms <= ?
+                    ORDER BY bar_time_ms DESC
+                    LIMIT 1
+                    """,
+                    (symbol, interval_to_chart_tf("5m"), source_environment, int(cutoff_ms)),
+                ).fetchone()
+        except Exception:
+            return 0.0
+        if not row:
+            return 0.0
+        extra = self._parse_object(row["extra"])
+        atr_pct = abs(float(extra.get("atr_pct", 0) or 0))
+        if atr_pct <= 0 and latest_close > 0:
+            atr_pct = abs(float(extra.get("atr", 0) or 0)) / latest_close * 100.0
+        return round(float(atr_pct or 0), 4)
+
+    def _build_historical_scan_metric_rejections(
+        self,
+        symbol: str,
+        metric_row: dict,
+        settings: dict,
+        *,
+        allow_unknown_atr: bool = False,
+    ) -> list[dict]:
+        examples = []
+        checks = (
+            ("avg_10d_volume", "min_avg_10d_volume", "avg_10d_volume_below_threshold", "10 日均量不足"),
+            ("premarket_volume", "min_premarket_volume", "premarket_volume_below_threshold", "盘前量不足"),
+            ("day_change_pct", "min_abs_day_change_pct", "day_change_below_threshold", "日内涨跌幅不足"),
+        )
+        for metric_key, threshold_key, bucket, note in checks:
+            actual = abs(float(metric_row.get(metric_key, 0) or 0)) if metric_key == "day_change_pct" else float(metric_row.get(metric_key, 0) or 0)
+            threshold = float(settings.get(threshold_key, 0) or 0)
+            if actual < threshold:
+                examples.append(
+                    {
+                        "bucket": bucket,
+                        "symbol": symbol,
+                        "actual": round(actual, 4),
+                        "threshold": round(threshold, 4),
+                        "note": note,
+                    }
+                )
+        atr_pct = abs(float(metric_row.get("atr_pct", 0) or 0))
+        atr_threshold = float(settings.get("min_atr_pct", 0) or 0)
+        if atr_pct < atr_threshold and not (allow_unknown_atr and atr_pct <= 0):
+            examples.append(
+                {
+                    "bucket": "atr_pct_below_threshold",
+                    "symbol": symbol,
+                    "actual": round(atr_pct, 4),
+                    "threshold": round(atr_threshold, 4),
+                    "note": "ATR 不足",
+                }
+            )
+        return examples
+
+    def _load_historical_scan_settings(self, source_environment: str) -> dict:
+        try:
+            return _load_scan_settings(source_environment)
+        except Exception:
+            return {
+                "scan_time_et": DEFAULT_SCAN_CUTOFF_TIME,
+                "min_avg_10d_volume": 100000,
+                "min_premarket_volume": 5000,
+                "min_atr_pct": 0.15,
+                "min_abs_day_change_pct": 1.0,
+                "monitor_count": 0,
+                "target_subscription_limit": 80,
+                "total_subscription_limit": 80,
+                "trade_subscription_budget": 80,
+            }
 
     def _build_historical_scan_engines(self, symbol: str, request: dict, cutoff_ms: int) -> tuple[dict, dict]:
         params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
@@ -2530,13 +2747,54 @@ class BacktestService:
         details["ready_timeframes"].sort(key=lambda item: interval_to_ms(item))
         return engines, details
 
-    def _evaluate_historical_scan_symbol(self, symbol: str, trade_date: str, request: dict) -> dict | None:
+    def _evaluate_historical_scan_symbol(
+        self,
+        symbol: str,
+        trade_date: str,
+        request: dict,
+        settings: dict | None = None,
+    ) -> dict | None:
         cutoff_ms = self._build_scan_cutoff_ms(trade_date, request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME)
+        metric_row = self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, None)
+        scan_settings = settings or self._load_historical_scan_settings(request["source_environment"])
+        prefilter_rejections = self._build_historical_scan_metric_rejections(
+            symbol,
+            metric_row,
+            scan_settings,
+            allow_unknown_atr=True,
+        )
+        if prefilter_rejections:
+            return {
+                "symbol": symbol,
+                "score": 0,
+                "technical_score": 0,
+                "direction_bias": "neutral",
+                "reason": "historical_metric_prefilter",
+                "quality_gate_passed": False,
+                "rejection_examples": prefilter_rejections,
+                "extra": {
+                    "environment": request["source_environment"],
+                    "timeframes_ready": [],
+                    "long_votes": 0,
+                    "short_votes": 0,
+                    "scan_cutoff_time": request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME,
+                    "scan_cutoff_ms": cutoff_ms,
+                    "metric_row": metric_row,
+                    "prefiltered_before_indicators": True,
+                },
+            }
         engines, details = self._build_historical_scan_engines(symbol, request, cutoff_ms)
         if not engines:
             return None
+        metric_row = self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, engines)
         scanner = DailyScanner(self.pb, engines)
-        result = scanner.evaluate_symbol(symbol, trade_date, request["source_environment"])
+        result = scanner.evaluate_symbol(
+            symbol,
+            trade_date,
+            request["source_environment"],
+            metrics=metric_row,
+            settings=scan_settings,
+        )
         if not result:
             return None
         enriched = dict(result)
@@ -2550,6 +2808,7 @@ class BacktestService:
                 "ready_timeframes": list(details.get("ready_timeframes") or []),
                 "bars_loaded": details.get("bars_loaded") or {},
                 "last_bar_time_ms_by_interval": details.get("last_bar_time_ms_by_interval") or {},
+                "metric_row": metric_row,
             }
         )
         enriched["extra"] = enriched_extra
@@ -2577,9 +2836,16 @@ class BacktestService:
                 progress_context,
             )
             universe_rows = self._load_scan_universe(request, as_of_date=trade_date)
+            universe_snapshot_fallback = False
+            if not universe_rows and trade_date and not request.get("symbols"):
+                universe_rows = self._load_scan_universe(request, as_of_date="")
+                universe_snapshot_fallback = bool(universe_rows)
             day_candidates = []
             scanned_count = 0
             ready_count = 0
+            quality_rejected_count = 0
+            rejection_summary: dict[str, int] = {}
+            scan_settings = self._load_historical_scan_settings(request["source_environment"])
             for item in universe_rows:
                 if self._cancel_event.is_set():
                     raise BacktestCancelled()
@@ -2587,10 +2853,17 @@ class BacktestService:
                 if not symbol:
                     continue
                 scanned_count += 1
-                evaluated = self._evaluate_historical_scan_symbol(symbol, trade_date, request)
+                evaluated = self._evaluate_historical_scan_symbol(symbol, trade_date, request, settings=scan_settings)
                 if not evaluated:
                     continue
                 ready_count += 1
+                if not bool(evaluated.get("quality_gate_passed")):
+                    quality_rejected_count += 1
+                    for example in evaluated.get("rejection_examples") or []:
+                        bucket = str((example or {}).get("bucket") or "").strip()
+                        if bucket:
+                            rejection_summary[bucket] = int(rejection_summary.get(bucket, 0) or 0) + 1
+                    continue
                 score = float(evaluated.get("score", 0) or 0)
                 direction_bias = str(evaluated.get("direction_bias", "neutral") or "neutral")
                 if score <= 0 or direction_bias == "neutral":
@@ -2634,6 +2907,7 @@ class BacktestService:
                             "source_environment": request["source_environment"],
                             "selection_rank": rank,
                             "universe_mode": universe_mode,
+                            "universe_snapshot_fallback": universe_snapshot_fallback,
                             "universe_size": scanned_count,
                             **build_runtime_timestamps(),
                         },
@@ -2643,7 +2917,10 @@ class BacktestService:
                 {
                     "date": trade_date,
                     "universe_size": scanned_count,
+                    "universe_snapshot_fallback": universe_snapshot_fallback,
                     "ready_symbol_count": ready_count,
+                    "quality_rejected_count": quality_rejected_count,
+                    "rejection_summary": rejection_summary,
                     "candidate_count": len(day_candidates),
                     "selected_count": len(selected_rows),
                     "selected_symbols": [item["symbol"] for item in selected_rows],
@@ -3227,12 +3504,19 @@ class BacktestService:
             return "medium"
         return "weak"
 
-    def _resolve_reverse_indicator_action(self, score: float, target_state: str) -> str:
+    def _resolve_reverse_indicator_action(
+        self,
+        score: float,
+        target_state: str,
+        progress_ratio: float = 0.0,
+    ) -> str:
         if target_state == "pending_entry":
             return "cancel"
         if score >= 6:
             return "close"
         if score >= 3:
+            if float(progress_ratio or 0) >= 0.7:
+                return "adjust_tp"
             return "adjust_sl"
         if score > 0:
             return "cancel"
@@ -3617,9 +3901,17 @@ class BacktestService:
                 analysis["pending_age_bars"] = pending_age_bars
                 analysis["pending_same_day"] = pending_same_day
                 analysis["pending_late_session"] = pending_late_session
+            progress = {}
+            if target_state == "filled_position":
+                progress = self._calculate_position_progress(
+                    target,
+                    float(analysis.get("close", snapshot.get("close", 0)) or 0),
+                )
+                analysis["progress"] = progress
             analysis["action_type"] = self._resolve_reverse_indicator_action(
                 float(analysis.get("score", 0) or 0),
                 target_state,
+                float(progress.get("progress_ratio", 0) or 0),
             )
             if not analysis.get("action_type"):
                 return None
@@ -3699,12 +3991,12 @@ class BacktestService:
             extra["pending_same_day"] = bool(analysis.get("pending_same_day"))
         if analysis.get("pending_late_session") is not None:
             extra["pending_late_session"] = bool(analysis.get("pending_late_session"))
+        progress = analysis.get("progress") or {}
+        if progress:
+            extra["progress_ratio"] = round(float(progress.get("progress_ratio", 0) or 0), 4)
+            extra["favorable_move"] = round(float(progress.get("favorable_move", 0) or 0), 4)
+            extra["target_move"] = round(float(progress.get("target_move", 0) or 0), 4)
         if reverse_kind == "signal_conflict":
-            progress = analysis.get("progress") or {}
-            if progress:
-                extra["progress_ratio"] = round(float(progress.get("progress_ratio", 0) or 0), 4)
-                extra["favorable_move"] = round(float(progress.get("favorable_move", 0) or 0), 4)
-                extra["target_move"] = round(float(progress.get("target_move", 0) or 0), 4)
             reason = f"signal_conflict({target_state}) -> new_signal={str(origin_signal_payload.get('signal', '') or '')}"
         else:
             reason = f"indicator_conflict({target_state}) -> {', '.join(triggered_signals)}"

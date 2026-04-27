@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -28,6 +28,9 @@ except ModuleNotFoundError:
             def decorator(func):
                 return func
             return decorator
+
+        def add_url_rule(self, *args, **kwargs):
+            return None
 
     def fake_jsonify(*args, **kwargs):
         if len(args) == 1 and not kwargs:
