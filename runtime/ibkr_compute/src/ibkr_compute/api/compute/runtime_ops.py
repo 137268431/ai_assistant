@@ -64,7 +64,15 @@ def build_recompute_response():
     reset_compute_runtime_state()
 
     compute_payload = {}
-    with api_app.app.test_request_context("/compute", method="POST", json={"source": "recompute", "force_rollup": True}):
+    with api_app.app.test_request_context(
+        "/compute",
+        method="POST",
+        json={
+            "source": "recompute",
+            "force_rollup": True,
+            "rollup_intervals": ["15m", "30m", "1h", "4h"],
+        },
+    ):
         response = api_app.compute()
         try:
             compute_payload = response.get_json() or {}

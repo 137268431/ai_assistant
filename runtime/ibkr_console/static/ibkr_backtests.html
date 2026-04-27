@@ -28,11 +28,14 @@
                     <button class="btn danger" type="button" onclick="cancelActiveRun()">停止当前回测</button>
                 </div>
             </div>
-            <div class="hero-note-grid" id="heroNotes"></div>
+            <details class="compact-details hero-notes-toggle">
+                <summary class="compact-summary">运行摘要 / 隔离说明</summary>
+                <div class="hero-note-grid" id="heroNotes"></div>
+            </details>
         </section>
 
-        <section class="panel-grid">
-            <div class="panel">
+        <section class="panel launch-console">
+            <div class="launch-form-card">
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">新建回测</div>
@@ -42,8 +45,8 @@
                         <button class="btn primary" id="startButton" type="button" onclick="handleStartBacktest()">启动回测</button>
                     </div>
                 </div>
-                <div class="form-grid">
-                    <div class="field span-2">
+                <div class="form-grid quick-form-grid">
+                    <div class="field">
                         <label for="runName">Run Name</label>
                         <input id="runName" type="text" placeholder="例如：April Momentum Replay">
                     </div>
@@ -55,10 +58,6 @@
                             <option value="watchlist">watchlist</option>
                             <option value="daily_scan_replay">daily_scan_replay</option>
                         </select>
-                    </div>
-                    <div class="field">
-                        <label for="maxSymbols">Max Symbols</label>
-                        <input id="maxSymbols" type="number" min="1" max="20" value="12">
                     </div>
                     <div class="field span-2">
                         <label for="symbolsText">Symbols</label>
@@ -73,51 +72,110 @@
                         <label for="dateTo">Date To</label>
                         <input id="dateTo" type="date">
                     </div>
-                    <div class="field">
-                        <label for="sessionMode">Session</label>
-                        <select id="sessionMode">
-                            <option value="extended">extended</option>
-                            <option value="regular">regular</option>
-                        </select>
-                    </div>
-                    <div class="field">
-                        <label for="benchmarkSymbol">Benchmark</label>
-                        <input id="benchmarkSymbol" type="text" value="SPY" placeholder="SPY">
-                    </div>
-                    <div class="field">
-                        <label for="initialCapital">Initial Capital</label>
-                        <input id="initialCapital" type="number" min="1000" step="1000" value="100000">
-                    </div>
-                    <div class="field">
-                        <label for="commissionPerShare">Commission / Share</label>
-                        <input id="commissionPerShare" type="number" min="0" step="0.001" value="0.005">
-                    </div>
-                    <div class="field">
-                        <label for="slippageBps">Slippage (bps)</label>
-                        <input id="slippageBps" type="number" min="0" step="0.5" value="2">
-                    </div>
-                    <div class="field">
-                        <label for="warmupBars">Warmup Bars</label>
-                        <input id="warmupBars" type="number" min="0" max="2000" step="10" value="320">
-                    </div>
-                    <div class="field">
-                        <label for="premarketCutoff">Premarket Cutoff</label>
-                        <input id="premarketCutoff" type="text" value="09:25" placeholder="09:25">
-                    </div>
-                    <div class="field span-2">
-                        <label for="strategyParams">Strategy Params JSON</label>
-                        <textarea id="strategyParams" placeholder='{"sl_atr_mult": 1.6, "tp_atr_mult": 3.2}'></textarea>
-                        <small>留空走默认策略参数；支持 <span class="mono">risk_reward_ratio</span> / <span class="mono">tp_atr_mult</span> 别名，会自动换算成回测引擎参数。</small>
-                    </div>
-                    <div class="field span-2">
-                        <label for="variantsJson">Variants JSON Array</label>
-                        <textarea id="variantsJson" placeholder='[{"label":"tight","sl_atr_mult":1.6,"tp_atr_mult":2.4},{"label":"wide","strategy_params":{"sl_atr_mult":2.0,"tp_atr_mult":3.2,"risk_reward_ratio":1.8}}]'></textarea>
-                        <small>非空即进入参数扫描模式；每个对象支持直接写参数覆盖，或使用 <span class="mono">strategy_params</span>。同样支持 <span class="mono">risk_reward_ratio</span> / <span class="mono">tp_atr_mult</span> 别名。</small>
-                    </div>
+                    <details class="advanced-config full-config-toggle">
+                        <summary>
+                            <span>更多启动参数 / 高级参数</span>
+                            <small>Max symbols、session、benchmark、资金、风控、费用与 JSON 覆盖默认收起。</small>
+                        </summary>
+                        <div class="advanced-grid">
+                            <div class="field">
+                                <label for="maxSymbols">Max Symbols</label>
+                                <input id="maxSymbols" type="number" min="1" max="20" value="12">
+                            </div>
+                            <div class="field">
+                                <label for="sessionMode">Session</label>
+                                <select id="sessionMode">
+                                    <option value="extended">extended</option>
+                                    <option value="regular">regular</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="benchmarkSymbol">Benchmark</label>
+                                <input id="benchmarkSymbol" type="text" value="SPY" placeholder="SPY">
+                            </div>
+                            <div class="field">
+                                <label for="initialCapital">Initial Capital</label>
+                                <input id="initialCapital" type="number" min="1000" step="1000" value="10000">
+                            </div>
+                            <div class="field">
+                                <label for="executionModel">Execution Model</label>
+                                <select id="executionModel">
+                                    <option value="portfolio_stream">portfolio_stream</option>
+                                    <option value="symbol_independent">symbol_independent</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="borrowLimitMode">Borrow Limit</label>
+                                <select id="borrowLimitMode">
+                                    <option value="account_buying_power">account_buying_power</option>
+                                    <option value="fixed">fixed</option>
+                                    <option value="none">none</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="maxBorrowAmount">Max Borrow</label>
+                                <input id="maxBorrowAmount" type="number" min="0" step="1000" value="0">
+                            </div>
+                            <div class="field">
+                                <label for="positionLimitMax">Daily Position Limit</label>
+                                <input id="positionLimitMax" type="number" min="1" max="100" step="1" value="3">
+                            </div>
+                            <div class="field">
+                                <label for="signalValidityMinutes">Signal Validity (min)</label>
+                                <input id="signalValidityMinutes" type="number" min="1" max="390" step="1" value="30">
+                            </div>
+                            <div class="field">
+                                <label for="tradeWindowStart">Trade Window Start</label>
+                                <input id="tradeWindowStart" type="text" value="09:35" placeholder="09:35">
+                            </div>
+                            <div class="field">
+                                <label for="tradeWindowEnd">Trade Window End</label>
+                                <input id="tradeWindowEnd" type="text" value="15:30" placeholder="15:30">
+                            </div>
+                            <div class="field">
+                                <label for="orderWindowEnd">Order Window End</label>
+                                <input id="orderWindowEnd" type="text" value="15:00" placeholder="15:00">
+                            </div>
+                            <div class="field">
+                                <label for="signalPriority">Signal Priority</label>
+                                <select id="signalPriority">
+                                    <option value="daily_target_rank">daily_target_rank</option>
+                                    <option value="signal_quality">signal_quality</option>
+                                    <option value="liquidity">liquidity</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="commissionPerShare">Commission / Share</label>
+                                <input id="commissionPerShare" type="number" min="0" step="0.001" value="0.005">
+                            </div>
+                            <div class="field">
+                                <label for="slippageBps">Slippage (bps)</label>
+                                <input id="slippageBps" type="number" min="0" step="0.5" value="2">
+                            </div>
+                            <div class="field">
+                                <label for="warmupBars">Warmup Bars</label>
+                                <input id="warmupBars" type="number" min="0" max="2000" step="10" value="320">
+                            </div>
+                            <div class="field">
+                                <label for="premarketCutoff">Premarket Cutoff</label>
+                                <input id="premarketCutoff" type="text" value="09:25" placeholder="09:25">
+                            </div>
+                            <div class="field span-2">
+                                <label for="strategyParams">Strategy Params JSON</label>
+                                <textarea id="strategyParams" placeholder='{"sl_atr_mult": 1.6, "tp_atr_mult": 3.2}'></textarea>
+                                <small>留空走默认策略参数；支持 <span class="mono">risk_reward_ratio</span> / <span class="mono">tp_atr_mult</span> 别名，会自动换算成回测引擎参数。</small>
+                            </div>
+                            <div class="field span-2">
+                                <label for="variantsJson">Variants JSON Array</label>
+                                <textarea id="variantsJson" placeholder='[{"label":"tight","sl_atr_mult":1.6,"tp_atr_mult":2.4},{"label":"wide","strategy_params":{"sl_atr_mult":2.0,"tp_atr_mult":3.2,"risk_reward_ratio":1.8}}]'></textarea>
+                                <small>非空即进入参数扫描模式；每个对象支持直接写参数覆盖，或使用 <span class="mono">strategy_params</span>。同样支持 <span class="mono">risk_reward_ratio</span> / <span class="mono">tp_atr_mult</span> 别名。</small>
+                            </div>
+                        </div>
+                    </details>
                 </div>
             </div>
 
-            <div class="panel">
+            <div class="launch-status-card">
                 <div class="panel-header">
                     <div>
                         <div class="panel-title">执行状态</div>
@@ -128,8 +186,11 @@
                 <div class="progress-shell">
                     <div class="progress-rail"><div class="progress-bar" id="statusProgressBar"></div></div>
                     <div class="status-highlight" id="statusHeadline">等待加载状态...</div>
-                    <div class="status-meta" id="statusMeta"></div>
-                    <div class="note-box" id="statusNote">暂无运行中的回测。</div>
+                    <details class="compact-details status-more">
+                        <summary class="compact-summary">Worker 详情</summary>
+                        <div class="status-meta" id="statusMeta"></div>
+                        <div class="note-box" id="statusNote">暂无运行中的回测。</div>
+                    </details>
                 </div>
             </div>
         </section>
@@ -146,112 +207,139 @@
                 </div>
             </div>
             <div class="metric-grid" id="metricsGrid"></div>
-            <div class="chart-shell">
-                <canvas id="equityChart"></canvas>
-            </div>
+            <details class="compact-details metrics-more-toggle">
+                <summary class="compact-summary">更多指标 / Signal + Portfolio</summary>
+                <div class="metric-grid metric-grid-secondary" id="metricsMoreGrid"></div>
+            </details>
+            <details class="compact-details overview-chart-toggle" id="overviewChartToggle">
+                <summary class="compact-summary">收益曲线 / Benchmark</summary>
+                <div class="chart-shell">
+                    <canvas id="equityChart"></canvas>
+                </div>
+            </details>
         </section>
 
-        <section class="dual-grid">
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">最近 Experiments</div>
-                        <div class="panel-copy">参数扫描批次会聚合成 experiment，用于快速比较哪组参数更稳、哪组只是偶然好看。</div>
-                    </div>
-                    <div class="panel-tools">
-                        <span class="pill pill-muted"><span class="dot"></span><span id="batchCountLabel">0 experiments</span></span>
-                    </div>
+        <section class="panel workbench">
+            <div class="panel-header workbench-header">
+                <div>
+                    <div class="panel-title">回测工作台</div>
+                    <div class="panel-copy">Experiments、Runs、Trades 与 Replay 合并成 tabs，减少页面纵向长度。</div>
                 </div>
-                <div class="run-list" id="batchList"></div>
+                <div class="workbench-tabs" role="tablist" aria-label="回测工作台">
+                    <button class="tab-btn" type="button" data-backtest-tab="experiments" role="tab" aria-selected="false" onclick="setBacktestTab('experiments')">Experiments</button>
+                    <button class="tab-btn is-active" type="button" data-backtest-tab="runs" role="tab" aria-selected="true" onclick="setBacktestTab('runs')">Runs</button>
+                    <button class="tab-btn" type="button" data-backtest-tab="trades" role="tab" aria-selected="false" onclick="setBacktestTab('trades')">Trades / Replay</button>
+                </div>
             </div>
 
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">Experiment Leaderboard</div>
-                        <div class="panel-copy">按收益和 Sharpe 排序，继续查看 run / trades / replay。</div>
+            <div class="workbench-tab-panel" data-backtest-tab-panel="experiments" role="tabpanel" hidden>
+                <div class="dual-grid workbench-grid">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <div class="panel-title">最近 Experiments</div>
+                                <div class="panel-copy">参数扫描批次会聚合成 experiment，用于快速比较哪组参数更稳。</div>
+                            </div>
+                            <div class="panel-tools">
+                                <span class="pill pill-muted"><span class="dot"></span><span id="batchCountLabel">0 experiments</span></span>
+                            </div>
+                        </div>
+                        <div class="run-list" id="batchList"></div>
                     </div>
-                    <div class="panel-tools">
-                        <button class="btn ghost" type="button" onclick="refreshSelectedBatch(true)">刷新 Experiment</button>
-                        <button class="btn danger" type="button" onclick="cleanupSelectedBatch()">清理 Experiment</button>
-                    </div>
-                </div>
-                <div class="detail-grid section-scroll-body backtest-scroll-region" id="batchDetail"></div>
-            </div>
-        </section>
 
-        <section class="dual-grid">
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">最近 Runs</div>
-                        <div class="panel-copy">只列出当前来源环境的回测记录，点击后右侧会加载详情、交易和回放。</div>
-                    </div>
-                    <div class="panel-tools">
-                        <span class="pill pill-muted"><span class="dot"></span><span id="runCountLabel">0 runs</span></span>
-                    </div>
-                </div>
-                <div class="run-list" id="runList"></div>
-            </div>
-
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">Run 详情</div>
-                        <div class="panel-copy">参数、数据质量和月度回报都集中在这里，方便排查策略是否只是“结果好看”。</div>
-                    </div>
-                    <div class="panel-tools" id="selectedRunPill"></div>
-                </div>
-                <div class="detail-grid section-scroll-body backtest-scroll-region" id="runDetail"></div>
-            </div>
-        </section>
-
-        <section class="dual-grid">
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">Trades</div>
-                        <div class="panel-copy">回测成交明细；可从任意一笔交易直接跳到 replay timeline。</div>
-                    </div>
-                    <div class="panel-tools">
-                        <span class="pill pill-muted"><span class="dot"></span><span id="tradeCountLabel">0 trades</span></span>
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <div class="panel-title">Experiment Leaderboard</div>
+                                <div class="panel-copy">按收益和 Sharpe 排序，继续查看 run / trades / replay。</div>
+                            </div>
+                            <div class="panel-tools">
+                                <button class="btn ghost" type="button" onclick="refreshSelectedBatch(true)">刷新 Experiment</button>
+                                <button class="btn danger" type="button" onclick="cleanupSelectedBatch()">清理 Experiment</button>
+                            </div>
+                        </div>
+                        <div class="detail-grid section-scroll-body backtest-scroll-region" id="batchDetail"></div>
                     </div>
                 </div>
-                <div class="section-scroll-body backtest-scroll-region" id="tradesPanel"></div>
             </div>
 
-            <div class="panel">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-title">Replay Timeline</div>
-                        <div class="panel-copy">按信号或交易回看价格、ATR 与信号链路。</div>
+            <div class="workbench-tab-panel is-active" data-backtest-tab-panel="runs" role="tabpanel">
+                <div class="dual-grid workbench-grid">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <div class="panel-title">最近 Runs</div>
+                                <div class="panel-copy">只列出当前来源环境的回测记录，点击后右侧会加载详情、交易和回放。</div>
+                            </div>
+                            <div class="panel-tools">
+                                <span class="pill pill-muted"><span class="dot"></span><span id="runCountLabel">0 runs</span></span>
+                            </div>
+                        </div>
+                        <div class="run-list" id="runList"></div>
                     </div>
-                    <div class="panel-tools">
-                        <button class="btn ghost" type="button" onclick="loadReplayForSelection()">加载回放</button>
-                    </div>
-                </div>
-                <div class="replay-controls">
-                    <div class="field">
-                        <label for="replaySymbol">Replay Symbol</label>
-                        <select id="replaySymbol"></select>
-                    </div>
-                    <div class="field">
-                        <label for="replayCenterBar">Center Bar</label>
-                        <input id="replayCenterBar" type="number" min="0" step="1" placeholder="点击 trade 自动填充">
-                    </div>
-                    <div class="field">
-                        <label for="replayWindow">Window</label>
-                        <input id="replayWindow" type="number" min="20" max="240" step="10" value="80">
-                    </div>
-                    <div class="field">
-                        <label>&nbsp;</label>
-                        <button class="btn primary" type="button" onclick="loadReplayForSelection()">Replay</button>
+
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <div class="panel-title">Run 详情</div>
+                                <div class="panel-copy">参数、数据质量和月度回报都集中在这里，方便排查策略是否只是“结果好看”。</div>
+                            </div>
+                            <div class="panel-tools" id="selectedRunPill"></div>
+                        </div>
+                        <div class="detail-grid section-scroll-body backtest-scroll-region" id="runDetail"></div>
                     </div>
                 </div>
-                <div class="chart-shell" style="margin-bottom: 14px;">
-                    <canvas id="replayChart"></canvas>
+            </div>
+
+            <div class="workbench-tab-panel" data-backtest-tab-panel="trades" role="tabpanel" hidden>
+                <div class="dual-grid workbench-grid">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <div class="panel-title">Trades</div>
+                                <div class="panel-copy">回测成交明细；可从任意一笔交易直接跳到 replay timeline。</div>
+                            </div>
+                            <div class="panel-tools">
+                                <span class="pill pill-muted"><span class="dot"></span><span id="tradeCountLabel">0 trades</span></span>
+                            </div>
+                        </div>
+                        <div class="section-scroll-body backtest-scroll-region" id="tradesPanel"></div>
+                    </div>
+
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <div class="panel-title">Replay Timeline</div>
+                                <div class="panel-copy">按信号或交易回看价格、ATR 与信号链路。</div>
+                            </div>
+                            <div class="panel-tools">
+                                <button class="btn ghost" type="button" onclick="loadReplayForSelection()">加载回放</button>
+                            </div>
+                        </div>
+                        <div class="replay-controls">
+                            <div class="field">
+                                <label for="replaySymbol">Replay Symbol</label>
+                                <select id="replaySymbol"></select>
+                            </div>
+                            <div class="field">
+                                <label for="replayCenterBar">Center Bar</label>
+                                <input id="replayCenterBar" type="number" min="0" step="1" placeholder="点击 trade 自动填充">
+                            </div>
+                            <div class="field">
+                                <label for="replayWindow">Window</label>
+                                <input id="replayWindow" type="number" min="20" max="240" step="10" value="80">
+                            </div>
+                            <div class="field">
+                                <label>&nbsp;</label>
+                                <button class="btn primary" type="button" onclick="loadReplayForSelection()">Replay</button>
+                            </div>
+                        </div>
+                        <div class="chart-shell replay-chart-shell">
+                            <canvas id="replayChart"></canvas>
+                        </div>
+                        <div class="detail-grid section-scroll-body backtest-scroll-region" id="replayPanel"></div>
+                    </div>
                 </div>
-                <div class="detail-grid section-scroll-body backtest-scroll-region" id="replayPanel"></div>
             </div>
         </section>
 

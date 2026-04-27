@@ -82,6 +82,67 @@ def _load_bar_rows_sqlite(
     return [dict(row) for row in rows]
 
 
+def _load_daily_rows_from_5m_sqlite(
+    *,
+    environment: str,
+    symbols: list[str],
+    start_ms: int,
+    end_ms: int,
+) -> list[dict]:
+    placeholders, normalized_symbols = _build_symbol_placeholders(symbols)
+    if not placeholders:
+        return []
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    env_clause = "(environment = ? OR environment = '')" if runtime_environment == "live" else "environment = ?"
+    params = [
+        runtime_environment,
+        int(start_ms or 0),
+        int(end_ms or 0),
+        *normalized_symbols,
+    ]
+    with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
+        rows = conn.execute(
+            f"""
+            WITH base AS (
+                SELECT symbol, exchange, open, high, low, close, volume,
+                       session_type, us_time, cn_time, bar_time_ms, environment,
+                       substr(us_time, 1, 10) AS day
+                FROM ibkr_bars
+                WHERE interval = '5m'
+                  AND {env_clause}
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                  AND us_time != ''
+                  AND symbol IN ({placeholders})
+            ),
+            daily AS (
+                SELECT symbol, day, MIN(bar_time_ms) AS first_ms,
+                       MAX(bar_time_ms) AS last_ms, SUM(volume) AS volume,
+                       MAX(high) AS high, MIN(low) AS low
+                FROM base
+                GROUP BY symbol, day
+            )
+            SELECT d.symbol, last.exchange, '1d' AS interval, first.open,
+                   d.high, d.low, last.close, d.volume, last.session_type,
+                   last.us_time, last.cn_time, d.first_ms AS bar_time_ms,
+                   '{{"source":"5m_daily_fallback"}}' AS extra,
+                   last.environment, '' AS created, '' AS updated
+            FROM daily d
+            JOIN base last
+              ON last.symbol = d.symbol
+             AND last.day = d.day
+             AND last.bar_time_ms = d.last_ms
+            JOIN base first
+              ON first.symbol = d.symbol
+             AND first.day = d.day
+             AND first.bar_time_ms = d.first_ms
+            ORDER BY d.first_ms ASC, d.symbol ASC
+            """,
+            tuple(params),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _load_indicator_rows_sqlite(
     *,
     interval: str,
@@ -139,6 +200,35 @@ def _build_daily_change_fields(current_close: float, daily_history: list[dict]) 
         "prev_close_change_pct": round(prev_close_change_pct, 2),
         "change_7d": round(change_7d, 2),
     }
+
+
+def _daily_row_date(api_app, row: dict) -> str:
+    us_time = str((row or {}).get("us_time") or "").strip()
+    if len(us_time) >= 10:
+        return us_time[:10]
+    bar_ms = coerce_int((row or {}).get("bar_time_ms"))
+    if bar_ms <= 0:
+        return ""
+    return api_app.ms_to_et(bar_ms).strftime("%Y-%m-%d")
+
+
+def _merge_daily_rows_with_fallback(api_app, daily_rows: list[dict], fallback_rows: list[dict]) -> list[dict]:
+    merged = []
+    seen_keys = set()
+    for row in daily_rows or []:
+        symbol = str((row or {}).get("symbol", "")).strip().upper()
+        row_date = _daily_row_date(api_app, row)
+        if symbol and row_date:
+            seen_keys.add((symbol, row_date))
+        merged.append(row)
+    for row in fallback_rows or []:
+        symbol = str((row or {}).get("symbol", "")).strip().upper()
+        row_date = _daily_row_date(api_app, row)
+        if not symbol or not row_date or (symbol, row_date) in seen_keys:
+            continue
+        merged.append(row)
+        seen_keys.add((symbol, row_date))
+    return merged
 
 
 def build_screener_payload(
@@ -240,6 +330,24 @@ def build_screener_payload(
             max_pages=100,
         ),
     )
+    daily_history_symbols = {
+        str((row or {}).get("symbol", "")).strip().upper()
+        for row in daily_rows
+        if str((row or {}).get("symbol", "")).strip().upper() in universe_set
+        and _daily_row_date(api_app, row) < market_date
+    }
+    missing_daily_symbols = [symbol for symbol in universe_symbols if symbol not in daily_history_symbols]
+    if missing_daily_symbols:
+        fallback_daily_rows = _load_rows_with_fallback(
+            lambda: _load_daily_rows_from_5m_sqlite(
+                environment=runtime_environment,
+                symbols=missing_daily_symbols,
+                start_ms=lookback_daily_ms,
+                end_ms=market_end_ms,
+            ),
+            lambda: [],
+        )
+        daily_rows = _merge_daily_rows_with_fallback(api_app, daily_rows, fallback_daily_rows)
 
     intraday_filter_parts = [
         'interval = "5m"',
@@ -299,7 +407,7 @@ def build_screener_payload(
         if bar_ms <= 0 or close <= 0:
             continue
         daily_bars_by_symbol.setdefault(symbol, []).append(row)
-        row_date = api_app.ms_to_et(bar_ms).strftime("%Y-%m-%d")
+        row_date = _daily_row_date(api_app, row)
         if row_date < market_date:
             fallback_daily_by_symbol[symbol] = row
 
@@ -363,7 +471,7 @@ def build_screener_payload(
         daily_history = [
             row
             for row in daily_bars_by_symbol.get(symbol, [])
-            if api_app.ms_to_et(coerce_int(row.get("bar_time_ms"))).strftime("%Y-%m-%d") < market_date
+            if _daily_row_date(api_app, row) < market_date
         ]
         last_10_daily = daily_history[-10:]
         avg_10d_volume = (

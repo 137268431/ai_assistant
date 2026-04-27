@@ -14,6 +14,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let replayChart = null;
         let refreshTimer = null;
         let actionPending = false;
+        let activeBacktestTab = 'runs';
         const BACKTEST_TABLE_PREVIEW_LIMITS = Object.freeze({
             leaderboard: 50,
             trades: 20,
@@ -694,6 +695,31 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             });
         }
 
+        function resizeBacktestCharts() {
+            requestAnimationFrame(() => {
+                if (equityChart) equityChart.resize();
+                if (replayChart) replayChart.resize();
+            });
+        }
+
+        function setBacktestTab(tabKey) {
+            const panels = Array.from(document.querySelectorAll('[data-backtest-tab-panel]'));
+            if (!panels.length) return;
+            const targetKey = panels.some((panel) => panel.dataset.backtestTabPanel === tabKey) ? tabKey : 'runs';
+            activeBacktestTab = targetKey;
+            panels.forEach((panel) => {
+                const isActive = panel.dataset.backtestTabPanel === targetKey;
+                panel.hidden = !isActive;
+                panel.classList.toggle('is-active', isActive);
+            });
+            document.querySelectorAll('[data-backtest-tab]').forEach((button) => {
+                const isActive = button.dataset.backtestTab === targetKey;
+                button.classList.toggle('is-active', isActive);
+                button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            });
+            resizeBacktestCharts();
+        }
+
         function syncSymbolSourceUI() {
             const source = document.getElementById('symbolSource').value;
             const symbolsInput = document.getElementById('symbolsText');
@@ -910,28 +936,35 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function renderMetrics() {
             if (!selectedRun) {
                 document.getElementById('metricsGrid').innerHTML = '<div class="empty-state">选择 run 查看收益与风险。</div>';
+                document.getElementById('metricsMoreGrid').innerHTML = '';
                 destroyEquityChart();
                 return;
             }
             const metrics = selectedRun.metrics || {};
-            const cards = [
+            const primaryCards = [
                 ['Net PnL', formatMoney(selectedRun.net_pnl), classForValue(selectedRun.net_pnl), `${selectedRun.trade_count} trades`],
                 ['Total Return', formatPct(selectedRun.total_return_pct), classForValue(selectedRun.total_return_pct), `ending ${formatMoney(metrics.ending_equity || 0)}`],
                 ['Sharpe', formatNumber(selectedRun.sharpe, 2), classForValue(selectedRun.sharpe), `sortino ${formatNumber(metrics.sortino, 2)}`],
                 ['Max Drawdown', formatPct(-Math.abs(selectedRun.max_drawdown_pct || 0)), 'negative', `profit factor ${formatNumber(metrics.profit_factor, 2)}`],
+            ];
+            const secondaryCards = [
                 ['Win Rate', formatPct(selectedRun.win_rate), classForValue(selectedRun.win_rate - 50), `expectancy ${formatMoney(metrics.expectancy || 0)}`],
                 ['Avg Win / Loss', `${formatMoney(metrics.avg_win || 0)} / ${formatMoney(metrics.avg_loss || 0)}`, '', `盈亏比 ${formatNumber(metrics.win_loss_ratio || 0, 2)}`],
                 ['Signal Fill', formatPct(metrics.signal_fill_rate || 0), classForValue((metrics.signal_fill_rate || 0) - 50), `${metrics.executed_signal_count || 0}/${metrics.signal_count || 0} executed`],
+                ['Portfolio Exposure', formatMoney(metrics.portfolio_max_gross_exposure || 0), '', `borrow max ${formatMoney(metrics.portfolio_max_borrowed_amount || 0)}`],
+                ['Signal Rejects', String(Object.values(metrics.portfolio_rejection_counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)), '', formatBreakdown(metrics.portfolio_rejection_counts || {})],
                 ['Replay Targets', String(metrics.backtest_target_count || 0), '', `${metrics.historical_targeting?.target_date_count || 0} trade dates`],
                 ['Reverse Actions', String(metrics.backtest_reverse_signal_count || 0), '', formatBreakdown(metrics.backtest_reverse_action_breakdown || {})],
             ];
-            document.getElementById('metricsGrid').innerHTML = cards.map(([label, value, tone, subtext]) => `
+            const renderMetricCards = (cards) => cards.map(([label, value, tone, subtext]) => `
                 <div class="metric-card">
                     <div class="metric-label">${escapeHtml(label)}</div>
                     <div class="metric-value ${tone}">${escapeHtml(value)}</div>
                     <div class="metric-subtext">${escapeHtml(subtext)}</div>
                 </div>
             `).join('');
+            document.getElementById('metricsGrid').innerHTML = renderMetricCards(primaryCards);
+            document.getElementById('metricsMoreGrid').innerHTML = renderMetricCards(secondaryCards);
             renderEquityChart(selectedRun);
         }
 
@@ -1014,6 +1047,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             document.getElementById('selectedRunPill').innerHTML = detailStatusTag(selectedRun.status);
             const metrics = selectedRun.metrics || {};
             const extra = selectedRun.extra || {};
+            const portfolioRisk = metrics.portfolio_risk || extra.portfolio_risk || {};
             const monthlyReturns = Array.isArray(metrics.monthly_returns) ? metrics.monthly_returns : [];
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
@@ -1031,6 +1065,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         <div class="detail-item"><div class="detail-item-label">Warmup</div><div class="detail-item-value">${escapeHtml(String(extra.warmup_bars || metrics.warmup_bars || '--'))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Scan Cutoff</div><div class="detail-item-value">${escapeHtml(extra.premarket_cutoff_time || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Capital</div><div class="detail-item-value">${escapeHtml(formatMoney(selectedRun.initial_capital || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Execution</div><div class="detail-item-value">${escapeHtml(extra.execution_model || metrics.execution_model || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Borrow Mode</div><div class="detail-item-value">${escapeHtml(portfolioRisk.borrow_limit_mode || extra.borrow_limit_mode || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Borrow Limit</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.max_borrow_amount || extra.max_borrow_amount || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Buying Power</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.total_exposure_limit || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Signal Validity</div><div class="detail-item-value">${escapeHtml(String(portfolioRisk.signal_validity_minutes || extra.signal_validity_minutes || '--'))}m</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Order Cut</div><div class="detail-item-value">${escapeHtml(portfolioRisk.order_window_end_time || extra.order_window_end_time || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Runtime</div><div class="detail-item-value">${escapeHtml(String(selectedRun.duration_s || 0))}s</div></div>
                         <div class="detail-item"><div class="detail-item-label">Started</div><div class="detail-item-value mono">${escapeHtml(selectedRun.started_at || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Finished</div><div class="detail-item-value mono">${escapeHtml(selectedRun.finished_at || '--')}</div></div>
@@ -1097,6 +1137,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         backtest_target_capture: extra.backtest_target_capture || {},
                         backtest_reverse_capture: extra.backtest_reverse_capture || {},
                         historical_targeting: extra.historical_targeting || {},
+                        portfolio_risk: metrics.portfolio_risk || extra.portfolio_risk || {},
+                        portfolio_rejection_counts: metrics.portfolio_rejection_counts || extra.portfolio_rejection_counts || {},
+                        portfolio_candidate_samples: metrics.portfolio_candidate_samples || [],
                         analysis_report: extra.analysis_report || {},
                     }, null, 2), 'runDetail')}
                 </div>
@@ -1493,7 +1536,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 date_to: dateTo,
                 session_mode: document.getElementById('sessionMode').value,
                 benchmark_symbol: String(document.getElementById('benchmarkSymbol').value || '').trim().toUpperCase(),
-                initial_capital: Number(document.getElementById('initialCapital').value || 100000),
+                initial_capital: Number(document.getElementById('initialCapital').value || 10000),
+                execution_model: document.getElementById('executionModel').value,
+                borrow_limit_mode: document.getElementById('borrowLimitMode').value,
+                max_borrow_amount: Number(document.getElementById('maxBorrowAmount').value || 0),
+                position_limit_max: Number(document.getElementById('positionLimitMax').value || 3),
+                signal_validity_minutes: Number(document.getElementById('signalValidityMinutes').value || 30),
+                trade_window_start_time: String(document.getElementById('tradeWindowStart').value || '09:35').trim(),
+                trade_window_end_time: String(document.getElementById('tradeWindowEnd').value || '15:30').trim(),
+                order_window_end_time: String(document.getElementById('orderWindowEnd').value || '15:00').trim(),
+                simultaneous_signal_priority: document.getElementById('signalPriority').value,
+                manual_confirm_mode: 'auto',
+                confirm_delay_minutes: 0,
                 commission_per_share: Number(document.getElementById('commissionPerShare').value || 0.005),
                 slippage_bps: Number(document.getElementById('slippageBps').value || 2),
                 warmup_bars: Number(document.getElementById('warmupBars').value || 320),
@@ -1617,6 +1671,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         async function selectBatch(batchId) {
+            setBacktestTab('experiments');
             selectedBatchId = batchId;
             selectedBatch = batchList.find((batch) => batch.id === batchId) || null;
             backtestTableExpandedState.leaderboard = false;
@@ -1627,6 +1682,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         async function openRunFromBatch(runId) {
             if (!runId) return;
+            setBacktestTab('runs');
             await selectRun(runId);
         }
 
@@ -1649,6 +1705,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         async function replayTarget(symbol, barTimeMs) {
+            setBacktestTab('trades');
             buildReplaySymbolOptions();
             document.getElementById('replaySymbol').value = symbol || document.getElementById('replaySymbol').value;
             document.getElementById('replayCenterBar').value = String(barTimeMs || '');
@@ -1706,6 +1763,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         async function replayTrade(symbol, entryBarMs) {
+            setBacktestTab('trades');
             document.getElementById('replayCenterBar').value = String(entryBarMs || '');
             buildReplaySymbolOptions();
             document.getElementById('replaySymbol').value = symbol || document.getElementById('replaySymbol').value;
@@ -1733,6 +1791,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         window.refreshDashboard = refreshDashboard;
         window.refreshSelectedRun = refreshSelectedRun;
         window.refreshSelectedBatch = refreshSelectedBatch;
+        window.setBacktestTab = setBacktestTab;
         window.loadReplayForSelection = loadReplayForSelection;
         window.replayTrade = replayTrade;
         window.replayTarget = replayTarget;
@@ -1749,8 +1808,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 subtitle: '结果 / 参数 / replay',
             });
             document.getElementById('pageBridge').innerHTML = renderBacktestsBridge('/ibkr_backtests.html');
+            document.getElementById('overviewChartToggle')?.addEventListener('toggle', resizeBacktestCharts);
             applyDefaultDates();
             syncSymbolSourceUI();
+            setBacktestTab(activeBacktestTab);
             renderReplay([]);
             await withPageLoading(
                 () => refreshDashboard(false),

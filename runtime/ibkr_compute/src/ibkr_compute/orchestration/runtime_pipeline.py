@@ -164,6 +164,42 @@ class TradingServiceRuntimePipelineMixin:
             completed_intervals = []
             last_error = ""
             try:
+                from ibkr_compute.api.service_topology import uses_remote_compute_service
+
+                if uses_remote_compute_service():
+                    from ibkr_compute.api.compute_status_client import trigger_remote_prime
+
+                    for interval in service_mod.STARTUP_BACKGROUND_PRIME_INTERVALS:
+                        if not self._running:
+                            break
+                        for index in range(
+                            0,
+                            len(normalized_symbols),
+                            service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE,
+                        ):
+                            if not self._running:
+                                break
+                            chunk = normalized_symbols[index:index + service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE]
+                            result = trigger_remote_prime(
+                                {
+                                    "environments": [service_mod.ENVIRONMENT],
+                                    "symbols": chunk,
+                                    "intervals": [interval],
+                                }
+                            )
+                            if result.get("ok") is False:
+                                raise RuntimeError(
+                                    str(result.get("error") or f"remote_prime_failed:{interval}")
+                                )
+                        completed_intervals.append(interval)
+                        service_mod.logger.info(
+                            "Remote background interval prime finished (%s): interval=%s symbols=%d",
+                            source,
+                            interval,
+                            len(normalized_symbols),
+                        )
+                    return
+
                 from ibkr_compute.api import server as compute_server
 
                 try:

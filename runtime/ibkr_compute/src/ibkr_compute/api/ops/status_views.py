@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
+from ibkr_compute.api.compute.prime import build_multi_timeframe_readiness
 from ibkr_compute.api.ops.common import _build_engine_status_map, _build_runtime_summary, _snapshot_engine_items
 from ibkr_compute.api.route_runtime import get_app_module, get_requested_environment
 from ibkr_compute.api.service_topology import build_service_topology, get_runtime_mode, get_service_profile
@@ -25,9 +26,24 @@ def _include_engines_in_status() -> bool:
     return coerce_request_bool(request.args.get("full"), False) or not coerce_request_bool(request.args.get("lite"), True)
 
 
+def _safe_multi_timeframe_readiness(app_mod, requested_environment: str) -> dict:
+    try:
+        return build_multi_timeframe_readiness(
+            app_mod,
+            environment=requested_environment,
+        )
+    except Exception as exc:
+        return {
+            "environment": requested_environment,
+            "status": "unknown",
+            "error": str(exc),
+        }
+
+
 def build_health_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
+    multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment)
     return jsonify(
         {
             "ok": True,
@@ -36,6 +52,7 @@ def build_health_response():
             "runtime_mode": get_runtime_mode(),
             "engines": len(app_mod.engines),
             "compute_startup_preload": get_compute_startup_preload_state(app_mod),
+            "multi_timeframe_readiness": multi_timeframe_readiness,
             **_build_runtime_summary(app_mod),
             "backtest": app_mod.backtest_service.status(),
             "history_rebuild": app_mod.history_rebuild_manager.status(requested_environment),
@@ -50,6 +67,7 @@ def build_status_response():
     include_engines = _include_engines_in_status()
     engine_items = _snapshot_engine_items(app_mod, blocking=include_engines)
     engine_status = _build_engine_status_map(engine_items) if include_engines else {}
+    multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment)
     return jsonify(
         {
             "ok": True,
@@ -70,6 +88,7 @@ def build_status_response():
             "persisted_cursor_envs_loaded": sorted(app_mod.persistent_cursor_envs_loaded),
             "tracked_cursors": len(app_mod.last_processed_ms),
             "compute_startup_preload": get_compute_startup_preload_state(app_mod),
+            "multi_timeframe_readiness": multi_timeframe_readiness,
             **_build_runtime_summary(app_mod),
             "backtest": app_mod.backtest_service.status(),
             "history_rebuild": app_mod.history_rebuild_manager.status(requested_environment),

@@ -109,6 +109,27 @@ class ScreenerPayloadHelpersTest(unittest.TestCase):
         self.assertEqual(fields["prev_close_change_pct"], 7.69)
         self.assertEqual(fields["change_7d"], 54.0)
 
+    def test_daily_rows_merge_uses_5m_fallback_without_overwriting_1d(self):
+        fake_app = SimpleNamespace(ms_to_et=lambda bar_ms: None)
+        daily_rows = [
+            {"symbol": "AAPL", "us_time": "2026-04-24 00:00:00", "close": 100, "volume": 100000},
+        ]
+        fallback_rows = [
+            {"symbol": "AAPL", "us_time": "2026-04-24 19:55:00", "close": 999, "volume": 999999},
+            {"symbol": "AAPL", "us_time": "2026-04-25 19:55:00", "close": 110, "volume": 200000},
+            {"symbol": "MSFT", "us_time": "2026-04-25 19:55:00", "close": 50, "volume": 300000},
+        ]
+
+        merged = screener_payload._merge_daily_rows_with_fallback(fake_app, daily_rows, fallback_rows)
+
+        aapl_rows = [row for row in merged if row["symbol"] == "AAPL"]
+        self.assertEqual([row["close"] for row in aapl_rows], [100, 110])
+        self.assertEqual(len([row for row in merged if row["symbol"] == "MSFT"]), 1)
+
+        fields = screener_payload._build_daily_change_fields(121, aapl_rows)
+        self.assertEqual(fields["day_change_pct"], 10.0)
+        self.assertEqual(fields["prev_close_change_pct"], 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

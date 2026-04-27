@@ -10,6 +10,8 @@ SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "s
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from ibkr_compute.orchestration import market_universe as market_universe_mod
+from ibkr_compute.orchestration.market_universe import TradingServiceMarketUniverseMixin
 from ibkr_compute.orchestration.runtime_pipeline import TradingServiceRuntimePipelineMixin
 from ibkr_compute.orchestration.warmup_cycle import TradingServiceWarmupCycleMixin
 
@@ -49,6 +51,71 @@ class _DummyRuntimePipeline(TradingServiceRuntimePipelineMixin):
 
     def _now_iso(self) -> str:
         return "2026-04-25T10:00:00Z"
+
+
+class _DummyStatePB:
+    def __init__(self):
+        self.states = []
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        self.states.append((state_key, environment, dict(data), date))
+        return {"ok": True}
+
+
+class _DummyMarketUniverse(TradingServiceMarketUniverseMixin):
+    def __init__(self):
+        self._current_market_date = "2026-04-27"
+        self._scan_state_lock = threading.Lock()
+        self._daily_scan_state = self._initial_daily_scan_state(self._current_market_date)
+        self._watchlist_trade_symbols = ["AAPL"]
+        self._last_target_refresh_at = 10.0
+        self._daily_scan_alert_market_date = ""
+        self._daily_scan_alert_error = ""
+        self._daily_scan_alert_title = ""
+        self._daily_scan_alert_at = 0.0
+        self._daily_scan_alert_active = False
+        self._daily_scan_failure_count = 0
+        self.pb = _DummyStatePB()
+        self.events = []
+
+    def _market_date(self) -> str:
+        return self._current_market_date
+
+    def _now_iso(self) -> str:
+        return "2026-04-27T09:20:03-04:00"
+
+    def _now_et(self) -> str:
+        return "2026-04-27T09:20:03-04:00"
+
+    def _runtime_phase_label(self) -> str:
+        return "running"
+
+    def _runtime_page_url(self) -> str:
+        return "https://quant.example/ibkr_runtime.html"
+
+    def _emit_system_event(self, event_type: str, level: str, title: str, detail: dict, *, message_id: str = ""):
+        self.events.append(
+            {
+                "event_type": event_type,
+                "level": level,
+                "title": title,
+                "detail": dict(detail),
+                "message_id": message_id,
+            }
+        )
+        return {"ok": True}
+
+    def _refresh_watchlist_pool(self):
+        return None
+
+    def _scan_window_open(self) -> bool:
+        return True
+
+    def _copy_warmup_state(self) -> dict:
+        return {"symbols_total": 1, "pending_symbols": [], "monitor_symbols": []}
+
+    def _non_monitor_pending_symbols(self, pending_symbols, monitor_symbols=None):
+        return []
 
 
 class RemoteWarmupReadinessTest(unittest.TestCase):
@@ -231,6 +298,88 @@ class RemoteRealtimeComputeTriggerTest(unittest.TestCase):
                 ("live", ("TSLA",), "4h", True, True),
             ],
         )
+
+
+class RemoteDailyScanDelegationTest(unittest.TestCase):
+    def setUp(self):
+        self.service_mod = SimpleNamespace(
+            ENVIRONMENT="live",
+            DAILY_SCAN_STATE_KEY="ibkr_daily_scan_state",
+            DAILY_SCAN_STATE_DATE="global",
+            DAILY_SCAN_EVENT_ALERT_COOLDOWN_SECONDS=1800,
+            logger=mock.Mock(),
+        )
+        self.service_patch = mock.patch.object(
+            market_universe_mod,
+            "_service_mod",
+            return_value=self.service_mod,
+        )
+        self.service_patch.start()
+
+    def tearDown(self):
+        self.service_patch.stop()
+
+    def test_daily_scan_posts_to_remote_compute_service_for_runtime_profile(self):
+        service = _DummyMarketUniverse()
+        remote_result = {
+            "ok": True,
+            "date": "2026-04-27",
+            "scanned": 2,
+            "eligible": 1,
+            "active": 1,
+            "candidates": 0,
+            "errors": 0,
+            "rejection_summary": {"vote_tie": 1},
+        }
+
+        with mock.patch(
+            "ibkr_compute.api.service_topology.uses_remote_compute_service",
+            return_value=True,
+        ):
+            with mock.patch(
+                "ibkr_compute.api.compute_status_client.trigger_remote_scan",
+                return_value=remote_result,
+            ) as trigger_mock:
+                result = service._run_daily_scan_if_due(reason="poll")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"]["status"], "completed")
+        self.assertEqual(result["state"]["result"], remote_result)
+        self.assertEqual(service._last_target_refresh_at, 0.0)
+        trigger_mock.assert_called_once_with({"environment": "live"})
+
+    def test_daily_scan_all_snapshotless_result_is_failed_not_completed(self):
+        service = _DummyMarketUniverse()
+        snapshotless_result = {
+            "ok": True,
+            "date": "2026-04-27",
+            "scanned": 2,
+            "eligible": 0,
+            "active": 0,
+            "candidates": 0,
+            "errors": 0,
+            "rejection_summary": {"no_snapshot": 2},
+        }
+
+        with mock.patch(
+            "ibkr_compute.api.service_topology.uses_remote_compute_service",
+            return_value=True,
+        ):
+            with mock.patch(
+                "ibkr_compute.api.compute_status_client.trigger_remote_scan",
+                return_value=snapshotless_result,
+            ):
+                result = service._run_daily_scan_if_due(reason="poll")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"]["status"], "failed")
+        self.assertEqual(
+            result["state"]["last_error"],
+            "all_scanned_symbols_missing_technical_snapshots",
+        )
+        self.assertFalse(result["state"]["result"]["ok"])
+        self.assertEqual(result["state"]["result"]["error"], "all_scanned_symbols_missing_technical_snapshots")
+        self.assertEqual(service.events[0]["title"], "IBKR 盘前日筛失败")
 
 
 if __name__ == "__main__":

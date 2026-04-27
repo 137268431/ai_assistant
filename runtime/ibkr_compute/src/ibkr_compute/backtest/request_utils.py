@@ -48,20 +48,29 @@ def normalize_positive_int(raw_value: Any, default: int, minimum: int = 0, maxim
     return max(minimum, min(maximum, value))
 
 
-def normalize_hhmm(raw_value: Any) -> str:
+def normalize_hhmm(raw_value: Any, default: str | None = None) -> str:
     service_module = _runtime_service_module()
+    default_value = str(default or service_module.DEFAULT_SCAN_CUTOFF_TIME)
     text = str(raw_value or "").strip()
     if ":" not in text:
-        return service_module.DEFAULT_SCAN_CUTOFF_TIME
+        return default_value
     hour_text, minute_text = text.split(":", 1)
     try:
         hour = int(hour_text)
         minute = int(minute_text)
     except Exception:
-        return service_module.DEFAULT_SCAN_CUTOFF_TIME
+        return default_value
     if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-        return service_module.DEFAULT_SCAN_CUTOFF_TIME
+        return default_value
     return f"{hour:02d}:{minute:02d}"
+
+
+def normalize_positive_float(raw_value: Any, default: float, minimum: float = 0.0, maximum: float = 1000000000.0) -> float:
+    try:
+        value = float(raw_value)
+    except Exception:
+        value = float(default)
+    return max(float(minimum), min(float(maximum), value))
 
 
 def normalize_strategy_params(raw_params: dict, base_params: dict | None = None) -> dict:
@@ -164,11 +173,56 @@ def normalize_request(payload: dict) -> dict:
     if session_mode not in service_module.SESSION_MODE_VALUES:
         session_mode = "extended"
 
-    initial_capital = max(1000.0, float(payload.get("initial_capital") or 100000))
+    initial_capital = max(1000.0, float(payload.get("initial_capital") or 10000))
     commission_per_share = max(0.0, float(payload.get("commission_per_share") or 0.005))
     slippage_bps = max(0.0, float(payload.get("slippage_bps") or 2.0))
     force_flat_eod = True
     max_symbols = max(1, min(service_module.DEFAULT_MAX_SYMBOLS, int(payload.get("max_symbols") or service_module.DEFAULT_MAX_SYMBOLS)))
+    execution_model = str(payload.get("execution_model") or "portfolio_stream").strip().lower() or "portfolio_stream"
+    if execution_model not in service_module.EXECUTION_MODEL_VALUES:
+        execution_model = "portfolio_stream"
+    borrow_limit_mode = str(payload.get("borrow_limit_mode") or "").strip().lower()
+    if not borrow_limit_mode:
+        borrow_limit_mode = "account_buying_power" if execution_model == "portfolio_stream" else "none"
+    if borrow_limit_mode not in service_module.BORROW_LIMIT_MODE_VALUES:
+        borrow_limit_mode = "none"
+    max_borrow_amount = normalize_positive_float(payload.get("max_borrow_amount"), 0.0)
+    position_limit_max = normalize_positive_int(
+        payload.get("position_limit_max"),
+        default=service_module.DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX,
+        minimum=1,
+        maximum=100,
+    )
+    signal_validity_minutes = normalize_positive_int(
+        payload.get("signal_validity_minutes"),
+        default=service_module.DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES,
+        minimum=1,
+        maximum=390,
+    )
+    trade_window_start_time = normalize_hhmm(
+        payload.get("trade_window_start_time"),
+        service_module.DEFAULT_PORTFOLIO_TRADE_WINDOW_START,
+    )
+    trade_window_end_time = normalize_hhmm(
+        payload.get("trade_window_end_time"),
+        service_module.DEFAULT_PORTFOLIO_TRADE_WINDOW_END,
+    )
+    order_window_end_time = normalize_hhmm(
+        payload.get("order_window_end_time"),
+        service_module.DEFAULT_PORTFOLIO_ORDER_WINDOW_END,
+    )
+    simultaneous_signal_priority = str(payload.get("simultaneous_signal_priority") or "daily_target_rank").strip().lower()
+    if simultaneous_signal_priority not in service_module.SIGNAL_PRIORITY_VALUES:
+        simultaneous_signal_priority = "daily_target_rank"
+    manual_confirm_mode = str(payload.get("manual_confirm_mode") or "auto").strip().lower() or "auto"
+    if manual_confirm_mode not in service_module.MANUAL_CONFIRM_MODE_VALUES:
+        manual_confirm_mode = "auto"
+    confirm_delay_minutes = normalize_positive_int(
+        payload.get("confirm_delay_minutes"),
+        default=0,
+        minimum=0,
+        maximum=390,
+    )
     compare_with_tv = normalize_bool(payload.get("compare_with_tv"), True)
     compare_tv_signals = normalize_bool(payload.get("compare_tv_signals"), False)
     persist_backtest_indicators = normalize_bool(payload.get("persist_backtest_indicators"), True)
@@ -217,6 +271,17 @@ def normalize_request(payload: dict) -> dict:
         "slippage_bps": slippage_bps,
         "force_flat_eod": force_flat_eod,
         "max_symbols": max_symbols,
+        "execution_model": execution_model,
+        "borrow_limit_mode": borrow_limit_mode,
+        "max_borrow_amount": max_borrow_amount,
+        "position_limit_max": position_limit_max,
+        "signal_validity_minutes": signal_validity_minutes,
+        "trade_window_start_time": trade_window_start_time,
+        "trade_window_end_time": trade_window_end_time,
+        "order_window_end_time": order_window_end_time,
+        "simultaneous_signal_priority": simultaneous_signal_priority,
+        "manual_confirm_mode": manual_confirm_mode,
+        "confirm_delay_minutes": confirm_delay_minutes,
         "compare_with_tv": compare_with_tv,
         "compare_tv_signals": compare_tv_signals,
         "persist_backtest_indicators": persist_backtest_indicators,
@@ -235,6 +300,17 @@ def normalize_request(payload: dict) -> dict:
             "persist_backtest_indicators": persist_backtest_indicators,
             "requested_symbol_source": symbol_source,
             "historical_targets_replay": historical_targets_replay,
+            "execution_model": execution_model,
+            "borrow_limit_mode": borrow_limit_mode,
+            "max_borrow_amount": max_borrow_amount,
+            "position_limit_max": position_limit_max,
+            "signal_validity_minutes": signal_validity_minutes,
+            "trade_window_start_time": trade_window_start_time,
+            "trade_window_end_time": trade_window_end_time,
+            "order_window_end_time": order_window_end_time,
+            "simultaneous_signal_priority": simultaneous_signal_priority,
+            "manual_confirm_mode": manual_confirm_mode,
+            "confirm_delay_minutes": confirm_delay_minutes,
         },
         "variants": variants,
         "strategy_tag": strategy_tag,

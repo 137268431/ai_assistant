@@ -77,6 +77,57 @@ class _FakeResponse:
         return dict(self._payload)
 
 
+class ComputePipelineGuardTest(unittest.TestCase):
+    def test_compute_lock_busy_returns_retryable_error(self):
+        lock = threading.Lock()
+        lock.acquire()
+        fake_app = SimpleNamespace(compute_lock=lock)
+
+        try:
+            with mock.patch("ibkr_compute.api.compute.pipeline_views._api_app", return_value=fake_app):
+                with mock.patch.object(pipeline_views, "COMPUTE_LOCK_TIMEOUT_SECONDS", 0.01):
+                    with mock.patch(
+                        "ibkr_compute.api.compute.pipeline_views.jsonify",
+                        side_effect=lambda payload: _FakeResponse(payload),
+                    ):
+                        response, status = pipeline_views.build_compute_response({})
+        finally:
+            lock.release()
+
+        self.assertEqual(status, 503)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "compute_busy")
+        self.assertTrue(payload["retryable"])
+
+    def test_unbounded_daily_rollup_requires_symbols(self):
+        fake_app = SimpleNamespace(
+            cfg=SimpleNamespace(refresh=lambda: None),
+            compute_lock=threading.Lock(),
+        )
+        plan = {
+            "payload": {"source": "manual_daily_rollup_repair", "rollup_intervals": ["1d"]},
+            "enabled_environments": ["live"],
+            "requested_environments": ["live"],
+            "requested_symbols": [],
+            "rollup_intervals": ["1d"],
+        }
+
+        with mock.patch("ibkr_compute.api.compute.pipeline_views._api_app", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.compute.pipeline_views.build_compute_execution_plan", return_value=plan):
+                with mock.patch(
+                    "ibkr_compute.api.compute.pipeline_views.jsonify",
+                    side_effect=lambda payload: _FakeResponse(payload),
+                ):
+                    response, status = pipeline_views.build_compute_response(plan["payload"])
+
+        self.assertEqual(status, 400)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "unbounded_daily_rollup_requires_symbols")
+        self.assertEqual(payload["rollup_intervals"], ["1d"])
+
+
 class ComputePipelineCursorCommitTest(unittest.TestCase):
     def test_indicator_flush_failure_keeps_cursor_behind_and_retry_forces_rebuild(self):
         engine = _FakeEngine()

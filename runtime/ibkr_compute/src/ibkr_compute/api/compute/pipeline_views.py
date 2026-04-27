@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
 import time
 import traceback
 
 from flask import jsonify
 
 from ibkr_compute.api.compute.request import build_compute_disabled_payload, build_compute_execution_plan
+
+COMPUTE_LOCK_TIMEOUT_SECONDS = max(
+    0.1,
+    float(os.environ.get("IBKR_COMPUTE_LOCK_TIMEOUT_SEC", "5.0")),
+)
 
 
 def _api_app():
@@ -14,14 +20,80 @@ def _api_app():
     return api_app
 
 
+class _HeldComputeLock:
+    def __init__(self, lock):
+        self._lock = lock
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._lock.release()
+        return False
+
+
+def _acquire_compute_lock(api_app):
+    try:
+        acquired = api_app.compute_lock.acquire(timeout=COMPUTE_LOCK_TIMEOUT_SECONDS)
+    except TypeError:
+        acquired = api_app.compute_lock.acquire()
+    if not acquired:
+        return None
+    return _HeldComputeLock(api_app.compute_lock)
+
+
+def _coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _unbounded_daily_rollup_error(plan: dict) -> str:
+    if "1d" not in (plan.get("rollup_intervals") or []):
+        return ""
+    if plan.get("requested_symbols"):
+        return ""
+    payload = plan.get("payload") if isinstance(plan.get("payload"), dict) else {}
+    if _coerce_bool(payload.get("allow_unbounded_daily_rollup")):
+        return ""
+    return "unbounded_daily_rollup_requires_symbols"
+
+
 def build_compute_response(payload=None):
     api_app = _api_app()
 
-    with api_app.compute_lock:
+    compute_lock = _acquire_compute_lock(api_app)
+    if compute_lock is None:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "compute_busy",
+                "retryable": True,
+                "lock_timeout_s": COMPUTE_LOCK_TIMEOUT_SECONDS,
+            }
+        ), 503
+
+    with compute_lock:
         api_app.cfg.refresh()
         plan = build_compute_execution_plan(payload)
         if not plan["enabled_environments"]:
             return jsonify(build_compute_disabled_payload(plan["requested_environments"]))
+        daily_rollup_error = _unbounded_daily_rollup_error(plan)
+        if daily_rollup_error:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": daily_rollup_error,
+                    "requested_environments": plan["requested_environments"],
+                    "environments": sorted(plan["enabled_environments"]),
+                    "symbols": plan["requested_symbols"],
+                    "rollup_intervals": plan["rollup_intervals"],
+                    "hint": "Pass an explicit symbols list for 1d rollup, or set allow_unbounded_daily_rollup for offline maintenance.",
+                }
+            ), 400
 
         start = time.time()
         processed = 0

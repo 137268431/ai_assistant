@@ -39,7 +39,40 @@ def build_service_bundle(
     )
     pb_client = PBClient(base_url=pb_base_url)
     config = Config(pb_client=pb_client)
-    backtest_service = BacktestService(pb_client)
+
+    def _backtest_account_snapshot_provider(environment: str = "live") -> dict:
+        import requests
+
+        from ibkr_compute.api.account.snapshot_builder import _build_ibkr_account_snapshot
+        from ibkr_compute.api.runtime.common import get_ibkr_service
+        from ibkr_compute.api.service_topology import get_api_internal_url, get_runtime_internal_url
+
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+
+        service = get_ibkr_service()
+        if service is not None:
+            return _build_ibkr_account_snapshot(service)
+
+        errors = []
+        for base_url, path in (
+            (get_runtime_internal_url(), "/ibkr/account"),
+            (get_api_internal_url(), "/api/custom/ibkr/account_snapshot"),
+        ):
+            try:
+                response = requests.get(
+                    f"{base_url.rstrip('/')}{path}",
+                    params={"environment": runtime_environment},
+                    timeout=20,
+                )
+                payload = response.json() if response.content else {}
+                if response.ok and isinstance(payload, dict):
+                    return payload
+                errors.append(f"{path}:{response.status_code}:{str((payload or {}).get('error') or '')[:120]}")
+            except Exception as exc:
+                errors.append(f"{path}:{str(exc)[:120]}")
+        return {"ok": False, "error": "; ".join(errors) or "account_snapshot_unavailable", "summary": {}}
+
+    backtest_service = BacktestService(pb_client, account_snapshot_provider=_backtest_account_snapshot_provider)
     history_rebuild_manager = HistoryRebuildManager(
         pb_client,
         config,

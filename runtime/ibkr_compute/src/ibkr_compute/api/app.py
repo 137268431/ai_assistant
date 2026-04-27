@@ -5,6 +5,7 @@ from flask import Flask
 
 from ibkr_compute.api.app_entrypoints import (
     build_compute_entrypoint_response,
+    build_compute_prime_entrypoint_response,
     build_proxy_legacy_pb_collections_response,
     build_recompute_entrypoint_response,
     build_scan_entrypoint_response,
@@ -45,6 +46,10 @@ def proxy_legacy_pb_collections(subpath):
 
 def compute():
     return build_compute_entrypoint_response()
+
+
+def compute_prime():
+    return build_compute_prime_entrypoint_response()
 
 
 def scan():

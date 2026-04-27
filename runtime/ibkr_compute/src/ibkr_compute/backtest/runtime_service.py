@@ -10,7 +10,7 @@ import time
 import traceback
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ibkr_compute.backtest import request_utils
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, IndicatorEngine
@@ -35,6 +35,13 @@ from ibkr_compute.market.timeframe_utils import (
     ms_to_et,
     normalize_interval,
 )
+from ibkr_compute.order.order_lifecycle import DEFAULT_POSITION_LIMIT_MAX as LIVE_DEFAULT_POSITION_LIMIT_MAX
+from ibkr_compute.signal.signal_processor import (
+    DEFAULT_ORDER_WINDOW_END as LIVE_DEFAULT_ORDER_WINDOW_END,
+    DEFAULT_SIGNAL_EXPIRY_MINUTES as LIVE_DEFAULT_SIGNAL_EXPIRY_MINUTES,
+    DEFAULT_TRADE_WINDOW_END as LIVE_DEFAULT_TRADE_WINDOW_END,
+    DEFAULT_TRADE_WINDOW_START as LIVE_DEFAULT_TRADE_WINDOW_START,
+)
 from ibkr_compute.workflows.daily_scanner import DailyScanner, _load_scan_settings
 
 BACKTEST_ENVIRONMENT = "backtest"
@@ -50,6 +57,10 @@ TV_SIGNAL_COLLECTION = "tv_signals"
 RUN_STATUS_VALUES = {"queued", "running", "completed", "failed", "cancelled"}
 SESSION_MODE_VALUES = {"extended", "regular"}
 SYMBOL_SOURCE_VALUES = {"manual", "targets", "watchlist", "daily_scan_replay"}
+EXECUTION_MODEL_VALUES = {"symbol_independent", "portfolio_stream"}
+BORROW_LIMIT_MODE_VALUES = {"none", "fixed", "account_buying_power"}
+SIGNAL_PRIORITY_VALUES = {"daily_target_rank", "signal_quality", "liquidity"}
+MANUAL_CONFIRM_MODE_VALUES = {"auto", "delayed", "strict"}
 DEFAULT_MAX_SYMBOLS = 20
 DEFAULT_MAX_PAGES = 1200
 MAX_REPLAY_ROWS = 240
@@ -64,6 +75,17 @@ SCAN_INTERVALS = tuple(COMPUTE_INTERVALS)
 BACKTEST_IMPROVEMENT_NOTIFY_THRESHOLD = 0.05
 BACKTEST_IMPROVEMENT_SHARPE_THRESHOLD = 0.1
 BACKTEST_SQLITE_PATH = os.environ.get("PB_SQLITE_PATH", "/opt/pocketbase/pb_data/data.db")
+
+
+def _hhmm_from_tuple(value: tuple[int, int]) -> str:
+    return f"{int(value[0]):02d}:{int(value[1]):02d}"
+
+
+DEFAULT_PORTFOLIO_TRADE_WINDOW_START = _hhmm_from_tuple(LIVE_DEFAULT_TRADE_WINDOW_START)
+DEFAULT_PORTFOLIO_TRADE_WINDOW_END = _hhmm_from_tuple(LIVE_DEFAULT_TRADE_WINDOW_END)
+DEFAULT_PORTFOLIO_ORDER_WINDOW_END = _hhmm_from_tuple(LIVE_DEFAULT_ORDER_WINDOW_END)
+DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES = LIVE_DEFAULT_SIGNAL_EXPIRY_MINUTES
+DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX = LIVE_DEFAULT_POSITION_LIMIT_MAX
 
 TV_INDICATOR_EXTRA_FIELDS = (
     "open",
@@ -169,8 +191,9 @@ WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
 
 
 class BacktestService:
-    def __init__(self, pb_client: PBClient):
+    def __init__(self, pb_client: PBClient, account_snapshot_provider: Callable[..., dict] | None = None):
         self.pb = pb_client
+        self.account_snapshot_provider = account_snapshot_provider
         self.data_backfill = DataBackfill() if pb_client else None
         self.conid_resolver = ConidResolver(pb_client=pb_client) if pb_client else None
         if self.conid_resolver is not None:
@@ -298,6 +321,7 @@ class BacktestService:
                     "symbol_source": request["symbol_source"],
                     "requested_symbols": request["symbols"],
                     "max_symbols": request["max_symbols"],
+                    **self._build_execution_extra(request),
                     **build_runtime_timestamps(),
                 },
             },
@@ -494,6 +518,21 @@ class BacktestService:
     def _build_variant_request(self, base_request: dict, variant: dict, variant_index: int) -> dict:
         return request_utils.build_variant_request(base_request, variant, variant_index)
 
+    def _build_execution_extra(self, request: dict) -> dict:
+        return {
+            "execution_model": request.get("execution_model", "portfolio_stream"),
+            "borrow_limit_mode": request.get("borrow_limit_mode", "none"),
+            "max_borrow_amount": float(request.get("max_borrow_amount", 0) or 0),
+            "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
+            "signal_validity_minutes": int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES),
+            "trade_window_start_time": str(request.get("trade_window_start_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_START),
+            "trade_window_end_time": str(request.get("trade_window_end_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_END),
+            "order_window_end_time": str(request.get("order_window_end_time") or DEFAULT_PORTFOLIO_ORDER_WINDOW_END),
+            "simultaneous_signal_priority": str(request.get("simultaneous_signal_priority") or "daily_target_rank"),
+            "manual_confirm_mode": str(request.get("manual_confirm_mode") or "auto"),
+            "confirm_delay_minutes": int(request.get("confirm_delay_minutes", 0) or 0),
+        }
+
     def _create_run_record(self, request: dict, extra_patch: dict | None = None) -> dict:
         extra = {
             "force_flat_eod": request["force_flat_eod"],
@@ -507,6 +546,7 @@ class BacktestService:
             "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": request.get("scan_session_mode", "extended"),
             "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
+            **self._build_execution_extra(request),
             **build_runtime_timestamps(),
         }
         if extra_patch:
@@ -576,6 +616,7 @@ class BacktestService:
                     "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
                     "scan_session_mode": request.get("scan_session_mode", "extended"),
                     "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
+                    **self._build_execution_extra(request),
                     **build_runtime_timestamps(),
                 },
                 "error": "",
@@ -846,6 +887,7 @@ class BacktestService:
             "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": str(request.get("scan_session_mode") or "extended"),
             "retention_limit": int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
+            **self._build_execution_extra(request),
             **build_runtime_timestamps(),
         }
         if request.get("batch_id"):
@@ -860,6 +902,8 @@ class BacktestService:
             )
         if metrics is not None:
             extra["monthly_returns"] = metrics.get("monthly_returns") or []
+            extra["portfolio_risk"] = metrics.get("portfolio_risk") or {}
+            extra["portfolio_rejection_counts"] = metrics.get("portfolio_rejection_counts") or {}
         if daily_equity is not None:
             extra["equity_curve"] = daily_equity
         if benchmark_points is not None:
@@ -1413,48 +1457,66 @@ class BacktestService:
         tv_symbol_reports = []
         realized_pnl = 0.0
         initial_capital = float(request["initial_capital"])
-        total_symbols = max(1, len(symbols))
-        completed_symbols = 0
-
-        for symbol in symbols:
-            if self._cancel_event.is_set():
-                raise BacktestCancelled()
-            progress_value = 5 + int((completed_symbols / total_symbols) * 70)
-            self._set_progress_context("running", "loading", f"loading {symbol}", progress_value, progress_context)
-            bars = self._load_symbol_bars(
-                symbol,
-                request["source_environment"],
-                request["date_from"],
-                request["date_to"],
-                request["session_mode"],
-            )
-            if len(bars) < 40:
-                skipped_symbols.append(symbol)
-                data_quality.append(
-                    {
-                        "symbol": symbol,
-                        "bar_count": len(bars),
-                        "gap_count": 0,
-                        "status": "insufficient_data",
-                    }
-                )
-                completed_symbols += 1
-                continue
-
-            trades, quality, tv_symbol_report, indicator_rows, signal_rows, reverse_rows = self._run_symbol_backtest(
-                symbol,
-                bars,
+        portfolio_metrics = {}
+        if str(request.get("execution_model") or "symbol_independent") == "portfolio_stream":
+            portfolio_result = self._run_portfolio_stream_backtest(
+                symbols,
                 request,
-                allowed_trade_days=allowed_trade_days_by_symbol.get(symbol),
+                allowed_trade_days_by_symbol=allowed_trade_days_by_symbol,
+                target_rows=backtest_target_rows,
+                progress_context=progress_context,
             )
-            all_trades.extend(trades)
-            all_indicator_rows.extend(indicator_rows)
-            all_signal_rows.extend(signal_rows)
-            all_reverse_rows.extend(reverse_rows)
-            data_quality.append(quality)
-            if tv_symbol_report:
-                tv_symbol_reports.append(tv_symbol_report)
-            completed_symbols += 1
+            all_trades = list(portfolio_result.get("trades") or [])
+            all_indicator_rows = list(portfolio_result.get("indicator_rows") or [])
+            all_signal_rows = list(portfolio_result.get("signal_rows") or [])
+            all_reverse_rows = list(portfolio_result.get("reverse_rows") or [])
+            skipped_symbols = list(portfolio_result.get("skipped_symbols") or [])
+            data_quality = list(portfolio_result.get("data_quality") or [])
+            tv_symbol_reports = list(portfolio_result.get("tv_symbol_reports") or [])
+            portfolio_metrics = dict(portfolio_result.get("portfolio_metrics") or {})
+        else:
+            total_symbols = max(1, len(symbols))
+            completed_symbols = 0
+
+            for symbol in symbols:
+                if self._cancel_event.is_set():
+                    raise BacktestCancelled()
+                progress_value = 5 + int((completed_symbols / total_symbols) * 70)
+                self._set_progress_context("running", "loading", f"loading {symbol}", progress_value, progress_context)
+                bars = self._load_symbol_bars(
+                    symbol,
+                    request["source_environment"],
+                    request["date_from"],
+                    request["date_to"],
+                    request["session_mode"],
+                )
+                if len(bars) < 40:
+                    skipped_symbols.append(symbol)
+                    data_quality.append(
+                        {
+                            "symbol": symbol,
+                            "bar_count": len(bars),
+                            "gap_count": 0,
+                            "status": "insufficient_data",
+                        }
+                    )
+                    completed_symbols += 1
+                    continue
+
+                trades, quality, tv_symbol_report, indicator_rows, signal_rows, reverse_rows = self._run_symbol_backtest(
+                    symbol,
+                    bars,
+                    request,
+                    allowed_trade_days=allowed_trade_days_by_symbol.get(symbol),
+                )
+                all_trades.extend(trades)
+                all_indicator_rows.extend(indicator_rows)
+                all_signal_rows.extend(signal_rows)
+                all_reverse_rows.extend(reverse_rows)
+                data_quality.append(quality)
+                if tv_symbol_report:
+                    tv_symbol_reports.append(tv_symbol_report)
+                completed_symbols += 1
 
         if self._cancel_event.is_set():
             raise BacktestCancelled()
@@ -1480,6 +1542,7 @@ class BacktestService:
             initial_capital,
         )
         metrics = self._compute_metrics(initial_capital, all_trades, daily_equity)
+        metrics.update(portfolio_metrics)
         metrics["benchmark"] = benchmark_points
         metrics["skipped_symbols"] = skipped_symbols
         metrics["data_quality"] = data_quality
@@ -1491,6 +1554,11 @@ class BacktestService:
         metrics["backtest_reverse_signal_count"] = len(all_reverse_rows)
         metrics["signal_count"] = len(all_signal_rows)
         metrics["executed_signal_count"] = len([row for row in all_signal_rows if str(row.get("status") or "") == "executed"])
+        metrics["backtest_signal_status_breakdown"] = self._count_values(all_signal_rows, "status")
+        metrics["backtest_signal_reason_breakdown"] = self._count_signal_status_reasons(all_signal_rows)
+        metrics["backtest_signal_rejection_breakdown"] = self._count_signal_status_reasons(
+            [row for row in all_signal_rows if str(row.get("status") or "") in {"skipped", "dropped"}]
+        )
         metrics["signal_fill_rate"] = (
             round((metrics["executed_signal_count"] / metrics["signal_count"]) * 100.0, 4)
             if metrics["signal_count"] else 0.0
@@ -2954,6 +3022,408 @@ class BacktestService:
                 inverted.setdefault(symbol_text, set()).add(str(trade_date or ""))
         return inverted
 
+    def _build_daily_target_lookup(self, target_rows: list[dict], symbols: list[str]) -> dict[tuple[str, str], dict]:
+        lookup: dict[tuple[str, str], dict] = {}
+        fallback_rank = {str(symbol or "").strip().upper(): index for index, symbol in enumerate(symbols or [], start=1)}
+        for row in target_rows or []:
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            date_text = str(row.get("date", "") or "")[:10]
+            if not symbol or not date_text:
+                continue
+            extra = self._parse_object(row.get("extra"))
+            rank = int(row.get("rank", extra.get("selection_rank", fallback_rank.get(symbol, 999999))) or fallback_rank.get(symbol, 999999))
+            score = float(row.get("score", 0) or 0)
+            lookup[(date_text, symbol)] = {
+                "rank": rank,
+                "score": score,
+                "direction_bias": str(row.get("direction_bias", "") or ""),
+            }
+        for symbol, rank in fallback_rank.items():
+            lookup.setdefault(("", symbol), {"rank": rank, "score": 0.0, "direction_bias": ""})
+        return lookup
+
+    def _parse_hhmm_tuple(self, raw_value: Any, default: str) -> tuple[int, int]:
+        text = str(raw_value or default or "00:00").strip()
+        try:
+            hour_text, minute_text = text.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            pass
+        hour_text, minute_text = str(default or "00:00").split(":", 1)
+        return int(hour_text), int(minute_text)
+
+    def _portfolio_bar_time_tuple(self, bar_or_ms: dict | int) -> tuple[int, int]:
+        if isinstance(bar_or_ms, dict):
+            bar_ms = int(bar_or_ms.get("bar_time_ms", 0) or 0)
+        else:
+            bar_ms = int(bar_or_ms or 0)
+        et_time = ms_to_et(bar_ms) if bar_ms > 0 else datetime.now(ET)
+        return et_time.hour, et_time.minute
+
+    def _portfolio_bar_in_trade_window(self, bar_or_ms: dict | int, request: dict) -> bool:
+        current = self._portfolio_bar_time_tuple(bar_or_ms)
+        start = self._parse_hhmm_tuple(request.get("trade_window_start_time"), DEFAULT_PORTFOLIO_TRADE_WINDOW_START)
+        end = self._parse_hhmm_tuple(request.get("trade_window_end_time"), DEFAULT_PORTFOLIO_TRADE_WINDOW_END)
+        return start <= current <= end
+
+    def _portfolio_bar_in_order_window(self, bar_or_ms: dict | int, request: dict) -> bool:
+        current = self._portfolio_bar_time_tuple(bar_or_ms)
+        start = self._parse_hhmm_tuple(request.get("trade_window_start_time"), DEFAULT_PORTFOLIO_TRADE_WINDOW_START)
+        end = self._parse_hhmm_tuple(request.get("order_window_end_time"), DEFAULT_PORTFOLIO_ORDER_WINDOW_END)
+        return start <= current <= end
+
+    def _portfolio_signal_expired(self, signal: dict, bar_or_ms: dict | int, request: dict) -> bool:
+        if isinstance(bar_or_ms, dict):
+            bar_ms = int(bar_or_ms.get("bar_time_ms", 0) or 0)
+        else:
+            bar_ms = int(bar_or_ms or 0)
+        signal_ms = int(signal.get("signal_bar_ms", signal.get("bar_time_ms", 0)) or 0)
+        if signal_ms <= 0 or bar_ms <= 0:
+            return False
+        validity_ms = int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) * 60 * 1000
+        return bar_ms - signal_ms > validity_ms
+
+    def _coerce_float_value(self, value: Any, default: float = 0.0) -> float:
+        if value is None or isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value or "").strip().replace(",", "")
+        if not text:
+            return default
+        try:
+            return float(text)
+        except Exception:
+            return default
+
+    def _resolve_account_buying_power_snapshot(self, environment: str = "live") -> dict:
+        if not callable(self.account_snapshot_provider):
+            return {
+                "ok": False,
+                "reason": "account_snapshot_provider_unavailable",
+                "snapshot": {},
+                "buying_power": 0.0,
+            }
+        try:
+            try:
+                snapshot = self.account_snapshot_provider(environment) or {}
+            except TypeError:
+                snapshot = self.account_snapshot_provider() or {}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "reason": f"account_snapshot_error: {exc}",
+                "snapshot": {},
+                "buying_power": 0.0,
+            }
+        summary = snapshot.get("summary") if isinstance(snapshot, dict) else {}
+        summary = summary if isinstance(summary, dict) else {}
+        buying_power = self._coerce_float_value(summary.get("buying_power"), 0.0)
+        return {
+            "ok": buying_power > 0,
+            "reason": "" if buying_power > 0 else "buying_power_unavailable",
+            "snapshot": snapshot if isinstance(snapshot, dict) else {},
+            "buying_power": buying_power,
+        }
+
+    def _resolve_portfolio_risk_limits(self, request: dict) -> dict:
+        initial_capital = float(request.get("initial_capital", 0) or 0)
+        mode = str(request.get("borrow_limit_mode") or "none").strip().lower()
+        account_snapshot = {}
+        account_summary = {}
+        account_snapshot_ok = False
+        account_snapshot_reason = ""
+        if mode == "account_buying_power":
+            resolved = self._resolve_account_buying_power_snapshot(request.get("source_environment") or "live")
+            account_snapshot = resolved.get("snapshot") or {}
+            account_summary = account_snapshot.get("summary") if isinstance(account_snapshot.get("summary"), dict) else {}
+            account_snapshot_ok = bool(resolved.get("ok"))
+            account_snapshot_reason = str(resolved.get("reason") or "")
+            buying_power = float(resolved.get("buying_power", 0) or 0)
+            if buying_power <= 0:
+                raise ValueError(f"account_buying_power_unavailable: {account_snapshot_reason or 'missing buying_power'}")
+            total_exposure_limit = buying_power
+            max_borrow_amount = max(0.0, buying_power - initial_capital)
+        elif mode == "fixed":
+            max_borrow_amount = max(0.0, float(request.get("max_borrow_amount", 0) or 0))
+            total_exposure_limit = initial_capital + max_borrow_amount
+        else:
+            mode = "none"
+            max_borrow_amount = 0.0
+            total_exposure_limit = initial_capital
+        return {
+            "initial_capital": round(initial_capital, 4),
+            "borrow_limit_mode": mode,
+            "max_borrow_amount": round(max_borrow_amount, 4),
+            "total_exposure_limit": round(max(0.0, total_exposure_limit), 4),
+            "account_snapshot_ok": account_snapshot_ok,
+            "account_snapshot_reason": account_snapshot_reason,
+            "account_summary": {
+                "account_code": account_summary.get("account_code") or "",
+                "account_type": account_summary.get("account_type") or "",
+                "currency": account_summary.get("currency") or "",
+                "buying_power": self._coerce_float_value(account_summary.get("buying_power"), 0.0),
+                "available_funds": self._coerce_float_value(account_summary.get("available_funds"), 0.0),
+                "net_liquidation": self._coerce_float_value(account_summary.get("net_liquidation"), 0.0),
+                "gross_position_value": self._coerce_float_value(account_summary.get("gross_position_value"), 0.0),
+            },
+        }
+
+    def _portfolio_signal_exposure(self, signal: dict) -> float:
+        shares = max(0, int(signal.get("shares", 0) or 0))
+        entry_price = float(signal.get("entry_price", signal.get("entry", 0)) or 0)
+        return max(0.0, shares * entry_price)
+
+    def _portfolio_position_exposure(self, position: dict) -> float:
+        explicit = self._coerce_float_value(position.get("entry_exposure"), -1.0)
+        if explicit >= 0:
+            return explicit
+        shares = max(0, int(position.get("shares", 0) or 0))
+        entry_price = float(position.get("entry_price", 0) or 0)
+        return max(0.0, shares * entry_price)
+
+    def _portfolio_projected_borrow(self, ledger: dict, additional_exposure: float = 0.0) -> float:
+        equity_cash = float(ledger.get("initial_capital", 0) or 0) + float(ledger.get("realized_pnl", 0) or 0)
+        projected_exposure = (
+            float(ledger.get("open_exposure", 0) or 0)
+            + float(ledger.get("reserved_exposure", 0) or 0)
+            + float(additional_exposure or 0)
+        )
+        return max(0.0, projected_exposure - equity_cash)
+
+    def _portfolio_can_reserve_exposure(self, ledger: dict, exposure: float) -> tuple[bool, str, dict]:
+        requested = max(0.0, float(exposure or 0))
+        projected_exposure = (
+            float(ledger.get("open_exposure", 0) or 0)
+            + float(ledger.get("reserved_exposure", 0) or 0)
+            + requested
+        )
+        total_limit = float(ledger.get("total_exposure_limit", 0) or 0)
+        projected_borrow = self._portfolio_projected_borrow(ledger, requested)
+        max_borrow = float(ledger.get("max_borrow_amount", 0) or 0)
+        details = {
+            "requested_exposure": round(requested, 4),
+            "projected_exposure": round(projected_exposure, 4),
+            "total_exposure_limit": round(total_limit, 4),
+            "projected_borrowed_amount": round(projected_borrow, 4),
+            "max_borrow_amount": round(max_borrow, 4),
+        }
+        if total_limit > 0 and projected_exposure - total_limit > 1e-6:
+            return False, "buying_power_exceeded", details
+        if projected_borrow - max_borrow > 1e-6:
+            return False, "borrow_limit_exceeded", details
+        return True, "ok", details
+
+    def _portfolio_record_rejection(self, ledger: dict, reason: str):
+        key = str(reason or "unknown").strip() or "unknown"
+        rejection_counts = ledger.setdefault("rejection_counts", {})
+        rejection_counts[key] = int(rejection_counts.get(key, 0) or 0) + 1
+
+    def _portfolio_record_candidate_sample(self, ledger: dict, candidate: dict, status: str, reason: str, details: dict | None = None):
+        samples = ledger.setdefault("candidate_samples", [])
+        if len(samples) >= 200:
+            return
+        signal_payload = candidate.get("signal_payload") or {}
+        bar = candidate.get("bar") or {}
+        samples.append(
+            {
+                "bar_time_ms": int(bar.get("bar_time_ms", signal_payload.get("bar_time_ms", 0)) or 0),
+                "us_time": str(bar.get("us_time", signal_payload.get("us_time", "")) or ""),
+                "symbol": str(signal_payload.get("symbol", candidate.get("symbol", "")) or ""),
+                "direction": str(signal_payload.get("direction", "") or ""),
+                "status": str(status or ""),
+                "reason": str(reason or ""),
+                "target_rank": int(candidate.get("target_rank", 999999) or 999999),
+                "target_score": round(float(candidate.get("target_score", 0) or 0), 4),
+                "signal_quality": round(float(candidate.get("signal_quality", 0) or 0), 4),
+                "requested_exposure": round(float(candidate.get("requested_exposure", 0) or 0), 4),
+                **(details or {}),
+            }
+        )
+
+    def _build_portfolio_candidate(
+        self,
+        state: dict,
+        bar: dict,
+        index: int,
+        signal: dict,
+        signal_payload: dict,
+        signal_row: dict,
+        current_day: str,
+        target_lookup: dict[tuple[str, str], dict],
+    ) -> dict:
+        symbol = str(state.get("symbol", signal_payload.get("symbol", "")) or "").strip().upper()
+        target_meta = target_lookup.get((current_day, symbol)) or target_lookup.get(("", symbol)) or {}
+        extra = dict(signal_payload.get("extra") or {})
+        rr = self._coerce_float_value(signal_payload.get("rr"), 0.0)
+        signal_quality = max(
+            rr,
+            self._coerce_float_value(extra.get("signal_score"), 0.0),
+            self._coerce_float_value(extra.get("score"), 0.0),
+            self._coerce_float_value(extra.get("sl_atr_ratio"), 0.0),
+        )
+        requested_exposure = self._portfolio_signal_exposure(signal_payload)
+        return {
+            "state": state,
+            "symbol": symbol,
+            "bar": bar,
+            "index": index,
+            "signal": signal,
+            "signal_payload": signal_payload,
+            "signal_row": signal_row,
+            "signal_id": str(signal_row.get("signal_id", "") or ""),
+            "current_day": current_day,
+            "target_rank": int(target_meta.get("rank", 999999) or 999999),
+            "target_score": float(target_meta.get("score", 0) or 0),
+            "signal_quality": signal_quality,
+            "requested_exposure": requested_exposure,
+        }
+
+    def _sort_portfolio_candidates(self, candidates: list[dict], request: dict) -> list[dict]:
+        priority = str(request.get("simultaneous_signal_priority") or "daily_target_rank").strip().lower()
+
+        def sort_key(candidate: dict):
+            symbol = str(candidate.get("symbol", "") or "")
+            bar_ms = int((candidate.get("bar") or {}).get("bar_time_ms", 0) or 0)
+            target_rank = int(candidate.get("target_rank", 999999) or 999999)
+            target_score = float(candidate.get("target_score", 0) or 0)
+            signal_quality = float(candidate.get("signal_quality", 0) or 0)
+            requested_exposure = float(candidate.get("requested_exposure", 0) or 0)
+            if priority == "signal_quality":
+                return (bar_ms, -signal_quality, target_rank, -target_score, requested_exposure, symbol)
+            if priority == "liquidity":
+                bar = candidate.get("bar") or {}
+                liquidity = float(bar.get("volume", 0) or 0) * float(bar.get("close", 0) or 0)
+                return (bar_ms, -liquidity, target_rank, -signal_quality, requested_exposure, symbol)
+            return (bar_ms, target_rank, -target_score, -signal_quality, requested_exposure, symbol)
+
+        return sorted(candidates, key=sort_key)
+
+    def _release_portfolio_pending(self, ledger: dict, pending_signal: dict | None):
+        if not pending_signal:
+            return
+        ledger["reserved_exposure"] = max(
+            0.0,
+            float(ledger.get("reserved_exposure", 0) or 0) - self._portfolio_signal_exposure(pending_signal),
+        )
+
+    def _open_portfolio_position_from_pending(
+        self,
+        ledger: dict,
+        symbol: str,
+        bar: dict,
+        pending_signal: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+    ) -> dict | None:
+        position = self._check_pending_entry_fill(
+            symbol,
+            bar,
+            pending_signal,
+            commission_per_share,
+            slippage_bps,
+        )
+        if not position:
+            return None
+        self._release_portfolio_pending(ledger, pending_signal)
+        exposure = self._portfolio_position_exposure(position)
+        position["entry_exposure"] = exposure
+        position["portfolio_execution_model"] = "portfolio_stream"
+        ledger["open_exposure"] = float(ledger.get("open_exposure", 0) or 0) + exposure
+        ledger["max_gross_exposure"] = max(float(ledger.get("max_gross_exposure", 0) or 0), float(ledger.get("open_exposure", 0) or 0) + float(ledger.get("reserved_exposure", 0) or 0))
+        ledger["max_borrowed_amount"] = max(float(ledger.get("max_borrowed_amount", 0) or 0), self._portfolio_projected_borrow(ledger, 0))
+        return position
+
+    def _close_portfolio_position(self, ledger: dict, position: dict | None, trade: dict | None) -> dict | None:
+        if not position or not trade:
+            return trade
+        exposure = self._portfolio_position_exposure(position)
+        ledger["open_exposure"] = max(0.0, float(ledger.get("open_exposure", 0) or 0) - exposure)
+        ledger["realized_pnl"] = float(ledger.get("realized_pnl", 0) or 0) + float(trade.get("pnl", 0) or 0)
+        trade_extra = self._parse_object(trade.get("extra"))
+        trade_extra.update(
+            {
+                "execution_model": "portfolio_stream",
+                "entry_exposure": round(exposure, 4),
+                "portfolio_open_exposure_after": round(float(ledger.get("open_exposure", 0) or 0), 4),
+                "portfolio_reserved_exposure_after": round(float(ledger.get("reserved_exposure", 0) or 0), 4),
+                "portfolio_borrowed_after": round(self._portfolio_projected_borrow(ledger, 0), 4),
+            }
+        )
+        trade["extra"] = trade_extra
+        return trade
+
+    def _accept_portfolio_candidate(self, ledger: dict, candidate: dict, signal_index: dict, request: dict) -> bool:
+        if str(request.get("manual_confirm_mode") or "auto") == "strict":
+            reason = "manual_confirmation_required"
+            self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason)
+            self._portfolio_record_rejection(ledger, reason)
+            self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason)
+            return False
+
+        position_limit = int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX)
+        if int(ledger.get("daily_position_count", 0) or 0) >= position_limit:
+            reason = "position_limit_reached"
+            self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason)
+            self._portfolio_record_rejection(ledger, reason)
+            self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason)
+            return False
+
+        confirm_delay_minutes = int(request.get("confirm_delay_minutes", 0) or 0)
+        if str(request.get("manual_confirm_mode") or "auto") != "delayed":
+            confirm_delay_minutes = 0
+        validity_minutes = int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES)
+        if confirm_delay_minutes > validity_minutes:
+            reason = "signal_expired_before_confirm"
+            self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason)
+            self._portfolio_record_rejection(ledger, reason)
+            self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason)
+            return False
+
+        exposure = float(candidate.get("requested_exposure", 0) or 0)
+        ok, reason, details = self._portfolio_can_reserve_exposure(ledger, exposure)
+        if not ok:
+            self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+            self._portfolio_record_rejection(ledger, reason)
+            self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+            return False
+
+        state = candidate["state"]
+        pending_signal = self._build_backtest_pending_signal(
+            candidate["symbol"],
+            candidate["bar"],
+            candidate["signal"],
+            candidate["signal_payload"],
+        )
+        confirm_ready_ms = int(candidate["bar"].get("bar_time_ms", 0) or 0) + confirm_delay_minutes * 60 * 1000
+        pending_signal["reserved_exposure"] = exposure
+        pending_signal["confirm_ready_bar_ms"] = confirm_ready_ms
+        pending_signal["portfolio_target_rank"] = int(candidate.get("target_rank", 999999) or 999999)
+        pending_signal["portfolio_target_score"] = float(candidate.get("target_score", 0) or 0)
+        state["pending_signal"] = pending_signal
+        ledger["reserved_exposure"] = float(ledger.get("reserved_exposure", 0) or 0) + exposure
+        ledger["daily_position_count"] = int(ledger.get("daily_position_count", 0) or 0) + 1
+        ledger["max_gross_exposure"] = max(float(ledger.get("max_gross_exposure", 0) or 0), float(ledger.get("open_exposure", 0) or 0) + float(ledger.get("reserved_exposure", 0) or 0))
+        ledger["max_borrowed_amount"] = max(float(ledger.get("max_borrowed_amount", 0) or 0), self._portfolio_projected_borrow(ledger, 0))
+        self._mark_backtest_signal_status(
+            signal_index,
+            candidate.get("signal_id"),
+            "pending",
+            "accepted_pending_entry",
+            {
+                **details,
+                "portfolio_target_rank": int(candidate.get("target_rank", 999999) or 999999),
+                "portfolio_target_score": round(float(candidate.get("target_score", 0) or 0), 4),
+                "confirm_delay_minutes": confirm_delay_minutes,
+                "confirm_ready_bar_ms": confirm_ready_ms,
+            },
+        )
+        self._portfolio_record_candidate_sample(ledger, candidate, "pending", "accepted_pending_entry", details)
+        return True
+
     def _bootstrap_backtest_state(self, engine: IndicatorEngine, signal_gen: SignalGenerator, warmup_bars: list[dict]) -> str:
         previous_day = ""
         for bar in warmup_bars:
@@ -2966,6 +3436,538 @@ class BacktestService:
                 continue
             signal_gen.update(snapshot)
         return previous_day
+
+    def _prepare_portfolio_symbol_state(
+        self,
+        symbol: str,
+        bars: list[dict],
+        request: dict,
+        allowed_trade_days: set[str] | None,
+    ) -> tuple[dict | None, dict | None]:
+        if len(bars) < 40:
+            return None, {
+                "symbol": symbol,
+                "bar_count": len(bars),
+                "gap_count": 0,
+                "status": "insufficient_data",
+                "first_bar_us": bars[0].get("us_time", "") if bars else "",
+                "last_bar_us": bars[-1].get("us_time", "") if bars else "",
+                "market_bars": len(bars),
+                "selected_trade_day_count": len(allowed_trade_days or []),
+            }
+        precheck_gap_count = self._count_internal_5m_gaps(bars)
+        if precheck_gap_count > 0:
+            return None, {
+                "symbol": symbol,
+                "bar_count": len(bars),
+                "gap_count": precheck_gap_count,
+                "status": "invalid_gap",
+                "first_bar_us": bars[0].get("us_time", "") if bars else "",
+                "last_bar_us": bars[-1].get("us_time", "") if bars else "",
+                "market_bars": len(bars),
+                "selected_trade_day_count": len(allowed_trade_days or []),
+            }
+
+        params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
+        engine = IndicatorEngine(symbol, "5m", params=params)
+        signal_gen = SignalGenerator(symbol, "5m", params=params)
+        warmup_bars = self._load_symbol_warmup_bars(
+            symbol,
+            request["source_environment"],
+            int(bars[0].get("bar_time_ms", 0) or 0),
+            request["session_mode"],
+            limit=int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+        )
+        previous_day = self._bootstrap_backtest_state(engine, signal_gen, warmup_bars) if warmup_bars else ""
+        compare_with_tv = self._should_compare_with_tv(request)
+        compare_tv_signals = self._should_compare_tv_signals(request)
+        tv_reference = self._load_tv_reference(
+            symbol,
+            request["source_environment"],
+            request["date_from"],
+            request["date_to"],
+            include_signals=compare_tv_signals,
+        ) if compare_with_tv else {}
+        symbol_tv_parity = self._init_symbol_tv_parity(
+            symbol,
+            tv_reference,
+            compare_tv_signals=compare_tv_signals,
+        ) if compare_with_tv else None
+        return {
+            "symbol": symbol,
+            "bars": bars,
+            "engine": engine,
+            "signal_gen": signal_gen,
+            "daily_close_lookup": self._load_daily_close_lookup(
+                symbol,
+                request["source_environment"],
+                request["date_from"],
+                request["date_to"],
+            ),
+            "symbol_tv_parity": symbol_tv_parity,
+            "allowed_trade_days": allowed_trade_days,
+            "previous_ms": 0,
+            "previous_day": previous_day,
+            "previous_bar": None,
+            "pending_signal": None,
+            "open_position": None,
+            "gap_count": 0,
+            "market_bars": 0,
+            "reverse_index": set(),
+        }, None
+
+    def _run_portfolio_stream_backtest(
+        self,
+        symbols: list[str],
+        request: dict,
+        allowed_trade_days_by_symbol: dict[str, set[str]] | None = None,
+        target_rows: list[dict] | None = None,
+        progress_context: dict | None = None,
+    ) -> dict:
+        risk_limits = self._resolve_portfolio_risk_limits(request)
+        ledger = {
+            **risk_limits,
+            "realized_pnl": 0.0,
+            "open_exposure": 0.0,
+            "reserved_exposure": 0.0,
+            "max_gross_exposure": 0.0,
+            "max_borrowed_amount": 0.0,
+            "daily_position_count": 0,
+            "current_day": "",
+            "rejection_counts": {},
+            "candidate_samples": [],
+        }
+        states: dict[str, dict] = {}
+        bars_by_time: dict[int, list[tuple[str, int, dict]]] = {}
+        data_quality = []
+        skipped_symbols = []
+        all_trades = []
+        all_indicator_rows = []
+        all_signal_rows = []
+        all_reverse_rows = []
+        tv_symbol_reports = []
+        signal_index = {}
+        target_lookup = self._build_daily_target_lookup(target_rows or [], symbols)
+
+        total_symbols = max(1, len(symbols))
+        for completed_symbols, symbol in enumerate(symbols):
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            progress_value = 5 + int((completed_symbols / total_symbols) * 18)
+            self._set_progress_context("running", "loading", f"loading {symbol}", progress_value, progress_context)
+            bars = self._load_symbol_bars(
+                symbol,
+                request["source_environment"],
+                request["date_from"],
+                request["date_to"],
+                request["session_mode"],
+            )
+            state, quality = self._prepare_portfolio_symbol_state(
+                symbol,
+                bars,
+                request,
+                (allowed_trade_days_by_symbol or {}).get(symbol),
+            )
+            if quality:
+                data_quality.append(quality)
+                skipped_symbols.append(symbol)
+                continue
+            if not state:
+                skipped_symbols.append(symbol)
+                continue
+            states[symbol] = state
+            for index, bar in enumerate(state["bars"]):
+                bar_ms = int(bar.get("bar_time_ms", 0) or 0)
+                if bar_ms <= 0:
+                    continue
+                bars_by_time.setdefault(bar_ms, []).append((symbol, index, bar))
+
+        if not states:
+            return {
+                "trades": [],
+                "indicator_rows": [],
+                "signal_rows": [],
+                "reverse_rows": [],
+                "data_quality": data_quality,
+                "skipped_symbols": skipped_symbols,
+                "tv_symbol_reports": [],
+                "portfolio_metrics": {
+                    "execution_model": "portfolio_stream",
+                    "portfolio_risk": risk_limits,
+                    "portfolio_rejection_counts": {},
+                    "portfolio_candidate_samples": [],
+                },
+            }
+
+        bar_times = sorted(bars_by_time.keys())
+        total_steps = max(1, len(bar_times))
+        commission_per_share = float(request["commission_per_share"])
+        slippage_bps = float(request["slippage_bps"])
+        force_flat_eod = bool(request["force_flat_eod"])
+        compare_tv_signals = self._should_compare_tv_signals(request)
+
+        def append_trade(position: dict, trade: dict | None):
+            if not trade:
+                return
+            closed_trade = self._close_portfolio_position(ledger, position, trade)
+            if closed_trade:
+                all_trades.append(closed_trade)
+
+        for step_index, bar_ms in enumerate(bar_times):
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            if step_index % 50 == 0 or step_index == total_steps - 1:
+                progress_value = 25 + int((step_index / total_steps) * 60)
+                self._set_progress_context("running", "streaming", f"streaming portfolio {step_index + 1}/{total_steps}", progress_value, progress_context)
+            entries = sorted(bars_by_time.get(bar_ms) or [], key=lambda item: item[0])
+            current_day = ms_to_et(bar_ms).strftime("%Y-%m-%d")
+            if ledger.get("current_day") and ledger["current_day"] != current_day:
+                ledger["daily_position_count"] = 0
+            ledger["current_day"] = current_day
+
+            candidates = []
+            for symbol, index, bar in entries:
+                state = states[symbol]
+                state["market_bars"] = int(state.get("market_bars", 0) or 0) + 1
+                current_symbol_day = str(bar.get("us_time", "") or "")[:10]
+
+                previous_ms = int(state.get("previous_ms", 0) or 0)
+                if previous_ms > 0 and int(bar["bar_time_ms"]) - previous_ms > interval_to_ms("5m") * 3:
+                    state["gap_count"] = int(state.get("gap_count", 0) or 0) + 1
+                state["previous_ms"] = int(bar["bar_time_ms"])
+
+                if state.get("previous_day") and current_symbol_day != state.get("previous_day"):
+                    state["signal_gen"].daily_reset()
+                    if state.get("open_position") and force_flat_eod and state.get("previous_bar"):
+                        trade = self._close_position(
+                            state["open_position"],
+                            state["previous_bar"],
+                            commission_per_share,
+                            slippage_bps,
+                            "eod",
+                        )
+                        append_trade(state["open_position"], trade)
+                        state["open_position"] = None
+                    if state.get("pending_signal"):
+                        self._mark_backtest_signal_status(signal_index, state["pending_signal"].get("signal_id"), "dropped", "new_day_reset")
+                        self._release_portfolio_pending(ledger, state["pending_signal"])
+                    state["pending_signal"] = None
+                state["previous_day"] = current_symbol_day
+
+                pending_signal = state.get("pending_signal")
+                if pending_signal and state.get("open_position") is None:
+                    if self._portfolio_signal_expired(pending_signal, bar, request):
+                        self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "signal_expired")
+                        self._portfolio_record_rejection(ledger, "signal_expired")
+                        self._release_portfolio_pending(ledger, pending_signal)
+                        state["pending_signal"] = None
+                    elif int(bar.get("bar_time_ms", 0) or 0) >= int(pending_signal.get("confirm_ready_bar_ms", pending_signal.get("signal_bar_ms", 0)) or 0):
+                        filled_position = self._open_portfolio_position_from_pending(
+                            ledger,
+                            symbol,
+                            bar,
+                            pending_signal,
+                            commission_per_share,
+                            slippage_bps,
+                        )
+                        if filled_position:
+                            state["open_position"] = filled_position
+                            self._mark_backtest_signal_status(
+                                signal_index,
+                                pending_signal.get("signal_id"),
+                                "executed",
+                                "entry_limit_filled",
+                                {
+                                    "entry_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+                                    "entry_us_time": str(bar.get("us_time", "") or ""),
+                                    "entry_cn_time": str(bar.get("cn_time", "") or ""),
+                                    "entry_price": round(float(filled_position.get("entry_price", 0) or 0), 4),
+                                    "entry_limit_price": round(float(filled_position.get("entry_limit_price", 0) or 0), 4),
+                                    "portfolio_open_exposure": round(float(ledger.get("open_exposure", 0) or 0), 4),
+                                    "portfolio_reserved_exposure": round(float(ledger.get("reserved_exposure", 0) or 0), 4),
+                                },
+                            )
+                            state["pending_signal"] = None
+
+                if state.get("open_position"):
+                    closed = self._check_exit(state["open_position"], bar, commission_per_share, slippage_bps)
+                    if closed:
+                        append_trade(state["open_position"], closed)
+                        state["open_position"] = None
+
+                snapshot = state["engine"].update(bar)
+                if not snapshot or not state["engine"].is_ready():
+                    state["previous_bar"] = bar
+                    continue
+
+                daily_fields = self._get_daily_change_fields_from_lookup(
+                    state["daily_close_lookup"],
+                    float(snapshot.get("close", 0) or 0),
+                    int(bar.get("bar_time_ms", 0) or 0),
+                )
+                indicator_payload = self._build_tv_indicator_compare_payload(
+                    symbol,
+                    bar,
+                    state["engine"].bar_count,
+                    snapshot,
+                    request["source_environment"],
+                    daily_fields,
+                )
+                indicator_audit = None
+                if state.get("symbol_tv_parity") is not None:
+                    indicator_audit = self._compare_generated_indicator(state["symbol_tv_parity"], indicator_payload)
+                all_indicator_rows.append(
+                    self._build_backtest_indicator_row(
+                        request,
+                        bar,
+                        indicator_payload,
+                        indicator_audit,
+                    )
+                )
+
+                signal = state["signal_gen"].update(snapshot)
+                trading_day_enabled = state.get("allowed_trade_days") is None or current_symbol_day in state.get("allowed_trade_days")
+                preexisting_pending_signal = state.get("pending_signal") if state.get("pending_signal") and state.get("open_position") is None else None
+                preexisting_open_position = state.get("open_position")
+                signal_conflict_emitted = False
+
+                if signal and int(signal.get("shares", 0) or 0) > 0:
+                    signal_payload = self._build_tv_signal_compare_payload(
+                        symbol,
+                        bar,
+                        state["engine"].bar_count,
+                        signal,
+                        request["source_environment"],
+                        daily_fields,
+                    )
+                    if state.get("symbol_tv_parity") is not None and compare_tv_signals:
+                        self._compare_generated_signal(state["symbol_tv_parity"], signal_payload)
+                    signal_row = self._build_backtest_signal_row(request, bar, signal_payload)
+                    signal_row["status"] = "generated"
+                    all_signal_rows.append(signal_row)
+                    signal_id = str(signal_row.get("signal_id", "") or "")
+                    if signal_id:
+                        signal_index[signal_id] = signal_row
+
+                    if not trading_day_enabled:
+                        self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "symbol_not_selected_for_day")
+                    elif not self._portfolio_bar_in_trade_window(bar, request):
+                        self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "outside_trade_window")
+                        self._portfolio_record_rejection(ledger, "outside_trade_window")
+                    elif not self._portfolio_bar_in_order_window(bar, request):
+                        self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "outside_order_window")
+                        self._portfolio_record_rejection(ledger, "outside_order_window")
+                    else:
+                        active_target = preexisting_pending_signal if preexisting_pending_signal else preexisting_open_position
+                        active_state = "pending_entry" if preexisting_pending_signal else ("filled_position" if preexisting_open_position else "")
+                        active_direction = str((active_target or {}).get("direction", "") or "").strip().lower()
+                        new_direction = str(signal_payload.get("direction", "") or "").strip().lower()
+                        if active_target or index >= len(state["bars"]) - 1:
+                            if active_target and active_direction and new_direction and new_direction != active_direction:
+                                reverse_row = self._build_backtest_reverse_signal_row(
+                                    request,
+                                    symbol,
+                                    bar,
+                                    state["engine"].bar_count,
+                                    snapshot,
+                                    daily_fields,
+                                    active_target,
+                                    target_state=active_state,
+                                    reverse_kind="signal_conflict",
+                                    source="signal",
+                                    origin_signal_payload=signal_payload,
+                                )
+                                reverse_key = self._build_backtest_reverse_key(reverse_row)
+                                if reverse_row and reverse_key not in state["reverse_index"]:
+                                    all_reverse_rows.append(reverse_row)
+                                    state["reverse_index"].add(reverse_key)
+                                    signal_conflict_emitted = True
+                                    if preexisting_pending_signal and active_state == "pending_entry":
+                                        updated_pending = self._apply_backtest_pending_reverse_action(
+                                            state["pending_signal"],
+                                            reverse_row,
+                                            signal_index,
+                                        )
+                                        if updated_pending is None:
+                                            self._release_portfolio_pending(ledger, state["pending_signal"])
+                                        state["pending_signal"] = updated_pending
+                                    elif preexisting_open_position and active_state == "filled_position":
+                                        original_position = state["open_position"]
+                                        state["open_position"], reverse_trade = self._apply_backtest_position_reverse_action(
+                                            state["open_position"],
+                                            reverse_row,
+                                            bar,
+                                            commission_per_share,
+                                            slippage_bps,
+                                        )
+                                        if reverse_trade:
+                                            append_trade(original_position, reverse_trade)
+                            if active_target:
+                                drop_reason = "active_target_exists"
+                                if active_direction and new_direction and new_direction != active_direction:
+                                    drop_reason = "signal_conflict_active_target"
+                                self._mark_backtest_signal_status(signal_index, signal_id, "dropped", drop_reason)
+                            elif index >= len(state["bars"]) - 1:
+                                self._mark_backtest_signal_status(signal_index, signal_id, "dropped", "last_bar_no_entry")
+                        else:
+                            if force_flat_eod and index < len(state["bars"]) - 1:
+                                next_day = str(state["bars"][index + 1].get("us_time", "") or "")[:10]
+                                if next_day != current_symbol_day:
+                                    self._mark_backtest_signal_status(signal_index, signal_id, "dropped", "force_flat_eod")
+                                else:
+                                    candidates.append(
+                                        self._build_portfolio_candidate(
+                                            state,
+                                            bar,
+                                            index,
+                                            signal,
+                                            signal_payload,
+                                            signal_row,
+                                            current_symbol_day,
+                                            target_lookup,
+                                        )
+                                    )
+                            else:
+                                candidates.append(
+                                    self._build_portfolio_candidate(
+                                        state,
+                                        bar,
+                                        index,
+                                        signal,
+                                        signal_payload,
+                                        signal_row,
+                                        current_symbol_day,
+                                        target_lookup,
+                                    )
+                                )
+
+                if not signal_conflict_emitted and preexisting_pending_signal and state.get("pending_signal") and state.get("open_position") is None:
+                    reverse_row = self._build_backtest_reverse_signal_row(
+                        request,
+                        symbol,
+                        bar,
+                        state["engine"].bar_count,
+                        snapshot,
+                        daily_fields,
+                        state["pending_signal"],
+                        target_state="pending_entry",
+                        reverse_kind="indicator_conflict",
+                        source="indicator",
+                    )
+                    reverse_key = self._build_backtest_reverse_key(reverse_row)
+                    if reverse_row and reverse_key not in state["reverse_index"]:
+                        all_reverse_rows.append(reverse_row)
+                        state["reverse_index"].add(reverse_key)
+                        updated_pending = self._apply_backtest_pending_reverse_action(
+                            state["pending_signal"],
+                            reverse_row,
+                            signal_index,
+                        )
+                        if updated_pending is None:
+                            self._release_portfolio_pending(ledger, state["pending_signal"])
+                        state["pending_signal"] = updated_pending
+
+                if not signal_conflict_emitted and preexisting_open_position and state.get("open_position"):
+                    reverse_row = self._build_backtest_reverse_signal_row(
+                        request,
+                        symbol,
+                        bar,
+                        state["engine"].bar_count,
+                        snapshot,
+                        daily_fields,
+                        state["open_position"],
+                        target_state="filled_position",
+                        reverse_kind="indicator_conflict",
+                        source="indicator",
+                    )
+                    reverse_key = self._build_backtest_reverse_key(reverse_row)
+                    if reverse_row and reverse_key not in state["reverse_index"]:
+                        all_reverse_rows.append(reverse_row)
+                        state["reverse_index"].add(reverse_key)
+                        original_position = state["open_position"]
+                        state["open_position"], reverse_trade = self._apply_backtest_position_reverse_action(
+                            state["open_position"],
+                            reverse_row,
+                            bar,
+                            commission_per_share,
+                            slippage_bps,
+                        )
+                        if reverse_trade:
+                            append_trade(original_position, reverse_trade)
+
+                state["previous_bar"] = bar
+
+            for candidate in self._sort_portfolio_candidates(candidates, request):
+                self._accept_portfolio_candidate(ledger, candidate, signal_index, request)
+
+        for symbol in sorted(states.keys()):
+            state = states[symbol]
+            if state.get("open_position"):
+                last_bar = state["bars"][-1]
+                trade = self._close_position(
+                    state["open_position"],
+                    last_bar,
+                    commission_per_share,
+                    slippage_bps,
+                    "last_bar",
+                )
+                append_trade(state["open_position"], trade)
+                state["open_position"] = None
+            if state.get("pending_signal"):
+                self._mark_backtest_signal_status(signal_index, state["pending_signal"].get("signal_id"), "dropped", "last_bar_no_entry")
+                self._release_portfolio_pending(ledger, state["pending_signal"])
+                state["pending_signal"] = None
+
+            quality = {
+                "symbol": symbol,
+                "bar_count": len(state["bars"]),
+                "gap_count": int(state.get("gap_count", 0) or 0),
+                "status": "ok",
+                "first_bar_us": state["bars"][0].get("us_time", "") if state["bars"] else "",
+                "last_bar_us": state["bars"][-1].get("us_time", "") if state["bars"] else "",
+                "market_bars": int(state.get("market_bars", 0) or 0),
+                "selected_trade_day_count": len(state.get("allowed_trade_days") or []),
+            }
+            data_quality.append(quality)
+            if state.get("symbol_tv_parity") is not None:
+                self._finalize_symbol_tv_parity(state["symbol_tv_parity"])
+                tv_symbol_reports.append(state["symbol_tv_parity"])
+
+        all_trades.sort(key=lambda item: (int(item.get("exit_bar_ms", 0) or 0), item.get("symbol", "")))
+        all_reverse_rows.sort(key=lambda item: (int(item.get("bar_time_ms", 0) or 0), item.get("symbol", ""), item.get("action_type", "")))
+        gross_now = float(ledger.get("open_exposure", 0) or 0) + float(ledger.get("reserved_exposure", 0) or 0)
+        portfolio_metrics = {
+            "execution_model": "portfolio_stream",
+            "portfolio_risk": {
+                **risk_limits,
+                "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
+                "signal_validity_minutes": int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES),
+                "trade_window_start_time": str(request.get("trade_window_start_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_START),
+                "trade_window_end_time": str(request.get("trade_window_end_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_END),
+                "order_window_end_time": str(request.get("order_window_end_time") or DEFAULT_PORTFOLIO_ORDER_WINDOW_END),
+                "simultaneous_signal_priority": str(request.get("simultaneous_signal_priority") or "daily_target_rank"),
+                "manual_confirm_mode": str(request.get("manual_confirm_mode") or "auto"),
+                "confirm_delay_minutes": int(request.get("confirm_delay_minutes", 0) or 0),
+            },
+            "portfolio_rejection_counts": dict(ledger.get("rejection_counts") or {}),
+            "portfolio_candidate_samples": list(ledger.get("candidate_samples") or []),
+            "portfolio_max_gross_exposure": round(float(ledger.get("max_gross_exposure", 0) or 0), 4),
+            "portfolio_max_borrowed_amount": round(float(ledger.get("max_borrowed_amount", 0) or 0), 4),
+            "portfolio_final_open_exposure": round(float(ledger.get("open_exposure", 0) or 0), 4),
+            "portfolio_final_reserved_exposure": round(float(ledger.get("reserved_exposure", 0) or 0), 4),
+            "portfolio_final_gross_exposure": round(gross_now, 4),
+            "portfolio_realized_pnl": round(float(ledger.get("realized_pnl", 0) or 0), 4),
+        }
+        return {
+            "trades": all_trades,
+            "indicator_rows": all_indicator_rows,
+            "signal_rows": all_signal_rows,
+            "reverse_rows": all_reverse_rows,
+            "data_quality": data_quality,
+            "skipped_symbols": skipped_symbols,
+            "tv_symbol_reports": tv_symbol_reports,
+            "portfolio_metrics": portfolio_metrics,
+        }
 
     def _run_symbol_backtest(
         self,
@@ -4032,6 +5034,16 @@ class BacktestService:
             if not key:
                 continue
             counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _count_signal_status_reasons(self, rows: list[dict]) -> dict:
+        counts = {}
+        for row in rows:
+            extra = self._parse_object(row.get("extra"))
+            reason = str(extra.get("signal_status_reason", "") or "").strip()
+            if not reason:
+                continue
+            counts[reason] = counts.get(reason, 0) + 1
         return counts
 
     def _build_backtest_reverse_samples(self, rows: list[dict], limit: int = 8) -> list[dict]:

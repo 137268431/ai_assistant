@@ -68,10 +68,11 @@ def get_remote_compute_status(*, force_refresh: bool = False) -> dict:
     return dict(payload)
 
 
-def trigger_remote_compute(payload: dict | None = None) -> dict:
+def _post_remote_compute_path(path: str, payload: dict | None = None) -> dict:
+    safe_path = "/" + str(path or "").strip().lstrip("/")
     try:
         response = requests.post(
-            f"{get_compute_internal_url()}/compute",
+            f"{get_compute_internal_url()}{safe_path}",
             json=payload or {},
             timeout=COMPUTE_TRIGGER_TIMEOUT_SECONDS,
         )
@@ -100,3 +101,15 @@ def trigger_remote_compute(payload: dict | None = None) -> dict:
         "status_code": response.status_code,
         "error": str(response.text or "").strip() or f"http_{response.status_code}",
     }
+
+
+def trigger_remote_compute(payload: dict | None = None) -> dict:
+    return _post_remote_compute_path("/compute", payload)
+
+
+def trigger_remote_prime(payload: dict | None = None) -> dict:
+    return _post_remote_compute_path("/compute/prime", payload)
+
+
+def trigger_remote_scan(payload: dict | None = None) -> dict:
+    return _post_remote_compute_path("/scan", payload)

@@ -43,6 +43,32 @@ def _target_row_is_manual(row: dict | None) -> bool:
     return source in MANUAL_TARGET_SOURCES
 
 
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _daily_scan_all_snapshotless(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    scanned = _safe_int(result.get("scanned"), 0)
+    rejection_summary = result.get("rejection_summary")
+    if not isinstance(rejection_summary, dict):
+        rejection_summary = {}
+    no_snapshot = _safe_int(rejection_summary.get("no_snapshot"), 0)
+    if scanned <= 0 and isinstance(result.get("environment_results"), list):
+        env_results = [row for row in result.get("environment_results") if isinstance(row, dict)]
+        scanned = sum(_safe_int(row.get("scanned"), 0) for row in env_results)
+        no_snapshot = 0
+        for row in env_results:
+            summary = row.get("rejection_summary")
+            if isinstance(summary, dict):
+                no_snapshot += _safe_int(summary.get("no_snapshot"), 0)
+    return scanned > 0 and no_snapshot >= scanned
+
+
 class TradingServiceMarketUniverseMixin:
     def _initial_daily_scan_state(self, market_date: str = "") -> dict:
         return {
@@ -495,23 +521,41 @@ class TradingServiceMarketUniverseMixin:
             result={},
         )
         try:
-            from ibkr_compute.api import server as compute_server
+            from ibkr_compute.api.service_topology import uses_remote_compute_service
 
-            result = compute_server._run_internal_scan({"environment": service_mod.ENVIRONMENT}) or {}
+            scan_payload = {"environment": service_mod.ENVIRONMENT}
+            if uses_remote_compute_service():
+                from ibkr_compute.api.compute_status_client import trigger_remote_scan
+
+                result = trigger_remote_scan(scan_payload) or {}
+            else:
+                from ibkr_compute.api import server as compute_server
+
+                result = compute_server._run_internal_scan(scan_payload) or {}
+            scan_ok = bool(result.get("ok", True))
+            last_error = "" if scan_ok else str(result.get("error") or "daily_scan_failed")
+            if scan_ok and _daily_scan_all_snapshotless(result):
+                last_error = "all_scanned_symbols_missing_technical_snapshots"
+                result = {
+                    **result,
+                    "ok": False,
+                    "error": last_error,
+                }
+                scan_ok = False
             completed_state = self._set_daily_scan_state(
                 market_date=market_date,
-                status="completed" if bool(result.get("ok", True)) else "failed",
+                status="completed" if scan_ok else "failed",
                 reason=reason,
                 finished_at=self._now_iso(),
-                last_error="" if bool(result.get("ok", True)) else str(result.get("error") or "daily_scan_failed"),
+                last_error=last_error,
                 result=result,
             )
-            if bool(result.get("ok", True)):
+            if scan_ok:
                 self._notify_daily_scan_recovered(completed_state)
                 self._last_target_refresh_at = 0.0
             else:
                 self._notify_daily_scan_failed(completed_state)
-            return {"ok": bool(result.get("ok", True)), "ran": True, "state": completed_state, "result": result}
+            return {"ok": scan_ok, "ran": True, "state": completed_state, "result": result}
         except Exception as exc:
             failed_state = self._set_daily_scan_state(
                 market_date=market_date,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ibkr_compute.api.compute.pipeline_views import build_compute_response
+from ibkr_compute.api.compute.prime import build_compute_prime_response, build_multi_timeframe_readiness
 from ibkr_compute.api.compute.request import (
     get_requested_environments,
     get_requested_symbols,
@@ -52,6 +53,7 @@ COMPUTE_EXPORTS = {
     "bootstrap_engine_state": bootstrap_engine_state,
     "build_compute_cursor_key": build_compute_cursor_key,
     "build_compute_response": build_compute_response,
+    "build_compute_prime_response": build_compute_prime_response,
     "build_indicator_payload": build_indicator_payload,
     "build_recompute_response": build_recompute_response,
     "build_scan_response": build_scan_response,
@@ -69,6 +71,7 @@ COMPUTE_EXPORTS = {
     "get_requested_environments": get_requested_environments,
     "get_requested_symbols": get_requested_symbols,
     "get_signal_generator_params": get_signal_generator_params,
+    "build_multi_timeframe_readiness": build_multi_timeframe_readiness,
     "has_interval_bars": has_interval_bars,
     "is_environment_compute_enabled": is_environment_compute_enabled,
     "is_recent_signal_bar": is_recent_signal_bar,
