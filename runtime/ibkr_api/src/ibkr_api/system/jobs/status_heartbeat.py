@@ -10,6 +10,7 @@ ALERT_FLAG_SEVERITIES = {"warning", "error"}
 CONNECTION_ISSUE_CODES = {"gateway_offline", "session_unauthenticated", "websocket_not_ready"}
 DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
 OFFLINE_SERVICE_STATUSES = {"offline", "error"}
+TRUTHY_TEXT = {"1", "true", "yes", "on"}
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -33,6 +34,13 @@ def _to_int(value: Any, default: int = 0) -> int:
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _truthy(value: Any, *, default: bool = False) -> bool:
+    text = _to_text(value).lower()
+    if not text:
+        return default
+    return text in TRUTHY_TEXT
 
 
 def _normalized_status(value: Any) -> str:
@@ -388,6 +396,7 @@ def build_system_heartbeat_response(
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
+    emit_nominal_ok = _truthy(request_payload.get("emit_nominal_ok"), default=False)
     times = time_strings()
     state = _as_dict(get_state_payload(HEARTBEAT_STATE_KEY, environment).get("data"))
     snapshot = _runtime_health_snapshot(
@@ -408,6 +417,7 @@ def build_system_heartbeat_response(
     last_issue_hash = _to_text(state.get("last_issue_hash"))
     last_issue_ms = _to_int(state.get("last_issue_ms"), 0)
     current_hour = _to_text(times.get("us"))[:13]
+    nominal_ok_suppressed = False
 
     if snapshot.get("unhealthy"):
         should_notify = fingerprint != last_issue_hash or last_issue_ms <= 0 or (current_ms - last_issue_ms) >= HEARTBEAT_ALERT_COOLDOWN_MS
@@ -448,15 +458,19 @@ def build_system_heartbeat_response(
             )
             next_state["last_recovery_at"] = times["us"]
         elif _to_text(times.get("us"))[14:16] == "00" and _to_text(state.get("last_ok_hour")) != current_hour:
-            issue_event = emit_system_event(
-                event_type="heartbeat",
-                level="info",
-                source="ibkr-api",
-                title="IBKR 系统心跳（native）",
-                detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
-                environment=environment,
-            )
-            next_state["last_ok_hour"] = current_hour
+            if emit_nominal_ok:
+                issue_event = emit_system_event(
+                    event_type="heartbeat",
+                    level="info",
+                    source="ibkr-api",
+                    title="IBKR 系统心跳（native）",
+                    detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
+                    environment=environment,
+                )
+                next_state["last_ok_hour"] = current_hour
+            else:
+                nominal_ok_suppressed = True
+                next_state["last_ok_suppressed_hour"] = current_hour
 
     upsert_state(HEARTBEAT_STATE_KEY, environment, next_state, times["date"])
     return {
@@ -469,6 +483,7 @@ def build_system_heartbeat_response(
         "monitor_status": _to_text(snapshot.get("monitor_status")) or "unknown",
         "issue_codes": list(snapshot.get("issue_codes") or []),
         "event": issue_event,
+        "nominal_ok_suppressed": nominal_ok_suppressed,
         "state": next_state,
         "source": "ibkr-api",
     }, 200

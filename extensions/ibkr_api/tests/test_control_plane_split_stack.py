@@ -1487,7 +1487,7 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
             return {"ok": True, "notified": True}
 
         payload, status_code = build_system_heartbeat_response(
-            payload={"environment": "live"},
+            payload={"environment": "live", "emit_nominal_ok": True},
             normalize_environment=lambda value, default="live": str(value or default),
             time_strings=lambda: {"us": "2026-04-23 12:00:00", "cn": "2026-04-24 00:00:00", "date": "2026-04-23"},
             build_system_summary_payload=lambda environment, lite_mode=False: {
@@ -1531,6 +1531,55 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertNotIn("故障域统计", detail)
         self.assertNotIn("诊断码", detail)
         self.assertEqual(detail["结论"], "系统与 IBKR 连接正常。")
+
+    def test_system_heartbeat_suppresses_nominal_ok_by_default(self):
+        states = {}
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True}
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 12:00:00", "cn": "2026-04-24 00:00:00", "date": "2026-04-23"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "today": {"ibkr_bars": 1, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                    "gateway": {"running": True, "reachable": True},
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+                "service_monitor": {"status_counts": {"running": 6}},
+                "flags": [{"code": "monitor_nominal", "severity": "info"}],
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["unhealthy"])
+        self.assertTrue(payload["nominal_ok_suppressed"])
+        self.assertFalse(events)
+        self.assertEqual(states[("system_notify_heartbeat", "live")]["last_ok_suppressed_hour"], "2026-04-23 12")
 
     def test_system_heartbeat_reports_actionable_degraded_service_name(self):
         states = {}
