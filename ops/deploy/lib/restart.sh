@@ -168,7 +168,11 @@ collect_restart_groups() {
   if array_contains "ibkr_src" "$@"; then
     append_unique "$array_name" "ibkr-api"
     append_unique "$array_name" "ibkr-scheduler"
-    append_unique "$array_name" "ibkr-runtime"
+    # Runtime shares ibkr_compute on PYTHONPATH, but restarting it can disturb
+    # IB Gateway/IBC and force a new 2FA. Make that restart an explicit opt-in.
+    if [[ "${DEPLOY_RESTART_RUNTIME_FOR_IBKR_SRC:-0}" -eq 1 ]]; then
+      append_unique "$array_name" "ibkr-runtime"
+    fi
   fi
   if array_contains "ibkr_requirements" "$@"; then
     append_unique "$array_name" "ibkr-api"

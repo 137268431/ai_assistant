@@ -28,7 +28,7 @@ const configData = [
   cfg('pb_cron_order_expiry_enabled', 'TRUE', 'TRUE', '订单过期取消', 'Scheduler 调度(兼容 key)', 131, '扫描 Init / Submitted 订单，超时后自动标记为 Canceled。Cron: */5 * * * *；周期: 每 5 分钟；时间窗口: 全天。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_order_detail_integrity_guard_enabled', 'TRUE', 'TRUE', '订单明细自愈', 'Scheduler 调度(兼容 key)', 131.5, '巡检 orders 与 ibkr_order_details 的当前状态是否一致，缺失时自动回补当前状态明细。Cron: */10 * * * *；周期: 每 10 分钟；时间窗口: 全天。受 Scheduler 总开关和本开关共同控制；默认静默补齐，不发送订单通知卡片。'),
   cfg('pb_cron_ibkr_compute_runtime_enabled', 'TRUE', 'TRUE', 'Compute + 状态摘要', 'Scheduler 调度(兼容 key)', 132, '触发 compute 调度。Cron: */5 * * * *；周期: 每 5 分钟检查一次；执行条件: 仅当已落库 5m bar ingest cursor 超过 compute dispatch cursor 时才调用 compute；空转时只比较 PB state 游标，覆盖盘前、盘中、盘后和 DST 切换。'),
-  cfg('pb_cron_ibkr_scan_runtime_enabled', 'TRUE', 'TRUE', '盘前 Scan', 'Scheduler 调度(兼容 key)', 133, '触发开盘前 scan 调度，刷新当天候选信号与市场扫描结果。Cron: */5 7-9 * * 1-5；周期: 工作日 UTC 07:00-09:55 每 5 分钟；时间窗口: 盘前窗口。受 Scheduler 总开关、Compute 开关和本开关共同控制。'),
+  cfg('pb_cron_ibkr_scan_runtime_enabled', 'TRUE', 'TRUE', '盘前 Scan', 'Scheduler 调度(兼容 key)', 133, '按 09:20 ET 触发盘前 daily scan，刷新当天 candidate / active 目标池。Cron: 20 9 * * 1-5；时区: America/New_York；周期: 美东工作日 09:20；时间窗口: 09:20 ET 日筛。受 Scheduler 总开关、Compute 开关和本开关共同控制。'),
   cfg('pb_cron_ibkr_auth_edge_guard_enabled', 'TRUE', 'TRUE', '2FA 即时巡检', 'Scheduler 调度(兼容 key)', 134, '巡检 Session / 2FA 的边沿变化，并在会话失效、401 或进入待验证状态时立即告警。Cron: */1 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:59 每 1 分钟；时间窗口: 盘前到盘后。受 Scheduler 总开关和本开关共同控制；长时间未恢复仍由 2FA 长时间未恢复巡检继续补报。'),
   cfg('pb_cron_ibkr_auth_pending_guard_enabled', 'TRUE', 'TRUE', '2FA 长时间未恢复巡检', 'Scheduler 调度(兼容 key)', 135, '巡检 Session / 2FA 长时间未恢复状态，并在需要时发出系统告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_system_data_gap_guard_enabled', 'TRUE', 'TRUE', '数据缺口巡检', 'Scheduler 调度(兼容 key)', 136, '巡检 bars / indicators / 序列缺口，并在检测到市场活动异常时发出告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 Scheduler 总开关、Compute 开关和本开关共同控制。'),
@@ -92,6 +92,7 @@ const configData = [
   cfg('system_2fa_chat_id', 'oc_c48c10447685e80cfea0c003864aa51f', 'oc_c48c10447685e80cfea0c003864aa51f', '2FA 群 Chat ID', '通知路由', 605, '所有 2FA 卡片、2FA 超时/失败/待确认、Session 失效与运行态未认证提醒统一发送到这里'),
   cfg('system_alert_chat_id', 'oc_91aa4f84bc6fedb125b1a263d91d4104', 'oc_91aa4f84bc6fedb125b1a263d91d4104', '告警群 Chat ID', '通知路由', 610, '所有非 2FA 的 warning / error 级别且影响系统运行的异常默认发送到这里'),
   cfg('signal_chat_id', 'oc_edb26dcc52938b7833ac9f32ae6b1620', 'oc_edb26dcc52938b7833ac9f32ae6b1620', '信号群 Chat ID', '通知路由', 620, '新信号卡片默认发送到这里'),
+  cfg('backtest_chat_id', 'oc_8c4831630f2121ffe5ff9c7f72ec9e1e', 'oc_8c4831630f2121ffe5ff9c7f72ec9e1e', '回测群 Chat ID', '通知路由', 625, 'Backtest 单次回测和参数实验通知默认发送到这里'),
   cfg('order_chat_id', 'oc_5ca4585e1fd108c2c662dfc358684945', 'oc_5ca4585e1fd108c2c662dfc358684945', '订单群 Chat ID', '通知路由', 630, '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
   cfg('reverse_chat_id', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转群 Chat ID', '通知路由', 640, '反转信号与反转执行卡片默认发送到这里'),
 

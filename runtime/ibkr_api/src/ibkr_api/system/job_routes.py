@@ -258,7 +258,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
             config_value=config_value,
             console_base_url=console_base_url,
-            system_status_chat_id=system_status_chat_id,
+            signal_chat_id=signal_chat_id,
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

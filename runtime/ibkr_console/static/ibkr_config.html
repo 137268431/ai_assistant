@@ -92,6 +92,7 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'signal_poll_interval_sec',
   'system_status_chat_id',
   'system_alert_chat_id',
+  'backtest_chat_id',
   'signal_chat_id',
   'order_chat_id',
   'reverse_chat_id',
@@ -184,6 +185,7 @@ const CONFIG_META = {
   system_2fa_chat_id: meta('2FA 群 Chat ID', '通知路由', 605, 'oc_c48c10447685e80cfea0c003864aa51f', '所有 2FA 卡片、2FA 超时/失败/待确认、Session 失效与运行态未认证提醒统一发送到这里'),
   system_alert_chat_id: meta('告警群 Chat ID', '通知路由', 610, 'oc_91aa4f84bc6fedb125b1a263d91d4104', '所有非 2FA 的 warning / error 级别且影响系统运行的异常默认发送到这里'),
   signal_chat_id: meta('信号群 Chat ID', '通知路由', 620, 'oc_edb26dcc52938b7833ac9f32ae6b1620', '新信号卡片默认发送到这里'),
+  backtest_chat_id: meta('回测群 Chat ID', '通知路由', 625, 'oc_8c4831630f2121ffe5ff9c7f72ec9e1e', 'Backtest 单次回测和参数实验通知默认发送到这里'),
   order_chat_id: meta('订单群 Chat ID', '通知路由', 630, 'oc_5ca4585e1fd108c2c662dfc358684945', '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
   reverse_chat_id: meta('反转群 Chat ID', '通知路由', 640, 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转信号与反转执行卡片默认发送到这里'),
 

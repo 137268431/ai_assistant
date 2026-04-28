@@ -15,7 +15,7 @@ GetStatePayload = Callable[[str, str], dict[str, Any]]
 UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
 ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
-SystemStatusChatId = Callable[[str], str]
+SignalChatId = Callable[[str], str]
 
 
 def _to_text(value: Any) -> str:
@@ -153,7 +153,7 @@ def build_system_scan_summary_response(
     upsert_state: UpsertState,
     config_value: ConfigValue,
     console_base_url: ConsoleBaseUrl,
-    system_status_chat_id: SystemStatusChatId,
+    signal_chat_id: SignalChatId,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
@@ -213,7 +213,7 @@ def build_system_scan_summary_response(
         environment=environment,
         console_base_url=console_base_url(),
     )
-    result = feishu_send_interactive(card, system_status_chat_id(environment), environment)
+    result = feishu_send_interactive(card, signal_chat_id(environment), environment)
     notified = bool(result.get("success")) and not bool(result.get("suppressed"))
     write_system_event_record(
         "scan_summary",

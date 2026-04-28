@@ -116,6 +116,17 @@ def likely_two_factor_alert(title: str, detail: Any) -> bool:
     return "2FA状态" in detail and any(key in detail for key in ("Session认证", "验证模式", "Challenge", "响应状态"))
 
 
+def likely_backtest_event(title: str, detail: Any) -> bool:
+    text = str(title or "").strip().lower()
+    if "backtest" in text or "回测" in text:
+        return True
+    if not isinstance(detail, dict):
+        return False
+    if any(key in detail for key in ("batch_id", "best_run_id")):
+        return True
+    return "run_id" in detail and any(key in detail for key in ("date_from", "date_to", "symbol_source"))
+
+
 
 def should_notify_system_event(
     event_type: str,
@@ -167,6 +178,8 @@ def system_event_chat_id(
         return config_value("system_2fa_chat_id", default_2fa_chat_id, runtime_environment)
     if normalized_level in {"warning", "error"} or normalized_event_type == "alert":
         return config_value("system_alert_chat_id", default_alert_chat_id, runtime_environment)
+    if likely_backtest_event(title, detail):
+        return config_value("backtest_chat_id", default_system_chat_id, runtime_environment)
     return config_value("system_status_chat_id", default_system_chat_id, runtime_environment)
 
 

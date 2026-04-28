@@ -123,6 +123,33 @@ class SchedulerJobsTest(unittest.TestCase):
             )
         )
 
+    def test_scan_runtime_cron_matches_0920_et_only(self):
+        definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_scan_runtime")
+
+        self.assertEqual(definition["cron_expr"], "20 9 * * 1-5")
+        self.assertEqual(definition["cron_timezone"], "America/New_York")
+        self.assertTrue(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+        self.assertTrue(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 1, 5, 14, 20, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+        self.assertFalse(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 4, 20, 9, 55, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+
     def test_compute_dispatch_updates_cursor_from_latest_persisted_bars(self):
         pb = _FakePB()
         pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {

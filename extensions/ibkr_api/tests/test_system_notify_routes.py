@@ -44,9 +44,56 @@ if "flask" not in sys.modules:
     sys.modules["flask"] = flask_stub
 
 from ibkr_api import api_app as api_app_mod
+from ibkr_api.system.events import system_event_chat_id
 
 
 class SystemNotifyRoutesTest(unittest.TestCase):
+    def test_backtest_event_uses_backtest_chat_id(self):
+        values = {
+            "backtest_chat_id": "oc_backtest",
+            "system_status_chat_id": "oc_status",
+            "system_alert_chat_id": "oc_alert",
+            "system_2fa_chat_id": "oc_2fa",
+        }
+
+        chat_id = system_event_chat_id(
+            "status_change",
+            "info",
+            "live",
+            "ibkr_compute",
+            "Backtest 发现更优同周期结果",
+            {"run_id": "run-1", "date_from": "2026-04-01", "date_to": "2026-04-02"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            config_value=lambda key, default, environment: values.get(key, default),
+            default_2fa_chat_id="oc_2fa_default",
+            default_alert_chat_id="oc_alert_default",
+            default_system_chat_id="oc_status_default",
+        )
+
+        self.assertEqual("oc_backtest", chat_id)
+
+    def test_regular_status_event_still_uses_status_chat_id(self):
+        values = {
+            "backtest_chat_id": "oc_backtest",
+            "system_status_chat_id": "oc_status",
+        }
+
+        chat_id = system_event_chat_id(
+            "status_change",
+            "info",
+            "live",
+            "ibkr_compute",
+            "Compute startup completed",
+            {"reason": "ok"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            config_value=lambda key, default, environment: values.get(key, default),
+            default_2fa_chat_id="oc_2fa_default",
+            default_alert_chat_id="oc_alert_default",
+            default_system_chat_id="oc_status_default",
+        )
+
+        self.assertEqual("oc_status", chat_id)
+
     def test_health_report_persists_heartbeat_event(self):
         request_payload = {
             "environment": "paper",

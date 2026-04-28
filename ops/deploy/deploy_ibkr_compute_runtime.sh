@@ -66,6 +66,11 @@ Options:
   --no-restart          Skip service restart
   --status-only         Show ibkr-compute / ibkr-api / ibkr-scheduler status and exit
   -h, --help            Show this help
+
+Environment:
+  DEPLOY_RESTART_RUNTIME_FOR_IBKR_SRC=1
+                      Also restart ibkr-runtime when runtime/ibkr_compute/src changes.
+                      Default is 0 to avoid disturbing IB Gateway/2FA during hotfixes.
 EOF
 }
 
