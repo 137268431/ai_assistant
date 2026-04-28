@@ -1012,6 +1012,40 @@
             return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
         }
 
+        function normalizeSymbolList(value) {
+            const rawItems = Array.isArray(value) ? value : String(value || '').split(',');
+            const seen = new Set();
+            const symbols = [];
+            rawItems.forEach((item) => {
+                const symbol = String(item?.symbol || item || '').trim().toUpperCase();
+                if (!symbol || seen.has(symbol)) return;
+                seen.add(symbol);
+                symbols.push(symbol);
+            });
+            return symbols;
+        }
+
+        async function fetchConfiguredMarketMonitorSymbols() {
+            const summary = await requestJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`)
+                .catch(() => ({}));
+            const summarySymbols = normalizeSymbolList(summary?.config?.ibkr_market_ws_symbols);
+            if (summarySymbols.length) return summarySymbols;
+
+            const monitor = await requestJson(`/api/custom/system/monitorz?environment=${encodeURIComponent(currentEnvironment)}`)
+                .catch(() => ({}));
+            const runtimeSymbols = normalizeSymbolList(monitor?.runtime?.market_universe?.market_ws_symbols);
+            if (runtimeSymbols.length) return runtimeSymbols;
+
+            const activeSubscriptions = Array.isArray(monitor?.samples?.active_subscriptions)
+                ? monitor.samples.active_subscriptions
+                : [];
+            return normalizeSymbolList(
+                activeSubscriptions
+                    .filter((item) => String(item?.role || '').trim().toLowerCase() === 'market_monitor')
+                    .map((item) => item.symbol)
+            );
+        }
+
         function updateMarketPulse(metrics = [], symbolCount = 0) {
             const pulseValueEl = document.getElementById('marketPulseValue');
             const pulseMetaEl = document.getElementById('marketPulseMeta');
