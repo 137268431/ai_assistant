@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -29,6 +30,26 @@ class _FailingBroker:
     def request_historical_bars(self, **_kwargs):
         self.calls += 1
         raise RuntimeError(self.error_text)
+
+
+class _SequenceBroker:
+    def __init__(self, responses):
+        self.responses = [list(item or []) for item in (responses or [])]
+        self.calls = []
+
+    def request_historical_bars(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        if not self.responses:
+            return []
+        return list(self.responses.pop(0))
+
+
+def _et_ms(year, month, day, hour, minute):
+    return int(datetime(year, month, day, hour, minute, tzinfo=timezone(timedelta(hours=-4))).timestamp() * 1000)
+
+
+def _history_bar(bar_time_ms):
+    return {"t": int(bar_time_ms / 1000), "o": 1.0, "h": 1.2, "l": 0.9, "c": 1.1, "v": 10}
 
 
 class HistoricalRequestFormatDateTest(unittest.TestCase):
@@ -65,6 +86,52 @@ class HistoricalRequestFormatDateTest(unittest.TestCase):
 
 
 class BackfillFutureGuardTest(unittest.TestCase):
+    def test_long_5m_history_requests_are_chunked(self):
+        first_ms = _et_ms(2020, 1, 15, 9, 30)
+        second_ms = _et_ms(2020, 1, 8, 9, 30)
+        third_ms = _et_ms(2020, 1, 1, 9, 30)
+        broker = _SequenceBroker(
+            [
+                [_history_bar(first_ms)],
+                [_history_bar(second_ms)],
+                [_history_bar(third_ms)],
+            ]
+        )
+        backfill = DataBackfill(
+            data_writer=None,
+            config=None,
+            environment="live",
+            broker=broker,
+        )
+
+        with mock.patch("ibkr_compute.market.data_backfill.time.sleep"):
+            rows = backfill.fetch_history(
+                121665622,
+                "ZTS",
+                interval="5m",
+                exchange="BATS",
+                repair=True,
+                request_period="9d",
+            )
+
+        self.assertEqual([call["duration"] for call in broker.calls], ["4 D", "4 D", "1 D"])
+        self.assertEqual(broker.calls[0]["end_datetime"], "")
+        self.assertEqual(broker.calls[1]["end_datetime"], "20200115 09:25:00 US/Eastern")
+        self.assertEqual(broker.calls[2]["end_datetime"], "20200108 09:25:00 US/Eastern")
+        self.assertEqual(
+            [row["us_time"] for row in rows],
+            [
+                "2020-01-01 09:30:00",
+                "2020-01-08 09:30:00",
+                "2020-01-15 09:30:00",
+            ],
+        )
+        self.assertEqual({row["extra"]["request_period"] for row in rows}, {"9d"})
+        self.assertEqual(
+            {row["extra"]["request_chunk_period"] for row in rows},
+            {"1d", "4d"},
+        )
+
     def test_fetch_history_drops_unsafe_future_5m_bars(self):
         broker = _FakeBroker(
             [

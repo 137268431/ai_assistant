@@ -250,6 +250,267 @@ class TradingServiceWarmupCycleMixin:
             required_interval=service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
         )
 
+    def _warmup_indicator_backfill_intervals(self) -> list[str]:
+        service_mod = _service_mod()
+        if not self.config.get_bool_for_environment(
+            "ibkr_warmup_indicator_backfill_enabled",
+            service_mod.ENVIRONMENT,
+            True,
+        ):
+            return []
+        configured = self.config.get_for_environment(
+            "ibkr_warmup_indicator_backfill_intervals",
+            service_mod.ENVIRONMENT,
+            ",".join(
+                interval
+                for interval in self._multi_timeframe_warmup_intervals()
+                if interval != service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL
+            ),
+        )
+        intervals = []
+        for raw in str(configured or "").replace("\n", ",").split(","):
+            interval = str(raw or "").strip()
+            if not interval:
+                continue
+            try:
+                from ibkr_compute.market.timeframe_utils import interval_to_ms, normalize_interval
+
+                normalized = normalize_interval(interval)
+                interval_to_ms(normalized)
+            except Exception:
+                continue
+            if normalized != service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL and normalized not in intervals:
+                intervals.append(normalized)
+        return intervals
+
+    def _collect_warmup_indicator_backfill_plan(self, snapshot: dict) -> dict[str, list[str]]:
+        intervals = self._warmup_indicator_backfill_intervals()
+        if not intervals:
+            return {}
+        snapshot_symbols = self._normalize_symbol_list(snapshot.get("symbols") or [])
+        symbol_set = set(snapshot_symbols)
+        conid_symbols = {
+            str(symbol or "").strip().upper()
+            for symbol in (snapshot.get("conid_map") or {}).keys()
+            if str(symbol or "").strip()
+        }
+
+        def eligible(values) -> list[str]:
+            return [
+                symbol
+                for symbol in self._normalize_symbol_list(values)
+                if symbol in symbol_set and symbol in conid_symbols
+            ]
+
+        if not self._warmup_uses_remote_compute_service():
+            return {
+                interval: eligible(snapshot_symbols)
+                for interval in intervals
+                if eligible(snapshot_symbols)
+            }
+
+        from ibkr_compute.api.compute_status_client import (
+            get_remote_compute_status,
+            is_compute_status_payload,
+        )
+
+        payload = get_remote_compute_status(force_refresh=True)
+        if not is_compute_status_payload(payload):
+            return {
+                interval: eligible(snapshot_symbols)
+                for interval in intervals
+                if eligible(snapshot_symbols)
+            }
+
+        readiness_intervals = (payload.get("multi_timeframe_readiness") or {}).get("intervals") or {}
+        plan = {}
+        for interval in intervals:
+            row = readiness_intervals.get(interval) or {}
+            missing = list(row.get("missing_indicator_symbols") or [])
+            symbols = eligible(missing)
+            status = str(row.get("status") or "").strip().lower()
+            if (
+                not symbols
+                and status
+                and status != "ready"
+                and int(row.get("missing_indicator_symbols_total", 0) or 0) > 0
+            ):
+                symbols = eligible(snapshot_symbols)
+            if symbols:
+                plan[interval] = symbols
+        return plan
+
+    def _prime_warmup_indicator_backfill(self, plan: dict[str, list[str]]) -> dict:
+        service_mod = _service_mod()
+        prime_result = {}
+        if not plan:
+            return prime_result
+        max_retries = max(
+            0,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_prime_retries",
+                service_mod.ENVIRONMENT,
+                3,
+            ),
+        )
+        retry_delay_s = max(
+            0,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_prime_retry_delay_sec",
+                service_mod.ENVIRONMENT,
+                5,
+            ),
+        )
+
+        def retryable(result: dict) -> bool:
+            if bool((result or {}).get("ok")):
+                return False
+            text = str((result or {}).get("error") or "").lower()
+            return bool((result or {}).get("retryable")) or "compute_busy" in text or "timed out" in text
+
+        if self._warmup_uses_remote_compute_service():
+            from ibkr_compute.api.compute_status_client import trigger_remote_prime
+
+            for interval, symbols in sorted(plan.items()):
+                interval_results = []
+                normalized_symbols = self._normalize_symbol_list(symbols)
+                for index in range(
+                    0,
+                    len(normalized_symbols),
+                    service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE,
+                ):
+                    chunk = normalized_symbols[index:index + service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE]
+                    if not chunk:
+                        continue
+                    payload = {
+                        "environments": [service_mod.ENVIRONMENT],
+                        "symbols": chunk,
+                        "intervals": [interval],
+                    }
+                    result = {}
+                    for attempt in range(max_retries + 1):
+                        result = trigger_remote_prime(payload)
+                        if not retryable(result) or attempt >= max_retries:
+                            break
+                        if retry_delay_s > 0:
+                            time.sleep(retry_delay_s)
+                    interval_results.append(result)
+                prime_result[interval] = interval_results
+            return prime_result
+
+        from ibkr_compute.api import server as compute_server
+
+        for interval, symbols in sorted(plan.items()):
+            with compute_server.compute_lock:
+                prime_result[interval] = compute_server.materialize_engines_from_storage(
+                    service_mod.ENVIRONMENT,
+                    self._normalize_symbol_list(symbols),
+                    interval,
+                    persist_latest_indicator=True,
+                )
+        return prime_result
+
+    def _run_warmup_indicator_backfill(self, snapshot: dict) -> dict:
+        service_mod = _service_mod()
+        period = self._multi_timeframe_warmup_period()
+        max_passes = max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_backfill_passes",
+                service_mod.ENVIRONMENT,
+                2,
+            ),
+        )
+        attempted = {}
+        combined_plan = {}
+        backfill = {}
+        prime = {}
+        written_total = 0
+
+        for pass_index in range(max_passes):
+            plan = self._collect_warmup_indicator_backfill_plan(snapshot)
+            if not plan:
+                break
+            service_mod.logger.info(
+                "Warmup indicator backfill started: pass=%d/%d period=%s plan=%s",
+                pass_index + 1,
+                max_passes,
+                period,
+                ",".join(
+                    f"{interval}:{len(symbols)}"
+                    for interval, symbols in sorted(plan.items())
+                ),
+            )
+            prime_plan = {}
+            backfill_plan = {}
+            for interval, symbols in sorted(plan.items()):
+                normalized_symbols = self._normalize_symbol_list(symbols)
+                if not normalized_symbols:
+                    continue
+                combined_plan.setdefault(interval, [])
+                for symbol in normalized_symbols:
+                    if symbol not in combined_plan[interval]:
+                        combined_plan[interval].append(symbol)
+                prime_plan[interval] = normalized_symbols
+                attempted_set = attempted.setdefault(interval, set())
+                new_symbols = [symbol for symbol in normalized_symbols if symbol not in attempted_set]
+                if new_symbols:
+                    backfill_plan[interval] = new_symbols
+                    attempted_set.update(new_symbols)
+
+            for interval, symbols in sorted(backfill_plan.items()):
+                conid_map = {
+                    symbol: (snapshot.get("conid_map") or {}).get(symbol)
+                    for symbol in self._normalize_symbol_list(symbols)
+                    if (snapshot.get("conid_map") or {}).get(symbol)
+                }
+                if not conid_map:
+                    continue
+                interval_result = self.data_backfill.backfill_all(
+                    conid_map,
+                    symbol_meta=snapshot.get("symbol_meta") or {},
+                    intervals=[interval],
+                    repair_symbols=list(conid_map.keys()),
+                    period_overrides={
+                        symbol: {interval: period}
+                        for symbol in conid_map.keys()
+                    },
+                )
+                backfill.setdefault(interval, {}).update(interval_result)
+                written_total += sum(
+                    int(count or 0)
+                    for per_symbol in interval_result.values()
+                    for count in per_symbol.values()
+                )
+
+            if backfill_plan:
+                self.data_writer.flush()
+            pass_prime = self._prime_warmup_indicator_backfill(prime_plan)
+            for interval, result in pass_prime.items():
+                prime.setdefault(interval, []).extend(result if isinstance(result, list) else [result])
+
+        if not combined_plan:
+            return {
+                "period": period,
+                "plan": {},
+                "written_total": 0,
+                "backfill": {},
+                "prime": {},
+            }
+
+        service_mod.logger.info(
+            "Warmup indicator backfill finished: period=%s written=%d",
+            period,
+            written_total,
+        )
+        return {
+            "period": period,
+            "plan": {interval: list(symbols) for interval, symbols in sorted(combined_plan.items())},
+            "written_total": written_total,
+            "backfill": backfill,
+            "prime": prime,
+        }
+
     def _apply_integrity_readiness(self, readiness: dict, snapshot: dict, repair_plan: dict[str, dict] | None = None) -> dict:
         plan = repair_plan or {}
         if not plan:
@@ -517,6 +778,13 @@ class TradingServiceWarmupCycleMixin:
             if storage_bootstrap:
                 compute_result["storage_bootstrap"] = storage_bootstrap
 
+            step_started = time.perf_counter()
+            indicator_backfill = self._run_warmup_indicator_backfill(snapshot)
+            warmup_timings["indicator_backfill_s"] = round(time.perf_counter() - step_started, 3)
+            if indicator_backfill.get("plan"):
+                compute_result["indicator_backfill"] = indicator_backfill
+                backfill_written += int(indicator_backfill.get("written_total", 0) or 0)
+
             readiness = self._collect_warmup_readiness(snapshot)
             readiness = self._apply_integrity_readiness(readiness, snapshot, preflight_blockers)
             if readiness["pending_symbols"]:
@@ -729,6 +997,7 @@ class TradingServiceWarmupCycleMixin:
                     symbol_meta=snapshot["symbol_meta"],
                     intervals=[service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL],
                     repair_symbols=list(pending_map.keys()),
+                    period_overrides=self._multi_timeframe_5m_period_overrides(pending_map.keys()),
                 )
                 warmup_timings["pending_backfill_s"] = round(
                     time.perf_counter() - step_started,

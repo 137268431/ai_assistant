@@ -4,6 +4,8 @@ from typing import Any, Callable
 
 
 DAILY_REMINDER_STATE_KEY = "system_notify_daily"
+DEFAULT_MARKET_OPEN_REMINDER_TIME_ET = "09:20"
+DEFAULT_DAILY_REPORT_TIME_ET = "16:05"
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -27,6 +29,14 @@ def _to_int(value: Any, default: int = 0) -> int:
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _matches_time_window(current_us: str, target_et: str) -> bool:
+    current = _to_text(current_us)
+    target = _to_text(target_et)
+    if len(current) < 16 or len(target) < 5:
+        return False
+    return current[11:16] == target[:5]
 
 
 def _summary_detail(summary: dict[str, Any], monitor: dict[str, Any], *, phase: str, timestamp_us: str) -> dict[str, Any]:
@@ -78,6 +88,18 @@ def build_system_market_open_reminder_response(
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
     times = time_strings()
+    target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_MARKET_OPEN_REMINDER_TIME_ET
+    if not _matches_time_window(times["us"], target_time_et):
+        return {
+            "ok": True,
+            "environment": environment,
+            "skipped": True,
+            "reason": "outside_time_window",
+            "target_time_et": target_time_et,
+            "source": "ibkr-api",
+            "job_id": "system_market_open_reminder",
+        }, 200
+
     current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, environment).get("data"))
     if _to_text(current_state.get("open_sent_at")):
         return {"ok": True, "environment": environment, "skipped": True, "reason": "already_sent", "source": "ibkr-api", "job_id": "system_market_open_reminder"}, 200
@@ -123,6 +145,18 @@ def build_system_daily_report_response(
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
     times = time_strings()
+    target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_DAILY_REPORT_TIME_ET
+    if not _matches_time_window(times["us"], target_time_et):
+        return {
+            "ok": True,
+            "environment": environment,
+            "skipped": True,
+            "reason": "outside_time_window",
+            "target_time_et": target_time_et,
+            "source": "ibkr-api",
+            "job_id": "system_daily_report",
+        }, 200
+
     current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, environment).get("data"))
     if _to_text(current_state.get("close_sent_at")):
         return {"ok": True, "environment": environment, "skipped": True, "reason": "already_sent", "source": "ibkr-api", "job_id": "system_daily_report"}, 200

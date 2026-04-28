@@ -16,7 +16,10 @@ os.environ.setdefault("IBKR_SCHEDULER_AUTOSTART", "false")
 
 from ibkr_api.system.jobs.auth import build_auth_immediate_issue, is_operational_2fa_issue
 from ibkr_api.system.jobs.order_expiry import build_order_expiry_response
-from ibkr_api.system.jobs.reminders import build_system_market_open_reminder_response
+from ibkr_api.system.jobs.reminders import (
+    build_system_daily_report_response,
+    build_system_market_open_reminder_response,
+)
 
 
 class _OrderExpiryPB:
@@ -101,6 +104,49 @@ class _ReminderPB:
 
 
 class SystemSchedulerJobsTest(unittest.TestCase):
+    def _reminder_deps(self, pb, sent, now_us="2026-04-23 09:20:00", date="2026-04-23"):
+        def emit_system_event(**kwargs):
+            sent.append(kwargs)
+            return {"notified": True, "persisted": True}
+
+        def get_state_payload(state_key, environment, state_date=date):
+            return {
+                "data": dict(pb.states.get((state_key, environment, state_date), {}).get("data") or {}),
+                "environment": environment,
+                "date": state_date,
+            }
+
+        def build_system_summary_payload(environment, lite_mode=False):
+            return {
+                "status": "running",
+                "today": {"ibkr_bars": 10, "ibkr_signals": 2, "orders": 1, "events": 0},
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "daily_scan": {"status": "completed", "market_date": date},
+            }
+
+        def build_system_monitor_payload(environment):
+            return {
+                "runtime": {
+                    "gateway": {"running": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True},
+                    "daily_scan": {"status": "completed", "market_date": date},
+                },
+                "scheduler": {"status": "running", "job_count": 3},
+                "service_monitor": {"status_counts": {"running": 6}},
+            }
+
+        return {
+            "normalize_environment": lambda value, default: str(value or default).strip().lower() or default,
+            "time_strings": lambda: {"us": now_us, "cn": "2026-04-23 21:20:00", "date": date},
+            "build_system_summary_payload": build_system_summary_payload,
+            "build_system_monitor_payload": build_system_monitor_payload,
+            "emit_system_event": emit_system_event,
+            "get_state_payload": get_state_payload,
+            "upsert_state": lambda key, environment, data, state_date: pb.upsert_state(key, environment, data, date=state_date),
+        }
+
     def test_order_expiry_marks_group_canceled(self):
         pb = _OrderExpiryPB()
 
@@ -172,48 +218,58 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         pb = _ReminderPB()
         sent = []
 
-        def emit_system_event(**kwargs):
-            sent.append(kwargs)
-            return {"notified": True, "persisted": True}
-
-        def get_state_payload(state_key, environment, date="2026-04-23"):
-            return {
-                "data": dict(pb.states.get((state_key, environment, date), {}).get("data") or {}),
-                "environment": environment,
-                "date": date,
-            }
-
-        def build_system_summary_payload(environment, lite_mode=False):
-            return {
-                "status": "running",
-                "today": {"ibkr_bars": 10, "ibkr_signals": 2, "orders": 1, "events": 0},
-                "ibkr_compute": {"status": "running"},
-                "ibkr_runtime": {"status": "running"},
-                "daily_scan": {"status": "completed", "market_date": "2026-04-23"},
-            }
-
-        def build_system_monitor_payload(environment):
-            return {
-                "runtime": {
-                    "gateway": {"running": True},
-                    "session": {"authenticated": True},
-                    "websocket": {"connected": True},
-                    "daily_scan": {"status": "completed", "market_date": "2026-04-23"},
-                },
-                "scheduler": {"status": "running", "job_count": 3},
-                "service_monitor": {"status_counts": {"running": 6}},
-            }
-
         for _ in range(2):
             payload, status_code = build_system_market_open_reminder_response(
                 payload={"environment": "live"},
-                normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
-                time_strings=lambda: {"us": "2026-04-23 09:20:00", "cn": "2026-04-23 21:20:00", "date": "2026-04-23"},
-                build_system_summary_payload=build_system_summary_payload,
-                build_system_monitor_payload=build_system_monitor_payload,
-                emit_system_event=emit_system_event,
-                get_state_payload=lambda state_key, environment, date="2026-04-23": get_state_payload(state_key, environment, date),
-                upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+                **self._reminder_deps(pb, sent),
+            )
+            self.assertEqual(status_code, 200)
+            self.assertTrue(payload["ok"])
+
+        self.assertEqual(len(sent), 1)
+
+    def test_market_open_reminder_skips_outside_target_window(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_market_open_reminder_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(pb, sent, now_us="2026-04-28 00:00:42", date="2026-04-28"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "outside_time_window")
+        self.assertEqual(payload["target_time_et"], "09:20")
+        self.assertEqual(len(sent), 0)
+        self.assertEqual(pb.states, {})
+
+    def test_daily_report_skips_outside_target_window(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(pb, sent, now_us="2026-04-28 00:00:45", date="2026-04-28"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "outside_time_window")
+        self.assertEqual(payload["target_time_et"], "16:05")
+        self.assertEqual(len(sent), 0)
+        self.assertEqual(pb.states, {})
+
+    def test_daily_report_is_idempotent_per_day_at_close_time(self):
+        pb = _ReminderPB()
+        sent = []
+
+        for _ in range(2):
+            payload, status_code = build_system_daily_report_response(
+                payload={"environment": "live"},
+                **self._reminder_deps(pb, sent, now_us="2026-04-23 16:05:00"),
             )
             self.assertEqual(status_code, 200)
             self.assertTrue(payload["ok"])

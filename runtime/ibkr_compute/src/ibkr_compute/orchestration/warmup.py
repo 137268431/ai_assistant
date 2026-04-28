@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import math
+
+from ibkr_compute.market.timeframe_utils import interval_to_ms, normalize_interval
+
 
 def _service_mod():
     from . import trading_service as service_mod
@@ -92,6 +96,94 @@ class TradingServiceWarmupMixin:
     def _live_warmup_days(self) -> int:
         service_mod = _service_mod()
         return max(1, self.config.get_int_for_environment("ibkr_live_warmup_days", service_mod.ENVIRONMENT, 14))
+
+    def _multi_timeframe_warmup_intervals(self) -> list[str]:
+        service_mod = _service_mod()
+        default_intervals = [
+            service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
+            *list(getattr(service_mod, "STARTUP_BACKGROUND_PRIME_INTERVALS", ()) or ()),
+        ]
+        configured = self.config.get_for_environment(
+            "ibkr_warmup_indicator_intervals",
+            service_mod.ENVIRONMENT,
+            ",".join(default_intervals),
+        )
+        intervals = []
+        for raw in str(configured or "").replace("\n", ",").split(","):
+            try:
+                interval = normalize_interval(raw)
+                interval_to_ms(interval)
+            except Exception:
+                continue
+            if interval not in intervals:
+                intervals.append(interval)
+        return intervals or default_intervals
+
+    def _multi_timeframe_warmup_days(self) -> int:
+        service_mod = _service_mod()
+        base_days = self._live_warmup_days()
+        ready_bars = max(1, int(service_mod.indicator_ready_bar_count() or 0))
+        session_minutes = max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_regular_minutes_per_day",
+                service_mod.ENVIRONMENT,
+                390,
+            ),
+        )
+        calendar_multiplier = max(
+            1.0,
+            self.config.get_float_for_environment(
+                "ibkr_warmup_indicator_calendar_multiplier",
+                service_mod.ENVIRONMENT,
+                1.4,
+            ),
+        )
+        buffer_days = max(
+            0,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_buffer_days",
+                service_mod.ENVIRONMENT,
+                5,
+            ),
+        )
+        max_days = max(
+            base_days,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_max_days",
+                service_mod.ENVIRONMENT,
+                60,
+            ),
+        )
+        required_minutes = max(
+            (
+                max(1, interval_to_ms(interval) // 60000) * ready_bars
+                for interval in self._multi_timeframe_warmup_intervals()
+            ),
+            default=ready_bars * 5,
+        )
+        calculated_days = int(math.ceil((required_minutes / session_minutes) * calendar_multiplier)) + buffer_days
+        return min(max_days, max(base_days, calculated_days))
+
+    def _multi_timeframe_warmup_period(self) -> str:
+        return f"{self._multi_timeframe_warmup_days()}d"
+
+    def _warmup_required_5m_period(self) -> str:
+        service_mod = _service_mod()
+        period = self.config.get_for_environment(
+            "ibkr_warmup_required_5m_period",
+            service_mod.ENVIRONMENT,
+            "4d",
+        )
+        return str(period or "4d").strip() or "4d"
+
+    def _multi_timeframe_5m_period_overrides(self, symbols) -> dict[str, dict]:
+        period = self._warmup_required_5m_period()
+        return {
+            str(symbol or "").strip().upper(): {"5m": period}
+            for symbol in (symbols or [])
+            if str(symbol or "").strip()
+        }
 
     def _restart_overlap_days(self) -> int:
         service_mod = _service_mod()

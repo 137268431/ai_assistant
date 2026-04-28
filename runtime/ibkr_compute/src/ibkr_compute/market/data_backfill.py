@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
+import math
 import os
 import time
 import logging
@@ -81,6 +82,12 @@ IB_BAR_SIZE_MAP = {
     "4h": "4 hours",
     "1d": "1 day",
 }
+DEFAULT_CHUNK_DAYS = {
+    "5m": 4,
+    "15m": 14,
+    "30m": 30,
+    "1h": 60,
+}
 
 
 def _to_ib_duration(value: str) -> str:
@@ -94,6 +101,36 @@ def _to_ib_duration(value: str) -> str:
     if digits and suffix in IB_DURATION_SUFFIX:
         return f"{int(digits)} {IB_DURATION_SUFFIX[suffix]}"
     return text.upper()
+
+
+def _parse_period_days(value: str) -> Optional[int]:
+    text = str(value or "").strip().lower().replace(" ", "")
+    if not text:
+        return None
+    digits = "".join(ch for ch in text if ch.isdigit())
+    suffix = "".join(ch for ch in text if ch.isalpha())
+    if not digits:
+        return None
+    amount = max(1, int(digits))
+    if suffix == "d":
+        return amount
+    if suffix == "w":
+        return amount * 7
+    if suffix == "m":
+        return amount * 30
+    if suffix == "y":
+        return amount * 365
+    return None
+
+
+def _period_from_days(days: int) -> str:
+    return f"{max(1, int(days or 0))}d"
+
+
+def _format_ib_end_datetime(bar_time_ms: int) -> str:
+    if int(bar_time_ms or 0) <= 0:
+        return ""
+    return datetime.fromtimestamp(int(bar_time_ms) / 1000, ET).strftime("%Y%m%d %H:%M:%S US/Eastern")
 
 
 def _to_ib_bar_size(value: str) -> str:
@@ -226,6 +263,28 @@ class DataBackfill:
     def _retry_base_delay(self) -> float:
         return max(0.5, self._get_float_setting("ibkr_history_retry_base_delay", RETRY_BASE_DELAY_SECONDS))
 
+    def _chunked_backfill_enabled(self) -> bool:
+        if not self.config:
+            return True
+        return self.config.get_bool_for_environment(
+            "ibkr_history_chunked_backfill_enabled",
+            self.environment,
+            True,
+        )
+
+    def _history_chunk_days(self, interval: str) -> int:
+        normalized = normalize_interval(interval)
+        fallback = DEFAULT_CHUNK_DAYS.get(normalized, 0)
+        if fallback <= 0:
+            return 0
+        return max(
+            1,
+            self._get_int_setting(
+                f"ibkr_history_chunk_days_{normalized}",
+                fallback,
+            ),
+        )
+
     def _is_terminal_history_error(self, error: Exception | str | None) -> bool:
         text = str(error or "").strip().lower()
         if not text:
@@ -332,6 +391,173 @@ class DataBackfill:
                 )
                 time.sleep(delay)
         raise RuntimeError(f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}")
+
+    def _build_history_rows(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        interval: str,
+        period: str,
+        bar_size: str,
+        exchange: str,
+        bars: Sequence[Dict],
+        repair: bool,
+        chunk_period: str = "",
+        chunk_end_datetime: str = "",
+        fetch_meta_extra: Optional[Dict] = None,
+    ) -> List[Dict]:
+        normalized = normalize_interval(interval)
+        result = []
+        fetch_meta = {
+            "source": "ibkr_history_backfill",
+            "conid": conid,
+            "exchange": exchange,
+            "interval": normalized,
+            "outside_rth": True,
+            "request_period": period,
+            "request_bar": bar_size,
+        }
+        if chunk_period:
+            fetch_meta["request_chunk_period"] = chunk_period
+        if chunk_end_datetime:
+            fetch_meta["request_end_datetime"] = chunk_end_datetime
+        if fetch_meta_extra:
+            fetch_meta.update(fetch_meta_extra)
+
+        for bar in bars:
+            raw_bar_time = int(bar.get("t", 0) or 0)
+            bar_time_ms = raw_bar_time if raw_bar_time > 1_000_000_000_000 else raw_bar_time * 1000
+            us_time = format_us_time(bar_time_ms)
+            payload = {
+                "symbol": symbol,
+                "conid": conid,
+                "environment": self.environment,
+                "exchange": exchange,
+                "interval": normalized,
+                "open": float(bar.get("o", 0) or 0),
+                "high": float(bar.get("h", 0) or 0),
+                "low": float(bar.get("l", 0) or 0),
+                "close": float(bar.get("c", 0) or 0),
+                "volume": float(bar.get("v", 0) or 0),
+                "bar_time_ms": bar_time_ms,
+                "us_time": us_time,
+                "cn_time": format_cn_time(bar_time_ms),
+                "session_type": classify_session(us_time, bar_time_ms),
+                "source": "backfill",
+                "extra": {
+                    **fetch_meta,
+                    "repair_mode": bool(repair),
+                    **build_runtime_timestamps(),
+                },
+            }
+            result.append(payload)
+        return result
+
+    def _fetch_history_rows_once(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        interval: str,
+        period: str,
+        bar_size: str,
+        exchange: str,
+        repair: bool,
+        end_datetime: str = "",
+        parent_period: str = "",
+    ) -> List[Dict]:
+        data = self._request_history_json(conid, symbol, interval, period, bar_size, end_datetime, exchange=exchange)
+        fetch_meta_extra = {}
+        if data.get("mktDataDelay") is not None:
+            fetch_meta_extra["mkt_data_delay"] = data.get("mktDataDelay")
+        if data.get("mdAvailability"):
+            fetch_meta_extra["md_availability"] = data.get("mdAvailability")
+        if data.get("points") is not None:
+            fetch_meta_extra["points"] = data.get("points")
+        return self._build_history_rows(
+            conid=conid,
+            symbol=symbol,
+            interval=interval,
+            period=parent_period or period,
+            bar_size=bar_size,
+            exchange=exchange,
+            bars=data.get("data", []),
+            repair=repair,
+            chunk_period=period if parent_period else "",
+            chunk_end_datetime=end_datetime,
+            fetch_meta_extra=fetch_meta_extra,
+        )
+
+    def _fetch_history_rows_chunked(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        interval: str,
+        period: str,
+        period_days: int,
+        chunk_days: int,
+        bar_size: str,
+        exchange: str,
+        repair: bool,
+    ) -> List[Dict]:
+        normalized = normalize_interval(interval)
+        interval_ms = max(1, interval_to_ms(normalized))
+        rows_by_time: Dict[int, Dict] = {}
+        remaining_days = max(1, int(period_days or 0))
+        end_datetime = ""
+        previous_oldest_ms = 0
+        chunks_requested = 0
+        max_chunks = max(1, int(math.ceil(remaining_days / max(1, int(chunk_days or 0)))))
+        logger.info(
+            "Chunked history fetch started for %s/%s: period=%s chunk_days=%d max_chunks=%d",
+            symbol,
+            normalized,
+            period,
+            chunk_days,
+            max_chunks,
+        )
+
+        while remaining_days > 0 and chunks_requested < max_chunks:
+            current_chunk_days = min(chunk_days, remaining_days)
+            current_period = _period_from_days(current_chunk_days)
+            chunk_rows = self._fetch_history_rows_once(
+                conid=conid,
+                symbol=symbol,
+                interval=normalized,
+                period=current_period,
+                bar_size=bar_size,
+                exchange=exchange,
+                repair=repair,
+                end_datetime=end_datetime,
+                parent_period=period,
+            )
+            chunks_requested += 1
+            remaining_days -= current_chunk_days
+
+            if not chunk_rows:
+                break
+            for row in chunk_rows:
+                bar_time_ms = int(row.get("bar_time_ms", 0) or 0)
+                if bar_time_ms > 0:
+                    rows_by_time[bar_time_ms] = row
+            oldest_ms = min(int(row.get("bar_time_ms", 0) or 0) for row in chunk_rows if int(row.get("bar_time_ms", 0) or 0) > 0)
+            if oldest_ms <= 0 or oldest_ms == previous_oldest_ms:
+                break
+            previous_oldest_ms = oldest_ms
+            end_datetime = _format_ib_end_datetime(oldest_ms - interval_ms)
+
+        rows = [rows_by_time[key] for key in sorted(rows_by_time.keys())]
+        logger.info(
+            "Chunked history fetch finished for %s/%s: period=%s chunks=%d rows=%d",
+            symbol,
+            normalized,
+            period,
+            chunks_requested,
+            len(rows),
+        )
+        return rows
 
     def _write_bars(self, bars: List[Dict]) -> int:
         written = 0
@@ -593,52 +819,35 @@ class DataBackfill:
             period = str(request_period).strip()
 
         try:
-            data = self._request_history_json(conid, symbol, normalized, period, bar_size, exchange=exchange)
-            bars = data.get("data", [])
-            result = []
-            fetch_meta = {
-                "source": "ibkr_history_backfill",
-                "conid": conid,
-                "exchange": exchange,
-                "interval": normalized,
-                "outside_rth": True,
-                "request_period": period,
-                "request_bar": bar_size,
-            }
-            if data.get("mktDataDelay") is not None:
-                fetch_meta["mkt_data_delay"] = data.get("mktDataDelay")
-            if data.get("mdAvailability"):
-                fetch_meta["md_availability"] = data.get("mdAvailability")
-            if data.get("points") is not None:
-                fetch_meta["points"] = data.get("points")
-
-            for bar in bars:
-                raw_bar_time = int(bar.get("t", 0) or 0)
-                bar_time_ms = raw_bar_time if raw_bar_time > 1_000_000_000_000 else raw_bar_time * 1000
-                us_time = format_us_time(bar_time_ms)
-                payload = {
-                    "symbol": symbol,
-                    "conid": conid,
-                    "environment": self.environment,
-                    "exchange": exchange,
-                    "interval": normalized,
-                    "open": float(bar.get("o", 0) or 0),
-                    "high": float(bar.get("h", 0) or 0),
-                    "low": float(bar.get("l", 0) or 0),
-                    "close": float(bar.get("c", 0) or 0),
-                    "volume": float(bar.get("v", 0) or 0),
-                    "bar_time_ms": bar_time_ms,
-                    "us_time": us_time,
-                    "cn_time": format_cn_time(bar_time_ms),
-                    "session_type": classify_session(us_time, bar_time_ms),
-                    "source": "backfill",
-                    "extra": {
-                        **fetch_meta,
-                        "repair_mode": bool(repair),
-                        **build_runtime_timestamps(),
-                    },
-                }
-                result.append(payload)
+            period_days = _parse_period_days(period)
+            chunk_days = self._history_chunk_days(normalized)
+            if (
+                self._chunked_backfill_enabled()
+                and period_days is not None
+                and chunk_days > 0
+                and period_days > chunk_days
+            ):
+                result = self._fetch_history_rows_chunked(
+                    conid=conid,
+                    symbol=symbol,
+                    interval=normalized,
+                    period=period,
+                    period_days=period_days,
+                    chunk_days=chunk_days,
+                    bar_size=bar_size,
+                    exchange=exchange,
+                    repair=repair,
+                )
+            else:
+                result = self._fetch_history_rows_once(
+                    conid=conid,
+                    symbol=symbol,
+                    interval=normalized,
+                    period=period,
+                    bar_size=bar_size,
+                    exchange=exchange,
+                    repair=repair,
+                )
 
             safe_upper_ms = self._safe_history_upper_bound_ms(normalized)
             if safe_upper_ms > 0:

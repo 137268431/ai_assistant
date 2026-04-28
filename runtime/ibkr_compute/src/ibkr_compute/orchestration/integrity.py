@@ -476,18 +476,18 @@ class TradingServiceIntegrityMixin:
         ]
         if not reasons:
             return ""
-        warmup_period = f"{self._live_warmup_days()}d"
-        overlap_period = f"{self._restart_overlap_days()}d"
         if any(
             reason.startswith("bars<") or reason.startswith("startup_snapshot_error:")
             for reason in reasons
         ):
-            return warmup_period
+            if hasattr(self, "_warmup_required_5m_period"):
+                return self._warmup_required_5m_period()
+            return f"{self._live_warmup_days()}d"
         if all(reason.startswith("today_regular_") for reason in reasons):
-            return overlap_period or service_mod.STARTUP_HISTORY_REPAIR_SHORT_PERIOD
+            return service_mod.STARTUP_HISTORY_REPAIR_SHORT_PERIOD
         if any(reason.startswith("gaps=") for reason in reasons):
-            return overlap_period
-        return warmup_period
+            return service_mod.STARTUP_HISTORY_REPAIR_SHORT_PERIOD
+        return service_mod.STARTUP_HISTORY_REPAIR_SHORT_PERIOD
 
     def _build_startup_history_period_overrides(self, repair_plan: dict[str, dict]) -> dict[str, dict]:
         overrides = {}
