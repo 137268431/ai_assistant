@@ -514,7 +514,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function getEffectiveRuntimeStatusCardModel(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
-            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactor);
+            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
             if (!isTwoFactorVerifiedSuccess(twoFactorState)) return runtimeStatus;
             if (!isRuntimeSnapshotIncomplete(status, twoFactorState) && runtimeStatus.authenticated) return runtimeStatus;
             return {

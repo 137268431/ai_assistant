@@ -417,6 +417,14 @@
                     };
                 }
                 if (!runtimeOnline) {
+                    if (hasEffectiveAuthenticatedSession(payload) && isRuntimeSnapshotIncomplete(payload)) {
+                        return {
+                            tone: 'chip-warn',
+                            label: 'REFRESHING',
+                            copy: 'IBKR 认证已验证，Monitor runtime 快照暂缺 pull 线程时间戳',
+                            summary: 'pull refreshing',
+                        };
+                    }
                     return {
                         tone: 'chip-error',
                         label: 'ERROR',
@@ -477,6 +485,14 @@
             ].join(' · ');
 
             if (!websocket.connected || !websocket.ready) {
+                if (hasEffectiveAuthenticatedSession(payload) && isRuntimeSnapshotIncomplete(payload)) {
+                    return {
+                        tone: 'chip-warn',
+                        label: 'REFRESHING',
+                        copy: `2FA 已验证，等待 runtime 推送完整 WebSocket 快照 · ${copy}`,
+                        summary: 'push refreshing',
+                    };
+                }
                 return {
                     tone: 'chip-error',
                     label: 'ERROR',
@@ -554,6 +570,88 @@
                 throw new Error(data.error || data.message || `Request failed (${response.status})`);
             }
             return data;
+        }
+
+        async function requestOptionalMonitorJson(path) {
+            try {
+                return await requestMonitorJson(path);
+            } catch (error) {
+                return { ok: false, error: error?.message || String(error || 'request_failed') };
+            }
+        }
+
+        function getTwoFactorState(payload) {
+            const raw = payload?.two_factor || payload?.twoFactor || {};
+            return raw?.state && typeof raw.state === 'object' ? raw.state : raw;
+        }
+
+        function isTwoFactorVerifiedSuccess(payload) {
+            const state = getTwoFactorState(payload);
+            const status = String(state?.status || '').trim().toLowerCase();
+            const recoveryPhase = String(state?.recovery_phase || '').trim().toLowerCase();
+            const probeResult = String(state?.probe_result || '').trim().toLowerCase();
+            return status === 'success'
+                || (recoveryPhase === 'recovered' && probeResult === 'authenticated' && Boolean(state?.last_runtime_authenticated_at));
+        }
+
+        function isRuntimeSnapshotIncomplete(payload) {
+            const state = getTwoFactorState(payload);
+            if (state?.runtime_status_incomplete === true) return true;
+            if (!isTwoFactorVerifiedSuccess(payload)) return false;
+            const runtime = payload?.runtime || {};
+            const gateway = runtime?.gateway || {};
+            const session = runtime?.session || {};
+            const websocket = runtime?.websocket || {};
+            return !runtime?.runtime_phase
+                && !runtime?.starting
+                && !runtime?.startup_complete
+                && !session?.running
+                && !session?.authenticated
+                && !gateway?.running
+                && !gateway?.reachable
+                && !websocket?.running
+                && !websocket?.connected
+                && !Number(gateway?.status_code || 0)
+                && !Number(gateway?.pid || 0);
+        }
+
+        function hasEffectiveAuthenticatedSession(payload) {
+            const runtime = payload?.runtime || {};
+            if (runtime?.session?.authenticated) return true;
+            const state = getTwoFactorState(payload);
+            return isTwoFactorVerifiedSuccess(payload) && (
+                state?.runtime_authenticated === true
+                || state?.operator_action === 'none'
+                || isRuntimeSnapshotIncomplete(payload)
+            );
+        }
+
+        function hasEffectiveGatewayActive(payload) {
+            const runtime = payload?.runtime || {};
+            if (runtime?.gateway?.running || runtime?.gateway?.reachable) return true;
+            const state = getTwoFactorState(payload);
+            return isTwoFactorVerifiedSuccess(payload) && (
+                state?.runtime_started === true
+                || state?.runtime_authenticated === true
+                || isRuntimeSnapshotIncomplete(payload)
+            );
+        }
+
+        function getDisplayFlags(payload) {
+            const rawFlags = Array.isArray(payload?.flags) ? payload.flags : [];
+            if (!isTwoFactorVerifiedSuccess(payload) || !isRuntimeSnapshotIncomplete(payload)) {
+                return rawFlags;
+            }
+            const filtered = rawFlags.filter((item) => !['gateway_offline', 'session_unauthenticated'].includes(String(item?.code || '').trim()));
+            return [
+                {
+                    severity: 'warning',
+                    code: 'runtime_snapshot_refreshing',
+                    title: 'Runtime snapshot refreshing',
+                    detail: 'IBKR 认证已完成，但 Monitor 当前收到的是不完整 runtime 快照；Gateway / Session 已按 2FA 探测结果修正。'
+                },
+                ...filtered
+            ];
         }
 
         function renderMetricCard({ label, value, copy, delta = null, toneClass = '' }) {
@@ -663,21 +761,30 @@
             const schedulerLagLabel = payload?.scheduler?.dispatch_lag_min != null
                 ? formatSeconds(Number(payload.scheduler.dispatch_lag_min || 0) * 60)
                 : '--';
-            const gatewayActive = Boolean(runtime?.gateway?.running || runtime?.gateway?.reachable);
-            const sessionAuthed = Boolean(runtime?.session?.authenticated);
+            const rawGatewayActive = Boolean(runtime?.gateway?.running || runtime?.gateway?.reachable);
+            const rawSessionAuthed = Boolean(runtime?.session?.authenticated);
+            const gatewayActive = hasEffectiveGatewayActive(payload);
+            const sessionAuthed = hasEffectiveAuthenticatedSession(payload);
+            const snapshotIncomplete = isRuntimeSnapshotIncomplete(payload);
             const wsReady = Boolean(runtime?.websocket?.connected && runtime?.websocket?.ready);
             const dataStatus = deriveDataStatus(payload);
             const hostStatus = deriveHostStatus(payload);
             const pocketbaseStatus = derivePocketBaseStatus(payload);
             const pullStatus = deriveAsyncPullStatus(payload);
             const pushStatus = deriveWebSocketPushStatus(payload);
-            const monitorTone = payload?.status === 'error'
+            const displayFlags = getDisplayFlags(payload);
+            const hasDisplayError = displayFlags.some((item) => String(item?.severity || '').toLowerCase() === 'error');
+            const hasDisplayWarn = displayFlags.some((item) => ['warning', 'warn'].includes(String(item?.severity || '').toLowerCase()));
+            const effectiveMonitorStatus = hasDisplayError ? 'error' : (hasDisplayWarn ? 'warning' : String(payload?.status || 'ok').toLowerCase());
+            const monitorTone = effectiveMonitorStatus === 'error'
                 ? 'chip-error'
-                : (payload?.status === 'warning' ? 'chip-warn' : 'chip-ok');
+                : (effectiveMonitorStatus === 'warning' ? 'chip-warn' : 'chip-ok');
+            const gatewayLabel = !rawGatewayActive && gatewayActive && snapshotIncomplete ? 'VERIFIED' : (gatewayActive ? 'ACTIVE' : 'OFFLINE');
+            const sessionLabel = !rawSessionAuthed && sessionAuthed && snapshotIncomplete ? 'AUTHED*' : (sessionAuthed ? 'AUTHED' : 'PENDING');
             const chips = [
-                { label: `Monitor ${String(payload?.status || 'ok').toUpperCase()}`, tone: monitorTone },
-                { label: `Gateway ${gatewayActive ? 'ACTIVE' : 'OFFLINE'}`, tone: gatewayActive ? 'chip-ok' : 'chip-error' },
-                { label: `Session ${sessionAuthed ? 'AUTHED' : 'PENDING'}`, tone: sessionAuthed ? 'chip-ok' : 'chip-warn' },
+                { label: `Monitor ${String(effectiveMonitorStatus || 'ok').toUpperCase()}`, tone: monitorTone },
+                { label: `Gateway ${gatewayLabel}`, tone: gatewayActive ? 'chip-ok' : 'chip-error' },
+                { label: `Session ${sessionLabel}`, tone: sessionAuthed ? 'chip-ok' : 'chip-warn' },
                 { label: `WebSocket ${wsReady ? 'READY' : 'PENDING'}`, tone: wsReady ? 'chip-ok' : 'chip-error' },
                 { label: `Pull ${pullStatus.label}`, tone: pullStatus.tone },
                 { label: `WS Push ${pushStatus.label}`, tone: pushStatus.tone },
@@ -725,7 +832,7 @@
                 callout.innerHTML = `<div class="callout error">请求的是 ${escapeHtml(String(payload.requested_environment || currentEnvironment).toUpperCase())}，但当前真正跑起来的是 ${escapeHtml(String(payload.actual_runtime_environment || '--').toUpperCase())}。下面所有指标都以实际运行环境为准。</div>`;
                 return;
             }
-            const flags = Array.isArray(payload?.flags) ? payload.flags : [];
+            const flags = displayFlags;
             const firstFlag = flags.find((item) => String(item?.severity || '').toLowerCase() === 'error')
                 || flags.find((item) => String(item?.severity || '').toLowerCase() === 'warning')
                 || flags[0];
@@ -1076,7 +1183,7 @@
         }
 
         function renderFlags(payload) {
-            const flags = Array.isArray(payload?.flags) ? payload.flags : [];
+            const flags = getDisplayFlags(payload);
             document.getElementById('flagMeta').textContent = `flags ${flags.length}`;
             if (!flags.length) {
                 document.getElementById('flagList').innerHTML = '<div class="empty-state">当前没有 flags。</div>';
@@ -1125,7 +1232,11 @@
             const loadId = ++latestMonitorLoadId;
             setRefreshState(true);
             try {
-                const payload = await requestMonitorJson('/api/custom/system/monitorz');
+                const [payload, twoFactorPayload] = await Promise.all([
+                    requestMonitorJson('/api/custom/system/monitorz'),
+                    requestOptionalMonitorJson('/api/custom/ibkr/2fa/status')
+                ]);
+                payload.two_factor = getTwoFactorState(twoFactorPayload);
                 if (loadId !== latestMonitorLoadId) return;
                 const deltas = deriveRefreshDelta(payload?.api_utilization || {});
                 renderHero(payload);

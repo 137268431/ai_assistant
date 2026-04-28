@@ -7,7 +7,7 @@
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ibkr_compute.core.time_utils import ET
 from typing import Dict, List, Optional
 

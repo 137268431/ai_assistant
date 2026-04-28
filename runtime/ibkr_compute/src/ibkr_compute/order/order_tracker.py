@@ -9,7 +9,7 @@ import time
 import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from ibkr_compute.core.time_utils import ET
 
 from ibkr_compute.broker import BrokerAdapter
