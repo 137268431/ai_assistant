@@ -570,49 +570,92 @@ function renderServiceTopology(topologyPayload = {}) {
         ? topologyPayload.services
         : {};
     const services = Object.values(topology);
+    const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
     if (!services.length) {
-        el.innerHTML = '<div class="loading-text">暂无服务拓扑</div>';
+        el.innerHTML = `
+            <div class="ops-summary-shell">
+                <div class="ops-summary-lead">
+                    <div>
+                        <div class="ops-summary-title">服务拓扑详情已移到运维大盘</div>
+                        <div class="ops-summary-copy">总览页只保留入口和健康摘要；请求、订阅、主机和 PB 明细请在运维页排查。</div>
+                    </div>
+                    <a class="ops-summary-link" href="${monitorHref}">打开运维大盘 →</a>
+                </div>
+                <div class="loading-text">暂无服务拓扑摘要</div>
+            </div>
+        `;
         return;
     }
 
-    el.innerHTML = `<div class="engine-grid">${services.map((service) => {
-        const status = String(service?.status || '--').trim().toUpperCase() || '--';
-        const owner = String(service?.owner || '--').trim() || '--';
-        const mode = String(service?.runtime_mode || '--').trim() || '--';
-        const internalUrl = String(service?.internal_url || '--').trim() || '--';
-        const upstream = String(service?.upstream || '').trim() || '--';
-        const title = String(service?.service_name || service?.kind || '--').trim() || '--';
-        const subtitle = String(service?.kind || '--').trim() || '--';
-        return `
-            <div class="engine-card">
-                <div class="engine-card-head">
-                    <div class="engine-card-title">
-                        <div class="engine-card-name">${escapeHtml(title)}</div>
-                        <div class="engine-card-sub">${escapeHtml(subtitle)}</div>
-                    </div>
-                    <span class="engine-state ${String(status).toLowerCase() === 'running' ? 'ready' : 'warming'}">${escapeHtml(status)}</span>
+    const normalizedServices = services.map((service) => {
+        const rawStatus = String(service?.status || 'unknown').trim().toLowerCase() || 'unknown';
+        const status = ['ok', 'ready', 'healthy', 'online', 'peer', 'external'].includes(rawStatus) ? 'running' : rawStatus;
+        return {
+            status,
+            title: String(service?.service_name || service?.kind || '--').trim() || '--',
+        };
+    });
+    const counts = normalizedServices.reduce((acc, service) => {
+        acc[service.status] = (acc[service.status] || 0) + 1;
+        return acc;
+    }, {});
+    const issueServices = normalizedServices.filter((service) => !['running', 'unknown'].includes(service.status));
+    const unknownCount = counts.unknown || 0;
+    const runningCount = counts.running || 0;
+    const degradedCount = (counts.degraded || 0) + (counts.warning || 0) + (counts.warn || 0);
+    const offlineCount = (counts.offline || 0) + (counts.failed || 0) + (counts.error || 0);
+    const attentionCount = issueServices.length + unknownCount;
+    const overallTone = offlineCount > 0 ? 'danger' : (degradedCount > 0 || attentionCount > 0 ? 'warn' : 'ok');
+    const overallLabel = offlineCount > 0 ? '需要排查' : (degradedCount > 0 || attentionCount > 0 ? '关注' : '正常');
+    const countParts = Object.entries(counts)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([status, count]) => `${String(status).toUpperCase()} ${count}`);
+    const issueText = issueServices.length
+        ? issueServices.slice(0, 3).map((service) => `${service.title} ${service.status.toUpperCase()}`).join(' · ')
+        : (unknownCount ? `${unknownCount} 个服务状态未知` : '未发现异常服务状态');
+
+    const cards = [
+        {
+            label: 'Services',
+            value: String(normalizedServices.length),
+            copy: countParts.join(' · ') || '--',
+            tone: overallTone,
+        },
+        {
+            label: 'Running',
+            value: String(runningCount),
+            copy: '完整服务拓扑请进运维大盘',
+            tone: runningCount === normalizedServices.length ? 'ok' : 'neutral',
+        },
+        {
+            label: 'Needs Attention',
+            value: String(attentionCount),
+            copy: issueText,
+            tone: attentionCount ? 'warn' : 'ok',
+        },
+    ];
+
+    el.innerHTML = `
+        <div class="ops-summary-shell">
+            <div class="ops-summary-lead">
+                <div>
+                    <div class="ops-summary-kicker">Ops Routing</div>
+                    <div class="ops-summary-title">服务状态 ${escapeHtml(overallLabel)}</div>
+                    <div class="ops-summary-copy">总览页只看健康摘要；请求、订阅、主机、PB 磁盘与完整 split-stack 详情统一在运维大盘。</div>
                 </div>
-                <div class="engine-meta-grid">
-                    <div class="engine-meta-item">
-                        <span class="engine-meta-label">Owner</span>
-                        <span class="engine-meta-value">${escapeHtml(owner)}</span>
-                    </div>
-                    <div class="engine-meta-item">
-                        <span class="engine-meta-label">Mode</span>
-                        <span class="engine-meta-value">${escapeHtml(mode)}</span>
-                    </div>
-                    <div class="engine-meta-item">
-                        <span class="engine-meta-label">Internal</span>
-                        <span class="engine-meta-value">${escapeHtml(internalUrl)}</span>
-                    </div>
-                    <div class="engine-meta-item">
-                        <span class="engine-meta-label">Upstream</span>
-                        <span class="engine-meta-value">${escapeHtml(upstream)}</span>
-                    </div>
-                </div>
+                <a class="ops-summary-link" href="${monitorHref}">打开运维大盘 →</a>
             </div>
-        `;
-    }).join('')}</div>`;
+            <div class="ops-summary-grid">
+                ${cards.map((card) => `
+                    <div class="ops-summary-card tone-${escapeHtml(card.tone)}">
+                        <div class="ops-summary-label">${escapeHtml(card.label)}</div>
+                        <div class="ops-summary-value">${escapeHtml(card.value)}</div>
+                        <div class="ops-summary-card-copy">${escapeHtml(card.copy || '--')}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `;
 }
 
 function renderTodayStats(today) {

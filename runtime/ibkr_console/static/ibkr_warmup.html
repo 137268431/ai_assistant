@@ -33,11 +33,48 @@
         <section class="metric-grid" id="metricGrid"></section>
         <section class="section service-topology-section">
             <div class="section-head">
-                <div class="section-title">服务拓扑</div>
-                <div class="section-copy">split runtime + compute + gateway + pocketbase</div>
+                <div class="section-title">链路摘要</div>
+                <div class="section-copy">runtime / compute / gateway / PB readiness · 完整拓扑进运维大盘</div>
             </div>
             <div class="section-body" id="serviceTopologyBody">
-                <div class="empty-state">等待加载服务拓扑...</div>
+                <div class="warmup-link-summary">
+                    <div class="warmup-link-copy">
+                        <div class="warmup-link-title">链路摘要加载中</div>
+                        <div class="warmup-link-sub">预热页只保留启动 readiness 所需链路；完整 split-stack 服务拓扑请进运维大盘。</div>
+                    </div>
+                    <a class="warmup-link-action" href="/ibkr_monitor.html">打开运维大盘 →</a>
+                </div>
+                <div class="empty-state">等待加载链路摘要...</div>
+            </div>
+        </section>
+        <section class="section warmup-guide-section">
+            <div class="section-head">
+                <div class="section-title">怎么看这页</div>
+                <div class="section-copy">只判断启动 readiness；数据修复和重建不要混在这里做</div>
+            </div>
+            <div class="section-body">
+                <div class="warmup-guide-grid">
+                    <div class="warmup-guide-card">
+                        <div class="warmup-guide-step">1</div>
+                        <div class="warmup-guide-title">先看交易闸门</div>
+                        <div class="warmup-guide-copy">Gate open 才代表交易预热可用；monitor coverage 不参与交易阻塞。</div>
+                    </div>
+                    <div class="warmup-guide-card">
+                        <div class="warmup-guide-step">2</div>
+                        <div class="warmup-guide-title">再看阻塞 symbol</div>
+                        <div class="warmup-guide-copy">Blocked / integrity reasons 指向真正阻塞 trade warmup 的标的。</div>
+                    </div>
+                    <a id="warmupGuideQualityLink" class="warmup-guide-card" href="/ibkr_data_quality.html">
+                        <div class="warmup-guide-step">3</div>
+                        <div class="warmup-guide-title">数据问题去数据质量</div>
+                        <div class="warmup-guide-copy">K线缺口、重复、派生周期滞后统一在数据质量页判断和安全修复。</div>
+                    </a>
+                    <a id="warmupGuideRebuildLink" class="warmup-guide-card is-danger" href="/ibkr_history_rebuild.html">
+                        <div class="warmup-guide-step">4</div>
+                        <div class="warmup-guide-title">不要直接历史重建</div>
+                        <div class="warmup-guide-copy">只有确认需要清理并重导历史链时，才进入历史重建。</div>
+                    </a>
+                </div>
             </div>
         </section>
         <section class="section">
@@ -383,64 +420,66 @@
             const body = document.getElementById('serviceTopologyBody');
             const topologyPayload = status?.service_topology || status?.runtime?.service_topology || {};
             const services = getOrderedTopologyServices(topologyPayload);
+            const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
             if (!services.length) {
-                body.innerHTML = '<div class="empty-state">当前没有可展示的服务拓扑</div>';
+                body.innerHTML = `
+                    <div class="warmup-link-summary">
+                        <div class="warmup-link-copy">
+                            <div class="warmup-link-title">链路摘要暂不可用</div>
+                            <div class="warmup-link-sub">预热页只保留启动 readiness 所需链路；完整 split-stack 服务拓扑请进运维大盘。</div>
+                        </div>
+                        <a class="warmup-link-action" href="${monitorHref}">打开运维大盘 →</a>
+                    </div>
+                    <div class="empty-state">当前没有可展示的链路摘要</div>
+                `;
                 return;
             }
             const runtimeMode = String(topologyPayload?.runtime_mode || '--').trim().toUpperCase() || '--';
             const serviceProfile = String(topologyPayload?.service_profile || '--').trim().toUpperCase() || '--';
             const restartIndependent = topologyPayload?.restart_independent ? 'YES' : 'NO';
-            const summaryTags = [
-                ['Mode', runtimeMode],
-                ['Profile', serviceProfile],
-                ['Restart', restartIndependent],
-                ['Services', String(services.length)]
+            const serviceByName = services.reduce((acc, service) => {
+                const name = String(service?.service_name || '').trim();
+                if (name) acc[name] = service;
+                return acc;
+            }, {});
+            const summarizeService = (name, label, copyFallback) => {
+                const service = serviceByName[name] || {};
+                const statusText = String(service?.status || 'unknown').trim() || 'unknown';
+                const tone = getServiceTopologyTone(statusText);
+                const copy = String(service?.detail || service?.responsibility || service?.kind || copyFallback || '').trim() || '--';
+                return { label, statusText, tone, copy };
+            };
+            const cards = [
+                summarizeService('ibkr-runtime', 'Runtime', `mode ${runtimeMode}`),
+                summarizeService('ibkr-compute', 'Compute', 'compute engines / warmup snapshot'),
+                summarizeService('ibkr-gateway', 'Gateway', 'IBC + IB Gateway session path'),
+                summarizeService('pocketbase', 'PocketBase', 'state / data store dependency'),
             ];
             body.innerHTML = `
                 <div class="service-topology-shell">
-                    <div class="chip-list">
-                        ${summaryTags.map(([label, value]) => `
-                            <span class="list-chip info">
-                                ${escapeHtml(`${label} ${value}`)}
-                            </span>
+                    <div class="warmup-link-summary">
+                        <div class="warmup-link-copy">
+                            <div class="warmup-link-title">预热链路只保留关键依赖</div>
+                            <div class="warmup-link-sub">当前 ${escapeHtml(runtimeMode)} / ${escapeHtml(serviceProfile)} · restart independent ${escapeHtml(restartIndependent)}。完整服务拓扑、主机和 PB 细节请进运维大盘。</div>
+                        </div>
+                        <a class="warmup-link-action" href="${monitorHref}">打开运维大盘 →</a>
+                    </div>
+                    <div class="warmup-link-grid">
+                        ${cards.map((card) => `
+                            <div class="warmup-link-card ${escapeHtml(card.tone)}">
+                                <div class="warmup-link-card-head">
+                                    <div class="warmup-link-card-label">${escapeHtml(card.label)}</div>
+                                    ${renderBadge(card.statusText.toUpperCase(), card.tone)}
+                                </div>
+                                <div class="warmup-link-card-copy">${escapeHtml(card.copy)}</div>
+                            </div>
                         `).join('')}
                     </div>
-                    <div class="service-topology-grid">
-                        ${services.map((service) => {
-                            const serviceName = String(service?.service_name || service?.kind || '--').trim() || '--';
-                            const serviceKind = String(service?.kind || '--').trim() || '--';
-                            const serviceStatus = String(service?.status || '--').trim() || '--';
-                            const owner = String(service?.owner || '--').trim() || '--';
-                            const mode = String(service?.runtime_mode || topologyPayload?.runtime_mode || '--').trim() || '--';
-                            const endpoint = String(service?.internal_url || service?.upstream || '--').trim() || '--';
-                            const endpointLabel = service?.internal_url ? 'Internal' : 'Endpoint';
-                            const tone = getServiceTopologyTone(serviceStatus);
-                            return `
-                                <div class="service-topology-card">
-                                    <div class="service-topology-head">
-                                        <div class="service-topology-title">
-                                            <div class="service-topology-name">${escapeHtml(serviceName)}</div>
-                                            <div class="service-topology-kind">${escapeHtml(serviceKind)}</div>
-                                        </div>
-                                        ${renderBadge(serviceStatus.toUpperCase(), tone)}
-                                    </div>
-                                    <div class="reason-list">
-                                        <div class="reason-row">
-                                            <div class="reason-key">Owner</div>
-                                            <div class="reason-value">${escapeHtml(owner)}</div>
-                                        </div>
-                                        <div class="reason-row">
-                                            <div class="reason-key">Mode</div>
-                                            <div class="reason-value">${escapeHtml(String(mode).toUpperCase())}</div>
-                                        </div>
-                                        <div class="reason-row">
-                                            <div class="reason-key">${escapeHtml(endpointLabel)}</div>
-                                            <div class="reason-value mono">${escapeHtml(endpoint)}</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('')}
+                    <div class="chip-list">
+                        <span class="list-chip info">${escapeHtml(`Services ${services.length}`)}</span>
+                        <span class="list-chip info">${escapeHtml(`Mode ${runtimeMode}`)}</span>
+                        <span class="list-chip info">${escapeHtml(`Profile ${serviceProfile}`)}</span>
+                        <span class="list-chip info">${escapeHtml(`Restart ${restartIndependent}`)}</span>
                     </div>
                 </div>
             `;
@@ -910,6 +949,18 @@
             spinPageRefreshButton('warmupRefreshBtn');
             await loadWarmupData();
         }
+        function syncWarmupGuideLinks() {
+            [
+                ['warmupGuideQualityLink', '/ibkr_data_quality.html'],
+                ['warmupGuideRebuildLink', '/ibkr_history_rebuild.html'],
+            ].forEach(([id, path]) => {
+                const el = document.getElementById(id);
+                if (el) el.href = buildPageUrl(path, {}, { environment: currentEnvironment });
+            });
+            document.querySelectorAll('#serviceTopologyBody .warmup-link-action').forEach((link) => {
+                link.href = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
+            });
+        }
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_warmup.html', {}, { environment: currentEnvironment });
@@ -919,6 +970,7 @@
             document.getElementById('nav').innerHTML = renderNav('/ibkr_warmup.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🔥 Warmup 预热', { subtitle: '启动进度 / 修复 / symbol readiness' });
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_warmup.html');
+            syncWarmupGuideLinks();
             document.getElementById('symbolSearch').addEventListener('input', () => {
                 if (lastStatusPayload) renderSymbolTable(normalizeWarmup(lastStatusPayload));
             });

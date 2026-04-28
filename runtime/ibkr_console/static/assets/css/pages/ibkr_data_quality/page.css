@@ -183,6 +183,101 @@
       line-height: 1.6;
     }
 
+    .quality-route-panel {
+      border-color: rgba(94, 234, 212, 0.18);
+      background:
+        radial-gradient(circle at top right, rgba(94, 234, 212, 0.10), transparent 34%),
+        var(--surface);
+    }
+
+    .quality-route-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+
+    .quality-route-kicker,
+    .quality-route-label {
+      color: var(--accent);
+      font-size: 11px;
+      font-family: "JetBrains Mono", monospace;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .quality-route-kicker {
+      margin-bottom: 8px;
+    }
+
+    .quality-route-title {
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .quality-route-copy {
+      max-width: 500px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+      text-align: right;
+    }
+
+    .quality-route-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .quality-route-card {
+      min-width: 0;
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      background: rgba(8, 14, 24, 0.58);
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    a.quality-route-card {
+      transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    }
+
+    a.quality-route-card:hover,
+    a.quality-route-card:active {
+      transform: translateY(-1px);
+      border-color: rgba(94, 234, 212, 0.36);
+      background: rgba(94, 234, 212, 0.07);
+    }
+
+    .quality-route-card.is-active {
+      border-color: rgba(94, 234, 212, 0.28);
+      background: rgba(94, 234, 212, 0.08);
+    }
+
+    .quality-route-card.is-danger {
+      border-color: rgba(246, 173, 85, 0.22);
+      background: rgba(246, 173, 85, 0.06);
+    }
+
+    .quality-route-title-small {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .quality-route-card-copy {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
     .filters {
       margin-top: 16px;
       display: grid;
@@ -430,5 +525,18 @@
 
       .hero-meta {
         justify-items: start;
+      }
+
+      .quality-route-head {
+        flex-direction: column;
+      }
+
+      .quality-route-copy {
+        max-width: none;
+        text-align: left;
+      }
+
+      .quality-route-grid {
+        grid-template-columns: 1fr;
       }
     }

@@ -34,6 +34,39 @@
 
         <div id="errorBanner" class="banner"></div>
 
+        <section class="rebuild-guard-panel">
+            <div class="guard-head">
+                <div>
+                    <div class="guard-kicker">Decision Gate</div>
+                    <div class="guard-title">历史重建是最后恢复手段，不作为日常修复入口</div>
+                    <div class="guard-copy">先用监控大盘判断故障域；启动卡住进预热，K线缺口/派生周期问题进数据质量。只有确认需要清理并重导历史链时才在这里执行。</div>
+                </div>
+                <div class="guard-badge">High Impact</div>
+            </div>
+            <div class="guard-grid">
+                <a id="guardMonitorLink" class="guard-card" href="/ibkr_monitor.html">
+                    <div class="guard-card-label">1 · 先判断</div>
+                    <div class="guard-card-title">监控大盘</div>
+                    <div class="guard-card-copy">服务、订阅、主机、PB 和请求利用率是否异常。</div>
+                </a>
+                <a id="guardWarmupLink" class="guard-card" href="/ibkr_warmup.html">
+                    <div class="guard-card-label">2 · 启动问题</div>
+                    <div class="guard-card-title">预热</div>
+                    <div class="guard-card-copy">trade warmup、blocking symbols、startup snapshot。</div>
+                </a>
+                <a id="guardQualityLink" class="guard-card" href="/ibkr_data_quality.html">
+                    <div class="guard-card-label">3 · 数据问题</div>
+                    <div class="guard-card-title">数据质量</div>
+                    <div class="guard-card-copy">5m 缺口、重复、rollup 缺失和安全修复。</div>
+                </a>
+                <div class="guard-card guard-card-danger">
+                    <div class="guard-card-label">4 · 最后才做</div>
+                    <div class="guard-card-title">历史重建</div>
+                    <div class="guard-card-copy">清理当前环境历史链并重新 backfill / rollup / recompute。</div>
+                </div>
+            </div>
+        </section>
+
         <section class="panel">
             <div class="panel-head">
                 <div>
@@ -44,7 +77,7 @@
                 <div class="panel-tools">
                     <div id="statusPill" class="status-pill status-idle"><span class="status-dot"></span><span>IDLE</span></div>
                     <button id="todayButton" class="btn" type="button">仅重建今日</button>
-                    <button id="startButton" class="btn primary" type="button">全量清除并重建</button>
+                    <button id="startButton" class="btn primary" type="button" disabled>全量清除并重建</button>
                 </div>
             </div>
             <div class="form-grid" style="margin-top:16px;">
@@ -61,6 +94,13 @@
                     <div class="checkbox-row">
                         <input id="scanAfterRebuild" type="checkbox" checked>
                         <span>完成后自动重新执行当日盘前筛选，重建 <span class="mono">ibkr_targets</span></span>
+                    </div>
+                </div>
+                <div class="field span-2">
+                    <label>全量重建确认</label>
+                    <div class="checkbox-row checkbox-row-danger">
+                        <input id="confirmFullRebuild" type="checkbox">
+                        <span>我已确认不是预热或数据质量可修复问题，需要清空当前环境历史链后重新回填。</span>
                     </div>
                 </div>
             </div>
@@ -355,8 +395,30 @@
             renderMetrics(activeStatus);
             renderSummary(activeStatus);
             renderLogs(activeStatus);
-            document.getElementById('startButton').disabled = Boolean(activeStatus?.running);
-            document.getElementById('todayButton').disabled = Boolean(activeStatus?.running);
+            syncActionButtons();
+        }
+
+        function isFullRebuildConfirmed() {
+            return Boolean(document.getElementById('confirmFullRebuild')?.checked);
+        }
+
+        function syncActionButtons() {
+            const running = Boolean(activeStatus?.running);
+            const startButton = document.getElementById('startButton');
+            const todayButton = document.getElementById('todayButton');
+            if (todayButton) todayButton.disabled = running;
+            if (startButton) startButton.disabled = running || !isFullRebuildConfirmed();
+        }
+
+        function syncGuardLinks() {
+            [
+                ['guardMonitorLink', '/ibkr_monitor.html'],
+                ['guardWarmupLink', '/ibkr_warmup.html'],
+                ['guardQualityLink', '/ibkr_data_quality.html'],
+            ].forEach(([id, path]) => {
+                const el = document.getElementById(id);
+                if (el) el.href = buildPageUrl(path, {}, { environment: currentEnvironment });
+            });
         }
 
         async function loadStatus() {
@@ -369,6 +431,11 @@
 
         async function startRebuild(mode = 'full_reset_rebuild', overrides = {}) {
             setError('');
+            if (mode === 'full_reset_rebuild' && !isFullRebuildConfirmed()) {
+                setError('请先勾选“全量重建确认”，确认这不是预热或数据质量可修复问题。');
+                document.getElementById('confirmFullRebuild')?.focus();
+                return;
+            }
             const payload = {
                 environment: currentEnvironment,
                 mode,
@@ -426,7 +493,10 @@
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_history_rebuild.html');
             document.getElementById('startButton').addEventListener('click', () => startRebuild('full_reset_rebuild'));
             document.getElementById('todayButton').addEventListener('click', () => startRebuild('rebuild_today', { lookback_days: 1 }));
+            document.getElementById('confirmFullRebuild').addEventListener('change', syncActionButtons);
             document.getElementById('refreshStatusButton').addEventListener('click', () => refreshHistoryRebuildStatus(true));
+            syncGuardLinks();
+            syncActionButtons();
             await withPageLoading(
                 async () => {
                     try {

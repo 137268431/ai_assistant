@@ -614,6 +614,99 @@
             display: grid;
             gap: 12px;
         }
+        .runtime-link-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+            padding: 14px;
+            border-radius: 16px;
+            border: 1px solid rgba(99, 179, 237, 0.16);
+            background:
+                radial-gradient(circle at top right, rgba(99, 179, 237, 0.14), transparent 34%),
+                rgba(255,255,255,0.035);
+        }
+        .runtime-link-copy {
+            display: grid;
+            gap: 5px;
+            min-width: 0;
+        }
+        .runtime-link-title {
+            color: var(--text);
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.35;
+        }
+        .runtime-link-sub {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .runtime-link-action {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 36px;
+            padding: 9px 13px;
+            border-radius: 999px;
+            border: 1px solid rgba(99, 179, 237, 0.28);
+            background: rgba(99, 179, 237, 0.10);
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+        .runtime-link-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .runtime-link-card {
+            min-width: 0;
+            padding: 13px;
+            border-radius: 15px;
+            border: 1px solid rgba(255,255,255,0.07);
+            background: rgba(255,255,255,0.035);
+            display: grid;
+            gap: 10px;
+        }
+        .runtime-link-card.ok {
+            border-color: rgba(72, 187, 120, 0.24);
+            background: rgba(72, 187, 120, 0.07);
+        }
+        .runtime-link-card.warn {
+            border-color: rgba(246, 173, 85, 0.24);
+            background: rgba(246, 173, 85, 0.07);
+        }
+        .runtime-link-card.error {
+            border-color: rgba(252, 129, 129, 0.24);
+            background: rgba(252, 129, 129, 0.07);
+        }
+        .runtime-link-card.info {
+            border-color: rgba(99, 179, 237, 0.24);
+            background: rgba(99, 179, 237, 0.07);
+        }
+        .runtime-link-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        .runtime-link-card-label {
+            color: var(--text);
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.4;
+        }
+        .runtime-link-card-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.55;
+            word-break: break-word;
+        }
         .service-topology-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1081,6 +1174,15 @@
             .data-table th,
             .data-table td {
                 padding: 9px 6px;
+            }
+            .runtime-link-summary {
+                flex-direction: column;
+            }
+            .runtime-link-action {
+                width: 100%;
+            }
+            .runtime-link-grid {
+                grid-template-columns: 1fr;
             }
         }
 

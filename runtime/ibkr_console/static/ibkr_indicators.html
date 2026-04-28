@@ -352,6 +352,10 @@
             };
         }
 
+        function getSelectedDateRange() {
+            return getIndicatorTimeRange();
+        }
+
         function syncDatePickerUI(selectedDate) {
             const input = document.getElementById('customDate');
             if (input) input.value = selectedDate;

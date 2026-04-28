@@ -987,19 +987,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }).length;
             const topologyCard = {
                 tone: topologyServices.length && topologyReadyCount >= topologyServices.length ? 'ok' : 'info',
-                kicker: 'SERVICE TOPOLOGY',
+                kicker: 'OPS ROUTING',
                 title: topologyServices.length
                     ? `split ${topologyReadyCount}/${topologyServices.length} visible`
                     : 'runtime topology pending',
                 copy: topologyServices.length
-                    ? topologyServices.map((service) => {
-                        const serviceName = String(service?.service_name || service?.kind || '--').trim() || '--';
-                        const serviceStatus = String(service?.status || '--').trim().toLowerCase() || '--';
-                        return `${serviceName} ${serviceStatus}`;
-                    }).join(' · ')
-                    : '等待 service_topology 返回 runtime / compute / gateway / pocketbase',
+                    ? '控制台只保留操作前摘要；服务拓扑、主机健康和 PB 磁盘统一在运维大盘排查。'
+                    : '等待 service_topology 返回 runtime / compute / gateway / pocketbase。',
                 links: [
-                    { label: '查看系统总览', path: '/ibkr_system.html' },
+                    { label: '打开运维大盘', path: '/ibkr_monitor.html' },
                 ],
             };
 
@@ -1044,74 +1040,86 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return ordered;
         }
 
+        function getServiceTopologyTone(status) {
+            const text = String(status || '').trim().toLowerCase();
+            if (['running', 'peer', 'external', 'online', 'ok', 'ready', 'healthy'].includes(text)) return 'ok';
+            if (['starting', 'warming', 'pending', 'degraded', 'warning', 'warn'].includes(text)) return 'warn';
+            if (['error', 'failed', 'offline', 'stopped'].includes(text)) return 'error';
+            return 'info';
+        }
+
         function renderServiceTopology(status = {}) {
             const el = document.getElementById('serviceTopologyArea');
             if (!el) return;
             const topologyPayload = status?.service_topology || {};
             const services = getOrderedTopologyServices(topologyPayload);
+            const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
             if (!services.length) {
-                el.innerHTML = '<div class="table-empty">暂无服务拓扑</div>';
+                el.innerHTML = `
+                    <div class="runtime-link-summary">
+                        <div class="runtime-link-copy">
+                            <div class="runtime-link-title">链路摘要暂不可用</div>
+                            <div class="runtime-link-sub">控制台只保留操作前关键依赖；完整 split-stack 服务拓扑、主机健康和 PB 细节请进运维大盘。</div>
+                        </div>
+                        <a class="runtime-link-action" href="${monitorHref}">打开运维大盘 →</a>
+                    </div>
+                    <div class="table-empty">暂无链路摘要</div>
+                `;
                 return;
             }
 
             const runtimeMode = String(topologyPayload?.runtime_mode || '--').trim().toUpperCase() || '--';
             const serviceProfile = String(topologyPayload?.service_profile || '--').trim().toUpperCase() || '--';
             const restartIndependent = topologyPayload?.restart_independent ? 'YES' : 'NO';
-            const summaryTags = [
-                ['Mode', runtimeMode],
-                ['Profile', serviceProfile],
-                ['Restart', restartIndependent],
-                ['Services', String(services.length)],
+            const serviceByName = services.reduce((acc, service) => {
+                const name = String(service?.service_name || '').trim();
+                if (name) acc[name] = service;
+                return acc;
+            }, {});
+            const summarizeService = (name, label, copyFallback) => {
+                const service = serviceByName[name] || {};
+                const statusText = String(service?.status || 'unknown').trim() || 'unknown';
+                const tone = getServiceTopologyTone(statusText);
+                const copy = String(service?.detail || service?.responsibility || service?.kind || copyFallback || '').trim() || '--';
+                return { label, statusText, tone, copy };
+            };
+            const cards = [
+                summarizeService('ibkr-runtime', 'Runtime', `mode ${runtimeMode}`),
+                summarizeService('ibkr-gateway', 'Gateway', 'IBC + IB Gateway session path'),
+                summarizeService('ibkr-compute', 'Compute', 'compute engines / manual actions'),
+                summarizeService('pocketbase', 'PocketBase', 'state / config / event store'),
             ];
 
             el.innerHTML = `
                 <div class="service-topology-shell">
-                    <div class="tag-row">
-                        ${summaryTags.map(([label, value]) => `
-                            <span class="mini-tag">
-                                <span class="mini-label">${escapeHtml(label)}</span>
-                                <span>${escapeHtml(value)}</span>
-                            </span>
-                        `).join('')}
+                    <div class="runtime-link-summary">
+                        <div class="runtime-link-copy">
+                            <div class="runtime-link-title">控制台只看操作前关键依赖</div>
+                            <div class="runtime-link-sub">当前 ${escapeHtml(runtimeMode)} / ${escapeHtml(serviceProfile)} · restart independent ${escapeHtml(restartIndependent)}。完整拓扑、主机健康、请求与 PB 磁盘统一进运维大盘。</div>
+                        </div>
+                        <a class="runtime-link-action" href="${monitorHref}">打开运维大盘 →</a>
                     </div>
-                    <div class="service-topology-grid">
-                        ${services.map((service) => {
-                            const serviceName = String(service?.service_name || service?.kind || '--').trim() || '--';
-                            const serviceKind = String(service?.kind || '--').trim() || '--';
-                            const serviceStatus = String(service?.status || '--').trim() || '--';
-                            const owner = String(service?.owner || '--').trim() || '--';
-                            const mode = String(service?.runtime_mode || topologyPayload?.runtime_mode || '--').trim() || '--';
-                            const endpoint = String(service?.internal_url || service?.upstream || '--').trim() || '--';
-                            const endpointLabel = service?.internal_url ? 'Internal' : 'Endpoint';
-                            const pillState = serviceStatus.toLowerCase() === 'peer'
+                    <div class="runtime-link-grid">
+                        ${cards.map((card) => {
+                            const pillState = card.statusText.toLowerCase() === 'peer'
                                 ? 'ready'
-                                : (serviceStatus.toLowerCase() === 'external' ? 'online' : serviceStatus);
+                                : (card.statusText.toLowerCase() === 'external' ? 'online' : card.statusText);
                             return `
-                                <div class="service-topology-card">
-                                    <div class="service-topology-head">
-                                        <div class="service-topology-title">
-                                            <div class="service-topology-name">${escapeHtml(serviceName)}</div>
-                                            <div class="service-topology-kind">${escapeHtml(serviceKind)}</div>
-                                        </div>
-                                        <span class="pill ${statusClass(pillState)}">${escapeHtml(serviceStatus.toUpperCase())}</span>
+                                <div class="runtime-link-card ${escapeHtml(card.tone)}">
+                                    <div class="runtime-link-card-head">
+                                        <div class="runtime-link-card-label">${escapeHtml(card.label)}</div>
+                                        <span class="pill ${statusClass(pillState)}">${escapeHtml(card.statusText.toUpperCase())}</span>
                                     </div>
-                                    <div class="service-topology-meta">
-                                        <div class="service-topology-row">
-                                            <span class="service-topology-label">Owner</span>
-                                            <span class="service-topology-value">${escapeHtml(owner)}</span>
-                                        </div>
-                                        <div class="service-topology-row">
-                                            <span class="service-topology-label">Mode</span>
-                                            <span class="service-topology-value">${escapeHtml(String(mode).toUpperCase())}</span>
-                                        </div>
-                                        <div class="service-topology-row">
-                                            <span class="service-topology-label">${escapeHtml(endpointLabel)}</span>
-                                            <span class="service-topology-value mono">${escapeHtml(endpoint)}</span>
-                                        </div>
-                                    </div>
+                                    <div class="runtime-link-card-copy">${escapeHtml(card.copy)}</div>
                                 </div>
                             `;
                         }).join('')}
+                    </div>
+                    <div class="tag-row">
+                        <span class="mini-tag"><span class="mini-label">Mode</span><span>${escapeHtml(runtimeMode)}</span></span>
+                        <span class="mini-tag"><span class="mini-label">Profile</span><span>${escapeHtml(serviceProfile)}</span></span>
+                        <span class="mini-tag"><span class="mini-label">Restart</span><span>${escapeHtml(restartIndependent)}</span></span>
+                        <span class="mini-tag"><span class="mini-label">Services</span><span>${escapeHtml(String(services.length))}</span></span>
                     </div>
                 </div>
             `;

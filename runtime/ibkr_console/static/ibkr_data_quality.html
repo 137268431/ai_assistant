@@ -56,6 +56,38 @@
       </div>
     </section>
 
+    <section class="panel quality-route-panel">
+      <div class="quality-route-head">
+        <div>
+          <div class="quality-route-kicker">Quality Runbook</div>
+          <div class="quality-route-title">这里是日常安全修复入口，不是启动预热页，也不是全量重建页</div>
+        </div>
+        <div class="quality-route-copy">先定位问题类型；只有黄色可自动修复项在这里补齐。红色人工复核不自动清洗，确认全链路异常才考虑历史重建。</div>
+      </div>
+      <div class="quality-route-grid">
+        <a id="qualityRouteMonitorLink" class="quality-route-card" href="/ibkr_monitor.html">
+          <div class="quality-route-label">先判断</div>
+          <div class="quality-route-title-small">监控大盘</div>
+          <div class="quality-route-card-copy">看服务、订阅、请求和主机是否导致数据延迟。</div>
+        </a>
+        <a id="qualityRouteWarmupLink" class="quality-route-card" href="/ibkr_warmup.html">
+          <div class="quality-route-label">启动卡住</div>
+          <div class="quality-route-title-small">预热</div>
+          <div class="quality-route-card-copy">只看交易闸门、blocking symbols 和 startup snapshot。</div>
+        </a>
+        <div class="quality-route-card is-active">
+          <div class="quality-route-label">日常修复</div>
+          <div class="quality-route-title-small">数据质量</div>
+          <div class="quality-route-card-copy">补 5m 缺口、K线数量不足和派生周期缺失/滞后。</div>
+        </div>
+        <a id="qualityRouteRebuildLink" class="quality-route-card is-danger" href="/ibkr_history_rebuild.html">
+          <div class="quality-route-label">最后手段</div>
+          <div class="quality-route-title-small">历史重建</div>
+          <div class="quality-route-card-copy">只有确认需要清理并重导历史链时才进入。</div>
+        </a>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="panel-title">过滤与动作</div>
       <div class="panel-copy">按环境、日期、范围、状态和标的过滤，并可立即重扫或修复。</div>
@@ -642,6 +674,17 @@
       }
     }
 
+    function syncQualityRouteLinks() {
+      [
+        ['qualityRouteMonitorLink', '/ibkr_monitor.html'],
+        ['qualityRouteWarmupLink', '/ibkr_warmup.html'],
+        ['qualityRouteRebuildLink', '/ibkr_history_rebuild.html']
+      ].forEach(([id, path]) => {
+        const el = document.getElementById(id);
+        if (el) el.href = buildPageUrl(path, {}, { environment: currentEnvironment });
+      });
+    }
+
     document.addEventListener('DOMContentLoaded', async () => {
       if (!initAuth()) return;
       setFiltersFromUrl();
@@ -650,6 +693,7 @@
         subtitle: '5 分钟K线完整性 / 派生周期同步 / 修复回写'
       });
       document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_data_quality.html');
+      syncQualityRouteLinks();
       await withPageLoading(
         () => loadDataQuality(false),
         {

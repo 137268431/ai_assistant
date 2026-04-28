@@ -32,6 +32,50 @@
             <div id="heroCallout"></div>
         </section>
 
+        <section class="ops-route-panel" aria-label="运维路径">
+            <div class="ops-route-head">
+                <div>
+                    <div class="ops-route-kicker">Ops Runbook</div>
+                    <div class="ops-route-title">先在监控大盘定故障域，再进入专项页处理</div>
+                </div>
+                <div class="ops-route-copy">预热看启动 readiness，数据质量看 bars/rollup 修复，历史重建只做大范围恢复。</div>
+            </div>
+            <div class="ops-route-grid">
+                <a id="opsRouteMonitorLink" class="ops-route-card is-active" href="/ibkr_monitor.html">
+                    <div class="ops-route-card-top">
+                        <span class="ops-route-icon">📊</span>
+                        <span class="ops-route-tag">默认入口</span>
+                    </div>
+                    <div class="ops-route-name">监控大盘</div>
+                    <div class="ops-route-card-copy">看请求利用率、订阅、服务性能、主机和 PB 状态，判断问题属于哪一层。</div>
+                </a>
+                <a id="opsRouteWarmupLink" class="ops-route-card" href="/ibkr_warmup.html">
+                    <div class="ops-route-card-top">
+                        <span class="ops-route-icon">🔥</span>
+                        <span class="ops-route-tag">启动卡住</span>
+                    </div>
+                    <div class="ops-route-name">预热</div>
+                    <div class="ops-route-card-copy">只看 trade warmup、blocking symbols、startup snapshot 和修复队列。</div>
+                </a>
+                <a id="opsRouteDataQualityLink" class="ops-route-card" href="/ibkr_data_quality.html">
+                    <div class="ops-route-card-top">
+                        <span class="ops-route-icon">🧩</span>
+                        <span class="ops-route-tag">数据异常</span>
+                    </div>
+                    <div class="ops-route-name">数据质量</div>
+                    <div class="ops-route-card-copy">定位 5m 缺口、重复、派生周期缺失，区分可自动修复和人工复核。</div>
+                </a>
+                <a id="opsRouteRebuildLink" class="ops-route-card is-danger" href="/ibkr_history_rebuild.html">
+                    <div class="ops-route-card-top">
+                        <span class="ops-route-icon">🧱</span>
+                        <span class="ops-route-tag">高级恢复</span>
+                    </div>
+                    <div class="ops-route-name">历史重建</div>
+                    <div class="ops-route-card-copy">确认需要清理并重导历史链时才进入；用于 backfill / rollup / recompute。</div>
+                </a>
+            </div>
+        </section>
+
         <section class="section">
             <div class="section-header">
                 <div>
@@ -1286,6 +1330,19 @@
             }
         }
 
+        function syncOpsRouteLinks() {
+            const links = [
+                ['opsRouteMonitorLink', '/ibkr_monitor.html'],
+                ['opsRouteWarmupLink', '/ibkr_warmup.html'],
+                ['opsRouteDataQualityLink', '/ibkr_data_quality.html'],
+                ['opsRouteRebuildLink', '/ibkr_history_rebuild.html'],
+            ];
+            links.forEach(([id, path]) => {
+                const el = document.getElementById(id);
+                if (el) el.href = buildPageUrl(path, {}, { environment: currentEnvironment });
+            });
+        }
+
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
@@ -1307,6 +1364,7 @@
                 subtitle: '请求 / 订阅 / 主机健康',
             });
             document.getElementById('pageBridge').innerHTML = renderOpsBridge('/ibkr_monitor.html');
+            syncOpsRouteLinks();
             await withPageLoading(
                 () => loadMonitorData(false),
                 {

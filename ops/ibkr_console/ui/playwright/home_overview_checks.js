@@ -17,6 +17,7 @@ async function waitForHomeOverviewReady(page, timeoutMs) {
       readyStates.stack === 'ready' &&
       document.querySelectorAll('#homeOverview .home-stat-card').length >= 6 &&
       document.querySelectorAll('#homeQuickLinks .home-quick-link').length >= 6 &&
+      document.querySelectorAll('#homeQuickLinks .home-tool-chip').length >= 5 &&
       document.querySelectorAll('#overviewServiceRows .home-stack-service').length >= 5
     );
   }, { timeout: timeoutMs });
@@ -32,12 +33,16 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const stackSummary = document.getElementById('overviewStackSummary');
     const stackRows = Array.from(document.querySelectorAll('#overviewServiceRows .home-stack-service'));
     const stackLink = document.getElementById('overviewStackLink');
+    const configLink = document.getElementById('actionConfigLink');
+    const toolChips = Array.from(document.querySelectorAll('#homeQuickLinks .home-tool-chip'));
 
     const tipText = String(tip?.textContent || '').trim();
     const badgeText = String(badge?.textContent || '').trim();
     const tipStyle = tipCard ? window.getComputedStyle(tipCard) : null;
     const stackSummaryText = String(stackSummary?.textContent || '').trim();
     const stackLinkHref = String(stackLink?.getAttribute('href') || '').trim();
+    const configLinkHref = String(configLink?.getAttribute('href') || '').trim();
+    const toolChipTexts = toolChips.map((chip) => String(chip.textContent || '').trim()).filter(Boolean);
     const stackRowNames = stackRows
       .map((row) => String(row.querySelector('.home-stack-service-name')?.textContent || '').trim())
       .filter(Boolean);
@@ -59,7 +64,10 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     if (!stackCard) issues.push('missing_overview_stack_card');
     if (!stackSummary) issues.push('missing_overview_stack_summary');
     if (!stackLink) issues.push('missing_overview_stack_link');
+    if (!configLink) issues.push('missing_action_config_link');
     if (stackLink && !/\/ibkr_system\.html/.test(stackLinkHref)) issues.push(`overview_stack_link_href:${stackLinkHref || 'empty'}`);
+    if (configLink && !/\/ibkr_config\.html/.test(configLinkHref)) issues.push(`action_config_link_href:${configLinkHref || 'empty'}`);
+    if (!toolChipTexts.some((text) => text.includes('配置'))) issues.push('missing_config_tool_chip');
     if (stackSummary && !stackSummaryText.includes('Runtime / Compute / API / Scheduler 已拆分')) {
       issues.push(`overview_stack_summary_text:${stackSummaryText || 'empty'}`);
     }

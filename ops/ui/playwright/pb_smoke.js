@@ -418,6 +418,33 @@ async function waitForPageReady(page, url) {
       });
       return !document.querySelector('#indicatorsContainer .loading') && !overlayVisible;
     }, { timeout }),
+    '/ibkr_stats.html': () => page.waitForFunction(() => {
+      const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          !node.classList.contains('is-hidden') &&
+          rect.width > 1 &&
+          rect.height > 1
+        );
+      });
+      const textOf = (id) => String(document.getElementById(id)?.textContent || '').trim();
+      const tradesText = String(document.getElementById('tradesTable')?.textContent || '').trim();
+      return (
+        !overlayVisible &&
+        document.querySelectorAll('.stat-card').length >= 8 &&
+        document.querySelectorAll('canvas').length >= 4 &&
+        textOf('totalOrders') !== '' &&
+        textOf('totalOrders') !== '-' &&
+        textOf('totalSignals') !== '' &&
+        textOf('totalSignals') !== '-' &&
+        tradesText !== '' &&
+        !tradesText.includes('加载中')
+      );
+    }, { timeout }),
     '/ibkr_config.html': () => page.waitForFunction(() => !/LOADING/i.test(document.getElementById('configContainer')?.innerText || ''), { timeout }),
   };
 
@@ -585,6 +612,90 @@ async function collectPageExpectationIssues(page, url, mobile) {
     }, mobile);
   }
 
+  const systemDomainExpectations = {
+    '/ibkr_system.html': { systemBridge: '总览', opsSummary: true },
+    '/ibkr_monitor.html': { systemBridge: '运维', opsBridge: '监控大盘', monitorOpsRoute: true },
+    '/ibkr_warmup.html': { systemBridge: '运维', opsBridge: '预热', warmupSummary: true, warmupGuide: true },
+    '/ibkr_data_quality.html': { systemBridge: '运维', opsBridge: '数据质量', qualityRoute: true },
+    '/ibkr_history_rebuild.html': { systemBridge: '运维', opsBridge: '历史重建', historyGuard: true },
+    '/ibkr_runtime.html': { systemBridge: '控制台', runtimeSummary: true },
+    '/ibkr_config.html': { systemBridge: '配置' },
+  };
+  const expectedSystemPage = systemDomainExpectations[path];
+  if (expectedSystemPage) {
+    return page.evaluate((expected) => {
+      const issues = [];
+      const navTexts = Array.from(document.querySelectorAll('#nav .nav-item, #navContainer .nav-item'))
+        .map((node) => String(node.textContent || '').trim())
+        .filter(Boolean);
+      const bridgeLabels = Array.from(document.querySelectorAll('#pageBridge .page-bridge-label'))
+        .map((node) => String(node.textContent || '').trim())
+        .filter(Boolean);
+      if (!navTexts.some((text) => text.includes('系统'))) issues.push('system_domain_missing_bottom_system');
+      if (navTexts.some((text) => text.includes('运维'))) issues.push('system_domain_legacy_bottom_ops');
+      if (!bridgeLabels.includes(expected.systemBridge)) issues.push(`missing_system_bridge:${expected.systemBridge}`);
+      if (expected.opsBridge && !bridgeLabels.includes(expected.opsBridge)) issues.push(`missing_ops_bridge:${expected.opsBridge}`);
+      if (expected.opsSummary) {
+        const summaryText = String(document.getElementById('serviceTopologyArea')?.textContent || '');
+        const summaryLink = document.querySelector('#serviceTopologyArea .ops-summary-link');
+        const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
+        if (!summaryText.includes('运维大盘')) issues.push('missing_system_ops_summary_copy');
+        if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
+          issues.push(`missing_system_ops_summary_link:${summaryLinkHref || 'empty'}`);
+        }
+      }
+      if (expected.warmupSummary) {
+        const summaryText = String(document.getElementById('serviceTopologyBody')?.textContent || '');
+        const summaryLink = document.querySelector('#serviceTopologyBody .warmup-link-action');
+        const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
+        if (!summaryText.includes('运维大盘')) issues.push('missing_warmup_ops_summary_copy');
+        if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
+          issues.push(`missing_warmup_ops_summary_link:${summaryLinkHref || 'empty'}`);
+        }
+      }
+      if (expected.warmupGuide) {
+        const guideText = String(document.querySelector('.warmup-guide-section')?.textContent || '');
+        if (!guideText.includes('交易闸门')) issues.push('missing_warmup_guide_gate');
+        if (!guideText.includes('数据质量')) issues.push('missing_warmup_guide_quality');
+        if (!guideText.includes('历史重建')) issues.push('missing_warmup_guide_rebuild');
+      }
+      if (expected.monitorOpsRoute) {
+        const routeLabels = Array.from(document.querySelectorAll('.ops-route-card .ops-route-name'))
+          .map((node) => String(node.textContent || '').trim())
+          .filter(Boolean);
+        ['监控大盘', '预热', '数据质量', '历史重建'].forEach((label) => {
+          if (!routeLabels.includes(label)) issues.push(`missing_monitor_ops_route:${label}`);
+        });
+      }
+      if (expected.qualityRoute) {
+        const routeText = String(document.querySelector('.quality-route-panel')?.textContent || '');
+        if (!routeText.includes('日常安全修复入口')) issues.push('missing_quality_route_copy');
+        if (!routeText.includes('预热') || !routeText.includes('历史重建')) issues.push('missing_quality_route_links');
+      }
+      if (expected.historyGuard) {
+        const guardText = String(document.querySelector('.rebuild-guard-panel')?.textContent || '');
+        const confirmBox = document.getElementById('confirmFullRebuild');
+        const startButton = document.getElementById('startButton');
+        if (!guardText.includes('最后恢复手段')) issues.push('missing_history_guard_copy');
+        if (!guardText.includes('预热') || !guardText.includes('数据质量')) issues.push('missing_history_guard_routes');
+        if (!confirmBox) issues.push('missing_history_rebuild_confirm');
+        if (startButton && !startButton.disabled && confirmBox && !confirmBox.checked) {
+          issues.push('history_rebuild_start_not_guarded');
+        }
+      }
+      if (expected.runtimeSummary) {
+        const summaryText = String(document.getElementById('serviceTopologyArea')?.textContent || '');
+        const summaryLink = document.querySelector('#serviceTopologyArea .runtime-link-action');
+        const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
+        if (!summaryText.includes('运维大盘')) issues.push('missing_runtime_ops_summary_copy');
+        if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
+          issues.push(`missing_runtime_ops_summary_link:${summaryLinkHref || 'empty'}`);
+        }
+      }
+      return issues;
+    }, expectedSystemPage);
+  }
+
   return [];
 }
 
@@ -659,15 +770,26 @@ async function inspectPage(browser, token, url, mobile) {
     '/ibkr_config.html',
     '/ibkr_stats.html',
   ]).has(path);
+  const allowTwoBridgeShells = new Set([
+    '/ibkr_monitor.html',
+    '/ibkr_warmup.html',
+    '/ibkr_data_quality.html',
+    '/ibkr_history_rebuild.html',
+  ]).has(path);
 
   const layoutIssues = [];
   if (/\/login\.html/.test(finalUrl)) layoutIssues.push('redirected_to_login');
   if (!navTexts.length) layoutIssues.push('missing_nav');
+  if (navTexts.length && navTexts.length !== 6) layoutIssues.push(`nav_count:${navTexts.length}`);
+  if (navTexts.some((text) => String(text || '').includes('运维'))) layoutIssues.push('legacy_ops_bottom_nav');
+  if (navTexts.length && !navTexts.some((text) => String(text || '').includes('系统'))) layoutIssues.push('missing_system_bottom_nav');
   if (!layout.context_count) layoutIssues.push('missing_context_bar');
   if (layout.context_count !== 1) layoutIssues.push(`context_bar_count:${layout.context_count}`);
   if (!isHomePage && !allowMissingTopSection && !layout.top_section_count) layoutIssues.push('missing_top_section');
   if (!isHomePage && !layout.bridge_count) layoutIssues.push('missing_bridge');
-  if (!isHomePage && layout.bridge_shell_count !== 1) layoutIssues.push(`bridge_shell_count:${layout.bridge_shell_count}`);
+  if (!isHomePage && layout.bridge_shell_count !== 1 && !(allowTwoBridgeShells && layout.bridge_shell_count === 2)) {
+    layoutIssues.push(`bridge_shell_count:${layout.bridge_shell_count}`);
+  }
   if (!allowVisibleInitialOverlay && layout.visible_loading_overlay_count) {
     layoutIssues.push(`visible_loading_overlay_count:${layout.visible_loading_overlay_count}`);
   }

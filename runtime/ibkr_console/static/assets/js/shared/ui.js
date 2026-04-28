@@ -27,8 +27,20 @@ function renderNav(activePage) {
     { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '标的' },
     { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html'], icon: '📈', label: '研究' },
     { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
-    { path: '/ibkr_monitor.html', aliases: ['/ibkr_monitor.html', '/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html'], icon: '🛠️', label: '运维' },
-    { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_runtime.html', '/ibkr_config.html'], icon: '🖥️', label: '系统' }
+    {
+      path: '/ibkr_system.html',
+      aliases: [
+        '/ibkr_system.html',
+        '/ibkr_monitor.html',
+        '/ibkr_warmup.html',
+        '/ibkr_data_quality.html',
+        '/ibkr_history_rebuild.html',
+        '/ibkr_runtime.html',
+        '/ibkr_config.html'
+      ],
+      icon: '🖥️',
+      label: '系统'
+    }
   ];
 
   return `
@@ -1103,13 +1115,26 @@ function renderPageBridge(items = []) {
 }
 
 function renderSystemBridge(activePage) {
+  const opsPages = [
+    '/ibkr_monitor.html',
+    '/ibkr_warmup.html',
+    '/ibkr_data_quality.html',
+    '/ibkr_history_rebuild.html'
+  ];
   return renderPageBridge([
     {
       path: '/ibkr_system.html',
       kicker: 'Overview',
       label: '总览',
-      copy: '健康 / 配置',
+      copy: '健康 / 统计',
       active: activePage === '/ibkr_system.html'
+    },
+    {
+      path: '/ibkr_monitor.html',
+      kicker: 'Ops',
+      label: '运维',
+      copy: '监控 / 排障',
+      active: opsPages.includes(activePage)
     },
     {
       path: '/ibkr_runtime.html',
@@ -1226,27 +1251,21 @@ function renderHomeBridge() {
       copy: '回放 / 验证'
     },
     {
-      path: '/ibkr_monitor.html',
-      kicker: 'Ops',
-      label: '运维域',
-      copy: '监控 / 数据'
-    },
-    {
       path: '/ibkr_system.html',
       kicker: 'System',
       label: '系统域',
-      copy: '总览 / 配置'
+      copy: '总览 / 运维 / 配置'
     }
   ]);
 }
 
 function renderOpsBridge(activePage) {
-  return renderPageBridge([
+  const opsBridge = renderPageBridge([
     {
       path: '/ibkr_monitor.html',
       kicker: 'Dashboard',
       label: '监控大盘',
-      copy: '请求 / 健康',
+      copy: '请求 / 订阅 / 主机',
       active: activePage === '/ibkr_monitor.html'
     },
     {
@@ -1267,10 +1286,11 @@ function renderOpsBridge(activePage) {
       path: '/ibkr_history_rebuild.html',
       kicker: 'Rebuild',
       label: '历史重建',
-      copy: '重导 / recompute',
+      copy: '高级恢复',
       active: activePage === '/ibkr_history_rebuild.html'
     }
   ]);
+  return `${renderSystemBridge(activePage)}${opsBridge}`;
 }
 
 function renderBacktestsBridge(activePage) {

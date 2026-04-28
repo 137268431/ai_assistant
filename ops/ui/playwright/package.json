@@ -5,7 +5,8 @@
   "type": "commonjs",
   "scripts": {
     "smoke": "node pb_smoke.js",
-    "smoke:indicator-trace": "node indicator_trace_surface_check.js"
+    "smoke:indicator-trace": "node indicator_trace_surface_check.js",
+    "static:system-ops": "node system_ops_static_check.js"
   },
   "dependencies": {
     "playwright": "^1.59.1"

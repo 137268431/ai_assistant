@@ -42,13 +42,21 @@ async function inspectMonitor(browser, deviceName = null) {
   const heroText = await page.locator(".hero").innerText().catch(() => "");
   const sectionTitles = await page.locator(".section-title").allTextContents().catch(() => []);
   const navTexts = await page.locator("#nav .nav-item").allTextContents().catch(() => []);
+  const bridgeTexts = await page.locator("#pageBridge .page-bridge-label").allTextContents().catch(() => []);
+  const opsRouteTexts = await page.locator(".ops-route-card .ops-route-name").allTextContents().catch(() => []);
 
   const summary = {
     url: target,
     device: deviceName || "desktop",
     title: await page.title(),
     navTexts,
+    bridgeTexts,
+    opsRouteTexts,
     sectionTitles,
+    hasSystemNav: navTexts.some((text) => text.includes("系统")),
+    hasLegacyOpsNav: navTexts.some((text) => text.includes("运维")),
+    hasSystemOpsBridge: bridgeTexts.includes("运维") && bridgeTexts.includes("监控大盘"),
+    hasOpsRouteGuide: ["监控大盘", "预热", "数据质量", "历史重建"].every((label) => opsRouteTexts.includes(label)),
     hasApiSection: sectionTitles.includes("IBKR API 利用率"),
     hasSystemSection: sectionTitles.includes("Split-Stack 系统状态"),
     hasSubscriptionSection: sectionTitles.includes("订阅视图"),

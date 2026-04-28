@@ -527,7 +527,7 @@
         backdrop-filter: blur(16px);
         border-top: 1px solid var(--border);
         display: grid;
-        grid-template-columns: repeat(var(--nav-count, 7), minmax(0, 1fr));
+        grid-template-columns: repeat(var(--nav-count, 6), minmax(0, 1fr));
         padding: 8px max(6px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-right));
         z-index: 50;
       }
