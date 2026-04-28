@@ -1061,11 +1061,14 @@
                     ? '(environment = "live" || environment = "global" || environment = "")'
                     : `(environment = "${escapeQueryValue(currentEnvironment)}" || environment = "global")`;
 
-                const watchlistResp = await apiFetch('watchlist', {
-                    filter: `${scopeFilter} && symbol_role = "market_monitor"`,
-                    sort: '-updated',
-                    perPage: 100
-                }).catch(() => ({ items: [] }));
+                const [watchlistResp, configuredSymbols] = await Promise.all([
+                    apiFetch('watchlist', {
+                        filter: `${scopeFilter} && symbol_role = "market_monitor"`,
+                        sort: '-updated',
+                        perPage: 100
+                    }).catch(() => ({ items: [] })),
+                    fetchConfiguredMarketMonitorSymbols()
+                ]);
 
                 const roleRows = Array.isArray(watchlistResp.items) ? watchlistResp.items : [];
                 const priority = { '': 0, global: 1 };
@@ -1073,6 +1076,15 @@
 
                 const merged = {};
                 const applied = {};
+                const configuredOrder = normalizeSymbolList(configuredSymbols);
+                configuredOrder.forEach((symbol) => {
+                    merged[symbol] = {
+                        symbol,
+                        environment: 'config',
+                        symbol_role: 'market_monitor'
+                    };
+                    applied[symbol] = -1;
+                });
                 roleRows.forEach((item) => {
                     const symbol = String(item.symbol || '').trim().toUpperCase();
                     if (!symbol) return;
@@ -1084,11 +1096,15 @@
                     merged[symbol] = item;
                 });
 
-                const symbols = Object.keys(merged).sort();
+                const symbolSet = new Set(Object.keys(merged));
+                const symbols = [
+                    ...configuredOrder.filter((symbol) => symbolSet.delete(symbol)),
+                    ...Array.from(symbolSet).sort()
+                ];
                 if (!symbols.length) {
                     setSectionState('homeMarket', 'empty');
-                    document.getElementById('marketSummaryText').textContent = '当前未配置市场监控标的。';
-                    container.innerHTML = '<div class="home-empty">当前未配置市场监控标的。</div>';
+                    document.getElementById('marketSummaryText').textContent = '当前未配置市场监控标的：请检查 ibkr_market_ws_symbols 或 watchlist market_monitor。';
+                    container.innerHTML = '<div class="home-empty">当前未配置市场监控标的：请检查 ibkr_market_ws_symbols 或 watchlist market_monitor。</div>';
                     updateMarketPulse([], 0);
                     return;
                 }
