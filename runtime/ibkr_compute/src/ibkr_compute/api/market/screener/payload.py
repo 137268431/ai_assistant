@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from ibkr_compute.api.market.screener.coercion import coerce_float, coerce_int, parse_json_object
 from ibkr_compute.api.market.screener.runtime import get_api_app
@@ -12,13 +12,13 @@ from ibkr_compute.api.market.screener.scoring import (
     build_tradability_assessment,
 )
 from ibkr_compute.api.market.screener.watchlist import load_effective_watchlist
+from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 
 
 def parse_market_date_bounds_ms(market_date: str) -> tuple[int, int]:
-    et = timezone(timedelta(hours=-4))
     start_dt = datetime.strptime(str(market_date or "").strip(), "%Y-%m-%d").replace(
-        tzinfo=et,
+        tzinfo=ET,
         hour=0,
         minute=0,
         second=0,

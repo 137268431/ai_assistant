@@ -8,6 +8,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let latestRuntimeLoadId = 0;
         let hasLoadedRuntimeData = false;
         let runtimePageClosing = false;
+        let authActionFeedback = null;
         const CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000;
         const MANUAL_AUTH_REASON_LABELS = {
             weekly_reauth: '每周重登提醒',
@@ -488,6 +489,46 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return getIbkrRuntimeStarted(status);
         }
 
+        function isTwoFactorVerifiedSuccess(twoFactorState = latestTwoFactorState) {
+            const status = normalizeIbkrTwoFactorStatus(twoFactorState?.status || '');
+            const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
+            const probeResult = String(twoFactorState?.probe_result || '').trim().toLowerCase();
+            return status === 'success'
+                || (recoveryPhase === 'recovered' && probeResult === 'authenticated' && Boolean(twoFactorState?.last_runtime_authenticated_at));
+        }
+
+        function isRuntimeSnapshotIncomplete(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
+            if (twoFactorState?.runtime_status_incomplete === true) return true;
+            if (!isTwoFactorVerifiedSuccess(twoFactorState)) return false;
+            const gateway = status?.gateway || {};
+            const session = status?.session || {};
+            return !status?.runtime_phase
+                && !status?.starting
+                && !status?.startup_complete
+                && !session?.running
+                && !session?.authenticated
+                && !gateway?.running
+                && !gateway?.reachable
+                && !Number(gateway?.status_code || 0)
+                && !Number(gateway?.pid || 0);
+        }
+
+        function getEffectiveRuntimeStatusCardModel(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
+            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactor);
+            if (!isTwoFactorVerifiedSuccess(twoFactorState)) return runtimeStatus;
+            if (!isRuntimeSnapshotIncomplete(status, twoFactorState) && runtimeStatus.authenticated) return runtimeStatus;
+            return {
+                ...runtimeStatus,
+                dotClass: 'dot-green',
+                mainText: '认证',
+                subText: '2FA 已验证 · runtime 快照待刷新',
+                started: true,
+                gatewayActive: true,
+                authenticated: true,
+                snapshotIncomplete: isRuntimeSnapshotIncomplete(status, twoFactorState)
+            };
+        }
+
         function normalizeStartupUiState(startupState = latestStartupState) {
             const state = { ...(startupState || {}) };
             state.active = state.active === true;
@@ -549,7 +590,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function deriveNextAuthActionModel(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState, startupState = latestStartupState) {
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
-            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
             const runtimeStarted = runtimeStatus.started;
             const sessionAuthenticated = runtimeStatus.authenticated;
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
@@ -586,8 +627,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const metaHtml = Array.isArray(model.meta) && model.meta.length
                 ? `<div class="auth-banner-meta">${model.meta.filter(Boolean).map((item) => `<span class="auth-banner-pill">${escapeHtml(item)}</span>`).join('')}</div>`
                 : '';
+            const feedbackHtml = authActionFeedback?.text
+                ? `<div class="auth-banner-feedback ${escapeHtml(authActionFeedback.tone || 'info')}">${escapeHtml(authActionFeedback.text)}</div>`
+                : '';
+            const primaryLabel = actionPending && model.buttonLabel ? '执行中...' : model.buttonLabel;
             const buttonHtml = model.buttonLabel
-                ? `<button class="auth-banner-btn" onclick="runPrimaryAuthAction()" ${actionPending ? 'disabled' : ''}>${escapeHtml(model.buttonLabel)}</button>`
+                ? `<button class="auth-banner-btn" onclick="runPrimaryAuthAction()" ${actionPending ? 'disabled' : ''}>${escapeHtml(primaryLabel)}</button>`
+                : '';
+            const secondaryButtonHtml = model.secondaryButtonLabel
+                ? `<button class="auth-banner-btn auth-banner-btn-secondary" onclick="runSecondaryAuthAction()" ${actionPending ? 'disabled' : ''}>${escapeHtml(model.secondaryButtonLabel)}</button>`
                 : '';
 
             banner.className = `auth-banner ${escapeHtml(model.tone || 'info')}`;
@@ -601,9 +649,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     <div class="auth-banner-title">${escapeHtml(model.title || '等待下一步')}</div>
                     <div class="auth-banner-copy">${escapeHtml(model.copy || '')}</div>
                     ${metaHtml}
+                    ${feedbackHtml}
                 </div>
                 <div class="auth-banner-side">
                     ${buttonHtml}
+                    ${secondaryButtonHtml}
                     <div class="auth-banner-hint">每次重启后直接看这块。只有你手动触发或确认后，流程才会继续往下走。</div>
                 </div>
             `;
@@ -761,19 +811,30 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             renderAuthActionBanner(latestNextActionModel);
         }
 
+        function setAuthActionFeedback(message, tone = 'info') {
+            const text = String(message || '').trim();
+            authActionFeedback = text
+                ? { text, tone: String(tone || 'info').trim() || 'info' }
+                : null;
+            renderAuthActionBanner(latestNextActionModel);
+        }
+
         function renderMetricCards(summary, health, status, twoFactorState, latestBar) {
             const today = summary?.today || {};
             const computeHealth = normalizeIbkrComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
-            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toUpperCase() || '--';
+            const sessionCopy = runtimeStatus.snapshotIncomplete
+                ? `2FA ${twoFactorStatus} · 快照待刷新`
+                : `2FA ${twoFactorStatus} · gateway ${runtimeStatus.gatewayActive ? 'active' : 'offline'}`;
             const cards = [
                 {
                     label: 'Session Auth',
                     value: runtimeStatus.authenticated ? 'AUTHED' : (runtimeStatus.started ? 'WAITING' : 'STOPPED'),
-                    copy: `2FA ${twoFactorStatus} · gateway ${runtimeStatus.gatewayActive ? 'active' : 'offline'}`
+                    copy: sessionCopy
                 },
                 {
                     label: 'Ready Engines',
@@ -848,7 +909,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const canonical = status?.canonical_5m || {};
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const startup = normalizeStartupUiState(startupState);
-            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactor);
             const gatewayActive = runtimeStatus.gatewayActive;
             const runtimeStarted = runtimeStatus.started;
             const sessionAuthenticated = runtimeStatus.authenticated;
@@ -1044,19 +1105,26 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const warmupSummaryText = getIbkrWarmupSummaryText(warmup);
             const dataStatus = dataHealth.status || 'no_data';
             const computeStatus = computeHealth.status || 'unknown';
-            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
             const gatewayRunning = runtimeStatus.gatewayActive;
             const sessionAuthenticated = runtimeStatus.authenticated;
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toLowerCase() || 'idle';
             latestNextActionModel = deriveNextAuthActionModel(status, twoFactorState, startup);
             renderAuthActionBanner(latestNextActionModel);
+            const gatewayChipLabel = runtimeStatus.snapshotIncomplete
+                ? 'Gateway VERIFIED'
+                : `Gateway ${gatewayRunning ? 'ACTIVE' : 'OFFLINE'}`;
+            const sessionChipLabel = runtimeStatus.snapshotIncomplete
+                ? 'Session AUTHED'
+                : `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`;
             const chips = [
                 { label: `Compute ${String(computeStatus).toUpperCase()}`, tone: chipTone(computeStatus) },
                 { label: `Data ${String(dataStatus).toUpperCase()}`, tone: chipTone(dataStatus) },
-                { label: `Gateway ${gatewayRunning ? 'ACTIVE' : 'OFFLINE'}`, tone: gatewayRunning ? 'chip-ok' : 'chip-error' },
-                { label: `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`, tone: sessionAuthenticated ? 'chip-ok' : 'chip-warn' },
+                { label: gatewayChipLabel, tone: gatewayRunning ? 'chip-ok' : 'chip-error' },
+                { label: sessionChipLabel, tone: sessionAuthenticated ? 'chip-ok' : 'chip-warn' },
                 { label: `Warmup ${warmup.gate_open ? 'READY' : String(warmup.phase || 'idle').toUpperCase()}`, tone: warmup.gate_open ? 'chip-ok' : chipTone(warmup.phase) },
                 { label: `2FA ${twoFactorStatus.toUpperCase()}`, tone: sessionAuthenticated ? 'chip-ok' : chipTone(twoFactorStatus) },
+                ...(runtimeStatus.snapshotIncomplete ? [{ label: 'Runtime SNAPSHOT REFRESHING', tone: 'chip-muted' }] : []),
                 ...(startup.active ? [{ label: `Flow ${getManualAuthReasonLabel(startup.reason)}`, tone: chipTone(startup.status || 'active') }] : []),
                 { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
@@ -1079,7 +1147,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const runtimeMismatch = getRuntimeEnvironmentMismatch(status, twoFactorState);
             const keepCurrentCycle = isIbkrTwoFactorCycleActive(twoFactorState);
             const lastRequestAtLabel = twoFactorState?.last_request_at ? formatTimeLabel(twoFactorState.last_request_at) : '';
-            const authSummary = getIbkrRuntimeHeroAuthSummaryText({
+            const authSummary = runtimeStatus.snapshotIncomplete
+                ? '2FA success · runtime status snapshot incomplete · no action needed'
+                : getIbkrRuntimeHeroAuthSummaryText({
                 runtimeMismatch,
                 runtimeStatus,
                 startupActive: startup.active,
@@ -1421,7 +1491,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const indicatorExtra = getExtraObject(latestIndicator);
             const signalExtra = getExtraObject(latestSignal);
             const engineCount = Number(status?.total_engines || 0) || 0;
-            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
             const isAuthenticated = runtimeStatus.authenticated;
             const gatewayActive = runtimeStatus.gatewayActive;
 
@@ -1494,7 +1564,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (!engineCount) {
                 notes.push({ tone: 'warn', text: '当前 compute engines = 0，说明内存引擎还没有被 bars 预热。' });
             }
-            if (!gatewayActive) {
+            if (runtimeStatus.snapshotIncomplete) {
+                notes.push({ tone: 'ok', text: '2FA 已认证成功；当前 Gateway / Session 的离线字样来自运行态快照未刷新，不需要重新触发 2FA。' });
+            } else if (!gatewayActive) {
                 notes.push({ tone: 'error', text: 'Gateway 当前不可达，先恢复网关进程，再谈 2FA 和 bars 刷新。' });
             } else if (!runtimeStatus.started) {
                 notes.push({ tone: 'warn', text: '当前 runtime service 没有真正拉起；这种状态下会看到 Session 待认证，但根因通常是服务停止或刚重启后未恢复。' });
@@ -2042,7 +2114,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (!target) return;
 
             setActionState(true);
-            document.getElementById('lastAction').textContent = `执行中：${action} ...`;
+            const pendingMessage = `执行中：${action} ...`;
+            document.getElementById('lastAction').textContent = pendingMessage;
+            setAuthActionFeedback(pendingMessage, 'info');
             try {
                 const payload = await requestIbkrEnvironmentJson(target.path, currentEnvironment, {
                     method: 'POST',
@@ -2051,32 +2125,47 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 });
                 const message = summarizeAction(action, payload);
                 document.getElementById('lastAction').textContent = `最近动作：${message}`;
+                setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
                 showToast(message);
                 await loadRuntimeData(false);
             } catch (error) {
                 const message = `动作失败：${action} · ${error.message || error}`;
                 document.getElementById('lastAction').textContent = message;
+                setAuthActionFeedback(message, 'error');
                 showToast(message);
             } finally {
                 setActionState(false);
             }
         }
 
-        async function runPrimaryAuthAction() {
-            const model = latestNextActionModel || deriveNextAuthActionModel();
+        async function runAuthActionFromModel(model, { secondary = false } = {}) {
             if (!model || model.visible !== true || actionPending) return;
 
-            if (model.behavior === 'refresh') {
+            const behavior = secondary ? model.secondaryBehavior : model.behavior;
+            const actionName = secondary ? model.secondaryActionName : model.actionName;
+            const requestTarget = secondary ? model.secondaryRequestTarget : model.requestTarget;
+
+            if (behavior === 'refresh') {
                 await loadRuntimeData(true);
                 return;
             }
-            if (model.behavior === 'focus_response') {
+            if (behavior === 'focus_response') {
                 focusTwoFactorResponseInput();
                 return;
             }
-            if (model.behavior === 'action' && model.actionName) {
-                await handleRuntimeAction(model.actionName, model.requestTarget || null);
+            if (behavior === 'action' && actionName) {
+                await handleRuntimeAction(actionName, requestTarget || null);
             }
+        }
+
+        async function runPrimaryAuthAction() {
+            const model = latestNextActionModel || deriveNextAuthActionModel();
+            await runAuthActionFromModel(model);
+        }
+
+        async function runSecondaryAuthAction() {
+            const model = latestNextActionModel || deriveNextAuthActionModel();
+            await runAuthActionFromModel(model, { secondary: true });
         }
 
         async function handleRuntimeAction(action, overrideTarget = null) {
@@ -2085,12 +2174,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch && guardedActions.has(action)) {
                 document.getElementById('lastAction').textContent = runtimeMismatch.message;
+                setAuthActionFeedback(runtimeMismatch.message, 'error');
                 showToast(runtimeMismatch.message);
                 return;
             }
             const actionLockReason = getTwoFactorActionLockReason(action);
             if (actionLockReason) {
                 document.getElementById('lastAction').textContent = `最近动作：${actionLockReason}`;
+                setAuthActionFeedback(`最近动作：${actionLockReason}`, 'warn');
                 showToast(actionLockReason);
                 syncActionLocks();
                 return;
@@ -2130,6 +2221,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     return;
                 }
             }
+            if (action === 'reauth_force_new' && !window.confirm('确认开始 2FA？这会触发 IBKR 手机验证；如果已有手机通知或 Challenge，请取消并继续当前轮次。')) {
+                return;
+            }
             if (action === 'panic_reset_2fa' && !window.confirm('确认重开 2FA？将清空旧 Challenge / Response / 接管状态，并重启验证。')) {
                 return;
             }
@@ -2139,6 +2233,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         window.handleRuntimeAction = handleRuntimeAction;
         window.runPrimaryAuthAction = runPrimaryAuthAction;
+        window.runSecondaryAuthAction = runSecondaryAuthAction;
         window.submitTwoFactorResponse = submitTwoFactorResponse;
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;

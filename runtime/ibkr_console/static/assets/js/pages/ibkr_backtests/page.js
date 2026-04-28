@@ -1552,7 +1552,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 slippage_bps: Number(document.getElementById('slippageBps').value || 2),
                 warmup_bars: Number(document.getElementById('warmupBars').value || 320),
                 scan_warmup_bars: Number(document.getElementById('warmupBars').value || 320),
-                premarket_cutoff_time: String(document.getElementById('premarketCutoff').value || '09:25').trim(),
+                premarket_cutoff_time: String(document.getElementById('premarketCutoff').value || '09:20').trim(),
                 max_symbols: Number(document.getElementById('maxSymbols').value || 12),
                 source_environment: currentEnvironment,
                 strategy_params: strategyParams,

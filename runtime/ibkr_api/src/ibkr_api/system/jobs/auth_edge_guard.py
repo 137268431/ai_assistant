@@ -12,6 +12,7 @@ from .auth_issue import (
 from .auth_shared import (
     AUTH_EDGE_ALERT_COOLDOWN_MS,
     AUTH_EDGE_MONITOR_STATE_KEY,
+    AUTH_MONITOR_STATE_DATE,
     ET,
     EmitSystemEvent,
     FetchRuntimeStatus,
@@ -28,9 +29,15 @@ from .auth_shared import (
 
 
 def _build_auth_immediate_fingerprint(auth: dict[str, Any], issue: dict[str, Any]) -> str:
+    issue_kind = _to_text(issue.get("kind"))
+    stable_silent_probe = issue_kind in {
+        "server_boot_resume_pending",
+        "session_recovering",
+        "stale_broker_recovering",
+    }
     return str(
         {
-            "issue_kind": issue.get("kind") or "",
+            "issue_kind": issue_kind,
             "cycle_id": auth.get("cycle_id") or "",
             "status": auth.get("status") or "",
             "requested_at": auth.get("requested_at") or "",
@@ -39,7 +46,7 @@ def _build_auth_immediate_fingerprint(auth: dict[str, Any], issue: dict[str, Any
             "recovery_class": auth.get("recovery_class") or "",
             "recovery_reason": auth.get("recovery_reason") or "",
             "interruption_kind": auth.get("interruption_kind") or "",
-            "probe_result": auth.get("probe_result") or "",
+            "probe_result": "" if stable_silent_probe else (auth.get("probe_result") or ""),
             "auto_restart_scheduled": "yes" if auth.get("auto_restart_scheduled") else "no",
             "runtime_started": "yes" if auth.get("runtime_started") else "no",
             "runtime_authenticated": "yes" if auth.get("runtime_authenticated") else "no",
@@ -98,6 +105,16 @@ def _should_notify_auth_immediate_alert(
 
 def _auth_issue_detail(auth: dict[str, Any], issue: dict[str, Any], *, now_us: str) -> dict[str, Any]:
     issue_kind = _to_text(issue.get("kind"))
+    if is_waiting_response_issue_kind(issue_kind):
+        advice = build_waiting_response_advice(auth)
+    elif issue_kind in {"session_recovering", "stale_broker_recovering"}:
+        advice = "先观察当前静默恢复窗口，不要重复触发 2FA；若长时间未恢复，再去 Runtime 页面人工接管或手动重开。"
+    elif issue_kind == "server_boot_resume_manual_required":
+        advice = "提醒卡片只保留查看入口，不放直接触发按钮；请打开 Runtime 页面，先确认当前手机 Push / Challenge，仍未恢复再干净重开。"
+    elif issue_kind == "gateway_restart_reauth_required":
+        advice = "本次是 Gateway 重启后的新轮次。优先处理当前 2FA，不要把它当成旧 Session 自然失效后反复重触发。"
+    else:
+        advice = "优先打开 Runtime 页面确认当前状态；如果仍是 waiting_confirm，只在 IBKR App 点一次确认。"
     detail = {
         "异常结论": _to_text(issue.get("summary")),
         "检查时间": now_us,
@@ -108,19 +125,7 @@ def _auth_issue_detail(auth: dict[str, Any], issue: dict[str, Any], *, now_us: s
         "Runtime已启动": "yes" if auth.get("runtime_started") else "no",
         "Gateway状态码": str(auth.get("gateway_status_code")) if auth.get("gateway_status_code") else "n/a",
         "Gateway运行时长(s)": str(auth.get("gateway_uptime_s")) if auth.get("gateway_uptime_s") else "n/a",
-        "处理建议": (
-            build_waiting_response_advice(auth)
-            if is_waiting_response_issue_kind(issue_kind)
-            else (
-                "先观察当前静默恢复窗口，不要重复触发 2FA；若长时间未恢复，再去 Runtime 页面人工接管或手动重开。"
-                if issue_kind in {"session_recovering", "stale_broker_recovering"}
-                else (
-                    "本次是 Gateway 重启后的新轮次。优先处理当前 2FA，不要把它当成旧 Session 自然失效后反复重触发。"
-                    if issue_kind == "gateway_restart_reauth_required"
-                    else "优先打开 Runtime 页面确认当前状态；如果仍是 waiting_confirm，只在 IBKR App 点一次确认。"
-                )
-            )
-        ),
+        "处理建议": advice,
     }
     optional_map = {
         "触发原因": auth.get("reason"),
@@ -178,7 +183,9 @@ def build_auth_edge_guard_response(
         runtime_status=runtime_payload,
         now_ms=now_ms,
     )
-    current_state = _as_dict(get_state_payload(AUTH_EDGE_MONITOR_STATE_KEY, environment).get("data"))
+    current_state = _as_dict(
+        get_state_payload(AUTH_EDGE_MONITOR_STATE_KEY, environment, date=AUTH_MONITOR_STATE_DATE).get("data")
+    )
     next_state = {
         "last_auth_scan_at": now["us"],
         "last_auth_status": auth.get("status") or "",
@@ -204,7 +211,7 @@ def build_auth_edge_guard_response(
                 "last_auth_edge_alert_hash": "",
             }
         )
-        upsert_state(AUTH_EDGE_MONITOR_STATE_KEY, environment, next_state, now["date"])
+        upsert_state(AUTH_EDGE_MONITOR_STATE_KEY, environment, next_state, AUTH_MONITOR_STATE_DATE)
         return {
             "ok": True,
             "environment": environment,
@@ -245,7 +252,7 @@ def build_auth_edge_guard_response(
                 "last_auth_issue_summary": issue.get("summary") or "",
             }
         )
-    upsert_state(AUTH_EDGE_MONITOR_STATE_KEY, environment, next_state, now["date"])
+    upsert_state(AUTH_EDGE_MONITOR_STATE_KEY, environment, next_state, AUTH_MONITOR_STATE_DATE)
     return {
         "ok": True,
         "environment": environment,

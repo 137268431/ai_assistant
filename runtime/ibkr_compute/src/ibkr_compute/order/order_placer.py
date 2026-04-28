@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 from typing import Any, Dict, List
 
 from ibkr_compute.broker import BrokerAdapter
@@ -15,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 PAPER_ACCOUNT_ID = os.environ.get("IBKR_PAPER_ACCOUNT_ID", "")
-ET = timezone(timedelta(hours=-4))
 
 
 class OrderPlacer:

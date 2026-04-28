@@ -4,11 +4,10 @@ Timeframe and timestamp helpers shared by the IBKR market-data pipeline.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Dict
 
-ET = timezone(timedelta(hours=-4))
-CN = timezone(timedelta(hours=8))
+from ibkr_compute.core.time_utils import CN, ET
 
 COMPUTE_INTERVALS = ("5m", "15m", "30m", "1h", "4h", "1d")
 HIGHER_INTERVALS = ("15m", "30m", "1h", "4h", "1d")

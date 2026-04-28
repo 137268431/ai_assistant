@@ -7,13 +7,14 @@ from zoneinfo import ZoneInfo
 
 AUTH_EDGE_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 AUTH_EDGE_MONITOR_STATE_KEY = "system_auth_edge_monitor"
+AUTH_MONITOR_STATE_DATE = "global"
 AUTH_PENDING_ALERT_TRIGGER_MS = 15 * 60 * 1000
 AUTH_PENDING_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 AUTH_MONITOR_STATE_KEY = "system_auth_monitor"
 ET = ZoneInfo("America/New_York")
 
 NormalizeEnvironment = Callable[[Any, str], str]
-GetStatePayload = Callable[[str, str], dict[str, Any]]
+GetStatePayload = Callable[..., dict[str, Any]]
 NormalizeTwoFactorStateWithRuntime = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 FetchRuntimeStatus = Callable[[str], dict[str, Any]]
 TimeStrings = Callable[[], dict[str, str]]
@@ -142,6 +143,7 @@ def load_auth_attention_summary(
 __all__ = [
     "AUTH_EDGE_ALERT_COOLDOWN_MS",
     "AUTH_EDGE_MONITOR_STATE_KEY",
+    "AUTH_MONITOR_STATE_DATE",
     "AUTH_MONITOR_STATE_KEY",
     "AUTH_PENDING_ALERT_COOLDOWN_MS",
     "AUTH_PENDING_ALERT_TRIGGER_MS",

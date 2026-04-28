@@ -199,6 +199,12 @@ def normalize_request(payload: dict) -> dict:
         minimum=1,
         maximum=390,
     )
+    cooldown_bars_after_sl = normalize_positive_int(payload.get("cooldown_bars_after_sl"), default=6, minimum=0, maximum=390)
+    cooldown_bars_after_reverse = normalize_positive_int(payload.get("cooldown_bars_after_reverse"), default=3, minimum=0, maximum=390)
+    atr_dynamic_stop_enabled = normalize_bool(payload.get("atr_dynamic_stop_enabled"), True)
+    atr_stop_min_profit_r = normalize_positive_float(payload.get("atr_stop_min_profit_r"), 0.3, minimum=0.0, maximum=10.0)
+    atr_stop_deviation_threshold = normalize_positive_float(payload.get("atr_stop_deviation_threshold"), 0.30, minimum=0.0, maximum=10.0)
+    atr_stop_min_change = normalize_positive_float(payload.get("atr_stop_min_change"), 0.01, minimum=0.0, maximum=100.0)
     trade_window_start_time = normalize_hhmm(
         payload.get("trade_window_start_time"),
         service_module.DEFAULT_PORTFOLIO_TRADE_WINDOW_START,
@@ -250,6 +256,13 @@ def normalize_request(payload: dict) -> dict:
     )
     raw_params = payload.get("strategy_params") or payload.get("params") or {}
     strategy_params = normalize_strategy_params(raw_params)
+    if payload.get("signal_window_max_bars") not in (None, ""):
+        strategy_params["signal_window_max_bars"] = normalize_positive_int(
+            payload.get("signal_window_max_bars"),
+            default=int(DEFAULT_PARAMS.get("signal_window_max_bars", 12)),
+            minimum=0,
+            maximum=390,
+        )
     strategy_tag = str(payload.get("strategy_tag") or "IBKR_SAC_BACKTEST_V1").strip() or "IBKR_SAC_BACKTEST_V1"
     variants = normalize_variants(payload.get("variants") or [], strategy_params, strategy_tag)
 
@@ -276,6 +289,12 @@ def normalize_request(payload: dict) -> dict:
         "max_borrow_amount": max_borrow_amount,
         "position_limit_max": position_limit_max,
         "signal_validity_minutes": signal_validity_minutes,
+        "cooldown_bars_after_sl": cooldown_bars_after_sl,
+        "cooldown_bars_after_reverse": cooldown_bars_after_reverse,
+        "atr_dynamic_stop_enabled": atr_dynamic_stop_enabled,
+        "atr_stop_min_profit_r": atr_stop_min_profit_r,
+        "atr_stop_deviation_threshold": atr_stop_deviation_threshold,
+        "atr_stop_min_change": atr_stop_min_change,
         "trade_window_start_time": trade_window_start_time,
         "trade_window_end_time": trade_window_end_time,
         "order_window_end_time": order_window_end_time,
@@ -303,6 +322,12 @@ def normalize_request(payload: dict) -> dict:
             "execution_model": execution_model,
             "borrow_limit_mode": borrow_limit_mode,
             "max_borrow_amount": max_borrow_amount,
+            "cooldown_bars_after_sl": cooldown_bars_after_sl,
+            "cooldown_bars_after_reverse": cooldown_bars_after_reverse,
+            "atr_dynamic_stop_enabled": atr_dynamic_stop_enabled,
+            "atr_stop_min_profit_r": atr_stop_min_profit_r,
+            "atr_stop_deviation_threshold": atr_stop_deviation_threshold,
+            "atr_stop_min_change": atr_stop_min_change,
             "position_limit_max": position_limit_max,
             "signal_validity_minutes": signal_validity_minutes,
             "trade_window_start_time": trade_window_start_time,

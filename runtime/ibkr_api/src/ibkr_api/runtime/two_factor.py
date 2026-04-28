@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000
+SERVER_BOOT_RESUME_MANUAL_GRACE_SECONDS = 300
 RECOVERY_FIELDS = (
     "cycle_id",
     "recovery_phase",
@@ -31,6 +32,30 @@ RECOVERY_FIELDS = (
 
 AsDict = Callable[[Any], dict[str, Any]]
 ParseEtTimeMs = Callable[[Any], int]
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _has_runtime_auth_context(runtime_status: dict[str, Any]) -> bool:
+    runtime = dict(runtime_status) if isinstance(runtime_status, dict) else {}
+    return any(
+        key in runtime
+        for key in (
+            "session",
+            "gateway",
+            "websocket",
+            "order_tracker",
+            "auth_recovery",
+            "runtime_phase",
+            "starting",
+            "startup_complete",
+        )
+    )
 
 
 def normalize_two_factor_status(value: Any) -> str:
@@ -205,6 +230,14 @@ def normalize_two_factor_state_with_runtime(
 ) -> dict[str, Any]:
     state = as_dict(state_data)
     runtime = as_dict(runtime_status)
+    if runtime and not _has_runtime_auth_context(runtime):
+        # A topology-only runtime payload is not enough to decide auth state.
+        # Keep the persisted 2FA status instead of downgrading a fresh success.
+        state["runtime_status_incomplete"] = True
+        if "runtime_status_incomplete_reason" not in state:
+            state["runtime_status_incomplete_reason"] = "missing_auth_context"
+        return derive_2fa_action_state(state, as_dict=as_dict, parse_et_time_ms=parse_et_time_ms)
+
     auth_recovery = as_dict(runtime.get("auth_recovery"))
     runtime_started = bool(
         runtime.get("starting")
@@ -215,12 +248,16 @@ def normalize_two_factor_state_with_runtime(
     runtime_authenticated = bool(as_dict(runtime.get("session")).get("authenticated"))
     gateway = as_dict(runtime.get("gateway"))
     gateway_reachable = bool(gateway.get("running") or gateway.get("reachable"))
-    gateway_status_code = int(gateway.get("status_code") or 0)
+    gateway_status_code = _safe_int(gateway.get("status_code"), 0)
+    gateway_uptime_s = _safe_int(gateway.get("uptime_s"), 0)
+    gateway_pid = _safe_int(gateway.get("pid"), 0)
 
     state["runtime_started"] = runtime_started
     state["runtime_authenticated"] = runtime_authenticated
     state["gateway_status_code"] = gateway_status_code
     state["gateway_reachable"] = gateway_reachable
+    state["gateway_uptime_s"] = gateway_uptime_s
+    state["gateway_pid"] = gateway_pid
     for key in RECOVERY_FIELDS:
         if key in auth_recovery:
             state[key] = auth_recovery.get(key)
@@ -265,17 +302,29 @@ def normalize_two_factor_state_with_runtime(
             state["browser_authenticated"] = False
         active_cycle = normalized_status in {"triggered", "waiting_confirm", "waiting_response"}
         if server_boot_resume_pending and not active_cycle:
+            manual_required = (
+                str(state.get("recovery_phase") or "").strip().lower() == "resume_waiting_manual"
+                or str(state.get("probe_result") or "").strip().lower() in {
+                    "resume_probe_timeout",
+                    "manual_trigger_required",
+                    "timeout_after_self_heal",
+                }
+                or (
+                    gateway_status_code == 401
+                    and gateway_uptime_s >= SERVER_BOOT_RESUME_MANUAL_GRACE_SECONDS
+                )
+            )
             state.update(
                 {
-                    "status": "resume_pending",
+                    "status": "requested" if manual_required else "resume_pending",
                     "message": (
-                        "静默恢复尚未自动成功；当前不会自动补发新的 2FA，如需立即恢复请去 Runtime 页面人工处理。"
-                        if str(state.get("probe_result") or "").strip().lower() == "resume_probe_timeout"
+                        "Gateway 重启后静默恢复仍未认证；请打开 Runtime 页面人工处理当前 2FA，必要时干净重开。"
+                        if manual_required
                         else "Compute 重启后正在静默复用现有 Gateway Session，本轮不会自动重开 2FA。"
                     ),
                     "last_result": (
-                        "静默恢复未自动成功，当前保持被动等待，不会自动新开 2FA。"
-                        if str(state.get("probe_result") or "").strip().lower() == "resume_probe_timeout"
+                        "静默恢复未完成，等待人工触发或重开新的 2FA 轮次。"
+                        if manual_required
                         else "已进入 server_boot 静默恢复窗口。"
                     ),
                     "last_error": "",

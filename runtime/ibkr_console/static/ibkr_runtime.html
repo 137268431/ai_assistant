@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260428-runtime-clarity">
 </head>
 <body>
     <div class="page-loading-overlay" id="pageLoading">
@@ -103,12 +103,12 @@
                     </div>
                     <div class="action-section">
                         <button class="action-btn action-accent" data-action="reauth" onclick="handleRuntimeAction('reauth')">
-                            <span class="action-label">请求 / 复用 2FA 卡片</span>
-                            <span class="action-copy">发出或复用飞书 2FA 卡片。</span>
+                            <span class="action-label">刷新飞书 2FA 卡片</span>
+                            <span class="action-copy">只发出或复用飞书入口，不触发手机验证。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="reauth_force_new" onclick="handleRuntimeAction('reauth_force_new')">
-                            <span class="action-label">开始新一轮 2FA</span>
-                            <span class="action-copy">仅在没有 active 轮次时使用。</span>
+                            <span class="action-label">开始 2FA（触发手机）</span>
+                            <span class="action-copy">会触发 IBKR 手机验证，仅在没有 active 轮次时使用。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="takeover_on" onclick="handleRuntimeAction('takeover_on')">
                             <span class="action-label">开始人工接管</span>
@@ -320,7 +320,7 @@
         </section>
     </div>
 
-    <script src="/assets/js/shared/ibkr-page.js"></script>
-    <script src="/assets/js/pages/ibkr_runtime/page.js"></script>
+    <script src="/assets/js/shared/ibkr-page.js?v=20260428-runtime-clarity"></script>
+    <script src="/assets/js/pages/ibkr_runtime/page.js?v=20260428-runtime-clarity"></script>
 </body>
 </html>

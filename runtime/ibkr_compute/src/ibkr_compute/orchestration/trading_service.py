@@ -12,7 +12,8 @@ import signal
 import logging
 import threading
 import queue
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 
 from ibkr_compute.broker import (
     AuthController,
@@ -69,7 +70,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ibkr_service")
 
-ET = timezone(timedelta(hours=-4))
 
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://127.0.0.1:8090")
 CONSOLE_BASE_URL = (

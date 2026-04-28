@@ -9,7 +9,8 @@ import time
 import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 
 from ibkr_compute.broker import BrokerAdapter
 
@@ -20,7 +21,6 @@ ORDER_UPDATES_MODE = str(os.environ.get("IBKR_ORDER_UPDATES_MODE", "hybrid") or 
 POLL_INTERVAL_ACTIVE = max(5, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_ACTIVE_SEC", "5")))
 POLL_INTERVAL_IDLE = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_POLL_INTERVAL_IDLE_SEC", "15")))
 ORDER_FAST_TRACK_WINDOW = max(POLL_INTERVAL_ACTIVE, int(os.environ.get("IBKR_ORDER_FAST_TRACK_SEC", "30")))
-ET = timezone(timedelta(hours=-4))
 
 
 class OrderTracker:

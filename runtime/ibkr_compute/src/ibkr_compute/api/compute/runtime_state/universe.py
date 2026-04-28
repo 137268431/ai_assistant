@@ -119,11 +119,13 @@ def get_active_trade_symbols(environment: str, market_date: str | None = None) -
 
 
 def get_signal_generator_params(environment: str) -> dict:
+    api_app = _api_app()
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
     signal_enabled_symbols = sorted(get_active_trade_symbols(environment))
     return {
         "market_monitor_symbols": ",".join(market_monitor_symbols),
         "signal_enabled_symbols": ",".join(signal_enabled_symbols),
+        "signal_window_max_bars": api_app.cfg.get_int_for_environment("signal_window_max_bars", environment, 12),
     }
 
 

@@ -170,11 +170,12 @@ class TradingServiceSignalsMixin:
                             ack_err,
                             signal_id,
                         )
-                    self.signal_processor.register_position(
+                    self.signal_processor.register_pending_entry(
                         symbol,
                         {
                             "direction": sig["direction"],
                             "bracket_group": result.get("bracket_group"),
+                            "signal_id": signal_id,
                         },
                     )
                     self.order_lifecycle.increment_position_count()

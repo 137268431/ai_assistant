@@ -5,7 +5,8 @@ Historical bar backfill across the IBKR timeframes used by the pipeline.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 import math
 import os
 import time
@@ -28,7 +29,6 @@ from .timeframe_utils import (
 logger = logging.getLogger(__name__)
 
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
-ET = timezone(timedelta(hours=-4))
 
 PERIOD_MAP = {
     "5m": ("4d", "5min"),

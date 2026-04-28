@@ -36,6 +36,9 @@ class SignalGenerator:
         self.sd_upper_mr_used = False
         self.sd_lower_touched = False
         self.sd_upper_touched = False
+        self._bar_index = 0
+        self._sd_lower_activated_bar = 0
+        self._sd_upper_activated_bar = 0
 
         # 上轨窗口组件
         self.sd_upper_bull_touch_seen = False
@@ -98,6 +101,7 @@ class SignalGenerator:
         if not snapshot:
             self.last_trace = self._empty_trace()
             return None
+        self._bar_index += 1
         if self.symbol_is_market_monitor:
             self.last_trace = self._build_trace_payload(
                 snapshot,
@@ -119,6 +123,7 @@ class SignalGenerator:
             events.append("SD上轨触发，开启上轨窗口")
         self._prev_sd_lower = sd_lower
         self._prev_sd_upper = sd_upper
+        self._expire_stale_windows(events)
 
         # 窗口有效性 (上一根 bar 激活 + 未消费)
         sd_lower_valid = self.sd_lower_mr_active and not self.sd_lower_mr_used
@@ -306,6 +311,8 @@ class SignalGenerator:
                 "sd_lower_active": self.sd_lower_mr_active,
                 "sd_upper_used": self.sd_upper_mr_used,
                 "sd_lower_used": self.sd_lower_mr_used,
+                "sd_upper_age_bars": self._window_age_bars("upper") if self.sd_upper_mr_active else 0,
+                "sd_lower_age_bars": self._window_age_bars("lower") if self.sd_lower_mr_active else 0,
             },
             component_flags={
                 "sd_upper_bull_touch_seen": self.sd_upper_bull_touch_seen,
@@ -333,15 +340,51 @@ class SignalGenerator:
             self.sd_lower_mr_active = True
             self.sd_lower_mr_used = False
             self.sd_lower_touched = True
+            self._sd_lower_activated_bar = self._bar_index
         else:
             self.sd_upper_mr_active = True
             self.sd_upper_mr_used = False
             self.sd_upper_touched = True
+            self._sd_upper_activated_bar = self._bar_index
 
         self._clear_bull_components()
         self._clear_bear_components()
         self.buy_consumed = False
         self.sell_consumed = False
+
+    def _window_age_bars(self, side: str) -> int:
+        activated = self._sd_lower_activated_bar if side == "lower" else self._sd_upper_activated_bar
+        if activated <= 0:
+            return 0
+        return max(0, self._bar_index - activated)
+
+    def _signal_window_max_bars(self) -> int:
+        try:
+            return max(0, int(self.params.get("signal_window_max_bars", 12) or 0))
+        except Exception:
+            return 12
+
+    def _expire_stale_windows(self, events: list[str]):
+        max_bars = self._signal_window_max_bars()
+        if max_bars <= 0:
+            return
+        expired = []
+        if self.sd_lower_mr_active and not self.sd_lower_mr_used and self._window_age_bars("lower") > max_bars:
+            self.sd_lower_mr_active = False
+            self.sd_lower_mr_used = False
+            self._sd_lower_activated_bar = 0
+            expired.append("下轨")
+        if self.sd_upper_mr_active and not self.sd_upper_mr_used and self._window_age_bars("upper") > max_bars:
+            self.sd_upper_mr_active = False
+            self.sd_upper_mr_used = False
+            self._sd_upper_activated_bar = 0
+            expired.append("上轨")
+        if expired:
+            self._clear_bull_components()
+            self._clear_bear_components()
+            self.buy_consumed = False
+            self.sell_consumed = False
+            events.append(f"SD{'/'.join(expired)}窗口超过{max_bars}根K线，清空陈旧组件")
 
     # ── 组件清除 ──
 
@@ -497,6 +540,7 @@ class SignalGenerator:
                 "atr_pct": snapshot.get("atr_pct", 0),
                 "sl_dist_pct": pos.get("sl_dist_pct", 0),
                 "sl_atr_ratio": pos.get("sl_atr_ratio", 0),
+                "window_age_bars": self._window_age_bars("upper" if signal_window == "sd_upper" else "lower"),
                 "source": "ibkr_compute",
             },
         }
@@ -641,6 +685,9 @@ class SignalGenerator:
         self.sd_upper_mr_used = False
         self.sd_lower_touched = False
         self.sd_upper_touched = False
+        self._bar_index = 0
+        self._sd_lower_activated_bar = 0
+        self._sd_upper_activated_bar = 0
         self._clear_bull_components()
         self._clear_bear_components()
         self.buy_consumed = False

@@ -7,7 +7,8 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from ibkr_compute.core.time_utils import ET
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 try:
@@ -46,7 +47,6 @@ except Exception as exc:  # pragma: no cover - import availability depends on ru
 
 logger = logging.getLogger(__name__)
 
-ET = timezone(timedelta(hours=-4))
 
 DEFAULT_HOST = os.environ.get("IBGW_HOST", "127.0.0.1").strip() or "127.0.0.1"
 DEFAULT_PORT = int(os.environ.get("IBGW_PORT", "4001"))

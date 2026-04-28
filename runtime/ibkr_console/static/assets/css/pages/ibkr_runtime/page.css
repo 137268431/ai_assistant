@@ -149,6 +149,29 @@
             flex-wrap: wrap;
             gap: 8px;
         }
+        .auth-banner-feedback {
+            width: fit-content;
+            max-width: 100%;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(99, 179, 237, 0.20);
+            background: rgba(99, 179, 237, 0.08);
+            color: var(--text);
+            font-size: 12px;
+            line-height: 1.55;
+        }
+        .auth-banner-feedback.ok {
+            border-color: rgba(72, 187, 120, 0.25);
+            background: rgba(72, 187, 120, 0.10);
+        }
+        .auth-banner-feedback.warn {
+            border-color: rgba(246, 173, 85, 0.28);
+            background: rgba(246, 173, 85, 0.10);
+        }
+        .auth-banner-feedback.error {
+            border-color: rgba(252, 129, 129, 0.28);
+            background: rgba(252, 129, 129, 0.10);
+        }
         .auth-banner-side {
             display: grid;
             gap: 10px;
@@ -180,6 +203,17 @@
         .auth-banner-btn:disabled {
             opacity: 0.62;
             cursor: wait;
+        }
+        .auth-banner-btn-secondary {
+            border-color: rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.035);
+            color: var(--muted);
+        }
+        .auth-banner.warn .auth-banner-btn-secondary,
+        .auth-banner.error .auth-banner-btn-secondary,
+        .auth-banner.ok .auth-banner-btn-secondary {
+            border-color: rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.035);
         }
         .auth-banner-hint {
             font-size: 11px;

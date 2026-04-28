@@ -35,6 +35,7 @@ DEFAULT_PARAMS = {
     "div_type": "both",
     "position_amount": 10000, "max_loss_per_trade": 150,
     "entry_atr_mult": 1.0, "sl_atr_mult": 2.0, "rr_ratio": 1.5,
+    "signal_window_max_bars": 12,
     "enable_advanced_filter": True,
     "ema_strength_lookback": 20, "ema_weak_threshold": 0.005,
     "dtp_switch_lookback": 10, "dtp_max_switches": 3,

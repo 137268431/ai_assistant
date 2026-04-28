@@ -9,12 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from ibkr_compute.core.time_utils import ET
 from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
-ET = timezone(timedelta(hours=-4))
 DEFAULT_RETENTION_DAYS = max(30, int(os.environ.get("IBKR_HISTORY_RETENTION_DAYS", "365")))
 RETENTION_BATCH_SIZE = max(20, int(os.environ.get("IBKR_HISTORY_RETENTION_BATCH_SIZE", "200")))
 RETENTION_STATE_KEY = "ibkr_history_retention"

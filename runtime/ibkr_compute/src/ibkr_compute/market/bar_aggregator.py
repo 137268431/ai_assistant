@@ -8,14 +8,14 @@
 import time
 import logging
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 from typing import Callable, Dict, Optional
 
 from .timeframe_utils import classify_session, format_cn_time, format_us_time
 
 logger = logging.getLogger(__name__)
 
-ET = timezone(timedelta(hours=-4))
 BAR_INTERVAL_SECONDS = 300  # 5 minutes
 
 

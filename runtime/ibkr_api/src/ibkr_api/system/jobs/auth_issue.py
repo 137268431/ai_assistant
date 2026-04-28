@@ -26,6 +26,20 @@ def _is_server_boot_resume_recovery(auth: dict[str, Any]) -> bool:
     )
 
 
+def _is_server_boot_resume_manual_required(auth: dict[str, Any]) -> bool:
+    if not _is_server_boot_resume_recovery(auth) or bool(auth.get("runtime_authenticated")):
+        return False
+    gateway_status_code = _to_int(auth.get("gateway_status_code"), 0)
+    gateway_uptime_s = _to_int(auth.get("gateway_uptime_s"), 0)
+    recovery_phase = _to_text(auth.get("recovery_phase")).lower()
+    probe_result = _to_text(auth.get("probe_result")).lower()
+    return (
+        recovery_phase == "resume_waiting_manual"
+        or probe_result in {"resume_probe_timeout", "manual_trigger_required", "timeout_after_self_heal"}
+        or (gateway_status_code == 401 and gateway_uptime_s >= 300)
+    )
+
+
 def _is_silent_recovery_issue(auth: dict[str, Any]) -> bool:
     status = _to_text(auth.get("status")).lower()
     recovery_phase = _to_text(auth.get("recovery_phase")).lower()
@@ -161,6 +175,12 @@ def build_auth_immediate_issue(auth: dict[str, Any]) -> dict[str, str] | None:
             "kind": "waiting_confirm",
             "title": "IBKR 2FA 已触发，等待确认",
             "summary": "本轮 2FA 当前仍是手机确认。只需要在 IBKR App 点一次确认；如果手机没有反应，不要反复点旧消息，先去 Runtime 页面确认当前状态是否已变成 Challenge/Response。",
+        }
+    if _is_server_boot_resume_manual_required(auth):
+        return {
+            "kind": "server_boot_resume_manual_required",
+            "title": "IBKR 静默恢复未完成，需人工处理 2FA",
+            "summary": "Gateway 重启后仍是 401，静默复用旧 Session 未成功；请打开 Runtime 页面处理当前 2FA，必要时再干净重开。",
         }
     if active and status in {"requested", "triggered"}:
         return {

@@ -5,6 +5,7 @@ from typing import Any
 
 from .auth_issue import build_waiting_response_advice, build_waiting_response_issue
 from .auth_shared import (
+    AUTH_MONITOR_STATE_DATE,
     AUTH_MONITOR_STATE_KEY,
     AUTH_PENDING_ALERT_COOLDOWN_MS,
     ET,
@@ -126,7 +127,7 @@ def build_auth_pending_guard_response(
     }
     if not auth.get("pending_too_long"):
         next_state["last_auth_issue_at"] = ""
-        upsert_state(AUTH_MONITOR_STATE_KEY, environment, next_state, now["date"])
+        upsert_state(AUTH_MONITOR_STATE_KEY, environment, next_state, AUTH_MONITOR_STATE_DATE)
         return {
             "ok": True,
             "environment": environment,
@@ -138,7 +139,9 @@ def build_auth_pending_guard_response(
         }, 200
 
     fingerprint = _build_auth_pending_fingerprint(auth)
-    current_state = _as_dict(get_state_payload(AUTH_MONITOR_STATE_KEY, environment).get("data"))
+    current_state = _as_dict(
+        get_state_payload(AUTH_MONITOR_STATE_KEY, environment, date=AUTH_MONITOR_STATE_DATE).get("data")
+    )
     last_alert_hash = _to_text(current_state.get("last_auth_alert_hash"))
     last_alert_ms = _to_int(current_state.get("last_auth_alert_ms"), 0)
     should_notify = fingerprint != last_alert_hash or last_alert_ms <= 0 or (now_ms - last_alert_ms) >= AUTH_PENDING_ALERT_COOLDOWN_MS
@@ -161,7 +164,7 @@ def build_auth_pending_guard_response(
                 "last_auth_alert_hash": fingerprint,
             }
         )
-    upsert_state(AUTH_MONITOR_STATE_KEY, environment, next_state, now["date"])
+    upsert_state(AUTH_MONITOR_STATE_KEY, environment, next_state, AUTH_MONITOR_STATE_DATE)
     return {
         "ok": True,
         "environment": environment,

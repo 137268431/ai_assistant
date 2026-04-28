@@ -8,7 +8,8 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 from typing import Dict, List, Optional
 
 from ibkr_compute.broker import BrokerAdapter
@@ -16,7 +17,6 @@ from ibkr_compute.broker import BrokerAdapter
 logger = logging.getLogger(__name__)
 
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
-ET = timezone(timedelta(hours=-4))
 
 DEFAULT_EOD_CLOSE_TIME = (15, 55)
 DEFAULT_POSITION_LIMIT_MAX = 3

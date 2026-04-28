@@ -19,6 +19,8 @@ from ibkr_api.system.jobs.auth import (
     build_auth_pending_guard_response,
     build_two_factor_hourly_check_response,
 )
+from ibkr_api.runtime.two_factor import normalize_two_factor_state_with_runtime
+from ibkr_api.two_factor.deadlines import parse_et_time_ms
 
 
 class _AuthStateStore:
@@ -27,14 +29,14 @@ class _AuthStateStore:
         self.extra_states = {key: dict(value) for key, value in (extra_states or {}).items()}
         self.upserts = []
 
-    def get_state_payload(self, state_key, environment):
+    def get_state_payload(self, state_key, environment, date="global"):
         if state_key == "ibkr_2fa":
             return {"data": dict(self.auth_state), "environment": environment}
-        return {"data": dict(self.extra_states.get((state_key, environment), {})), "environment": environment}
+        return {"data": dict(self.extra_states.get((state_key, environment, date), {})), "environment": environment, "date": date}
 
     def upsert_state(self, state_key, environment, data, date):
         payload = dict(data)
-        self.extra_states[(state_key, environment)] = payload
+        self.extra_states[(state_key, environment, date)] = payload
         self.upserts.append((state_key, environment, payload, date))
         return {"data": payload, "environment": environment, "date": date}
 
@@ -150,6 +152,49 @@ class AuthJobsTest(unittest.TestCase):
         self.assertEqual(requests[0]["reason"], "weekly_reauth")
         self.assertIn("最晚请于美股周一盘前前完成", requests[0]["message"])
         self.assertEqual(requests[0]["detail"]["周验证截止"], "2026-04-25 20:00:00 北京时间 / 2026-04-25 08:00:00 美东")
+
+    def test_auth_edge_guard_ignores_topology_only_runtime_after_success(self):
+        store = _AuthStateStore(
+            auth_state={
+                "status": "success",
+                "request_count": 1,
+                "requested_at": "2026-04-28 05:33:35",
+                "triggered_at": "2026-04-28 05:33:35",
+                "recovery_phase": "recovered",
+                "probe_result": "authenticated",
+                "last_runtime_authenticated_at": "2026-04-28T05:33:44.154247-04:00",
+            }
+        )
+        emitted = []
+
+        payload, status_code = build_auth_edge_guard_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            get_state_payload=store.get_state_payload,
+            normalize_two_factor_state_with_runtime=lambda state, runtime: normalize_two_factor_state_with_runtime(
+                state,
+                runtime,
+                as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+                parse_et_time_ms=parse_et_time_ms,
+            ),
+            fetch_runtime_status=lambda environment: {
+                "payload": {
+                    "ok": True,
+                    "service_profile": "runtime",
+                    "runtime_mode": "remote",
+                    "service_topology": {"services": {}},
+                }
+            },
+            time_strings=lambda: {"us": "2026-04-28 05:38:17", "cn": "2026-04-28 17:38:17", "date": "2026-04-28"},
+            upsert_state=store.upsert_state,
+            emit_system_event=lambda **kwargs: emitted.append(kwargs) or {"notified": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertIsNone(payload["issue"])
+        self.assertFalse(emitted)
+        self.assertEqual(payload["state"]["last_auth_status"], "success")
 
 
 if __name__ == "__main__":

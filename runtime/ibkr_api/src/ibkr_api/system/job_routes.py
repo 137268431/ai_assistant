@@ -100,10 +100,10 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         payload, status_code = build_auth_edge_guard_response(
             payload=request.get_json(silent=True) or {},
             normalize_environment=normalize_environment,
-            get_state_payload=lambda state_key, environment: get_state_payload(
+            get_state_payload=lambda state_key, environment, date=None: get_state_payload(
                 state_key,
                 environment,
-                date="global" if state_key == "ibkr_2fa" else time_strings()["date"],
+                date=date or ("global" if state_key == "ibkr_2fa" else time_strings()["date"]),
             ),
             normalize_two_factor_state_with_runtime=normalize_two_factor_state_with_runtime,
             fetch_runtime_status=fetch_runtime_status,
@@ -121,10 +121,10 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         payload, status_code = build_auth_pending_guard_response(
             payload=request.get_json(silent=True) or {},
             normalize_environment=normalize_environment,
-            get_state_payload=lambda state_key, environment: get_state_payload(
+            get_state_payload=lambda state_key, environment, date=None: get_state_payload(
                 state_key,
                 environment,
-                date="global" if state_key == "ibkr_2fa" else time_strings()["date"],
+                date=date or ("global" if state_key == "ibkr_2fa" else time_strings()["date"]),
             ),
             normalize_two_factor_state_with_runtime=normalize_two_factor_state_with_runtime,
             fetch_runtime_status=fetch_runtime_status,

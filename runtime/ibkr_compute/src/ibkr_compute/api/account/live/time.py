@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+
+from ibkr_compute.core.time_utils import ET
 
 
 def _coerce_time_ms(value) -> int:
@@ -54,7 +56,7 @@ def _extract_market_date_text(value) -> str:
         return ""
     if parsed.tzinfo is None:
         return parsed.strftime("%Y-%m-%d")
-    return parsed.astimezone(timezone(timedelta(hours=-4))).strftime("%Y-%m-%d")
+    return parsed.astimezone(ET).strftime("%Y-%m-%d")
 
 
 def _order_history_time_value(record: dict) -> str:

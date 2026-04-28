@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ibkr_compute.backtest import request_utils
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, IndicatorEngine
+from ibkr_compute.core.risk_management import compute_atr_tightened_stop
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.integrations.pb_client import PBClient
@@ -67,7 +68,7 @@ MAX_REPLAY_ROWS = 240
 MAX_BATCH_VARIANTS = 16
 TV_COMPARE_SAMPLE_LIMIT = 8
 BACKTEST_WARMUP_BARS = 320
-DEFAULT_SCAN_CUTOFF_TIME = "09:25"
+DEFAULT_SCAN_CUTOFF_TIME = "09:20"
 DEFAULT_BACKTEST_RETENTION_LIMIT = 30
 MAX_BACKTEST_RETENTION_LIMIT = 200
 MAX_BACKTEST_WARMUP_BARS = 2000
@@ -3086,6 +3087,53 @@ class BacktestService:
         validity_ms = int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) * 60 * 1000
         return bar_ms - signal_ms > validity_ms
 
+    def _cooldown_bars_to_ms(self, bars: int) -> int:
+        return max(0, int(bars or 0)) * interval_to_ms("5m")
+
+    def _backtest_cooldown_active(self, state: dict, bar: dict) -> tuple[bool, str]:
+        until_ms = int(state.get("cooldown_until_ms", 0) or 0)
+        bar_ms = int(bar.get("bar_time_ms", 0) or 0)
+        if until_ms <= 0 or bar_ms >= until_ms:
+            if until_ms > 0 and bar_ms >= until_ms:
+                state["cooldown_until_ms"] = 0
+                state["cooldown_reason"] = ""
+            return False, ""
+        return True, str(state.get("cooldown_reason") or "cooldown_active")
+
+    def _start_backtest_cooldown(self, state: dict, bar: dict, bars: int, reason: str):
+        duration_ms = self._cooldown_bars_to_ms(bars)
+        if duration_ms <= 0:
+            return
+        state["cooldown_until_ms"] = int(bar.get("bar_time_ms", 0) or 0) + duration_ms
+        state["cooldown_reason"] = str(reason or "cooldown_active").strip() or "cooldown_active"
+
+    def _maybe_apply_backtest_atr_stop(
+        self,
+        position: dict | None,
+        snapshot: dict,
+        request: dict,
+    ) -> dict | None:
+        if not position or not self._normalize_bool(request.get("atr_dynamic_stop_enabled"), True):
+            return position
+        current_price = self._coerce_float_value(snapshot.get("close"), 0.0)
+        current_atr = self._coerce_float_value(snapshot.get("atr"), 0.0)
+        result = compute_atr_tightened_stop(
+            position,
+            current_price=current_price,
+            current_atr=current_atr,
+            sl_atr_mult=self._coerce_float_value((request.get("params") or {}).get("strategy_params", {}).get("sl_atr_mult"), DEFAULT_PARAMS["sl_atr_mult"]),
+            min_profit_r=self._coerce_float_value(request.get("atr_stop_min_profit_r"), 0.3),
+            deviation_threshold=self._coerce_float_value(request.get("atr_stop_deviation_threshold"), 0.30),
+            min_change=self._coerce_float_value(request.get("atr_stop_min_change"), 0.01),
+        )
+        if not result.get("should_update"):
+            return position
+        position["stop_price"] = float(result["new_sl"])
+        position["last_stop_atr"] = float(result.get("current_atr", current_atr) or current_atr)
+        position["atr_stop_adjust_count"] = int(position.get("atr_stop_adjust_count", 0) or 0) + 1
+        position["last_atr_stop_adjust"] = result
+        return position
+
     def _coerce_float_value(self, value: Any, default: float = 0.0) -> float:
         if value is None or isinstance(value, bool):
             return default
@@ -3511,6 +3559,8 @@ class BacktestService:
             "previous_bar": None,
             "pending_signal": None,
             "open_position": None,
+            "cooldown_until_ms": 0,
+            "cooldown_reason": "",
             "gap_count": 0,
             "market_bars": 0,
             "reverse_index": set(),
@@ -3612,6 +3662,15 @@ class BacktestService:
             closed_trade = self._close_portfolio_position(ledger, position, trade)
             if closed_trade:
                 all_trades.append(closed_trade)
+                if str(closed_trade.get("exit_reason") or "") == "stop_loss":
+                    state = states.get(str(closed_trade.get("symbol") or "").upper())
+                    if state is not None:
+                        self._start_backtest_cooldown(
+                            state,
+                            {"bar_time_ms": int(closed_trade.get("exit_bar_ms", 0) or 0)},
+                            int(request.get("cooldown_bars_after_sl", 6) or 0),
+                            "cooldown_after_stop_loss",
+                        )
 
         for step_index, bar_ms in enumerate(bar_times):
             if self._cancel_event.is_set():
@@ -3638,6 +3697,8 @@ class BacktestService:
 
                 if state.get("previous_day") and current_symbol_day != state.get("previous_day"):
                     state["signal_gen"].daily_reset()
+                    state["cooldown_until_ms"] = 0
+                    state["cooldown_reason"] = ""
                     if state.get("open_position") and force_flat_eod and state.get("previous_bar"):
                         trade = self._close_position(
                             state["open_position"],
@@ -3757,6 +3818,10 @@ class BacktestService:
                     elif not self._portfolio_bar_in_order_window(bar, request):
                         self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "outside_order_window")
                         self._portfolio_record_rejection(ledger, "outside_order_window")
+                    elif self._backtest_cooldown_active(state, bar)[0]:
+                        _, cooldown_reason = self._backtest_cooldown_active(state, bar)
+                        self._mark_backtest_signal_status(signal_index, signal_id, "skipped", cooldown_reason)
+                        self._portfolio_record_rejection(ledger, cooldown_reason)
                     else:
                         active_target = preexisting_pending_signal if preexisting_pending_signal else preexisting_open_position
                         active_state = "pending_entry" if preexisting_pending_signal else ("filled_position" if preexisting_open_position else "")
@@ -3802,6 +3867,12 @@ class BacktestService:
                                         )
                                         if reverse_trade:
                                             append_trade(original_position, reverse_trade)
+                                            self._start_backtest_cooldown(
+                                                state,
+                                                bar,
+                                                int(request.get("cooldown_bars_after_reverse", 3) or 0),
+                                                "cooldown_after_reverse_close",
+                                            )
                             if active_target:
                                 drop_reason = "active_target_exists"
                                 if active_direction and new_direction and new_direction != active_direction:
@@ -3894,6 +3965,19 @@ class BacktestService:
                         )
                         if reverse_trade:
                             append_trade(original_position, reverse_trade)
+                            self._start_backtest_cooldown(
+                                state,
+                                bar,
+                                int(request.get("cooldown_bars_after_reverse", 3) or 0),
+                                "cooldown_after_reverse_close",
+                            )
+
+                if state.get("open_position"):
+                    state["open_position"] = self._maybe_apply_backtest_atr_stop(
+                        state["open_position"],
+                        snapshot,
+                        request,
+                    )
 
                 state["previous_bar"] = bar
 
@@ -4014,6 +4098,7 @@ class BacktestService:
         previous_day = ""
         pending_signal = None
         open_position = None
+        cooldown_state = {"cooldown_until_ms": 0, "cooldown_reason": ""}
 
         warmup_bars = self._load_symbol_warmup_bars(
             symbol,
@@ -4051,6 +4136,8 @@ class BacktestService:
 
             if previous_day and current_day != previous_day:
                 signal_gen.daily_reset()
+                cooldown_state["cooldown_until_ms"] = 0
+                cooldown_state["cooldown_reason"] = ""
                 if open_position and force_flat_eod:
                     exit_trade = self._close_position(open_position, bars[index - 1], commission_per_share, slippage_bps, "eod")
                     trades.append(exit_trade)
@@ -4089,6 +4176,13 @@ class BacktestService:
                 closed = self._check_exit(open_position, bar, commission_per_share, slippage_bps)
                 if closed:
                     trades.append(closed)
+                    if str(closed.get("exit_reason") or "") == "stop_loss":
+                        self._start_backtest_cooldown(
+                            cooldown_state,
+                            bar,
+                            int(request.get("cooldown_bars_after_sl", 6) or 0),
+                            "cooldown_after_stop_loss",
+                        )
                     open_position = None
 
             snapshot = engine.update(bar)
@@ -4144,6 +4238,9 @@ class BacktestService:
                     signal_index[signal_id] = signal_row
                 if not trading_day_enabled:
                     self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "symbol_not_selected_for_day")
+                elif self._backtest_cooldown_active(cooldown_state, bar)[0]:
+                    _, cooldown_reason = self._backtest_cooldown_active(cooldown_state, bar)
+                    self._mark_backtest_signal_status(signal_index, signal_id, "skipped", cooldown_reason)
                 else:
                     active_target = preexisting_pending_signal if preexisting_pending_signal else preexisting_open_position
                     active_state = "pending_entry" if preexisting_pending_signal else ("filled_position" if preexisting_open_position else "")
@@ -4185,6 +4282,12 @@ class BacktestService:
                                     )
                                     if reverse_trade:
                                         trades.append(reverse_trade)
+                                        self._start_backtest_cooldown(
+                                            cooldown_state,
+                                            bar,
+                                            int(request.get("cooldown_bars_after_reverse", 3) or 0),
+                                            "cooldown_after_reverse_close",
+                                        )
                         if active_target:
                             drop_reason = "active_target_exists"
                             if active_direction and new_direction and new_direction != active_direction:
@@ -4255,6 +4358,15 @@ class BacktestService:
                     )
                     if reverse_trade:
                         trades.append(reverse_trade)
+                        self._start_backtest_cooldown(
+                            cooldown_state,
+                            bar,
+                            int(request.get("cooldown_bars_after_reverse", 3) or 0),
+                            "cooldown_after_reverse_close",
+                        )
+
+            if open_position:
+                open_position = self._maybe_apply_backtest_atr_stop(open_position, snapshot, request)
 
         if open_position:
             trades.append(self._close_position(open_position, bars[-1], commission_per_share, slippage_bps, "last_bar"))
@@ -4741,11 +4853,6 @@ class BacktestService:
     def _resolve_reverse_signal_conflict_action(self, target_state: str, progress_ratio: float) -> str:
         if target_state == "pending_entry":
             return "cancel"
-        safe_progress = float(progress_ratio or 0)
-        if safe_progress >= 0.7:
-            return "adjust_tp"
-        if safe_progress >= 0.3:
-            return "adjust_sl"
         return "close"
 
     def _build_backtest_signal_conflict_analysis(
@@ -5714,6 +5821,11 @@ class BacktestService:
             "entry_limit_price": float(signal.get("entry_price", signal.get("entry", 0)) or 0),
             "target_price": float(signal.get("target_price", signal.get("take_profit", 0)) or 0),
             "stop_price": float(signal.get("stop_price", signal.get("stop_loss", 0)) or 0),
+            "original_stop_loss": float(signal.get("stop_price", signal.get("stop_loss", 0)) or 0),
+            "last_stop_atr": float((signal.get("extra") or {}).get("atr", 0) or 0),
+            "atr_stop_adjust_count": 0,
+            "mfe": 0.0,
+            "mae": 0.0,
             "shares": shares,
             "bars_held": 0,
             "entry_commission": round(shares * commission_per_share, 4),
@@ -5731,6 +5843,16 @@ class BacktestService:
         close = float(bar.get("close", 0) or 0)
         shares = int(position.get("shares", 0) or 0)
         position["bars_held"] = int(position.get("bars_held", 0) or 0) + 1
+        entry_price = float(position.get("entry_price", 0) or 0)
+        if entry_price > 0:
+            if direction == "long":
+                favorable = max(0.0, high - entry_price)
+                adverse = max(0.0, entry_price - low)
+            else:
+                favorable = max(0.0, entry_price - low)
+                adverse = max(0.0, high - entry_price)
+            position["mfe"] = max(float(position.get("mfe", 0) or 0), favorable)
+            position["mae"] = max(float(position.get("mae", 0) or 0), adverse)
 
         exit_reason = ""
         raw_exit_price = 0.0
@@ -5781,6 +5903,10 @@ class BacktestService:
             "extra": {
                 "stop_price": stop_price,
                 "target_price": target_price,
+                "mfe": round(float(position.get("mfe", 0) or 0), 4),
+                "mae": round(float(position.get("mae", 0) or 0), 4),
+                "atr_stop_adjust_count": int(position.get("atr_stop_adjust_count", 0) or 0),
+                "last_atr_stop_adjust": position.get("last_atr_stop_adjust") or {},
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),
                 "signal_close": float(position.get("signal_close", 0) or 0),
@@ -5792,6 +5918,12 @@ class BacktestService:
         direction = str(position.get("direction", "") or "")
         shares = int(position.get("shares", 0) or 0)
         raw_exit_price = float(bar.get("close", 0) or 0)
+        entry_price = float(position.get("entry_price", 0) or 0)
+        if entry_price > 0 and raw_exit_price > 0:
+            favorable = max(0.0, raw_exit_price - entry_price) if direction == "long" else max(0.0, entry_price - raw_exit_price)
+            adverse = max(0.0, entry_price - raw_exit_price) if direction == "long" else max(0.0, raw_exit_price - entry_price)
+            position["mfe"] = max(float(position.get("mfe", 0) or 0), favorable)
+            position["mae"] = max(float(position.get("mae", 0) or 0), adverse)
         exit_price = self._apply_slippage(raw_exit_price, direction, is_entry=False, bps=slippage_bps)
         exit_commission = round(shares * commission_per_share, 4)
         pnl = self._calc_pnl(direction, float(position["entry_price"]), exit_price, shares) - float(position["entry_commission"]) - exit_commission
@@ -5820,6 +5952,10 @@ class BacktestService:
             "extra": {
                 "stop_price": float(position.get("stop_price", 0) or 0),
                 "target_price": float(position.get("target_price", 0) or 0),
+                "mfe": round(float(position.get("mfe", 0) or 0), 4),
+                "mae": round(float(position.get("mae", 0) or 0), 4),
+                "atr_stop_adjust_count": int(position.get("atr_stop_adjust_count", 0) or 0),
+                "last_atr_stop_adjust": position.get("last_atr_stop_adjust") or {},
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),
                 "signal_close": float(position.get("signal_close", 0) or 0),
@@ -5895,6 +6031,18 @@ class BacktestService:
         profit_factor = (gross_profit / abs(gross_loss)) if gross_loss < 0 else 0.0
         expectancy = (net_pnl / trade_count) if trade_count else 0.0
         total_return_pct = (net_pnl / initial_capital * 100.0) if initial_capital > 0 else 0.0
+        exit_reason_breakdown = {}
+        direction_breakdown = {}
+        mfe_values = []
+        mae_values = []
+        for item in trades:
+            exit_reason = str(item.get("exit_reason") or "unknown")
+            direction = str(item.get("direction") or "unknown")
+            exit_reason_breakdown[exit_reason] = int(exit_reason_breakdown.get(exit_reason, 0) or 0) + 1
+            direction_breakdown[direction] = int(direction_breakdown.get(direction, 0) or 0) + 1
+            extra = self._parse_object(item.get("extra"))
+            mfe_values.append(float(extra.get("mfe", 0) or 0))
+            mae_values.append(float(extra.get("mae", 0) or 0))
 
         daily_returns = []
         previous_equity = initial_capital
@@ -5970,6 +6118,10 @@ class BacktestService:
             "ending_equity": round(initial_capital + net_pnl, 4),
             "daily_equity_count": len(daily_equity),
             "monthly_returns": monthly_returns,
+            "exit_reason_breakdown": exit_reason_breakdown,
+            "direction_breakdown": direction_breakdown,
+            "avg_mfe": round(statistics.fmean(mfe_values), 4) if mfe_values else 0.0,
+            "avg_mae": round(statistics.fmean(mae_values), 4) if mae_values else 0.0,
         }
 
     def _persist_trades(self, run_id: str, trades: list[dict]):

@@ -7,12 +7,12 @@
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from ibkr_compute.core.time_utils import ET
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-ET = timezone(timedelta(hours=-4))
 
 
 class SignalRouter:

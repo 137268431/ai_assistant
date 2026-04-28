@@ -7,12 +7,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 from typing import Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-ET = timezone(timedelta(hours=-4))
 
 
 class RealtimeQuoteBook:

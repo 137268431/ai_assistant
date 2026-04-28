@@ -13,10 +13,46 @@ def _service_mod():
 
 class TradingServiceRuntimeOpsMixin:
     def _on_order_fill(self, order: dict):
-        _service_mod().logger.info("Order filled: %s", order.get("ticker"))
+        service_mod = _service_mod()
+        symbol = str(order.get("ticker") or order.get("symbol") or "").strip().upper()
+        order_type = str(order.get("orderType") or order.get("order_type") or "").strip().upper()
+        has_parent = bool(str(order.get("parentId") or order.get("parent_id") or "").strip())
+        side = str(order.get("side") or "").strip().upper()
+        role = "entry"
+        if has_parent and order_type in {"STP", "STOP", "STOPLOSS"}:
+            role = "stop_loss"
+        elif has_parent:
+            role = "take_profit"
+        service_mod.logger.info("Order filled: %s role=%s", symbol or order.get("ticker"), role)
+        if not symbol:
+            return
+        if role == "entry":
+            direction = "long" if side == "BUY" else "short" if side == "SELL" else ""
+            self.signal_processor.register_filled_position(
+                symbol,
+                {
+                    "direction": direction,
+                    "broker_order_id": str(order.get("orderId") or order.get("order_id") or ""),
+                    "state": "filled_position",
+                },
+            )
+            return
+        self.signal_processor.remove_position(symbol)
+        if role == "stop_loss":
+            self.order_lifecycle.increment_sl_count()
+            self.signal_processor.start_cooldown(
+                symbol,
+                self.signal_processor.cooldown_bars_after_sl(),
+                "cooldown_after_stop_loss",
+            )
 
     def _on_order_cancel(self, order: dict):
-        _service_mod().logger.info("Order cancelled: %s", order.get("ticker"))
+        service_mod = _service_mod()
+        symbol = str(order.get("ticker") or order.get("symbol") or "").strip().upper()
+        has_parent = bool(str(order.get("parentId") or order.get("parent_id") or "").strip())
+        service_mod.logger.info("Order cancelled: %s", symbol or order.get("ticker"))
+        if symbol and not has_parent:
+            self.signal_processor.remove_position(symbol)
 
     def _schedule_retention(self):
         service_mod = _service_mod()

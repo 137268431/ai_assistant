@@ -939,6 +939,20 @@ function getIbkrRuntimeAuthGuidanceModel({
         };
     }
 
+    if (twoFactorCyclePhase === 'success') {
+        return {
+            visible: true,
+            tone: 'ok',
+            badge: '2FA SUCCESS',
+            stepLabel: '无需操作',
+            title: 'IBKR 认证已完成',
+            copy: '当前 2FA 已成功恢复认证。若 Gateway / Session 小标签短暂显示离线或 pending，通常只是运行态快照还没刷新，不需要重新触发 2FA。',
+            meta: [safeStartupStepLabel, '等待状态快照刷新'],
+            buttonLabel: '刷新状态',
+            behavior: 'refresh'
+        };
+    }
+
     if (twoFactorCyclePhase === 'waiting_response_reset') {
         return {
             visible: true,
@@ -1015,19 +1029,43 @@ function getIbkrRuntimeAuthGuidanceModel({
             visible: true,
             tone: safeReason === 'weekly_reauth' ? 'warn' : 'info',
             badge: safeReasonLabel,
-            stepLabel: '去飞书开始',
-            title: safeReason === 'weekly_reauth' ? '本周重登提醒已发出' : '去飞书开始 2FA 验证',
-            copy: startup?.operator_action || '这一步还没有真正开始验证。请去飞书点击“开始 2FA 验证”，点完后回到这里刷新状态。',
+            stepLabel: '选择触发方式',
+            title: safeReason === 'weekly_reauth' ? '本周重登等待开始 2FA' : '等待开始 2FA 验证',
+            copy: startup?.operator_action || '当前还没有真正触发手机验证。点“开始 2FA（触发手机）”会直接发起 IBKR 手机验证；点“刷新飞书卡片”只更新飞书入口，不会触发手机。',
             meta: [safeStartupStepLabel, startup?.current_blocker || '当前停在待手动触发'],
-            buttonLabel: '请求 / 刷新 2FA 卡片',
+            buttonLabel: '开始 2FA（触发手机）',
             behavior: 'action',
-            actionName: 'reauth',
+            actionName: 'reauth_force_new',
             requestTarget: getIbkrRuntimeAuthGuidanceRequestTarget({
+                requestTargetKind: 'reauth_force_new',
+                environment,
+                reason: safeReason,
+                source
+            }),
+            secondaryButtonLabel: '刷新飞书卡片（不触发手机）',
+            secondaryBehavior: 'action',
+            secondaryActionName: 'reauth',
+            secondaryRequestTarget: getIbkrRuntimeAuthGuidanceRequestTarget({
                 requestTargetKind: 'reauth',
                 environment,
                 reason: safeReason,
                 source
             })
+        };
+    }
+
+    if (!sessionAuthenticated && ['resume_pending', 'recovering'].includes(twoFactorCyclePhase)) {
+        return {
+            visible: true,
+            tone: 'warn',
+            badge: safeReasonLabel,
+            stepLabel: '静默恢复',
+            title: '静默恢复未完成',
+            copy: '提醒消息只保留查看入口，不直接放触发按钮。若你已经处理了当前手机确认或 Challenge，可先立即探测；长时间仍未恢复，再在 Runtime 页面干净重开。',
+            meta: [safeStartupStepLabel, '避免在提醒里误触发新一轮'],
+            buttonLabel: '我已处理，立即探测',
+            behavior: 'action',
+            actionName: 'probe'
         };
     }
 
@@ -1059,12 +1097,21 @@ function getIbkrRuntimeAuthGuidanceModel({
             badge: safeReasonLabel,
             stepLabel: safeStartupStepLabel,
             title: safeReason === 'weekly_reauth' ? '继续本周重登提醒' : '继续手动验证',
-            copy: startup?.operator_action || startup?.current_blocker || '请先把同一张 2FA 卡片刷到飞书，然后去飞书点击开始验证。',
+            copy: startup?.operator_action || startup?.current_blocker || '可以直接在这里开始 2FA 手机验证；如果只想更新飞书入口，请点刷新飞书卡片。',
             meta: [startup?.summary || '按顶部入口一步一步推进', '只有人工确认后才继续'],
-            buttonLabel: '请求 / 刷新 2FA 卡片',
+            buttonLabel: '开始 2FA（触发手机）',
             behavior: 'action',
-            actionName: 'reauth',
+            actionName: 'reauth_force_new',
             requestTarget: getIbkrRuntimeAuthGuidanceRequestTarget({
+                requestTargetKind: 'reauth_force_new',
+                environment,
+                reason: safeReason,
+                source
+            }),
+            secondaryButtonLabel: '刷新飞书卡片（不触发手机）',
+            secondaryBehavior: 'action',
+            secondaryActionName: 'reauth',
+            secondaryRequestTarget: getIbkrRuntimeAuthGuidanceRequestTarget({
                 requestTargetKind: 'reauth',
                 environment,
                 reason: safeReason,
@@ -1099,11 +1146,11 @@ function getIbkrRuntimeAuthGuidanceRequestTarget({
     const safeKind = String(requestTargetKind || '').trim();
     const safeEnvironment = String(environment || '').trim();
     const safeSource = String(source || 'runtime_page_banner').trim() || 'runtime_page_banner';
+    const normalizedReason = String(reason || '').trim() === 'weekly_reauth'
+        ? 'weekly_reauth'
+        : 'manual_start';
 
     if (safeKind === 'reauth') {
-        const normalizedReason = String(reason || '').trim() === 'weekly_reauth'
-            ? 'weekly_reauth'
-            : 'manual_start';
         return {
             path: '/api/custom/ibkr/2fa/request',
             body: {
@@ -1114,6 +1161,22 @@ function getIbkrRuntimeAuthGuidanceRequestTarget({
                 message: normalizedReason === 'weekly_reauth'
                     ? '本周重登等待你在飞书手动点开始验证。'
                     : '启动验证等待你在飞书手动点开始验证。'
+            }
+        };
+    }
+
+    if (safeKind === 'reauth_force_new') {
+        return {
+            path: '/api/custom/ibkr/2fa/request',
+            body: {
+                environment: safeEnvironment,
+                reason: normalizedReason,
+                source: safeSource,
+                force_reset: true,
+                force_restart: true,
+                trigger_now: true,
+                force_new: true,
+                message: '已开始新一轮 2FA，请查看手机。'
             }
         };
     }
@@ -1428,9 +1491,17 @@ const IBKR_CONFIG_DETAIL_KEYS = [
     'trade_window_end_time',
     'order_window_end_time',
     'signal_validity_minutes',
+    'signal_window_max_bars',
+    'cooldown_bars_after_sl',
+    'cooldown_bars_after_reverse',
+    'atr_dynamic_stop_enabled',
+    'atr_stop_min_profit_r',
+    'atr_stop_deviation_threshold',
+    'atr_stop_min_change',
     'order_validity_minutes',
     'signal_poll_interval_sec',
-    'reverse_signal_threshold'
+    'reverse_signal_threshold',
+    'reverse_flip_enabled'
 ];
 
 const IBKR_SYSTEM_PRIMARY_DETAIL_KEYS = new Set([

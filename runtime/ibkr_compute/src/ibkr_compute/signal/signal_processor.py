@@ -9,17 +9,18 @@
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
+from ibkr_compute.core.time_utils import ET
 from typing import Callable, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
-ET = timezone(timedelta(hours=-4))
 
 DEFAULT_TRADE_WINDOW_START = (9, 35)
 DEFAULT_TRADE_WINDOW_END = (15, 30)
 DEFAULT_ORDER_WINDOW_END = (15, 0)
 DEFAULT_SIGNAL_EXPIRY_MINUTES = 30
+DEFAULT_COOLDOWN_BAR_MINUTES = 5
 
 
 class SignalProcessor:
@@ -29,6 +30,7 @@ class SignalProcessor:
         self.environment = environment
         self.readiness_provider = readiness_provider
         self._active_positions: Dict[str, dict] = {}
+        self._cooldowns: Dict[str, dict] = {}
 
     def validate_signal(self, signal: dict) -> Tuple[bool, str]:
         et_now = datetime.now(ET)
@@ -57,6 +59,10 @@ class SignalProcessor:
 
         symbol = signal.get("symbol", "").upper()
         direction = signal.get("direction", "")
+
+        cooldown_active, cooldown_reason = self._cooldown_status(symbol, et_now)
+        if cooldown_active:
+            return False, cooldown_reason
 
         if self._has_conflicting_position(symbol, direction):
             return False, "direction_conflict"
@@ -153,10 +159,42 @@ class SignalProcessor:
 
     def _has_conflicting_position(self, symbol: str, direction: str) -> bool:
         if symbol in self._active_positions:
-            existing = self._active_positions[symbol]
-            if existing.get("direction") == direction:
-                return True
+            return True
         return False
+
+    def _cooldown_status(self, symbol: str, et_now: datetime) -> Tuple[bool, str]:
+        if not symbol:
+            return False, "ok"
+        row = self._cooldowns.get(symbol)
+        if not row:
+            return False, "ok"
+        until = row.get("until")
+        if not isinstance(until, datetime):
+            self._cooldowns.pop(symbol, None)
+            return False, "ok"
+        if et_now >= until:
+            self._cooldowns.pop(symbol, None)
+            return False, "ok"
+        reason = str(row.get("reason") or "cooldown_active").strip() or "cooldown_active"
+        return True, reason
+
+    def cooldown_bars_after_sl(self) -> int:
+        return max(0, self.config.get_int_for_environment("cooldown_bars_after_sl", self.environment, 6))
+
+    def cooldown_bars_after_reverse(self) -> int:
+        return max(0, self.config.get_int_for_environment("cooldown_bars_after_reverse", self.environment, 3))
+
+    def start_cooldown(self, symbol: str, bars: int, reason: str, now: datetime | None = None):
+        text = str(symbol or "").strip().upper()
+        safe_bars = max(0, int(bars or 0))
+        if not text or safe_bars <= 0:
+            return
+        et_now = now.astimezone(ET) if isinstance(now, datetime) else datetime.now(ET)
+        self._cooldowns[text] = {
+            "until": et_now + timedelta(minutes=safe_bars * DEFAULT_COOLDOWN_BAR_MINUTES),
+            "bars": safe_bars,
+            "reason": str(reason or "cooldown_active").strip() or "cooldown_active",
+        }
 
     def _validate_prices(self, signal: dict) -> bool:
         entry = signal.get("entry", 0)
@@ -179,13 +217,24 @@ class SignalProcessor:
         return True
 
     def register_position(self, symbol: str, position_data: dict):
-        self._active_positions[symbol] = position_data
+        self._active_positions[str(symbol or "").upper()] = position_data
+
+    def register_pending_entry(self, symbol: str, position_data: dict):
+        payload = dict(position_data or {})
+        payload["state"] = "pending_entry"
+        self.register_position(symbol, payload)
+
+    def register_filled_position(self, symbol: str, position_data: dict):
+        payload = dict(position_data or {})
+        payload["state"] = "filled_position"
+        self.register_position(symbol, payload)
 
     def remove_position(self, symbol: str):
-        self._active_positions.pop(symbol, None)
+        self._active_positions.pop(str(symbol or "").upper(), None)
 
     def daily_reset(self):
         self._active_positions.clear()
+        self._cooldowns.clear()
         logger.info("Signal processor daily reset")
 
     def status(self) -> dict:
@@ -194,6 +243,14 @@ class SignalProcessor:
             "environment": self.environment,
             "active_positions": len(self._active_positions),
             "positions": list(self._active_positions.keys()),
+            "cooldowns": {
+                symbol: {
+                    "until": row.get("until").isoformat() if isinstance(row.get("until"), datetime) else "",
+                    "reason": row.get("reason", ""),
+                    "bars": row.get("bars", 0),
+                }
+                for symbol, row in self._cooldowns.items()
+            },
             "ibkr_trading_enabled": self._is_trading_enabled(),
             "trading_gate_open": trade_ready,
             "trading_gate_reason": trade_ready_reason,

@@ -43,13 +43,21 @@ const configData = [
   cfg('signal_manual_confirm_enabled', 'TRUE', 'TRUE', '手动确认信号', '信号与反转', 205, '开启后，新信号会先进入 awaiting_confirm，由人工确认后再进入正式下单链路'),
   cfg('signal_poll_interval_sec', '120', '120', '信号轮询秒数', '信号与反转', 210, 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
   cfg('signal_validity_minutes', '30', '30', '信号有效期', '信号与反转', 220, '超过此时间的 pending / awaiting_confirm 信号将被自动标记为 expired'),
+  cfg('signal_window_max_bars', '12', '12', '信号窗口最大K线数', '信号与反转', 222, 'SD 窗口开启后最多保留多少根 5m K线；过期后清空组件，避免陈旧信号'),
   cfg('reverse_signal_threshold', '6', '6', '反转通知阈值', '信号与反转', 230, '仅当反转评分达到该阈值时发送反转卡片通知'),
+  cfg('reverse_flip_enabled', 'FALSE', 'FALSE', '反向信号反手', '信号与反转', 235, '默认关闭；反向信号只用于取消/平仓/风控，不立即开反向新仓'),
 
   cfg('trade_window_start_time', '09:35', '09:35', '交易开始时间', '交易窗口', 300, '信号允许进入交易校验的开始时间，ET 时区'),
   cfg('trade_window_end_time', '15:30', '15:30', '交易结束时间', '交易窗口', 310, '超过该时间后不再接受新交易信号，ET 时区'),
   cfg('order_window_end_time', '15:00', '15:00', '下单截止时间', '交易窗口', 320, '超过该时间后新信号不再进入下单环节，ET 时区'),
 
   cfg('position_limit_max', '3', '3', '当日持仓上限', '交易风控', 400, '当日成功下单计数达到该上限后，新的交易信号将被拒绝'),
+  cfg('cooldown_bars_after_sl', '6', '6', '止损后冷却K线数', '交易风控', 405, '同标的止损后冷却多少根 5m K线，冷却期间不再开新仓'),
+  cfg('cooldown_bars_after_reverse', '3', '3', '反向退出后冷却K线数', '交易风控', 406, '同标的反向信号平仓后冷却多少根 5m K线，冷却期间不再开新仓'),
+  cfg('atr_dynamic_stop_enabled', 'TRUE', 'TRUE', 'ATR动态止损', '交易风控', 407, '开启后仅允许按 ATR 收紧止损，不放宽风险，不调整 TP'),
+  cfg('atr_stop_min_profit_r', '0.3', '0.3', 'ATR调止损最小盈利R', '交易风控', 408, '持仓至少达到该 R 倍盈利后才允许 ATR 动态收紧止损'),
+  cfg('atr_stop_deviation_threshold', '0.30', '0.30', 'ATR调止损变化阈值', '交易风控', 408.2, '当前 ATR 相对上次记录 ATR 变化超过该比例才触发收紧评估'),
+  cfg('atr_stop_min_change', '0.01', '0.01', 'ATR调止损最小价差', '交易风控', 408.4, '新旧止损价差至少达到该值才尝试改单'),
   cfg('order_validity_minutes', '30', '30', '订单有效期', '交易风控', 410, 'Init / Submitted 状态的订单超过此时间自动标记为 Canceled'),
 
   cfg('eod_close_time', '15:55', '15:55', 'EOD 平仓时间', '日终规则', 500, '到达该 ET 时间后自动执行日终平仓'),

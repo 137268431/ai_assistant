@@ -8,11 +8,11 @@
 
 import logging
 from typing import Dict, Optional
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from ibkr_compute.core.time_utils import ET
 
 logger = logging.getLogger(__name__)
 
-ET = timezone(timedelta(hours=-4))
 
 REVERSE_ACTIONS = {"close", "cancel", "adjust_sl", "adjust_tp"}
 REVERSE_SIGNAL_COLLECTION = "ibkr_reverse_signals"
@@ -117,6 +117,11 @@ class ReverseSignalHandler:
                 if result.get("ok"):
                     if self.signal_processor:
                         self.signal_processor.remove_position(symbol)
+                        self.signal_processor.start_cooldown(
+                            symbol,
+                            self.signal_processor.cooldown_bars_after_reverse(),
+                            "cooldown_after_reverse_close",
+                        )
                     return True
 
         logger.warning("No position found for close: %s", symbol)
