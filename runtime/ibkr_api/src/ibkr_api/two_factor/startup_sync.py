@@ -31,13 +31,13 @@ def _step_patch(status: str, state_data: dict[str, Any]) -> tuple[str, str, str,
     if status == "triggered":
         return (
             "manual_confirm",
-            "等待手机确认 2FA Push",
-            "查看手机通知；如果切到 Challenge/Response，则去 Runtime 页面提交 Response Code",
+            "等待 Gateway 进入 2FA",
+            "先确认 Gateway 已真正进入 Second Factor；手机 Push 尚未确认发出",
             {
                 "service_boot": {"status": "done", "detail": "Gateway 已启动并进入当前验证流程。"},
                 "card_ready": {"status": "done", "detail": "当前 2FA 卡片已准备完成。"},
-                "manual_trigger": {"status": "done", "detail": "飞书按钮已点下，不会自动补发新的 Push。"},
-                "manual_confirm": {"status": "waiting", "detail": "等待手机确认或进入响应码模式。"},
+                "manual_trigger": {"status": "done", "detail": "飞书按钮已点下，只代表控制请求已发送。"},
+                "manual_confirm": {"status": "waiting", "detail": "等待 Gateway 进入手机 Push 或 Challenge/Response；未进入前不要盲等手机。"},
             },
         )
     if status == "waiting_confirm":

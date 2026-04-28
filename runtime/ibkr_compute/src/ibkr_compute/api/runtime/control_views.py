@@ -114,7 +114,7 @@ def _build_ibkr_status_response() -> tuple[dict, int]:
             "runtime_mode": get_runtime_mode(),
             "service_topology": build_service_topology(),
         }, 200
-    _maybe_restore_ibkr_service(service)
+    _maybe_restore_ibkr_service(service, refresh_auth=False, block=False)
     status_payload = get_service_status_snapshot(service)
     status_payload["runtime_control"] = get_ibkr_runtime_control(_ibkr_service_environment(service))
     status_payload["service_profile"] = get_service_profile()
@@ -135,7 +135,7 @@ def _build_ibkr_monitor_response(requested_environment: str) -> tuple[dict, int]
         payload["runtime_mode"] = get_runtime_mode()
         payload["service_topology"] = build_service_topology()
         return payload, 200
-    _maybe_restore_ibkr_service(service)
+    _maybe_restore_ibkr_service(service, refresh_auth=False, block=False)
     payload = _build_ibkr_monitor_snapshot(service, requested_environment=requested_environment)
     payload["service_profile"] = get_service_profile()
     payload["runtime_mode"] = get_runtime_mode()

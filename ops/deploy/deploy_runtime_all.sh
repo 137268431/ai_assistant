@@ -54,6 +54,11 @@ usage() {
   cat <<EOF
 Usage: deploy_runtime_all.sh [options]
 
+Compatibility name: this is the split IBKR stack deploy orchestrator. Prefer
+deploy_ibkr_stack.sh for new usage. Without --file/--diff, the default scope
+deploy can publish/restart compute, api, scheduler, runtime, Gateway systemd
+units, PocketBase runtime, console, and public proxy.
+
 Options:
   --host <host>       Override SSH target
   --mode <mode>       scope | files | package | auto
@@ -69,6 +74,20 @@ Options:
   --no-restart        Skip service restarts
   --status-only       Show pocketbase / ibkr-console / ibkr-api / ibkr-scheduler / ibkr-runtime / ibkr-compute / ibkr-display / ibkr-gateway status and exit
   -h, --help          Show this help
+
+Main deploy ownership:
+  ibkr-compute     runtime/ibkr_compute/src + ibkr-compute.service
+  ibkr-api         runtime/ibkr_api/src + ibkr-api.service
+  ibkr-scheduler   runtime/ibkr_scheduler/src + ibkr-scheduler.service
+  ibkr-runtime     runtime/ibkr_runtime/src + ibkr-runtime.service
+  ibkr-gateway     runtime/ib_gateway/systemd/ibkr-gateway.service
+  ibkr-display     runtime/ib_gateway/systemd/ibkr-display.service
+  ibkr-console     runtime/ibkr_console/static + ibkr-console.service
+  pocketbase       runtime/pocketbase/pb_public/pb_hooks + pocketbase.service
+  public proxy     Caddy config for quant.lzw-glory.top / pb.lzw-glory.top
+
+Tip: always use --plan-only first when unsure; it prints exact files and
+systemd services that will be restarted.
 EOF
 }
 

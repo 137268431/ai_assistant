@@ -29,7 +29,7 @@ STATUS_CARD_META = {
         "title": "IBKR 2FA 已触发",
         "template": "blue",
         "button": "查看当前轮次",
-        "summary": "登录流程已启动。当前已有一轮 2FA 在进行中，请打开 Runtime 跟当前轮次，不要重复触发。",
+        "summary": "控制请求已发送，正在等待 Gateway 真正进入 2FA；手机 Push 尚未确认发出，请打开 Runtime 跟当前轮次。",
     },
     "waiting_confirm": {
         "emoji": "📲",
@@ -251,14 +251,18 @@ def build_request_response_message(
             if state.get("response_status") == "received":
                 return "Runtime 已收到 Response Code，正在等待浏览器提交流程；请继续当前轮次，不要重复触发。"
             return "当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。"
+        if active_status == "triggered":
+            if bool(state.get("gateway_2fa_not_reached")) or str(state.get("last_result") or "").startswith("gateway_not_ready"):
+                return "当前只确认控制请求已发送，Gateway 尚未进入 2FA；手机 Push 未确认发出，请打开 Runtime 检查 Gateway，必要时重启 Gateway。"
+            return "当前控制请求已发送，正在等待 Gateway 进入手机 Push 或 Challenge/Response；不要重复触发。"
         return "当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。"
 
     if trigger_now and bool(result.get("ok")):
         return (
-            "已强制开启新一轮 2FA，并刷新卡片。请立即查看手机通知；"
-            "若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
+            "已强制开启新一轮 2FA，并刷新卡片。请等待 Gateway 进入手机 Push 或 Challenge/Response；"
+            "若 Gateway 已进入 Second Factor 后仍无手机通知，再去 Runtime 查看是否切到 Challenge/Response。"
             if force_new
-            else "已重新触发 2FA。请立即查看手机通知；若稍后切到 Challenge/Response，再去 Runtime 页面提交 Response Code。"
+            else "已重新触发 2FA。请先等待 Gateway 进入手机 Push 或 Challenge/Response；不要把飞书请求成功当作手机 Push 已发出。"
         )
 
     skipped_reason = str(result.get("skipped_reason") or "")

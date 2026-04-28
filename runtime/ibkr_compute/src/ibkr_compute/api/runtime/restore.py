@@ -11,7 +11,7 @@ from ibkr_compute.api.runtime.common import (
 )
 
 
-def _maybe_restore_ibkr_service(service):
+def _maybe_restore_ibkr_service(service, *, refresh_auth: bool = True, block: bool = True):
     api_app = _api_app()
     if not service:
         return
@@ -23,7 +23,11 @@ def _maybe_restore_ibkr_service(service):
         restore_lock = Lock()
         api_app._ibkr_restore_lock = restore_lock
 
-    with restore_lock:
+    acquired = restore_lock.acquire(blocking=bool(block))
+    if not acquired:
+        return
+
+    try:
         if api_app._ibkr_restore_attempted:
             return
 
@@ -33,11 +37,19 @@ def _maybe_restore_ibkr_service(service):
             return
         if getattr(service, "is_busy", False):
             return
-        try:
-            auth_status = service.session_keeper.check_auth_status() if hasattr(service, "session_keeper") else {}
-        except Exception:
-            traceback.print_exc()
-            auth_status = {}
+        auth_status = {}
+        session_keeper = getattr(service, "session_keeper", None)
+        if session_keeper is not None:
+            status_fn = getattr(session_keeper, "status", None)
+            check_fn = getattr(session_keeper, "check_auth_status", None)
+            try:
+                if refresh_auth and callable(check_fn):
+                    auth_status = check_fn()
+                elif callable(status_fn):
+                    auth_status = status_fn()
+            except Exception:
+                traceback.print_exc()
+                auth_status = {}
         if (
             hasattr(service, "clear_stale_startup_cycle")
             and not getattr(service, "is_starting", False)
@@ -83,3 +95,5 @@ def _maybe_restore_ibkr_service(service):
             reason="auto_restore",
             source="server_boot",
         )
+    finally:
+        restore_lock.release()

@@ -106,6 +106,78 @@ class RuntimeRestoreRaceTest(unittest.TestCase):
         self.assertEqual(len(restore_calls), 1)
         self.assertEqual(service.clear_calls, 1)
 
+    def test_status_restore_can_skip_blocking_auth_refresh(self):
+        restore_calls = []
+        fake_app = types.SimpleNamespace(
+            _ibkr_restore_attempted=False,
+            _ibkr_restore_lock=threading.Lock(),
+            build_runtime_timestamps=lambda: {"us": "2026-04-28 10:00:00"},
+        )
+
+        class FakeSessionKeeper:
+            def __init__(self):
+                self.check_called = False
+
+            def status(self):
+                return {"authenticated": False}
+
+            def check_auth_status(self):
+                self.check_called = True
+                raise AssertionError("status endpoint must not run a blocking auth probe")
+
+        class FakeService:
+            is_busy = False
+            is_starting = False
+            is_running = False
+
+            def __init__(self):
+                self.session_keeper = FakeSessionKeeper()
+
+            def auto_restore_guard(self):
+                return {"blocked": False}
+
+            def status(self):
+                return {"environment": "live"}
+
+        service = FakeService()
+
+        with mock.patch.object(restore, "_api_app", return_value=fake_app):
+            with mock.patch.object(restore, "get_ibkr_runtime_control", return_value={"desired_running": True}):
+                with mock.patch.object(restore, "set_ibkr_runtime_control", return_value={"ok": True}):
+                    with mock.patch.object(restore, "_background_start_ibkr_service", side_effect=lambda *args, **kwargs: restore_calls.append((args, kwargs))):
+                        restore._maybe_restore_ibkr_service(service, refresh_auth=False, block=False)
+
+        self.assertFalse(service.session_keeper.check_called)
+        self.assertTrue(fake_app._ibkr_restore_attempted)
+        self.assertEqual(len(restore_calls), 1)
+
+    def test_nonblocking_restore_returns_when_lock_is_busy(self):
+        fake_app = types.SimpleNamespace(
+            _ibkr_restore_attempted=False,
+            _ibkr_restore_lock=threading.Lock(),
+            build_runtime_timestamps=lambda: {"us": "2026-04-28 10:00:00"},
+        )
+        fake_app._ibkr_restore_lock.acquire()
+
+        class FakeService:
+            is_busy = False
+            is_starting = False
+            is_running = False
+
+            def status(self):
+                return {"environment": "live"}
+
+        try:
+            with mock.patch.object(restore, "_api_app", return_value=fake_app):
+                started = time.time()
+                restore._maybe_restore_ibkr_service(FakeService(), refresh_auth=False, block=False)
+                elapsed = time.time() - started
+        finally:
+            fake_app._ibkr_restore_lock.release()
+
+        self.assertLess(elapsed, 0.1)
+        self.assertFalse(fake_app._ibkr_restore_attempted)
+
 
 if __name__ == "__main__":
     unittest.main()

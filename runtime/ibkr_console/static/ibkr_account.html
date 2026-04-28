@@ -928,7 +928,7 @@
             }
 
             const lines = [];
-            if (!serviceRunning) lines.push('IBKR 服务当前没有 running，账户页只能看到空状态。');
+            if (!serviceRunning) lines.push('Runtime 当前没有 running，账户页只能看到空状态。');
             if (serviceRunning && !sessionAuthenticated) lines.push('当前会话未认证，先去控制台完成 2FA。');
             if (errors.summary) lines.push(`summary error: ${errors.summary}`);
             if (errors.positions) lines.push(`positions error: ${errors.positions}`);

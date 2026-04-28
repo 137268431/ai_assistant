@@ -662,6 +662,9 @@ function isIbkrTwoFactorCycleActive(twoFactorState = {}) {
 function getIbkrTwoFactorCyclePhase(twoFactorState = {}) {
     const status = getIbkrTwoFactorStatusKey(twoFactorState);
     const responsePhase = getIbkrTwoFactorResponsePhase(twoFactorState);
+    if (['triggered', 'waiting_confirm'].includes(status) && twoFactorState?.gateway_2fa_not_reached === true) {
+        return 'gateway_not_ready';
+    }
     if (status === 'waiting_response') {
         if (responsePhase.showResetCta) return 'waiting_response_reset';
         if (responsePhase.phase === 'received') return 'waiting_response_received';
@@ -716,6 +719,9 @@ function getIbkrTwoFactorCycleActionLockReason(action, cyclePhase) {
     if (safePhase === 'waiting_response_ready' || safePhase === 'waiting_response_waiting') {
         return '当前已进入 Challenge/Response，请继续当前轮次并提交 Response Code，不要重复触发。';
     }
+    if (safePhase === 'gateway_not_ready') {
+        return 'Gateway 尚未真正进入 2FA，手机 Push 未确认发出；请先重启 IB Gateway 服务或等待 Gateway 恢复，不要重复点 2FA。';
+    }
     if (safePhase === 'waiting_confirm') {
         return '当前正在等待手机确认，请继续当前轮次，不要重复触发。';
     }
@@ -744,11 +750,14 @@ function getIbkrTwoFactorCycleActionSummary(action, cyclePhase) {
     if (safePhase === 'waiting_response_ready' || safePhase === 'waiting_response_waiting') {
         return '当前已进入 Challenge/Response，请继续当前轮次并在 Runtime 页面提交 Response Code，不要重复触发。';
     }
+    if (safePhase === 'gateway_not_ready') {
+        return '控制请求已发出，但 Gateway 尚未进入 2FA，手机 Push 未确认发出；请先重启 IB Gateway 服务或刷新状态。';
+    }
     if (safePhase === 'triggered' || safePhase === 'waiting_confirm') {
         return '当前已有一轮 2FA 正在进行，请继续当前轮次，不要重复触发。';
     }
     return safeAction === 'reauth_force_new'
-        ? '已开始新一轮 2FA，请立即查看手机通知或飞书卡片。'
+        ? '已开始新一轮 2FA，请等待 Gateway 进入手机 Push 或 Challenge/Response。'
         : '已请求 2FA 卡片，请在飞书点击按钮触发验证。';
 }
 
@@ -811,7 +820,10 @@ function getIbkrTwoFactorCycleHelperText({
         return '这一步只是把 2FA 卡片发到或刷新到飞书，还没有真正开始验证。请直接用页面顶部主入口或去飞书点击“开始 2FA 验证”。';
     }
     if (safeCyclePhase === 'triggered') {
-        return safeLastResult || '登录流程已经触发，等待 IBKR 返回手机确认或 Challenge/Response。当前已有 active 轮次，请不要重复触发。';
+        return safeLastResult || '控制请求已经发送，正在等待 Gateway 真正进入手机 Push 或 Challenge/Response；飞书请求成功不等于手机 Push 已发出。';
+    }
+    if (safeCyclePhase === 'gateway_not_ready') {
+        return 'Gateway API 当前不可用或尚未进入 Second Factor，手机 Push 未确认发出。请优先重启 IB Gateway 服务后重新触发当前启动轮次。';
     }
     if (safeCyclePhase.startsWith('waiting_response')) {
         return safeWaitingResponseHelperText || getIbkrTwoFactorWaitingResponseHelperText(twoFactorState);
@@ -1010,14 +1022,31 @@ function getIbkrRuntimeAuthGuidanceModel({
         };
     }
 
+    if (twoFactorCyclePhase === 'gateway_not_ready') {
+        return {
+            visible: true,
+            tone: 'error',
+            badge: safeReasonLabel,
+            stepLabel: 'Gateway 未进入 2FA',
+            title: '当前没有确认手机 Push 已发出',
+            copy: '飞书/控制请求已发送，但 Gateway API 不可用或未进入 Second Factor；继续等手机通常无效，请重启 IB Gateway 服务后重新触发。',
+            meta: [safeStartupStepLabel, 'Push 未确认发出'],
+            buttonLabel: '重启 IB Gateway 服务',
+            behavior: 'action',
+            actionName: 'gateway_restart',
+            secondaryButtonLabel: '刷新状态',
+            secondaryBehavior: 'refresh'
+        };
+    }
+
     if (twoFactorCyclePhase === 'triggered') {
         return {
             visible: true,
             tone: 'info',
             badge: safeReasonLabel,
-            stepLabel: '等待验证模式',
+            stepLabel: '等待 Gateway 进入 2FA',
             title: '当前轮次已手动触发',
-            copy: '飞书按钮已经点下。现在等待手机确认，或稍后切到响应码模式。',
+            copy: '飞书按钮已经点下，只代表控制请求已发送。请等待 Gateway 进入手机 Push 或 Challenge/Response；未进入前不要盲等手机。',
             meta: [safeStartupStepLabel, '不要重复触发'],
             buttonLabel: '刷新状态',
             behavior: 'refresh'
@@ -1075,10 +1104,10 @@ function getIbkrRuntimeAuthGuidanceModel({
             tone: 'info',
             badge: '顶部主入口',
             stepLabel: '先拉起服务',
-            title: '先启动 IBKR 服务',
+            title: '先启动 Runtime',
             copy: '这一步只拉起服务，不会自动触发手机 Push。启动后顶部入口会切到飞书手动验证。',
             meta: ['启动后再进入手动验证', '不会自动往下推进'],
-            buttonLabel: '启动 IBKR 服务',
+            buttonLabel: '启动 Runtime',
             behavior: 'action',
             actionName: 'start',
             requestTarget: getIbkrRuntimeAuthGuidanceRequestTarget({
@@ -1220,7 +1249,11 @@ function getIbkrRuntimePrimaryBlockerPhase({
 
     if (runtimeMismatch) return 'runtime_mismatch';
     if (!sessionAuthenticated && startup?.active && startup?.current_step === 'manual_trigger') return 'startup_manual_trigger';
-    if (!sessionAuthenticated && startup?.active && startup?.current_step === 'manual_confirm') return 'startup_manual_confirm';
+    if (!sessionAuthenticated && startup?.active && startup?.current_step === 'manual_confirm') {
+        const blockerText = String(startup?.current_blocker || startup?.operator_action || '').trim();
+        if (blockerText.includes('Gateway')) return 'gateway_not_ready';
+        return 'startup_manual_confirm';
+    }
     if (normalizedRecoveryPhase === 'panic_resetting') return 'panic_resetting';
     if (normalizedRecoveryPhase === 'manual_takeover') return 'manual_takeover';
     if (!gatewayActive) return 'gateway_offline';
@@ -1234,6 +1267,9 @@ function getIbkrRuntimePrimaryBlockerPhase({
         return 'waiting_response';
     }
     if (!sessionAuthenticated) {
+        if (['triggered', 'waiting_confirm'].includes(normalizedTwoFactorStatus) && twoFactorState?.gateway_2fa_not_reached === true) {
+            return 'gateway_not_ready';
+        }
         return normalizedTwoFactorStatus === 'waiting_confirm'
             ? 'waiting_confirm'
             : 'session_unauthenticated';
@@ -1314,7 +1350,11 @@ function getIbkrRuntimePrimaryBlockerCardModel({
     } else if (blockerPhase === 'gateway_offline') {
         blocker.tone = 'error';
         blocker.title = 'Gateway 当前离线';
-        blocker.copy = '先恢复网关或重启 IBKR 服务，否则 2FA、bars、订单和信号链路都会停住。';
+        blocker.copy = '先恢复 systemd ibkr-gateway 或重启 IB Gateway 服务；必要时再启动 Runtime，否则 2FA、bars、订单和信号链路都会停住。';
+    } else if (blockerPhase === 'gateway_not_ready') {
+        blocker.tone = 'error';
+        blocker.title = 'Gateway 尚未进入 2FA';
+        blocker.copy = '飞书/控制请求已发送，但没有确认 IBKR 手机 Push 已发出。请先重启 IB Gateway 服务，看到 Gateway 进入 Second Factor 后再看手机。';
     } else if (blockerPhase === 'runtime_stopped') {
         blocker.tone = 'warn';
         blocker.title = 'Runtime 当前未启动';

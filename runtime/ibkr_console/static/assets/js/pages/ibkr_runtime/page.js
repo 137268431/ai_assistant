@@ -222,7 +222,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const strategy = getStartupStrategy(status);
             if (strategy.summary) return strategy.summary;
             const manualStart = strategy.manual_start_mode === 'fresh_cycle'
-                ? '手动启动=重启 Gateway + 新卡片 + 人工 2FA'
+                ? '手动启动=重启 IB Gateway 服务 + 新卡片 + 人工 2FA'
                 : '手动启动=直接恢复 Runtime';
             const weeklyReauth = strategy.weekly_reauth_mode === 'fresh_cycle'
                 ? '每周提醒=fresh cycle'
@@ -679,6 +679,26 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const challengeCode = String(state.challenge_code || '').trim();
             const feedback = String(state.challenge_feedback || '').trim();
             const recoveryPhase = String(state.recovery_phase || '').trim().toLowerCase();
+            const runtimeGateway = latestRuntimeStatus?.gateway && typeof latestRuntimeStatus.gateway === 'object'
+                ? latestRuntimeStatus.gateway
+                : {};
+            const gatewayStatusCode = Number(runtimeGateway.status_code ?? state.gateway_status_code ?? 0) || 0;
+            const gatewayRunning = Boolean(runtimeGateway.running || state.gateway_running);
+            const gatewayReachable = [0, 502, 503].includes(gatewayStatusCode)
+                ? false
+                : Boolean(runtimeGateway.reachable || state.gateway_reachable || gatewayRunning);
+            const hasGatewayEvidence = Boolean(
+                Object.keys(runtimeGateway).length
+                || state.gateway_status_code != null
+                || state.gateway_reachable != null
+                || state.gateway_running != null
+            );
+            if (['triggered', 'waiting_confirm'].includes(status) && !challengeCode && hasGatewayEvidence && !gatewayReachable) {
+                state.gateway_2fa_not_reached = true;
+                state.push_confirmed = false;
+                state.last_result = state.last_result || 'gateway_not_ready_push_not_confirmed';
+                state.message = state.message || 'Gateway 尚未真正进入 2FA，手机 Push 未确认发出。';
+            }
             const submittedMs = parseUsTimeMs(state.response_submitted_at);
             const rejectedMs = parseUsTimeMs(state.response_rejected_at);
             const submittedAgeMs = submittedMs > 0 ? Math.max(0, nowMs - submittedMs) : 0;
@@ -760,9 +780,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
             if (action === 'start') {
                 if (payload.message && payload.trigger_login === false) {
-                    return 'IBKR 服务已开始拉起；不会自动触发手机 Push，下一步请看顶部“下一步 / 手动验证”入口。';
+                    return 'ibkr-runtime 已开始拉起；不会自动触发手机 Push，下一步请看顶部“下一步 / 手动验证”入口。';
                 }
-                return payload.message || 'IBKR 服务启动中。';
+                return payload.message || 'ibkr-runtime 启动中。';
             }
             if (action === 'reauth' || action === 'reauth_force_new') {
                 if (payload.message) return payload.message;
@@ -775,9 +795,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
             if (action === 'gateway_start' || action === 'gateway_stop' || action === 'gateway_restart') {
                 if (payload.message) return payload.message;
-                if (action === 'gateway_start') return 'Gateway 动作已执行。';
-                if (action === 'gateway_stop') return 'Gateway 停止动作已执行。';
-                return 'Gateway 重启动作已执行。';
+                if (action === 'gateway_start') return 'systemd ibkr-gateway 启动动作已执行。';
+                if (action === 'gateway_stop') return 'systemd ibkr-gateway 停止动作已执行。';
+                return 'systemd ibkr-gateway 重启动作已执行。';
             }
             if (action === 'takeover_on' || action === 'takeover_off' || action === 'probe' || action === 'panic_reset_2fa') {
                 if (payload.message) return payload.message;
@@ -2207,7 +2227,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (action === 'emergency_trading' && !window.confirm('确认关闭交易执行？新的自动下单会被阻止。')) {
                 return;
             }
-            if (action === 'gateway_stop' && !window.confirm('确认停止 Gateway？如果当前有运行线程或启动轮次，会同时中断当前轮次。')) {
+            if (action === 'gateway_stop' && !window.confirm('确认停止 systemd ibkr-gateway？这会关闭 IBC + IB Gateway GUI/API；如果当前有运行线程或启动轮次，会同时中断当前轮次。')) {
                 return;
             }
             if (action === 'gateway_restart') {
@@ -2215,8 +2235,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 const runtimeActive = Boolean(latestRuntimeStatus?.starting || latestRuntimeStatus?.startup_complete || latestRuntimeStatus?.runtime_phase === 'running');
                 const requiresFreshCycle = runtimeActive || startup.active;
                 const message = requiresFreshCycle
-                    ? '确认重启 Gateway？这会进入新的启动轮次，并在新的启动卡片上等待你手动触发 2FA。'
-                    : '确认重启 Gateway？当前不会自动恢复 Runtime，也不会自动触发新的 2FA。';
+                    ? '确认重启 systemd ibkr-gateway？这会重启 IBC + IB Gateway GUI/API，并在新的启动卡片上等待你手动触发 2FA。'
+                    : '确认重启 systemd ibkr-gateway？当前不会自动恢复 ibkr-runtime，也不会自动触发新的 2FA。';
                 if (!window.confirm(message)) {
                     return;
                 }

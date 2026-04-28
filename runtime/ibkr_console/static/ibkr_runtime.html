@@ -63,12 +63,12 @@
                     </div>
                     <div class="action-section">
                         <button class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction('start')">
-                            <span class="action-label">启动 IBKR 服务</span>
-                            <span class="action-copy">重启 Gateway，等待人工 2FA。</span>
+                            <span class="action-label">启动 Runtime</span>
+                            <span class="action-copy">启动 `ibkr-runtime`；是否重启 IB Gateway 由启动策略决定。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="stop" onclick="handleRuntimeAction('stop')">
-                            <span class="action-label">停止 IBKR 服务</span>
-                            <span class="action-copy">停止当前运行中的 IBKR 服务线程，便于重新触发 2FA。</span>
+                            <span class="action-label">停止 Runtime</span>
+                            <span class="action-copy">停止 `ibkr-runtime` 内的交易线程，不直接停止 Gateway systemd 服务。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="compute" onclick="handleRuntimeAction('compute')">
                             <span class="action-label">执行 Compute</span>
@@ -127,10 +127,10 @@
                             <div class="runtime-control-kicker">Gateway / Diagnostics</div>
                             <div class="runtime-control-title">网关与探测</div>
                         </div>
-                        <div class="runtime-control-copy">单独管理 `ibkr_gateway`，并快速确认会话恢复状态。</div>
+                        <div class="runtime-control-copy">单独管理 IB Gateway systemd 服务 `ibkr-gateway`，并快速确认会话恢复状态。</div>
                     </div>
                     <div class="runtime-note">
-                        网关按钮只管理 `ibkr_gateway`。
+                        网关按钮只管理 systemd `ibkr-gateway`（IBC + IB Gateway GUI/API），不是 `ibkr-runtime` 线程。
                     </div>
                     <div class="action-section">
                         <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
@@ -138,16 +138,16 @@
                             <span class="action-copy">快速确认 Gateway 会话。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="gateway_start" onclick="handleRuntimeAction('gateway_start')">
-                            <span class="action-label">启动 Gateway</span>
-                            <span class="action-copy">只启动 `ibkr_gateway`。</span>
+                            <span class="action-label">启动 IB Gateway 服务</span>
+                            <span class="action-copy">只执行 systemd `ibkr-gateway` start。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="gateway_stop" onclick="handleRuntimeAction('gateway_stop')">
-                            <span class="action-label">停止 Gateway</span>
-                            <span class="action-copy">关闭 `ibkr_gateway` 并中断当前轮次。</span>
+                            <span class="action-label">停止 IB Gateway 服务</span>
+                            <span class="action-copy">停止 systemd `ibkr-gateway`，会中断当前 2FA/会话。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="gateway_restart" onclick="handleRuntimeAction('gateway_restart')">
-                            <span class="action-label">重启 Gateway</span>
-                            <span class="action-copy">重启 Gateway，并进入 fresh 2FA。</span>
+                            <span class="action-label">重启 IB Gateway 服务</span>
+                            <span class="action-copy">重启 systemd `ibkr-gateway`；看到 Second Factor 后再等手机 Push。</span>
                         </button>
                     </div>
                 </section>

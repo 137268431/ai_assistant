@@ -11,6 +11,8 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 from ibkr_api.two_factor.request import build_two_factor_request_response
 from ibkr_api.two_factor.respond import build_two_factor_respond_response
 from ibkr_api.two_factor.result import build_two_factor_result_response
+from ibkr_api.runtime.two_factor import normalize_two_factor_state_with_runtime
+from ibkr_api.two_factor.deadlines import parse_et_time_ms
 from ibkr_api.two_factor.runtime_actions import (
     build_two_factor_panic_reset_response,
     build_two_factor_probe_response,
@@ -314,6 +316,30 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.assertEqual(409, status_code)
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["runtime_environment_mismatch"])
+
+    def test_waiting_confirm_downgrades_when_gateway_never_reaches_2fa(self):
+        state = {
+            "status": "waiting_confirm",
+            "message": "等待手机确认 IBKR 2FA。",
+            "last_result": "waiting_mobile_approval",
+            "triggered_at": "2026-04-28 10:30:16",
+        }
+        runtime_status = {
+            "session": {"authenticated": False, "running": False},
+            "gateway": {"running": True, "reachable": False, "status_code": 503},
+        }
+
+        normalized = normalize_two_factor_state_with_runtime(
+            state,
+            runtime_status,
+            as_dict=self.as_dict,
+            parse_et_time_ms=parse_et_time_ms,
+        )
+
+        self.assertEqual("triggered", normalized["status"])
+        self.assertTrue(normalized["gateway_2fa_not_reached"])
+        self.assertFalse(normalized["push_confirmed"])
+        self.assertIn("暂未确认", normalized["message"])
 
 
 if __name__ == "__main__":

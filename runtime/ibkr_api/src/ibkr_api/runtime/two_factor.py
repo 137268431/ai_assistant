@@ -247,8 +247,9 @@ def normalize_two_factor_state_with_runtime(
     )
     runtime_authenticated = bool(as_dict(runtime.get("session")).get("authenticated"))
     gateway = as_dict(runtime.get("gateway"))
-    gateway_reachable = bool(gateway.get("running") or gateway.get("reachable"))
     gateway_status_code = _safe_int(gateway.get("status_code"), 0)
+    gateway_running = bool(gateway.get("running") or gateway.get("gateway_running"))
+    gateway_reachable = False if gateway_status_code in {0, 502, 503} else bool(gateway.get("reachable") or gateway_running)
     gateway_uptime_s = _safe_int(gateway.get("uptime_s"), 0)
     gateway_pid = _safe_int(gateway.get("pid"), 0)
 
@@ -265,6 +266,25 @@ def normalize_two_factor_state_with_runtime(
         state["recovery_phase"] = "recovered" if runtime_authenticated else "idle"
     normalized_status = normalize_two_factor_status(state.get("status") or "")
     server_boot_resume_pending = is_server_boot_resume_recovery_state(state, as_dict=as_dict) and not runtime_authenticated
+    active_cycle = normalized_status in {"triggered", "waiting_confirm", "waiting_response"}
+    gateway_not_ready_for_2fa = (
+        active_cycle
+        and normalized_status in {"triggered", "waiting_confirm"}
+        and not runtime_authenticated
+        and not str(state.get("challenge_code") or "").strip()
+        and (not gateway_reachable or gateway_status_code in {0, 502, 503})
+    )
+    if gateway_not_ready_for_2fa:
+        state.update(
+            {
+                "status": "triggered",
+                "message": "Gateway API 尚不可用，暂未确认 IBKR 已向手机发送 Push；请优先重启 IB Gateway 后重新触发。",
+                "last_result": "gateway_not_ready_push_not_confirmed",
+                "gateway_2fa_not_reached": True,
+                "push_confirmed": False,
+            }
+        )
+        normalized_status = "triggered"
 
     if runtime_authenticated and gateway_reachable and gateway_status_code != 401:
         state.update(
@@ -300,7 +320,6 @@ def normalize_two_factor_state_with_runtime(
         state["backend_authenticated"] = False
         if not runtime_started:
             state["browser_authenticated"] = False
-        active_cycle = normalized_status in {"triggered", "waiting_confirm", "waiting_response"}
         if server_boot_resume_pending and not active_cycle:
             manual_required = (
                 str(state.get("recovery_phase") or "").strip().lower() == "resume_waiting_manual"

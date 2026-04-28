@@ -140,10 +140,13 @@ From the parent directory of this repo:
 ```bash
 bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh
-bash ai_assistant/ops/deploy/deploy_runtime_all.sh
+bash ai_assistant/ops/deploy/deploy_ibkr_stack.sh
 ```
 
-- `deploy_runtime_all.sh` now deploys `ibkr_compute` before `ibkr_runtime` on fresh hosts because the runtime bootstrap still imports shared modules from `/opt/ibkr_compute/src` during the compatibility phase.
+- `deploy_ibkr_stack.sh` is the clearer split-stack entrypoint; `deploy_runtime_all.sh` remains as a compatibility alias target used by older commands.
+- `deploy_runtime_all.sh` / `deploy_ibkr_stack.sh` deploys `ibkr_compute` before `ibkr_runtime` on fresh hosts because the runtime bootstrap still imports shared modules from `/opt/ibkr_compute/src` during the compatibility phase.
+- With no `--file` / `--diff`, the default `scope` publish can touch the full split stack: `ibkr-compute`, `ibkr-api`, `ibkr-scheduler`, `ibkr-runtime`, `ibkr-gateway`, `ibkr-display`, `pocketbase`, `ibkr-console`, and the public proxy.
+- Use `--plan-only` first when unsure; it prints the exact files and systemd services that will be restarted.
 
 Deploy modes:
 
@@ -172,8 +175,8 @@ bash ai_assistant/ops/deploy/deploy_ibkr_runtime_service.sh --mode files --file 
 Auto-pick mode from git diff:
 
 ```bash
-bash ai_assistant/ops/deploy/deploy_runtime_all.sh --mode auto --diff HEAD~1..HEAD --plan-only
-bash ai_assistant/ops/deploy/deploy_runtime_all.sh --mode auto --diff HEAD~1..HEAD
+bash ai_assistant/ops/deploy/deploy_ibkr_stack.sh --mode auto --diff HEAD~1..HEAD --plan-only
+bash ai_assistant/ops/deploy/deploy_ibkr_stack.sh --mode auto --diff HEAD~1..HEAD
 ```
 
 Large change, package publish:

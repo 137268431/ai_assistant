@@ -123,7 +123,7 @@ def request_two_factor_approval(
                 event_type="status_change",
                 level="info",
                 source="ibkr-api",
-                title="IBKR 2FA 请求已发送",
+                title="IBKR 2FA 控制请求已发送",
                 detail={"reason": reason or "manual_reauth", "status": str((delivered.get('data') or {}).get('status') or 'requested')},
                 environment=environment,
             )

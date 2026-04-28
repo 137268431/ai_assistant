@@ -2004,6 +2004,36 @@ class AuthController:
         data = payload if isinstance(payload, dict) else {}
         return bool(data.get("authenticated") or data.get("ready"))
 
+    @staticmethod
+    def _gateway_status_code(payload: Optional[dict]) -> int:
+        data = payload if isinstance(payload, dict) else {}
+        return _safe_int(data.get("status_code"), 0)
+
+    @staticmethod
+    def _gateway_running(payload: Optional[dict]) -> bool:
+        data = payload if isinstance(payload, dict) else {}
+        return bool(data.get("running") or data.get("gateway_running"))
+
+    def _gateway_reachable_for_2fa(self, payload: Optional[dict]) -> bool:
+        data = payload if isinstance(payload, dict) else {}
+        status_code = self._gateway_status_code(data)
+        if status_code in {0, 502, 503}:
+            return False
+        return bool(data.get("reachable") or self._gateway_running(data))
+
+    def _gateway_health_state_patch(self, payload: Optional[dict]) -> dict[str, Any]:
+        data = payload if isinstance(payload, dict) else {}
+        status_code = self._gateway_status_code(data)
+        running = self._gateway_running(data)
+        return {
+            "gateway_status_code": status_code,
+            "gateway_running": running,
+            "gateway_reachable": self._gateway_reachable_for_2fa(data),
+            "gateway_2fa_not_reached": not self._gateway_reachable_for_2fa(data),
+            "push_confirmed": False,
+            "runtime_authenticated": bool(data.get("authenticated") or data.get("ready")),
+        }
+
     def _current_auth_health(self) -> dict[str, Any]:
         if self.session_keeper:
             return self.session_keeper.check_auth_status()
@@ -2188,18 +2218,12 @@ class AuthController:
             reason=reason,
             source=source,
             detail=detail,
-            message="IB Gateway 已启动，请在手机上确认当前 2FA。",
+            message="IB Gateway 登录流程已触发，正在等待 Gateway 进入 2FA；手机 Push 尚未确认发出。",
             force_reset=False,
+            report_pending=False,
         )
-        if self.pb_client:
-            self._report_2fa_status(
-                "pending",
-                detail,
-                reason=reason,
-                source=source,
-                message="等待手机确认 IBKR 2FA。",
-                last_result="waiting_mobile_approval",
-            )
+        reported_gateway_not_ready = False
+        reported_waiting_confirm = False
 
         deadline = time.time() + self.login_timeout_seconds
         while time.time() < deadline:
@@ -2226,8 +2250,52 @@ class AuthController:
                         message="IB Gateway 已完成认证。",
                         last_result="authenticated",
                     )
+                if self._gateway_reachable_for_2fa(health):
+                    if not reported_waiting_confirm:
+                        self._report_2fa_status(
+                            "waiting_confirm",
+                            detail,
+                            reason=reason,
+                            source=source,
+                            message="IB Gateway 已进入认证等待；如果手机收到 IBKR Push，请只确认当前这一轮。",
+                            last_result="waiting_mobile_approval",
+                            state_patch={
+                                **self._gateway_health_state_patch(health),
+                                "gateway_2fa_not_reached": False,
+                                "push_confirmed": True,
+                            },
+                        )
+                        reported_waiting_confirm = True
+                elif not reported_gateway_not_ready:
+                    self._report_2fa_status(
+                        "triggered",
+                        detail,
+                        reason=reason,
+                        source=source,
+                        message="IB Gateway API 尚不可用，暂未确认 IBKR 已向手机发送 Push。",
+                        last_result="gateway_not_ready_push_not_confirmed",
+                        state_patch=self._gateway_health_state_patch(health),
+                    )
+                    reported_gateway_not_ready = True
             except Exception as exc:
                 logger.debug("IB Gateway auth poll failed: %s", exc)
+                if not reported_gateway_not_ready:
+                    self._report_2fa_status(
+                        "triggered",
+                        detail,
+                        reason=reason,
+                        source=source,
+                        message="IB Gateway 认证探测失败，暂未确认 IBKR 已向手机发送 Push。",
+                        last_result="gateway_probe_failed_push_not_confirmed",
+                        state_patch={
+                            "gateway_status_code": 503,
+                            "gateway_running": bool(self.gateway_manager and self.gateway_manager.is_running),
+                            "gateway_reachable": False,
+                            "gateway_2fa_not_reached": True,
+                            "push_confirmed": False,
+                        },
+                    )
+                    reported_gateway_not_ready = True
 
             time.sleep(self.login_poll_interval_seconds)
 
@@ -2245,11 +2313,17 @@ class AuthController:
             source=source,
             message=(
                 "等待手机确认 2FA 超时，请重新触发当前轮次。"
+                if approval_requested and reported_waiting_confirm else
+                "Gateway 未真正进入 2FA 手机确认阶段；请重启 IB Gateway 后重新触发。"
                 if approval_requested else
                 "2FA 请求未成功送达且等待认证超时，请检查 Gateway / IBC 配置后重试。"
             ),
-            last_result="login_timeout",
+            last_result="login_timeout" if reported_waiting_confirm else "gateway_not_ready_timeout",
             error="login_timeout",
+            state_patch={
+                "gateway_2fa_not_reached": not reported_waiting_confirm,
+                "push_confirmed": bool(reported_waiting_confirm),
+            },
         )
         return False
 
