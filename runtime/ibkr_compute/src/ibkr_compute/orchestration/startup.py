@@ -287,7 +287,7 @@ class TradingServiceStartupMixin:
                     waiting_detail = {
                         "状态结论": "检测到 Gateway 当前未认证，Runtime 尚未完成启动。",
                         "检查时间": self._now_et(),
-                        "当前动作": "等待当前启动卡片下方的人工按钮触发当前轮次。",
+                        "当前动作": "等待人工触发/确认当前轮次；确认成功后系统会自动探测恢复。",
                     }
                     self._sync_startup_progress(
                         action="update",
@@ -295,11 +295,11 @@ class TradingServiceStartupMixin:
                         summary="Gateway 尚未认证，启动流程等待人工触发 2FA。",
                         current_step="auth",
                         current_blocker="等待手动触发 2FA",
-                        operator_action="点击当前启动卡片下方“开始 2FA 验证”",
+                        operator_action="点击当前启动卡片下方“开始 2FA 验证”；手机确认后系统会自动恢复，无需再手动探测",
                         steps={
                             "auth": {
                                 "status": "waiting",
-                                "detail": "当前不会自动发送新的 Push，需人工点击 2FA 卡片触发。",
+                                "detail": "当前不会自动发送新的 Push，需人工点击 2FA 卡片触发；触发后后台会短周期探测 Gateway 登录完成。",
                             },
                         },
                         fields=self._build_startup_progress_fields(reason, source, False, waiting_detail),
@@ -311,6 +311,11 @@ class TradingServiceStartupMixin:
                         event_title="IBKR Runtime 等待手动 2FA",
                         event_detail=waiting_detail,
                         level="warning",
+                    )
+                    self._start_auth_recovery(
+                        interruption_kind="post_login_2fa",
+                        recovery_reason=reason or "manual_2fa",
+                        source=source or "runtime_start",
                     )
                     return
                 if self._should_force_fresh_manual_auth_cycle(trigger_login, source):

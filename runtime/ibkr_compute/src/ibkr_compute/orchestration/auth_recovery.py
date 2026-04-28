@@ -13,6 +13,8 @@ def _service_mod():
 
 
 class TradingServiceAuthRecoveryMixin:
+    POST_LOGIN_2FA_INTERRUPTION_KINDS = {"post_login_2fa", "manual_gateway_restart"}
+
     def _initial_auth_recovery_state(self) -> dict:
         return {
             "cycle_id": "",
@@ -191,6 +193,8 @@ class TradingServiceAuthRecoveryMixin:
     def _auth_probe_window_seconds(self, interruption_kind: str) -> int:
         service_mod = _service_mod()
         default_window = max(service_mod.AUTH_PROBE_INTERVAL_SECONDS, int(service_mod.AUTH_PROBE_WINDOW_SECONDS or 0))
+        if str(interruption_kind or "").strip().lower() in self.POST_LOGIN_2FA_INTERRUPTION_KINDS:
+            return max(default_window, int(getattr(service_mod, "AUTH_POST_LOGIN_PROBE_WINDOW_SECONDS", 240) or 240))
         if self._auth_probe_in_late_session():
             default_window = max(
                 default_window,
@@ -206,6 +210,8 @@ class TradingServiceAuthRecoveryMixin:
             service_mod.AUTH_PROBE_INTERVAL_SECONDS,
             int(service_mod.AUTH_PROBE_SELF_HEAL_GRACE_SECONDS or 0),
         )
+        if str(interruption_kind or "").strip().lower() in self.POST_LOGIN_2FA_INTERRUPTION_KINDS:
+            return max(grace_seconds, int(getattr(service_mod, "AUTH_POST_LOGIN_PROBE_GRACE_SECONDS", 180) or 180))
         if self._auth_probe_in_late_session():
             grace_seconds = max(
                 grace_seconds,
@@ -340,6 +346,25 @@ class TradingServiceAuthRecoveryMixin:
                     probe_result="authenticated_resume_restart_scheduled",
                     auto_restart_scheduled=True,
                     last_recovery_source=restart_source or "server_boot",
+                )
+        elif self._should_restart_runtime_after_auth_recovered(
+            previous_phase=previous_phase,
+            recovery_reason=restart_reason or reason,
+            recovery_source=restart_source or source,
+        ):
+            scheduled = self._schedule_auth_restart(
+                reason=restart_reason or "auth_recovered",
+                source=restart_source or source or "auth_probe",
+                trigger_login=False,
+            )
+            if scheduled:
+                self._set_auth_recovery_state(
+                    cycle_id=snapshot.get("cycle_id") or current.get("cycle_id") or self._next_auth_cycle_id(),
+                    recovery_phase="recovered",
+                    recovery_reason=restart_reason or "auth_recovered",
+                    probe_result="authenticated_runtime_restart_scheduled",
+                    auto_restart_scheduled=True,
+                    last_recovery_source=restart_source or source or "auth_probe",
                 )
 
     def _fresh_broker_auth_probe(self, reason: str) -> dict:
@@ -548,6 +573,37 @@ class TradingServiceAuthRecoveryMixin:
                 fresh_probe_payload=fresh_probe_payload,
             )
         return False, attempts
+
+    def _should_restart_runtime_after_auth_recovered(
+        self,
+        *,
+        previous_phase: str,
+        recovery_reason: str,
+        recovery_source: str,
+    ) -> bool:
+        if self._running or self._starting:
+            return False
+        phase_key = self._normalize_recovery_value(previous_phase)
+        reason_key = self._normalize_recovery_value(recovery_reason)
+        source_key = self._normalize_recovery_value(recovery_source)
+        startup_active = False
+        try:
+            startup_active = bool(self.startup_progress_snapshot().get("active"))
+        except Exception:
+            startup_active = False
+        if startup_active and phase_key in {"requested", "silent_probe", "manual_takeover"}:
+            return True
+        manual_reasons = {
+            "manual_start",
+            "manual_reauth",
+            "weekly_reauth",
+            "manual_gateway_restart",
+            "panic_reset_2fa",
+        }
+        manual_sources = {"api_start", "runtime_page", "feishu_callback", "feishu_2fa"}
+        return phase_key in {"requested", "silent_probe", "manual_takeover"} and (
+            reason_key in manual_reasons or source_key in manual_sources
+        )
 
     def _ensure_auth_probe(self, cycle_id: str, interruption_kind: str, recovery_reason: str, source: str):
         service_mod = _service_mod()
