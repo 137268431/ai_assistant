@@ -58,7 +58,8 @@ Options:
   --plan-only           Print the resolved deployment plan and exit
   --package-name <n>    Override generated package name for package mode
   --ops-tools           Deprecated legacy flag, no longer deploys Client Portal tools
-  --gateway-service     Deprecated compatibility flag; gateway units now belong to ibkr-runtime
+  --gateway-service     Opt in to syncing/restarting ibkr-display and ibkr-gateway units
+  --restart-gateway     Alias for --gateway-service
   --skip-requirements   Skip remote pip install -r requirements.txt
   --skip-systemd        Skip systemd unit sync
   --dry-run             Show rsync changes without mutating the remote host
@@ -105,7 +106,7 @@ while [[ $# -gt 0 ]]; do
       DEPLOY_OPS_TOOLS=1
       shift
       ;;
-    --gateway-service)
+    --gateway-service|--restart-gateway)
       DEPLOY_GATEWAY_SERVICE=1
       shift
       ;;

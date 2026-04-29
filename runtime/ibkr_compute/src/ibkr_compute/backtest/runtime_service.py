@@ -905,6 +905,7 @@ class BacktestService:
             extra["monthly_returns"] = metrics.get("monthly_returns") or []
             extra["portfolio_risk"] = metrics.get("portfolio_risk") or {}
             extra["portfolio_rejection_counts"] = metrics.get("portfolio_rejection_counts") or {}
+            extra["daily_scan_match_diagnostics"] = metrics.get("daily_scan_match_diagnostics") or {}
         if daily_equity is not None:
             extra["equity_curve"] = daily_equity
         if benchmark_points is not None:
@@ -1142,6 +1143,12 @@ class BacktestService:
 
         if signal_fill_rate < 35:
             suggestions.append("优先提高信号成交率：复查入场条件、滑点假设、盘前 cutoff 和 session_mode。")
+        daily_scan_match = metrics.get("daily_scan_match_diagnostics") or {}
+        if request.get("symbol_source") == "daily_scan_replay" and int(daily_scan_match.get("generated_signal_count", 0) or 0) > 0:
+            selected_day_signal_rate = float(daily_scan_match.get("selected_day_signal_rate_pct", 0) or 0)
+            if selected_day_signal_rate < 25:
+                risks.append("9:20 日筛入选标的与后续日内信号重合度偏低，开仓数量会被 selection plan 明显压缩。")
+                suggestions.append("优先调 daily_scan_replay 命中率：扩大 max_symbols，或放宽盘前成交量/涨跌幅/ATR%门槛后做对照回测。")
         if total_return_pct <= 0 or max_drawdown_pct >= max(3.0, abs(total_return_pct) * 1.5):
             suggestions.append("优先收紧风险：减少弱分数标的、降低 max_symbols，或提高止损纪律。")
         if tv_status in {"warn", "fail", "error"}:
@@ -1559,6 +1566,10 @@ class BacktestService:
         metrics["backtest_signal_reason_breakdown"] = self._count_signal_status_reasons(all_signal_rows)
         metrics["backtest_signal_rejection_breakdown"] = self._count_signal_status_reasons(
             [row for row in all_signal_rows if str(row.get("status") or "") in {"skipped", "dropped"}]
+        )
+        metrics["daily_scan_match_diagnostics"] = self._build_daily_scan_match_diagnostics(
+            backtest_target_rows,
+            all_signal_rows,
         )
         metrics["signal_fill_rate"] = (
             round((metrics["executed_signal_count"] / metrics["signal_count"]) * 100.0, 4)
@@ -5152,6 +5163,179 @@ class BacktestService:
                 continue
             counts[reason] = counts.get(reason, 0) + 1
         return counts
+
+    def _build_daily_scan_match_diagnostics(self, target_rows: list[dict], signal_rows: list[dict]) -> dict:
+        selected_by_date: dict[str, set[str]] = {}
+        selected_pairs = set()
+        for row in target_rows or []:
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            date_text = str(row.get("date", "") or "")[:10]
+            if not symbol or not date_text:
+                continue
+            selected_by_date.setdefault(date_text, set()).add(symbol)
+            selected_pairs.add((date_text, symbol))
+
+        def pct(numerator: int, denominator: int) -> float:
+            return round((float(numerator) / float(denominator)) * 100.0, 4) if denominator else 0.0
+
+        def bump(counts: dict, key: str, amount: int = 1):
+            if not key:
+                return
+            counts[key] = int(counts.get(key, 0) or 0) + amount
+
+        def top_counts(counts: dict, limit: int = 12) -> list[dict]:
+            return [
+                {"key": key, "count": int(value)}
+                for key, value in sorted(
+                    counts.items(),
+                    key=lambda item: (-int(item[1] or 0), str(item[0])),
+                )[: max(0, int(limit or 0))]
+            ]
+
+        daily_stats = {
+            date_text: {
+                "date": date_text,
+                "selected_count": len(symbols),
+                "signal_count": 0,
+                "selected_day_signal_count": 0,
+                "off_plan_signal_count": 0,
+                "not_selected_signal_count": 0,
+                "executed_signal_count": 0,
+            }
+            for date_text, symbols in selected_by_date.items()
+        }
+        symbol_stats: dict[str, dict] = {}
+        selected_pairs_with_signal = set()
+        selected_pairs_with_executed = set()
+        generated_signal_count = len(signal_rows or [])
+        selected_day_signal_count = 0
+        selected_day_executed_signal_count = 0
+        off_plan_signal_count = 0
+        not_selected_signal_count = 0
+        executed_signal_count = 0
+        not_selected_symbol_counts: dict[str, int] = {}
+        not_selected_date_counts: dict[str, int] = {}
+        off_plan_symbol_counts: dict[str, int] = {}
+        matched_symbol_counts: dict[str, int] = {}
+        skipped_not_selected_samples = []
+
+        for row in signal_rows or []:
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            date_text = str(row.get("date", "") or row.get("us_time", "") or "")[:10]
+            status = str(row.get("status", "") or "").strip().lower()
+            extra = self._parse_object(row.get("extra"))
+            reason = str(extra.get("signal_status_reason", "") or "").strip()
+            if not symbol:
+                continue
+
+            symbol_stat = symbol_stats.setdefault(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "signal_count": 0,
+                    "selected_day_signal_count": 0,
+                    "off_plan_signal_count": 0,
+                    "not_selected_signal_count": 0,
+                    "executed_signal_count": 0,
+                },
+            )
+            symbol_stat["signal_count"] += 1
+            if date_text:
+                day_stat = daily_stats.setdefault(
+                    date_text,
+                    {
+                        "date": date_text,
+                        "selected_count": len(selected_by_date.get(date_text, set())),
+                        "signal_count": 0,
+                        "selected_day_signal_count": 0,
+                        "off_plan_signal_count": 0,
+                        "not_selected_signal_count": 0,
+                        "executed_signal_count": 0,
+                    },
+                )
+                day_stat["signal_count"] += 1
+            else:
+                day_stat = None
+
+            selected_pair = bool(date_text and (date_text, symbol) in selected_pairs)
+            if selected_pair:
+                selected_day_signal_count += 1
+                selected_pairs_with_signal.add((date_text, symbol))
+                symbol_stat["selected_day_signal_count"] += 1
+                bump(matched_symbol_counts, symbol)
+                if day_stat is not None:
+                    day_stat["selected_day_signal_count"] += 1
+            else:
+                off_plan_signal_count += 1
+                symbol_stat["off_plan_signal_count"] += 1
+                bump(off_plan_symbol_counts, symbol)
+                if day_stat is not None:
+                    day_stat["off_plan_signal_count"] += 1
+
+            if reason == "symbol_not_selected_for_day":
+                not_selected_signal_count += 1
+                symbol_stat["not_selected_signal_count"] += 1
+                bump(not_selected_symbol_counts, symbol)
+                bump(not_selected_date_counts, date_text or "unknown")
+                if day_stat is not None:
+                    day_stat["not_selected_signal_count"] += 1
+                if len(skipped_not_selected_samples) < 10:
+                    skipped_not_selected_samples.append(
+                        {
+                            "symbol": symbol,
+                            "date": date_text,
+                            "us_time": str(row.get("us_time", "") or ""),
+                            "direction": str(row.get("direction", "") or ""),
+                            "status": status,
+                            "reason": reason,
+                        }
+                    )
+
+            if status == "executed":
+                executed_signal_count += 1
+                symbol_stat["executed_signal_count"] += 1
+                if day_stat is not None:
+                    day_stat["executed_signal_count"] += 1
+                if selected_pair:
+                    selected_day_executed_signal_count += 1
+                    selected_pairs_with_executed.add((date_text, symbol))
+
+        daily_summary = []
+        for item in sorted(daily_stats.values(), key=lambda value: str(value.get("date", ""))):
+            signal_count = int(item.get("signal_count", 0) or 0)
+            selected_day_signals = int(item.get("selected_day_signal_count", 0) or 0)
+            item["selected_day_signal_rate_pct"] = pct(selected_day_signals, signal_count)
+            daily_summary.append(item)
+
+        symbol_summary = list(symbol_stats.values())
+        symbol_summary.sort(key=lambda item: (-int(item.get("signal_count", 0) or 0), str(item.get("symbol", ""))))
+
+        return {
+            "enabled": bool(selected_pairs),
+            "target_date_count": len(selected_by_date),
+            "selected_pair_count": len(selected_pairs),
+            "selected_symbol_count": len({symbol for _, symbol in selected_pairs}),
+            "generated_signal_count": generated_signal_count,
+            "selected_day_signal_count": selected_day_signal_count,
+            "off_plan_signal_count": off_plan_signal_count,
+            "not_selected_signal_count": not_selected_signal_count,
+            "executed_signal_count": executed_signal_count,
+            "selected_day_executed_signal_count": selected_day_executed_signal_count,
+            "selected_pair_with_signal_count": len(selected_pairs_with_signal),
+            "selected_pair_with_executed_count": len(selected_pairs_with_executed),
+            "selected_day_signal_rate_pct": pct(selected_day_signal_count, generated_signal_count),
+            "not_selected_signal_rate_pct": pct(not_selected_signal_count, generated_signal_count),
+            "selected_day_execution_rate_pct": pct(selected_day_executed_signal_count, selected_day_signal_count),
+            "selected_pair_hit_rate_pct": pct(len(selected_pairs_with_signal), len(selected_pairs)),
+            "selected_pair_execution_hit_rate_pct": pct(len(selected_pairs_with_executed), len(selected_pairs)),
+            "top_not_selected_symbols": top_counts(not_selected_symbol_counts),
+            "top_not_selected_dates": top_counts(not_selected_date_counts),
+            "top_off_plan_symbols": top_counts(off_plan_symbol_counts),
+            "top_matched_symbols": top_counts(matched_symbol_counts),
+            "skipped_not_selected_samples": skipped_not_selected_samples,
+            "symbol_summary": symbol_summary[:20],
+            "daily_summary": daily_summary,
+        }
 
     def _build_backtest_reverse_samples(self, rows: list[dict], limit: int = 8) -> list[dict]:
         samples = []

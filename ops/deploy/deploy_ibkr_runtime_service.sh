@@ -26,7 +26,7 @@ PB_REMOTE_ROOT="${PB_REMOTE_ROOT:-${IBKR_DEPLOY_PB_ROOT:-/opt/pocketbase}}"
 DEPLOY_PUBLIC=1
 DEPLOY_HOOKS=1
 DEPLOY_MIGRATIONS=0
-DEPLOY_GATEWAY_SERVICE=1
+DEPLOY_GATEWAY_SERVICE=0
 DEPLOY_IGNORE_UNMANAGED="${DEPLOY_IGNORE_UNMANAGED:-0}"
 
 source "$LIB_ROOT/common.sh"
@@ -52,6 +52,8 @@ Options:
   --package-name <n>    Override generated package name for package mode
   --skip-requirements   Skip remote pip install -r requirements.txt
   --skip-systemd        Skip systemd unit sync
+  --gateway-service     Opt in to syncing/restarting ibkr-display and ibkr-gateway units
+  --restart-gateway     Alias for --gateway-service
   --dry-run             Show rsync changes without mutating the remote host
   --skip-checks         Skip remote python syntax validation
   --no-restart          Skip service restart
@@ -93,6 +95,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-systemd)
       SKIP_SYSTEMD=1
+      shift
+      ;;
+    --gateway-service|--restart-gateway)
+      DEPLOY_GATEWAY_SERVICE=1
       shift
       ;;
     --dry-run)

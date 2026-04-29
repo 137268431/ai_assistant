@@ -374,6 +374,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function buildBacktestTargetReplayCard(run) {
             const capture = run?.extra?.backtest_target_capture || run?.metrics?.backtest_target_capture || {};
             const historicalTargeting = run?.extra?.historical_targeting || run?.metrics?.historical_targeting || {};
+            const scanDiagnostics = run?.metrics?.daily_scan_match_diagnostics || run?.extra?.daily_scan_match_diagnostics || {};
             const groups = groupTargetsByDate(selectedTargets, run);
             const selectedSymbolCount = Number(
                 historicalTargeting.selected_symbol_count
@@ -416,6 +417,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         <div class="detail-item"><div class="detail-item-label">Scan Session</div><div class="detail-item-value">${escapeHtml(historicalTargeting.scan_session_mode || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Scan Warmup</div><div class="detail-item-value">${escapeHtml(String(historicalTargeting.scan_warmup_bars || run?.extra?.scan_warmup_bars || '--'))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Saved / Errors</div><div class="detail-item-value">${escapeHtml(String(capture.saved_count || 0))} / ${escapeHtml(String(capture.error_count || 0))}</div></div>
+                        ${scanDiagnostics.enabled ? `
+                            <div class="detail-item"><div class="detail-item-label">Signal Match</div><div class="detail-item-value">${escapeHtml(formatPct(scanDiagnostics.selected_day_signal_rate_pct || 0))}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Matched Signals</div><div class="detail-item-value">${escapeHtml(String(scanDiagnostics.selected_day_signal_count || 0))} / ${escapeHtml(String(scanDiagnostics.generated_signal_count || 0))}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Not Selected</div><div class="detail-item-value">${escapeHtml(String(scanDiagnostics.not_selected_signal_count || 0))}</div></div>
+                        ` : ''}
                     </div>
                     ${selectedTargetsLoading ? '<div class="empty-state" style="margin-top: 14px;">读取历史 targets ...</div>' : ''}
                     ${!selectedTargetsLoading && groups.length ? groups.map((group) => {
@@ -941,6 +947,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 return;
             }
             const metrics = selectedRun.metrics || {};
+            const scanDiagnostics = metrics.daily_scan_match_diagnostics || selectedRun.extra?.daily_scan_match_diagnostics || {};
             const primaryCards = [
                 ['Net PnL', formatMoney(selectedRun.net_pnl), classForValue(selectedRun.net_pnl), `${selectedRun.trade_count} trades`],
                 ['Total Return', formatPct(selectedRun.total_return_pct), classForValue(selectedRun.total_return_pct), `ending ${formatMoney(metrics.ending_equity || 0)}`],
@@ -956,6 +963,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Replay Targets', String(metrics.backtest_target_count || 0), '', `${metrics.historical_targeting?.target_date_count || 0} trade dates`],
                 ['Reverse Actions', String(metrics.backtest_reverse_signal_count || 0), '', formatBreakdown(metrics.backtest_reverse_action_breakdown || {})],
             ];
+            if (scanDiagnostics.enabled) {
+                secondaryCards.splice(6, 0, [
+                    'Scan Match',
+                    formatPct(scanDiagnostics.selected_day_signal_rate_pct || 0),
+                    classForValue((scanDiagnostics.selected_day_signal_rate_pct || 0) - 35),
+                    `${scanDiagnostics.selected_day_signal_count || 0}/${scanDiagnostics.generated_signal_count || 0} signals`,
+                ]);
+            }
             const renderMetricCards = (cards) => cards.map(([label, value, tone, subtext]) => `
                 <div class="metric-card">
                     <div class="metric-label">${escapeHtml(label)}</div>
@@ -1137,6 +1152,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         backtest_target_capture: extra.backtest_target_capture || {},
                         backtest_reverse_capture: extra.backtest_reverse_capture || {},
                         historical_targeting: extra.historical_targeting || {},
+                        daily_scan_match_diagnostics: metrics.daily_scan_match_diagnostics || extra.daily_scan_match_diagnostics || {},
                         portfolio_risk: metrics.portfolio_risk || extra.portfolio_risk || {},
                         portfolio_rejection_counts: metrics.portfolio_rejection_counts || extra.portfolio_rejection_counts || {},
                         portfolio_candidate_samples: metrics.portfolio_candidate_samples || [],

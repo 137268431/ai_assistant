@@ -56,8 +56,8 @@ Usage: deploy_runtime_all.sh [options]
 
 Compatibility name: this is the split IBKR stack deploy orchestrator. Prefer
 deploy_ibkr_stack.sh for new usage. Without --file/--diff, the default scope
-deploy can publish/restart compute, api, scheduler, runtime, Gateway systemd
-units, PocketBase runtime, console, and public proxy.
+deploy can publish/restart compute, api, scheduler, runtime, PocketBase runtime,
+console, and public proxy. Gateway units are opt-in to avoid forcing IBKR 2FA.
 
 Options:
   --host <host>       Override SSH target
@@ -68,7 +68,8 @@ Options:
   --package-name <n>  Override generated package name for package mode
   --migrations        Deploy PocketBase extension migrations
   --ops-tools         Deprecated legacy flag, kept only for CLI compatibility
-  --gateway-service   Deprecated compatibility flag; gateway units now belong to ibkr-runtime
+  --gateway-service   Opt in to syncing/restarting ibkr-display and ibkr-gateway units
+  --restart-gateway   Alias for --gateway-service
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote syntax validation
   --no-restart        Skip service restarts
@@ -128,7 +129,7 @@ while [[ $# -gt 0 ]]; do
       DEPLOY_OPS_TOOLS=1
       shift
       ;;
-    --gateway-service)
+    --gateway-service|--restart-gateway)
       WITH_GATEWAY_SERVICE=1
       DEPLOY_GATEWAY_SERVICE=1
       shift
@@ -176,6 +177,7 @@ declare -a proxy_args=()
 [[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && compute_args+=(--host "$REMOTE_HOST") && runtime_args+=(--host "$REMOTE_HOST") && console_args+=(--host "$REMOTE_HOST")
 [[ "$WITH_MIGRATIONS" -eq 1 ]] && pb_args+=(--migrations)
 [[ "$WITH_OPS_TOOLS" -eq 1 ]] && compute_args+=(--ops-tools)
+[[ "$WITH_GATEWAY_SERVICE" -eq 1 ]] && runtime_args+=(--gateway-service)
 [[ -n "$REMOTE_HOST" ]] && proxy_args+=(--host "$REMOTE_HOST")
 [[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && compute_args+=(--dry-run) && runtime_args+=(--dry-run) && console_args+=(--dry-run) && proxy_args+=(--dry-run)
 [[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && compute_args+=(--skip-checks) && runtime_args+=(--skip-checks) && console_args+=(--skip-checks) && proxy_args+=(--skip-checks)

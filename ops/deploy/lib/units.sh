@@ -67,6 +67,8 @@ list_selected_units_for_target() {
       printf '%s\n' ibkr_runtime_requirements
       if [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
         printf '%s\n' ibkr_runtime_systemd
+      fi
+      if [[ "${DEPLOY_GATEWAY_SERVICE:-0}" -eq 1 && "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
         printf '%s\n' gateway_display_systemd
         printf '%s\n' gateway_systemd
       fi

@@ -87,6 +87,60 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(daily["selected_count"], 0)
         self.assertEqual(daily["rejection_summary"]["premarket_volume_below_threshold"], 1)
 
+    def test_daily_scan_match_diagnostics_counts_selected_day_hits_and_misses(self):
+        target_rows = [
+            {"symbol": "NVDA", "date": "2026-04-22"},
+            {"symbol": "TSLA", "date": "2026-04-22"},
+            {"symbol": "AAPL", "date": "2026-04-23"},
+        ]
+        signal_rows = [
+            {
+                "symbol": "NVDA",
+                "date": "2026-04-22",
+                "status": "executed",
+                "direction": "long",
+                "us_time": "2026-04-22 10:00:00",
+                "extra": {"signal_status_reason": "entry_limit_filled"},
+            },
+            {
+                "symbol": "TSLA",
+                "date": "2026-04-22",
+                "status": "skipped",
+                "direction": "short",
+                "us_time": "2026-04-22 09:25:00",
+                "extra": {"signal_status_reason": "outside_trade_window"},
+            },
+            {
+                "symbol": "AMD",
+                "date": "2026-04-22",
+                "status": "skipped",
+                "direction": "long",
+                "us_time": "2026-04-22 10:15:00",
+                "extra": {"signal_status_reason": "symbol_not_selected_for_day"},
+            },
+            {
+                "symbol": "AAPL",
+                "date": "2026-04-24",
+                "status": "skipped",
+                "direction": "long",
+                "us_time": "2026-04-24 11:00:00",
+                "extra": {"signal_status_reason": "symbol_not_selected_for_day"},
+            },
+        ]
+
+        diagnostics = self.service._build_daily_scan_match_diagnostics(target_rows, signal_rows)
+
+        self.assertTrue(diagnostics["enabled"])
+        self.assertEqual(diagnostics["selected_pair_count"], 3)
+        self.assertEqual(diagnostics["generated_signal_count"], 4)
+        self.assertEqual(diagnostics["selected_day_signal_count"], 2)
+        self.assertEqual(diagnostics["not_selected_signal_count"], 2)
+        self.assertEqual(diagnostics["selected_day_executed_signal_count"], 1)
+        self.assertEqual(diagnostics["selected_day_signal_rate_pct"], 50.0)
+        self.assertEqual(diagnostics["selected_pair_hit_rate_pct"], 66.6667)
+        self.assertEqual(diagnostics["top_not_selected_symbols"][0], {"key": "AAPL", "count": 1})
+        self.assertEqual(diagnostics["skipped_not_selected_samples"][0]["symbol"], "AMD")
+
     def test_historical_scan_metric_row_uses_cutoff_limited_premarket_data(self):
         trade_date = "2026-04-24"
         day_start = datetime.strptime(trade_date, "%Y-%m-%d").replace(tzinfo=ET)
