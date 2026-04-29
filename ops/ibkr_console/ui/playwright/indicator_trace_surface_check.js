@@ -325,6 +325,18 @@ async function openTracePage(page, seed) {
     const shell = document.getElementById('tracePanelShell');
     return !!shell && !shell.classList.contains('hidden') && !!document.querySelector('#tracePanelShell .trace-panel-title');
   }, null, { timeout: 30000 });
+  await page.waitForFunction(() => {
+    const summary = String(document.getElementById('summaryStrip')?.textContent || '');
+    const meta = String(document.getElementById('chartMeta')?.textContent || '');
+    const note = String(document.getElementById('chartNote')?.textContent || '');
+    return (
+      summary.includes('K 线') &&
+      !summary.includes('加载中') &&
+      meta &&
+      !meta.includes('数据加载中') &&
+      !note.includes('正在重算')
+    );
+  }, null, { timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(2000);
 }
 
