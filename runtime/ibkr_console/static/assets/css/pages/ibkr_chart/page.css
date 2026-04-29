@@ -641,7 +641,8 @@
                 radial-gradient(circle at top right, rgba(72, 187, 120, 0.08), transparent 22%),
                 linear-gradient(180deg, rgba(7, 12, 20, 0.96), rgba(10, 16, 28, 0.98));
             box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
-            overscroll-behavior: contain;
+            overscroll-behavior-x: contain;
+            overscroll-behavior-y: auto;
             touch-action: pan-x pan-y pinch-zoom;
         }
 

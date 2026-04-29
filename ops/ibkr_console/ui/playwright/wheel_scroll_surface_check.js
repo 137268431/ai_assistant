@@ -115,6 +115,105 @@ async function inspectChartWheel(page) {
   };
 }
 
+async function inspectInnerScrollChain(page) {
+  await page.setContent(`
+    <!doctype html>
+    <html lang="zh-CN">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="${CONSOLE_BASE}/assets/css/common.css">
+        <link rel="stylesheet" href="${CONSOLE_BASE}/assets/css/ibkr-page-common.css">
+        <style>
+          .scroll-chain-test-spacer { height: 48px; }
+          .scroll-chain-probe-fill {
+            display: grid;
+            gap: 12px;
+            height: 1800px;
+          }
+          .scroll-chain-probe-fill > div {
+            min-height: 64px;
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            background: rgba(8, 14, 24, 0.44);
+          }
+          .scroll-chain-test-tail { height: 1600px; }
+        </style>
+      </head>
+      <body>
+        <main class="page-shell">
+          <div class="scroll-chain-test-spacer"></div>
+          <section class="panel-grid">
+            <article class="panel">
+              <div class="panel-header">
+                <div class="panel-title">Scroll chain probe</div>
+              </div>
+              <div class="panel-body scroll-chain-probe">
+                <div class="scroll-chain-probe-fill">
+                  ${Array.from({ length: 18 }, (_, idx) => `<div>probe row ${idx + 1}</div>`).join('')}
+                </div>
+              </div>
+            </article>
+          </section>
+          <div class="scroll-chain-test-tail"></div>
+        </main>
+      </body>
+    </html>
+  `, { waitUntil: 'load' });
+  await page.waitForFunction(() => {
+    const probe = document.querySelector('.scroll-chain-probe');
+    if (!probe) return false;
+    const style = window.getComputedStyle(probe);
+    return (probe.scrollHeight - probe.clientHeight) > 400
+      && style.overflowY !== 'visible';
+  }, { timeout: 10000 });
+
+  const probe = page.locator('.scroll-chain-probe');
+  const box = await probe.boundingBox();
+  if (!box) throw new Error('inner_scroll_probe_box_missing');
+
+  const before = await page.evaluate(() => {
+    const probeNode = document.querySelector('.scroll-chain-probe');
+    probeNode.scrollTop = probeNode.scrollHeight;
+    window.scrollTo(0, 0);
+    const style = window.getComputedStyle(probeNode);
+    return {
+      windowScrollY: window.scrollY,
+      probeScrollTop: probeNode.scrollTop,
+      probeScrollHeight: probeNode.scrollHeight,
+      probeClientHeight: probeNode.clientHeight,
+      overflowY: style.overflowY,
+      overscrollBehaviorX: style.overscrollBehaviorX,
+      overscrollBehaviorY: style.overscrollBehaviorY,
+    };
+  });
+
+  await page.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 220));
+  for (let i = 0; i < 3; i += 1) {
+    await page.mouse.wheel(0, 900);
+    await page.waitForTimeout(180);
+  }
+
+  const after = await page.evaluate(() => {
+    const probeNode = document.querySelector('.scroll-chain-probe');
+    return {
+      windowScrollY: window.scrollY,
+      probeScrollTop: probeNode.scrollTop,
+    };
+  });
+
+  return {
+    scenario: 'inner_scroll_chain_to_page',
+    url: `${CONSOLE_BASE}/assets/css/common.css`,
+    before,
+    after,
+    windowDelta: after.windowScrollY - before.windowScrollY,
+    ok: before.overscrollBehaviorX === 'contain'
+      && before.overscrollBehaviorY === 'auto'
+      && (after.windowScrollY - before.windowScrollY) >= 120,
+  };
+}
+
 async function waitForIndicatorListReady(page) {
   await page.waitForFunction(() => {
     const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
@@ -229,6 +328,7 @@ async function runWheelScrollSurfaceCheck() {
   const browser = await chromium.launch({ headless: true });
   try {
     const results = [
+      await withPage(browser, token, async (page) => inspectInnerScrollChain(page)),
       await withPage(browser, token, async (page) => inspectChartWheel(page)),
       await withPage(browser, token, async (page) => inspectIndicatorQuickviewWheel(page)),
     ];

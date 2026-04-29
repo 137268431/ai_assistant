@@ -926,7 +926,9 @@
         min-height: 0;
         overflow: auto;
         max-height: var(--panel-scroll-max-height);
-        overscroll-behavior: contain;
+        overscroll-behavior-x: contain;
+        overscroll-behavior-y: auto;
+        -webkit-overflow-scrolling: touch;
         scrollbar-gutter: stable both-edges;
       }
 
@@ -939,7 +941,9 @@
         min-height: 0;
         overflow: auto;
         max-height: var(--panel-scroll-max-height);
-        overscroll-behavior: contain;
+        overscroll-behavior-x: contain;
+        overscroll-behavior-y: auto;
+        -webkit-overflow-scrolling: touch;
         scrollbar-gutter: stable both-edges;
       }
 
@@ -955,7 +959,9 @@
           overflow-x: auto;
           overflow-y: auto;
           max-height: var(--panel-scroll-max-height);
-          overscroll-behavior: contain;
+          overscroll-behavior-x: contain;
+          overscroll-behavior-y: auto;
+          -webkit-overflow-scrolling: touch;
           scrollbar-gutter: stable both-edges;
         }
       }

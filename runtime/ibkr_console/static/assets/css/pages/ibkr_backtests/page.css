@@ -579,7 +579,9 @@ body {
             max-height: var(--panel-scroll-max-height);
             overflow: auto;
             padding-right: 2px;
-            overscroll-behavior: contain;
+            overscroll-behavior-x: contain;
+            overscroll-behavior-y: auto;
+            -webkit-overflow-scrolling: touch;
             scrollbar-gutter: stable both-edges;
         }
         .run-item {
@@ -822,7 +824,9 @@ body {
             min-height: 0;
             max-height: var(--panel-scroll-max-height);
             padding-right: 4px;
-            overscroll-behavior: contain;
+            overscroll-behavior-x: contain;
+            overscroll-behavior-y: auto;
+            -webkit-overflow-scrolling: touch;
             scrollbar-gutter: stable both-edges;
         }
         @media (hover: hover) and (pointer: fine) {
@@ -830,7 +834,9 @@ body {
             .backtest-scroll-region {
                 max-height: var(--panel-scroll-max-height);
                 overflow: auto;
-                overscroll-behavior: contain;
+                overscroll-behavior-x: contain;
+                overscroll-behavior-y: auto;
+                -webkit-overflow-scrolling: touch;
                 scrollbar-gutter: stable both-edges;
                 padding-right: 4px;
             }
