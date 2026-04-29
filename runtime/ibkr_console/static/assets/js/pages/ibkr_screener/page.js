@@ -38,6 +38,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       requestToken: 0,
       searchDebounceId: 0,
     };
+    const screenerPaginationState = {
+      page: 1,
+      perPage: 10,
+    };
+    const watchlistPaginationState = {
+      page: 1,
+      perPage: 10,
+    };
     let currentFiltersExpanded = false;
     let rulesLoaded = false;
     let rulesLoadingPromise = null;
@@ -1476,7 +1484,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           ? screenerPayload.items.map((row) => mergeScreenerRowWithRealtimeQuote(row))
           : [],
       };
-      applyFilters();
+      applyFilters({ resetPage: false });
       if (activeTab === 'screener') updateHero();
     }
 
@@ -1484,17 +1492,95 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return `<span class="status-chip ${escapeHtml(className || '')}">${escapeHtml(label || '--')}</span>`;
     }
 
+    function getScreenerPageSize() {
+      const rawValue = Number(document.getElementById('screenerPageSize')?.value || screenerPaginationState.perPage || 10);
+      if (!Number.isFinite(rawValue) || rawValue <= 0) return 10;
+      return Math.max(1, Math.min(100, Math.trunc(rawValue)));
+    }
+
+    function getScreenerPageButtons(page, totalPages) {
+      const pages = [];
+      const pushPage = (value) => {
+        if (pages.includes(value)) return;
+        pages.push(value);
+      };
+      pushPage(1);
+      for (let index = page - 1; index <= page + 1; index += 1) {
+        if (index > 1 && index < totalPages) pushPage(index);
+      }
+      if (totalPages > 1) pushPage(totalPages);
+      return pages.sort((left, right) => left - right);
+    }
+
+    function getScreenerPageRows() {
+      screenerPaginationState.perPage = getScreenerPageSize();
+      const totalRows = Array.isArray(filteredRows) ? filteredRows.length : 0;
+      const totalPages = Math.max(1, Math.ceil(totalRows / screenerPaginationState.perPage));
+      screenerPaginationState.page = Math.max(1, Math.min(totalPages, Number(screenerPaginationState.page) || 1));
+      const startIndex = (screenerPaginationState.page - 1) * screenerPaginationState.perPage;
+      return filteredRows.slice(startIndex, startIndex + screenerPaginationState.perPage);
+    }
+
+    function renderScreenerPagination(pageRows) {
+      screenerPaginationState.perPage = getScreenerPageSize();
+      const totalRows = Array.isArray(filteredRows) ? filteredRows.length : 0;
+      const totalPages = Math.max(1, Math.ceil(totalRows / screenerPaginationState.perPage));
+      const page = Math.max(1, Math.min(totalPages, Number(screenerPaginationState.page) || 1));
+      screenerPaginationState.page = page;
+      const returnedCount = Array.isArray(pageRows) ? pageRows.length : 0;
+      const pageButtons = getScreenerPageButtons(page, totalPages);
+      const shouldShowPagination = totalRows > screenerPaginationState.perPage;
+      const controls = [];
+
+      controls.push(`<button class="mini-btn pagination-btn" type="button" onclick="setScreenerPage(${page - 1})" ${page <= 1 ? 'disabled' : ''}>上一页</button>`);
+      let lastPage = 0;
+      pageButtons.forEach((value) => {
+        if (lastPage && value - lastPage > 1) {
+          controls.push('<span class="pagination-ellipsis">...</span>');
+        }
+        controls.push(`<button class="mini-btn pagination-btn ${value === page ? 'active' : ''}" type="button" onclick="setScreenerPage(${value})">${value}</button>`);
+        lastPage = value;
+      });
+      controls.push(`<button class="mini-btn pagination-btn" type="button" onclick="setScreenerPage(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>下一页</button>`);
+
+      ['screenerPaginationTop', 'screenerPaginationBottom'].forEach((id) => {
+        const mount = document.getElementById(id);
+        if (!mount) return;
+        const bar = mount.closest('.pagination-bar');
+        if (bar) bar.hidden = !shouldShowPagination;
+        mount.innerHTML = shouldShowPagination ? controls.join('') : '';
+      });
+
+      const statusText = totalRows
+        ? `第 ${page} / ${totalPages} 页 · 本页 ${returnedCount} 条 · 过滤后 ${totalRows} 条`
+        : '第 1 / 1 页 · 当前没有结果';
+      ['screenerPaginationStatusTop', 'screenerPaginationStatusBottom'].forEach((id) => {
+        const mount = document.getElementById(id);
+        if (mount) mount.textContent = shouldShowPagination ? statusText : '';
+      });
+    }
+
+    window.setScreenerPage = function setScreenerPage(page) {
+      const totalPages = Math.max(1, Math.ceil((filteredRows.length || 0) / getScreenerPageSize()));
+      const nextPage = Math.max(1, Math.min(totalPages, Number(page) || 1));
+      if (nextPage === screenerPaginationState.page) return;
+      screenerPaginationState.page = nextPage;
+      renderTable();
+    };
+
     function renderTable() {
       const tbody = document.getElementById('screenerTable');
       if (!Array.isArray(filteredRows) || !filteredRows.length) {
         tbody.innerHTML = '<tr><td colspan="9" class="empty">当前条件下没有符合的标的</td></tr>';
         renderScreenerCards([]);
+        renderScreenerPagination([]);
         document.getElementById('tableMeta').textContent = '0 条结果';
         document.getElementById('tableMetaSecondary').textContent = '';
         return;
       }
 
-      tbody.innerHTML = filteredRows.map((row) => {
+      const pageRows = getScreenerPageRows();
+      tbody.innerHTML = pageRows.map((row) => {
         const checked = selectedSymbols.has(String(row.symbol || '').trim().toUpperCase()) ? 'checked' : '';
         return `
           <tr>
@@ -1548,13 +1634,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           </tr>
         `;
       }).join('');
-      renderScreenerCards(filteredRows);
+      renderScreenerCards(pageRows);
+      renderScreenerPagination(pageRows);
 
-      document.getElementById('tableMeta').textContent = `可见 ${filteredRows.length} · 可操作 ${filteredRows.filter((row) => row.is_operable).length} · live bars ${filteredRows.filter((row) => row.has_live_bar).length}`;
+      document.getElementById('tableMeta').textContent = `过滤 ${filteredRows.length} · 本页 ${pageRows.length} · 可操作 ${filteredRows.filter((row) => row.is_operable).length} · live bars ${filteredRows.filter((row) => row.has_live_bar).length}`;
       document.getElementById('tableMetaSecondary').textContent = `已选 ${filteredRows.filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase())).length} 条`;
     }
 
-    function applyFilters() {
+    function applyFilters({ resetPage = true } = {}) {
+      if (resetPage) screenerPaginationState.page = 1;
       const filters = getRowFilters();
       const rows = (screenerPayload.items || []).filter((row) => {
         if (filters.symbol_search) {
@@ -1604,7 +1692,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       filteredRows.forEach((row) => selectedSymbols.add(String(row.symbol || '').trim().toUpperCase()));
       renderTable();
       updateSelectionInfo();
-      showToast(`已选择 ${filteredRows.length} 个可见标的`);
+      showToast(`已选择 ${filteredRows.length} 个过滤结果标的`);
     };
 
     window.clearSelection = function() {
@@ -1622,7 +1710,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
       try {
         await navigator.clipboard.writeText(text);
-        showToast(`已复制 ${filteredRows.length} 个 symbols`);
+        showToast(`已复制 ${filteredRows.length} 个过滤结果 symbols`);
       } catch (_) {
         showToast('复制失败，请检查浏览器权限');
       }
@@ -1749,6 +1837,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         'targetScoreMin',
         'freshnessMax',
         'sortBy',
+        'screenerPageSize',
         'operableOnly'
       ];
       ids.forEach((id) => {
@@ -2336,14 +2425,93 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }).join('');
     }
 
+    function getWatchlistPageSize() {
+      const rawValue = Number(document.getElementById('watchlistPageSize')?.value || watchlistPaginationState.perPage || 10);
+      if (!Number.isFinite(rawValue) || rawValue <= 0) return 10;
+      return Math.max(1, Math.min(100, Math.trunc(rawValue)));
+    }
+
+    function getWatchlistPageButtons(page, totalPages) {
+      const pages = [];
+      const pushPage = (value) => {
+        if (pages.includes(value)) return;
+        pages.push(value);
+      };
+      pushPage(1);
+      for (let index = page - 1; index <= page + 1; index += 1) {
+        if (index > 1 && index < totalPages) pushPage(index);
+      }
+      if (totalPages > 1) pushPage(totalPages);
+      return pages.sort((left, right) => left - right);
+    }
+
+    function getWatchlistPageItems(items) {
+      const rows = Array.isArray(items) ? items : [];
+      watchlistPaginationState.perPage = getWatchlistPageSize();
+      const totalPages = Math.max(1, Math.ceil(rows.length / watchlistPaginationState.perPage));
+      watchlistPaginationState.page = Math.max(1, Math.min(totalPages, Number(watchlistPaginationState.page) || 1));
+      const startIndex = (watchlistPaginationState.page - 1) * watchlistPaginationState.perPage;
+      return rows.slice(startIndex, startIndex + watchlistPaginationState.perPage);
+    }
+
+    function renderWatchlistPagination(items, pageItems) {
+      const rows = Array.isArray(items) ? items : [];
+      watchlistPaginationState.perPage = getWatchlistPageSize();
+      const totalRows = rows.length;
+      const totalPages = Math.max(1, Math.ceil(totalRows / watchlistPaginationState.perPage));
+      const page = Math.max(1, Math.min(totalPages, Number(watchlistPaginationState.page) || 1));
+      watchlistPaginationState.page = page;
+      const returnedCount = Array.isArray(pageItems) ? pageItems.length : 0;
+      const shouldShowPagination = totalRows > watchlistPaginationState.perPage;
+      const controls = [];
+
+      controls.push(`<button class="mini-btn pagination-btn" type="button" onclick="setWatchlistPage(${page - 1})" ${page <= 1 ? 'disabled' : ''}>上一页</button>`);
+      let lastPage = 0;
+      getWatchlistPageButtons(page, totalPages).forEach((value) => {
+        if (lastPage && value - lastPage > 1) {
+          controls.push('<span class="pagination-ellipsis">...</span>');
+        }
+        controls.push(`<button class="mini-btn pagination-btn ${value === page ? 'active' : ''}" type="button" onclick="setWatchlistPage(${value})">${value}</button>`);
+        lastPage = value;
+      });
+      controls.push(`<button class="mini-btn pagination-btn" type="button" onclick="setWatchlistPage(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>下一页</button>`);
+
+      ['watchlistPaginationTop', 'watchlistPaginationBottom'].forEach((id) => {
+        const mount = document.getElementById(id);
+        if (!mount) return;
+        const bar = mount.closest('.pagination-bar');
+        if (bar) bar.hidden = !shouldShowPagination;
+        mount.innerHTML = shouldShowPagination ? controls.join('') : '';
+      });
+
+      const statusText = totalRows
+        ? `第 ${page} / ${totalPages} 页 · 本页 ${returnedCount} 条 · 可见 ${totalRows} 条`
+        : '第 1 / 1 页 · 当前没有结果';
+      ['watchlistPaginationStatusTop', 'watchlistPaginationStatusBottom'].forEach((id) => {
+        const mount = document.getElementById(id);
+        if (mount) mount.textContent = shouldShowPagination ? statusText : '';
+      });
+    }
+
+    window.setWatchlistPage = function setWatchlistPage(page) {
+      const items = getFilteredWatchlistItems();
+      const totalPages = Math.max(1, Math.ceil(items.length / getWatchlistPageSize()));
+      const nextPage = Math.max(1, Math.min(totalPages, Number(page) || 1));
+      if (nextPage === watchlistPaginationState.page) return;
+      watchlistPaginationState.page = nextPage;
+      renderWatchlistRows();
+    };
+
     function renderWatchlistRows() {
       const items = getFilteredWatchlistItems();
       const table = document.getElementById('watchlistTable');
       if (!items.length) {
         table.innerHTML = `<tr><td colspan="9" class="empty-state">暂无 ${escapeHtml(getWatchlistRoleLabel())} 记录。</td></tr>`;
         renderWatchlistCards([]);
+        renderWatchlistPagination(items, []);
       } else {
-        table.innerHTML = items.map((item) => `
+        const pageItems = getWatchlistPageItems(items);
+        table.innerHTML = pageItems.map((item) => `
           <tr>
             <td>
               <div class="meta-stack">
@@ -2372,10 +2540,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             </td>
           </tr>
         `).join('');
-        renderWatchlistCards(items);
+        renderWatchlistCards(pageItems);
+        renderWatchlistPagination(items, pageItems);
       }
 
-      document.getElementById('listMeta').textContent = `载入 ${watchlistState.items.length} · 可见 ${items.length}`;
+      document.getElementById('listMeta').textContent = `载入 ${watchlistState.items.length} · 可见 ${items.length} · 每页 ${getWatchlistPageSize()}`;
       if (isWatchlistRoleTab()) {
         renderSearchResults();
         updateHero();
@@ -2631,8 +2800,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       });
       document.getElementById('batchDeleteBtn').addEventListener('click', batchDeleteSymbols);
       document.getElementById('refreshListBtn').addEventListener('click', () => loadWatchlist(true));
-      document.getElementById('scopeFilter').addEventListener('change', () => loadWatchlist(false));
-      document.getElementById('listSearchInput').addEventListener('input', renderWatchlistRows);
+      document.getElementById('scopeFilter').addEventListener('change', () => {
+        watchlistPaginationState.page = 1;
+        loadWatchlist(false);
+      });
+      document.getElementById('listSearchInput').addEventListener('input', () => {
+        watchlistPaginationState.page = 1;
+        renderWatchlistRows();
+      });
+      document.getElementById('watchlistPageSize').addEventListener('change', () => {
+        watchlistPaginationState.page = 1;
+        renderWatchlistRows();
+      });
       document.getElementById('targetScope').addEventListener('change', renderSearchResults);
     }
 

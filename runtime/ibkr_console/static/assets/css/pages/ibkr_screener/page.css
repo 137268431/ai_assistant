@@ -816,6 +816,12 @@
       line-height: 1.55;
     }
 
+    .screener-page-size-field,
+    .watchlist-page-size-field {
+      width: 132px;
+      min-width: 132px;
+    }
+
     .table-wrap {
       margin-top: 14px;
       width: 100%;
@@ -1385,6 +1391,11 @@
       .today-target-head,
       .today-target-foot {
         align-items: stretch;
+      }
+
+      .screener-page-size-field,
+      .watchlist-page-size-field {
+        width: 100%;
       }
 
       .pagination-bar-top {

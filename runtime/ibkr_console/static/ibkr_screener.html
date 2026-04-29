@@ -8,7 +8,7 @@
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260429-list-pagination-10">
 </head>
 <body>
   <div id="nav"></div>
@@ -279,7 +279,7 @@
               <span>重新从 compute 聚合最新 watchlist / bars / indicators / targets 数据。</span>
             </button>
             <button class="action-btn" onclick="selectVisibleRows()">
-              <strong>全选可见标的</strong>
+              <strong>全选过滤结果</strong>
               <span>把当前过滤结果里的标的全部加入选择集，方便统一写入当天 targets。</span>
             </button>
             <button class="action-btn" onclick="clearSelection()">
@@ -287,7 +287,7 @@
               <span>保留当前过滤条件，只清掉页面上的选择状态。</span>
             </button>
             <button class="action-btn" onclick="copyVisibleSymbols()">
-              <strong>复制可见代码</strong>
+              <strong>复制过滤结果代码</strong>
               <span>把过滤后的 symbols 复制成逗号分隔文本，方便外部核对或回测复用。</span>
             </button>
             <button class="action-btn" onclick="pushSelectedTargets()">
@@ -302,7 +302,20 @@
           <div class="panel-copy">可操作分仅用于人工排序，不直接触发交易。</div>
           <div class="table-header">
             <div class="table-meta" id="tableMeta">等待加载...</div>
+            <div class="field screener-page-size-field">
+              <label for="screenerPageSize">每页条数</label>
+              <select id="screenerPageSize">
+                <option value="10" selected>10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
             <div class="table-meta" id="tableMetaSecondary"></div>
+          </div>
+          <div class="pagination-bar pagination-bar-top">
+            <div class="pagination-group" id="screenerPaginationTop"></div>
+            <div class="pagination-status" id="screenerPaginationStatusTop">第 1 / 1 页</div>
           </div>
           <div class="table-wrap desktop-table-wrap">
             <table>
@@ -326,6 +339,10 @@
           </div>
           <div id="screenerCards" class="mobile-card-list" aria-live="polite">
             <div class="empty-state">加载中...</div>
+          </div>
+          <div class="pagination-bar pagination-bar-bottom">
+            <div class="pagination-group" id="screenerPaginationBottom"></div>
+            <div class="pagination-status" id="screenerPaginationStatusBottom">第 1 / 1 页</div>
           </div>
         </section>
         </div>
@@ -516,6 +533,19 @@
 
           <div class="table-header">
             <div class="table-meta" id="listMeta">尚未加载记录。</div>
+            <div class="field watchlist-page-size-field">
+              <label for="watchlistPageSize">每页条数</label>
+              <select id="watchlistPageSize">
+                <option value="10" selected>10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+          </div>
+          <div class="pagination-bar pagination-bar-top">
+            <div class="pagination-group" id="watchlistPaginationTop"></div>
+            <div class="pagination-status" id="watchlistPaginationStatusTop">第 1 / 1 页</div>
           </div>
           <div class="table-wrap desktop-table-wrap">
             <table>
@@ -540,11 +570,15 @@
           <div id="watchlistCards" class="mobile-card-list" aria-live="polite">
             <div class="empty-state">尚未加载记录。</div>
           </div>
+          <div class="pagination-bar pagination-bar-bottom">
+            <div class="pagination-group" id="watchlistPaginationBottom"></div>
+            <div class="pagination-status" id="watchlistPaginationStatusBottom">第 1 / 1 页</div>
+          </div>
         </section>
       </div>
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_screener/page.js"></script>
+  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260429-list-pagination-10"></script>
 </body>
 </html>
