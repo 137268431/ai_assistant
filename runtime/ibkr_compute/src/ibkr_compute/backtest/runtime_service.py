@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import math
 import os
@@ -884,7 +885,7 @@ class BacktestService:
             "strategy_tag": request["strategy_tag"],
             "compare_with_tv": bool(request.get("compare_with_tv", True)),
             "compare_tv_signals": bool(request.get("compare_tv_signals", False)),
-            "persist_backtest_indicators": bool(request.get("persist_backtest_indicators", True)),
+            "persist_backtest_indicators": bool(request.get("persist_backtest_indicators", False)),
             "warmup_bars": int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
             "scan_warmup_bars": int(request.get("scan_warmup_bars", request.get("warmup_bars", BACKTEST_WARMUP_BARS)) or BACKTEST_WARMUP_BARS),
             "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
@@ -1459,6 +1460,7 @@ class BacktestService:
 
         all_trades = []
         all_indicator_rows = []
+        backtest_indicator_generated_count = 0
         all_signal_rows = []
         all_reverse_rows = []
         daily_equity_points = []
@@ -1478,6 +1480,7 @@ class BacktestService:
             )
             all_trades = list(portfolio_result.get("trades") or [])
             all_indicator_rows = list(portfolio_result.get("indicator_rows") or [])
+            backtest_indicator_generated_count = int(portfolio_result.get("indicator_count", len(all_indicator_rows)) or 0)
             all_signal_rows = list(portfolio_result.get("signal_rows") or [])
             all_reverse_rows = list(portfolio_result.get("reverse_rows") or [])
             skipped_symbols = list(portfolio_result.get("skipped_symbols") or [])
@@ -1511,9 +1514,10 @@ class BacktestService:
                         }
                     )
                     completed_symbols += 1
+                    bars.clear()
                     continue
 
-                trades, quality, tv_symbol_report, indicator_rows, signal_rows, reverse_rows = self._run_symbol_backtest(
+                trades, quality, tv_symbol_report, indicator_rows, signal_rows, reverse_rows, indicator_count = self._run_symbol_backtest(
                     symbol,
                     bars,
                     request,
@@ -1521,12 +1525,15 @@ class BacktestService:
                 )
                 all_trades.extend(trades)
                 all_indicator_rows.extend(indicator_rows)
+                backtest_indicator_generated_count += int(indicator_count or len(indicator_rows))
                 all_signal_rows.extend(signal_rows)
                 all_reverse_rows.extend(reverse_rows)
                 data_quality.append(quality)
                 if tv_symbol_report:
                     tv_symbol_reports.append(tv_symbol_report)
                 completed_symbols += 1
+                indicator_rows.clear()
+                bars.clear()
 
         if self._cancel_event.is_set():
             raise BacktestCancelled()
@@ -1558,7 +1565,7 @@ class BacktestService:
         metrics["data_quality"] = data_quality
         tv_parity = self._finalize_tv_parity_report(request, tv_symbol_reports)
         metrics["tv_parity"] = tv_parity.get("summary") or {}
-        metrics["backtest_indicator_count"] = len(all_indicator_rows)
+        metrics["backtest_indicator_count"] = backtest_indicator_generated_count
         metrics["backtest_signal_count"] = len(all_signal_rows)
         metrics["backtest_target_count"] = len(backtest_target_rows)
         metrics["backtest_reverse_signal_count"] = len(all_reverse_rows)
@@ -1595,13 +1602,24 @@ class BacktestService:
         )
         metrics["analysis_summary"] = analysis_report.get("summary") or {}
 
-        self._set_progress_context("running", "persist", "saving trades and metrics", 92, progress_context)
-        if bool(request.get("persist_backtest_indicators", True)):
-            backtest_indicator_capture = self._persist_backtest_indicators(run_id, all_indicator_rows)
-        else:
-            backtest_indicator_capture = self._empty_capture_summary(BACKTEST_INDICATOR_COLLECTION, run_id, "disabled")
-            backtest_indicator_capture["attempted_count"] = len(all_indicator_rows)
+        persist_backtest_indicators = self._should_persist_backtest_indicators(request)
+        self._set_progress_context(
+            "running",
+            "persist",
+            "saving backtest indicators" if persist_backtest_indicators else "skipping backtest indicator persistence",
+            92,
+            progress_context,
+        )
+        try:
+            if persist_backtest_indicators:
+                backtest_indicator_capture = self._persist_backtest_indicators(run_id, all_indicator_rows)
+            else:
+                backtest_indicator_capture = self._empty_capture_summary(BACKTEST_INDICATOR_COLLECTION, run_id, "disabled")
+                backtest_indicator_capture["attempted_count"] = backtest_indicator_generated_count
+        finally:
+            all_indicator_rows.clear()
         metrics["backtest_indicator_capture"] = backtest_indicator_capture
+        self._set_progress_context("running", "persist", "saving trades and metrics", 94, progress_context)
         backtest_signal_capture = self._persist_backtest_signals(run_id, all_signal_rows)
         metrics["backtest_signal_capture"] = backtest_signal_capture
         metrics["backtest_target_capture"] = backtest_target_capture
@@ -1661,6 +1679,7 @@ class BacktestService:
                     "suggestions": (analysis_report.get("recommendation") or {}).get("suggestions") or [],
                 },
             )
+        self._clear_backtest_row_buffers(all_trades, all_signal_rows, all_reverse_rows, daily_equity_points, backtest_target_rows)
         return {
             "ok": True,
             "status": "completed",
@@ -3628,6 +3647,7 @@ class BacktestService:
         skipped_symbols = []
         all_trades = []
         all_indicator_rows = []
+        indicator_count = 0
         all_signal_rows = []
         all_reverse_rows = []
         tv_symbol_reports = []
@@ -3656,9 +3676,11 @@ class BacktestService:
             if quality:
                 data_quality.append(quality)
                 skipped_symbols.append(symbol)
+                bars.clear()
                 continue
             if not state:
                 skipped_symbols.append(symbol)
+                bars.clear()
                 continue
             states[symbol] = state
             for index, bar in enumerate(state["bars"]):
@@ -3668,9 +3690,10 @@ class BacktestService:
                 bars_by_time.setdefault(bar_ms, []).append((symbol, index, bar))
 
         if not states:
-            return {
+            result = {
                 "trades": [],
                 "indicator_rows": [],
+                "indicator_count": 0,
                 "signal_rows": [],
                 "reverse_rows": [],
                 "data_quality": data_quality,
@@ -3683,6 +3706,8 @@ class BacktestService:
                     "portfolio_candidate_samples": [],
                 },
             }
+            self._clear_portfolio_working_sets(states, bars_by_time, signal_index, target_lookup)
+            return result
 
         bar_times = sorted(bars_by_time.keys())
         total_steps = max(1, len(bar_times))
@@ -3690,6 +3715,7 @@ class BacktestService:
         slippage_bps = float(request["slippage_bps"])
         force_flat_eod = bool(request["force_flat_eod"])
         compare_tv_signals = self._should_compare_tv_signals(request)
+        capture_indicator_rows = self._should_persist_backtest_indicators(request)
 
         def append_trade(position: dict, trade: dict | None):
             if not trade:
@@ -3713,7 +3739,7 @@ class BacktestService:
             if step_index % 50 == 0 or step_index == total_steps - 1:
                 progress_value = 25 + int((step_index / total_steps) * 60)
                 self._set_progress_context("running", "streaming", f"streaming portfolio {step_index + 1}/{total_steps}", progress_value, progress_context)
-            entries = sorted(bars_by_time.get(bar_ms) or [], key=lambda item: item[0])
+            entries = sorted(bars_by_time.pop(bar_ms, []) or [], key=lambda item: item[0])
             current_day = ms_to_et(bar_ms).strftime("%Y-%m-%d")
             if ledger.get("current_day") and ledger["current_day"] != current_day:
                 ledger["daily_position_count"] = 0
@@ -3795,31 +3821,35 @@ class BacktestService:
                 if not snapshot or not state["engine"].is_ready():
                     state["previous_bar"] = bar
                     continue
+                indicator_count += 1
 
                 daily_fields = self._get_daily_change_fields_from_lookup(
                     state["daily_close_lookup"],
                     float(snapshot.get("close", 0) or 0),
                     int(bar.get("bar_time_ms", 0) or 0),
                 )
-                indicator_payload = self._build_tv_indicator_compare_payload(
-                    symbol,
-                    bar,
-                    state["engine"].bar_count,
-                    snapshot,
-                    request["source_environment"],
-                    daily_fields,
-                )
+                indicator_payload = None
                 indicator_audit = None
-                if state.get("symbol_tv_parity") is not None:
-                    indicator_audit = self._compare_generated_indicator(state["symbol_tv_parity"], indicator_payload)
-                all_indicator_rows.append(
-                    self._build_backtest_indicator_row(
-                        request,
+                if state.get("symbol_tv_parity") is not None or capture_indicator_rows:
+                    indicator_payload = self._build_tv_indicator_compare_payload(
+                        symbol,
                         bar,
-                        indicator_payload,
-                        indicator_audit,
+                        state["engine"].bar_count,
+                        snapshot,
+                        request["source_environment"],
+                        daily_fields,
                     )
-                )
+                    if state.get("symbol_tv_parity") is not None:
+                        indicator_audit = self._compare_generated_indicator(state["symbol_tv_parity"], indicator_payload)
+                    if capture_indicator_rows:
+                        all_indicator_rows.append(
+                            self._build_backtest_indicator_row(
+                                request,
+                                bar,
+                                indicator_payload,
+                                indicator_audit,
+                            )
+                        )
 
                 signal = state["signal_gen"].update(snapshot)
                 trading_day_enabled = state.get("allowed_trade_days") is None or current_symbol_day in state.get("allowed_trade_days")
@@ -4077,9 +4107,10 @@ class BacktestService:
             "portfolio_final_gross_exposure": round(gross_now, 4),
             "portfolio_realized_pnl": round(float(ledger.get("realized_pnl", 0) or 0), 4),
         }
-        return {
+        result = {
             "trades": all_trades,
             "indicator_rows": all_indicator_rows,
+            "indicator_count": indicator_count,
             "signal_rows": all_signal_rows,
             "reverse_rows": all_reverse_rows,
             "data_quality": data_quality,
@@ -4087,6 +4118,8 @@ class BacktestService:
             "tv_symbol_reports": tv_symbol_reports,
             "portfolio_metrics": portfolio_metrics,
         }
+        self._clear_portfolio_working_sets(states, bars_by_time, signal_index, target_lookup)
+        return result
 
     def _run_symbol_backtest(
         self,
@@ -4094,7 +4127,7 @@ class BacktestService:
         bars: list[dict],
         request: dict,
         allowed_trade_days: set[str] | None = None,
-    ) -> tuple[list[dict], dict, dict | None, list[dict], list[dict]]:
+    ) -> tuple[list[dict], dict, dict | None, list[dict], list[dict], list[dict], int]:
         params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
         slippage_bps = float(request["slippage_bps"])
         commission_per_share = float(request["commission_per_share"])
@@ -4103,6 +4136,7 @@ class BacktestService:
         signal_gen = SignalGenerator(symbol, "5m", params=params)
         compare_with_tv = self._should_compare_with_tv(request)
         compare_tv_signals = self._should_compare_tv_signals(request)
+        capture_indicator_rows = self._should_persist_backtest_indicators(request)
         tv_reference = self._load_tv_reference(
             symbol,
             request["source_environment"],
@@ -4123,6 +4157,7 @@ class BacktestService:
         ) if compare_with_tv else None
         trades = []
         indicator_rows = []
+        indicator_count = 0
         signal_rows = []
         reverse_rows = []
         signal_index = {}
@@ -4157,7 +4192,7 @@ class BacktestService:
                 "market_bars": len(bars),
                 "selected_trade_day_count": len(allowed_trade_days or []),
             }
-            return [], quality, symbol_tv_parity, [], [], []
+            return [], quality, symbol_tv_parity, [], [], [], 0
 
         for index, bar in enumerate(bars):
             if self._cancel_event.is_set():
@@ -4223,31 +4258,35 @@ class BacktestService:
             snapshot = engine.update(bar)
             if not snapshot or not engine.is_ready():
                 continue
+            indicator_count += 1
 
             daily_fields = self._get_daily_change_fields_from_lookup(
                 daily_close_lookup,
                 float(snapshot.get("close", 0) or 0),
                 int(bar.get("bar_time_ms", 0) or 0),
             )
-            indicator_payload = self._build_tv_indicator_compare_payload(
-                symbol,
-                bar,
-                engine.bar_count,
-                snapshot,
-                request["source_environment"],
-                daily_fields,
-            )
+            indicator_payload = None
             indicator_audit = None
-            if symbol_tv_parity is not None:
-                indicator_audit = self._compare_generated_indicator(symbol_tv_parity, indicator_payload)
-            indicator_rows.append(
-                self._build_backtest_indicator_row(
-                    request,
+            if symbol_tv_parity is not None or capture_indicator_rows:
+                indicator_payload = self._build_tv_indicator_compare_payload(
+                    symbol,
                     bar,
-                    indicator_payload,
-                    indicator_audit,
+                    engine.bar_count,
+                    snapshot,
+                    request["source_environment"],
+                    daily_fields,
                 )
-            )
+                if symbol_tv_parity is not None:
+                    indicator_audit = self._compare_generated_indicator(symbol_tv_parity, indicator_payload)
+                if capture_indicator_rows:
+                    indicator_rows.append(
+                        self._build_backtest_indicator_row(
+                            request,
+                            bar,
+                            indicator_payload,
+                            indicator_audit,
+                        )
+                    )
             signal = signal_gen.update(snapshot)
             trading_day_enabled = allowed_trade_days is None or current_day in allowed_trade_days
             preexisting_pending_signal = pending_signal if pending_signal and open_position is None else None
@@ -4420,13 +4459,45 @@ class BacktestService:
         }
         if symbol_tv_parity is not None:
             self._finalize_symbol_tv_parity(symbol_tv_parity)
-        return trades, quality, symbol_tv_parity, indicator_rows, signal_rows, reverse_rows
+        return trades, quality, symbol_tv_parity, indicator_rows, signal_rows, reverse_rows, indicator_count
 
     def _should_compare_with_tv(self, request: dict) -> bool:
         return bool(request.get("compare_with_tv", True)) and str(request.get("source_environment") or "").strip().lower() != BACKTEST_ENVIRONMENT
 
     def _should_compare_tv_signals(self, request: dict) -> bool:
         return self._should_compare_with_tv(request) and bool(request.get("compare_tv_signals", False))
+
+    def _should_persist_backtest_indicators(self, request: dict) -> bool:
+        return bool(request.get("persist_backtest_indicators", False))
+
+    def _clear_backtest_row_buffers(self, *buffers: Any, collect: bool = True):
+        for buffer in buffers:
+            if hasattr(buffer, "clear"):
+                try:
+                    buffer.clear()
+                except Exception:
+                    continue
+        if collect:
+            gc.collect()
+
+    def _clear_portfolio_working_sets(
+        self,
+        states: dict[str, dict],
+        bars_by_time: dict[int, list[tuple[str, int, dict]]],
+        signal_index: dict,
+        target_lookup: dict,
+    ):
+        for state in list(states.values()):
+            self._clear_backtest_row_buffers(
+                state.get("bars"),
+                state.get("daily_close_lookup"),
+                state.get("reverse_index"),
+                collect=False,
+            )
+            state.pop("previous_bar", None)
+            state.pop("open_position", None)
+            state.pop("pending_signal", None)
+        self._clear_backtest_row_buffers(states, bars_by_time, signal_index, target_lookup)
 
     def _parse_object(self, value: Any) -> dict:
         if isinstance(value, dict):
@@ -5860,148 +5931,118 @@ class BacktestService:
             "errors": [],
         }
 
-    def _persist_backtest_indicators(self, run_id: str, indicator_rows: list[dict]) -> dict:
-        summary = self._empty_capture_summary(BACKTEST_INDICATOR_COLLECTION, run_id)
-        summary["attempted_count"] = len(indicator_rows)
+    def _append_capture_error(self, summary: dict, payload: dict, exc: Exception | str, fields: tuple[str, ...]):
+        summary["error_count"] += 1
+        summary["status"] = "partial"
+        if len(summary["errors"]) >= TV_COMPARE_SAMPLE_LIMIT:
+            return
+        sample = {field: payload.get(field, "") for field in fields}
+        if "bar_time_ms" in sample:
+            sample["bar_time_ms"] = int(sample.get("bar_time_ms", 0) or 0)
+        sample["error"] = str(exc)[:300]
+        summary["errors"].append(sample)
+
+    def _prepare_backtest_capture_payload(self, run_id: str, row: dict) -> dict:
+        payload = dict(row or {})
+        extra = self._parse_object(payload.get("extra"))
+        extra["backtest_run_id"] = run_id
+        payload["run_id"] = run_id
+        payload["extra"] = extra
+        return payload
+
+    def _persist_backtest_collection_rows(
+        self,
+        collection: str,
+        run_id: str,
+        rows: list[dict],
+        error_fields: tuple[str, ...],
+    ) -> dict:
+        summary = self._empty_capture_summary(collection, run_id)
+        summary["attempted_count"] = len(rows)
         if not self.pb or not run_id:
             return summary
-        if not indicator_rows:
+        if not rows:
             return summary
 
         summary["status"] = "ok"
-        for row in indicator_rows:
+        payloads = []
+        for row in rows:
             if self._cancel_event.is_set():
                 raise BacktestCancelled()
-            payload = dict(row or {})
-            extra = self._parse_object(payload.get("extra"))
-            extra["backtest_run_id"] = run_id
-            payload["run_id"] = run_id
-            payload["extra"] = extra
-            try:
-                self.pb.create_record(BACKTEST_INDICATOR_COLLECTION, payload)
-                summary["saved_count"] += 1
-            except Exception as exc:
-                summary["error_count"] += 1
-                summary["status"] = "partial"
-                if len(summary["errors"]) < TV_COMPARE_SAMPLE_LIMIT:
-                    summary["errors"].append(
-                        {
-                            "bar_time_ms": int(payload.get("bar_time_ms", 0) or 0),
-                            "symbol": str(payload.get("symbol", "") or ""),
-                            "error": str(exc)[:300],
-                        }
-                    )
+            payloads.append(self._prepare_backtest_capture_payload(run_id, row))
+
+        bulk_create = getattr(self.pb, "create_records", None)
+        chunk_size = 50
+        for index in range(0, len(payloads), chunk_size):
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            chunk = payloads[index : index + chunk_size]
+            if callable(bulk_create):
+                try:
+                    bulk_create(collection, chunk, timeout=60, batch_size=chunk_size)
+                    summary["saved_count"] += len(chunk)
+                    continue
+                except Exception as exc:
+                    for payload in chunk:
+                        self._append_capture_error(summary, payload, exc, error_fields)
+                    continue
+
+            for payload in chunk:
+                if self._cancel_event.is_set():
+                    raise BacktestCancelled()
+                try:
+                    self.pb.create_record(collection, payload)
+                    summary["saved_count"] += 1
+                except Exception as exc:
+                    self._append_capture_error(summary, payload, exc, error_fields)
+
         if summary["error_count"] and summary["saved_count"] == 0:
             summary["status"] = "error"
         return summary
+
+    def _persist_backtest_indicators(self, run_id: str, indicator_rows: list[dict]) -> dict:
+        return self._persist_backtest_collection_rows(
+            BACKTEST_INDICATOR_COLLECTION,
+            run_id,
+            indicator_rows,
+            ("bar_time_ms", "symbol"),
+        )
 
     def _persist_backtest_signals(self, run_id: str, signal_rows: list[dict]) -> dict:
-        summary = self._empty_capture_summary(BACKTEST_SIGNAL_COLLECTION, run_id)
-        summary["attempted_count"] = len(signal_rows)
-        if not self.pb or not run_id:
-            return summary
-        if not signal_rows:
-            return summary
-
-        summary["status"] = "ok"
-        for row in signal_rows:
-            if self._cancel_event.is_set():
-                raise BacktestCancelled()
-            payload = dict(row or {})
-            extra = self._parse_object(payload.get("extra"))
-            extra["backtest_run_id"] = run_id
-            payload["run_id"] = run_id
-            payload["extra"] = extra
-            try:
-                self.pb.create_record(BACKTEST_SIGNAL_COLLECTION, payload)
-                summary["saved_count"] += 1
-            except Exception as exc:
-                summary["error_count"] += 1
-                summary["status"] = "partial"
-                if len(summary["errors"]) < TV_COMPARE_SAMPLE_LIMIT:
-                    summary["errors"].append(
-                        {
-                            "bar_time_ms": int(payload.get("bar_time_ms", 0) or 0),
-                            "symbol": str(payload.get("symbol", "") or ""),
-                            "signal_id": str(payload.get("signal_id", "") or ""),
-                            "error": str(exc)[:300],
-                        }
-                    )
-        if summary["error_count"] and summary["saved_count"] == 0:
-            summary["status"] = "error"
-        return summary
+        return self._persist_backtest_collection_rows(
+            BACKTEST_SIGNAL_COLLECTION,
+            run_id,
+            signal_rows,
+            ("bar_time_ms", "symbol", "signal_id"),
+        )
 
     def _persist_backtest_targets(self, run_id: str, target_rows: list[dict]) -> dict:
-        summary = self._empty_capture_summary(BACKTEST_TARGET_COLLECTION, run_id)
-        summary["attempted_count"] = len(target_rows)
-        if not self.pb or not run_id:
-            return summary
-        if not target_rows:
-            return summary
-
-        summary["status"] = "ok"
-        for row in target_rows:
-            if self._cancel_event.is_set():
-                raise BacktestCancelled()
-            payload = dict(row or {})
-            extra = self._parse_object(payload.get("extra"))
-            extra["backtest_run_id"] = run_id
-            payload["run_id"] = run_id
-            payload["extra"] = extra
-            try:
-                self.pb.create_record(BACKTEST_TARGET_COLLECTION, payload)
-                summary["saved_count"] += 1
-            except Exception as exc:
-                summary["error_count"] += 1
-                summary["status"] = "partial"
-                if len(summary["errors"]) < TV_COMPARE_SAMPLE_LIMIT:
-                    summary["errors"].append(
-                        {
-                            "date": str(payload.get("date", "") or ""),
-                            "symbol": str(payload.get("symbol", "") or ""),
-                            "error": str(exc)[:300],
-                        }
-                    )
-        if summary["error_count"] and summary["saved_count"] == 0:
-            summary["status"] = "error"
-        return summary
+        return self._persist_backtest_collection_rows(
+            BACKTEST_TARGET_COLLECTION,
+            run_id,
+            target_rows,
+            ("date", "symbol"),
+        )
 
     def _persist_backtest_reverse_signals(self, run_id: str, reverse_rows: list[dict]) -> dict:
-        summary = self._empty_capture_summary(BACKTEST_REVERSE_SIGNAL_COLLECTION, run_id)
-        summary["attempted_count"] = len(reverse_rows)
-        if not self.pb or not run_id:
-            return summary
-        if not reverse_rows:
-            return summary
+        return self._persist_backtest_collection_rows(
+            BACKTEST_REVERSE_SIGNAL_COLLECTION,
+            run_id,
+            reverse_rows,
+            ("bar_time_ms", "symbol", "action_type", "signal_id"),
+        )
 
-        summary["status"] = "ok"
-        for row in reverse_rows:
+    def _create_records_or_raise(self, collection: str, payloads: list[dict], timeout: int = 60, batch_size: int = 50):
+        if not payloads:
+            return
+        bulk_create = getattr(self.pb, "create_records", None)
+        if callable(bulk_create):
+            bulk_create(collection, payloads, timeout=timeout, batch_size=batch_size)
+            return
+        for payload in payloads:
             if self._cancel_event.is_set():
                 raise BacktestCancelled()
-            payload = dict(row or {})
-            extra = self._parse_object(payload.get("extra"))
-            extra["backtest_run_id"] = run_id
-            payload["run_id"] = run_id
-            payload["extra"] = extra
-            try:
-                self.pb.create_record(BACKTEST_REVERSE_SIGNAL_COLLECTION, payload)
-                summary["saved_count"] += 1
-            except Exception as exc:
-                summary["error_count"] += 1
-                summary["status"] = "partial"
-                if len(summary["errors"]) < TV_COMPARE_SAMPLE_LIMIT:
-                    summary["errors"].append(
-                        {
-                            "bar_time_ms": int(payload.get("bar_time_ms", 0) or 0),
-                            "symbol": str(payload.get("symbol", "") or ""),
-                            "action_type": str(payload.get("action_type", "") or ""),
-                            "signal_id": str(payload.get("signal_id", "") or ""),
-                            "error": str(exc)[:300],
-                        }
-                    )
-        if summary["error_count"] and summary["saved_count"] == 0:
-            summary["status"] = "error"
-        return summary
+            self.pb.create_record(collection, payload)
 
     def _open_position(
         self,
@@ -6333,31 +6374,36 @@ class BacktestService:
         }
 
     def _persist_trades(self, run_id: str, trades: list[dict]):
+        if not self.pb or not run_id or not trades:
+            return
+        payloads = []
         for index, trade in enumerate(trades, start=1):
             if self._cancel_event.is_set():
                 raise BacktestCancelled()
-            payload = {
-                "run_id": run_id,
-                "symbol": trade.get("symbol", ""),
-                "direction": trade.get("direction", ""),
-                "signal": trade.get("signal", ""),
-                "signal_id": trade.get("signal_id", ""),
-                "entry_us_time": trade.get("entry_us_time", ""),
-                "exit_us_time": trade.get("exit_us_time", ""),
-                "entry_bar_ms": int(trade.get("entry_bar_ms", 0) or 0),
-                "exit_bar_ms": int(trade.get("exit_bar_ms", 0) or 0),
-                "entry_price": float(trade.get("entry_price", 0) or 0),
-                "exit_price": float(trade.get("exit_price", 0) or 0),
-                "shares": int(trade.get("shares", 0) or 0),
-                "pnl": float(trade.get("pnl", 0) or 0),
-                "pnl_pct": float(trade.get("pnl_pct", 0) or 0),
-                "bars_held": int(trade.get("bars_held", 0) or 0),
-                "exit_reason": trade.get("exit_reason", ""),
-                "session_type": trade.get("session_type", "regular"),
-                "trade_index": index,
-                "extra": trade.get("extra", {}),
-            }
-            self.pb.create_record(TRADE_COLLECTION, payload)
+            payloads.append(
+                {
+                    "run_id": run_id,
+                    "symbol": trade.get("symbol", ""),
+                    "direction": trade.get("direction", ""),
+                    "signal": trade.get("signal", ""),
+                    "signal_id": trade.get("signal_id", ""),
+                    "entry_us_time": trade.get("entry_us_time", ""),
+                    "exit_us_time": trade.get("exit_us_time", ""),
+                    "entry_bar_ms": int(trade.get("entry_bar_ms", 0) or 0),
+                    "exit_bar_ms": int(trade.get("exit_bar_ms", 0) or 0),
+                    "entry_price": float(trade.get("entry_price", 0) or 0),
+                    "exit_price": float(trade.get("exit_price", 0) or 0),
+                    "shares": int(trade.get("shares", 0) or 0),
+                    "pnl": float(trade.get("pnl", 0) or 0),
+                    "pnl_pct": float(trade.get("pnl_pct", 0) or 0),
+                    "bars_held": int(trade.get("bars_held", 0) or 0),
+                    "exit_reason": trade.get("exit_reason", ""),
+                    "session_type": trade.get("session_type", "regular"),
+                    "trade_index": index,
+                    "extra": trade.get("extra", {}),
+                }
+            )
+        self._create_records_or_raise(TRADE_COLLECTION, payloads)
 
     def _build_replay_timeline(self, symbol: str, bars: list[dict], params: dict) -> list[dict]:
         timeline = build_runtime_timeline(

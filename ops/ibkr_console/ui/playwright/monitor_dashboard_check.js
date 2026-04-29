@@ -58,12 +58,16 @@ async function inspectMonitor(browser, deviceName = null) {
     hasSystemOpsBridge: bridgeTexts.includes("运维") && bridgeTexts.includes("监控大盘"),
     hasOpsRouteGuide: ["监控大盘", "预热", "数据质量", "历史重建"].every((label) => opsRouteTexts.includes(label)),
     hasApiSection: sectionTitles.includes("IBKR API 利用率"),
+    hasMarketOverviewSection: sectionTitles.includes("大盘行情雷达"),
+    hasCriticalMetricsSection: sectionTitles.includes("关键监控指标带"),
     hasSystemSection: sectionTitles.includes("Split-Stack 系统状态"),
     hasSubscriptionSection: sectionTitles.includes("订阅视图"),
     hasHostSection: sectionTitles.includes("主机健康"),
     hasFlagsSection: sectionTitles.includes("当前告警"),
     hasHeroEnv: heroText.includes(ENVIRONMENT.toUpperCase()),
     hasRefreshButton: await page.locator("#refreshBtn").count().catch(() => 0),
+    hasMarketMounts: await page.locator("#marketOverviewGrid, #marketMonitorCards").count().catch(() => 0),
+    hasCriticalMount: await page.locator("#criticalMetricsGrid").count().catch(() => 0),
     errors,
   };
 

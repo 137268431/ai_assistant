@@ -4,6 +4,8 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.system.service_state import build_service_monitor_from_topology
+
 
 def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
@@ -57,6 +59,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         compute_payload = as_dict(compute_result.get("payload"))
         runtime_payload = as_dict(runtime_result.get("payload"))
         service_topology = merge_service_topology(compute_payload, runtime_payload)
+        service_monitor = build_service_monitor_from_topology(environment, service_topology)
         runtime_expected = str(service_topology.get("runtime_mode") or "").strip().lower() == "remote"
         ok = bool(compute_result.get("ok")) and (not runtime_expected or bool(runtime_result.get("ok")))
         degraded = bool(compute_result.get("ok")) or bool(runtime_result.get("ok")) or bool(compute_payload) or bool(runtime_payload)
@@ -78,6 +81,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "compute": compute_payload,
                 "runtime": runtime_payload,
                 "service_topology": service_topology,
+                "service_monitor": service_monitor,
                 "source": "ibkr-api",
                 "proxy_upstream_compute": f"{compute_base_url}/health",
                 "proxy_upstream_runtime": runtime_result.get("upstream") or "",
@@ -118,6 +122,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             },
         )
         service_topology = merge_service_topology(compute_data, runtime_data)
+        service_monitor = build_service_monitor_from_topology(environment, service_topology)
         actual_runtime_environment = normalize_environment(
             runtime_data.get("environment") or compute_data.get("environment") or environment,
             environment,
@@ -140,6 +145,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "compute": compute_data,
                 "runtime": runtime_data,
                 "service_topology": service_topology,
+                "service_monitor": service_monitor,
                 "warmup_details_included": bool(include_warmup_details),
                 "requested_environment": environment,
                 "actual_runtime_environment": actual_runtime_environment,

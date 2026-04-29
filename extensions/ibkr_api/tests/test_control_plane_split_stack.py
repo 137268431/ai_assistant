@@ -324,6 +324,7 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIn("system/jobs/scan_summary", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/jobs/status_reminder", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/schedulerz", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("system/scheduler/jobs/run", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/monitorz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/summaryz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr-api", payload["service_topology"]["services"])
@@ -928,6 +929,74 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertEqual(payload["scheduler"]["dispatch_lag_min"], 5.0)
         self.assertIn("ibkr-scheduler", payload["service_topology"]["services"])
 
+    def test_manual_scheduler_scan_job_route_proxies_allowlisted_job(self):
+        calls = []
+
+        def fake_request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(
+                {
+                    "method": method,
+                    "base_url": base_url,
+                    "path": path,
+                    "params": params,
+                    "json_body": json_body,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "ok": True,
+                "status_code": 200,
+                "target_url": "http://scheduler/jobs/run/ibkr_scan_runtime",
+                "error": "",
+                "payload": {
+                    "ok": True,
+                    "status_code": 200,
+                    "payload": {
+                        "ok": True,
+                        "active": 2,
+                        "candidates": 3,
+                        "removed": 1,
+                        "errors": 0,
+                    },
+                },
+            }
+
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={
+                "environment": "live",
+                "job_id": "ibkr_scan_runtime",
+                "trigger_source": "console_manual_daily_scan",
+            },
+        ):
+            with mock.patch.object(api_app_mod, "_request_json_request", side_effect=fake_request_json_request):
+                payload = api_app_mod.custom_system_scheduler_job_run()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["job_id"], "ibkr_scan_runtime")
+        self.assertEqual(payload["scan_result"]["active"], 2)
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["path"], "/jobs/run/ibkr_scan_runtime")
+        self.assertEqual(calls[0]["json_body"]["trigger_source"], "console_manual_daily_scan")
+        self.assertNotIn("scheduled_slot", calls[0]["json_body"])
+
+    def test_manual_scheduler_job_route_rejects_non_allowlisted_job(self):
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={
+                "environment": "live",
+                "job_id": "system_daily_report",
+            },
+        ):
+            payload, status_code = api_app_mod.custom_system_scheduler_job_run()
+
+        self.assertEqual(status_code, 400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "unsupported_scheduler_job")
+        self.assertEqual(payload["allowed_jobs"], ["ibkr_scan_runtime"])
+
     def test_monitorz_route_merges_split_stack_service_monitor(self):
         base_monitor_payload = {
             "ok": True,
@@ -1275,6 +1344,32 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIn(payload["live_readiness"]["source"], {"compute_engines", "runtime_warmup_snapshot"})
         self.assertIn("ibkr-runtime", payload["service_topology"]["services"])
         fetch_compute_status.assert_called_once_with("live", include_engines=False)
+
+    def test_statusz_route_canonicalizes_reboot_starting_runtime_state(self):
+        compute_result = {"ok": True, "payload": _sample_compute_status_payload(), "error": ""}
+        runtime_result = {
+            "ok": True,
+            "payload": _sample_runtime_status_payload(authenticated=False),
+            "error": "",
+            "selected_upstream": "http://runtime/ibkr/status",
+            "proxy_upstream": "http://compute/ibkr/status",
+            "direct_upstream": "http://runtime/ibkr/status",
+        }
+        with mock.patch.dict(os.environ, {"IBKR_SERVICE_PROFILE": "api", "IBKR_RUNTIME_MODE": "remote"}, clear=False):
+            with mock.patch.object(api_app_mod, "_fetch_compute_status", return_value=compute_result):
+                with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value=runtime_result):
+                    with mock.patch.object(api_app_mod, "_load_daily_scan_state", return_value={"market_date": "2026-04-22"}):
+                        with mock.patch.object(api_app_mod, "_count_active_today_targets", return_value=1):
+                            with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "lite": "1"}):
+                                payload = api_app_mod.custom_ibkr_statusz()
+
+        services = payload["service_topology"]["services"]
+        monitor_services = payload["service_monitor"]["services"]
+        self.assertEqual(payload["service_topology"]["service_profile"], "api")
+        self.assertEqual(services["ibkr-api"]["status"], "running")
+        self.assertEqual(services["ibkr-runtime"]["status"], "starting")
+        self.assertEqual(services["ibkr-runtime"]["readiness_phase"], "auth_pending")
+        self.assertEqual(monitor_services["ibkr-runtime"]["status"], services["ibkr-runtime"]["status"])
 
     def test_statusz_route_requests_full_compute_status_when_full_requested(self):
         compute_result = {"ok": True, "payload": _sample_compute_status_payload(), "error": ""}

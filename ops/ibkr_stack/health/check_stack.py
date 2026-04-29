@@ -974,6 +974,53 @@ def fetch_first_ok(urls: list[str], *, expect_json: bool = False, timeout: int =
     return first_result
 
 
+def extract_service_statuses(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    candidates = []
+    service_monitor = payload.get("service_monitor")
+    if isinstance(service_monitor, dict):
+        candidates.append(service_monitor)
+    topology = payload.get("service_topology")
+    if isinstance(topology, dict):
+        candidates.append(topology)
+    if isinstance(payload.get("services"), dict):
+        candidates.append(payload)
+
+    for candidate in candidates:
+        services = candidate.get("services") if isinstance(candidate, dict) else {}
+        if not isinstance(services, dict):
+            continue
+        statuses = {}
+        for name, item in services.items():
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status:
+                statuses[str(name)] = status
+        if statuses:
+            return statuses
+    return {}
+
+
+def find_service_status_mismatches(named_payloads: dict[str, dict]) -> list[str]:
+    by_service: dict[str, dict[str, str]] = {}
+    for source_name, payload in named_payloads.items():
+        for service_name, status in extract_service_statuses(payload).items():
+            if status == "unknown":
+                continue
+            by_service.setdefault(service_name, {})[source_name] = status
+
+    mismatches = []
+    for service_name, source_statuses in sorted(by_service.items()):
+        unique_statuses = sorted(set(source_statuses.values()))
+        if len(unique_statuses) <= 1:
+            continue
+        detail = ",".join(f"{source}={status}" for source, status in sorted(source_statuses.items()))
+        mismatches.append(f"{service_name}:{detail}")
+    return mismatches
+
+
 def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     pb_base_url = args.pb_base_url.rstrip("/")
     api_public_url = args.api_public_url.rstrip("/")
@@ -1001,6 +1048,10 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
             f"{api_public_url}/api/custom/system/summaryz?lite=1&environment={args.environment}",
             expect_json=True,
         ),
+        "api_system_monitorz": fetch_url(
+            f"{api_public_url}/api/custom/system/monitorz?environment={args.environment}",
+            expect_json=True,
+        ),
         "compute_public_health": (
             fetch_url(f"{compute_public_url}/health", expect_json=True)
             if compute_public_url
@@ -1012,7 +1063,15 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
     failures = payload.setdefault("failures", [])
     warnings = payload.setdefault("warnings", [])
 
-    for name in ("pb_api_health", "pb_root_page", "api_public_health", "api_public_status", "api_ibkr_statusz", "api_system_summaryz"):
+    for name in (
+        "pb_api_health",
+        "pb_root_page",
+        "api_public_health",
+        "api_public_status",
+        "api_ibkr_statusz",
+        "api_system_summaryz",
+        "api_system_monitorz",
+    ):
         if not public[name].get("ok"):
             failures.append(f"public:{name}")
     pb_root_final_url = str(public.get("pb_root_page", {}).get("final_url") or "")
@@ -1065,6 +1124,16 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
         failures.append("public:topology:ibkr_scheduler_missing")
     if "ibkr-console" not in services:
         failures.append("public:topology:ibkr_console_missing")
+
+    status_mismatches = find_service_status_mismatches(
+        {
+            "statusz": public.get("api_ibkr_statusz", {}).get("json") or {},
+            "summaryz": public.get("api_system_summaryz", {}).get("json") or {},
+            "monitorz": public.get("api_system_monitorz", {}).get("json") or {},
+        }
+    )
+    for mismatch in status_mismatches:
+        failures.append(f"public:service_status_mismatch:{mismatch}")
 
     public_preload_reason = str(public_compute_startup_preload_sla.get("reason") or "").strip().lower()
     if public_preload_reason == "failed":

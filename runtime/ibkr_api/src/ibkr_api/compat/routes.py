@@ -5,6 +5,8 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.system.service_state import canonicalize_topology
+
 
 NATIVE_CUSTOM_ROUTES = [
     "ibkr/bars",
@@ -79,6 +81,7 @@ NATIVE_CUSTOM_ROUTES = [
     "system/jobs/weekly_reauth_followup",
     "system/jobs/weekly_reauth_reminder",
     "system/monitorz",
+    "system/scheduler/jobs/run",
     "system/schedulerz",
     "system/summaryz",
 ]
@@ -133,12 +136,14 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     @app.route("/health", methods=["GET"])
     def health() -> Response:
         scheduler_jobs = scheduler_job_states()
+        service_topology, service_monitor = canonicalize_topology("live", build_service_topology())
         return jsonify(
             {
                 "ok": True,
                 "status": "running",
                 "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
-                "service_topology": build_service_topology(),
+                "service_topology": service_topology,
+                "service_monitor": service_monitor,
                 "upstreams": {
                     "pocketbase": pb_base_url,
                     "compute": compute_base_url,
@@ -157,12 +162,14 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
         config.refresh()
         scheduler_items = build_cron_payload(config, environment, scheduler_jobs)
+        service_topology, service_monitor = canonicalize_topology(environment, build_service_topology())
         return jsonify(
             {
                 "ok": True,
                 "status": "running",
                 "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
-                "service_topology": build_service_topology(),
+                "service_topology": service_topology,
+                "service_monitor": service_monitor,
                 "compatibility": {
                     "direct_proxy_routes": sorted({path for (_, path) in direct_proxy_map}),
                     "proxy_action_routes": sorted(action_proxy_map),

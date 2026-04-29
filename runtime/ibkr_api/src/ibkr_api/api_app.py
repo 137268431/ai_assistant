@@ -633,6 +633,7 @@ _platform_route_handlers = register_platform_routes(
         build_service_topology=build_service_topology,
         compute_base_url=COMPUTE_BASE_URL,
         runtime_base_url=RUNTIME_BASE_URL,
+        scheduler_base_url=SCHEDULER_BASE_URL,
         ibkr_2fa_state_key=IBKR_2FA_STATE_KEY,
         ibkr_2fa_state_date=IBKR_2FA_STATE_DATE,
         ibkr_startup_state_key=IBKR_STARTUP_STATE_KEY,

@@ -77,7 +77,7 @@ class MultiTimeframeWarmupPeriodTest(unittest.TestCase):
 
         self.assertEqual(overrides, {"AAPL": {"5m": "3d"}, "MSFT": {"5m": "3d"}})
 
-    def test_indicator_backfill_plan_uses_remote_missing_higher_timeframe_symbols(self):
+    def test_indicator_backfill_plan_ignores_missing_indicator_mirror_symbols(self):
         warmup = _DummyWarmup({"ibkr_warmup_indicator_backfill_intervals": "15m,30m,1h"})
         snapshot = {
             "symbols": ["AAPL", "MSFT", "VIX"],
@@ -90,6 +90,7 @@ class MultiTimeframeWarmupPeriodTest(unittest.TestCase):
                     "15m": {"status": "ready"},
                     "1h": {
                         "status": "degraded",
+                        "storage_checked": True,
                         "missing_indicator_symbols": ["aapl", "MSFT"],
                         "missing_ready_symbols": ["VIX"],
                     },
@@ -106,7 +107,43 @@ class MultiTimeframeWarmupPeriodTest(unittest.TestCase):
         ):
             plan = warmup._collect_warmup_indicator_backfill_plan(snapshot)
 
-        self.assertEqual(plan, {"1h": ["AAPL"]})
+        self.assertEqual(plan, {})
+
+    def test_indicator_backfill_plan_uses_only_storage_checked_missing_bars(self):
+        warmup = _DummyWarmup({"ibkr_warmup_indicator_backfill_intervals": "15m,30m,1h"})
+        snapshot = {
+            "symbols": ["AAPL", "MSFT", "VIX"],
+            "conid_map": {"AAPL": 1, "VIX": 2},
+        }
+        payload = {
+            "service_profile": "compute",
+            "multi_timeframe_readiness": {
+                "intervals": {
+                    "15m": {
+                        "status": "degraded",
+                        "storage_checked": False,
+                        "missing_bar_symbols": ["AAPL"],
+                    },
+                    "1h": {
+                        "status": "degraded",
+                        "storage_checked": True,
+                        "missing_bar_symbols": ["aapl", "MSFT", "VIX"],
+                        "missing_indicator_symbols": ["VIX"],
+                    },
+                }
+            },
+        }
+
+        with (
+            mock.patch("ibkr_compute.orchestration.warmup_cycle._service_mod", return_value=_service_mod()),
+            mock.patch(
+                "ibkr_compute.api.compute_status_client.get_remote_compute_status",
+                return_value=payload,
+            ),
+        ):
+            plan = warmup._collect_warmup_indicator_backfill_plan(snapshot)
+
+        self.assertEqual(plan, {"1h": ["AAPL", "VIX"]})
 
 
 if __name__ == "__main__":

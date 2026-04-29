@@ -1,12 +1,13 @@
 [Unit]
 Description=IBKR Console Static Service
-After=network.target ibkr-api.service
-Wants=ibkr-api.service
+After=network-online.target ibkr-api.service
+Wants=network-online.target ibkr-api.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/ibkr_console
 EnvironmentFile=-/opt/ibkr_console/.env
+ExecStartPre=/bin/sh -lc 'for i in $(seq 1 ${IBKR_WAIT_API_ATTEMPTS:-90}); do /usr/bin/nc -z 127.0.0.1 5102 >/dev/null 2>&1 && exit 0; sleep 2; done; echo "API port not ready" >&2; exit 1'
 ExecStart=/bin/sh -lc 'exec ${PYTHON_BIN:-/usr/bin/python3} -m http.server "${PORT:-5104}" --bind "${IBKR_CONSOLE_BIND:-127.0.0.1}" --directory /opt/ibkr_console/static'
 Restart=on-failure
 RestartSec=10

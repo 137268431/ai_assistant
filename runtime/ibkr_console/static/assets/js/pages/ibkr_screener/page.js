@@ -38,6 +38,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       requestToken: 0,
       searchDebounceId: 0,
     };
+    const manualDailyScanState = {
+      running: false,
+      lastResult: null,
+    };
     const screenerPaginationState = {
       page: 1,
       perPage: 10,
@@ -209,6 +213,22 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
     function getSelectedMarketDate() {
       return document.getElementById('marketDate')?.value || '';
+    }
+
+    function isSelectedDateToday() {
+      return String(getSelectedMarketDate() || '').trim() === getUsDate();
+    }
+
+    function syncManualDailyScanButton() {
+      const button = document.getElementById('rerunDailyScanBtn');
+      if (!button) return;
+      const selectedDate = String(getSelectedMarketDate() || '').trim();
+      const isToday = isSelectedDateToday();
+      button.disabled = manualDailyScanState.running || !isToday;
+      button.textContent = manualDailyScanState.running ? '补跑中...' : '补跑今日日筛';
+      button.title = isToday
+        ? '手动补跑一次 09:20 ET 日筛，刷新今日 candidate / active。'
+        : `只支持当前美东日期 ${getUsDate()}，当前选择 ${selectedDate || '--'}。`;
     }
 
     function getScreenerLoadKey(marketDate = getSelectedMarketDate()) {
@@ -1415,6 +1435,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
     async function loadTodayTargets(showToastOnSuccess = false) {
       const marketDate = document.getElementById('marketDate').value || getDailyTargetDate() || getUsDate();
+      syncManualDailyScanButton();
       window.clearTimeout(currentTargetState.searchDebounceId);
       const requestToken = ++currentTargetState.requestToken;
       document.getElementById('currentTargetsMeta').textContent = '正在加载当前标的...';
@@ -1742,6 +1763,62 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
     };
 
+    function summarizeManualDailyScanResult(payload) {
+      const schedulerResult = payload?.scheduler_result && typeof payload.scheduler_result === 'object'
+        ? payload.scheduler_result
+        : {};
+      const scanResult = payload?.scan_result && typeof payload.scan_result === 'object'
+        ? payload.scan_result
+        : (schedulerResult.payload && typeof schedulerResult.payload === 'object' ? schedulerResult.payload : {});
+      if (schedulerResult.skipped) {
+        return `补跑跳过: ${schedulerResult.reason || payload?.error || 'scheduler skipped'}`;
+      }
+      const active = Number(scanResult.active || 0) || 0;
+      const candidates = Number(scanResult.candidates || 0) || 0;
+      const removed = Number(scanResult.removed || 0) || 0;
+      const errors = Number(scanResult.errors || 0) || 0;
+      return `补跑完成: active ${active}, candidate ${candidates}, removed ${removed}, errors ${errors}`;
+    }
+
+    window.rerunTodayDailyScan = async function() {
+      if (manualDailyScanState.running) return;
+      if (!isSelectedDateToday()) {
+        showToast(`只支持补跑当前美东日期 ${getUsDate()}`);
+        syncManualDailyScanButton();
+        return;
+      }
+      const confirmed = window.confirm(
+        '确认补跑一次今日日筛？\\n\\n这会重新计算今日 candidate / active，保留手动加入标的，不会直接下单或触发信号确认。'
+      );
+      if (!confirmed) return;
+
+      manualDailyScanState.running = true;
+      syncManualDailyScanButton();
+      try {
+        showLoading('正在补跑今日日筛...');
+        const payload = await requestJson('/api/custom/system/scheduler/jobs/run', {
+          method: 'POST',
+          body: {
+            environment: currentEnvironment,
+            job_id: 'ibkr_scan_runtime',
+            trigger_source: 'console_manual_daily_scan'
+          }
+        });
+        manualDailyScanState.lastResult = payload;
+        showToast(summarizeManualDailyScanResult(payload));
+        currentTargetState.page = 1;
+        screenerLoadKey = '';
+        await loadScreener(false, { force: true });
+        await loadDailyTargets(false);
+      } catch (error) {
+        showToast(`补跑失败: ${error.message || error}`);
+      } finally {
+        manualDailyScanState.running = false;
+        syncManualDailyScanButton();
+        hideLoading();
+      }
+    };
+
     async function loadScreener(showToastOnSuccess = false, { loadCurrentTargetsAfter = true, force = false } = {}) {
       if (!initAuth()) return;
       const marketDate = document.getElementById('marketDate').value || '';
@@ -1854,6 +1931,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         if (document.getElementById('dailyTargetDate')) {
           document.getElementById('dailyTargetDate').value = nextDate;
         }
+        syncManualDailyScanButton();
         syncUrl();
         if (activeTab === 'screener') {
           await ensureActiveScreenerDataLoaded({ force: true });
@@ -1900,6 +1978,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         syncCurrentAdvancedFilters();
       });
       syncCurrentAdvancedFilters();
+      syncManualDailyScanButton();
     }
 
     function parseSymbolList(rawValue) {

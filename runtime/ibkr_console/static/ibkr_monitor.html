@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css?v=20260429-console-cohesion">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css?v=20260429-market-critical">
 </head>
 <body>
     <div id="nav"></div>
@@ -73,6 +73,33 @@
                     <div class="ops-route-name">历史重建</div>
                     <div class="ops-route-card-copy">确认需要清理并重导历史链时才进入；用于 backfill / rollup / recompute。</div>
                 </a>
+            </div>
+        </section>
+
+        <section class="section market-overview-section">
+            <div class="section-header">
+                <div>
+                    <div class="section-title">大盘行情雷达</div>
+                    <div class="section-copy">聚合 market_monitor 的实时价格、涨跌、quote / tick 新鲜度和图表入口。</div>
+                </div>
+                <div class="section-meta" id="marketOverviewMeta">market --</div>
+            </div>
+            <div class="section-body">
+                <div class="market-overview-grid" id="marketOverviewGrid"></div>
+                <div class="market-monitor-cards" id="marketMonitorCards"></div>
+            </div>
+        </section>
+
+        <section class="section critical-metrics-section">
+            <div class="section-header">
+                <div>
+                    <div class="section-title">关键监控指标带</div>
+                    <div class="section-copy">把 session、5m 官方桶、quote 覆盖、计算、写入、预热、scan 和交易闸门压成一排。</div>
+                </div>
+                <div class="section-meta" id="criticalMetricsMeta">metrics --</div>
+            </div>
+            <div class="section-body">
+                <div class="critical-metric-strip" id="criticalMetricsGrid"></div>
             </div>
         </section>
 
@@ -200,6 +227,7 @@
             'websocket_message_count',
             'order_update_count',
         ];
+        const MARKET_MONITOR_PRIORITY = ['SPY', 'QQQ', 'DIA', 'IWM', 'VIX', 'UVXY', 'TLT', 'GLD', 'USO'];
 
         function initMonitorAuth() {
             const token = getToken();
@@ -349,7 +377,22 @@
             return Number.isFinite(num) ? `${num.toFixed(digits)}%` : '--';
         }
 
+        function formatSignedPercent(value, digits = 2) {
+            if (value === undefined || value === null || value === '') return '--';
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            const prefix = num > 0 ? '+' : '';
+            return `${prefix}${num.toFixed(digits)}%`;
+        }
+
+        function formatPrice(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num <= 0) return '--';
+            return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
         function formatSeconds(value) {
+            if (value === undefined || value === null || value === '') return '--';
             const num = Number(value);
             if (!Number.isFinite(num)) return '--';
             if (num >= 3600) return `${(num / 3600).toFixed(1)}h`;
@@ -370,6 +413,44 @@
             }
             const digits = size >= 100 ? 0 : (size >= 10 ? 1 : 2);
             return `${size.toFixed(digits)} ${units[unitIndex]}`;
+        }
+
+        function normalizeRole(value) {
+            return String(value || '').trim().toLowerCase();
+        }
+
+        function buildChartUrl(symbol) {
+            return buildPageUrl('/ibkr_chart.html', {
+                symbol: String(symbol || '').trim().toUpperCase(),
+                interval: '5m',
+            }, { environment: currentEnvironment });
+        }
+
+        function buildMarketMonitorUrl() {
+            return buildPageUrl('/ibkr_screener.html', { tab: 'monitor' }, { environment: currentEnvironment });
+        }
+
+        function metricToneFromChip(tone) {
+            if (tone === 'chip-error') return 'is-error';
+            if (tone === 'chip-warn') return 'is-warn';
+            if (tone === 'chip-ok') return 'is-ok';
+            return 'is-muted';
+        }
+
+        function getFiniteNumber(value) {
+            if (value === undefined || value === null || value === '') return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function getMaxFinite(values) {
+            const numeric = values.map(getFiniteNumber).filter((value) => value != null);
+            return numeric.length ? Math.max(...numeric) : null;
+        }
+
+        function formatSourceList(value) {
+            const sources = Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : [];
+            return sources.length ? sources.join(' / ') : '--';
         }
 
         function severityClass(severity) {
@@ -579,6 +660,172 @@
             };
         }
 
+        function getMarketMonitorRows(payload) {
+            const activeSubscriptions = Array.isArray(payload?.samples?.active_subscriptions)
+                ? payload.samples.active_subscriptions
+                : [];
+            return activeSubscriptions
+                .filter((item) => normalizeRole(item?.role) === 'market_monitor')
+                .map((item) => ({
+                    ...item,
+                    symbol: String(item?.symbol || '').trim().toUpperCase(),
+                }))
+                .filter((item) => item.symbol)
+                .sort((left, right) => {
+                    const leftIndex = MARKET_MONITOR_PRIORITY.indexOf(left.symbol);
+                    const rightIndex = MARKET_MONITOR_PRIORITY.indexOf(right.symbol);
+                    const leftWeight = leftIndex >= 0 ? leftIndex : 999;
+                    const rightWeight = rightIndex >= 0 ? rightIndex : 999;
+                    if (leftWeight !== rightWeight) return leftWeight - rightWeight;
+                    return left.symbol.localeCompare(right.symbol);
+                });
+        }
+
+        function summarizeMarketMonitors(rows) {
+            const total = rows.length;
+            let up = 0;
+            let down = 0;
+            let flat = 0;
+            let stale = 0;
+            let visible = 0;
+            rows.forEach((item) => {
+                if (item?.stale) stale += 1;
+                if (item?.visible && !item?.stale) visible += 1;
+                const changePct = getFiniteNumber(item?.day_change_pct);
+                if (changePct == null) {
+                    flat += 1;
+                } else if (changePct > 0.01) {
+                    up += 1;
+                } else if (changePct < -0.01) {
+                    down += 1;
+                } else {
+                    flat += 1;
+                }
+            });
+            const maxQuoteAge = getMaxFinite(rows.map((item) => item?.quote_age_s));
+            const maxTickAge = getMaxFinite(rows.map((item) => item?.last_update_age_s));
+            const tone = !total
+                ? 'chip-muted'
+                : (stale > 0 || (maxQuoteAge != null && maxQuoteAge > 300) || (maxTickAge != null && maxTickAge > 300)
+                    ? 'chip-warn'
+                    : 'chip-ok');
+            return { total, up, down, flat, stale, visible, maxQuoteAge, maxTickAge, tone };
+        }
+
+        function deriveCanonical5mStatus(payload) {
+            const runtime = payload?.runtime || {};
+            const canonical = runtime?.canonical_5m || {};
+            const marketSession = runtime?.market_session || {};
+            const lagS = getFiniteNumber(canonical?.lag_s);
+            const pending = Number(canonical?.pending_symbols_total || 0) || 0;
+            const gaps = Number(canonical?.sequence_gap_count || 0) || 0;
+            const missing = Number(canonical?.missing_required_bars_total || 0) || 0;
+            const hasBucket = Boolean(canonical?.last_completed_bucket_ms || canonical?.last_completed_bucket_us);
+            const requiresLive = marketSession?.requires_live_5m !== false;
+            let tone = 'chip-ok';
+            let label = 'OK';
+            if (!hasBucket && !requiresLive) {
+                tone = 'chip-muted';
+                label = 'OFF-HOURS';
+            } else if (!hasBucket) {
+                tone = 'chip-warn';
+                label = 'WAITING';
+            } else if ((lagS != null && lagS > 300) || gaps > 0 || missing > 0) {
+                tone = 'chip-error';
+                label = 'LAG';
+            } else if ((lagS != null && lagS > 90) || pending > 0) {
+                tone = 'chip-warn';
+                label = 'SLOW';
+            }
+            return {
+                tone,
+                label,
+                value: lagS == null ? '--' : formatSeconds(lagS),
+                copy: `pending ${pending} · gaps ${gaps} · missing ${missing}`,
+                summary: `5m lag ${lagS == null ? '--' : formatSeconds(lagS)}`,
+            };
+        }
+
+        function deriveComputeHealthStatus(payload) {
+            const runtime = payload?.runtime || {};
+            const realtime = runtime?.realtime_compute || {};
+            const runtimePhase = String(runtime?.runtime_phase || '').trim().toLowerCase();
+            const queueSize = Number(realtime?.queue_size || 0) || 0;
+            const inflight = Boolean(realtime?.inflight);
+            const stalled = Boolean(realtime?.stalled);
+            const threadAlive = realtime?.thread_alive !== false;
+            const inflightAgeS = getFiniteNumber(realtime?.inflight_age_s);
+            const lastElapsedS = getFiniteNumber(realtime?.last_elapsed_s ?? realtime?.last_result?.elapsed_s);
+            if (!runtime?.startup_complete && runtimePhase === 'stopped') {
+                return {
+                    tone: 'chip-muted',
+                    label: 'STOPPED',
+                    value: 'STOPPED',
+                    copy: 'runtime stopped · compute idle',
+                    summary: 'compute stopped',
+                };
+            }
+            if (stalled) {
+                return {
+                    tone: 'chip-error',
+                    label: 'STALLED',
+                    value: 'STALLED',
+                    copy: `reason ${realtime?.stall_reason || '--'} · queue ${queueSize}`,
+                    summary: `compute stalled ${realtime?.stall_reason || '--'}`,
+                };
+            }
+            if (!threadAlive) {
+                return {
+                    tone: 'chip-warn',
+                    label: 'THREAD',
+                    value: 'THREAD',
+                    copy: `thread not alive · queue ${queueSize}`,
+                    summary: 'compute thread pending',
+                };
+            }
+            if (queueSize > 0 || inflight) {
+                return {
+                    tone: 'chip-warn',
+                    label: inflight ? 'INFLIGHT' : 'QUEUED',
+                    value: inflight ? 'INFLIGHT' : formatInteger(queueSize),
+                    copy: `queue ${queueSize} · inflight age ${formatSeconds(inflightAgeS)} · elapsed ${formatSeconds(lastElapsedS)}`,
+                    summary: `compute queue ${queueSize}`,
+                };
+            }
+            return {
+                tone: 'chip-ok',
+                label: 'OK',
+                value: 'OK',
+                copy: `queue ${queueSize} · elapsed ${formatSeconds(lastElapsedS)}`,
+                summary: `compute queue ${queueSize}`,
+            };
+        }
+
+        function deriveTradingGateStatus(payload) {
+            const processor = payload?.runtime?.signal_processor || {};
+            const marketSession = payload?.runtime?.market_session || {};
+            const gateOpen = Boolean(processor?.trading_gate_open);
+            const activePositions = Number(processor?.active_positions || 0) || 0;
+            const reason = String(processor?.trading_gate_reason || '').trim() || '--';
+            if (gateOpen) {
+                return {
+                    tone: 'chip-ok',
+                    label: 'OPEN',
+                    value: 'OPEN',
+                    copy: `positions ${activePositions} · window ${processor?.trade_window_start_time || '--'}-${processor?.trade_window_end_time || '--'}`,
+                    summary: `gate open · pos ${activePositions}`,
+                };
+            }
+            const offHours = marketSession?.is_open === false || String(marketSession?.kind || '').toLowerCase() === 'closed';
+            return {
+                tone: offHours ? 'chip-muted' : 'chip-warn',
+                label: 'CLOSED',
+                value: 'CLOSED',
+                copy: `reason ${reason} · positions ${activePositions}`,
+                summary: `gate closed · ${reason}`,
+            };
+        }
+
         function deriveRefreshDelta(apiUtilization) {
             const deltas = {};
             const nextSnapshot = {};
@@ -714,6 +961,17 @@
             `;
         }
 
+        function renderCriticalMetricCard({ label, value, copy, meta = '', toneClass = 'is-neutral' }) {
+            return `
+                <div class="critical-metric-card ${escapeHtml(toneClass)}">
+                    <div class="critical-metric-label">${escapeHtml(label)}</div>
+                    <div class="critical-metric-value">${escapeHtml(value)}</div>
+                    <div class="critical-metric-copy">${escapeHtml(copy)}</div>
+                    ${meta ? `<div class="critical-metric-meta">${escapeHtml(meta)}</div>` : ''}
+                </div>
+            `;
+        }
+
         function getSystemServiceTone(status) {
             const text = String(status || '').trim().toLowerCase();
             if (['running', 'ok', 'online', 'ready', 'success'].includes(text)) return 'is-ok';
@@ -790,6 +1048,242 @@
             }).join('');
         }
 
+        function renderMarketOverview(payload) {
+            const metaEl = document.getElementById('marketOverviewMeta');
+            const summaryEl = document.getElementById('marketOverviewGrid');
+            const cardsEl = document.getElementById('marketMonitorCards');
+            if (!metaEl || !summaryEl || !cardsEl) return;
+
+            const rows = getMarketMonitorRows(payload);
+            const summary = summarizeMarketMonitors(rows);
+            metaEl.textContent = [
+                `monitor ${summary.total}`,
+                `up ${summary.up}`,
+                `down ${summary.down}`,
+                `stale ${summary.stale}`,
+                `quote ${formatSeconds(summary.maxQuoteAge)}`,
+                `tick ${formatSeconds(summary.maxTickAge)}`,
+            ].join(' · ');
+
+            summaryEl.innerHTML = [
+                {
+                    label: 'Monitor Symbols',
+                    value: formatInteger(summary.total),
+                    copy: `visible ${summary.visible} · stale ${summary.stale}`,
+                    toneClass: summary.total ? (summary.stale ? 'is-warn' : 'is-ok') : 'is-neutral',
+                },
+                {
+                    label: 'Breadth',
+                    value: `${summary.up}/${summary.down}`,
+                    copy: `up / down · flat ${summary.flat}`,
+                    toneClass: summary.up >= summary.down ? 'is-ok' : 'is-warn',
+                },
+                {
+                    label: 'Max Quote Age',
+                    value: formatSeconds(summary.maxQuoteAge),
+                    copy: 'quote book 最近更新延迟',
+                    toneClass: summary.maxQuoteAge == null ? 'is-neutral' : (summary.maxQuoteAge > 300 ? 'is-warn' : 'is-ok'),
+                },
+                {
+                    label: 'Max Tick Age',
+                    value: formatSeconds(summary.maxTickAge),
+                    copy: 'bar aggregator 最近 tick 延迟',
+                    toneClass: summary.maxTickAge == null ? 'is-neutral' : (summary.maxTickAge > 300 ? 'is-warn' : 'is-ok'),
+                },
+            ].map(renderMetricCard).join('');
+
+            if (!rows.length) {
+                cardsEl.innerHTML = `
+                    <div class="empty-state">
+                        当前没有 market_monitor 订阅。可到
+                        <a class="inline-link" href="${buildMarketMonitorUrl()}">市场监控池</a>
+                        维护 SPY / QQQ / IWM / VIX 等大盘上下文标的。
+                    </div>
+                `;
+                return;
+            }
+
+            cardsEl.innerHTML = rows.map((item) => {
+                const changePct = getFiniteNumber(item?.day_change_pct);
+                const quoteAge = getFiniteNumber(item?.quote_age_s);
+                const tickAge = getFiniteNumber(item?.last_update_age_s);
+                const trendClass = item?.stale
+                    ? 'is-stale'
+                    : (changePct > 0.01 ? 'is-up' : (changePct < -0.01 ? 'is-down' : 'is-flat'));
+                const trendLabel = item?.stale
+                    ? 'STALE'
+                    : (changePct > 0.01 ? 'UP' : (changePct < -0.01 ? 'DOWN' : 'FLAT'));
+                return `
+                    <article class="market-card ${trendClass}">
+                        <div class="market-card-head">
+                            <div>
+                                <a class="market-symbol" href="${buildChartUrl(item.symbol)}">${escapeHtml(item.symbol)}</a>
+                                <div class="market-subtitle mono">conid ${escapeHtml(String(item.conid ?? '--'))}</div>
+                            </div>
+                            <span class="market-trend">${escapeHtml(trendLabel)}</span>
+                        </div>
+                        <div class="market-price-row">
+                            <div class="market-price">${escapeHtml(formatPrice(item.last_price))}</div>
+                            <div class="market-change">${escapeHtml(formatSignedPercent(item.day_change_pct))}</div>
+                        </div>
+                        <div class="market-freshness-grid">
+                            <div>
+                                <span>Quote</span>
+                                <strong>${escapeHtml(formatSeconds(quoteAge))}</strong>
+                            </div>
+                            <div>
+                                <span>Tick</span>
+                                <strong>${escapeHtml(formatSeconds(tickAge))}</strong>
+                            </div>
+                            <div>
+                                <span>Ticks</span>
+                                <strong>${escapeHtml(formatInteger(item.tick_count || 0))}</strong>
+                            </div>
+                            <div>
+                                <span>Volume</span>
+                                <strong>${escapeHtml(formatInteger(item.volume_updates || 0))}</strong>
+                            </div>
+                        </div>
+                        <div class="market-card-foot">
+                            <span>${escapeHtml(formatSourceList(item.visibility_sources))}</span>
+                            <a class="mini-link" href="${buildChartUrl(item.symbol)}">Chart</a>
+                        </div>
+                    </article>
+                `;
+            }).join('');
+        }
+
+        function renderCriticalMetrics(payload) {
+            const metaEl = document.getElementById('criticalMetricsMeta');
+            const gridEl = document.getElementById('criticalMetricsGrid');
+            if (!metaEl || !gridEl) return;
+
+            const runtime = payload?.runtime || {};
+            const marketSession = runtime?.market_session || {};
+            const realtimeQuotes = runtime?.realtime_quotes || {};
+            const writer = runtime?.data_writer || {};
+            const warmup = runtime?.warmup || {};
+            const dailyScan = runtime?.daily_scan || {};
+            const orderTracker = runtime?.order_tracker || {};
+            const canonicalStatus = deriveCanonical5mStatus(payload);
+            const pushStatus = deriveWebSocketPushStatus(payload);
+            const computeStatus = deriveComputeHealthStatus(payload);
+            const tradingGateStatus = deriveTradingGateStatus(payload);
+            const monitorRows = getMarketMonitorRows(payload);
+            const marketSummary = summarizeMarketMonitors(monitorRows);
+
+            const writerAvailable = Object.keys(writer).length > 0;
+            const writerPending = Number(writer?.pending_batch || 0) || 0;
+            const writerInflight = Number(writer?.inflight_batch || 0) || 0;
+            const writerBacklog = writerPending + writerInflight;
+            const writerErrors = Number(writer?.errors || 0) || 0;
+            const writerTone = !writerAvailable
+                ? 'is-neutral'
+                : (writerErrors > 0
+                ? 'is-error'
+                : (writerBacklog > Math.max(0, Number(writer?.batch_size || 0) || 0) ? 'is-warn' : 'is-ok'));
+
+            const warmupPhase = String(warmup?.phase || '--').trim();
+            const readyTrade = Number(warmup?.ready_trade_symbols || 0) || 0;
+            const totalTrade = Number(warmup?.trade_symbols_total || 0) || 0;
+            const readyMonitor = Number(warmup?.ready_monitor_symbols || 0) || 0;
+            const totalMonitor = Number(warmup?.monitor_symbols_total || 0) || 0;
+            const warmupPending = Number(warmup?.pending_symbols_total || (Array.isArray(warmup?.pending_symbols) ? warmup.pending_symbols.length : 0) || 0) || 0;
+            const warmupTone = ['ready', 'completed'].includes(warmupPhase.toLowerCase())
+                ? 'is-ok'
+                : (['degraded', 'running', 'pending'].includes(warmupPhase.toLowerCase()) || warmupPending > 0 ? 'is-warn' : 'is-neutral');
+
+            const dailyScanStatus = String(dailyScan?.status || '--').trim();
+            const dailyScanTone = ['completed', 'success', 'ready'].includes(dailyScanStatus.toLowerCase())
+                ? 'is-ok'
+                : (['running', 'pending'].includes(dailyScanStatus.toLowerCase())
+                    ? 'is-warn'
+                    : (['failed', 'error'].includes(dailyScanStatus.toLowerCase()) ? 'is-error' : 'is-neutral'));
+
+            const orderPollAgeS = ageSecondsFromIso(orderTracker?.last_poll);
+            const orderTone = orderTracker?.running === false
+                ? 'is-warn'
+                : (orderPollAgeS != null && orderPollAgeS > 180 ? 'is-warn' : 'is-ok');
+
+            const cards = [
+                {
+                    label: 'Market Session',
+                    value: String(marketSession?.kind || '--').toUpperCase(),
+                    copy: `${marketSession?.label || '--'} · ET ${marketSession?.us_time || '--'}`,
+                    meta: `CN ${marketSession?.cn_time || '--'}`,
+                    toneClass: marketSession?.is_open ? 'is-ok' : 'is-muted',
+                },
+                {
+                    label: 'Official 5m Lag',
+                    value: canonicalStatus.value,
+                    copy: canonicalStatus.copy,
+                    meta: runtime?.canonical_5m?.last_completed_bucket_us || '--',
+                    toneClass: metricToneFromChip(canonicalStatus.tone),
+                },
+                {
+                    label: 'Quote Coverage',
+                    value: `${marketSummary.visible}/${marketSummary.total}`,
+                    copy: `quotes ${formatInteger(realtimeQuotes?.total_quotes || 0)} · stale ${formatInteger(realtimeQuotes?.stale_quotes || 0)}`,
+                    meta: `monitor quote ${formatSeconds(marketSummary.maxQuoteAge)} · tick ${formatSeconds(marketSummary.maxTickAge)}`,
+                    toneClass: metricToneFromChip(marketSummary.tone),
+                },
+                {
+                    label: 'WS Silence',
+                    value: pushStatus.label,
+                    copy: pushStatus.copy,
+                    meta: `last ${runtime?.websocket?.last_message || '--'}`,
+                    toneClass: metricToneFromChip(pushStatus.tone),
+                },
+                {
+                    label: 'Compute Health',
+                    value: computeStatus.value,
+                    copy: computeStatus.copy,
+                    meta: `last run ${formatTimeLabel(runtime?.realtime_compute?.last_run)}`,
+                    toneClass: metricToneFromChip(computeStatus.tone),
+                },
+                {
+                    label: 'Writer Backlog',
+                    value: writerAvailable ? (writerBacklog ? `${formatInteger(writerBacklog)} queued` : 'CLEAR') : '--',
+                    copy: writerAvailable ? `pending ${writerPending} · inflight ${writerInflight} · errors ${writerErrors}` : 'data_writer snapshot unavailable',
+                    meta: writerAvailable ? `writes ${formatInteger(writer?.writes || 0)} · dedup ${formatInteger(writer?.skips_dedup || 0)}` : '--',
+                    toneClass: writerTone,
+                },
+                {
+                    label: 'Warmup Readiness',
+                    value: warmupPhase.toUpperCase(),
+                    copy: `trade ${readyTrade}/${totalTrade} · monitor ${readyMonitor}/${totalMonitor}`,
+                    meta: `pending ${warmupPending}`,
+                    toneClass: warmupTone,
+                },
+                {
+                    label: 'Daily Scan',
+                    value: dailyScanStatus.toUpperCase(),
+                    copy: `date ${dailyScan?.market_date || '--'} · targets ${dailyScan?.target_count ?? dailyScan?.selected_count ?? '--'}`,
+                    meta: `finished ${formatTimeLabel(dailyScan?.finished_at)}`,
+                    toneClass: dailyScanTone,
+                },
+                {
+                    label: 'Trading Gate',
+                    value: tradingGateStatus.value,
+                    copy: tradingGateStatus.copy,
+                    meta: `signals ${formatInteger(runtime?.signal_router?.processed_count || 0)} processed`,
+                    toneClass: metricToneFromChip(tradingGateStatus.tone),
+                },
+                {
+                    label: 'Order Tracker',
+                    value: orderTracker?.running === false ? 'STOPPED' : formatInteger(orderTracker?.tracked_orders || 0),
+                    copy: `mode ${orderTracker?.mode || '--'} · live updates ${formatInteger(orderTracker?.live_update_count || 0)}`,
+                    meta: `poll ${orderTracker?.last_poll ? formatAgo(orderTracker.last_poll) : '--'}`,
+                    toneClass: orderTone,
+                },
+            ];
+
+            const warnCount = cards.filter((item) => item.toneClass === 'is-warn').length;
+            const errorCount = cards.filter((item) => item.toneClass === 'is-error').length;
+            metaEl.textContent = `metrics ${cards.length} · warn ${warnCount} · error ${errorCount}`;
+            gridEl.innerHTML = cards.map(renderCriticalMetricCard).join('');
+        }
+
         function renderHero(payload) {
             const runtime = payload?.runtime || {};
             const compute = payload?.compute || {};
@@ -816,6 +1310,10 @@
             const pocketbaseStatus = derivePocketBaseStatus(payload);
             const pullStatus = deriveAsyncPullStatus(payload);
             const pushStatus = deriveWebSocketPushStatus(payload);
+            const canonicalStatus = deriveCanonical5mStatus(payload);
+            const computeStatus = deriveComputeHealthStatus(payload);
+            const tradingGateStatus = deriveTradingGateStatus(payload);
+            const marketSummary = summarizeMarketMonitors(getMarketMonitorRows(payload));
             const displayFlags = getDisplayFlags(payload);
             const hasDisplayError = displayFlags.some((item) => String(item?.severity || '').toLowerCase() === 'error');
             const hasDisplayWarn = displayFlags.some((item) => ['warning', 'warn'].includes(String(item?.severity || '').toLowerCase()));
@@ -833,6 +1331,10 @@
                 { label: `Pull ${pullStatus.label}`, tone: pullStatus.tone },
                 { label: `WS Push ${pushStatus.label}`, tone: pushStatus.tone },
                 { label: `Data ${dataStatus.label}`, tone: dataStatus.tone },
+                { label: `Market Monitor ${marketSummary.total ? `${marketSummary.up}/${marketSummary.down}` : 'NONE'}`, tone: marketSummary.tone },
+                { label: `5m ${canonicalStatus.label}`, tone: canonicalStatus.tone },
+                { label: `Compute ${computeStatus.label}`, tone: computeStatus.tone },
+                { label: `Gate ${tradingGateStatus.label}`, tone: tradingGateStatus.tone },
                 { label: `API ${apiServiceStatus}`, tone: getSystemServiceTone(apiServiceStatus) === 'is-error' ? 'chip-error' : 'chip-ok' },
                 { label: `Scheduler ${schedulerServiceStatus}`, tone: getSystemServiceTone(schedulerServiceStatus) === 'is-error' ? 'chip-error' : (getSystemServiceTone(schedulerServiceStatus) === 'is-warn' ? 'chip-warn' : 'chip-ok') },
                 { label: `Console ${consoleServiceStatus}`, tone: getSystemServiceTone(consoleServiceStatus) === 'is-error' ? 'chip-error' : (getSystemServiceTone(consoleServiceStatus) === 'is-warn' ? 'chip-warn' : 'chip-ok') },
@@ -853,6 +1355,10 @@
                 `scheduler ${schedulerServiceStatus}${schedulerLagLabel !== '--' ? ` / lag ${schedulerLagLabel}` : ''}`,
                 pullStatus.summary,
                 pushStatus.summary,
+                `market ${marketSummary.up}↑ ${marketSummary.down}↓ stale ${marketSummary.stale}`,
+                canonicalStatus.summary,
+                computeStatus.summary,
+                tradingGateStatus.summary,
                 `pb_data ${formatBytes(payload?.pocketbase?.disk?.data_size_bytes)}`,
                 `host ${host.hostname || '--'}`,
                 dataStatus.copy
@@ -1005,15 +1511,21 @@
             }).map((item, index) => {
                 const stateText = item.stale ? 'STALE' : (item.visible ? 'ACTIVE' : 'PENDING');
                 const stateClass = item.stale ? 'state-stale' : (item.visible ? 'state-active' : 'state-pending');
+                const changePct = getFiniteNumber(item.day_change_pct);
+                const changeClass = changePct > 0.01 ? 'state-active' : (changePct < -0.01 ? 'state-stale' : 'state-pending');
                 const symbolPagerKey = `subscription-symbol-${index}`;
                 return `
                     <tr>
                         <td class="mono">${renderPagedSymbol(item.symbol || '--', symbolPagerKey)}</td>
                         <td><span class="table-pill ${escapeHtml(item.role || 'subscription')}">${escapeHtml(item.role || 'subscription')}</span></td>
                         <td class="mono">${escapeHtml(String(item.conid ?? '--'))}</td>
+                        <td class="mono">${escapeHtml(formatPrice(item.last_price))}</td>
+                        <td class="mono ${changeClass}">${escapeHtml(formatSignedPercent(item.day_change_pct))}</td>
+                        <td>${escapeHtml(formatSeconds(item.quote_age_s))}</td>
                         <td>${escapeHtml(formatSeconds(item.last_update_age_s))}</td>
                         <td>${escapeHtml(String(item.tick_count ?? 0))}</td>
                         <td>${escapeHtml(String(item.volume_updates ?? 0))}</td>
+                        <td>${escapeHtml(formatSourceList(item.visibility_sources))}</td>
                         <td class="${stateClass}">${escapeHtml(stateText)}</td>
                     </tr>
                 `;
@@ -1026,9 +1538,13 @@
                             <th>Symbol</th>
                             <th>Role</th>
                             <th>Conid</th>
+                            <th>Price</th>
+                            <th>Change</th>
+                            <th>Quote Age</th>
                             <th>Tick Age</th>
                             <th>Ticks</th>
                             <th>Volume Updates</th>
+                            <th>Sources</th>
                             <th>State</th>
                         </tr>
                     </thead>
@@ -1284,6 +1800,8 @@
                 if (loadId !== latestMonitorLoadId) return;
                 const deltas = deriveRefreshDelta(payload?.api_utilization || {});
                 renderHero(payload);
+                renderMarketOverview(payload);
+                renderCriticalMetrics(payload);
                 renderSystemMonitor(payload);
                 renderUtilization(payload, deltas);
                 renderSubscriptionView(payload);
@@ -1299,12 +1817,16 @@
                 if (loadId !== latestMonitorLoadId) return;
                 document.getElementById('heroCopy').textContent = `监控数据加载失败：${error.message || error}`;
                 document.getElementById('heroCallout').innerHTML = `<div class="callout error">${escapeHtml(error.message || String(error))}</div>`;
-                ['systemMonitorGrid', 'utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'pocketbaseGrid', 'flagList', 'eventList'].forEach((id) => {
+                ['marketOverviewGrid', 'marketMonitorCards', 'criticalMetricsGrid', 'systemMonitorGrid', 'utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'pocketbaseGrid', 'flagList', 'eventList'].forEach((id) => {
                     const el = document.getElementById(id);
                     if (el) el.innerHTML = '<div class="empty-state">监控聚合失败，请检查 ibkr-api /api/custom/system/monitorz 及其 compute / scheduler / PocketBase upstream。</div>';
                 });
                 const systemMeta = document.getElementById('systemMonitorMeta');
                 if (systemMeta) systemMeta.textContent = 'services --';
+                const marketMeta = document.getElementById('marketOverviewMeta');
+                if (marketMeta) marketMeta.textContent = 'market --';
+                const criticalMeta = document.getElementById('criticalMetricsMeta');
+                if (criticalMeta) criticalMeta.textContent = 'metrics --';
                 if (showToastOnSuccess) {
                     showToast(`刷新失败：${error.message || error}`);
                 }
@@ -1369,7 +1891,7 @@
                 () => loadMonitorData(false),
                 {
                     title: '监控页加载中',
-                    copy: '正在同步请求利用率、订阅状态、服务性能和主机健康快照。',
+                    copy: '正在同步大盘行情、关键指标、请求利用率、订阅状态、服务性能和主机健康快照。',
                 }
             );
             startPolling();

@@ -5,6 +5,15 @@ from typing import Any, Callable
 
 import requests
 
+from ibkr_api.system.service_state import (
+    apply_service_monitor_to_topology,
+    derive_compute_state,
+    derive_gateway_state,
+    derive_runtime_state,
+    rebuild_service_monitor,
+    utc_timestamp,
+)
+
 NormalizeEnvironment = Callable[[Any, str], str]
 FetchPayload = Callable[[str], dict[str, Any]]
 AsDict = Callable[[Any], dict[str, Any]]
@@ -212,6 +221,7 @@ def derive_monitor_service_map(
         status = str(preload.get("status") or "").strip().lower()
         return bool(preload.get("running")) or status in {"running", "scheduled"}
 
+    observed_at = utc_timestamp()
     console_meta = _topology_meta("ibkr-console")
     console_running = bool(console_probe.get("ok"))
     pb_meta = _topology_meta("pocketbase")
@@ -325,15 +335,26 @@ def derive_monitor_service_map(
         },
     }
 
-    counts: dict[str, int] = {}
-    for service in service_map.values():
-        normalized = str(service.get("status") or "unknown").strip().lower() or "unknown"
-        counts[normalized] = counts.get(normalized, 0) + 1
-    return {
-        "environment": environment,
-        "services": service_map,
-        "status_counts": counts,
-    }
+    if compute:
+        compute_state_payload = dict(compute)
+        compute_preload = _compute_startup_preload_snapshot()
+        if compute_preload and not isinstance(compute_state_payload.get("compute_startup_preload"), dict):
+            compute_state_payload["compute_startup_preload"] = compute_preload
+        service_map["ibkr-compute"] = {
+            **service_map.get("ibkr-compute", {}),
+            **derive_compute_state(compute_state_payload, observed_at=observed_at),
+        }
+    if runtime:
+        service_map["ibkr-runtime"] = {
+            **service_map.get("ibkr-runtime", {}),
+            **derive_runtime_state(runtime, observed_at=observed_at),
+        }
+        service_map["ibkr-gateway"] = {
+            **service_map.get("ibkr-gateway", {}),
+            **derive_gateway_state(runtime, observed_at=observed_at),
+        }
+
+    return rebuild_service_monitor(environment, service_map)
 
 
 
@@ -477,6 +498,10 @@ def build_system_monitor_payload(
             runtime_environment,
             merged_payload.get("service_topology") if isinstance(merged_payload.get("service_topology"), dict) else build_service_topology(),
         )
+    merged_payload["service_topology"] = apply_service_monitor_to_topology(
+        merged_payload.get("service_topology") if isinstance(merged_payload.get("service_topology"), dict) else {},
+        merged_payload["service_monitor"],
+    )
     if builder_errors:
         merged_payload["monitor_builder_errors"] = builder_errors
         merged_payload["flags"] = _merge_monitor_builder_flags(merged_payload.get("flags"), builder_errors)

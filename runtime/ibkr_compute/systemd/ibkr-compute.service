@@ -1,11 +1,13 @@
 [Unit]
 Description=IBKR Compute Service
-After=network.target ibkr-runtime.service
-Wants=ibkr-runtime.service
+After=network-online.target pocketbase.service ibkr-runtime.service
+Wants=network-online.target pocketbase.service ibkr-runtime.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/ibkr_compute
+ExecStartPre=/bin/sh -lc 'for i in $(seq 1 ${IBKR_WAIT_PB_ATTEMPTS:-90}); do /usr/bin/curl -fsS --max-time 5 http://127.0.0.1:8090/api/health >/dev/null 2>&1 && exit 0; sleep 2; done; echo "PocketBase health endpoint not ready" >&2; exit 1'
+ExecStartPre=/bin/sh -lc 'for i in $(seq 1 ${IBKR_WAIT_RUNTIME_ATTEMPTS:-90}); do /usr/bin/nc -z 127.0.0.1 5101 >/dev/null 2>&1 && exit 0; sleep 2; done; echo "Runtime port not ready" >&2; exit 1'
 ExecStart=/opt/ibkr_compute/venv/bin/python -m ibkr_compute.api.server
 EnvironmentFile=/opt/ibkr_compute/.env
 Environment=PYTHONPATH=/opt/ibkr_compute/src

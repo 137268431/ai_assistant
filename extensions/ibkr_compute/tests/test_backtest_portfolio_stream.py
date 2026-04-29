@@ -162,6 +162,41 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["buying_power_exceeded"], 1)
         self.assertEqual(result["portfolio_metrics"]["portfolio_candidate_samples"][0]["symbol"], "AAPL")
 
+    def test_indicator_rows_stay_memory_only_when_persistence_disabled(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        bars_by_symbol = {
+            "AAPL": build_bars("AAPL", start_ms),
+            "NVDA": build_bars("NVDA", start_ms),
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+
+        result = self.service._run_portfolio_stream_backtest(["AAPL", "NVDA"], self._request())
+
+        self.assertEqual(result["indicator_rows"], [])
+        self.assertEqual(result["indicator_count"], 90)
+
+    def test_indicator_rows_can_be_captured_for_debug_runs(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        bars_by_symbol = {
+            "AAPL": build_bars("AAPL", start_ms),
+            "NVDA": build_bars("NVDA", start_ms),
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+
+        result = self.service._run_portfolio_stream_backtest(
+            ["AAPL", "NVDA"],
+            self._request(persist_backtest_indicators=True),
+        )
+
+        self.assertEqual(len(result["indicator_rows"]), 90)
+        self.assertEqual(result["indicator_count"], 90)
+
     def test_account_buying_power_sets_borrow_limit_from_snapshot(self):
         service = BacktestService(
             None,

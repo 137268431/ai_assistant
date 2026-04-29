@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any, Callable
 
 RequestJson = Callable[..., dict[str, Any]]
+RequestJsonRequest = Callable[..., dict[str, Any]]
 SchedulerStatusFn = Callable[[str], dict[str, Any]]
+
+MANUAL_SCHEDULER_JOB_ALLOWLIST = {"ibkr_scan_runtime"}
 
 
 def extract_cursor_interval(cursor_payload: dict[str, Any], interval: str = "5m") -> dict[str, Any]:
@@ -86,6 +89,72 @@ def scheduler_status(
     }
 
 
+def run_scheduler_job(
+    *,
+    job_id: str,
+    environment: str,
+    trigger_source: str,
+    request_json_request: RequestJsonRequest,
+    scheduler_base_url: str,
+) -> tuple[dict[str, Any], int]:
+    normalized_job_id = str(job_id or "").strip()
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_trigger_source = str(trigger_source or "api_manual").strip() or "api_manual"
+
+    if normalized_job_id not in MANUAL_SCHEDULER_JOB_ALLOWLIST:
+        return {
+            "ok": False,
+            "environment": runtime_environment,
+            "job_id": normalized_job_id,
+            "error": "unsupported_scheduler_job",
+            "allowed_jobs": sorted(MANUAL_SCHEDULER_JOB_ALLOWLIST),
+            "source": "ibkr-api",
+        }, 400
+
+    result = request_json_request(
+        "POST",
+        scheduler_base_url,
+        f"/jobs/run/{normalized_job_id}",
+        json_body={
+            "environment": runtime_environment,
+            "trigger_source": normalized_trigger_source,
+        },
+        timeout=120,
+    )
+    scheduler_result = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    scheduler_error = str(result.get("error") or "").strip()
+    status_code = int(result.get("status_code") or 0)
+    scan_result = scheduler_result.get("payload") if isinstance(scheduler_result.get("payload"), dict) else {}
+    ok = bool(result.get("ok")) and bool(scheduler_result.get("ok", False))
+
+    response_payload = {
+        "ok": ok,
+        "environment": runtime_environment,
+        "job_id": normalized_job_id,
+        "trigger_source": normalized_trigger_source,
+        "scheduler_result": scheduler_result,
+        "scan_result": scan_result,
+        "source": "ibkr-api",
+        "_meta": {
+            "target_url": result.get("target_url"),
+            "status_code": status_code,
+            "error": scheduler_error,
+        },
+    }
+    if scheduler_error:
+        response_payload["error"] = scheduler_error
+    elif not scheduler_result:
+        response_payload["error"] = "scheduler_unavailable"
+    elif not ok:
+        response_payload["error"] = str(scheduler_result.get("error") or scheduler_result.get("reason") or "scheduler_job_failed")
+
+    if ok:
+        return response_payload, 200
+    if status_code in {400, 401, 403, 404}:
+        return response_payload, status_code
+    return response_payload, 502
+
+
 
 def scheduler_job_states(environment: str = "live", *, scheduler_status_fn: SchedulerStatusFn) -> dict[str, Any]:
     payload = scheduler_status_fn(environment)
@@ -107,9 +176,11 @@ def augment_scheduler_summary(summary: dict[str, Any], items: list[dict[str, Any
 
 
 __all__ = [
+    "MANUAL_SCHEDULER_JOB_ALLOWLIST",
     "augment_scheduler_summary",
     "build_scheduler_summary",
     "extract_cursor_interval",
+    "run_scheduler_job",
     "scheduler_job_states",
     "scheduler_status",
 ]

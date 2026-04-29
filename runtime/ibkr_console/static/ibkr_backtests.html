@@ -161,6 +161,27 @@
                                 <input id="premarketCutoff" type="text" value="09:20" placeholder="09:20">
                             </div>
                             <div class="field span-2">
+                                <label class="checkline" for="persistBacktestIndicators">
+                                    <input id="persistBacktestIndicators" type="checkbox">
+                                    <span>保存指标明细（慢）</span>
+                                </label>
+                                <small>默认关闭：复用 bars，指标和信号在内存中演算，只保留回测结果、信号、反向动作和选股快照。</small>
+                            </div>
+                            <div class="field span-2">
+                                <label class="checkline" for="compareWithTv">
+                                    <input id="compareWithTv" type="checkbox" onchange="syncTvCompareUI()">
+                                    <span>TV 对齐校验（慢）</span>
+                                </label>
+                                <small>默认关闭用于快速回测；需要核对 TradingView 指标/信号一致性时再开启。</small>
+                            </div>
+                            <div class="field span-2">
+                                <label class="checkline" for="compareTvSignals">
+                                    <input id="compareTvSignals" type="checkbox" disabled>
+                                    <span>同时校验 TV 信号（更慢）</span>
+                                </label>
+                                <small>依赖 TV 对齐校验；开启后会对生成信号与 tv_signals 做逐条比对。</small>
+                            </div>
+                            <div class="field span-2">
                                 <label for="strategyParams">Strategy Params JSON</label>
                                 <textarea id="strategyParams" placeholder='{"sl_atr_mult": 1.6, "tp_atr_mult": 3.2}'></textarea>
                                 <small>留空走默认策略参数；支持 <span class="mono">risk_reward_ratio</span> / <span class="mono">tp_atr_mult</span> 别名，会自动换算成回测引擎参数。</small>

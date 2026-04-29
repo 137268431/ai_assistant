@@ -140,6 +140,29 @@ class PBClient:
         resp = self._request("POST", url, json=data, timeout=15)
         return resp.json()
 
+    def create_records(
+        self,
+        collection: str,
+        items: List[Dict[str, Any]],
+        *,
+        timeout: int = 30,
+        batch_size: int = 50,
+    ) -> Dict[str, Any]:
+        prepared = [dict(item or {}) for item in (items or []) if isinstance(item, dict)]
+        if not prepared:
+            return {"ok": True, "created": 0, "total": 0}
+
+        requests_payload = [
+            {
+                "method": "POST",
+                "url": f"/api/collections/{collection}/records",
+                "body": item,
+            }
+            for item in prepared
+        ]
+        self._execute_batch_requests(requests_payload, timeout=timeout, batch_size=batch_size)
+        return {"ok": True, "created": len(prepared), "total": len(prepared)}
+
     def update_record(self, collection: str, record_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/api/collections/{collection}/records/{record_id}"
         resp = self._request("PATCH", url, json=data, timeout=15)

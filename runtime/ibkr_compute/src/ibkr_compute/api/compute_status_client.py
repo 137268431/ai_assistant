@@ -35,7 +35,16 @@ def is_compute_status_payload(payload: dict | None) -> bool:
         return False
     if str(payload.get("service_profile") or "").strip().lower() == "compute":
         return True
-    return any(key in payload for key in ("engines", "ready_engines", "total_engines", "compute_enabled"))
+    return any(
+        key in payload
+        for key in (
+            "engines",
+            "ready_engines",
+            "total_engines",
+            "compute_enabled",
+            "multi_timeframe_readiness",
+        )
+    )
 
 
 def get_remote_compute_status(*, force_refresh: bool = False) -> dict:
@@ -48,18 +57,20 @@ def get_remote_compute_status(*, force_refresh: bool = False) -> dict:
                 return dict(cached_payload)
 
     payload: dict[str, Any] = {}
-    try:
-        response = requests.get(
-            f"{get_compute_internal_url()}/status",
-            params={"full": "1"},
-            timeout=COMPUTE_STATUS_TIMEOUT_SECONDS,
-        )
-        if response.ok:
-            candidate = response.json()
-            if isinstance(candidate, dict):
-                payload = dict(candidate)
-    except Exception:
-        payload = {}
+    for params in ({"lite": "1"}, {"full": "1"}):
+        try:
+            response = requests.get(
+                f"{get_compute_internal_url()}/status",
+                params=params,
+                timeout=COMPUTE_STATUS_TIMEOUT_SECONDS,
+            )
+            if response.ok:
+                candidate = response.json()
+                if isinstance(candidate, dict) and candidate:
+                    payload = dict(candidate)
+                    break
+        except Exception:
+            payload = {}
 
     with _compute_status_cache_lock:
         _compute_status_cache["payload"] = dict(payload)

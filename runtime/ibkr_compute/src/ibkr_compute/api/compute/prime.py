@@ -79,6 +79,23 @@ def _requested_interval_values(payload: dict) -> list:
     return requested
 
 
+def _payload_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(value)
+
+
 def _collect_latest_rows_by_symbol(api_app, collection: str, environment: str, interval: str, symbols: list[str]) -> dict:
     if not symbols:
         return {}
@@ -126,9 +143,10 @@ def _engine_status_by_symbol(api_app, environment: str, interval: str, symbols: 
 
 
 def _readiness_status(*, interval: str, missing_indicators: list[str], missing_ready: list[str]) -> str:
+    del missing_indicators
     if interval == "5m":
-        return "ready" if not missing_ready and not missing_indicators else "blocked"
-    return "ready" if not missing_ready and not missing_indicators else "degraded"
+        return "ready" if not missing_ready else "blocked"
+    return "ready" if not missing_ready else "degraded"
 
 
 def build_multi_timeframe_readiness(
@@ -304,6 +322,10 @@ def build_compute_prime_response(payload=None):
     requested_interval_values = _requested_interval_values(request_payload)
     intervals = _normalize_interval_list(requested_interval_values)
     unsupported_intervals = _unsupported_interval_values(requested_interval_values)
+    persist_latest_indicator = _payload_bool(
+        request_payload.get("persist_latest_indicator", request_payload.get("persist_indicators")),
+        False,
+    )
 
     if not requested_symbols:
         return jsonify(
@@ -377,7 +399,7 @@ def build_compute_prime_response(payload=None):
                     requested_symbols,
                     interval,
                     hydrate_signal_state=False,
-                    persist_latest_indicator=True,
+                    persist_latest_indicator=persist_latest_indicator,
                 )
                 interval_errors = sum(
                     int((item or {}).get("errors", 0) or 0)
@@ -407,6 +429,7 @@ def build_compute_prime_response(payload=None):
             "environments": enabled_environments,
             "symbols": requested_symbols,
             "intervals": intervals,
+            "persist_latest_indicator": persist_latest_indicator,
             "results": results,
             "elapsed_s": round(time.time() - started, 3),
         }

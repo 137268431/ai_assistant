@@ -11,6 +11,7 @@ def build_platform_route_deps(
     build_service_topology: Callable[[], dict[str, Any]],
     compute_base_url: str,
     runtime_base_url: str,
+    scheduler_base_url: str,
     ibkr_2fa_state_key: str,
     ibkr_2fa_state_date: str,
     ibkr_startup_state_key: str,
@@ -141,6 +142,7 @@ def build_platform_route_deps(
             timeout=timeout,
         ),
         "runtime_base_url": runtime_base_url,
+        "scheduler_base_url": scheduler_base_url,
     }
 
 

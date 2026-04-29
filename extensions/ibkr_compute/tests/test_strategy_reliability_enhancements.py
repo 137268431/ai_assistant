@@ -50,6 +50,35 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
 
         self.assertEqual(request["premarket_cutoff_time"], "09:20")
 
+    def test_backtest_indicator_persistence_defaults_off(self):
+        request = request_utils.normalize_request(
+            {
+                "name": "memory only indicators",
+                "symbol_source": "manual",
+                "symbols": "AAPL",
+                "date_from": "2026-04-01",
+                "date_to": "2026-04-01",
+            }
+        )
+
+        self.assertFalse(request["persist_backtest_indicators"])
+        self.assertFalse(request["params"]["persist_backtest_indicators"])
+
+    def test_backtest_indicator_persistence_can_be_enabled(self):
+        request = request_utils.normalize_request(
+            {
+                "name": "debug indicator persistence",
+                "symbol_source": "manual",
+                "symbols": "AAPL",
+                "date_from": "2026-04-01",
+                "date_to": "2026-04-01",
+                "persist_backtest_indicators": True,
+            }
+        )
+
+        self.assertTrue(request["persist_backtest_indicators"])
+        self.assertTrue(request["params"]["persist_backtest_indicators"])
+
     def test_signal_window_expires_after_configured_bar_count(self):
         gen = SignalGenerator("AAPL", "5m", {"signal_window_max_bars": 1})
 

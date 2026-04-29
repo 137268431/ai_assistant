@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime
 
@@ -156,7 +157,7 @@ class TradingServiceWarmupCycleMixin:
         symbols: list[str] | None,
         *,
         hydrate_signal_state: bool = True,
-        persist_latest_indicator: bool = True,
+        persist_latest_indicator: bool = False,
     ) -> dict:
         service_mod = _service_mod()
         if self._warmup_uses_remote_compute_service():
@@ -180,7 +181,26 @@ class TradingServiceWarmupCycleMixin:
 
         required_interval = service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL
         payload = get_remote_compute_status(force_refresh=True)
-        engines = payload.get("engines") if is_compute_status_payload(payload) else {}
+        if not is_compute_status_payload(payload):
+            readiness = self._build_warmup_readiness(
+                snapshot,
+                {
+                    symbol: {
+                        "ready": False,
+                        "bar_count": 0,
+                        "last_bar_time_ms": 0,
+                        "source": "remote_compute_status_unavailable",
+                    }
+                    for symbol in snapshot["symbols"]
+                },
+                required_interval=required_interval,
+            )
+            readiness["phase"] = "degraded"
+            readiness["pending_symbols"] = []
+            readiness["trading_gate_open"] = False
+            readiness["trading_gate_reason"] = "remote_compute_status_unavailable"
+            return readiness
+        engines = payload.get("engines") or {}
         readiness_interval = (
             ((payload.get("multi_timeframe_readiness") or {}).get("intervals") or {}).get(required_interval)
             if is_compute_status_payload(payload)
@@ -190,8 +210,13 @@ class TradingServiceWarmupCycleMixin:
             isinstance(readiness_interval, dict)
             and str(readiness_interval.get("status") or "").strip().lower() == "ready"
             and int(readiness_interval.get("missing_ready_symbols_total", 0) or 0) == 0
-            and int(readiness_interval.get("missing_indicator_symbols_total", 0) or 0) == 0
         )
+        storage_checked = bool((readiness_interval or {}).get("storage_checked"))
+        missing_bar_symbol_set = {
+            str(symbol or "").strip().upper()
+            for symbol in ((readiness_interval or {}).get("missing_bar_symbols") or [])
+            if str(symbol or "").strip()
+        }
         status_by_symbol = {}
         if isinstance(engines, dict):
             for symbol in snapshot["symbols"]:
@@ -209,8 +234,22 @@ class TradingServiceWarmupCycleMixin:
                     status_by_symbol[symbol] = {
                         "ready": True,
                         "bar_count": 0,
-                        "last_bar_time_ms": int(readiness_interval.get("latest_indicator_time_ms", 0) or 0),
-                        "source": "remote_compute_readiness",
+                        "last_bar_time_ms": int(
+                            readiness_interval.get("latest_bar_time_ms", 0)
+                            or readiness_interval.get("latest_indicator_time_ms", 0)
+                            or 0
+                        ),
+                        "source": "remote_compute_bar_readiness",
+                    }
+                else:
+                    source = "remote_compute_status_missing"
+                    if storage_checked and symbol in missing_bar_symbol_set:
+                        source = "remote_compute_bar_missing"
+                    status_by_symbol[symbol] = {
+                        "ready": False,
+                        "bar_count": 0,
+                        "last_bar_time_ms": 0,
+                        "source": source,
                     }
         return self._build_warmup_readiness(
             snapshot,
@@ -284,6 +323,12 @@ class TradingServiceWarmupCycleMixin:
         return intervals
 
     def _collect_warmup_indicator_backfill_plan(self, snapshot: dict) -> dict[str, list[str]]:
+        """Return only bar-missing repair work.
+
+        Indicators are derived from bars and may be re-created by replaying storage
+        into in-memory engines, so indicator mirror gaps must not trigger IB
+        history requests during startup.
+        """
         intervals = self._warmup_indicator_backfill_intervals()
         if not intervals:
             return {}
@@ -303,11 +348,7 @@ class TradingServiceWarmupCycleMixin:
             ]
 
         if not self._warmup_uses_remote_compute_service():
-            return {
-                interval: eligible(snapshot_symbols)
-                for interval in intervals
-                if eligible(snapshot_symbols)
-            }
+            return {}
 
         from ibkr_compute.api.compute_status_client import (
             get_remote_compute_status,
@@ -316,29 +357,69 @@ class TradingServiceWarmupCycleMixin:
 
         payload = get_remote_compute_status(force_refresh=True)
         if not is_compute_status_payload(payload):
-            return {
-                interval: eligible(snapshot_symbols)
-                for interval in intervals
-                if eligible(snapshot_symbols)
-            }
+            return {}
 
         readiness_intervals = (payload.get("multi_timeframe_readiness") or {}).get("intervals") or {}
         plan = {}
         for interval in intervals:
             row = readiness_intervals.get(interval) or {}
-            missing = list(row.get("missing_indicator_symbols") or [])
-            symbols = eligible(missing)
-            status = str(row.get("status") or "").strip().lower()
-            if (
-                not symbols
-                and status
-                and status != "ready"
-                and int(row.get("missing_indicator_symbols_total", 0) or 0) > 0
-            ):
-                symbols = eligible(snapshot_symbols)
+            if not bool(row.get("storage_checked")):
+                continue
+            symbols = eligible(row.get("missing_bar_symbols") or [])
             if symbols:
                 plan[interval] = symbols
         return plan
+
+    def _warmup_indicator_backfill_period_for_interval(self, interval: str) -> str:
+        service_mod = _service_mod()
+        try:
+            from ibkr_compute.market.timeframe_utils import interval_to_ms, normalize_interval
+
+            interval_minutes = max(
+                1,
+                interval_to_ms(normalize_interval(interval)) // 60000,
+            )
+        except Exception:
+            interval_minutes = 5
+
+        base_days = self._live_warmup_days()
+        ready_bars = max(1, int(service_mod.indicator_ready_bar_count() or 0))
+        session_minutes = max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_regular_minutes_per_day",
+                service_mod.ENVIRONMENT,
+                390,
+            ),
+        )
+        calendar_multiplier = max(
+            1.0,
+            self.config.get_float_for_environment(
+                "ibkr_warmup_indicator_calendar_multiplier",
+                service_mod.ENVIRONMENT,
+                1.4,
+            ),
+        )
+        buffer_days = max(
+            0,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_buffer_days",
+                service_mod.ENVIRONMENT,
+                5,
+            ),
+        )
+        max_days = max(
+            base_days,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_indicator_max_days",
+                service_mod.ENVIRONMENT,
+                60,
+            ),
+        )
+        calculated_days = int(
+            math.ceil(((interval_minutes * ready_bars) / session_minutes) * calendar_multiplier)
+        ) + buffer_days
+        return f"{min(max_days, max(base_days, calculated_days))}d"
 
     def _prime_warmup_indicator_backfill(self, plan: dict[str, list[str]]) -> dict:
         service_mod = _service_mod()
@@ -386,6 +467,7 @@ class TradingServiceWarmupCycleMixin:
                         "environments": [service_mod.ENVIRONMENT],
                         "symbols": chunk,
                         "intervals": [interval],
+                        "persist_latest_indicator": False,
                     }
                     result = {}
                     for attempt in range(max_retries + 1):
@@ -406,13 +488,13 @@ class TradingServiceWarmupCycleMixin:
                     service_mod.ENVIRONMENT,
                     self._normalize_symbol_list(symbols),
                     interval,
-                    persist_latest_indicator=True,
+                    persist_latest_indicator=False,
                 )
         return prime_result
 
     def _run_warmup_indicator_backfill(self, snapshot: dict) -> dict:
         service_mod = _service_mod()
-        period = self._multi_timeframe_warmup_period()
+        period = "bar_only"
         max_passes = max(
             1,
             self.config.get_int_for_environment(
@@ -472,7 +554,9 @@ class TradingServiceWarmupCycleMixin:
                     intervals=[interval],
                     repair_symbols=list(conid_map.keys()),
                     period_overrides={
-                        symbol: {interval: period}
+                        symbol: {
+                            interval: self._warmup_indicator_backfill_period_for_interval(interval)
+                        }
                         for symbol in conid_map.keys()
                     },
                 )
@@ -496,6 +580,8 @@ class TradingServiceWarmupCycleMixin:
                 "written_total": 0,
                 "backfill": {},
                 "prime": {},
+                "skipped": True,
+                "skip_reason": "indicator_is_derived_from_bars",
             }
 
         service_mod.logger.info(
@@ -509,6 +595,7 @@ class TradingServiceWarmupCycleMixin:
             "written_total": written_total,
             "backfill": backfill,
             "prime": prime,
+            "reason": "bar_missing_only",
         }
 
     def _apply_integrity_readiness(self, readiness: dict, snapshot: dict, repair_plan: dict[str, dict] | None = None) -> dict:
@@ -598,13 +685,29 @@ class TradingServiceWarmupCycleMixin:
         integrity_reference_et: datetime | None = None,
     ) -> dict:
         service_mod = _service_mod()
+        checked_symbols = self._normalize_symbol_list(snapshot.get("trade_symbols") or [])
+        if not checked_symbols:
+            return {
+                "checked_symbols": [],
+                "initial_repair_symbols": [],
+                "attempted_repair_symbols": [],
+                "remaining_repair_symbols": [],
+                "repair_reasons": {},
+                "history_fetch_symbols": [],
+                "history_period_overrides": {},
+                "history_written_total": 0,
+                "repair_result": {},
+                "skipped": True,
+                "skip_reason": "no_trade_symbols",
+            }
         repair_plan = self._build_startup_history_repair_plan(
-            snapshot.get("symbols") or [],
+            checked_symbols,
             et_now=integrity_reference_et,
         )
         period_overrides = self._build_startup_history_period_overrides(repair_plan)
         if not repair_plan:
             return {
+                "checked_symbols": checked_symbols,
                 "initial_repair_symbols": [],
                 "attempted_repair_symbols": [],
                 "remaining_repair_symbols": [],
@@ -631,7 +734,7 @@ class TradingServiceWarmupCycleMixin:
             history_period_overrides=period_overrides,
         )
         remaining_plan = self._build_startup_history_repair_plan(
-            snapshot.get("symbols") or [],
+            checked_symbols,
             et_now=integrity_reference_et,
         )
         history_written_total = 0
@@ -639,6 +742,7 @@ class TradingServiceWarmupCycleMixin:
             result = (item or {}).get("result") or {}
             history_written_total += int(result.get("history_written", 0) or 0)
         return {
+            "checked_symbols": checked_symbols,
             "initial_repair_symbols": sorted(repair_plan.keys()),
             "attempted_repair_symbols": sorted(repair_result.get("repair_symbols") or []),
             "remaining_repair_symbols": sorted(remaining_plan.keys()),
@@ -784,6 +888,11 @@ class TradingServiceWarmupCycleMixin:
             if indicator_backfill.get("plan"):
                 compute_result["indicator_backfill"] = indicator_backfill
                 backfill_written += int(indicator_backfill.get("written_total", 0) or 0)
+            elif indicator_backfill.get("skipped"):
+                compute_result["indicator_backfill"] = {
+                    "skipped": True,
+                    "skip_reason": indicator_backfill.get("skip_reason") or "no_bar_backfill_needed",
+                }
 
             readiness = self._collect_warmup_readiness(snapshot)
             readiness = self._apply_integrity_readiness(readiness, snapshot, preflight_blockers)
@@ -980,10 +1089,21 @@ class TradingServiceWarmupCycleMixin:
                 )
                 self._signal_wakeup.set()
 
+            pending_status_by_symbol = {
+                str((item or {}).get("symbol") or "").strip().upper(): dict(item or {})
+                for item in (readiness.get("symbol_status") or [])
+                if str((item or {}).get("symbol") or "").strip()
+            }
             pending_map = {
                 symbol: snapshot["conid_map"][symbol]
                 for symbol in readiness["pending_symbols"]
                 if symbol in snapshot["conid_map"]
+                and str(
+                    (pending_status_by_symbol.get(symbol) or {}).get("source") or ""
+                ) not in {
+                    "remote_compute_status_missing",
+                    "remote_compute_status_unavailable",
+                }
             }
             if pending_map:
                 service_mod.logger.info(
@@ -1089,10 +1209,15 @@ class TradingServiceWarmupCycleMixin:
         readiness = self._collect_warmup_readiness(snapshot)
         final_preflight = dict(compute_result.get("preflight_repair") or {})
         if final_preflight.get("initial_repair_symbols") or backfill_result:
+            final_recheck_symbols = self._normalize_symbol_list(
+                list(final_preflight.get("checked_symbols") or [])
+                + list((backfill_result or {}).keys())
+            )
             final_remaining_plan = self._build_startup_history_repair_plan(
-                snapshot["symbols"],
+                final_recheck_symbols,
                 et_now=integrity_reference_et,
             )
+            final_preflight["checked_symbols"] = final_recheck_symbols
             final_preflight["remaining_repair_symbols"] = sorted(final_remaining_plan.keys())
             final_preflight["repair_reasons"] = {
                 symbol: str((data or {}).get("repair_reason") or "history_repair_pending")
@@ -1108,6 +1233,28 @@ class TradingServiceWarmupCycleMixin:
         }
         readiness = self._apply_integrity_readiness(readiness, snapshot, final_blockers)
         if startup_gate_open_once and not readiness["trading_gate_open"]:
+            previous_ready_state = self._copy_warmup_state()
+            if int(previous_ready_state.get("ready_symbols", 0) or 0) > int(readiness.get("ready_symbols", 0) or 0):
+                for key in (
+                    "required_interval",
+                    "ready_symbols",
+                    "ready_scan_symbols",
+                    "ready_subscription_symbols",
+                    "ready_trade_symbols",
+                    "ready_monitor_symbols",
+                    "ready_symbols_list",
+                    "pending_symbols",
+                    "symbol_status",
+                    "integrity_pending_symbols",
+                    "integrity_repair_reasons",
+                ):
+                    if key in previous_ready_state:
+                        readiness[key] = previous_ready_state.get(key)
+                blocking_pending_symbols = self._non_monitor_pending_symbols(
+                    readiness.get("pending_symbols") or [],
+                    snapshot.get("monitor_symbols") or [],
+                )
+                readiness["phase"] = "ready" if not blocking_pending_symbols else "degraded"
             readiness["trading_gate_open"] = True
             if str(readiness.get("trading_gate_reason") or "").strip() != "ready":
                 readiness["trading_gate_reason"] = "background_repair"
@@ -1241,3 +1388,31 @@ class TradingServiceWarmupCycleMixin:
                 source=self._startup_source or "api_start",
                 trigger_login=bool(self._startup_trigger_login),
             )
+            if self._warmup_uses_remote_compute_service():
+                pending_sources = {
+                    str((item or {}).get("source") or "").strip()
+                    for item in (readiness.get("symbol_status") or [])
+                    if not bool((item or {}).get("ready"))
+                }
+                retryable_sources = {
+                    "remote_compute_status_missing",
+                    "remote_compute_status_unavailable",
+                }
+                if pending_sources and pending_sources.issubset(retryable_sources):
+                    retry_delay_s = max(
+                        1,
+                        self.config.get_int_for_environment(
+                            "ibkr_warmup_remote_compute_retry_sec",
+                            service_mod.ENVIRONMENT,
+                            5,
+                        ),
+                    )
+                    service_mod.logger.info(
+                        "Warmup waiting for remote compute readiness: sources=%s retry_in=%ss",
+                        ",".join(sorted(pending_sources)),
+                        retry_delay_s,
+                    )
+                    if self._running:
+                        time.sleep(retry_delay_s)
+                        if self._running:
+                            self._warmup_wakeup.set()

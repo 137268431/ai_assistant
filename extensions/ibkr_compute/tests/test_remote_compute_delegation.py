@@ -190,9 +190,10 @@ class RemoteWarmupReadinessTest(unittest.TestCase):
                 "intervals": {
                     "5m": {
                         "status": "ready",
+                        "latest_bar_time_ms": 1776793800000,
                         "latest_indicator_time_ms": 1776793800000,
                         "missing_ready_symbols_total": 0,
-                        "missing_indicator_symbols_total": 0,
+                        "missing_indicator_symbols_total": 2,
                     }
                 }
             },
@@ -219,7 +220,42 @@ class RemoteWarmupReadinessTest(unittest.TestCase):
         self.assertEqual(readiness["ready_trade_symbols"], 1)
         self.assertTrue(readiness["trading_gate_open"])
         self.assertEqual(readiness["pending_symbols"], [])
-        self.assertEqual(readiness["symbol_status"][0]["source"], "remote_compute_readiness")
+        self.assertEqual(readiness["symbol_status"][0]["source"], "remote_compute_bar_readiness")
+
+    def test_collect_warmup_readiness_does_not_mark_all_pending_when_remote_status_unavailable(self):
+        cycle = _DummyWarmupCycle()
+        snapshot = {
+            "symbols": ["AAPL", "AMD"],
+            "scan_symbols": [],
+            "subscription_symbols": ["AAPL", "AMD"],
+            "trade_symbols": ["AAPL"],
+            "trade_symbols_total": 1,
+            "monitor_symbols": [],
+            "monitor_symbols_total": 0,
+        }
+
+        with mock.patch(
+            "ibkr_compute.orchestration.warmup_cycle._service_mod",
+            return_value=SimpleNamespace(
+                ENVIRONMENT="live",
+                DEFAULT_WARMUP_REQUIRED_INTERVAL="5m",
+            ),
+        ):
+            with mock.patch(
+                "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                return_value=True,
+            ):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.get_remote_compute_status",
+                    return_value={},
+                ):
+                    readiness = cycle._collect_warmup_readiness(snapshot)
+
+        self.assertEqual(readiness["phase"], "degraded")
+        self.assertEqual(readiness["pending_symbols"], [])
+        self.assertFalse(readiness["trading_gate_open"])
+        self.assertEqual(readiness["trading_gate_reason"], "remote_compute_status_unavailable")
+        self.assertEqual(readiness["symbol_status"][0]["source"], "remote_compute_status_unavailable")
 
     def test_remote_warmup_skips_local_cursor_and_materialize_bootstrap(self):
         cycle = _DummyWarmupCycle()
@@ -359,15 +395,35 @@ class RemoteRealtimeComputeTriggerTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                {"environments": ["live"], "symbols": ["AAPL", "MSFT"], "intervals": ["15m"]},
-                {"environments": ["live"], "symbols": ["TSLA"], "intervals": ["15m"]},
-                {"environments": ["live"], "symbols": ["AAPL", "MSFT"], "intervals": ["30m"]},
-                {"environments": ["live"], "symbols": ["TSLA"], "intervals": ["30m"]},
+                {
+                    "environments": ["live"],
+                    "symbols": ["AAPL", "MSFT"],
+                    "intervals": ["15m"],
+                    "persist_latest_indicator": False,
+                },
+                {
+                    "environments": ["live"],
+                    "symbols": ["TSLA"],
+                    "intervals": ["15m"],
+                    "persist_latest_indicator": False,
+                },
+                {
+                    "environments": ["live"],
+                    "symbols": ["AAPL", "MSFT"],
+                    "intervals": ["30m"],
+                    "persist_latest_indicator": False,
+                },
+                {
+                    "environments": ["live"],
+                    "symbols": ["TSLA"],
+                    "intervals": ["30m"],
+                    "persist_latest_indicator": False,
+                },
             ],
         )
         self.assertEqual(pipeline._interval_prime_state["completed_intervals"], ["15m", "30m"])
 
-    def test_schedule_interval_prime_seeds_indicators_for_materialized_intervals(self):
+    def test_schedule_interval_prime_materializes_intervals_without_indicator_seed(self):
         pipeline = _DummyRuntimePipeline()
         call_log = []
         fake_server = types.ModuleType("ibkr_compute.api.server")
@@ -436,10 +492,10 @@ class RemoteRealtimeComputeTriggerTest(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("live", ("AAPL", "MSFT"), "1h", True, True),
-                ("live", ("TSLA",), "1h", True, True),
-                ("live", ("AAPL", "MSFT"), "4h", True, True),
-                ("live", ("TSLA",), "4h", True, True),
+                ("live", ("AAPL", "MSFT"), "1h", True, False),
+                ("live", ("TSLA",), "1h", True, False),
+                ("live", ("AAPL", "MSFT"), "4h", True, False),
+                ("live", ("TSLA",), "4h", True, False),
             ],
         )
 

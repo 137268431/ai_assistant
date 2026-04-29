@@ -231,7 +231,7 @@ def normalize_request(payload: dict) -> dict:
     )
     compare_with_tv = normalize_bool(payload.get("compare_with_tv"), True)
     compare_tv_signals = normalize_bool(payload.get("compare_tv_signals"), False)
-    persist_backtest_indicators = normalize_bool(payload.get("persist_backtest_indicators"), True)
+    persist_backtest_indicators = normalize_bool(payload.get("persist_backtest_indicators"), False)
     warmup_bars = normalize_positive_int(
         payload.get("warmup_bars") or payload.get("preheat_bars"),
         default=service_module.BACKTEST_WARMUP_BARS,

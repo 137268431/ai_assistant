@@ -122,6 +122,7 @@ assert(runtimeUnexpectedStaticActions.length === 0, `runtime_unexpected_static_a
 const monitorHtml = readStatic('ibkr_monitor.html');
 assert(monitorHtml.includes('ops-route-panel'), 'monitor_missing_ops_route_panel');
 assert(includesAll(monitorHtml, ['监控大盘', '预热', '数据质量', '历史重建']), 'monitor_ops_route_missing_labels');
+assert(includesAll(monitorHtml, ['大盘行情雷达', '关键监控指标带', 'marketOverviewGrid', 'criticalMetricsGrid']), 'monitor_missing_market_or_critical_metrics');
 
 const warmupHtml = readStatic('ibkr_warmup.html');
 assert(warmupHtml.includes('warmup-guide-section'), 'warmup_missing_guide_section');

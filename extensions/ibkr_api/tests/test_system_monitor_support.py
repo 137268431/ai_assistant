@@ -8,6 +8,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 
 from ibkr_api.system.monitor_support import build_system_monitor_payload
 from ibkr_api.system.monitor_support import derive_monitor_service_map
+from ibkr_api.system.service_state import derive_compute_state
 
 
 def _raise(message):
@@ -15,6 +16,16 @@ def _raise(message):
 
 
 class SystemMonitorSupportTest(unittest.TestCase):
+    def test_compute_partial_optional_engines_still_reports_running(self):
+        state = derive_compute_state(
+            {"status": "running", "total_engines": 712, "ready_engines": 490},
+            observed_at="2026-04-29T00:00:00+00:00",
+        )
+
+        self.assertEqual(state["status"], "running")
+        self.assertTrue(state["ready"])
+        self.assertEqual(state["readiness_phase"], "ready")
+
     def test_scheduler_lag_is_not_degraded_while_compute_preload_active(self):
         service_monitor = derive_monitor_service_map(
             "live",
@@ -51,6 +62,37 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(scheduler["status"], "running")
         self.assertIn("deferred by compute preload", scheduler["detail"])
 
+    def test_monitor_marks_compute_starting_when_root_preload_active(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 0,
+                    "ready_engines": 0,
+                },
+                "compute_startup_preload": {"status": "running", "running": True},
+                "service_topology": {"services": {}},
+            },
+            {"status": "running", "loop_interval_seconds": 30, "job_count": 12},
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        compute = service_monitor["services"]["ibkr-compute"]
+        self.assertEqual(compute["status"], "starting")
+        self.assertEqual(compute["readiness_phase"], "preload")
+        self.assertFalse(compute["ready"])
+
     def test_scheduler_lag_degrades_after_compute_preload_completes(self):
         service_monitor = derive_monitor_service_map(
             "live",
@@ -86,6 +128,65 @@ class SystemMonitorSupportTest(unittest.TestCase):
         scheduler = service_monitor["services"]["ibkr-scheduler"]
         self.assertEqual(scheduler["status"], "degraded")
         self.assertNotIn("deferred by compute preload", scheduler["detail"])
+
+    def test_runtime_auth_recovery_reports_starting_instead_of_degraded(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "starting": True,
+                    "startup_complete": False,
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True, "managed_by": "systemd", "pid": 123},
+                    "session": {"authenticated": False},
+                    "websocket": {"connected": False, "ready": False},
+                    "auth_recovery": {
+                        "recovery_phase": "resume_waiting_manual",
+                        "recovery_class": "manual_auth_required",
+                        "probe_result": "pending",
+                    },
+                },
+                "compute": {"status": "running", "total_engines": 1, "ready_engines": 1},
+                "service_topology": {"services": {}},
+            },
+            {"status": "running", "loop_interval_seconds": 30, "jobs": {}},
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        runtime = service_monitor["services"]["ibkr-runtime"]
+        self.assertEqual(runtime["status"], "starting")
+        self.assertEqual(runtime["readiness_phase"], "auth_pending")
+        self.assertFalse(runtime["ready"])
+
+    def test_canonical_monitor_clears_ready_when_probe_marks_service_offline(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {},
+                "compute": {},
+                "service_topology": {
+                    "services": {
+                        "ibkr-console": {"status": "running", "ready": True},
+                        "pocketbase": {"status": "running", "ready": True},
+                    },
+                },
+            },
+            {"status": "running", "loop_interval_seconds": 30, "jobs": {}},
+            console_probe={"ok": False, "status_code": 0, "error": "connection refused"},
+            pb_health={"ok": False, "status_code": 0, "error": "connection refused"},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        console = service_monitor["services"]["ibkr-console"]
+        pocketbase = service_monitor["services"]["pocketbase"]
+        self.assertEqual(console["status"], "offline")
+        self.assertFalse(console["ready"])
+        self.assertEqual(pocketbase["status"], "offline")
+        self.assertFalse(pocketbase["ready"])
 
     def test_monitor_payload_accepts_zero_arg_console_probe_wrapper(self):
         payload = build_system_monitor_payload(

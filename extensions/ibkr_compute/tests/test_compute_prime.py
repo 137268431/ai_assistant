@@ -142,6 +142,37 @@ class ComputePrimeResponseTest(unittest.TestCase):
             ["AAPL", "MSFT"],
             "15m",
             hydrate_signal_state=False,
+            persist_latest_indicator=False,
+        )
+        self.assertFalse(payload["persist_latest_indicator"])
+
+    def test_prime_can_explicitly_persist_latest_indicator_mirror(self):
+        fake_app = _fake_app()
+
+        with mock.patch.object(compute_prime, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_request, "_api_app", return_value=fake_app), \
+                mock.patch.object(
+                    compute_prime,
+                    "build_multi_timeframe_readiness",
+                    return_value={"status": "ready"},
+                ), \
+                mock.patch.object(compute_prime, "jsonify", side_effect=lambda payload: _FakeResponse(payload)):
+            response = compute_prime.build_compute_prime_response(
+                {
+                    "environments": ["live"],
+                    "symbols": ["aapl"],
+                    "intervals": ["15m"],
+                    "persist_latest_indicator": True,
+                }
+            )
+
+        payload = response.get_json()
+        self.assertTrue(payload["persist_latest_indicator"])
+        fake_app.materialize_engines_from_storage.assert_called_once_with(
+            "live",
+            ["AAPL"],
+            "15m",
+            hydrate_signal_state=False,
             persist_latest_indicator=True,
         )
 
@@ -222,6 +253,23 @@ class MultiTimeframeReadinessTest(unittest.TestCase):
         self.assertEqual(readiness["intervals"]["15m"]["readiness_source"], "engine")
         self.assertEqual(readiness["intervals"]["15m"]["bar_symbols"], 2)
         self.assertEqual(readiness["intervals"]["15m"]["indicator_symbols"], 1)
+        self.assertEqual(readiness["intervals"]["15m"]["missing_indicator_symbols"], ["MSFT"])
+
+    def test_readiness_ignores_missing_indicator_mirror_when_engines_are_ready(self):
+        fake_app = _fake_app()
+        fake_app.engines[("live", "MSFT", "15m")] = _FakeEngine(True, 260, 900)
+
+        readiness = compute_prime.build_multi_timeframe_readiness(
+            fake_app,
+            environment="live",
+            symbols=["AAPL", "MSFT"],
+            intervals=["5m", "15m"],
+            use_cache=False,
+        )
+
+        self.assertEqual(readiness["status"], "ready")
+        self.assertEqual(readiness["intervals"]["15m"]["status"], "ready")
+        self.assertEqual(readiness["intervals"]["15m"]["missing_ready_symbols"], [])
         self.assertEqual(readiness["intervals"]["15m"]["missing_indicator_symbols"], ["MSFT"])
 
     def test_readiness_returns_unknown_without_target_symbols(self):

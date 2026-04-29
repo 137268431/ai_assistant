@@ -333,6 +333,225 @@
             color: var(--muted);
         }
 
+        .market-overview-section {
+            border-color: rgba(79, 209, 197, 0.16);
+            background:
+                radial-gradient(circle at 8% 0%, rgba(79, 209, 197, 0.12), transparent 30%),
+                linear-gradient(180deg, rgba(14, 22, 34, 0.98), rgba(9, 15, 24, 0.98));
+        }
+        .market-overview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .market-monitor-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 12px;
+        }
+        .market-card {
+            position: relative;
+            overflow: hidden;
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background:
+                radial-gradient(circle at top right, rgba(99, 179, 237, 0.10), transparent 38%),
+                linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
+            padding: 14px;
+            display: grid;
+            gap: 12px;
+            min-height: 190px;
+        }
+        .market-card::before {
+            content: '';
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 4px;
+            background: rgba(139, 164, 196, 0.6);
+        }
+        .market-card.is-up::before {
+            background: #48BB78;
+            box-shadow: 0 0 18px rgba(72, 187, 120, 0.5);
+        }
+        .market-card.is-down::before,
+        .market-card.is-stale::before {
+            background: #FC8181;
+            box-shadow: 0 0 18px rgba(252, 129, 129, 0.5);
+        }
+        .market-card.is-flat::before {
+            background: #F6AD55;
+        }
+        .market-card.is-stale {
+            border-color: rgba(252, 129, 129, 0.22);
+            background:
+                radial-gradient(circle at top right, rgba(252, 129, 129, 0.12), transparent 40%),
+                linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.024));
+        }
+        .market-card-head,
+        .market-price-row,
+        .market-card-foot {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            min-width: 0;
+        }
+        .market-symbol {
+            color: var(--text);
+            text-decoration: none;
+            font-size: 22px;
+            line-height: 1.05;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+        }
+        .market-symbol:hover {
+            color: var(--accent);
+        }
+        .market-subtitle {
+            margin-top: 5px;
+            color: var(--muted);
+            font-size: 10px;
+        }
+        .market-trend {
+            padding: 5px 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.05);
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .market-card.is-up .market-trend,
+        .market-card.is-up .market-change {
+            color: #48BB78;
+        }
+        .market-card.is-down .market-trend,
+        .market-card.is-down .market-change,
+        .market-card.is-stale .market-trend {
+            color: #FC8181;
+        }
+        .market-card.is-flat .market-trend,
+        .market-card.is-flat .market-change {
+            color: #F6AD55;
+        }
+        .market-price {
+            font-size: 26px;
+            line-height: 1;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .market-change {
+            font-size: 15px;
+            line-height: 1.2;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            text-align: right;
+        }
+        .market-freshness-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .market-freshness-grid > div {
+            min-width: 0;
+            padding: 9px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.035);
+        }
+        .market-freshness-grid span {
+            display: block;
+            margin-bottom: 4px;
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .market-freshness-grid strong {
+            font-size: 13px;
+            line-height: 1.2;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .market-card-foot {
+            align-items: center;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .inline-link,
+        .mini-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 700;
+        }
+        .inline-link:hover,
+        .mini-link:hover {
+            color: var(--text);
+        }
+
+        .critical-metrics-section {
+            border-color: rgba(246, 173, 85, 0.14);
+            background:
+                radial-gradient(circle at 96% 0%, rgba(246, 173, 85, 0.12), transparent 32%),
+                linear-gradient(180deg, rgba(15, 21, 31, 0.98), rgba(9, 15, 24, 0.98));
+        }
+        .critical-metric-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+        .critical-metric-card {
+            min-width: 0;
+            display: grid;
+            gap: 8px;
+            padding: 13px;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.035);
+        }
+        .critical-metric-card.is-ok {
+            border-color: rgba(72, 187, 120, 0.20);
+            background: linear-gradient(180deg, rgba(72, 187, 120, 0.09), rgba(255,255,255,0.025));
+        }
+        .critical-metric-card.is-warn {
+            border-color: rgba(246, 173, 85, 0.22);
+            background: linear-gradient(180deg, rgba(246, 173, 85, 0.10), rgba(255,255,255,0.025));
+        }
+        .critical-metric-card.is-error {
+            border-color: rgba(252, 129, 129, 0.24);
+            background: linear-gradient(180deg, rgba(252, 129, 129, 0.11), rgba(255,255,255,0.025));
+        }
+        .critical-metric-card.is-muted,
+        .critical-metric-card.is-neutral {
+            color: #8BA4C4;
+        }
+        .critical-metric-label {
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1.2;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .critical-metric-value {
+            font-size: 20px;
+            line-height: 1.1;
+            font-weight: 800;
+            word-break: break-word;
+        }
+        .critical-metric-copy,
+        .critical-metric-meta {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.55;
+        }
+        .critical-metric-meta {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
         .sample-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -391,7 +610,7 @@
         .data-table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 760px;
+            min-width: 1040px;
         }
         .data-table th,
         .data-table td {
@@ -596,6 +815,6 @@
                 grid-template-columns: 1fr;
             }
             .data-table {
-                min-width: 640px;
+                min-width: 960px;
             }
         }

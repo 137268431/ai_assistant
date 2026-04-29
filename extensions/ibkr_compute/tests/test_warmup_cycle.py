@@ -15,9 +15,14 @@ from ibkr_compute.orchestration.warmup_cycle import TradingServiceWarmupCycleMix
 class DummyWarmupCycle(TradingServiceWarmupCycleMixin):
     def __init__(self):
         self.complete_calls = []
+        self.plan_calls = []
+        self.repair_calls = []
 
     def _now_iso(self) -> str:
         return "2026-04-15T19:02:32Z"
+
+    def _normalize_symbol_list(self, symbols) -> list[str]:
+        return sorted({str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()})
 
     def _format_symbol_list(self, symbols) -> str:
         values = [str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()]
@@ -26,6 +31,46 @@ class DummyWarmupCycle(TradingServiceWarmupCycleMixin):
     def _complete_startup_success(self, title: str, detail: dict | None = None) -> bool:
         self.complete_calls.append((title, dict(detail or {})))
         return True
+
+    def _build_startup_history_repair_plan(self, symbols, et_now=None):
+        del et_now
+        normalized = self._normalize_symbol_list(symbols)
+        self.plan_calls.append(tuple(normalized))
+        return {
+            symbol: {"repair_reason": "today_regular_incomplete=1"}
+            for symbol in normalized
+            if symbol in {"AAPL", "SPY"}
+        }
+
+    def _build_startup_history_period_overrides(self, repair_plan):
+        return {symbol: {"5m": "1d"} for symbol in repair_plan}
+
+    def _run_bar_integrity_repairs(
+        self,
+        repair_plan,
+        source,
+        allow_defer=False,
+        run_pipeline_repair=False,
+        history_period_overrides=None,
+    ):
+        self.repair_calls.append(
+            (
+                sorted(repair_plan.keys()),
+                source,
+                allow_defer,
+                run_pipeline_repair,
+                dict(history_period_overrides or {}),
+            )
+        )
+        return {
+            "repair_symbols": sorted(repair_plan.keys()),
+            "history_symbols": sorted(repair_plan.keys()),
+            "per_symbol": {
+                symbol: {"result": {"history_written": 2}}
+                for symbol in repair_plan.keys()
+            },
+        }
+
 
 class WarmupCycleStartupReleaseTest(unittest.TestCase):
     def test_release_startup_when_trade_gate_is_open_but_pending_symbols_remain(self):
@@ -73,7 +118,7 @@ class WarmupCycleStartupReleaseTest(unittest.TestCase):
             "交易链路已开放，剩余 monitor / integrity repair 在后台继续。",
         )
 
-    def test_local_warmup_materialization_seeds_latest_indicator(self):
+    def test_local_warmup_materialization_replays_bars_without_indicator_seed(self):
         cycle = DummyWarmupCycle()
         fake_server = types.ModuleType("ibkr_compute.api.server")
         call_log = []
@@ -94,7 +139,7 @@ class WarmupCycleStartupReleaseTest(unittest.TestCase):
                     persist_latest_indicator,
                 )
             )
-            return {"AAPL": {"is_ready": True, "indicator_seeded": True}}
+            return {"AAPL": {"is_ready": True, "indicator_seeded": persist_latest_indicator}}
 
         fake_server.materialize_engines_from_storage = materialize_engines_from_storage
 
@@ -114,11 +159,35 @@ class WarmupCycleStartupReleaseTest(unittest.TestCase):
                         ["AAPL"],
                     )
 
-        self.assertEqual(result, {"AAPL": {"is_ready": True, "indicator_seeded": True}})
+        self.assertEqual(result, {"AAPL": {"is_ready": True, "indicator_seeded": False}})
         self.assertEqual(
             call_log,
-            [("live", ("AAPL",), "5m", True, True)],
+            [("live", ("AAPL",), "5m", True, False)],
         )
+
+    def test_warmup_preflight_history_repair_scopes_to_trade_symbols(self):
+        cycle = DummyWarmupCycle()
+        snapshot = {
+            "symbols": ["AAPL", "MSFT", "SPY", "QQQ"],
+            "trade_symbols": ["SPY", "AAPL"],
+            "monitor_symbols": ["QQQ"],
+        }
+
+        with mock.patch(
+            "ibkr_compute.orchestration.warmup_cycle._service_mod",
+            return_value=SimpleNamespace(
+                logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+            ),
+        ):
+            result = cycle._run_warmup_preflight_repairs(snapshot)
+
+        self.assertEqual(result["checked_symbols"], ["AAPL", "SPY"])
+        self.assertEqual(result["initial_repair_symbols"], ["AAPL", "SPY"])
+        self.assertEqual(result["remaining_repair_symbols"], ["AAPL", "SPY"])
+        self.assertEqual(result["history_written_total"], 4)
+        self.assertEqual(cycle.plan_calls, [("AAPL", "SPY"), ("AAPL", "SPY")])
+        self.assertEqual(len(cycle.repair_calls), 1)
+        self.assertEqual(cycle.repair_calls[0][0], ["AAPL", "SPY"])
 
 
 if __name__ == "__main__":

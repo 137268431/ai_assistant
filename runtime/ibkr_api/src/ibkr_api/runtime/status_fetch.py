@@ -1,8 +1,79 @@
 from __future__ import annotations
 
+import os
+import threading
+import time
 from typing import Any
 
+from ibkr_api.system.service_state import canonicalize_topology
+
 from .status_types import AsDict, BuildServiceTopology, RequestJson
+
+
+UPSTREAM_CACHE_TTL_SECONDS = max(
+    0.0,
+    float(os.environ.get("IBKR_API_UPSTREAM_STATUS_CACHE_TTL_SEC", "60.0")),
+)
+
+_upstream_cache_lock = threading.Lock()
+_upstream_success_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+
+def _cache_key(
+    base_url: str,
+    path: str,
+    environment: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> tuple[Any, ...]:
+    return (
+        str(base_url or "").rstrip("/"),
+        str(path or "").strip(),
+        str(environment or "").strip().lower(),
+        tuple(extra_params or ()),
+    )
+
+
+def _with_stale_cache(key: tuple[Any, ...], result: dict[str, Any]) -> dict[str, Any]:
+    if UPSTREAM_CACHE_TTL_SECONDS <= 0:
+        return result
+    now = time.time()
+    payload = result.get("payload") if isinstance(result, dict) else {}
+    if bool(result.get("ok")) and isinstance(payload, dict) and payload:
+        with _upstream_cache_lock:
+            _upstream_success_cache[key] = {
+                "expires_at": now + UPSTREAM_CACHE_TTL_SECONDS,
+                "payload": dict(payload),
+                "target_url": result.get("target_url") or "",
+                "status_code": int(result.get("status_code") or 0),
+            }
+        return result
+
+    # A JSON payload with HTTP 200 but ok=false is an authoritative degraded
+    # snapshot, not a transport miss. Do not mask it with stale data.
+    if isinstance(payload, dict) and payload:
+        return result
+
+    with _upstream_cache_lock:
+        cached = dict(_upstream_success_cache.get(key) or {})
+    cached_payload = cached.get("payload") if isinstance(cached.get("payload"), dict) else {}
+    if cached_payload and now < float(cached.get("expires_at") or 0.0):
+        stale_payload = {
+            **dict(cached_payload),
+            "stale": True,
+            "stale_error": str(result.get("error") or ""),
+            "stale_status_code": int(result.get("status_code") or 0),
+        }
+        return {
+            **result,
+            "ok": True,
+            "payload": stale_payload,
+            "error": "",
+            "stale": True,
+            "stale_error": str(result.get("error") or ""),
+            "target_url": result.get("target_url") or cached.get("target_url") or "",
+            "cached_status_code": int(cached.get("status_code") or 0),
+        }
+    return result
 
 
 def _request_environment_payload(
@@ -17,12 +88,13 @@ def _request_environment_payload(
     params = [("environment", environment)]
     if extra_params:
         params.extend(extra_params)
-    return request_json(
+    result = request_json(
         base_url,
         path,
         params=params,
         timeout=timeout,
     )
+    return _with_stale_cache(_cache_key(base_url, path, environment, extra_params), result)
 
 
 def fetch_compute_monitor(environment: str, *, request_json: RequestJson, compute_base_url: str) -> dict[str, Any]:
@@ -128,6 +200,7 @@ def fetch_runtime_health(
 
 def merge_service_topology(*payloads: Any, build_service_topology: BuildServiceTopology) -> dict[str, Any]:
     merged = build_service_topology()
+    base_service_profile = str(merged.get("service_profile") or "").strip()
     merged_services = dict(merged.get("services") if isinstance(merged.get("services"), dict) else {})
     for payload in payloads:
         if not isinstance(payload, dict):
@@ -138,11 +211,27 @@ def merge_service_topology(*payloads: Any, build_service_topology: BuildServiceT
         for key, value in topology.items():
             if key == "services":
                 continue
+            if key == "service_profile" and base_service_profile:
+                continue
             merged[key] = value
         if isinstance(topology.get("services"), dict):
-            merged_services.update(topology.get("services") or {})
+            for service_name, service_item in (topology.get("services") or {}).items():
+                current_item = merged_services.get(service_name) if isinstance(merged_services.get(service_name), dict) else {}
+                incoming_item = service_item if isinstance(service_item, dict) else {}
+                merged_services[service_name] = {
+                    **current_item,
+                    **incoming_item,
+                }
     merged["services"] = merged_services
-    return merged
+    if base_service_profile:
+        merged["service_profile"] = base_service_profile
+    environment = "live"
+    for payload in payloads:
+        if isinstance(payload, dict) and str(payload.get("environment") or "").strip():
+            environment = str(payload.get("environment") or "").strip().lower()
+            break
+    canonical_topology, _ = canonicalize_topology(environment, merged, *payloads)
+    return canonical_topology
 
 
 __all__ = [

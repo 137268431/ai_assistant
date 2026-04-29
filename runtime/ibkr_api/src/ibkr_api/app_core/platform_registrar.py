@@ -41,6 +41,8 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "build_scheduler_summary": deps["build_scheduler_summary"],
                 "augment_scheduler_summary": deps["augment_scheduler_summary"],
                 "build_service_topology": deps["build_service_topology"],
+                "request_json_request": deps["request_json_request"],
+                "scheduler_base_url": deps["scheduler_base_url"],
                 "time_strings": deps["time_strings"],
                 "get_state_payload": deps["get_state_payload"],
                 "normalize_two_factor_state_with_runtime": deps["normalize_two_factor_state_with_runtime"],

@@ -185,6 +185,7 @@ class TradingServiceRuntimePipelineMixin:
                                     "environments": [service_mod.ENVIRONMENT],
                                     "symbols": chunk,
                                     "intervals": [interval],
+                                    "persist_latest_indicator": False,
                                 }
                             )
                             if result.get("ok") is False:
@@ -224,7 +225,7 @@ class TradingServiceRuntimePipelineMixin:
                                 service_mod.ENVIRONMENT,
                                 chunk,
                                 interval,
-                                persist_latest_indicator=True,
+                                persist_latest_indicator=False,
                             )
                     completed_intervals.append(interval)
                     service_mod.logger.info(
@@ -535,10 +536,14 @@ class TradingServiceRuntimePipelineMixin:
             for symbol in (symbols_override or [])
             if str(symbol or "").strip()
         }
-        symbols = [
-            symbol for symbol in list(snapshot.get("symbols") or [])
-            if not override_set or symbol in override_set
-        ]
+        snapshot_symbols = list(snapshot.get("symbols") or [])
+        if override_set:
+            symbols = [symbol for symbol in snapshot_symbols if symbol in override_set]
+        elif "trade_symbols" in snapshot:
+            trade_set = set(self._normalize_symbol_list(snapshot.get("trade_symbols") or []))
+            symbols = [symbol for symbol in snapshot_symbols if symbol in trade_set]
+        else:
+            symbols = snapshot_symbols
         conid_map = dict(snapshot.get("conid_map") or {})
         symbol_meta = dict(snapshot.get("symbol_meta") or {})
         request_period = self._official_5m_request_period()

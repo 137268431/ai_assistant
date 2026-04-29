@@ -405,12 +405,17 @@ class TradingServiceWarmupMixin:
         scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
         monitor_symbols = self._market_ws_symbols()
         subscription_symbols = self._normalize_symbol_list(monitor_symbols + trade_symbols)
+        backfill_symbol_set = set(trade_symbols)
         conid_map = {
             symbol: int(active_conid_map.get(symbol) or 0)
             for symbol in symbols
-            if int(active_conid_map.get(symbol) or 0) > 0
+            if symbol in backfill_symbol_set and int(active_conid_map.get(symbol) or 0) > 0
         }
-        unresolved = [symbol for symbol in symbols if symbol not in conid_map]
+        unresolved = [
+            symbol
+            for symbol in symbols
+            if symbol in backfill_symbol_set and symbol not in conid_map
+        ]
         if unresolved:
             try:
                 resolved = self.conid_resolver.resolve_bulk(unresolved)

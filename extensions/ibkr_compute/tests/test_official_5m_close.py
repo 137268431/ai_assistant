@@ -140,6 +140,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         data_writer: _FakeWriter,
         data_backfill: _FakeBackfill,
         pb=None,
+        snapshot=None,
     ):
         self._running = True
         self._starting = False
@@ -170,6 +171,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         self.data_writer = data_writer
         self.data_backfill = data_backfill
         self.pb = pb or _FakePB()
+        self.snapshot = snapshot
         self.compute_events = []
 
     def _official_5m_enabled(self) -> bool:
@@ -185,12 +187,17 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         return self._due_bucket_ms
 
     def _warmup_snapshot_from_subscriptions(self) -> dict:
+        if self.snapshot is not None:
+            return dict(self.snapshot)
         return {
             "symbols": ["AAPL"],
             "monitor_symbols": [],
             "conid_map": {"AAPL": 1},
             "symbol_meta": {"AAPL": {"exchange": "NASDAQ"}},
         }
+
+    def _normalize_symbol_list(self, symbols) -> list[str]:
+        return sorted({str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()})
 
     def _queue_compute_event(self, source: str, bar_count: int = 0, symbols=None):
         self.compute_events.append(
@@ -311,6 +318,42 @@ class Official5mCloseFlushTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_default_close_cycle_only_tracks_trade_symbols(self):
+        due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
+        previous_bucket_ms = due_bucket_ms - STEP_MS
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(
+            writer,
+            initial_rows=[_bar("AAPL", previous_bucket_ms)],
+            incremental_rows=[_bar("AAPL", due_bucket_ms)],
+            repair_rows=[],
+        )
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_bucket_ms,
+            last_completed_bucket_ms=previous_bucket_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            snapshot={
+                "symbols": ["AAPL", "MSFT"],
+                "trade_symbols": ["AAPL"],
+                "monitor_symbols": ["MSFT"],
+                "conid_map": {"AAPL": 1, "MSFT": 2},
+                "symbol_meta": {
+                    "AAPL": {"exchange": "NASDAQ"},
+                    "MSFT": {"exchange": "NASDAQ"},
+                },
+            },
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_official_5m_close_cycle()
+
+        state = pipeline._copy_official_5m_state()
+        self.assertEqual(state["pending_symbols"], [])
+        self.assertEqual(state["written_symbols"], ["AAPL"])
+        self.assertEqual(len(writer.flushed_rows), 1)
+        self.assertEqual(writer.flushed_rows[0]["symbol"], "AAPL")
 
     def test_startup_cycle_fetches_missing_official_bars_instead_of_restoring_only(self):
         session_start_ms = int(datetime(2026, 4, 17, 9, 30, tzinfo=ET).timestamp() * 1000)

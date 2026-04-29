@@ -214,7 +214,7 @@ def _preload_symbol_indicator_state(
                 [normalized_symbol],
                 normalized_interval,
                 hydrate_signal_state=True,
-                persist_latest_indicator=True,
+                persist_latest_indicator=False,
             )
             result = dict((results or {}).get(normalized_symbol) or {})
             if result:
@@ -475,7 +475,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
                         [symbol],
                         "5m",
                         hydrate_signal_state=True,
-                        persist_latest_indicator=True,
+                        persist_latest_indicator=False,
                     )
                     result = dict((fallback_results or {}).get(symbol) or {})
                     if bool(result.get("is_ready")):

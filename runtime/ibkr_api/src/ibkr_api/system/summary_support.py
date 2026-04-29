@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.system.service_state import build_service_monitor_from_topology
+
 NormalizeEnvironment = Callable[[Any, str], str]
 LoadEffectiveConfigMap = Callable[[str, tuple[str, ...] | list[str] | set[str] | None], dict[str, str]]
 IsEnabledText = Callable[[Any], bool]
@@ -73,6 +75,7 @@ def build_system_summary_payload(
         )
 
     merged_topology = merge_service_topology(compute_summary, runtime_payload)
+    service_monitor = build_service_monitor_from_topology(runtime_environment, merged_topology)
     runtime_summary = {
         "ok": bool(runtime_status.get("ok")) or bool(runtime_payload),
         "status": str(runtime_payload.get("status") or ("running" if runtime_payload else "offline")).strip().lower() or "offline",
@@ -108,6 +111,7 @@ def build_system_summary_payload(
         "ibkr_compute": compute_summary,
         "ibkr_runtime": runtime_summary,
         "service_topology": merged_topology,
+        "service_monitor": service_monitor,
         "recent_events": load_recent_system_events(runtime_environment, 20),
         "data_freshness": [],
         "lite_mode": bool(lite_mode),

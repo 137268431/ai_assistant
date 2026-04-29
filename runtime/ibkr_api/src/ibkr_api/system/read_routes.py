@@ -4,6 +4,8 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.system.scheduler_support import run_scheduler_job
+
 
 SystemDeps = dict[str, Any]
 
@@ -20,6 +22,8 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     build_system_monitor_payload = deps["build_system_monitor_payload"]
     build_system_summary_payload = deps["build_system_summary_payload"]
     build_service_topology = deps["build_service_topology"]
+    request_json_request = deps["request_json_request"]
+    scheduler_base_url = deps["scheduler_base_url"]
 
     @app.route("/api/custom/system/cronz", methods=["GET"])
     def custom_system_cronz() -> Response:
@@ -82,6 +86,22 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
         )
 
     exports["custom_system_schedulerz"] = custom_system_schedulerz
+
+    @app.route("/api/custom/system/scheduler/jobs/run", methods=["POST"])
+    def custom_system_scheduler_job_run() -> Response:
+        payload = request.get_json(silent=True) or {}
+        environment = normalize_environment(payload.get("environment"), "live")
+        response_payload, status_code = run_scheduler_job(
+            job_id=str(payload.get("job_id") or "").strip(),
+            environment=environment,
+            trigger_source=str(payload.get("trigger_source") or "api_manual").strip() or "api_manual",
+            request_json_request=request_json_request,
+            scheduler_base_url=scheduler_base_url,
+        )
+        response = jsonify(response_payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_scheduler_job_run"] = custom_system_scheduler_job_run
 
     @app.route("/api/custom/system/summaryz", methods=["GET"])
     def custom_system_summaryz() -> Response:

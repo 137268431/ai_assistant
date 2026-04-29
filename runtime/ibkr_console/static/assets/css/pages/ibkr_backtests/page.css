@@ -397,6 +397,21 @@ body {
             letter-spacing: 0.5px;
             text-transform: uppercase;
         }
+        .field label.checkline {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            width: fit-content;
+            color: var(--text);
+            text-transform: none;
+            cursor: pointer;
+        }
+        .field label.checkline input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #F6AD55;
+            cursor: pointer;
+        }
         .field input,
         .field select,
         .field textarea {

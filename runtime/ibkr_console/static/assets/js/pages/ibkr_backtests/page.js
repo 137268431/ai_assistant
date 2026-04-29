@@ -487,7 +487,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return `
                 <div class="detail-card">
                     <div class="subhead">回测指标留痕</div>
-                    <div class="foot-note">这是回测阶段的临时技术指标留痕表，用于核对 bars → indicators 的生成结果，不参与生产链路阻断。</div>
+                    <div class="foot-note">默认不落库：bars 可复用，指标只在内存中演算；仅勾选“保存指标明细”时写入该临时表用于排查。</div>
                     <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
                     <div class="detail-list">
                         <div class="detail-item"><div class="detail-item-label">Collection</div><div class="detail-item-value mono">${escapeHtml(capture.collection || 'ibkr_backtest_indicators')}</div></div>
@@ -744,6 +744,16 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             } else {
                 help.textContent = '会读取 watchlist 股票池，并按 max_symbols 截断。';
                 symbolsInput.placeholder = 'watchlist 模式会自动解析';
+            }
+        }
+
+        function syncTvCompareUI() {
+            const compareWithTv = Boolean(document.getElementById('compareWithTv')?.checked);
+            const compareSignalsInput = document.getElementById('compareTvSignals');
+            if (!compareSignalsInput) return;
+            compareSignalsInput.disabled = !compareWithTv;
+            if (!compareWithTv) {
+                compareSignalsInput.checked = false;
             }
         }
 
@@ -1569,6 +1579,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 warmup_bars: Number(document.getElementById('warmupBars').value || 320),
                 scan_warmup_bars: Number(document.getElementById('warmupBars').value || 320),
                 premarket_cutoff_time: String(document.getElementById('premarketCutoff').value || '09:20').trim(),
+                compare_with_tv: Boolean(document.getElementById('compareWithTv')?.checked),
+                compare_tv_signals: Boolean(document.getElementById('compareWithTv')?.checked && document.getElementById('compareTvSignals')?.checked),
+                persist_backtest_indicators: Boolean(document.getElementById('persistBacktestIndicators')?.checked),
                 max_symbols: Number(document.getElementById('maxSymbols').value || 12),
                 source_environment: currentEnvironment,
                 strategy_params: strategyParams,
@@ -1812,6 +1825,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         window.replayTrade = replayTrade;
         window.replayTarget = replayTarget;
         window.syncSymbolSourceUI = syncSymbolSourceUI;
+        window.syncTvCompareUI = syncTvCompareUI;
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_backtests.html', {}, { environment: currentEnvironment });
@@ -1827,6 +1841,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             document.getElementById('overviewChartToggle')?.addEventListener('toggle', resizeBacktestCharts);
             applyDefaultDates();
             syncSymbolSourceUI();
+            syncTvCompareUI();
             setBacktestTab(activeBacktestTab);
             renderReplay([]);
             await withPageLoading(
