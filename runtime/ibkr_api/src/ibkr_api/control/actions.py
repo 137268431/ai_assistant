@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import Any, Callable
 
 from ibkr_api.control.config_records import upsert_config_value
@@ -57,10 +58,140 @@ _RECOVER_CONFIG_ACTIONS = {
     ],
 }
 
+_SERVICE_ACTIONS = {"start", "stop", "restart"}
+_SERVICE_CONTROL_TARGETS = {
+    "ibkr-runtime": {
+        "unit": "ibkr-runtime",
+        "label": "IBKR Runtime",
+        "delegated_gateway": False,
+    },
+    "ibkr-gateway": {
+        "unit": "ibkr-gateway",
+        "label": "IBKR Gateway",
+        "delegated_gateway": True,
+    },
+    "ibkr-compute": {
+        "unit": "ibkr-compute",
+        "label": "IBKR Compute",
+        "delegated_gateway": False,
+    },
+    "ibkr-scheduler": {
+        "unit": "ibkr-scheduler",
+        "label": "IBKR Scheduler",
+        "delegated_gateway": False,
+    },
+}
+_SYSTEMCTL_SHOW_PROPERTIES = [
+    "Id",
+    "ActiveState",
+    "SubState",
+    "MainPID",
+    "UnitFileState",
+    "ExecMainStatus",
+    "Result",
+]
+
 
 def _normalize_action(value: Any, default: str = "all") -> str:
     text = str(value or "").strip().lower()
     return text or default
+
+
+def _normalize_service_name(value: Any) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _service_action_label(action: str) -> str:
+    if action == "start":
+        return "启动"
+    if action == "stop":
+        return "停止"
+    if action == "restart":
+        return "重启"
+    return action
+
+
+def _run_systemctl(args: list[str], *, timeout: float) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["systemctl", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _parse_systemctl_show(text: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in str(text or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key] = value
+    return parsed
+
+
+def _systemctl_status(unit: str) -> dict[str, Any]:
+    try:
+        result = _run_systemctl(
+            [
+                "show",
+                unit,
+                f"--property={','.join(_SYSTEMCTL_SHOW_PROPERTIES)}",
+                "--no-pager",
+            ],
+            timeout=10,
+        )
+    except Exception as exc:
+        return {
+            "unit": unit,
+            "active_state": "unknown",
+            "sub_state": "unknown",
+            "main_pid": 0,
+            "unit_file_state": "",
+            "exec_main_status": 0,
+            "result": "",
+            "ok": False,
+            "error": str(exc),
+        }
+
+    parsed = _parse_systemctl_show(result.stdout)
+    return {
+        "unit": unit,
+        "active_state": str(parsed.get("ActiveState") or "unknown"),
+        "sub_state": str(parsed.get("SubState") or "unknown"),
+        "main_pid": int(parsed.get("MainPID") or 0),
+        "unit_file_state": str(parsed.get("UnitFileState") or ""),
+        "exec_main_status": int(parsed.get("ExecMainStatus") or 0),
+        "result": str(parsed.get("Result") or ""),
+        "ok": result.returncode == 0,
+        "error": str(result.stderr or "").strip(),
+    }
+
+
+def _systemctl_action(unit: str, action: str) -> dict[str, Any]:
+    try:
+        result = _run_systemctl([action, unit], timeout=45 if action == "restart" else 30)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "returncode": 124,
+            "stdout": str(exc.stdout or "").strip(),
+            "stderr": str(exc.stderr or "").strip() or f"systemctl {action} timed out",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": str(exc),
+        }
+    return {
+        "ok": result.returncode == 0,
+        "returncode": int(result.returncode or 0),
+        "stdout": str(result.stdout or "").strip(),
+        "stderr": str(result.stderr or "").strip(),
+    }
 
 
 def _upstream_payload(result: dict[str, Any], *, as_dict: AsDict, default_ok: bool = False) -> dict[str, Any]:
@@ -223,6 +354,122 @@ def build_recover_response(
     }, 200
 
 
+def build_service_action_response(
+    *,
+    payload: dict[str, Any],
+    normalize_environment: NormalizeEnvironment,
+    request_json_request: RequestJsonRequest,
+    runtime_base_url: str,
+    inspect_runtime_environment: InspectRuntimeEnvironment,
+    build_runtime_environment_mismatch_payload: BuildMismatchPayload,
+    emit_system_event: EmitSystemEvent | None,
+    as_dict: AsDict,
+) -> tuple[dict[str, Any], int]:
+    environment = normalize_environment(payload.get("environment"), "live")
+    service = _normalize_service_name(payload.get("service"))
+    action = _normalize_action(payload.get("action"), "")
+    source = str(payload.get("source") or "ibkr-api").strip() or "ibkr-api"
+
+    target = _SERVICE_CONTROL_TARGETS.get(service)
+    if target is None:
+        return {
+            "ok": False,
+            "environment": environment,
+            "service": service,
+            "action": action,
+            "error": "Unsupported service",
+            "allowed_services": sorted(_SERVICE_CONTROL_TARGETS),
+            "source": "ibkr-api",
+        }, 400
+    if action not in _SERVICE_ACTIONS:
+        return {
+            "ok": False,
+            "environment": environment,
+            "service": service,
+            "action": action,
+            "error": "Unsupported service action",
+            "allowed_actions": sorted(_SERVICE_ACTIONS),
+            "source": "ibkr-api",
+        }, 400
+
+    route_path = "/api/custom/ibkr/services/action"
+    if service in {"ibkr-runtime", "ibkr-gateway"}:
+        environment_info = inspect_runtime_environment(environment)
+        if bool(environment_info.get("runtime_environment_mismatch")):
+            return build_runtime_environment_mismatch_payload(environment_info, route_path), 409
+
+    unit = str(target["unit"])
+    delegated_payload: dict[str, Any] | None = None
+    if bool(target.get("delegated_gateway")):
+        delegated_result = request_json_request(
+            "POST",
+            runtime_base_url,
+            f"/ibkr/gateway/{action}",
+            json_body={
+                "environment": environment,
+                "reason": f"service_control_{service}_{action}",
+                "source": source,
+            },
+            timeout=60 if action == "restart" else 30,
+        )
+        action_result = _upstream_payload(delegated_result, as_dict=as_dict, default_ok=False)
+        delegated_payload = action_result
+        action_ok = action_result.get("ok") is not False
+        command_result = {
+            "ok": action_ok,
+            "returncode": 0 if action_ok else int(action_result.get("status_code") or 1),
+            "stdout": "",
+            "stderr": str(action_result.get("error") or ""),
+        }
+    else:
+        command_result = _systemctl_action(unit, action)
+        action_ok = bool(command_result.get("ok"))
+
+    service_state = _systemctl_status(unit)
+    ok = bool(action_ok)
+    if callable(emit_system_event):
+        try:
+            action_label = _service_action_label(action)
+            emit_system_event(
+                event_type="status_change",
+                level="info" if ok else "warning",
+                source="manual",
+                title=f"{target['label']} 服务{action_label}{'已请求' if ok else '失败'}",
+                detail={
+                    "service": service,
+                    "unit": unit,
+                    "action": action,
+                    "source": source,
+                    "returncode": command_result.get("returncode"),
+                    "active_state": service_state.get("active_state"),
+                    "sub_state": service_state.get("sub_state"),
+                },
+                environment=environment,
+            )
+        except Exception:
+            pass
+
+    response_payload = {
+        "ok": ok,
+        "environment": environment,
+        "service": service,
+        "unit": unit,
+        "action": action,
+        "message": (
+            f"{target['label']} service {action} requested"
+            if ok
+            else f"{target['label']} service {action} failed"
+        ),
+        "command": command_result,
+        "service_state": service_state,
+        "source": "ibkr-api",
+    }
+    if delegated_payload is not None:
+        response_payload["delegated"] = True
+        response_payload["payload"] = delegated_payload
+    return response_payload, 200 if ok else 502
+
+
 def build_reauth_response(
     *,
     payload: dict[str, Any],
@@ -269,4 +516,5 @@ __all__ = [
     "build_emergency_stop_response",
     "build_reauth_response",
     "build_recover_response",
+    "build_service_action_response",
 ]

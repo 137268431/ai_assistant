@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ibkr_api.runtime.two_factor import normalize_two_factor_status
+from ibkr_api.two_factor.deadlines import parse_et_time_ms
 from ibkr_api.two_factor.delivery import deliver_two_factor_card
 from ibkr_api.two_factor.startup_sync import sync_startup_auth_progress
 from ibkr_api.two_factor.state import is_terminal_status, load_two_factor_state, save_two_factor_state, time_strings
@@ -18,6 +19,32 @@ MergeStartupSteps = Callable[[Any, Any, bool], dict[str, dict[str, Any]]]
 DeliverStartupProgressCard = Callable[[dict[str, Any], str], dict[str, Any]]
 
 SUPPORTED_STATUSES = {"requested", "triggered", "waiting_confirm", "waiting_response", "success", "timeout", "failed"}
+AUTO_RESTORE_SUCCESS_EVENT_DEDUPE_MS = 2 * 60 * 1000
+
+
+def _terminal_success_reason(state: dict[str, Any]) -> str:
+    return str(state.get("reason") or state.get("recovery_reason") or "").strip().lower()
+
+
+def _should_emit_terminal_system_event(
+    status: str,
+    current_data: dict[str, Any],
+    next_data: dict[str, Any],
+    current_ms: int,
+) -> bool:
+    if status != "success":
+        return True
+    reason = _terminal_success_reason(next_data)
+    if reason != "auto_restore":
+        return True
+    if normalize_two_factor_status(current_data.get("status")) != "success":
+        return True
+    if _terminal_success_reason(current_data) != reason:
+        return True
+    previous_result_ms = parse_et_time_ms(current_data.get("result_at"))
+    if previous_result_ms <= 0:
+        return True
+    return (int(current_ms or 0) - previous_result_ms) >= AUTO_RESTORE_SUCCESS_EVENT_DEDUPE_MS
 
 
 def build_two_factor_result_response(
@@ -41,6 +68,7 @@ def build_two_factor_result_response(
     current = load_two_factor_state(pb, environment, normalize_environment=normalize_environment, as_dict=as_dict)
     current_data = as_dict(current.get("data"))
     current_times = time_strings()
+    current_ms = parse_et_time_ms(current_times["us"])
     state_patch = as_dict(payload.get("state_patch"))
     patch: dict[str, Any] = {
         "status": status,
@@ -114,7 +142,13 @@ def build_two_factor_result_response(
         update_interactive=update_interactive,
         bypass_throttle=is_terminal_status(status),
     )
-    if callable(emit_system_event) and is_terminal_status(status):
+    should_emit_system_event = _should_emit_terminal_system_event(
+        status,
+        current_data,
+        as_dict(saved.get("data")),
+        current_ms,
+    )
+    if callable(emit_system_event) and is_terminal_status(status) and should_emit_system_event:
         try:
             emit_system_event(
                 event_type="status_change" if status == "success" else "alert",

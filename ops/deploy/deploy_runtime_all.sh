@@ -42,6 +42,7 @@ DEPLOY_IGNORE_UNMANAGED=0
 HEALTH_CHECK_ENVIRONMENT="${DEPLOY_HEALTH_ENVIRONMENT:-live}"
 STACK_HEALTH_TIMEOUT_SECONDS="${DEPLOY_STACK_HEALTH_TIMEOUT_SECONDS:-420}"
 STACK_HEALTH_RETRY_INTERVAL_SECONDS="${DEPLOY_STACK_HEALTH_RETRY_INTERVAL_SECONDS:-15}"
+STRICT_GATEWAY_HEALTH="${DEPLOY_STRICT_GATEWAY_HEALTH:-0}"
 
 source "$LIB_ROOT/common.sh"
 source "$LIB_ROOT/cli.sh"
@@ -89,6 +90,12 @@ Main deploy ownership:
 
 Tip: always use --plan-only first when unsure; it prints exact files and
 systemd services that will be restarted.
+
+Environment:
+  DEPLOY_STRICT_GATEWAY_HEALTH=1
+                      Fail final stack health when IBKR Gateway is unhealthy.
+                      Default is 0 so compute/console hotfixes do not fail only
+                      because Gateway is already waiting for 2FA.
 EOF
 }
 
@@ -278,6 +285,26 @@ collect_target_file_args() {
   done
 }
 
+stack_health_failure_tolerated() {
+  local output="$1"
+  [[ "${STRICT_GATEWAY_HEALTH:-0}" != "1" ]] || return 1
+  printf '%s' "$output" | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+failures = [str(item) for item in payload.get("failures") or []]
+allowed = {"runtime:gateway_unhealthy"}
+if failures and set(failures).issubset(allowed):
+    sys.exit(0)
+sys.exit(1)
+'
+}
+
 wait_for_full_stack_health() {
   [[ "${PLAN_ONLY:-0}" -eq 1 ]] && return 0
   [[ "${DRY_RUN:-0}" -eq 1 ]] && return 0
@@ -296,6 +323,11 @@ wait_for_full_stack_health() {
   while true; do
     if output="$(python3 "$AI_ASSISTANT_ROOT/ops/ibkr_stack/health/check_stack.py" --environment "$HEALTH_CHECK_ENVIRONMENT" --json 2>&1)"; then
       deploy_log "Full stack health check passed."
+      return 0
+    fi
+    if stack_health_failure_tolerated "$output"; then
+      deploy_warn "Full stack health has only tolerated Gateway failure; deployment completed without restarting Gateway."
+      printf '%s\n' "$output" >&2
       return 0
     fi
     if (( $(date +%s) >= deadline )); then

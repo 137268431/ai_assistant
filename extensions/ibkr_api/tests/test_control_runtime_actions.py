@@ -146,6 +146,147 @@ class ControlRuntimeActionsTest(unittest.TestCase):
         self.assertEqual("stopping", payload["stop_before_start"]["status"])
         self.assertEqual(2, request_mock.call_count)
 
+    def test_service_action_starts_compute_with_whitelisted_systemctl(self):
+        run_results = [
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(
+                returncode=0,
+                stdout=(
+                    "Id=ibkr-compute.service\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "MainPID=1234\n"
+                    "UnitFileState=enabled\n"
+                    "ExecMainStatus=0\n"
+                    "Result=success\n"
+                ),
+                stderr="",
+            ),
+        ]
+
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={"environment": "live", "service": "ibkr-compute", "action": "start", "source": "runtime_page"},
+        ):
+            with mock.patch("ibkr_api.control.actions.subprocess.run", side_effect=run_results) as run_mock:
+                with mock.patch.object(api_app_mod, "_deliver_system_event_notification", return_value={"success": True, "message_id": "evt-3"}):
+                    with mock.patch.object(api_app_mod, "_write_system_event_record", return_value=True):
+                        payload = api_app_mod.custom_ibkr_service_action()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("ibkr-compute", payload["service"])
+        self.assertEqual("start", payload["action"])
+        self.assertEqual("active", payload["service_state"]["active_state"])
+        self.assertEqual(1234, payload["service_state"]["main_pid"])
+        self.assertEqual(["systemctl", "start", "ibkr-compute"], run_mock.call_args_list[0].args[0])
+        self.assertEqual("systemctl", run_mock.call_args_list[1].args[0][0])
+        self.assertEqual("show", run_mock.call_args_list[1].args[0][1])
+
+    def test_service_action_stops_compute_with_whitelisted_systemctl(self):
+        run_results = [
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(
+                returncode=0,
+                stdout=(
+                    "Id=ibkr-compute.service\n"
+                    "ActiveState=inactive\n"
+                    "SubState=dead\n"
+                    "MainPID=0\n"
+                    "UnitFileState=enabled\n"
+                    "ExecMainStatus=0\n"
+                    "Result=success\n"
+                ),
+                stderr="",
+            ),
+        ]
+
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={"environment": "live", "service": "ibkr-compute", "action": "stop", "source": "runtime_page"},
+        ):
+            with mock.patch("ibkr_api.control.actions.subprocess.run", side_effect=run_results) as run_mock:
+                with mock.patch.object(api_app_mod, "_deliver_system_event_notification", return_value={"success": True, "message_id": "evt-5"}):
+                    with mock.patch.object(api_app_mod, "_write_system_event_record", return_value=True):
+                        payload = api_app_mod.custom_ibkr_service_action()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("ibkr-compute", payload["service"])
+        self.assertEqual("stop", payload["action"])
+        self.assertEqual("inactive", payload["service_state"]["active_state"])
+        self.assertEqual(0, payload["service_state"]["main_pid"])
+        self.assertEqual(["systemctl", "stop", "ibkr-compute"], run_mock.call_args_list[0].args[0])
+        self.assertEqual("systemctl", run_mock.call_args_list[1].args[0][0])
+        self.assertEqual("show", run_mock.call_args_list[1].args[0][1])
+
+    def test_service_action_rejects_non_whitelisted_service_without_systemctl(self):
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={"environment": "live", "service": "ibkr-api;rm -rf /", "action": "restart"},
+        ):
+            with mock.patch("ibkr_api.control.actions.subprocess.run") as run_mock:
+                payload, status_code = api_app_mod.custom_ibkr_service_action()
+
+        self.assertEqual(400, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("Unsupported service", payload["error"])
+        run_mock.assert_not_called()
+
+    def test_service_action_rejects_non_whitelisted_action_without_systemctl(self):
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={"environment": "live", "service": "ibkr-compute", "action": "reload"},
+        ):
+            with mock.patch("ibkr_api.control.actions.subprocess.run") as run_mock:
+                payload, status_code = api_app_mod.custom_ibkr_service_action()
+
+        self.assertEqual(400, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("Unsupported service action", payload["error"])
+        run_mock.assert_not_called()
+
+    def test_service_action_delegates_gateway_restart_to_runtime(self):
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={"environment": "live", "service": "ibkr-gateway", "action": "restart", "source": "runtime_page"},
+        ):
+            with mock.patch.object(
+                api_app_mod,
+                "_fetch_runtime_status",
+                return_value={
+                    "payload": {"environment": "live"},
+                    "selected_upstream": "http://runtime/ibkr/status",
+                    "proxy_upstream": "http://compute/ibkr/status",
+                    "error": "",
+                },
+            ):
+                with mock.patch.object(
+                    api_app_mod,
+                    "_request_json_request",
+                    return_value={"ok": True, "status_code": 200, "payload": {"ok": True, "message": "Gateway 已重启。"}},
+                ) as request_mock:
+                    with mock.patch(
+                        "ibkr_api.control.actions.subprocess.run",
+                        return_value=mock.Mock(
+                            returncode=0,
+                            stdout="ActiveState=active\nSubState=running\nMainPID=4321\nUnitFileState=enabled\nExecMainStatus=0\nResult=success\n",
+                            stderr="",
+                        ),
+                    ):
+                        with mock.patch.object(api_app_mod, "_deliver_system_event_notification", return_value={"success": True, "message_id": "evt-4"}):
+                            with mock.patch.object(api_app_mod, "_write_system_event_record", return_value=True):
+                                payload = api_app_mod.custom_ibkr_service_action()
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["delegated"])
+        self.assertEqual("ibkr-gateway", payload["service"])
+        self.assertEqual("restart", payload["action"])
+        self.assertEqual("/ibkr/gateway/restart", request_mock.call_args.args[2])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1405,6 +1405,7 @@ class BrokerAdapter:
         normalized_exchange = str(exchange or "").strip().upper()
         normalized_sec_type = str(sec_type or "").strip().upper()
         target_conid = int(conid or 0)
+        lookup_errors: list[str] = []
 
         cached_candidates = []
         if normalized_symbol and normalized_symbol in self.client._contract_cache_by_symbol:
@@ -1430,7 +1431,8 @@ class BrokerAdapter:
         if target_conid > 0:
             try:
                 details = self.client.request_contract_details(conid=target_conid)
-            except Exception:
+            except Exception as exc:
+                lookup_errors.append(f"contract_details_conid:{exc}")
                 details = []
             selected = self._select_contract_candidate(
                 details,
@@ -1458,7 +1460,8 @@ class BrokerAdapter:
 
         try:
             samples = self.client.request_matching_symbols(normalized_symbol)
-        except Exception:
+        except Exception as exc:
+            lookup_errors.append(f"matching_symbols:{exc}")
             samples = []
 
         best = self._select_contract_candidate(
@@ -1471,7 +1474,8 @@ class BrokerAdapter:
         if best:
             try:
                 details = self.client.request_contract_details(conid=int(best.get("conid") or 0))
-            except Exception:
+            except Exception as exc:
+                lookup_errors.append(f"contract_details_match:{exc}")
                 details = []
             selected = self._select_contract_candidate(
                 details,
@@ -1488,6 +1492,9 @@ class BrokerAdapter:
             ):
                 return dict(selected)
             return dict(best)
+        if lookup_errors:
+            target = normalized_symbol or str(target_conid or "")
+            raise RuntimeError(f"contract_lookup_failed:{target}:{'; '.join(lookup_errors)[:600]}")
         return None
 
     def search_contracts(self, query: str, limit: int = 10) -> List[dict]:

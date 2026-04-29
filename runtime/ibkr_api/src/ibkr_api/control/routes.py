@@ -8,6 +8,7 @@ from ibkr_api.control.actions import (
     build_emergency_stop_response,
     build_reauth_response,
     build_recover_response,
+    build_service_action_response,
 )
 
 
@@ -53,6 +54,22 @@ def register_control_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_recover"] = custom_ibkr_recover
+
+    @app.route("/api/custom/ibkr/services/action", methods=["POST"])
+    def custom_ibkr_service_action() -> Response:
+        payload, status_code = build_service_action_response(
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            request_json_request=request_json_request,
+            runtime_base_url=runtime_base_url,
+            inspect_runtime_environment=inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=build_runtime_environment_mismatch_payload,
+            emit_system_event=emit_system_event,
+            as_dict=as_dict,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+    exports["custom_ibkr_service_action"] = custom_ibkr_service_action
 
     @app.route("/api/custom/ibkr/reauth", methods=["POST"])
     def custom_ibkr_reauth() -> Response:

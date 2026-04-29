@@ -164,6 +164,65 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.assertEqual("", payload["state"]["response_status"])
         self.assertEqual("msg-2", payload["message_id"])
 
+    def test_result_builder_suppresses_duplicate_auto_restore_success_event(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {
+                        "status": "waiting_response",
+                        "message_id": "msg-2",
+                        "reason": "auto_restore",
+                    },
+                }
+            ]
+        )
+        emit_calls = []
+
+        common_kwargs = {
+            "normalize_environment": self.normalize_environment,
+            "as_dict": self.as_dict,
+            "console_base_url": self.console_base_url,
+            "config_value": self.config_value,
+            "send_interactive": lambda *args, **kwargs: {"success": True, "message_id": "msg-new"},
+            "update_interactive": lambda *args, **kwargs: {"success": True, "message_id": "msg-2"},
+            "emit_system_event": lambda **kwargs: emit_calls.append(kwargs) or {"ok": True, "message_id": "evt-1"},
+            "merge_startup_steps": self.merge_startup_steps,
+            "deliver_startup_progress_card": self.deliver_startup_progress_card,
+        }
+
+        first_payload, first_status_code = build_two_factor_result_response(
+            pb,
+            payload={
+                "environment": "live",
+                "status": "success",
+                "last_result": "会话恢复成功。",
+                "state_patch": {"recovery_reason": "auto_restore"},
+            },
+            **common_kwargs,
+        )
+        second_payload, second_status_code = build_two_factor_result_response(
+            pb,
+            payload={
+                "environment": "live",
+                "status": "success",
+                "last_result": "复用现有认证会话。",
+                "state_patch": {"reason": "auto_restore"},
+            },
+            **common_kwargs,
+        )
+
+        self.assertEqual(200, first_status_code)
+        self.assertEqual(200, second_status_code)
+        self.assertTrue(first_payload["ok"])
+        self.assertTrue(second_payload["ok"])
+        self.assertEqual(1, len(emit_calls))
+        self.assertEqual("IBKR 2FA 完成", emit_calls[0]["title"])
+        self.assertEqual("复用现有认证会话。", second_payload["state"]["last_result"])
+
     def test_respond_builder_validates_and_records_response_code(self):
         pb = _FakePB(
             state_rows=[

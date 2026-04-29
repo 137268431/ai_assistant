@@ -1,7 +1,10 @@
+import os
 import sys
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -60,6 +63,41 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(len(plan["target_rows"]), 2)
         self.assertTrue(all(day["universe_snapshot_fallback"] for day in plan["summary"]["daily"]))
         self.assertTrue(all(row["extra"]["universe_snapshot_fallback"] for row in plan["target_rows"]))
+
+    def test_backtest_history_broker_uses_dedicated_client_id(self):
+        with mock.patch.dict(
+            os.environ,
+            {"IBGW_CLIENT_ID": "31", "IBGW_BACKTEST_CLIENT_ID": "71"},
+            clear=False,
+        ):
+            service = BacktestService(object())
+
+        self.assertEqual(service._history_broker.client_id, 71)
+        self.assertIs(service.data_backfill.broker, service._history_broker)
+        self.assertIs(service.conid_resolver.broker, service._history_broker)
+
+    def test_backfill_history_failure_returns_repair_summary_without_raising(self):
+        service = BacktestService(None)
+        service.pb = object()
+        service.conid_resolver = SimpleNamespace(resolve=lambda symbol: 123)
+
+        def fail_history(*_args, **_kwargs):
+            raise RuntimeError("history_fetch_failed_after_retries:F:5m:123:historical_timeout")
+
+        service.data_backfill = SimpleNamespace(_request_history_json=fail_history)
+
+        result = service._backfill_symbol_history(
+            "F",
+            "live",
+            self.service._build_scan_cutoff_ms("2026-04-22", "09:20"),
+            self.service._build_scan_cutoff_ms("2026-04-23", "09:20"),
+            interval="5m",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "history_fetch_failed")
+        self.assertIn("historical_timeout", result["error"])
+        self.assertEqual(result["rows"], [])
 
     def test_scan_replay_applies_daily_scanner_quality_gate(self):
         self.service._load_trading_dates = lambda request: ["2026-04-22"]

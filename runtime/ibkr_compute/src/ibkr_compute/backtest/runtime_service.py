@@ -17,6 +17,7 @@ from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, IndicatorEngine
 from ibkr_compute.core.risk_management import compute_atr_tightened_stop
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
+from ibkr_compute.broker import BrokerAdapter
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.data_backfill import DataBackfill
@@ -195,8 +196,9 @@ class BacktestService:
     def __init__(self, pb_client: PBClient, account_snapshot_provider: Callable[..., dict] | None = None):
         self.pb = pb_client
         self.account_snapshot_provider = account_snapshot_provider
-        self.data_backfill = DataBackfill() if pb_client else None
-        self.conid_resolver = ConidResolver(pb_client=pb_client) if pb_client else None
+        self._history_broker = self._build_history_broker() if pb_client else None
+        self.data_backfill = DataBackfill(broker=self._history_broker) if pb_client else None
+        self.conid_resolver = ConidResolver(pb_client=pb_client, broker=self._history_broker) if pb_client else None
         if self.conid_resolver is not None:
             try:
                 self.conid_resolver.load_cache_from_pb()
@@ -1723,6 +1725,18 @@ class BacktestService:
                 self._active_run_id = ""
                 self._active_batch_id = ""
 
+    def _build_history_broker(self) -> BrokerAdapter:
+        base_client_id = self._get_env_int("IBGW_CLIENT_ID", 31)
+        client_id = self._get_env_int("IBGW_BACKTEST_CLIENT_ID", base_client_id + 20)
+        return BrokerAdapter(client_id=client_id)
+
+    @staticmethod
+    def _get_env_int(name: str, default: int) -> int:
+        try:
+            return int(str(os.environ.get(name, "") or default).strip())
+        except Exception:
+            return int(default)
+
     def _update_batch_summary(self, batch_id: str, batch: dict, summaries: list[dict], extra_patch: dict | None = None, status: str = ""):
         sorted_items = sorted(
             summaries,
@@ -1978,14 +1992,24 @@ class BacktestService:
 
         while anchor_ms >= earliest_needed_ms and batches < max_batches:
             start_time = self._format_backfill_start_time(anchor_ms)
-            payload = self.data_backfill._request_history_json(
-                conid,
-                symbol,
-                normalized_interval,
-                period,
-                bar_size,
-                start_time=start_time,
-            )
+            try:
+                payload = self.data_backfill._request_history_json(
+                    conid,
+                    symbol,
+                    normalized_interval,
+                    period,
+                    bar_size,
+                    start_time=start_time,
+                )
+            except Exception as exc:
+                return {
+                    "ok": bool(fetched_rows),
+                    "reason": "partial_history_fetch_failed" if fetched_rows else "history_fetch_failed",
+                    "error": str(exc)[:1000],
+                    "fetched_rows": len(fetched_rows),
+                    "batches": batches,
+                    "rows": fetched_rows,
+                }
             bars = list(payload.get("data") or [])
             if not bars:
                 break

@@ -51,6 +51,7 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/signals",
     "ibkr/signals/ack",
     "ibkr/signals/pending",
+    "ibkr/services/action",
     "ibkr/startup/progress",
     "ibkr/startup/status",
     "ibkr/statusz",

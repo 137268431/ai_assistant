@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260428-runtime-clarity2">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260429-service-stop">
 </head>
 <body>
     <div class="page-loading-overlay" id="pageLoading">
@@ -50,41 +50,45 @@
             </div>
 
             <div class="runtime-control-panel" aria-label="Runtime controls">
+                <section class="runtime-control-group runtime-control-services" id="serviceControlSection">
+                    <div class="runtime-control-head">
+                        <div>
+                            <div class="runtime-control-kicker">Core Modules</div>
+                            <div class="runtime-control-title">核心模块控制</div>
+                        </div>
+                        <div class="runtime-control-copy">启动、停止和重启核心 systemd 服务；高风险服务需输入服务名确认。</div>
+                    </div>
+                    <div class="runtime-note">
+                        模块控制只覆盖 `ibkr-runtime`、`ibkr-gateway`、`ibkr-compute`、`ibkr-scheduler`。Runtime 业务线程启动仍使用下方“启动 Runtime 线程”。
+                    </div>
+                    <div class="service-control-grid" id="serviceControlGrid">
+                        <div class="table-empty">等待加载模块状态...</div>
+                    </div>
+                </section>
+
                 <section class="runtime-control-group runtime-control-primary" id="actionSection">
                     <div class="runtime-control-head">
                         <div>
-                            <div class="runtime-control-kicker">Primary Runtime</div>
-                            <div class="runtime-control-title">主运行链路</div>
+                            <div class="runtime-control-kicker">Runtime Flow</div>
+                            <div class="runtime-control-title">主运行流程</div>
                         </div>
-                        <div class="runtime-control-copy">启动、停止、计算、扫描与手动刷新。</div>
+                        <div class="runtime-control-copy">业务线程启动、停止、静默探测与手动刷新。</div>
                     </div>
                     <div class="runtime-note runtime-note-strategy" id="startupStrategyInfo">
                         启动策略加载中...
                     </div>
                     <div class="action-section">
                         <button class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction('start')">
-                            <span class="action-label">启动 Runtime</span>
-                            <span class="action-copy">启动 `ibkr-runtime`；是否重启 IB Gateway 由启动策略决定。</span>
+                            <span class="action-label">启动 Runtime 线程</span>
+                            <span class="action-copy">启动 runtime 内部交易/行情线程；是否重启 Gateway 由启动策略决定。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="stop" onclick="handleRuntimeAction('stop')">
-                            <span class="action-label">停止 Runtime</span>
+                            <span class="action-label">停止 Runtime 线程</span>
                             <span class="action-copy">停止 `ibkr-runtime` 内的交易线程，不直接停止 Gateway systemd 服务。</span>
                         </button>
-                        <button class="action-btn action-accent" data-action="compute" onclick="handleRuntimeAction('compute')">
-                            <span class="action-label">执行 Compute</span>
-                            <span class="action-copy">触发 compute，检查 bars → indicators → signals。</span>
-                        </button>
-                        <button class="action-btn action-accent" data-action="scan" onclick="handleRuntimeAction('scan')">
-                            <span class="action-label">执行 Scan</span>
-                            <span class="action-copy">触发盘前扫描，把候选标的写入 `ibkr_targets`。</span>
-                        </button>
-                        <button class="action-btn" data-action="recompute" onclick="handleRuntimeAction('recompute')">
-                            <span class="action-label">重算历史缓存</span>
-                            <span class="action-copy">清空内存引擎缓存后重新跑 compute，用于核对链路回放。</span>
-                        </button>
-                        <button class="action-btn" onclick="window.location.href = buildPageUrl('/ibkr_data_quality.html', {}, { environment: currentEnvironment })">
-                            <span class="action-label">打开数据质量</span>
-                            <span class="action-copy">查看 bars 缺口、重复与修复结果。</span>
+                        <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
+                            <span class="action-label">立即静默探测</span>
+                            <span class="action-copy">快速确认 Gateway 会话和 runtime 认证状态。</span>
                         </button>
                         <button class="action-btn" onclick="loadRuntimeData(true)">
                             <span class="action-label">手动刷新</span>
@@ -121,33 +125,30 @@
                     </div>
                 </section>
 
-                <section class="runtime-control-group runtime-control-gateway" id="gatewaySection">
+                <section class="runtime-control-group runtime-control-data" id="dataActionSection">
                     <div class="runtime-control-head">
                         <div>
-                            <div class="runtime-control-kicker">Gateway / Diagnostics</div>
-                            <div class="runtime-control-title">网关与探测</div>
+                            <div class="runtime-control-kicker">Compute / Data</div>
+                            <div class="runtime-control-title">计算与数据操作</div>
                         </div>
-                        <div class="runtime-control-copy">单独管理 IB Gateway systemd 服务 `ibkr-gateway`，并快速确认会话恢复状态。</div>
-                    </div>
-                    <div class="runtime-note">
-                        网关按钮只管理 systemd `ibkr-gateway`（IBC + IB Gateway GUI/API），不是 `ibkr-runtime` 线程。
+                        <div class="runtime-control-copy">手动触发 compute、scan、重算和数据质量检查。</div>
                     </div>
                     <div class="action-section">
-                        <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
-                            <span class="action-label">立即静默探测</span>
-                            <span class="action-copy">快速确认 Gateway 会话。</span>
+                        <button class="action-btn action-accent" data-action="compute" onclick="handleRuntimeAction('compute')">
+                            <span class="action-label">执行 Compute</span>
+                            <span class="action-copy">触发 compute，检查 bars → indicators → signals。</span>
                         </button>
-                        <button class="action-btn action-accent" data-action="gateway_start" onclick="handleRuntimeAction('gateway_start')">
-                            <span class="action-label">启动 IB Gateway 服务</span>
-                            <span class="action-copy">只执行 systemd `ibkr-gateway` start。</span>
+                        <button class="action-btn action-accent" data-action="scan" onclick="handleRuntimeAction('scan')">
+                            <span class="action-label">执行 Scan</span>
+                            <span class="action-copy">触发盘前扫描，把候选标的写入 `ibkr_targets`。</span>
                         </button>
-                        <button class="action-btn action-danger" data-action="gateway_stop" onclick="handleRuntimeAction('gateway_stop')">
-                            <span class="action-label">停止 IB Gateway 服务</span>
-                            <span class="action-copy">停止 systemd `ibkr-gateway`，会中断当前 2FA/会话。</span>
+                        <button class="action-btn" data-action="recompute" onclick="handleRuntimeAction('recompute')">
+                            <span class="action-label">重算历史缓存</span>
+                            <span class="action-copy">清空内存引擎缓存后重新跑 compute，用于核对链路回放。</span>
                         </button>
-                        <button class="action-btn action-accent" data-action="gateway_restart" onclick="handleRuntimeAction('gateway_restart')">
-                            <span class="action-label">重启 IB Gateway 服务</span>
-                            <span class="action-copy">重启 systemd `ibkr-gateway`；看到 Second Factor 后再等手机 Push。</span>
+                        <button class="action-btn" onclick="window.location.href = buildPageUrl('/ibkr_data_quality.html', {}, { environment: currentEnvironment })">
+                            <span class="action-label">打开数据质量</span>
+                            <span class="action-copy">查看 bars 缺口、重复与修复结果。</span>
                         </button>
                     </div>
                 </section>
@@ -167,6 +168,10 @@
                         <button class="action-btn action-danger" data-action="emergency_runtime" onclick="handleRuntimeAction('emergency_runtime')">
                             <span class="action-label">急停运行线程</span>
                             <span class="action-copy">停止当前 runtime。</span>
+                        </button>
+                        <button class="action-btn action-danger" data-action="gateway_stop" onclick="handleRuntimeAction('gateway_stop')">
+                            <span class="action-label">停止 IB Gateway 服务</span>
+                            <span class="action-copy">停止 systemd `ibkr-gateway`，会中断当前 2FA/会话。</span>
                         </button>
                         <button class="action-btn action-danger" data-action="emergency_compute" onclick="handleRuntimeAction('emergency_compute')">
                             <span class="action-label">关闭计算调度</span>
@@ -320,7 +325,7 @@
         </section>
     </div>
 
-    <script src="/assets/js/shared/ibkr-page.js?v=20260428-runtime-clarity2"></script>
-    <script src="/assets/js/pages/ibkr_runtime/page.js?v=20260428-runtime-clarity2"></script>
+    <script src="/assets/js/shared/ibkr-page.js?v=20260429-service-control"></script>
+    <script src="/assets/js/pages/ibkr_runtime/page.js?v=20260429-service-stop"></script>
 </body>
 </html>

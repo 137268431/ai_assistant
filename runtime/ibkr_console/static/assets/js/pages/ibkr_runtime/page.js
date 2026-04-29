@@ -4,6 +4,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let latestRuntimeStatus = {};
         let latestTwoFactorState = {};
         let latestStartupState = {};
+        let latestServiceMonitorPayload = {};
+        let latestServiceActionStates = {};
         let latestNextActionModel = null;
         let latestRuntimeLoadId = 0;
         let hasLoadedRuntimeData = false;
@@ -26,6 +28,36 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             runtime_resume: '恢复 Runtime',
             health_check: '启动后健康检查'
         };
+        const SERVICE_CONTROL_MODULES = [
+            {
+                service: 'ibkr-runtime',
+                title: 'Runtime Service',
+                kicker: 'DATA PLANE',
+                copy: 'broker session / live bars / runtime state',
+                highRiskRestart: true,
+            },
+            {
+                service: 'ibkr-gateway',
+                title: 'IB Gateway',
+                kicker: 'BROKER',
+                copy: 'IBC + IB Gateway GUI/API',
+                highRiskRestart: true,
+            },
+            {
+                service: 'ibkr-compute',
+                title: 'Compute Service',
+                kicker: 'COMPUTE',
+                copy: 'indicators / signals / backtests',
+                highRiskRestart: false,
+            },
+            {
+                service: 'ibkr-scheduler',
+                title: 'Scheduler Service',
+                kicker: 'SCHEDULER',
+                copy: 'cron registry / cursor dispatch',
+                highRiskRestart: false,
+            },
+        ];
 
         function toArray(payload) {
             return Array.isArray(payload?.items) ? payload.items : [];
@@ -772,6 +804,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     ? '动作执行中，请稍候。'
                     : (lockReason || '');
             });
+            document.querySelectorAll('.service-action-btn').forEach((button) => {
+                button.disabled = actionPending;
+                button.title = actionPending ? '动作执行中，请稍候。' : '';
+            });
         }
 
         function summarizeAction(action, payload) {
@@ -828,6 +864,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function setActionState(isPending) {
             actionPending = isPending;
             syncActionLocks();
+            renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
             renderAuthActionBanner(latestNextActionModel);
         }
 
@@ -1046,6 +1083,127 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (['starting', 'warming', 'pending', 'degraded', 'warning', 'warn'].includes(text)) return 'warn';
             if (['error', 'failed', 'offline', 'stopped'].includes(text)) return 'error';
             return 'info';
+        }
+
+        function getMonitorServicePayload(serviceName, status = latestRuntimeStatus, monitorPayload = latestServiceMonitorPayload) {
+            const name = String(serviceName || '').trim();
+            const monitorServices = monitorPayload?.service_monitor?.services && typeof monitorPayload.service_monitor.services === 'object'
+                ? monitorPayload.service_monitor.services
+                : {};
+            const topologyServices = status?.service_topology?.services && typeof status.service_topology.services === 'object'
+                ? status.service_topology.services
+                : {};
+            return {
+                ...(topologyServices[name] && typeof topologyServices[name] === 'object' ? topologyServices[name] : {}),
+                ...(monitorServices[name] && typeof monitorServices[name] === 'object' ? monitorServices[name] : {}),
+                service_name: name,
+            };
+        }
+
+        function getServiceActionState(serviceName) {
+            const key = String(serviceName || '').trim();
+            const actionState = latestServiceActionStates?.[key];
+            return actionState && typeof actionState === 'object' ? actionState : {};
+        }
+
+        function normalizeServiceCardStatus(serviceName, servicePayload, actionState) {
+            const systemdState = actionState?.service_state && typeof actionState.service_state === 'object'
+                ? actionState.service_state
+                : {};
+            const activeState = String(systemdState.active_state || '').trim().toLowerCase();
+            if (activeState) {
+                if (activeState === 'active') return 'running';
+                if (activeState === 'inactive') return 'offline';
+                if (activeState === 'failed') return 'failed';
+                return activeState;
+            }
+            const rawStatus = String(servicePayload?.status || '').trim().toLowerCase();
+            if (rawStatus === 'peer' || rawStatus === 'expected_remote' || rawStatus === 'embedded') return rawStatus;
+            if (serviceName === 'ibkr-runtime') {
+                const runtimeStatus = getEffectiveRuntimeStatusCardModel(latestRuntimeStatus, latestTwoFactorState);
+                if (runtimeStatus.started || latestRuntimeStatus?.starting || latestRuntimeStatus?.startup_complete) return 'running';
+                if (rawStatus) return rawStatus;
+            }
+            if (serviceName === 'ibkr-gateway') {
+                const runtimeStatus = getEffectiveRuntimeStatusCardModel(latestRuntimeStatus, latestTwoFactorState);
+                if (runtimeStatus.gatewayActive) return 'running';
+                if (rawStatus) return rawStatus;
+            }
+            return rawStatus || 'unknown';
+        }
+
+        function getServiceCardTone(statusText) {
+            const text = String(statusText || '').trim().toLowerCase();
+            if (['running', 'active', 'online', 'ok', 'ready'].includes(text)) return 'ok';
+            if (['peer', 'expected_remote', 'embedded', 'starting', 'activating', 'reloading'].includes(text)) return 'info';
+            if (['degraded', 'warning', 'warn', 'pending'].includes(text)) return 'warn';
+            if (['failed', 'offline', 'inactive', 'stopped', 'error'].includes(text)) return 'error';
+            return 'info';
+        }
+
+        function shouldShowServiceStopAction(statusText) {
+            const text = String(statusText || '').trim().toLowerCase();
+            return ['running', 'active', 'online', 'ok', 'ready', 'starting', 'activating', 'reloading'].includes(text);
+        }
+
+        function formatServicePid(servicePayload, actionState) {
+            const systemdState = actionState?.service_state && typeof actionState.service_state === 'object'
+                ? actionState.service_state
+                : {};
+            const pid = Number(systemdState.main_pid || servicePayload?.pid || 0) || 0;
+            return pid > 0 ? String(pid) : '--';
+        }
+
+        function formatServiceDetail(moduleDef, servicePayload, actionState) {
+            const systemdState = actionState?.service_state && typeof actionState.service_state === 'object'
+                ? actionState.service_state
+                : {};
+            const actionLabel = actionState?.action
+                ? `${String(actionState.action).toUpperCase()} ${actionState.ok === false ? 'FAILED' : 'REQUESTED'}`
+                : '';
+            const systemdLabel = systemdState.active_state
+                ? `systemd ${systemdState.active_state}/${systemdState.sub_state || '--'}`
+                : '';
+            const detail = String(servicePayload?.detail || servicePayload?.responsibility || moduleDef.copy || '').trim();
+            return [actionLabel, systemdLabel, detail].filter(Boolean).join(' · ') || '--';
+        }
+
+        function renderServiceControlPanel(status = latestRuntimeStatus, monitorPayload = latestServiceMonitorPayload) {
+            const el = document.getElementById('serviceControlGrid');
+            if (!el) return;
+            el.innerHTML = SERVICE_CONTROL_MODULES.map((moduleDef) => {
+                const servicePayload = getMonitorServicePayload(moduleDef.service, status, monitorPayload);
+                const actionState = getServiceActionState(moduleDef.service);
+                const statusText = normalizeServiceCardStatus(moduleDef.service, servicePayload, actionState);
+                const tone = getServiceCardTone(statusText);
+                const pid = formatServicePid(servicePayload, actionState);
+                const owner = String(servicePayload?.owner || servicePayload?.managed_by || '--').trim() || '--';
+                const detail = formatServiceDetail(moduleDef, servicePayload, actionState);
+                const restartLabel = moduleDef.highRiskRestart ? '输入服务名后重启' : '重启服务';
+                const primaryAction = shouldShowServiceStopAction(statusText) ? 'stop' : 'start';
+                const primaryLabel = primaryAction === 'stop' ? '停止服务' : '启动服务';
+                return `
+                    <div class="service-control-card ${escapeHtml(tone)}">
+                        <div class="service-control-card-head">
+                            <div>
+                                <div class="service-control-kicker">${escapeHtml(moduleDef.kicker)}</div>
+                                <div class="service-control-title">${escapeHtml(moduleDef.title)}</div>
+                            </div>
+                            <span class="pill ${statusClass(statusText)}">${escapeHtml(String(statusText || 'unknown').toUpperCase())}</span>
+                        </div>
+                        <div class="service-control-detail">${escapeHtml(detail)}</div>
+                        <div class="service-control-meta">
+                            <span class="mini-tag"><span class="mini-label">UNIT</span>${escapeHtml(moduleDef.service)}</span>
+                            <span class="mini-tag"><span class="mini-label">PID</span>${escapeHtml(pid)}</span>
+                            <span class="mini-tag"><span class="mini-label">OWNER</span>${escapeHtml(owner)}</span>
+                        </div>
+                        <div class="service-control-actions">
+                            <button class="service-action-btn ${primaryAction === 'stop' ? 'stop' : ''}" type="button" data-service-action="${escapeHtml(moduleDef.service)}:${escapeHtml(primaryAction)}" onclick="handleServiceAction('${escapeHtml(moduleDef.service)}', '${escapeHtml(primaryAction)}')" ${actionPending ? 'disabled' : ''}>${escapeHtml(primaryLabel)}</button>
+                            <button class="service-action-btn restart" type="button" data-service-action="${escapeHtml(moduleDef.service)}:restart" onclick="handleServiceAction('${escapeHtml(moduleDef.service)}', 'restart')" ${actionPending ? 'disabled' : ''}>${escapeHtml(restartLabel)}</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
         }
 
         function renderServiceTopology(status = {}) {
@@ -1861,10 +2019,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
             try {
                 const envFilter = buildEnvironmentFilter();
-                const [health, status, summary, cronResp, twoFactorResp, startupResp, runtimeConfigResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
+                const [health, status, summary, monitorResp, cronResp, twoFactorResp, startupResp, runtimeConfigResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     requestIbkrEnvironmentJson('/api/custom/ibkr/healthz', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?lite=1', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/system/summaryz?lite=1', currentEnvironment, { retryAttempts: 3 }),
+                    withTimeout(
+                        requestIbkrEnvironmentJson('/api/custom/system/monitorz', currentEnvironment, { retryAttempts: 2 }),
+                        9000,
+                        'system/monitorz'
+                    ).catch(() => ({ service_monitor: { services: {} } })),
                     requestIbkrEnvironmentJson('/api/custom/system/cronz', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ items: [] })),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/2fa/status', currentEnvironment, { retryAttempts: 3 }),
                     requestIbkrEnvironmentJson('/api/custom/ibkr/startup/status', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ state: {} })),
@@ -1883,7 +2046,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     }
                 };
                 latestRuntimeStatus = status || {};
+                latestServiceMonitorPayload = monitorResp || {};
                 const twoFactorState = twoFactorResp?.state || {};
+                latestTwoFactorState = deriveTwoFactorUiState(twoFactorState);
                 const startupState = startupResp?.state || {};
                 latestStartupState = normalizeStartupUiState(startupState);
                 const signalItems = toArray(signalsResp);
@@ -1898,6 +2063,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
                     renderConfigDetail(resolvedSummary, runtimeConfig, cronResp || {});
                     renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
+                    renderServiceControlPanel(status, latestServiceMonitorPayload);
                     renderIndicatorsTable(indicatorItems);
                 };
 
@@ -2166,6 +2332,113 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
         }
 
+        function getServiceModuleDef(serviceName) {
+            const service = String(serviceName || '').trim();
+            return SERVICE_CONTROL_MODULES.find((item) => item.service === service) || null;
+        }
+
+        function getServiceActionLabel(action) {
+            const normalized = String(action || '').trim().toLowerCase();
+            if (normalized === 'restart') return '重启';
+            if (normalized === 'stop') return '停止';
+            return '启动';
+        }
+
+        function confirmServiceAction(serviceName, action) {
+            const moduleDef = getServiceModuleDef(serviceName);
+            if (!moduleDef) return false;
+            const service = moduleDef.service;
+            const normalizedAction = String(action || '').trim().toLowerCase();
+            const label = getServiceActionLabel(normalizedAction);
+            const highRiskAction = moduleDef.highRiskRestart && ['restart', 'stop'].includes(normalizedAction);
+            if (highRiskAction) {
+                const answer = window.prompt(`确认${label} ${service}？请输入服务名：${service}`);
+                return String(answer || '').trim() === service;
+            }
+            return window.confirm(`确认${label} ${service}？`);
+        }
+
+        function summarizeServiceAction(payload) {
+            const service = String(payload?.service || '').trim() || 'service';
+            const action = String(payload?.action || '').trim() || 'action';
+            const actionLabel = getServiceActionLabel(action);
+            const state = payload?.service_state || {};
+            const activeState = String(state?.active_state || '').trim();
+            const subState = String(state?.sub_state || '').trim();
+            const pid = Number(state?.main_pid || 0) || 0;
+            const stateText = activeState ? `${activeState}${subState ? `/${subState}` : ''}${pid ? ` · pid ${pid}` : ''}` : '';
+            if (payload?.ok === false) {
+                const error = payload?.command?.stderr || payload?.error || payload?.message || 'failed';
+                return `${service} ${actionLabel}失败：${error}`;
+            }
+            return `${service} ${actionLabel}已请求${stateText ? ` · ${stateText}` : ''}`;
+        }
+
+        async function handleServiceAction(serviceName, action) {
+            if (actionPending) return;
+            const moduleDef = getServiceModuleDef(serviceName);
+            const normalizedAction = String(action || '').trim().toLowerCase();
+            if (!moduleDef || !['start', 'stop', 'restart'].includes(normalizedAction)) {
+                const message = '不支持的服务动作。';
+                document.getElementById('lastAction').textContent = `最近动作：${message}`;
+                showToast(message);
+                return;
+            }
+            const runtimeMismatch = getRuntimeEnvironmentMismatch();
+            if (runtimeMismatch && ['ibkr-runtime', 'ibkr-gateway'].includes(moduleDef.service)) {
+                document.getElementById('lastAction').textContent = runtimeMismatch.message;
+                setAuthActionFeedback(runtimeMismatch.message, 'error');
+                showToast(runtimeMismatch.message);
+                return;
+            }
+            if (!confirmServiceAction(moduleDef.service, normalizedAction)) return;
+            if (!ensureIbkrPageAuth()) return;
+
+            setActionState(true);
+            const pendingMessage = `执行中：${moduleDef.service} ${normalizedAction} ...`;
+            document.getElementById('lastAction').textContent = pendingMessage;
+            setAuthActionFeedback(pendingMessage, 'info');
+            try {
+                const payload = await requestIbkrEnvironmentJson('/api/custom/ibkr/services/action', currentEnvironment, {
+                    method: 'POST',
+                    body: {
+                        environment: currentEnvironment,
+                        service: moduleDef.service,
+                        action: normalizedAction,
+                        source: 'runtime_page'
+                    },
+                    retryAttempts: 1
+                });
+                latestServiceActionStates = {
+                    ...latestServiceActionStates,
+                    [moduleDef.service]: payload
+                };
+                const message = summarizeServiceAction(payload);
+                document.getElementById('lastAction').textContent = `最近动作：${message}`;
+                setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
+                showToast(message);
+                renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
+                await loadRuntimeData(false);
+            } catch (error) {
+                const message = `服务动作失败：${moduleDef.service} ${normalizedAction} · ${error.message || error}`;
+                latestServiceActionStates = {
+                    ...latestServiceActionStates,
+                    [moduleDef.service]: {
+                        ok: false,
+                        service: moduleDef.service,
+                        action: normalizedAction,
+                        message
+                    }
+                };
+                document.getElementById('lastAction').textContent = message;
+                setAuthActionFeedback(message, 'error');
+                renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
+                showToast(message);
+            } finally {
+                setActionState(false);
+            }
+        }
+
         async function runAuthActionFromModel(model, { secondary = false } = {}) {
             if (!model || model.visible !== true || actionPending) return;
 
@@ -2260,6 +2533,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         window.handleRuntimeAction = handleRuntimeAction;
+        window.handleServiceAction = handleServiceAction;
         window.runPrimaryAuthAction = runPrimaryAuthAction;
         window.runSecondaryAuthAction = runSecondaryAuthAction;
         window.submitTwoFactorResponse = submitTwoFactorResponse;

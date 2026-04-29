@@ -267,8 +267,12 @@
         .runtime-control-primary::before {
             background: rgba(72, 187, 120, 0.68);
         }
+        .runtime-control-services::before {
+            background: rgba(246, 173, 85, 0.72);
+        }
         .runtime-control-auth::before,
-        .runtime-control-gateway::before {
+        .runtime-control-gateway::before,
+        .runtime-control-data::before {
             background: rgba(99, 179, 237, 0.66);
         }
         .runtime-control-danger {
@@ -369,6 +373,100 @@
         .action-primary { border-color: rgba(72, 187, 120, 0.22); }
         .action-danger { border-color: rgba(252, 129, 129, 0.24); }
         .action-accent { border-color: rgba(99, 179, 237, 0.24); }
+
+        .service-control-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 10px;
+        }
+        .service-control-card {
+            position: relative;
+            display: grid;
+            gap: 11px;
+            min-width: 0;
+            padding: 14px;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: linear-gradient(160deg, rgba(8, 14, 24, 0.82), rgba(14, 20, 32, 0.70));
+        }
+        .service-control-card.ok {
+            border-color: rgba(72, 187, 120, 0.22);
+        }
+        .service-control-card.warn {
+            border-color: rgba(246, 173, 85, 0.24);
+        }
+        .service-control-card.error {
+            border-color: rgba(252, 129, 129, 0.28);
+            background: linear-gradient(160deg, rgba(46, 14, 20, 0.50), rgba(14, 20, 32, 0.70));
+        }
+        .service-control-card.info {
+            border-color: rgba(99, 179, 237, 0.18);
+        }
+        .service-control-card-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            align-items: flex-start;
+            min-width: 0;
+        }
+        .service-control-kicker {
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .service-control-title {
+            font-size: 14px;
+            line-height: 1.25;
+            font-weight: 700;
+        }
+        .service-control-detail {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.55;
+            min-height: 34px;
+        }
+        .service-control-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 7px;
+        }
+        .service-control-actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .service-action-btn {
+            min-height: 38px;
+            border: 1px solid rgba(72, 187, 120, 0.24);
+            border-radius: 12px;
+            background: linear-gradient(180deg, rgba(72, 187, 120, 0.16), rgba(255,255,255,0.035));
+            color: var(--text);
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+        }
+        .service-action-btn.restart {
+            border-color: rgba(246, 173, 85, 0.28);
+            background: linear-gradient(180deg, rgba(246, 173, 85, 0.14), rgba(255,255,255,0.035));
+        }
+        .service-action-btn.stop {
+            border-color: rgba(252, 129, 129, 0.30);
+            background: linear-gradient(180deg, rgba(252, 129, 129, 0.14), rgba(255,255,255,0.035));
+        }
+        .service-action-btn:hover {
+            transform: translateY(-1px);
+            border-color: rgba(99, 179, 237, 0.38);
+            background: linear-gradient(180deg, rgba(99, 179, 237, 0.16), rgba(255,255,255,0.04));
+        }
+        .service-action-btn:disabled {
+            cursor: wait;
+            opacity: 0.62;
+            transform: none;
+        }
 
         .last-action {
             margin-top: 14px;
@@ -1184,12 +1282,18 @@
             .runtime-link-grid {
                 grid-template-columns: 1fr;
             }
+            .service-control-actions {
+                grid-template-columns: 1fr;
+            }
         }
 
         @media (min-width: 1120px) {
             .runtime-control-panel {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
                 align-items: start;
+            }
+            .runtime-control-services {
+                grid-column: 1 / -1;
             }
             .runtime-control-danger {
                 grid-column: 1 / -1;

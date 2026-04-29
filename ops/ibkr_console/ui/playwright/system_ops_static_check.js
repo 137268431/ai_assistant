@@ -99,6 +99,10 @@ const runtimeHtml = readStatic('ibkr_runtime.html');
 const runtimeJs = readStatic('assets/js/pages/ibkr_runtime/page.js');
 assert(runtimeHtml.includes('操作前链路摘要'), 'runtime_missing_link_summary_title');
 assert(runtimeJs.includes('runtime-link-action') && runtimeJs.includes('/ibkr_monitor.html'), 'runtime_summary_missing_monitor_link');
+assert(runtimeHtml.includes('核心模块控制') && runtimeHtml.includes('id="serviceControlGrid"'), 'runtime_missing_service_control_panel');
+assert(runtimeJs.includes('/api/custom/ibkr/services/action'), 'runtime_missing_service_action_api');
+assert(includesAll(runtimeJs, ['ibkr-runtime', 'ibkr-gateway', 'ibkr-compute', 'ibkr-scheduler']), 'runtime_service_control_missing_core_services');
+assert(includesAll(runtimeJs, ['shouldShowServiceStopAction', '停止服务', "'stop'"]), 'runtime_service_control_missing_stop_action');
 
 const monitorHtml = readStatic('ibkr_monitor.html');
 assert(monitorHtml.includes('ops-route-panel'), 'monitor_missing_ops_route_panel');
@@ -124,4 +128,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 25, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 29, staticRoot }, null, 2));
