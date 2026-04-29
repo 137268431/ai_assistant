@@ -571,6 +571,10 @@ function renderServiceTopology(topologyPayload = {}) {
         : {};
     const services = Object.values(topology);
     const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
+    const screenerHref = buildPageUrl('/ibkr_screener.html', {
+        tab: 'screener',
+        view: 'current',
+    }, { environment: currentEnvironment });
     if (!services.length) {
         el.innerHTML = `
             <div class="ops-summary-shell tone-neutral">
@@ -583,7 +587,10 @@ function renderServiceTopology(topologyPayload = {}) {
                             <div class="ops-summary-copy">总览页只保留入口和健康摘要；请求、订阅、主机和 PB 明细请在运维页排查。</div>
                         </div>
                     </div>
-                    <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                    <div class="ops-summary-actions">
+                        <a class="ops-summary-link is-primary" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
+                        <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                    </div>
                 </div>
                 <div class="ops-summary-empty">
                     <div class="ops-summary-label">Snapshot</div>
@@ -653,7 +660,10 @@ function renderServiceTopology(topologyPayload = {}) {
                         <div class="ops-summary-copy">总览页只看健康摘要；请求、订阅、主机、PB 磁盘与完整 split-stack 详情统一在运维大盘。</div>
                     </div>
                 </div>
-                <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                <div class="ops-summary-actions">
+                    <a class="ops-summary-link is-primary" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
+                    <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                </div>
             </div>
             <div class="ops-summary-grid">
                 ${cards.map((card) => `

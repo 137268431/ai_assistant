@@ -221,6 +221,25 @@ def derive_monitor_service_map(
         status = str(preload.get("status") or "").strip().lower()
         return bool(preload.get("running")) or status in {"running", "scheduled"}
 
+    def _scheduler_compute_preload_deferred() -> bool:
+        jobs = scheduler_summary.get("jobs") if isinstance(scheduler_summary.get("jobs"), dict) else {}
+        compute_job = jobs.get("ibkr_compute_runtime") if isinstance(jobs.get("ibkr_compute_runtime"), dict) else {}
+        last_result = compute_job.get("last_result") if isinstance(compute_job.get("last_result"), dict) else {}
+        result_payloads = [last_result]
+        nested_payload = last_result.get("payload") if isinstance(last_result.get("payload"), dict) else {}
+        if nested_payload:
+            result_payloads.append(nested_payload)
+
+        for payload in result_payloads:
+            reason = str(payload.get("reason") or "").strip().lower()
+            if reason == "compute_startup_preload_running":
+                return True
+            preload = payload.get("compute_startup_preload") if isinstance(payload.get("compute_startup_preload"), dict) else {}
+            status = str(preload.get("status") or "").strip().lower()
+            if bool(preload.get("running")) or status in {"running", "scheduled"}:
+                return True
+        return False
+
     observed_at = utc_timestamp()
     console_meta = _topology_meta("ibkr-console")
     console_running = bool(console_probe.get("ok"))
@@ -260,7 +279,7 @@ def derive_monitor_service_map(
 
     gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
     scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "offline"
-    compute_preload_active = _compute_startup_preload_active()
+    compute_preload_active = _compute_startup_preload_active() or _scheduler_compute_preload_deferred()
     if scheduler_status == "running" and float(scheduler_summary.get("dispatch_lag_min") or 0) >= 10 and not compute_preload_active:
         scheduler_status = "degraded"
 

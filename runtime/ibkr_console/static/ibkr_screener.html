@@ -8,7 +8,7 @@
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260429-manual-scan">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260430-manual-scan-entry">
 </head>
 <body>
   <div id="nav"></div>
@@ -28,6 +28,9 @@
           <div class="meta-line" id="marketDateMeta">等待加载...</div>
           <div class="meta-line" id="refreshInfo">数据未刷新</div>
           <div class="meta-line" id="selectionInfo">未选择标的</div>
+          <div class="hero-action-row">
+            <button id="heroRerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()" hidden>补跑今日日筛</button>
+          </div>
         </div>
       </div>
       <div class="summary-grid" id="summaryGrid"></div>
@@ -152,7 +155,7 @@
             <div class="table-header">
               <div class="leaderboard-meta" id="currentTargetsMeta">等待加载...</div>
               <div class="row-actions">
-                <button id="rerunDailyScanBtn" class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">补跑今日日筛</button>
+                <button id="rerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">补跑今日日筛</button>
                 <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的工作台</a>
                 <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
               </div>
@@ -580,6 +583,6 @@
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260429-manual-scan"></script>
+  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260430-manual-scan-entry"></script>
 </body>
 </html>

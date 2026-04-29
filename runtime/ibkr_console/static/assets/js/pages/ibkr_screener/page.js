@@ -220,15 +220,19 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     }
 
     function syncManualDailyScanButton() {
-      const button = document.getElementById('rerunDailyScanBtn');
-      if (!button) return;
+      const buttons = Array.from(document.querySelectorAll('[data-manual-daily-scan-btn]'));
+      if (!buttons.length) return;
       const selectedDate = String(getSelectedMarketDate() || '').trim();
       const isToday = isSelectedDateToday();
-      button.disabled = manualDailyScanState.running || !isToday;
-      button.textContent = manualDailyScanState.running ? '补跑中...' : '补跑今日日筛';
-      button.title = isToday
-        ? '手动补跑一次 09:20 ET 日筛，刷新今日 candidate / active。'
-        : `只支持当前美东日期 ${getUsDate()}，当前选择 ${selectedDate || '--'}。`;
+      const shouldShowHeroButton = activeTab === 'screener' && activeScreenerView === 'current';
+      buttons.forEach((button) => {
+        if (button.id === 'heroRerunDailyScanBtn') button.hidden = !shouldShowHeroButton;
+        button.disabled = manualDailyScanState.running || !isToday;
+        button.textContent = manualDailyScanState.running ? '补跑中...' : '补跑今日日筛';
+        button.title = isToday
+          ? '手动补跑一次 09:20 ET 日筛，刷新今日 candidate / active。'
+          : `只支持当前美东日期 ${getUsDate()}，当前选择 ${selectedDate || '--'}。`;
+      });
     }
 
     function getScreenerLoadKey(marketDate = getSelectedMarketDate()) {
@@ -674,6 +678,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     }
 
     function updateHero() {
+      syncManualDailyScanButton();
       if (isWatchlistRoleTab()) {
         const visible = getFilteredWatchlistItems().length;
         const roleLabel = getWatchlistRoleLabel();

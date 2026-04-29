@@ -334,34 +334,50 @@
         }
 
         .market-overview-section {
+            min-height: 0;
             border-color: rgba(79, 209, 197, 0.16);
             background:
                 radial-gradient(circle at 8% 0%, rgba(79, 209, 197, 0.12), transparent 30%),
                 linear-gradient(180deg, rgba(14, 22, 34, 0.98), rgba(9, 15, 24, 0.98));
         }
+        .market-overview-section > .section-body {
+            flex: 0 0 auto;
+        }
+        .market-overview-section .metric-card {
+            padding: 10px 12px;
+            border-radius: 13px;
+            gap: 6px;
+        }
+        .market-overview-section .metric-value {
+            font-size: 18px;
+        }
+        .market-overview-section .metric-copy,
+        .market-overview-section .metric-label {
+            font-size: 10px;
+        }
         .market-overview-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-            gap: 12px;
-            margin-bottom: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
         }
         .market-monitor-cards {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 10px;
         }
         .market-card {
             position: relative;
             overflow: hidden;
-            border-radius: 18px;
+            border-radius: 14px;
             border: 1px solid rgba(255,255,255,0.08);
             background:
                 radial-gradient(circle at top right, rgba(99, 179, 237, 0.10), transparent 38%),
                 linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
-            padding: 14px;
+            padding: 10px 12px;
             display: grid;
-            gap: 12px;
-            min-height: 190px;
+            gap: 8px;
+            min-height: 0;
         }
         .market-card::before {
             content: '';
@@ -394,13 +410,13 @@
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            gap: 12px;
+            gap: 8px;
             min-width: 0;
         }
         .market-symbol {
             color: var(--text);
             text-decoration: none;
-            font-size: 22px;
+            font-size: 18px;
             line-height: 1.05;
             font-weight: 800;
             letter-spacing: 0.2px;
@@ -409,17 +425,17 @@
             color: var(--accent);
         }
         .market-subtitle {
-            margin-top: 5px;
+            margin-top: 4px;
             color: var(--muted);
-            font-size: 10px;
+            font-size: 9px;
         }
         .market-trend {
-            padding: 5px 9px;
+            padding: 4px 7px;
             border-radius: 999px;
             border: 1px solid rgba(255,255,255,0.08);
             background: rgba(255,255,255,0.05);
             color: var(--muted);
-            font-size: 10px;
+            font-size: 9px;
             font-weight: 800;
             font-family: 'JetBrains Mono', monospace;
         }
@@ -437,13 +453,13 @@
             color: #F6AD55;
         }
         .market-price {
-            font-size: 26px;
+            font-size: 22px;
             line-height: 1;
             font-weight: 800;
             font-family: 'JetBrains Mono', monospace;
         }
         .market-change {
-            font-size: 15px;
+            font-size: 13px;
             line-height: 1.2;
             font-weight: 800;
             font-family: 'JetBrains Mono', monospace;
@@ -452,33 +468,33 @@
         .market-freshness-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px;
+            gap: 6px;
         }
         .market-freshness-grid > div {
             min-width: 0;
-            padding: 9px;
-            border-radius: 12px;
+            padding: 7px;
+            border-radius: 10px;
             border: 1px solid rgba(255,255,255,0.06);
             background: rgba(255,255,255,0.035);
         }
         .market-freshness-grid span {
             display: block;
-            margin-bottom: 4px;
+            margin-bottom: 3px;
             color: var(--muted);
-            font-size: 10px;
+            font-size: 9px;
             font-family: 'JetBrains Mono', monospace;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
         .market-freshness-grid strong {
-            font-size: 13px;
+            font-size: 12px;
             line-height: 1.2;
             font-family: 'JetBrains Mono', monospace;
         }
         .market-card-foot {
             align-items: center;
             color: var(--muted);
-            font-size: 11px;
+            font-size: 10px;
             line-height: 1.5;
         }
         .inline-link,

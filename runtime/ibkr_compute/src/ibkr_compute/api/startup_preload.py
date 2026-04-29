@@ -32,6 +32,7 @@ def _new_startup_preload_state() -> dict:
         "service_profile": "",
         "runtime_mode": "",
         "environments": [],
+        "intervals": [],
         "env_total": 0,
         "env_completed": 0,
         "symbol_total": 0,
@@ -106,17 +107,23 @@ def should_schedule_compute_startup_preload() -> bool:
 
 def resolve_compute_startup_preload_environments(api_app=None) -> list[str]:
     api_app = api_app or _api_app()
+    supported_order = [
+        str(environment or "").strip().lower()
+        for environment in (api_app.SUPPORTED_COMPUTE_ENVIRONMENTS or [])
+        if str(environment or "").strip()
+    ]
+    supported = set(supported_order)
     configured = str(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_ENVS", "") or "").strip()
     if configured:
         candidates = api_app.normalize_symbol_csv(configured)
+        if any(str(environment or "").strip().lower() in {"*", "all"} for environment in candidates):
+            candidates = supported_order
+    elif "live" in supported:
+        candidates = ["live"]
     else:
         candidates = [str(environment or "").strip().lower() for environment in (api_app.DEFAULT_COMPUTE_ENVIRONMENTS or [])]
 
     environments = []
-    supported = {
-        str(environment or "").strip().lower()
-        for environment in (api_app.SUPPORTED_COMPUTE_ENVIRONMENTS or [])
-    }
     for environment in candidates:
         normalized = str(environment or "").strip().lower()
         if not normalized or normalized not in supported or normalized in environments:
@@ -125,18 +132,49 @@ def resolve_compute_startup_preload_environments(api_app=None) -> list[str]:
     return environments
 
 
-def _collect_preload_interval_targets(api_app, environment: str) -> dict[str, dict[str, int]]:
+def _parse_preload_interval_csv(raw_value: str) -> list[str]:
+    return [
+        str(item or "").strip().lower()
+        for item in str(raw_value or "").replace(";", ",").split(",")
+        if str(item or "").strip()
+    ]
+
+
+def resolve_compute_startup_preload_intervals(api_app=None) -> list[str]:
+    api_app = api_app or _api_app()
+    supported_source = getattr(api_app, "INTERVALS", None) or ["5m"]
+    supported = [str(interval or "").strip().lower() for interval in supported_source if str(interval or "").strip()]
+    configured = str(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_INTERVALS", "") or "").strip()
+    candidates = _parse_preload_interval_csv(configured) if configured else ["5m"]
+    if any(item in {"*", "all"} for item in candidates):
+        candidates = supported
+
+    intervals = []
+    supported_set = set(supported)
+    for interval in candidates:
+        normalized = str(interval or "").strip().lower()
+        if not normalized or normalized not in supported_set or normalized in intervals:
+            continue
+        intervals.append(normalized)
+    return intervals
+
+
+def _collect_preload_interval_targets(api_app, environment: str, intervals: list[str] | tuple[str, ...] | set[str] | None = None) -> dict[str, dict[str, int]]:
     grouped: dict[str, dict[str, int]] = {}
+    interval_filter = {str(interval or "").strip().lower() for interval in (intervals or []) if str(interval or "").strip()}
     cursor_map = api_app.collect_environment_cursor_map(environment) or {}
     for raw_key, raw_value in cursor_map.items():
         symbol, interval = api_app.parse_compute_cursor_key(raw_key)
+        interval = str(interval or "").strip().lower()
         target_ms = int(raw_value or 0)
         if not symbol or not interval or target_ms <= 0:
+            continue
+        if interval_filter and interval not in interval_filter:
             continue
         grouped.setdefault(interval, {})[symbol] = target_ms
 
     ordered_groups = {}
-    for interval in list(api_app.INTERVALS or []):
+    for interval in list(getattr(api_app, "INTERVALS", None) or []):
         targets = grouped.pop(interval, {})
         if targets:
             ordered_groups[interval] = {
@@ -258,6 +296,8 @@ def get_compute_startup_preload_state(api_app=None) -> dict:
     snapshot["runtime_mode"] = get_runtime_mode()
     if not snapshot.get("environments"):
         snapshot["environments"] = resolve_compute_startup_preload_environments(api_app)
+    if not snapshot.get("intervals"):
+        snapshot["intervals"] = resolve_compute_startup_preload_intervals(api_app)
     snapshot["env_total"] = max(
         int(snapshot.get("env_total") or 0),
         len(snapshot.get("environments") or []),
@@ -303,6 +343,7 @@ def get_compute_startup_preload_state(api_app=None) -> dict:
 def run_compute_startup_preload(api_app=None) -> dict:
     api_app = api_app or _api_app()
     environments = resolve_compute_startup_preload_environments(api_app)
+    preload_intervals = resolve_compute_startup_preload_intervals(api_app)
     previous_state = _read_startup_preload_state(api_app)
     summary = {
         "ok": True,
@@ -314,6 +355,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
         "service_profile": get_service_profile(),
         "runtime_mode": get_runtime_mode(),
         "environments": environments,
+        "intervals": preload_intervals,
         "env_total": len(environments),
         "env_completed": 0,
         "symbol_total": 0,
@@ -328,17 +370,18 @@ def run_compute_startup_preload(api_app=None) -> dict:
     }
     _publish_startup_preload_state(api_app, summary)
 
-    if not environments:
+    if not environments or not preload_intervals:
         summary["status"] = "skipped"
         summary["running"] = False
         summary["finished_at"] = time.time()
-        summary["reason"] = "no_preload_environments"
+        summary["reason"] = "no_preload_environments" if not environments else "no_preload_intervals"
         _publish_startup_preload_state(api_app, summary)
         return summary
 
     LOGGER.info(
-        "Compute startup preload starting: envs=%s service_profile=%s runtime_mode=%s",
+        "Compute startup preload starting: envs=%s intervals=%s service_profile=%s runtime_mode=%s",
         ",".join(environments),
+        ",".join(preload_intervals),
         summary["service_profile"],
         summary["runtime_mode"],
     )
@@ -361,7 +404,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
     try:
         for environment in environments:
             cursor_applied = int(api_app.load_persisted_compute_cursors(environment) or 0)
-            interval_targets = _collect_preload_interval_targets(api_app, environment)
+            interval_targets = _collect_preload_interval_targets(api_app, environment, preload_intervals)
             cursor_count = len(api_app.collect_environment_cursor_map(environment) or {})
             env_result = {
                 "status": "running",
@@ -398,7 +441,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
                 symbol
                 for symbol in _resolve_preload_watchlist_symbols(api_app, environment)
                 if symbol not in set((interval_targets.get("5m") or {}).keys())
-            ]
+            ] if "5m" in preload_intervals else []
             if fallback_symbols:
                 # Fresh environments can have bars but no cursor state yet; warm 5m engines from storage first.
                 interval_state = env_result["intervals"].setdefault(
@@ -559,6 +602,7 @@ def schedule_compute_startup_preload() -> bool:
                 "service_profile": get_service_profile(),
                 "runtime_mode": get_runtime_mode(),
                 "environments": environments,
+                "intervals": resolve_compute_startup_preload_intervals(api_app),
                 "env_total": len(environments),
                 "env_completed": 0,
                 "symbol_total": 0,
@@ -585,6 +629,7 @@ __all__ = [
     "get_compute_startup_preload_state",
     "is_compute_startup_preload_enabled",
     "resolve_compute_startup_preload_environments",
+    "resolve_compute_startup_preload_intervals",
     "run_compute_startup_preload",
     "schedule_compute_startup_preload",
     "should_schedule_compute_startup_preload",

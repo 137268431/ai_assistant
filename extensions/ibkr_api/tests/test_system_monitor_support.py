@@ -62,6 +62,51 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(scheduler["status"], "running")
         self.assertIn("deferred by compute preload", scheduler["detail"])
 
+    def test_scheduler_lag_is_not_degraded_when_compute_job_deferred_by_preload(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 10,
+                    "ready_engines": 10,
+                },
+                "service_topology": {"services": {}},
+            },
+            {
+                "status": "running",
+                "dispatch_lag_min": 15.0,
+                "latest_ingested_bar_time_ms": 1713797100000,
+                "loop_interval_seconds": 30,
+                "job_count": 12,
+                "jobs": {
+                    "ibkr_compute_runtime": {
+                        "status": "idle",
+                        "last_result": {
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "compute_startup_preload_running",
+                        },
+                    }
+                },
+            },
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        scheduler = service_monitor["services"]["ibkr-scheduler"]
+        self.assertEqual(scheduler["status"], "running")
+        self.assertIn("deferred by compute preload", scheduler["detail"])
+
     def test_monitor_marks_compute_starting_when_root_preload_active(self):
         service_monitor = derive_monitor_service_map(
             "live",

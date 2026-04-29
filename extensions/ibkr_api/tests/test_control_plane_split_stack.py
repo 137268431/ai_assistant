@@ -1835,6 +1835,88 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["bar_lag_symbols"], [])
         self.assertFalse(events)
 
+    def test_data_gap_guard_ignores_non_target_bar_lag(self):
+        class FakeGapPB:
+            def __init__(self):
+                self.states = {}
+
+            def get_state(self, state_key, environment, date="global"):
+                return self.states.get((state_key, environment, date))
+
+            def upsert_state(self, state_key, environment, data, date="global"):
+                self.states[(state_key, environment, date)] = {"data": dict(data)}
+                return self.states[(state_key, environment, date)]
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                if collection == "watchlist":
+                    return [{"symbol": "AAPL"}, {"symbol": "MSFT"}, {"symbol": "GOOG"}]
+                if collection == "ibkr_targets":
+                    return [{"symbol": "AAPL", "status": "active"}, {"symbol": "MSFT", "status": "candidate"}]
+                if collection == "ibkr_bars":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5m",
+                            "bar_time_ms": 1713881100000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                        },
+                        {
+                            "environment": "live",
+                            "symbol": "MSFT",
+                            "interval": "5m",
+                            "bar_time_ms": 1713881100000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                        },
+                        {
+                            "environment": "live",
+                            "symbol": "GOOG",
+                            "interval": "5m",
+                            "bar_time_ms": 1713877500000,
+                            "us_time": "2026-04-23 08:45:00",
+                            "session_type": "regular",
+                        },
+                    ]
+                if collection == "ibkr_indicators":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5",
+                            "bar_time_ms": 1713881100000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                        },
+                        {
+                            "environment": "live",
+                            "symbol": "MSFT",
+                            "interval": "5",
+                            "bar_time_ms": 1713881100000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                        },
+                    ]
+                return []
+
+        events = []
+        payload, status_code = build_data_gap_guard_response(
+            FakeGapPB(),
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["summary"]["target_count"], 2)
+        self.assertEqual(payload["summary"]["alertable_symbol_count"], 2)
+        self.assertEqual(payload["summary"]["today_bar_symbol_count"], 3)
+        self.assertFalse(payload["summary"]["has_issue"])
+        self.assertEqual(payload["summary"]["bar_lag_symbols"], [])
+        self.assertFalse(events)
+
     def test_data_gap_guard_ignores_premarket_indicator_lag(self):
         class FakeGapPB:
             def __init__(self):

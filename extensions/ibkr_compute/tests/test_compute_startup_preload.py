@@ -57,6 +57,11 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             normalize_symbol_csv=lambda value: [item.strip().upper() for item in str(value).split(",") if item.strip()],
         )
 
+        with mock.patch.dict(os.environ, {}, clear=True):
+            environments = startup_preload.resolve_compute_startup_preload_environments(fake_app)
+
+        self.assertEqual(environments, ["live"])
+
         with mock.patch.dict(
             os.environ,
             {"IBKR_COMPUTE_STARTUP_PRELOAD_ENVS": "paper, live, paper,backtest"},
@@ -65,6 +70,30 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             environments = startup_preload.resolve_compute_startup_preload_environments(fake_app)
 
         self.assertEqual(environments, ["paper", "live", "backtest"])
+
+        with mock.patch.dict(os.environ, {"IBKR_COMPUTE_STARTUP_PRELOAD_ENVS": "all"}, clear=True):
+            environments = startup_preload.resolve_compute_startup_preload_environments(fake_app)
+
+        self.assertEqual(environments, ["live", "paper", "backtest"])
+
+    def test_resolve_preload_intervals_defaults_to_5m_and_allows_override(self):
+        fake_app = SimpleNamespace(INTERVALS=["5m", "15m", "30m", "1h", "4h", "1d"])
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(startup_preload.resolve_compute_startup_preload_intervals(fake_app), ["5m"])
+
+        with mock.patch.dict(
+            os.environ,
+            {"IBKR_COMPUTE_STARTUP_PRELOAD_INTERVALS": "1h, 5m, 1h,unknown"},
+            clear=True,
+        ):
+            self.assertEqual(startup_preload.resolve_compute_startup_preload_intervals(fake_app), ["1h", "5m"])
+
+        with mock.patch.dict(os.environ, {"IBKR_COMPUTE_STARTUP_PRELOAD_INTERVALS": "all"}, clear=True):
+            self.assertEqual(
+                startup_preload.resolve_compute_startup_preload_intervals(fake_app),
+                ["5m", "15m", "30m", "1h", "4h", "1d"],
+            )
 
     def test_run_preload_loads_cursors_and_materializes_by_interval(self):
         call_log = []
@@ -140,28 +169,30 @@ class ComputeStartupPreloadTest(unittest.TestCase):
                 "IBKR_RUNTIME_MODE": "remote",
                 "IBKR_COMPUTE_STARTUP_PRELOAD_ENVS": "live,paper",
             },
-            clear=False,
+            clear=True,
         ):
             result = startup_preload.run_compute_startup_preload(fake_app)
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["env_completed"], 2)
-        self.assertEqual(result["symbol_total"], 4)
-        self.assertEqual(result["symbol_completed"], 4)
-        self.assertEqual(result["ready_count"], 4)
+        self.assertEqual(result["intervals"], ["5m"])
+        self.assertEqual(result["symbol_total"], 3)
+        self.assertEqual(result["symbol_completed"], 3)
+        self.assertEqual(result["ready_count"], 3)
         self.assertEqual(result["indicator_seeded"], 0)
         self.assertEqual(result["environments"], ["live", "paper"])
         self.assertEqual(result["results"]["live"]["cursor_applied"], 3)
         self.assertEqual(result["results"]["live"]["cursor_count"], 3)
         self.assertEqual(result["results"]["live"]["status"], "completed")
-        self.assertEqual(result["results"]["live"]["symbol_total"], 3)
-        self.assertEqual(result["results"]["live"]["symbol_completed"], 3)
+        self.assertEqual(result["results"]["live"]["interval_total"], 1)
+        self.assertEqual(result["results"]["live"]["symbol_total"], 2)
+        self.assertEqual(result["results"]["live"]["symbol_completed"], 2)
         self.assertEqual(result["results"]["live"]["indicator_seeded"], 0)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_count"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_completed"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 0)
-        self.assertEqual(result["results"]["live"]["intervals"]["1h"]["symbol_count"], 1)
+        self.assertNotIn("1h", result["results"]["live"]["intervals"])
         self.assertEqual(result["results"]["paper"]["indicator_seeded"], 0)
         self.assertEqual(result["results"]["paper"]["intervals"]["5m"]["ready_count"], 1)
         self.assertIn(("cfg_refresh",), call_log)
@@ -169,21 +200,71 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertIn(("daily_close", ("live", "paper"), True), call_log)
         self.assertIn(("materialize", "live", ("AAPL",), "5m", True, False), call_log)
         self.assertIn(("materialize", "live", ("MSFT",), "5m", True, False), call_log)
-        self.assertIn(("materialize", "live", ("AAPL",), "1h", True, False), call_log)
+        self.assertNotIn(("materialize", "live", ("AAPL",), "1h", True, False), call_log)
         self.assertIn(("materialize", "paper", ("TSLA",), "5m", True, False), call_log)
 
         state = startup_preload.get_compute_startup_preload_state(fake_app)
         self.assertEqual(state["status"], "completed")
         self.assertEqual(state["env_total"], 2)
         self.assertEqual(state["env_completed"], 2)
-        self.assertEqual(state["symbol_total"], 4)
-        self.assertEqual(state["symbol_completed"], 4)
-        self.assertEqual(state["ready_count"], 4)
+        self.assertEqual(state["intervals"], ["5m"])
+        self.assertEqual(state["symbol_total"], 3)
+        self.assertEqual(state["symbol_completed"], 3)
+        self.assertEqual(state["ready_count"], 3)
         self.assertEqual(state["indicator_seeded"], 0)
         self.assertEqual(state["results"]["live"]["intervals"]["5m"]["ready_count"], 2)
         self.assertEqual(state["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 0)
         self.assertIsNotNone(state["started_at"])
         self.assertIsNotNone(state["finished_at"])
+
+    def test_run_preload_can_include_configured_higher_intervals(self):
+        call_log = []
+        cursor_maps = {
+            "live": {
+                "AAPL|5m": 100,
+                "AAPL|1h": 90,
+                "MSFT|15m": 80,
+            },
+        }
+
+        fake_app = SimpleNamespace(
+            cfg=SimpleNamespace(refresh=lambda: None),
+            refresh_symbol_metadata=lambda force=False: None,
+            refresh_daily_close_cache=lambda environments, force=False: None,
+            load_persisted_compute_cursors=lambda environment: len(cursor_maps.get(environment, {})),
+            collect_environment_cursor_map=lambda environment: dict(cursor_maps.get(environment, {})),
+            parse_compute_cursor_key=lambda raw_key: tuple(str(raw_key).split("|", 1)),
+            bootstrap_engine_state=lambda *args, **kwargs: 0,
+            materialize_engines_from_storage=lambda environment, symbols, interval, hydrate_signal_state=True, persist_latest_indicator=False: (
+                call_log.append(("materialize", environment, tuple(symbols), interval, hydrate_signal_state, persist_latest_indicator))
+                or {symbol: {"is_ready": True, "indicator_seeded": persist_latest_indicator} for symbol in symbols}
+            ),
+            pb=SimpleNamespace(get_all_records=lambda *args, **kwargs: []),
+            engines={},
+            DEFAULT_COMPUTE_ENVIRONMENTS=["live"],
+            SUPPORTED_COMPUTE_ENVIRONMENTS=["live", "paper", "backtest"],
+            INTERVALS=["5m", "15m", "30m", "1h", "4h", "1d"],
+            normalize_symbol_csv=lambda value: [item.strip().upper() for item in str(value).split(",") if item.strip()],
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "IBKR_SERVICE_PROFILE": "compute",
+                "IBKR_RUNTIME_MODE": "remote",
+                "IBKR_COMPUTE_STARTUP_PRELOAD_ENVS": "live",
+                "IBKR_COMPUTE_STARTUP_PRELOAD_INTERVALS": "5m,1h",
+            },
+            clear=True,
+        ):
+            result = startup_preload.run_compute_startup_preload(fake_app)
+
+        self.assertEqual(result["intervals"], ["5m", "1h"])
+        self.assertEqual(result["symbol_total"], 2)
+        self.assertEqual(result["results"]["live"]["interval_total"], 2)
+        self.assertIn(("materialize", "live", ("AAPL",), "5m", True, False), call_log)
+        self.assertIn(("materialize", "live", ("AAPL",), "1h", True, False), call_log)
+        self.assertNotIn(("materialize", "live", ("MSFT",), "15m", True, False), call_log)
 
     def test_get_preload_state_reports_disabled_when_schedule_guard_blocks(self):
         fake_app = SimpleNamespace(
@@ -272,7 +353,7 @@ class ComputeStartupPreloadTest(unittest.TestCase):
                 "IBKR_RUNTIME_MODE": "remote",
                 "IBKR_COMPUTE_STARTUP_PRELOAD_ENVS": "live",
             },
-            clear=False,
+            clear=True,
         ):
             result = startup_preload.run_compute_startup_preload(fake_app)
 

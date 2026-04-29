@@ -132,11 +132,11 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
     latest_bar_by_symbol = _as_dict(bars.get("latest_by_symbol"))
     latest_indicator_by_symbol = _as_dict(indicators.get("latest_by_symbol"))
     monitored_symbols = target_symbols or list(latest_bar_by_symbol.keys())
-    symbols = _alertable_symbols(list(monitored_symbols) + list(latest_bar_by_symbol.keys()))
+    symbols = _alertable_symbols(list(monitored_symbols))
     excluded_symbols = _unique_sorted(
         [
             symbol
-            for symbol in list(monitored_symbols) + list(latest_bar_by_symbol.keys())
+            for symbol in list(monitored_symbols)
             if _to_text(symbol).upper() in GAP_ALERT_EXCLUDED_SYMBOLS
         ]
     )

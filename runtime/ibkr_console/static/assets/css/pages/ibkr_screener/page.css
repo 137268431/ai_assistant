@@ -90,6 +90,13 @@
       justify-items: end;
     }
 
+    .hero-action-row {
+      display: flex;
+      justify-content: flex-end;
+      width: 100%;
+      margin-top: 2px;
+    }
+
     .meta-line {
       color: var(--screen-muted);
       font-size: 12px;
@@ -1218,6 +1225,10 @@
 
       .hero-meta {
         justify-items: start;
+      }
+
+      .hero-action-row {
+        justify-content: flex-start;
       }
 
       .meta-line {
