@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css?v=20260429-console-cohesion">
 </head>
 <body>
     <div id="nav"></div>
@@ -36,14 +36,14 @@
             <div class="ops-route-head">
                 <div>
                     <div class="ops-route-kicker">Ops Runbook</div>
-                    <div class="ops-route-title">先在监控大盘定故障域，再进入专项页处理</div>
+                    <div class="ops-route-title">先定故障域，再进专项页</div>
                 </div>
-                <div class="ops-route-copy">预热看启动 readiness，数据质量看 bars/rollup 修复，历史重建只做大范围恢复。</div>
+                <div class="ops-route-copy">监控大盘看全局；预热只看启动 readiness；数据质量处理 bars / rollup；历史重建只作为最后恢复。</div>
             </div>
             <div class="ops-route-grid">
                 <a id="opsRouteMonitorLink" class="ops-route-card is-active" href="/ibkr_monitor.html">
                     <div class="ops-route-card-top">
-                        <span class="ops-route-icon">📊</span>
+                        <span class="ops-route-icon">01</span>
                         <span class="ops-route-tag">默认入口</span>
                     </div>
                     <div class="ops-route-name">监控大盘</div>
@@ -51,7 +51,7 @@
                 </a>
                 <a id="opsRouteWarmupLink" class="ops-route-card" href="/ibkr_warmup.html">
                     <div class="ops-route-card-top">
-                        <span class="ops-route-icon">🔥</span>
+                        <span class="ops-route-icon">02</span>
                         <span class="ops-route-tag">启动卡住</span>
                     </div>
                     <div class="ops-route-name">预热</div>
@@ -59,7 +59,7 @@
                 </a>
                 <a id="opsRouteDataQualityLink" class="ops-route-card" href="/ibkr_data_quality.html">
                     <div class="ops-route-card-top">
-                        <span class="ops-route-icon">🧩</span>
+                        <span class="ops-route-icon">03</span>
                         <span class="ops-route-tag">数据异常</span>
                     </div>
                     <div class="ops-route-name">数据质量</div>
@@ -67,7 +67,7 @@
                 </a>
                 <a id="opsRouteRebuildLink" class="ops-route-card is-danger" href="/ibkr_history_rebuild.html">
                     <div class="ops-route-card-top">
-                        <span class="ops-route-icon">🧱</span>
+                        <span class="ops-route-icon">04</span>
                         <span class="ops-route-tag">高级恢复</span>
                     </div>
                     <div class="ops-route-name">历史重建</div>

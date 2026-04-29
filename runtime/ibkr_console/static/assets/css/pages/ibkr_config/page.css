@@ -3,51 +3,82 @@
     margin-bottom: 24px;
   }
 
+  .page-shell {
+    padding-bottom: 110px;
+  }
+
+  .page-shell > #pageBridge > .page-bridge {
+    margin-bottom: 12px;
+  }
+
   .config-action-bar {
     position: sticky;
-    top: 16px;
-    z-index: 24;
-    width: min(100%, var(--page-shell-max));
-    margin: 0 auto 12px;
-    padding: 0 var(--page-gutter);
+    top: 14px;
+    z-index: 34;
+    width: 100%;
+    margin: 12px 0 14px;
+    padding: 12px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
+    border: 1px solid rgba(79, 209, 197, 0.16);
+    border-radius: 18px;
+    background:
+      radial-gradient(circle at top left, rgba(79, 209, 197, 0.14), transparent 32%),
+      linear-gradient(135deg, rgba(10, 20, 29, 0.96), rgba(9, 15, 24, 0.92));
+    box-shadow:
+      0 18px 42px rgba(2, 8, 23, 0.18),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(16px);
   }
 
   .config-action-copy {
     flex: 1 1 auto;
     min-width: 0;
-    padding: 12px 14px;
-    border-radius: 16px;
-    border: 1px solid rgba(99,179,237,0.14);
-    background: rgba(14,20,32,0.92);
+    display: grid;
+    gap: 3px;
     color: var(--muted);
     font-size: 12px;
-    line-height: 1.6;
+    line-height: 1.55;
+  }
+
+  .config-action-kicker {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.2;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
   }
 
   .config-action-buttons {
+    flex: 0 0 auto;
     display: inline-flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 10px;
   }
 
+  .config-action-buttons > button {
+    min-height: 40px;
+    white-space: nowrap;
+  }
+
   #configContainer {
-    width: min(100%, var(--page-shell-max));
-    margin: 0 auto;
-    padding: 0 var(--page-gutter) 110px;
+    width: 100%;
+    margin: 0;
+    padding: 0;
   }
 
   .config-toolbar {
     position: sticky;
-    top: 96px;
-    z-index: 20;
-    margin-bottom: 18px;
-    padding-bottom: 8px;
-    background: linear-gradient(180deg, rgba(11,15,18,0.98) 0%, rgba(11,15,18,0.92) 70%, rgba(11,15,18,0) 100%);
+    top: 92px;
+    z-index: 28;
+    margin: 0 0 18px;
+    padding: 10px 0 8px;
+    background: linear-gradient(180deg, rgba(7, 16, 24, 0.96) 0%, rgba(7, 16, 24, 0.88) 78%, rgba(7, 16, 24, 0) 100%);
+    backdrop-filter: blur(10px);
   }
 
   .config-tabs {
@@ -67,27 +98,31 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
+    min-height: 38px;
     padding: 9px 12px;
     border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--surface);
+    border: 1px solid rgba(147,197,253,0.14);
+    background: rgba(12, 24, 33, 0.82);
     color: var(--muted);
     font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
     white-space: nowrap;
   }
 
   .config-tab:hover {
-    border-color: var(--accent);
+    transform: translateY(-1px);
+    border-color: rgba(79, 209, 197, 0.32);
     color: var(--text);
+    background: rgba(79, 209, 197, 0.08);
   }
 
   .config-tab.active {
-    background: rgba(99,179,237,0.14);
-    border-color: var(--accent);
+    background: rgba(79, 209, 197, 0.14);
+    border-color: rgba(79, 209, 197, 0.42);
     color: var(--accent);
+    box-shadow: 0 10px 24px rgba(2, 8, 23, 0.14);
   }
 
   .config-tab-count {
@@ -98,7 +133,7 @@
     height: 18px;
     padding: 0 5px;
     border-radius: 999px;
-    background: var(--surface2);
+    background: rgba(255,255,255,0.06);
     color: inherit;
     font-size: 10px;
   }
@@ -342,6 +377,7 @@
   .save-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    box-shadow: none;
   }
 
   /* ── Modified Indicator ── */
@@ -399,9 +435,13 @@
 
   @media (max-width: 900px) {
     .config-action-bar {
-      top: 88px;
+      top: 10px;
       align-items: stretch;
       flex-direction: column;
+    }
+
+    .config-action-copy {
+      text-align: left;
     }
 
     .config-action-buttons {
@@ -414,17 +454,19 @@
     }
 
     .config-toolbar {
-      top: 192px;
+      top: 152px;
     }
   }
 
   @media (max-width: 640px) {
     .config-action-bar {
-      top: 82px;
+      top: 8px;
+      padding: 10px;
+      border-radius: 16px;
     }
 
     .config-toolbar {
-      top: 236px;
+      top: 226px;
     }
 
     .config-action-buttons > * {

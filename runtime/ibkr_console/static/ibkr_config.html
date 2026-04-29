@@ -8,28 +8,29 @@
 <script src="common.js"></script>
 <script>document.write(getCommonStyles())</script>
 <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-<link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css">
+<link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css?v=20260429-console-cohesion">
 </head>
 <body>
 <div class="page-shell">
   <div id="configEnvironmentBar"></div>
   <div id="pageBridge"></div>
-</div>
 
-<div class="config-action-bar">
-  <div class="config-action-copy">
-    当前环境配置统一在这里查看和编辑。改动会先标记本地差异，确认后再一次性保存。
+  <div class="config-action-bar">
+    <div class="config-action-copy">
+      <span class="config-action-kicker">Config Control</span>
+      <span>当前环境配置统一在这里查看和编辑。改动会先标记本地差异，确认后再一次性保存。</span>
+    </div>
+    <div class="config-action-buttons">
+      <button class="refresh-btn page-refresh-trigger" id="configRefreshBtn" type="button" onclick="manualReloadConfig()">↻ 刷新配置</button>
+      <button class="reset-all-btn" id="resetAllBtn" onclick="resetAll()" disabled>重置全部</button>
+      <button class="save-btn" id="saveBtn" onclick="saveAll()" disabled>保存配置</button>
+    </div>
   </div>
-  <div class="config-action-buttons">
-    <button class="refresh-btn page-refresh-trigger" id="configRefreshBtn" type="button" onclick="manualReloadConfig()">↻ 刷新配置</button>
-    <button class="reset-all-btn" id="resetAllBtn" onclick="resetAll()" disabled>重置全部</button>
-    <button class="save-btn" id="saveBtn" onclick="saveAll()" disabled>保存配置</button>
-  </div>
-</div>
 
-<!-- Content -->
-<div class="content" id="configContainer">
-  <div class="loading">LOADING...</div>
+  <!-- Content -->
+  <div id="configContainer">
+    <div class="loading">LOADING...</div>
+  </div>
 </div>
 
 <!-- Bottom Nav -->

@@ -573,15 +573,22 @@ function renderServiceTopology(topologyPayload = {}) {
     const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
     if (!services.length) {
         el.innerHTML = `
-            <div class="ops-summary-shell">
+            <div class="ops-summary-shell tone-neutral">
                 <div class="ops-summary-lead">
-                    <div>
-                        <div class="ops-summary-title">服务拓扑详情已移到运维大盘</div>
-                        <div class="ops-summary-copy">总览页只保留入口和健康摘要；请求、订阅、主机和 PB 明细请在运维页排查。</div>
+                    <div class="ops-summary-headline">
+                        <span class="ops-summary-dot"></span>
+                        <div>
+                            <div class="ops-summary-kicker">Ops Routing</div>
+                            <div class="ops-summary-title">服务拓扑摘要待同步</div>
+                            <div class="ops-summary-copy">总览页只保留入口和健康摘要；请求、订阅、主机和 PB 明细请在运维页排查。</div>
+                        </div>
                     </div>
-                    <a class="ops-summary-link" href="${monitorHref}">打开运维大盘 →</a>
+                    <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
                 </div>
-                <div class="loading-text">暂无服务拓扑摘要</div>
+                <div class="ops-summary-empty">
+                    <div class="ops-summary-label">Snapshot</div>
+                    <div class="ops-summary-card-copy">暂无服务拓扑摘要，等待下一次 statusz 同步。</div>
+                </div>
             </div>
         `;
         return;
@@ -636,14 +643,17 @@ function renderServiceTopology(topologyPayload = {}) {
     ];
 
     el.innerHTML = `
-        <div class="ops-summary-shell">
+        <div class="ops-summary-shell tone-${escapeHtml(overallTone)}">
             <div class="ops-summary-lead">
-                <div>
-                    <div class="ops-summary-kicker">Ops Routing</div>
-                    <div class="ops-summary-title">服务状态 ${escapeHtml(overallLabel)}</div>
-                    <div class="ops-summary-copy">总览页只看健康摘要；请求、订阅、主机、PB 磁盘与完整 split-stack 详情统一在运维大盘。</div>
+                <div class="ops-summary-headline">
+                    <span class="ops-summary-dot"></span>
+                    <div>
+                        <div class="ops-summary-kicker">Ops Routing</div>
+                        <div class="ops-summary-title">服务状态 ${escapeHtml(overallLabel)}</div>
+                        <div class="ops-summary-copy">总览页只看健康摘要；请求、订阅、主机、PB 磁盘与完整 split-stack 详情统一在运维大盘。</div>
+                    </div>
                 </div>
-                <a class="ops-summary-link" href="${monitorHref}">打开运维大盘 →</a>
+                <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
             </div>
             <div class="ops-summary-grid">
                 ${cards.map((card) => `
