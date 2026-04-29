@@ -829,20 +829,16 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 }
                 return getIbkrTwoFactorCycleActionSummary(action, cyclePhase);
             }
-            if (action === 'gateway_start' || action === 'gateway_stop' || action === 'gateway_restart') {
+            if (action === 'gateway_restart') {
                 if (payload.message) return payload.message;
-                if (action === 'gateway_start') return 'systemd ibkr-gateway 启动动作已执行。';
-                if (action === 'gateway_stop') return 'systemd ibkr-gateway 停止动作已执行。';
                 return 'systemd ibkr-gateway 重启动作已执行。';
             }
-            if (action === 'takeover_on' || action === 'takeover_off' || action === 'probe' || action === 'panic_reset_2fa') {
+            if (action === 'probe' || action === 'panic_reset_2fa') {
                 if (payload.message) return payload.message;
-                if (action === 'takeover_on') return '已开启人工接管，系统会继续静默探测。';
-                if (action === 'takeover_off') return '已结束人工接管，并恢复静默探测。';
                 if (action === 'probe') return '已触发静默探测。';
                 return '已全量清空旧状态并重新拉起新的验证周期。';
             }
-            if (action === 'compute' || action === 'scan' || action === 'recompute') {
+            if (action === 'compute') {
                 const pieces = [];
                 if (payload.environments) pieces.push(`env=${payload.environments.join(',')}`);
                 if (payload.processed != null) pieces.push(`processed=${payload.processed}`);
@@ -850,6 +846,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 if (payload.errors != null) pieces.push(`errors=${payload.errors}`);
                 if (payload.candidates != null) pieces.push(`candidates=${payload.candidates}`);
                 return `${action} 返回：${pieces.join(' · ') || 'ok'}`;
+            }
+            if (action === 'recover_all') {
+                const updatedKeys = Array.isArray(payload.updated)
+                    ? payload.updated.map(item => item.key).filter(Boolean).join(',')
+                    : '';
+                return `恢复运行开关完成：${updatedKeys || 'no_config_change'}`;
             }
             if (action.startsWith('emergency_')) {
                 const updatedKeys = Array.isArray(payload.updated)
@@ -863,6 +865,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         function setActionState(isPending) {
             actionPending = isPending;
+            renderRuntimeFlowPrimaryAction(latestRuntimeStatus, latestTwoFactorState);
             syncActionLocks();
             renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
             renderAuthActionBanner(latestNextActionModel);
@@ -1139,6 +1142,30 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             if (['degraded', 'warning', 'warn', 'pending'].includes(text)) return 'warn';
             if (['failed', 'offline', 'inactive', 'stopped', 'error'].includes(text)) return 'error';
             return 'info';
+        }
+
+        function getRuntimeFlowPrimaryAction(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
+            const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
+            const running = Boolean(runtimeStatus.started || status?.starting || status?.startup_complete);
+            return running ? 'stop' : 'start';
+        }
+
+        function renderRuntimeFlowPrimaryAction(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
+            const button = document.getElementById('runtimeFlowToggleButton');
+            if (!button) return;
+            const action = getRuntimeFlowPrimaryAction(status, twoFactorState);
+            const isStop = action === 'stop';
+            const label = button.querySelector('.action-label');
+            const copy = button.querySelector('.action-copy');
+            button.dataset.action = action;
+            button.classList.toggle('action-primary', !isStop);
+            button.classList.toggle('action-danger', isStop);
+            if (label) label.textContent = isStop ? '停止 Runtime 线程' : '启动 Runtime 线程';
+            if (copy) {
+                copy.textContent = isStop
+                    ? '停止 runtime 内部交易/行情线程，不直接停止 Gateway systemd 服务。'
+                    : '启动 runtime 内部交易/行情线程；是否重启 Gateway 由启动策略决定。';
+            }
         }
 
         function shouldShowServiceStopAction(statusText) {
@@ -2063,6 +2090,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
                     renderConfigDetail(resolvedSummary, runtimeConfig, cronResp || {});
                     renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
+                    renderRuntimeFlowPrimaryAction(status, latestTwoFactorState);
                     renderServiceControlPanel(status, latestServiceMonitorPayload);
                     renderIndicatorsTable(indicatorItems);
                 };
@@ -2205,22 +2233,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         source: 'runtime_page'
                     }
                 },
-                gateway_start: {
-                    path: '/api/custom/ibkr/gateway/start',
-                    body: {
-                        environment: currentEnvironment,
-                        reason: 'manual_gateway_start',
-                        source: 'runtime_page'
-                    }
-                },
-                gateway_stop: {
-                    path: '/api/custom/ibkr/gateway/stop',
-                    body: {
-                        environment: currentEnvironment,
-                        reason: 'manual_gateway_stop',
-                        source: 'runtime_page'
-                    }
-                },
                 gateway_restart: {
                     path: '/api/custom/ibkr/gateway/restart',
                     body: {
@@ -2253,25 +2265,6 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         message: '已开始新一轮 2FA，请查看手机。'
                     }
                 },
-                takeover_on: {
-                    path: '/api/custom/ibkr/2fa/takeover',
-                    body: {
-                        environment: currentEnvironment,
-                        enabled: true,
-                        ttl_sec: 600,
-                        reason: 'manual_takeover',
-                        source: 'runtime_page'
-                    }
-                },
-                takeover_off: {
-                    path: '/api/custom/ibkr/2fa/takeover',
-                    body: {
-                        environment: currentEnvironment,
-                        enabled: false,
-                        reason: 'manual_takeover_released',
-                        source: 'runtime_page'
-                    }
-                },
                 probe: {
                     path: '/api/custom/ibkr/2fa/probe',
                     body: {
@@ -2292,14 +2285,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     }
                 },
                 compute: { path: '/api/custom/ibkr/proxy', body: { action: 'compute', environment: currentEnvironment } },
-                scan: { path: '/api/custom/ibkr/proxy', body: { action: 'scan', environment: currentEnvironment } },
-                recompute: { path: '/api/custom/ibkr/proxy', body: { action: 'recompute', environment: currentEnvironment } },
-                emergency_runtime: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'runtime', environment: currentEnvironment } },
-                emergency_compute: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'compute', environment: currentEnvironment } },
-                emergency_publish: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'publish', environment: currentEnvironment } },
-                emergency_scheduler: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'scheduler', environment: currentEnvironment } },
-                emergency_trading: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'trading', environment: currentEnvironment } },
-                emergency_all: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'all', environment: currentEnvironment } }
+                emergency_all: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'all', environment: currentEnvironment } },
+                recover_all: { path: '/api/custom/ibkr/recover', body: { action: 'all', environment: currentEnvironment } }
             };
         }
 
@@ -2471,7 +2458,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         async function handleRuntimeAction(action, overrideTarget = null) {
             if (actionPending) return;
-            const guardedActions = new Set(['start', 'stop', 'gateway_start', 'gateway_stop', 'gateway_restart', 'reauth', 'reauth_force_new', 'takeover_on', 'takeover_off', 'probe', 'panic_reset_2fa', 'emergency_runtime', 'emergency_compute', 'emergency_all']);
+            const guardedActions = new Set(['start', 'stop', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa', 'emergency_all', 'recover_all']);
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch && guardedActions.has(action)) {
                 document.getElementById('lastAction').textContent = runtimeMismatch.message;
@@ -2487,28 +2474,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 syncActionLocks();
                 return;
             }
-            if (action === 'recompute' && !window.confirm('确认执行 recompute？这会重置内存引擎缓存并重新跑一次 compute。')) {
-                return;
-            }
             if (action === 'emergency_all' && !window.confirm('确认执行全部急停？这会关闭 compute / trading / bars publish / IBKR Scheduler，并停止当前 runtime。')) {
                 return;
             }
-            if (action === 'emergency_runtime' && !window.confirm('确认停止当前 runtime 线程？')) {
-                return;
-            }
-            if (action === 'emergency_compute' && !window.confirm('确认关闭自动 compute / scan 调度？')) {
-                return;
-            }
-            if (action === 'emergency_publish' && !window.confirm('确认关闭 bars 写入？新的 ibkr_bars 将不再进入 PocketBase。')) {
-                return;
-            }
-            if (action === 'emergency_scheduler' && !window.confirm('确认关闭 IBKR Scheduler？')) {
-                return;
-            }
-            if (action === 'emergency_trading' && !window.confirm('确认关闭交易执行？新的自动下单会被阻止。')) {
-                return;
-            }
-            if (action === 'gateway_stop' && !window.confirm('确认停止 systemd ibkr-gateway？这会关闭 IBC + IB Gateway GUI/API；如果当前有运行线程或启动轮次，会同时中断当前轮次。')) {
+            if (action === 'recover_all' && !window.confirm('确认恢复 compute / trading / bars publish / IBKR Scheduler 开关？这不会自动重启服务。')) {
                 return;
             }
             if (action === 'gateway_restart') {

@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260429-service-stop">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260429-runtime-trim">
 </head>
 <body>
     <div class="page-loading-overlay" id="pageLoading">
@@ -59,7 +59,7 @@
                         <div class="runtime-control-copy">启动、停止和重启核心 systemd 服务；高风险服务需输入服务名确认。</div>
                     </div>
                     <div class="runtime-note">
-                        模块控制只覆盖 `ibkr-runtime`、`ibkr-gateway`、`ibkr-compute`、`ibkr-scheduler`。Runtime 业务线程启动仍使用下方“启动 Runtime 线程”。
+                        模块控制只覆盖 `ibkr-runtime`、`ibkr-gateway`、`ibkr-compute`、`ibkr-scheduler`。Runtime 业务线程使用下方“主运行流程”。
                     </div>
                     <div class="service-control-grid" id="serviceControlGrid">
                         <div class="table-empty">等待加载模块状态...</div>
@@ -72,19 +72,15 @@
                             <div class="runtime-control-kicker">Runtime Flow</div>
                             <div class="runtime-control-title">主运行流程</div>
                         </div>
-                        <div class="runtime-control-copy">业务线程启动、停止、静默探测与手动刷新。</div>
+                        <div class="runtime-control-copy">业务线程一键启动/停止、静默探测与手动刷新。</div>
                     </div>
                     <div class="runtime-note runtime-note-strategy" id="startupStrategyInfo">
                         启动策略加载中...
                     </div>
                     <div class="action-section">
-                        <button class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction('start')">
+                        <button id="runtimeFlowToggleButton" class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction(this.dataset.action || 'start')">
                             <span class="action-label">启动 Runtime 线程</span>
                             <span class="action-copy">启动 runtime 内部交易/行情线程；是否重启 Gateway 由启动策略决定。</span>
-                        </button>
-                        <button class="action-btn action-danger" data-action="stop" onclick="handleRuntimeAction('stop')">
-                            <span class="action-label">停止 Runtime 线程</span>
-                            <span class="action-copy">停止 `ibkr-runtime` 内的交易线程，不直接停止 Gateway systemd 服务。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
                             <span class="action-label">立即静默探测</span>
@@ -97,54 +93,18 @@
                     </div>
                 </section>
 
-                <section class="runtime-control-group runtime-control-auth">
-                    <div class="runtime-control-head">
-                        <div>
-                            <div class="runtime-control-kicker">Auth / 2FA</div>
-                            <div class="runtime-control-title">认证轮次</div>
-                        </div>
-                        <div class="runtime-control-copy">管理飞书卡片、fresh 2FA 与人工接管状态。</div>
-                    </div>
-                    <div class="action-section">
-                        <button class="action-btn action-accent" data-action="reauth" onclick="handleRuntimeAction('reauth')">
-                            <span class="action-label">刷新飞书 2FA 卡片</span>
-                            <span class="action-copy">只发出或复用飞书入口，不触发手机验证。</span>
-                        </button>
-                        <button class="action-btn action-accent" data-action="reauth_force_new" onclick="handleRuntimeAction('reauth_force_new')">
-                            <span class="action-label">开始 2FA（触发手机）</span>
-                            <span class="action-copy">会触发 IBKR 手机验证，仅在没有 active 轮次时使用。</span>
-                        </button>
-                        <button class="action-btn action-accent" data-action="takeover_on" onclick="handleRuntimeAction('takeover_on')">
-                            <span class="action-label">开始人工接管</span>
-                            <span class="action-copy">查真实账户前启用，避免误判锁死。</span>
-                        </button>
-                        <button class="action-btn action-accent" data-action="takeover_off" onclick="handleRuntimeAction('takeover_off')">
-                            <span class="action-label">结束人工接管并探测</span>
-                            <span class="action-copy">结束接管并恢复静默探测。</span>
-                        </button>
-                    </div>
-                </section>
-
                 <section class="runtime-control-group runtime-control-data" id="dataActionSection">
                     <div class="runtime-control-head">
                         <div>
                             <div class="runtime-control-kicker">Compute / Data</div>
                             <div class="runtime-control-title">计算与数据操作</div>
                         </div>
-                        <div class="runtime-control-copy">手动触发 compute、scan、重算和数据质量检查。</div>
+                        <div class="runtime-control-copy">手动触发 compute 和数据质量检查；扫描与历史重建放到对应页面。</div>
                     </div>
                     <div class="action-section">
                         <button class="action-btn action-accent" data-action="compute" onclick="handleRuntimeAction('compute')">
                             <span class="action-label">执行 Compute</span>
                             <span class="action-copy">触发 compute，检查 bars → indicators → signals。</span>
-                        </button>
-                        <button class="action-btn action-accent" data-action="scan" onclick="handleRuntimeAction('scan')">
-                            <span class="action-label">执行 Scan</span>
-                            <span class="action-copy">触发盘前扫描，把候选标的写入 `ibkr_targets`。</span>
-                        </button>
-                        <button class="action-btn" data-action="recompute" onclick="handleRuntimeAction('recompute')">
-                            <span class="action-label">重算历史缓存</span>
-                            <span class="action-copy">清空内存引擎缓存后重新跑 compute，用于核对链路回放。</span>
                         </button>
                         <button class="action-btn" onclick="window.location.href = buildPageUrl('/ibkr_data_quality.html', {}, { environment: currentEnvironment })">
                             <span class="action-label">打开数据质量</span>
@@ -159,43 +119,19 @@
                             <div class="runtime-control-kicker">Danger Zone</div>
                             <div class="runtime-control-title">紧急控制</div>
                         </div>
-                        <div class="runtime-control-copy">快速降载、止损与强制重开认证。</div>
+                        <div class="runtime-control-copy">只保留最小急停和恢复入口，单项开关进入配置/运维页处理。</div>
                     </div>
                     <div class="runtime-note runtime-note-danger">
-                        用于快速降载和止损，不删除数据。
+                        “全部急停”会关闭 compute、trading、bars publish、Scheduler 并停止当前 runtime；“恢复运行开关”只恢复配置开关，不自动重启服务。
                     </div>
                     <div class="action-section">
-                        <button class="action-btn action-danger" data-action="emergency_runtime" onclick="handleRuntimeAction('emergency_runtime')">
-                            <span class="action-label">急停运行线程</span>
-                            <span class="action-copy">停止当前 runtime。</span>
-                        </button>
-                        <button class="action-btn action-danger" data-action="gateway_stop" onclick="handleRuntimeAction('gateway_stop')">
-                            <span class="action-label">停止 IB Gateway 服务</span>
-                            <span class="action-copy">停止 systemd `ibkr-gateway`，会中断当前 2FA/会话。</span>
-                        </button>
-                        <button class="action-btn action-danger" data-action="emergency_compute" onclick="handleRuntimeAction('emergency_compute')">
-                            <span class="action-label">关闭计算调度</span>
-                            <span class="action-copy">关闭自动 compute / scan。</span>
-                        </button>
-                        <button class="action-btn action-danger" data-action="emergency_publish" onclick="handleRuntimeAction('emergency_publish')">
-                            <span class="action-label">关闭 Bars 写入</span>
-                            <span class="action-copy">停止新的 `ibkr_bars` 写入。</span>
-                        </button>
-                        <button class="action-btn action-danger" data-action="emergency_scheduler" onclick="handleRuntimeAction('emergency_scheduler')">
-                            <span class="action-label">关闭 Scheduler</span>
-                            <span class="action-copy">暂停 Scheduler 任务。</span>
-                        </button>
-                        <button class="action-btn action-danger" data-action="emergency_trading" onclick="handleRuntimeAction('emergency_trading')">
-                            <span class="action-label">关闭交易执行</span>
-                            <span class="action-copy">保留观测链路，但禁止继续下新单。</span>
-                        </button>
                         <button class="action-btn action-danger" data-action="emergency_all" onclick="handleRuntimeAction('emergency_all')">
                             <span class="action-label">全部急停</span>
                             <span class="action-copy">关闭计算、交易、K线写入和 runtime。</span>
                         </button>
-                        <button class="action-btn action-danger" data-action="panic_reset_2fa" onclick="handleRuntimeAction('panic_reset_2fa')">
-                            <span class="action-label">放弃当前轮次并干净重开</span>
-                            <span class="action-copy">终止旧 2FA，并重新发起验证。</span>
+                        <button class="action-btn action-primary" data-action="recover_all" onclick="handleRuntimeAction('recover_all')">
+                            <span class="action-label">恢复运行开关</span>
+                            <span class="action-copy">恢复计算、交易、K线写入和 Scheduler 配置。</span>
                         </button>
                     </div>
                 </section>
@@ -326,6 +262,6 @@
     </div>
 
     <script src="/assets/js/shared/ibkr-page.js?v=20260429-service-control"></script>
-    <script src="/assets/js/pages/ibkr_runtime/page.js?v=20260429-service-stop"></script>
+    <script src="/assets/js/pages/ibkr_runtime/page.js?v=20260429-runtime-trim"></script>
 </body>
 </html>
