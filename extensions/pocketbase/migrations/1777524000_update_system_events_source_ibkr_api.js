@@ -1,0 +1,386 @@
+/// <reference path="../pb_data/types.d.ts" />
+
+const SYSTEM_EVENTS_SCHEMA_WITH_IBKR_API = {
+  "id": "_pb_system_events_",
+  "listRule": "",
+  "viewRule": "",
+  "createRule": "",
+  "updateRule": "",
+  "deleteRule": "",
+  "name": "system_events",
+  "type": "base",
+  "fields": [
+    {
+      "autogeneratePattern": "[a-z0-9]{15}",
+      "hidden": false,
+      "id": "text3208210256",
+      "max": 15,
+      "min": 15,
+      "name": "id",
+      "pattern": "^[a-z0-9]+$",
+      "presentable": false,
+      "primaryKey": true,
+      "required": true,
+      "system": true,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "se_event_type",
+      "maxSelect": 1,
+      "name": "event_type",
+      "presentable": false,
+      "required": true,
+      "type": "select",
+      "values": [
+        "heartbeat",
+        "status_change",
+        "alert",
+        "compute_stats",
+        "daily_report"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "se_level",
+      "maxSelect": 1,
+      "name": "level",
+      "presentable": false,
+      "required": true,
+      "type": "select",
+      "values": [
+        "info",
+        "warning",
+        "error"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "se_source",
+      "maxSelect": 1,
+      "name": "source",
+      "presentable": false,
+      "required": true,
+      "type": "select",
+      "values": [
+        "qc",
+        "ibkr_compute",
+        "ibkr_api",
+        "pb",
+        "manual"
+      ]
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "se_title",
+      "max": 500,
+      "min": 0,
+      "name": "title",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "se_detail",
+      "maxSize": 50000,
+      "name": "detail",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    },
+    {
+      "hidden": false,
+      "id": "se_notified",
+      "name": "notified",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "bool"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "se_us_time",
+      "max": 0,
+      "min": 0,
+      "name": "us_time",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "se_cn_time",
+      "max": 0,
+      "min": 0,
+      "name": "cn_time",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "se_environment",
+      "maxSelect": 1,
+      "name": "environment",
+      "presentable": true,
+      "required": false,
+      "system": false,
+      "type": "select",
+      "values": [
+        "global",
+        "live",
+        "paper",
+        "backtest"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "autodate2990389176",
+      "name": "created",
+      "onCreate": true,
+      "onUpdate": false,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    },
+    {
+      "hidden": false,
+      "id": "autodate3332085495",
+      "name": "updated",
+      "onCreate": true,
+      "onUpdate": true,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    }
+  ],
+  "indexes": [
+    "CREATE INDEX idx_se_event_type ON system_events (event_type)",
+    "CREATE INDEX idx_se_level ON system_events (level)",
+    "CREATE INDEX idx_se_source ON system_events (source)",
+    "CREATE INDEX idx_se_created ON system_events (created DESC)",
+    "CREATE INDEX idx_se_environment ON system_events (environment)"
+  ],
+  "system": false,
+  "options": {}
+}
+
+const SYSTEM_EVENTS_SCHEMA_WITHOUT_IBKR_API = {
+  "id": "_pb_system_events_",
+  "listRule": "",
+  "viewRule": "",
+  "createRule": "",
+  "updateRule": "",
+  "deleteRule": "",
+  "name": "system_events",
+  "type": "base",
+  "fields": [
+    {
+      "autogeneratePattern": "[a-z0-9]{15}",
+      "hidden": false,
+      "id": "text3208210256",
+      "max": 15,
+      "min": 15,
+      "name": "id",
+      "pattern": "^[a-z0-9]+$",
+      "presentable": false,
+      "primaryKey": true,
+      "required": true,
+      "system": true,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "se_event_type",
+      "maxSelect": 1,
+      "name": "event_type",
+      "presentable": false,
+      "required": true,
+      "type": "select",
+      "values": [
+        "heartbeat",
+        "status_change",
+        "alert",
+        "compute_stats",
+        "daily_report"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "se_level",
+      "maxSelect": 1,
+      "name": "level",
+      "presentable": false,
+      "required": true,
+      "type": "select",
+      "values": [
+        "info",
+        "warning",
+        "error"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "se_source",
+      "maxSelect": 1,
+      "name": "source",
+      "presentable": false,
+      "required": true,
+      "type": "select",
+      "values": [
+        "qc",
+        "ibkr_compute",
+        "pb",
+        "manual"
+      ]
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "se_title",
+      "max": 500,
+      "min": 0,
+      "name": "title",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "se_detail",
+      "maxSize": 50000,
+      "name": "detail",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    },
+    {
+      "hidden": false,
+      "id": "se_notified",
+      "name": "notified",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "bool"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "se_us_time",
+      "max": 0,
+      "min": 0,
+      "name": "us_time",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "se_cn_time",
+      "max": 0,
+      "min": 0,
+      "name": "cn_time",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "se_environment",
+      "maxSelect": 1,
+      "name": "environment",
+      "presentable": true,
+      "required": false,
+      "system": false,
+      "type": "select",
+      "values": [
+        "global",
+        "live",
+        "paper",
+        "backtest"
+      ]
+    },
+    {
+      "hidden": false,
+      "id": "autodate2990389176",
+      "name": "created",
+      "onCreate": true,
+      "onUpdate": false,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    },
+    {
+      "hidden": false,
+      "id": "autodate3332085495",
+      "name": "updated",
+      "onCreate": true,
+      "onUpdate": true,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    }
+  ],
+  "indexes": [
+    "CREATE INDEX idx_se_event_type ON system_events (event_type)",
+    "CREATE INDEX idx_se_level ON system_events (level)",
+    "CREATE INDEX idx_se_source ON system_events (source)",
+    "CREATE INDEX idx_se_created ON system_events (created DESC)",
+    "CREATE INDEX idx_se_environment ON system_events (environment)"
+  ],
+  "system": false,
+  "options": {}
+}
+
+function findSystemEventsCollection(app) {
+  try {
+    return app.findCollectionByNameOrId("_pb_system_events_")
+  } catch (_) {}
+  try {
+    return app.findCollectionByNameOrId("system_events")
+  } catch (_) {}
+  return null
+}
+
+function saveSystemEventsSchema(app, schema) {
+  let collection = findSystemEventsCollection(app)
+  const payload = JSON.parse(JSON.stringify(schema))
+  if (collection) {
+    payload.id = collection.id
+    unmarshal(payload, collection)
+  } else {
+    collection = new Collection(payload)
+  }
+  return app.save(collection)
+}
+
+migrate((app) => {
+  return saveSystemEventsSchema(app, SYSTEM_EVENTS_SCHEMA_WITH_IBKR_API)
+}, (app) => {
+  return saveSystemEventsSchema(app, SYSTEM_EVENTS_SCHEMA_WITHOUT_IBKR_API)
+})

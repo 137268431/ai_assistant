@@ -44,6 +44,7 @@ def emit_system_event(
         "updated": bool(delivery.get("updated")),
         "skipped": bool(delivery.get("skipped")),
         "suppressed": bool(delivery.get("suppressed")),
+        "reason": str(delivery.get("reason") or ""),
         "error": str(delivery.get("error") or ""),
     }
 

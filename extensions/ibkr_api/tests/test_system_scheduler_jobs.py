@@ -104,10 +104,10 @@ class _ReminderPB:
 
 
 class SystemSchedulerJobsTest(unittest.TestCase):
-    def _reminder_deps(self, pb, sent, now_us="2026-04-23 09:20:00", date="2026-04-23"):
+    def _reminder_deps(self, pb, sent, now_us="2026-04-23 09:20:00", date="2026-04-23", event_result=None):
         def emit_system_event(**kwargs):
             sent.append(kwargs)
-            return {"notified": True, "persisted": True}
+            return dict(event_result or {"notified": True, "persisted": True, "message_id": "msg-1"})
 
         def get_state_payload(state_key, environment, state_date=date):
             return {
@@ -275,6 +275,58 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
 
         self.assertEqual(len(sent), 1)
+        state = pb.states[("system_notify_daily", "live", "2026-04-23")]["data"]
+        self.assertEqual(state["close_sent_at"], "2026-04-23 16:05:00")
+        self.assertTrue(state["close_notified"])
+        self.assertTrue(state["close_persisted"])
+        self.assertEqual(state["close_message_id"], "msg-1")
+        self.assertEqual(sent[0]["source"], "ibkr_api")
+
+    def test_daily_report_does_not_mark_sent_when_notification_fails(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(
+                pb,
+                sent,
+                now_us="2026-04-23 16:05:00",
+                event_result={"notified": False, "persisted": True, "error": "missing_token"},
+            ),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "missing_token")
+        state = pb.states[("system_notify_daily", "live", "2026-04-23")]["data"]
+        self.assertNotIn("close_sent_at", state)
+        self.assertEqual(state["close_last_attempt_at"], "2026-04-23 16:05:00")
+        self.assertEqual(state["close_error"], "missing_token")
+        self.assertFalse(state["close_notified"])
+        self.assertEqual(len(sent), 1)
+
+    def test_daily_report_marks_sent_when_notifications_are_disabled(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(
+                pb,
+                sent,
+                now_us="2026-04-23 16:05:00",
+                event_result={"notified": False, "persisted": True, "skipped": True, "reason": "notify_disabled"},
+            ),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        state = pb.states[("system_notify_daily", "live", "2026-04-23")]["data"]
+        self.assertEqual(state["close_sent_at"], "2026-04-23 16:05:00")
+        self.assertEqual(state["close_reason"], "notify_disabled")
+        self.assertEqual(state["close_error"], "")
 
 
 if __name__ == "__main__":

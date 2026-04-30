@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -33,6 +34,13 @@ class NormalizeCollectionTest(unittest.TestCase):
         self.assertEqual(collection["createRule"], "")
         self.assertEqual(collection["updateRule"], "")
         self.assertEqual(collection["deleteRule"], "")
+
+    def test_system_events_accepts_ibkr_api_source(self) -> None:
+        schema_path = REPO_ROOT / "extensions" / "pocketbase" / "schema" / "pb_table" / "schema_system_events.json"
+        collection = json.loads(schema_path.read_text())[0]
+        source_field = next(field for field in collection["fields"] if field.get("name") == "source")
+
+        self.assertIn("ibkr_api", source_field["values"])
 
 
 if __name__ == "__main__":

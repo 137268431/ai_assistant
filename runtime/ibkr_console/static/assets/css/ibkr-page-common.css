@@ -1,13 +1,13 @@
 :root {
-    --page-card-radius: var(--radius-xl, 20px);
-    --page-card-radius-compact: var(--radius-lg, 16px);
+    --page-card-radius: var(--radius-lg, 16px);
+    --page-card-radius-compact: 14px;
     --page-card-padding: var(--card-padding, 14px);
     --page-panel-min-height: var(--panel-min-height, 300px);
     --page-panel-scroll-max-height: var(--panel-scroll-max-height, min(46vh, 620px));
     --page-card-border: 1px solid rgba(147, 197, 253, 0.14);
     --page-card-bg: linear-gradient(180deg, rgba(8, 22, 31, 0.98), rgba(7, 16, 24, 0.96));
-    --page-card-shadow: 0 22px 48px rgba(0, 0, 0, 0.28);
-    --page-card-shadow-strong: 0 30px 72px rgba(2, 8, 23, 0.32);
+    --page-card-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+    --page-card-shadow-strong: 0 20px 46px rgba(2, 8, 23, 0.28);
     --page-chip-bg: rgba(255, 255, 255, 0.04);
     --page-chip-border: 1px solid rgba(255, 255, 255, 0.08);
     --page-input-bg: rgba(14, 30, 41, 0.94);
@@ -30,7 +30,7 @@ body.rules-detail-open {
 
 .page-shell,
 .page-shell.page-shell-wide {
-    padding-bottom: 96px;
+    padding-bottom: 84px;
 }
 
 .page-header,
@@ -44,7 +44,7 @@ body.rules-detail-open {
     position: sticky;
     top: 0;
     z-index: 48;
-    padding: 14px var(--page-gutter) 10px;
+    padding: 12px var(--page-gutter) 8px;
     background: linear-gradient(180deg, rgba(7, 16, 24, 0.97), rgba(7, 16, 24, 0.92) 72%, rgba(7, 16, 24, 0.72));
     backdrop-filter: blur(18px);
     border-bottom: 1px solid rgba(147, 197, 253, 0.12);
@@ -69,14 +69,14 @@ body.rules-detail-open {
 }
 
 .header .logo-title {
-    font-size: clamp(20px, 2.4vw, 24px);
+    font-size: clamp(18px, 2vw, 22px);
 }
 
 .page-header,
 .hero {
-    margin: 12px 0 16px;
-    padding: 20px 18px;
-    border-radius: 22px;
+    margin: 10px 0 12px;
+    padding: 16px 16px;
+    border-radius: 18px;
     border: 1px solid rgba(147, 197, 253, 0.14);
     background:
         radial-gradient(circle at top left, rgba(79, 209, 197, 0.12), transparent 30%),
@@ -90,8 +90,8 @@ body.rules-detail-open {
     content: '';
     position: absolute;
     inset: auto -72px -112px auto;
-    width: 220px;
-    height: 220px;
+    width: 180px;
+    height: 180px;
     border-radius: 50%;
     background: radial-gradient(circle, rgba(79, 209, 197, 0.14), transparent 68%);
     pointer-events: none;
@@ -116,7 +116,7 @@ body.rules-detail-open {
 
 .page-title,
 .hero-title {
-    font-size: clamp(24px, 3vw, 30px);
+    font-size: clamp(20px, 2.2vw, 24px);
     font-weight: 700;
     line-height: 1.08;
     letter-spacing: -0.04em;
@@ -130,15 +130,15 @@ body.rules-detail-open {
     margin-top: 8px;
     max-width: 820px;
     color: var(--muted);
-    font-size: 13px;
-    line-height: 1.68;
+    font-size: 12px;
+    line-height: 1.58;
 }
 
 .hero-kicker,
 .section-kicker,
 .page-kicker {
-    font-size: 11px;
-    letter-spacing: 1.5px;
+    font-size: 10px;
+    letter-spacing: 1.3px;
     text-transform: uppercase;
     color: var(--accent);
     font-family: var(--font-mono);
@@ -148,8 +148,8 @@ body.rules-detail-open {
 .hero-actions,
 .hero-meta {
     display: grid;
-    gap: 10px;
-    min-width: min(100%, 180px);
+    gap: 8px;
+    min-width: min(100%, 170px);
 }
 
 [id="environmentHeader"] {
@@ -167,8 +167,8 @@ body.rules-detail-open {
 .hero-status,
 .meta-line {
     color: var(--muted);
-    font-size: 11px;
-    line-height: 1.6;
+    font-size: 10.5px;
+    line-height: 1.55;
     font-family: var(--font-mono);
 }
 
@@ -181,7 +181,7 @@ body.rules-detail-open {
     display: flex;
     flex-wrap: wrap;
     align-items: stretch;
-    gap: 10px;
+    gap: 8px;
 }
 
 .page-top-section {
@@ -189,8 +189,8 @@ body.rules-detail-open {
 }
 
 .page-top-section[data-page-top-section="compact"] {
-    margin: 8px 0 14px;
-    padding: 16px 18px;
+    margin: 8px 0 12px;
+    padding: 12px 14px;
     border-radius: var(--page-card-radius-compact);
     border: 1px solid rgba(147, 197, 253, 0.12);
     background:
@@ -237,8 +237,8 @@ body.rules-detail-open {
 
 .page-top-section-meta {
     color: var(--muted);
-    font-size: 11px;
-    line-height: 1.6;
+    font-size: 10.5px;
+    line-height: 1.55;
     text-align: right;
     font-family: var(--font-mono);
 }
@@ -261,15 +261,15 @@ body.rules-detail-open {
 }
 
 .page-top-section[data-page-top-section="compact"] .page-title {
-    font-size: clamp(20px, 2vw, 24px);
+    font-size: clamp(18px, 1.8vw, 22px);
     line-height: 1.12;
 }
 
 .page-top-section[data-page-top-section="compact"] .page-copy {
     margin-top: 6px;
     max-width: 640px;
-    font-size: 12px;
-    line-height: 1.55;
+    font-size: 11.5px;
+    line-height: 1.5;
 }
 
 .page-toolbar-row,
@@ -353,7 +353,7 @@ body.rules-detail-open {
 .ticket-grid,
 .meta-grid,
 .stats-grid {
-    gap: 12px;
+    gap: 10px;
 }
 
 .summary-card,
@@ -429,7 +429,7 @@ body.rules-detail-open {
     justify-content: space-between;
     align-items: flex-start;
     gap: var(--space-3, 12px);
-    padding: var(--space-4, 16px) var(--space-4, 16px) var(--space-3, 12px);
+    padding: 12px 12px 9px;
 }
 
 .panel-header,
@@ -440,7 +440,7 @@ body.rules-detail-open {
 
 .panel-title,
 .section-title {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     line-height: 1.3;
     color: var(--text);
@@ -450,8 +450,8 @@ body.rules-detail-open {
 .section-meta,
 .panel-subtitle {
     color: var(--muted);
-    font-size: 11px;
-    line-height: 1.6;
+    font-size: 10.5px;
+    line-height: 1.55;
     text-align: right;
     font-family: var(--font-mono);
 }
@@ -460,7 +460,7 @@ body.rules-detail-open {
 .section-body {
     flex: 1 1 auto;
     min-height: 0;
-    padding: var(--page-card-padding) var(--space-4, 16px) var(--space-4, 16px);
+    padding: var(--page-card-padding) 12px 12px;
 }
 
 .panel > .panel-body,
@@ -491,8 +491,8 @@ body.rules-detail-open {
 .chip-muted {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
+    gap: 6px;
+    padding: 6px 10px;
     border-radius: 999px;
     border: var(--page-chip-border);
     background: var(--page-chip-bg);
@@ -555,9 +555,9 @@ body.rules-detail-open {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    min-height: 38px;
-    padding: 9px 14px;
-    border-radius: 12px;
+    min-height: 36px;
+    padding: 8px 12px;
+    border-radius: 10px;
     border: var(--page-button-border);
     background: var(--page-button-bg);
     color: var(--text);
@@ -705,11 +705,11 @@ body.rules-detail-open {
 }
 
 .refresh-btn.page-refresh-trigger.page-refresh-trigger.is-compact {
-    min-width: 42px;
-    min-height: 38px;
-    padding: 9px 12px;
+    min-width: 40px;
+    min-height: 36px;
+    padding: 8px 10px;
     border-radius: 12px;
-    font-size: 15px;
+    font-size: 14px;
     line-height: 1;
 }
 
@@ -771,12 +771,12 @@ body.rules-detail-open {
     input[type="password"],
     textarea
 ) {
-    min-height: 38px;
-    border-radius: 12px;
+    min-height: 36px;
+    border-radius: 10px;
     border: 1px solid rgba(99, 179, 237, 0.14);
     background: var(--page-input-bg);
     color: var(--text);
-    font-size: 13px;
+    font-size: 12.5px;
     line-height: 1.35;
     outline: none;
     transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
@@ -819,7 +819,7 @@ body.rules-detail-open {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 24px;
+    padding: 18px;
     background: rgba(7, 16, 24, 0.78);
     backdrop-filter: blur(10px);
     transition: opacity 0.24s ease, visibility 0.24s ease;
@@ -833,8 +833,8 @@ body.rules-detail-open {
 
 .page-loading-card {
     width: min(440px, 100%);
-    padding: 20px 18px;
-    border-radius: 18px;
+    padding: 16px;
+    border-radius: 16px;
     border: 1px solid rgba(147,197,253,0.14);
     background:
         radial-gradient(circle at top right, rgba(246,173,85,0.14), transparent 36%),
@@ -844,7 +844,7 @@ body.rules-detail-open {
 }
 
 .page-loading-title {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 700;
     color: var(--text);
 }
@@ -858,13 +858,13 @@ body.rules-detail-open {
 
 .page-loading-bars {
     display: grid;
-    gap: 10px;
-    margin-top: 16px;
+    gap: 8px;
+    margin-top: 12px;
 }
 
 .page-loading-bar {
     position: relative;
-    height: 10px;
+    height: 8px;
     border-radius: 999px;
     overflow: hidden;
     background: rgba(255,255,255,0.06);
@@ -890,7 +890,7 @@ body.rules-detail-open {
 @media (max-width: 900px) {
     .page-header,
     .hero {
-        padding: 18px 16px;
+        padding: 14px 14px;
     }
 
     .page-top-section[data-page-top-section="compact"] {
@@ -899,7 +899,7 @@ body.rules-detail-open {
     }
 
     .page-top-section[data-page-top-section="compact"] .page-title {
-        font-size: 20px;
+        font-size: 18px;
     }
 
     .header-side,
@@ -921,24 +921,24 @@ body.rules-detail-open {
     .section-header,
     .section-head,
     .group-header {
-        padding: 14px 14px 10px;
+        padding: 12px 12px 9px;
     }
 
     .panel,
     .section {
-        min-height: min(var(--page-panel-min-height), 260px);
+        min-height: min(var(--page-panel-min-height), 220px);
     }
 
     .panel-body,
     .section-body {
-        padding: var(--card-padding-compact, 12px) 14px 14px;
+        padding: var(--card-padding-compact, 10px) 12px 12px;
     }
 }
 
 @media (max-width: 640px) {
     .page-title,
     .hero-title {
-        font-size: 22px;
+        font-size: 20px;
     }
 
     .page-copy,
@@ -948,7 +948,7 @@ body.rules-detail-open {
 
     .page-header,
     .hero {
-        border-radius: 20px;
+        border-radius: 18px;
     }
 
     :where(
@@ -1021,4 +1021,49 @@ body.rules-detail-open {
 
 @keyframes ibkrPageLoadingShimmer {
     100% { transform: translateX(100%); }
+}
+
+
+/* Compact cohesion pass for shared ops surfaces. */
+.service-topology-shell,
+.ops-summary-shell,
+.quality-route-panel,
+.rebuild-guard-panel,
+.warmup-guide-card,
+.warmup-link-summary,
+.runtime-link-summary {
+    border: var(--page-card-border);
+    border-radius: var(--page-card-radius-compact);
+    background: linear-gradient(180deg, rgba(10, 24, 34, 0.94), rgba(7, 16, 24, 0.92));
+    box-shadow: var(--page-card-shadow);
+}
+
+.service-topology-shell,
+.ops-summary-shell,
+.quality-route-panel,
+.rebuild-guard-panel,
+.warmup-guide-card {
+    padding: var(--page-card-padding);
+}
+
+:where(.metric-value, .summary-value, .stat-value) {
+    line-height: 1.05;
+}
+
+@media (max-width: 640px) {
+    .page-header,
+    .hero {
+        padding: 13px 12px;
+    }
+
+    .chip,
+    .status-chip,
+    .hero-chip,
+    .list-chip,
+    .mini-chip,
+    .highlight-chip,
+    .warn-chip,
+    .chip-muted {
+        padding: 6px 9px;
+    }
 }

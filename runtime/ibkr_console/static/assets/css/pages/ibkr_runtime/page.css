@@ -1299,3 +1299,104 @@
                 grid-column: 1 / -1;
             }
         }
+
+/* Cohesion compact pass: normalize page-local sizing after legacy page rules. */
+:where(.hero, .page-header) {
+    padding: 14px 16px;
+    border-radius: 18px;
+    box-shadow: 0 16px 36px rgba(2, 8, 23, 0.24);
+}
+
+:where(.hero-title, .page-title) {
+    font-size: clamp(20px, 2vw, 24px);
+    line-height: 1.12;
+    letter-spacing: -0.03em;
+}
+
+:where(.hero-copy, .page-copy, .panel-copy, .section-copy, .summary-copy, .metric-copy, .legend-copy, .rules-panel-subtitle, .rules-section-copy, .quality-route-copy, .guard-copy) {
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+:where(.hero-kicker, .page-kicker, .panel-kicker, .summary-label, .metric-label, .rules-panel-kicker, .rules-section-label, .quality-route-kicker, .quality-route-label, .guard-kicker) {
+    font-size: 10px;
+    letter-spacing: 1.1px;
+}
+
+:where(.summary-card, .metric-card, .stat-card, .surface-card, .legend-card) {
+    padding: 12px;
+    border-radius: 14px;
+}
+
+:where(.summary-value, .metric-value, .stat-value, .detail-value) {
+    font-size: clamp(18px, 2vw, 22px);
+    line-height: 1.05;
+}
+
+@media (max-width: 720px) {
+    :where(.hero, .page-header) {
+        padding: 12px;
+        border-radius: 16px;
+    }
+
+    :where(.hero-title, .page-title) {
+        font-size: 20px;
+    }
+}
+
+/* Runtime density tune. */
+.page-shell {
+    padding: 0 14px 84px;
+}
+
+.hero {
+    padding: 14px 16px;
+    border-radius: 18px;
+}
+
+.auth-banner,
+.runtime-control-group,
+.panel,
+.metric-card,
+.pipeline-card,
+.pipeline-note {
+    border-radius: 14px;
+}
+
+.auth-banner,
+.runtime-control-group,
+.metric-card,
+.pipeline-card {
+    padding: 12px;
+}
+
+.runtime-control-panel,
+.service-control-grid,
+.action-section,
+.pipeline-stack,
+.pipeline-health {
+    gap: 10px;
+}
+
+.auth-banner-title,
+.runtime-control-title {
+    font-size: 18px;
+}
+
+.auth-banner-copy,
+.runtime-control-copy,
+.runtime-note {
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.panel-header,
+.panel-body {
+    padding: 12px;
+}
+
+@media (max-width: 720px) {
+    .page-shell {
+        padding-inline: 12px;
+    }
+}

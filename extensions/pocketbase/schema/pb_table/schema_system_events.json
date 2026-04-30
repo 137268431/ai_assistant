@@ -64,6 +64,7 @@
                 "values": [
                     "qc",
                     "ibkr_compute",
+                    "ibkr_api",
                     "pb",
                     "manual"
                 ]

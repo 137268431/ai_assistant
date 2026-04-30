@@ -998,3 +998,160 @@
                 justify-self: start;
             }
         }
+
+/* Cohesion compact pass: normalize page-local sizing after legacy page rules. */
+:where(.hero, .page-header) {
+    padding: 14px 16px;
+    border-radius: 18px;
+    box-shadow: 0 16px 36px rgba(2, 8, 23, 0.24);
+}
+
+:where(.hero-title, .page-title) {
+    font-size: clamp(20px, 2vw, 24px);
+    line-height: 1.12;
+    letter-spacing: -0.03em;
+}
+
+:where(.hero-copy, .page-copy, .panel-copy, .section-copy, .summary-copy, .metric-copy, .legend-copy, .rules-panel-subtitle, .rules-section-copy, .quality-route-copy, .guard-copy) {
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+:where(.hero-kicker, .page-kicker, .panel-kicker, .summary-label, .metric-label, .rules-panel-kicker, .rules-section-label, .quality-route-kicker, .quality-route-label, .guard-kicker) {
+    font-size: 10px;
+    letter-spacing: 1.1px;
+}
+
+:where(.summary-card, .metric-card, .stat-card, .surface-card, .legend-card) {
+    padding: 12px;
+    border-radius: 14px;
+}
+
+:where(.summary-value, .metric-value, .stat-value, .detail-value) {
+    font-size: clamp(18px, 2vw, 22px);
+    line-height: 1.05;
+}
+
+@media (max-width: 720px) {
+    :where(.hero, .page-header) {
+        padding: 12px;
+        border-radius: 16px;
+    }
+
+    :where(.hero-title, .page-title) {
+        font-size: 20px;
+    }
+}
+
+/* Home density tune. */
+.home-shell {
+    padding: 14px 16px 84px;
+}
+
+.home-main,
+.home-primary-grid,
+.home-secondary-grid,
+.home-overview-grid,
+.home-quick-grid,
+.home-targets-grid,
+.home-market-grid,
+.home-activity-list {
+    gap: 10px;
+}
+
+.home-panel {
+    padding: 14px;
+    border-radius: 18px;
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.20);
+}
+
+.home-panel-head {
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.home-panel-title,
+.home-target-symbol {
+    font-size: 18px;
+}
+
+.home-panel-copy {
+    margin-top: 5px;
+    font-size: 11.5px;
+    line-height: 1.5;
+}
+
+.home-overview-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    gap: 12px;
+}
+
+.home-stat-card {
+    min-height: 108px;
+    padding: 13px;
+    gap: 8px;
+    border-radius: 16px;
+}
+
+.home-stat-value {
+    font-size: clamp(22px, 2.4vw, 28px);
+}
+
+.home-stat-label {
+    font-size: 13px;
+}
+
+.home-stat-foot,
+.home-panel-meta,
+.home-inline-btn,
+.home-tool-chip {
+    font-size: 10px;
+}
+
+.home-quick-link {
+    min-height: 96px;
+    padding: 12px;
+    gap: 8px;
+    border-radius: 16px;
+}
+
+.home-quick-icon,
+.home-activity-icon {
+    font-size: 18px;
+}
+
+.home-quick-title,
+.home-market-price {
+    font-size: 14px;
+}
+
+.home-target-card,
+.home-market-card,
+.home-activity-item {
+    padding: 11px;
+    border-radius: 14px;
+}
+
+.home-primary-grid > .home-panel {
+    min-height: 0;
+    max-height: none;
+}
+
+.home-primary-grid > .home-panel > .home-panel-head {
+    min-height: 0;
+}
+
+@media (max-width: 720px) {
+    .home-shell {
+        padding: 12px 12px 88px;
+    }
+
+    .home-stat-value {
+        font-size: 22px;
+    }
+
+    .home-stat-card,
+    .home-quick-link {
+        padding: 11px;
+    }
+}

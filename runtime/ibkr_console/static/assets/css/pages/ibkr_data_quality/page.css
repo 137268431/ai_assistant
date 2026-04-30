@@ -540,3 +540,104 @@
         grid-template-columns: 1fr;
       }
     }
+
+/* Cohesion compact pass: normalize page-local sizing after legacy page rules. */
+:where(.hero, .page-header) {
+    padding: 14px 16px;
+    border-radius: 18px;
+    box-shadow: 0 16px 36px rgba(2, 8, 23, 0.24);
+}
+
+:where(.hero-title, .page-title) {
+    font-size: clamp(20px, 2vw, 24px);
+    line-height: 1.12;
+    letter-spacing: -0.03em;
+}
+
+:where(.hero-copy, .page-copy, .panel-copy, .section-copy, .summary-copy, .metric-copy, .legend-copy, .rules-panel-subtitle, .rules-section-copy, .quality-route-copy, .guard-copy) {
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+:where(.hero-kicker, .page-kicker, .panel-kicker, .summary-label, .metric-label, .rules-panel-kicker, .rules-section-label, .quality-route-kicker, .quality-route-label, .guard-kicker) {
+    font-size: 10px;
+    letter-spacing: 1.1px;
+}
+
+:where(.summary-card, .metric-card, .stat-card, .surface-card, .legend-card) {
+    padding: 12px;
+    border-radius: 14px;
+}
+
+:where(.summary-value, .metric-value, .stat-value, .detail-value) {
+    font-size: clamp(18px, 2vw, 22px);
+    line-height: 1.05;
+}
+
+@media (max-width: 720px) {
+    :where(.hero, .page-header) {
+        padding: 12px;
+        border-radius: 16px;
+    }
+
+    :where(.hero-title, .page-title) {
+        font-size: 20px;
+    }
+}
+
+/* Data quality density tune. */
+.page-shell {
+    padding: 14px 14px 96px;
+}
+
+.hero,
+.panel {
+    border-radius: 18px;
+}
+
+.hero,
+.panel,
+.quality-route-panel {
+    padding: 14px;
+}
+
+.summary-grid,
+.action-grid,
+.legend-grid,
+.quality-route-grid {
+    gap: 10px;
+}
+
+.summary-card,
+.legend-card,
+.quality-route-card,
+.decision-box {
+    padding: 12px;
+    border-radius: 14px;
+}
+
+.panel-title,
+.quality-route-title {
+    font-size: 16px;
+}
+
+th,
+td {
+    padding: 9px 8px;
+    font-size: 12px;
+}
+
+th {
+    font-size: 10px;
+}
+
+@media (max-width: 720px) {
+    .page-shell {
+        padding: 10px 10px 88px;
+    }
+
+    .hero-top,
+    .quality-route-head {
+        gap: 10px;
+    }
+}

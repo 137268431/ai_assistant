@@ -39,6 +39,23 @@ def _matches_time_window(current_us: str, target_et: str) -> bool:
     return current[11:16] == target[:5]
 
 
+def _event_delivery_finalized(event_result: dict[str, Any]) -> bool:
+    return bool(
+        event_result.get("notified")
+        or event_result.get("skipped")
+        or event_result.get("suppressed")
+    )
+
+
+def _event_result_error(event_result: dict[str, Any]) -> str:
+    explicit_error = _to_text(event_result.get("error"))
+    if explicit_error:
+        return explicit_error
+    if _event_delivery_finalized(event_result):
+        return ""
+    return _to_text(event_result.get("reason")) or "notification_failed"
+
+
 def _summary_detail(summary: dict[str, Any], monitor: dict[str, Any], *, phase: str, timestamp_us: str) -> dict[str, Any]:
     compute = _as_dict(summary.get("ibkr_compute"))
     runtime = _as_dict(summary.get("ibkr_runtime"))
@@ -162,25 +179,43 @@ def build_system_daily_report_response(
         return {"ok": True, "environment": environment, "skipped": True, "reason": "already_sent", "source": "ibkr-api", "job_id": "system_daily_report"}, 200
     summary = build_system_summary_payload(environment)
     monitor = build_system_monitor_payload(environment)
-    event_result = emit_system_event(
-        event_type="daily_report",
-        level="info",
-        source="ibkr_api",
-        title="IBKR 收盘汇总",
-        detail=_summary_detail(summary, monitor, phase="close", timestamp_us=times["us"]),
-        environment=environment,
+    event_result = _as_dict(
+        emit_system_event(
+            event_type="daily_report",
+            level="info",
+            source="ibkr_api",
+            title="IBKR 收盘汇总",
+            detail=_summary_detail(summary, monitor, phase="close", timestamp_us=times["us"]),
+            environment=environment,
+        )
     )
+    finalized = _event_delivery_finalized(event_result)
+    close_error = _event_result_error(event_result)
     next_state = {
         **current_state,
-        "close_sent_at": times["us"],
         "close_title": "IBKR 收盘汇总",
         "close_status": _to_text(summary.get("status")) or "offline",
+        "close_last_attempt_at": times["us"],
+        "close_notified": bool(event_result.get("notified")),
+        "close_persisted": bool(event_result.get("persisted")),
+        "close_message_id": _to_text(event_result.get("message_id")),
+        "close_skipped": bool(event_result.get("skipped")),
+        "close_suppressed": bool(event_result.get("suppressed")),
+        "close_reason": _to_text(event_result.get("reason")),
+        "close_error": close_error,
     }
+    if finalized:
+        next_state["close_sent_at"] = times["us"]
     upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
     return {
-        "ok": True,
+        "ok": finalized,
         "environment": environment,
         "notified": bool(event_result.get("notified")),
+        "persisted": bool(event_result.get("persisted")),
+        "message_id": _to_text(event_result.get("message_id")),
+        "skipped": bool(event_result.get("skipped")),
+        "suppressed": bool(event_result.get("suppressed")),
+        "error": close_error,
         "state": next_state,
         "source": "ibkr-api",
         "job_id": "system_daily_report",
