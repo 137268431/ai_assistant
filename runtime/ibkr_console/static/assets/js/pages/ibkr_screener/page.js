@@ -30,8 +30,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       searchResults: [],
       loaded: false,
       lastRefresh: '尚未加载',
-      loadedRole: ''
+      loadedRole: '',
+      configLoadError: ''
     };
+    const CONFIG_MONITOR_SOURCE = 'config_market_ws_symbols';
     const currentTargetState = {
       page: 1,
       perPage: 10,
@@ -312,6 +314,79 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         : 'watchlist / global pool / manual upkeep';
     }
 
+    function isConfigMonitorItem(item) {
+      return String(item?._source || '').trim() === CONFIG_MONITOR_SOURCE;
+    }
+
+    function getConfigPageUrl() {
+      return buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
+    }
+
+    function pickScopedConfigRecord(records = []) {
+      const priority = {
+        [currentEnvironment]: 3,
+        global: 2,
+        '': 1,
+      };
+      return (Array.isArray(records) ? records : [])
+        .slice()
+        .sort((left, right) => {
+          const leftEnv = String(left?.environment || '').trim().toLowerCase();
+          const rightEnv = String(right?.environment || '').trim().toLowerCase();
+          const priorityDiff = (priority[rightEnv] || 0) - (priority[leftEnv] || 0);
+          if (priorityDiff !== 0) return priorityDiff;
+          return String(right?.updated || '').localeCompare(String(left?.updated || ''));
+        })[0] || null;
+    }
+
+    async function loadConfigRecordValue(key, fallbackValue = '') {
+      const result = await apiFetch('config', {
+        filter: `key = "${escapeFilterValue(key)}" && (environment = "${escapeFilterValue(currentEnvironment)}" || environment = "global" || environment = "")`,
+        sort: '-updated',
+        perPage: 20,
+        page: 1
+      });
+      const record = pickScopedConfigRecord(Array.isArray(result?.items) ? result.items : []);
+      return {
+        value: record?.value ?? fallbackValue,
+        record,
+      };
+    }
+
+    async function loadConfiguredMarketMonitorItems(existingItems = []) {
+      try {
+        const { value, record } = await loadConfigRecordValue('ibkr_market_ws_symbols', '');
+        const configuredSymbols = parseSymbolList(value);
+        const existingMonitorSymbols = new Set(
+          (Array.isArray(existingItems) ? existingItems : [])
+            .filter((item) => normalizeWatchlistRole(item.symbol_role) === 'market_monitor')
+            .map((item) => String(item.symbol || '').trim().toUpperCase())
+            .filter(Boolean)
+        );
+        watchlistState.configLoadError = '';
+        return configuredSymbols
+          .filter((symbol) => !existingMonitorSymbols.has(symbol))
+          .map((symbol) => ({
+            id: `config:${record?.id || 'ibkr_market_ws_symbols'}:${symbol}`,
+            symbol,
+            exchange: 'CONFIG',
+            industry: 'ibkr_market_ws_symbols',
+            environment: String(record?.environment || 'global').trim().toLowerCase() || 'global',
+            symbol_role: 'market_monitor',
+            manual_member: 'config',
+            note: '来自 ibkr_market_ws_symbols 配置；用于 runtime 默认市场监控，不直接交易。',
+            updated: record?.updated || '',
+            updated_us: record?.updated ? 'CONFIG' : '',
+            us_time: record?.updated ? 'CONFIG' : '',
+            _source: CONFIG_MONITOR_SOURCE,
+          }));
+      } catch (error) {
+        console.warn('加载市场监控配置失败:', error);
+        watchlistState.configLoadError = error.message || String(error);
+        return [];
+      }
+    }
+
     function renderDomainTabs() {
       const items = [
         {
@@ -340,12 +415,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
       ];
       return `
-        <div class="domain-tabs">
+        <div class="page-bridge screener-domain-bridge">
           ${items.map((item) => `
-            <button class="domain-tab ${item.tab === activeTab ? 'active' : ''}" type="button" data-tab="${item.tab}">
-              <div class="domain-tab-kicker">${escapeHtml(item.kicker)}</div>
-              <div class="domain-tab-label">${escapeHtml(item.label)}</div>
-              <div class="domain-tab-copy">${escapeHtml(item.copy)}</div>
+            <button class="page-bridge-link screener-domain-tab ${item.tab === activeTab ? 'active' : ''}" type="button" data-tab="${item.tab}">
+              <span class="page-bridge-kicker">${escapeHtml(item.kicker)}</span>
+              <span class="page-bridge-label">${escapeHtml(item.label)}</span>
+              <span class="page-bridge-copy">${escapeHtml(item.copy)}</span>
             </button>
           `).join('')}
         </div>
@@ -551,6 +626,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     }
 
     function formatWatchlistMember(item) {
+      if (isConfigMonitorItem(item)) return 'CONFIG';
       const raw = item ? item.manual_member : undefined;
       const normalized = String(raw == null ? '' : raw).trim().toLowerCase();
       if (raw === false || normalized === 'false' || normalized === '0' || normalized === 'no') {
@@ -606,13 +682,19 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const currentCount = items.filter((item) => String(item.environment || '').trim().toLowerCase() === currentEnvironment).length;
       const globalCount = items.filter((item) => String(item.environment || '').trim().toLowerCase() === 'global').length;
       const legacyCount = items.filter((item) => !String(item.environment || '').trim()).length;
+      const configCount = items.filter((item) => isConfigMonitorItem(item)).length;
       const roleLabel = getWatchlistRoleLabel();
-      renderSummaryCards([
+      const cards = [
         { label: 'VISIBLE', value: items.length, copy: `可见${roleLabel}数` },
         { label: 'CURRENT ENV', value: currentCount, copy: '当前环境', className: 'good' },
         { label: 'GLOBAL', value: globalCount, copy: 'GLOBAL 共享', className: 'teal' },
-        { label: 'LEGACY', value: legacyCount, copy: '旧记录', className: 'accent' }
-      ]);
+      ];
+      if (getWatchlistRoleForTab() === 'market_monitor') {
+        cards.push({ label: 'CONFIG', value: configCount, copy: '配置监控', className: 'accent' });
+      } else {
+        cards.push({ label: 'LEGACY', value: legacyCount, copy: '旧记录', className: 'accent' });
+      }
+      renderSummaryCards(cards);
     }
 
     function getDailyTargetDate() {
@@ -683,14 +765,16 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const visible = getFilteredWatchlistItems().length;
         const roleLabel = getWatchlistRoleLabel();
         const isMonitorTab = getWatchlistRoleForTab() === 'market_monitor';
+        const configCount = watchlistState.items.filter((item) => isConfigMonitorItem(item)).length;
         document.getElementById('heroTitle').textContent = isMonitorTab ? '维护市场监控池。' : '维护运行标池。';
         document.getElementById('heroCopy').textContent = isMonitorTab
-          ? '搜索 IBKR 合约，写入环境或 GLOBAL。'
+          ? '显示 ibkr_market_ws_symbols 配置监控 + 手动 market_monitor 记录；只监控不交易。'
           : '搜索 IBKR 合约，写入环境或 GLOBAL。';
         setPageContextMeta([
           { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
           { label: 'Scope', value: `${getEnvironmentLabel(currentEnvironment)} + GLOBAL` },
           { label: '角色', value: roleLabel },
+          ...(isMonitorTab ? [{ label: '配置', value: `${configCount} 个` }] : []),
           { label: '可见', value: `${visible} 条` },
         ]);
         setHeroMetaLine('marketDateMeta');
@@ -703,7 +787,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           : '支持 ticker 或公司名。';
         document.getElementById('watchlistListPanelTitle').textContent = isMonitorTab ? '已有市场监控记录' : '已有 watchlist 记录';
         document.getElementById('watchlistListPanelCopy').textContent = isMonitorTab
-          ? '管理 market_monitor 记录。'
+          ? '配置项来自 ibkr_market_ws_symbols，手动项来自 watchlist.market_monitor。'
           : '管理 trade watchlist 记录。';
         document.getElementById('searchMeta').textContent = isMonitorTab ? '输入后回车或点击搜索，加入市场监控。' : '输入后回车或点击搜索。';
         document.getElementById('batchMeta').textContent = isMonitorTab
@@ -842,7 +926,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     }
 
     function bindTabEvents() {
-      document.querySelectorAll('.domain-tab').forEach((button) => {
+      document.querySelectorAll('.screener-domain-tab').forEach((button) => {
         button.addEventListener('click', async () => {
           await activateTab(button.dataset.tab || 'screener');
         });
@@ -1123,33 +1207,39 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         return;
       }
 
-      mount.innerHTML = items.map((item) => `
-        <article class="mobile-data-card">
-          <div class="mobile-data-head">
-            <div>
-              <a class="mobile-data-symbol" href="${buildChartUrl(item.symbol || '')}">${escapeHtml(item.symbol || '--')}</a>
-              <div class="mobile-data-time">${escapeHtml(item.exchange || '--')} / ${escapeHtml(item.industry || '--')}</div>
+      mount.innerHTML = items.map((item) => {
+        const configItem = isConfigMonitorItem(item);
+        return `
+          <article class="mobile-data-card">
+            <div class="mobile-data-head">
+              <div>
+                <a class="mobile-data-symbol" href="${buildChartUrl(item.symbol || '')}">${escapeHtml(item.symbol || '--')}</a>
+                <div class="mobile-data-time">${escapeHtml(item.exchange || '--')} / ${escapeHtml(item.industry || '--')}</div>
+              </div>
+              <div class="mobile-chip-row">
+                <span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span>
+                ${configItem ? statusChip('CONFIG', 'config') : statusChip(formatWatchlistRole(item.symbol_role), normalizeWatchlistRole(item.symbol_role))}
+              </div>
             </div>
-            <div class="mobile-chip-row">
-              <span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span>
-              ${statusChip(formatWatchlistRole(item.symbol_role), normalizeWatchlistRole(item.symbol_role))}
+
+            <div class="mobile-data-grid">
+              ${buildMobileMetricCard('成员属性', escapeHtml(formatWatchlistMember(item)))}
+              ${buildMobileMetricCard('更新时间', `${escapeHtml(item.updated_us || item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</span>`)}
             </div>
-          </div>
 
-          <div class="mobile-data-grid">
-            ${buildMobileMetricCard('成员属性', escapeHtml(formatWatchlistMember(item)))}
-            ${buildMobileMetricCard('更新时间', `${escapeHtml(item.updated_us || item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</span>`)}
-          </div>
+            ${buildMobileSection('备注', escapeHtml(item.note || '--'))}
 
-          ${buildMobileSection('备注', escapeHtml(item.note || '--'))}
-
-          <div class="mobile-data-actions">
-            <a class="mini-link" href="${buildChartUrl(item.symbol || '')}">Chart</a>
-            <button class="mini-btn" type="button" onclick="editItem('${escapeHtml(item.id || '')}')">编辑</button>
-            <button class="mini-btn danger" type="button" onclick="removeItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}', '${escapeHtml(formatRecordEnvironment(item.environment))}')">删除</button>
-          </div>
-        </article>
-      `).join('');
+            <div class="mobile-data-actions">
+              <a class="mini-link" href="${buildChartUrl(item.symbol || '')}">Chart</a>
+              ${configItem
+                ? `<a class="mini-link" href="${getConfigPageUrl()}">改配置</a>`
+                : `<button class="mini-btn" type="button" onclick="editItem('${escapeHtml(item.id || '')}')">编辑</button>
+                   <button class="mini-btn danger" type="button" onclick="removeItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}', '${escapeHtml(formatRecordEnvironment(item.environment))}')">删除</button>`
+              }
+            </div>
+          </article>
+        `;
+      }).join('');
     }
 
     function mergeTodayTargetRowWithRealtimeQuote(row) {
@@ -2595,40 +2685,47 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         renderWatchlistPagination(items, []);
       } else {
         const pageItems = getWatchlistPageItems(items);
-        table.innerHTML = pageItems.map((item) => `
-          <tr>
-            <td>
-              <div class="meta-stack">
-                <div class="table-symbol">${escapeHtml(item.symbol || '--')}</div>
-                <small>${escapeHtml(item.id || '')}</small>
-              </div>
-            </td>
-            <td>${escapeHtml(item.exchange || '--')}</td>
-            <td>${escapeHtml(item.industry || '--')}</td>
-            <td><span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span></td>
-            <td>${escapeHtml(formatWatchlistRole(item.symbol_role || 'trade'))}</td>
-            <td>${escapeHtml(formatWatchlistMember(item))}</td>
-            <td>${escapeHtml(item.note || '--')}</td>
-            <td>
-              <div class="meta-stack">
-                <span>${escapeHtml(item.updated_us || item.us_time || '--')}</span>
-                <small>${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</small>
-              </div>
-            </td>
-            <td>
-              <div class="row-actions">
-                <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
-                <button class="mini-btn" type="button" onclick="editItem('${escapeHtml(item.id || '')}')">编辑</button>
-                <button class="mini-btn danger" type="button" onclick="removeItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}', '${escapeHtml(formatRecordEnvironment(item.environment))}')">删除</button>
-              </div>
-            </td>
-          </tr>
-        `).join('');
+        table.innerHTML = pageItems.map((item) => {
+          const configItem = isConfigMonitorItem(item);
+          return `
+            <tr>
+              <td>
+                <div class="meta-stack">
+                  <div class="table-symbol">${escapeHtml(item.symbol || '--')}</div>
+                  <small>${escapeHtml(configItem ? 'ibkr_market_ws_symbols' : (item.id || ''))}</small>
+                </div>
+              </td>
+              <td>${escapeHtml(item.exchange || '--')}</td>
+              <td>${escapeHtml(item.industry || '--')}</td>
+              <td><span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span></td>
+              <td>${configItem ? statusChip('CONFIG', 'config') : escapeHtml(formatWatchlistRole(item.symbol_role || 'trade'))}</td>
+              <td>${escapeHtml(formatWatchlistMember(item))}</td>
+              <td>${escapeHtml(item.note || '--')}</td>
+              <td>
+                <div class="meta-stack">
+                  <span>${escapeHtml(item.updated_us || item.us_time || '--')}</span>
+                  <small>${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</small>
+                </div>
+              </td>
+              <td>
+                <div class="row-actions">
+                  <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
+                  ${configItem
+                    ? `<a class="mini-link" href="${getConfigPageUrl()}">改配置</a>`
+                    : `<button class="mini-btn" type="button" onclick="editItem('${escapeHtml(item.id || '')}')">编辑</button>
+                       <button class="mini-btn danger" type="button" onclick="removeItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}', '${escapeHtml(formatRecordEnvironment(item.environment))}')">删除</button>`
+                  }
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('');
         renderWatchlistCards(pageItems);
         renderWatchlistPagination(items, pageItems);
       }
 
-      document.getElementById('listMeta').textContent = `载入 ${watchlistState.items.length} · 可见 ${items.length} · 每页 ${getWatchlistPageSize()}`;
+      const configSuffix = watchlistState.configLoadError ? ` · 配置读取失败: ${watchlistState.configLoadError}` : '';
+      document.getElementById('listMeta').textContent = `载入 ${watchlistState.items.length} · 可见 ${items.length} · 每页 ${getWatchlistPageSize()}${configSuffix}`;
       if (isWatchlistRoleTab()) {
         renderSearchResults();
         updateHero();
@@ -2667,7 +2764,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           sort: '-updated',
           perPage: 200
         });
-        watchlistState.items = Array.isArray(response.items) ? response.items : [];
+        const collectionItems = Array.isArray(response.items) ? response.items : [];
+        const configItems = getWatchlistRoleForTab() === 'market_monitor'
+          ? await loadConfiguredMarketMonitorItems(collectionItems)
+          : [];
+        watchlistState.items = [...collectionItems, ...configItems];
         watchlistState.loaded = true;
         watchlistState.loadedRole = getWatchlistRoleForTab();
         watchlistState.lastRefresh = `${getWatchlistRoleLabel()} 已加载`;
@@ -2678,6 +2779,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         watchlistState.items = [];
         watchlistState.loaded = true;
         watchlistState.loadedRole = getWatchlistRoleForTab();
+        watchlistState.configLoadError = '';
         watchlistState.lastRefresh = 'watchlist 加载失败';
         document.getElementById('watchlistTable').innerHTML = `<tr><td colspan="9" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
         renderMobileCardState('watchlistCards', error.message || error);
@@ -2715,6 +2817,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const item = watchlistState.items.find((row) => String(row.id || '') === String(recordId || ''));
       if (!item) {
         showToast('记录不存在');
+        return;
+      }
+      if (isConfigMonitorItem(item)) {
+        showToast('配置来源的市场监控标的请到配置页修改 ibkr_market_ws_symbols');
         return;
       }
 
@@ -2779,6 +2885,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
     async function removeItem(recordId, symbol, scopeLabel) {
       if (!recordId) return;
+      const item = watchlistState.items.find((row) => String(row.id || '') === String(recordId || ''));
+      if (isConfigMonitorItem(item)) {
+        showToast('配置来源的市场监控标的请到配置页修改 ibkr_market_ws_symbols');
+        return;
+      }
       if (!window.confirm(`确认删除 ${symbol} (${scopeLabel}) ?`)) return;
       try {
         const payload = await requestJson('/api/custom/ibkr/watchlist/remove', {
@@ -2839,9 +2950,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         return;
       }
 
-      const targets = watchlistState.items.filter((item) => symbols.includes(String(item.symbol || '').trim().toUpperCase()));
+      const matched = watchlistState.items.filter((item) => symbols.includes(String(item.symbol || '').trim().toUpperCase()));
+      const targets = matched.filter((item) => !isConfigMonitorItem(item));
       if (!targets.length) {
-        showToast('当前加载范围内没有匹配记录');
+        showToast(matched.length ? '匹配项来自配置，请到配置页修改 ibkr_market_ws_symbols' : '当前加载范围内没有匹配记录');
         return;
       }
       if (!window.confirm(`确认删除 ${targets.length} 条记录？`)) return;

@@ -1,14 +1,15 @@
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from ibkr_compute.broker.ib_gateway import _IBGatewayApp, _PendingRequest
+from ibkr_compute.broker.ib_gateway import _IBGatewayApp, _PendingRequest, _ib_timestamp_to_ms
 from ibkr_compute.market.data_backfill import DataBackfill
 
 
@@ -45,7 +46,7 @@ class _SequenceBroker:
 
 
 def _et_ms(year, month, day, hour, minute):
-    return int(datetime(year, month, day, hour, minute, tzinfo=timezone(timedelta(hours=-4))).timestamp() * 1000)
+    return int(datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
 
 
 def _history_bar(bar_time_ms):
@@ -53,6 +54,12 @@ def _history_bar(bar_time_ms):
 
 
 class HistoricalRequestFormatDateTest(unittest.TestCase):
+    def test_daily_history_date_parses_as_session_date(self):
+        self.assertEqual(
+            _ib_timestamp_to_ms("20240430"),
+            _et_ms(2024, 4, 30, 0, 0),
+        )
+
     def test_request_historical_bars_uses_epoch_format(self):
         app = _IBGatewayApp("127.0.0.1", 4001, 31)
         app.connect_and_start = mock.Mock(return_value=True)
@@ -131,6 +138,76 @@ class BackfillFutureGuardTest(unittest.TestCase):
             {row["extra"]["request_chunk_period"] for row in rows},
             {"1d", "4d"},
         )
+
+    def test_long_4h_history_requests_are_chunked_directly_from_ibkr(self):
+        first_ms = _et_ms(2020, 1, 15, 12, 0)
+        second_ms = _et_ms(2020, 1, 1, 12, 0)
+        broker = _SequenceBroker(
+            [
+                [_history_bar(first_ms)],
+                [_history_bar(second_ms)],
+            ]
+        )
+        backfill = DataBackfill(
+            data_writer=None,
+            config=None,
+            environment="live",
+            broker=broker,
+        )
+
+        with mock.patch("ibkr_compute.market.data_backfill.time.sleep"):
+            rows = backfill.fetch_history(
+                121665622,
+                "ZTS",
+                interval="4h",
+                exchange="BATS",
+                repair=True,
+                request_period="240d",
+            )
+
+        self.assertEqual([call["duration"] for call in broker.calls], ["120 D", "120 D"])
+        self.assertEqual(broker.calls[0]["bar_size"], "4 hours")
+        self.assertEqual(broker.calls[0]["end_datetime"], "")
+        self.assertEqual(broker.calls[1]["end_datetime"], "20200115 08:00:00 US/Eastern")
+        self.assertEqual(
+            [row["us_time"] for row in rows],
+            [
+                "2020-01-01 12:00:00",
+                "2020-01-15 12:00:00",
+            ],
+        )
+
+    def test_history_concurrency_default_and_cap_allow_gateway_parallelism(self):
+        backfill = DataBackfill(
+            data_writer=None,
+            config=None,
+            environment="live",
+            broker=_FakeBroker([]),
+        )
+
+        self.assertEqual(backfill._max_concurrency(), 8)
+        self.assertEqual(backfill._request_spacing(), 0.35)
+        self.assertEqual(backfill._interval_delay(), 0.10)
+
+        class HighConcurrencyConfig:
+            def get_int_for_environment(self, key, environment, fallback):
+                del environment
+                if key == "ibkr_history_max_concurrency":
+                    return 20
+                return fallback
+
+            def get_float_for_environment(self, key, environment, fallback):
+                del key, environment
+                return fallback
+
+        capped = DataBackfill(
+            data_writer=None,
+            config=HighConcurrencyConfig(),
+            environment="live",
+            broker=_FakeBroker([]),
+        )
+
+        self.assertEqual(capped._max_concurrency(), 10)
 
     def test_fetch_history_drops_unsafe_future_5m_bars(self):
         broker = _FakeBroker(

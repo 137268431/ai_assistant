@@ -234,6 +234,8 @@
       border-radius: 16px;
       background: rgba(8, 12, 20, 0.72);
       border: 1px solid rgba(148, 163, 184, 0.12);
+      min-width: 0;
+      overflow: hidden;
     }
 
     .rules-chip-label {
@@ -249,6 +251,7 @@
       font-size: 22px;
       font-weight: 800;
       line-height: 1.15;
+      overflow-wrap: anywhere;
     }
 
     .rules-chip-copy {
@@ -256,6 +259,8 @@
       color: var(--screen-muted);
       font-size: 12px;
       line-height: 1.5;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .rules-section-list {
@@ -324,6 +329,17 @@
 
     #pageBridge {
       margin-bottom: 6px;
+    }
+
+    .screener-domain-bridge .screener-domain-tab {
+      appearance: none;
+      width: 100%;
+      font-family: var(--screen-body-font);
+      text-align: left;
+    }
+
+    .screener-domain-bridge .screener-domain-tab > * {
+      pointer-events: none;
     }
 
     .domain-tabs {
@@ -477,6 +493,10 @@
       font-size: 12px;
       line-height: 1.42;
       color: var(--screen-muted);
+    }
+
+    #screenerTab > .panel-stack > .panel:first-of-type {
+      min-height: 0;
     }
 
     .subview-panel {
@@ -984,6 +1004,11 @@
     .status-chip.neutral {
       background: rgba(148, 163, 184, 0.14);
       color: var(--screen-muted);
+    }
+
+    .status-chip.config {
+      background: rgba(79, 209, 197, 0.13);
+      color: var(--screen-accent-2);
     }
 
     .reason-pill {

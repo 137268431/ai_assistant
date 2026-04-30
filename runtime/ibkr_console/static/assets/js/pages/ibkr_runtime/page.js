@@ -9,6 +9,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let latestNextActionModel = null;
         let latestRuntimeLoadId = 0;
         let hasLoadedRuntimeData = false;
+        let latestRuntimeBarsSnapshot = [];
+        let latestRuntimeIndicatorSnapshot = [];
+        let runtimeRecentDataLoading = false;
         let runtimePageClosing = false;
         let authActionFeedback = null;
         const CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000;
@@ -343,7 +346,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function deriveDataHealth(latestBar) {
             return buildIbkrDataHealth(latestBar?.bar_time_ms, {
                 symbol: latestBar?.symbol || '',
-                noDataStatus: 'no_data'
+                noDataStatus: runtimeRecentDataLoading && !latestBar ? 'loading' : 'no_data'
             });
         }
 
@@ -883,6 +886,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const today = summary?.today || {};
             const computeHealth = normalizeIbkrComputeHealth(health);
             const dataHealth = deriveDataHealth(latestBar);
+            const dataIsLoading = dataHealth.status === 'loading';
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
             const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
@@ -929,8 +933,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 },
                 {
                     label: 'Data Freshness',
-                    value: dataHealth.last_bar_age_min != null ? `${dataHealth.last_bar_age_min}m` : '--',
-                    copy: dataHealth.last_bar_time_ms ? `${dataHealth.last_symbol || 'n/a'} · ${dataHealth.last_bar_label}` : 'no latest'
+                    value: dataIsLoading ? 'LOADING' : (dataHealth.last_bar_age_min != null ? `${dataHealth.last_bar_age_min}m` : '--'),
+                    copy: dataHealth.last_bar_time_ms ? `${dataHealth.last_symbol || 'n/a'} · ${dataHealth.last_bar_label}` : (dataIsLoading ? 'loading latest bar' : 'no latest')
                 },
                 {
                     label: 'Close Delay',
@@ -1330,6 +1334,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const sessionChipLabel = runtimeStatus.snapshotIncomplete
                 ? 'Session AUTHED'
                 : `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`;
+            const activeEnvironmentTone = String(currentEnvironment || '').trim().toLowerCase() === 'live'
+                ? 'chip-warn'
+                : 'chip-muted';
             const chips = [
                 { label: `Compute ${String(computeStatus).toUpperCase()}`, tone: chipTone(computeStatus) },
                 { label: `Data ${String(dataStatus).toUpperCase()}`, tone: chipTone(dataStatus) },
@@ -1342,7 +1349,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Runtime ${String(status?.service_topology?.runtime_mode || '--').toUpperCase()}`, tone: 'chip-muted' },
-                { label: `Active Env ${String(currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
+                { label: `Active Env ${String(currentEnvironment).toUpperCase()}`, tone: activeEnvironmentTone }
             ];
             document.getElementById('heroBadges').innerHTML = chips.map((chip) => `
                 <span class="status-chip ${chip.tone}"><span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}</span>
@@ -1696,6 +1703,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const latestIndicatorMs = Number(latestIndicator?.bar_time_ms || 0) || 0;
             const latestSignalMs = Number(latestSignal?.bar_time_ms || 0) || 0;
             const dataHealth = deriveDataHealth(latestBar);
+            const dataIsLoading = dataHealth.status === 'loading';
             const realtimeState = deriveRealtimeComputeState(status);
             const warmup = normalizeWarmup(status);
             const warmupElapsedS = getWarmupElapsedSeconds(warmup);
@@ -1708,8 +1716,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const isAuthenticated = runtimeStatus.authenticated;
             const gatewayActive = runtimeStatus.gatewayActive;
 
-            let chainValue = 'WAITING';
-            let chainCopy = '等待 bars 写入';
+            let chainValue = dataIsLoading ? 'LOADING' : 'WAITING';
+            let chainCopy = dataIsLoading ? '正在加载最近 bars' : '等待 bars 写入';
             if (latestBarMs && latestIndicatorMs && latestIndicatorMs >= latestBarMs - 5 * 60 * 1000) {
                 chainValue = 'COMPUTED';
                 chainCopy = `indicator 对齐到 ${formatBarTimeMsToET(latestIndicatorMs)}`;
@@ -1729,8 +1737,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 },
                 {
                     label: 'Latest Bar',
-                    value: latestBar ? `${latestBar.symbol || '--'} ${formatIbkrIntervalLabel(latestBar.interval)}` : '--',
-                    copy: latestBar ? `${getRecordBarLabel(latestBar)} · ${latestBar.session_type || 'session?'}` : '无 bar',
+                    value: latestBar ? `${latestBar.symbol || '--'} ${formatIbkrIntervalLabel(latestBar.interval)}` : (dataIsLoading ? 'LOADING' : '--'),
+                    copy: latestBar ? `${getRecordBarLabel(latestBar)} · ${latestBar.session_type || 'session?'}` : (dataIsLoading ? '加载最近 bars...' : '无 bar'),
                 },
                 {
                     label: 'Latest Indicator',
@@ -1756,7 +1764,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             ];
 
             const notes = [];
-            if (!latestBarMs) {
+            if (dataIsLoading) {
+                notes.push({ tone: 'info', text: '正在加载最近 bars，暂不把首屏空值判定为 NO_DATA。' });
+            } else if (!latestBarMs) {
                 notes.push({ tone: 'error', text: '当前环境没有 bars，先检查 Gateway 会话、行情订阅和写入链路。' });
             }
             if (latestBarMs && dataHealth.last_bar_age_min != null && dataHealth.last_bar_age_min > 30) {
@@ -1893,9 +1903,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
         }
 
-        function renderBarsTable(items) {
+        function renderBarsTable(items, options = {}) {
             if (!items.length) {
-                document.getElementById('barsTable').innerHTML = renderEmpty('暂无 bars 数据');
+                document.getElementById('barsTable').innerHTML = renderEmpty(options.loading ? '正在加载最近 bars...' : '暂无 bars 数据');
                 return;
             }
             document.getElementById('barsTable').innerHTML = `
@@ -1919,9 +1929,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             `;
         }
 
-        function renderIndicatorsTable(items) {
+        function renderIndicatorsTable(items, options = {}) {
             if (!items.length) {
-                document.getElementById('indicatorsTable').innerHTML = renderEmpty('暂无最近指标');
+                document.getElementById('indicatorsTable').innerHTML = renderEmpty(options.loading ? '正在加载最近指标...' : '暂无最近指标');
                 return;
             }
             document.getElementById('indicatorsTable').innerHTML = `
@@ -2079,29 +2089,36 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 const startupState = startupResp?.state || {};
                 latestStartupState = normalizeStartupUiState(startupState);
                 const signalItems = toArray(signalsResp);
-                let latestBar = null;
+                let latestBar = latestRuntimeBarsSnapshot[0] || null;
                 const latestSignal = signalItems[0] || null;
 
-                const renderRuntimeSnapshot = (resolvedSummary, indicatorItems = []) => {
+                const renderRuntimeSnapshot = (resolvedSummary, indicatorItems = latestRuntimeIndicatorSnapshot, options = {}) => {
                     const latestIndicator = indicatorItems[0] || null;
-                    renderHero(resolvedSummary, health, status, runtimeConfig, twoFactorState, latestStartupState, latestBar);
-                    renderOpsGrid(resolvedSummary, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                    renderMetricCards(resolvedSummary, health, status, twoFactorState, latestBar);
-                    renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                    renderConfigDetail(resolvedSummary, runtimeConfig, cronResp || {});
-                    renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
-                    renderRuntimeFlowPrimaryAction(status, latestTwoFactorState);
-                    renderServiceControlPanel(status, latestServiceMonitorPayload);
-                    renderIndicatorsTable(indicatorItems);
+                    const previousLoading = runtimeRecentDataLoading;
+                    runtimeRecentDataLoading = Boolean(options.dataLoading);
+                    try {
+                        renderHero(resolvedSummary, health, status, runtimeConfig, twoFactorState, latestStartupState, latestBar);
+                        renderOpsGrid(resolvedSummary, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
+                        renderMetricCards(resolvedSummary, health, status, twoFactorState, latestBar);
+                        renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
+                        renderConfigDetail(resolvedSummary, runtimeConfig, cronResp || {});
+                        renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
+                        renderRuntimeFlowPrimaryAction(status, latestTwoFactorState);
+                        renderServiceControlPanel(status, latestServiceMonitorPayload);
+                        renderIndicatorsTable(indicatorItems, { loading: Boolean(options.dataLoading) && !indicatorItems.length });
+                    } finally {
+                        runtimeRecentDataLoading = previousLoading;
+                    }
                 };
 
-                renderRuntimeSnapshot(baseSummary);
+                const recentDataLoading = !latestBar;
+                renderRuntimeSnapshot(baseSummary, latestRuntimeIndicatorSnapshot, { dataLoading: recentDataLoading });
                 renderTwoFactorPanel(twoFactorState);
                 syncActionLocks();
                 renderEngineTable(status);
                 renderServiceTopology(status);
                 void loadEngineDetail(loadId, status);
-                renderBarsTable([]);
+                renderBarsTable(latestRuntimeBarsSnapshot, { loading: recentDataLoading && !latestRuntimeBarsSnapshot.length });
                 renderSignalsTable(signalItems);
                 renderOrdersTable(toArray(ordersResp));
                 renderEventsTable(toArray(eventsResp));
@@ -2134,6 +2151,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ]).then(([barsResp, indicatorsResp, todayCounts]) => {
                     if (loadId !== latestRuntimeLoadId) return;
                     const barsItems = toArray(barsResp);
+                    const indicatorItems = toArray(indicatorsResp);
+                    latestRuntimeBarsSnapshot = barsItems;
+                    latestRuntimeIndicatorSnapshot = indicatorItems;
                     latestBar = barsItems[0] || null;
                     const resolvedSummary = {
                         ...baseSummary,
@@ -2142,7 +2162,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                             ...(todayCounts || {}),
                         }
                     };
-                    renderRuntimeSnapshot(resolvedSummary, toArray(indicatorsResp));
+                    renderRuntimeSnapshot(resolvedSummary, indicatorItems);
                     renderBarsTable(barsItems);
                     syncActionLocks();
                 });

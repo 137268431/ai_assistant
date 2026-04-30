@@ -53,11 +53,11 @@ DEFAULT_BACKFILL_INTERVALS = _parse_intervals(
     os.environ.get("IBKR_BACKFILL_INTERVALS", "5m"),
     fallback=("5m",),
 )
-REQUEST_SPACING_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_REQUEST_SPACING", "0.20")))
-INTERVAL_DELAY_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_INTERVAL_DELAY", "0.35")))
+REQUEST_SPACING_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_REQUEST_SPACING", "0.35")))
+INTERVAL_DELAY_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_INTERVAL_DELAY", "0.10")))
 MAX_CONCURRENT_REQUESTS = max(
     1,
-    min(5, int(os.environ.get("IBKR_HISTORY_MAX_CONCURRENCY", "4"))),
+    min(10, int(os.environ.get("IBKR_HISTORY_MAX_CONCURRENCY", "8"))),
 )
 MAX_RETRIES = max(0, int(os.environ.get("IBKR_HISTORY_MAX_RETRIES", "4")))
 RETRY_BASE_DELAY_SECONDS = max(0.5, float(os.environ.get("IBKR_HISTORY_RETRY_BASE_DELAY", "2.0")))
@@ -87,6 +87,7 @@ DEFAULT_CHUNK_DAYS = {
     "15m": 14,
     "30m": 30,
     "1h": 60,
+    "4h": 120,
 }
 
 
@@ -255,7 +256,7 @@ class DataBackfill:
         return max(0.0, self._get_float_setting("ibkr_history_interval_delay", INTERVAL_DELAY_SECONDS))
 
     def _max_concurrency(self) -> int:
-        return max(1, min(5, self._get_int_setting("ibkr_history_max_concurrency", MAX_CONCURRENT_REQUESTS)))
+        return max(1, min(10, self._get_int_setting("ibkr_history_max_concurrency", MAX_CONCURRENT_REQUESTS)))
 
     def _max_retries(self) -> int:
         return max(0, self._get_int_setting("ibkr_history_max_retries", MAX_RETRIES))
@@ -307,8 +308,6 @@ class DataBackfill:
 
     def _safe_history_upper_bound_ms(self, interval: str, *, now_ts: float | None = None) -> int:
         normalized = normalize_interval(interval)
-        if normalized != "5m":
-            return 0
         return latest_safe_closed_bucket_ms(
             normalized,
             delay_seconds=self._close_delay_seconds(),

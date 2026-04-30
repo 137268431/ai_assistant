@@ -185,6 +185,12 @@ def _ib_timestamp_to_ms(value: Any) -> int:
     text = str(value or "").strip()
     if not text:
         return 0
+    if text.isdigit() and len(text) == 8:
+        try:
+            dt = datetime.strptime(text, "%Y%m%d")
+            return int(dt.replace(tzinfo=ET).timestamp() * 1000)
+        except Exception:
+            pass
     if text.isdigit():
         raw = int(text)
         return raw if raw > 1_000_000_000_000 else raw * 1000

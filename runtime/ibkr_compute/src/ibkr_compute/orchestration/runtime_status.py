@@ -70,6 +70,7 @@ class TradingServiceRuntimeStatusMixin:
         market_session = service_mod.build_market_session_snapshot()
         auth_recovery = self._copy_auth_recovery_state()
         official_5m = self._copy_official_5m_state()
+        direct_history_topup = self._copy_direct_topup_state()
         due_bucket_ms = int(official_5m.get("last_due_bucket_ms", 0) or 0)
         completed_bucket_ms = int(official_5m.get("last_completed_bucket_ms", 0) or 0)
         official_5m["lag_s"] = (
@@ -144,6 +145,7 @@ class TradingServiceRuntimeStatusMixin:
             "bar_aggregator": self.bar_aggregator.status(),
             "realtime_quotes": realtime_quotes,
             "canonical_5m": official_5m,
+            "direct_history_topup": direct_history_topup,
             "data_writer": self.data_writer.status(),
             "data_backfill": self.data_backfill.status(),
             "data_retention": self.data_retention.status(),
@@ -235,6 +237,7 @@ class TradingServiceRuntimeStatusMixin:
                     "inflight_timeout_threshold_s": inflight_timeout_threshold_s,
                 },
                 "multi_timeframe_readiness": multi_timeframe_readiness,
+                "direct_history_topup": direct_history_topup,
                 "last_watchlist_refresh": (
                     datetime.fromtimestamp(self._last_watchlist_refresh_at, service_mod.ET).isoformat()
                     if self._last_watchlist_refresh_at else None

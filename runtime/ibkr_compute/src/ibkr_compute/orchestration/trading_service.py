@@ -82,11 +82,21 @@ PB_PUBLIC_URL = CONSOLE_BASE_URL
 ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 DEFAULT_SIGNAL_POLL_INTERVAL = 120
 DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
-STARTUP_BACKGROUND_PRIME_INTERVALS = ("15m", "30m", "1h")
+STARTUP_BACKGROUND_PRIME_INTERVALS = ("15m", "30m", "1h", "4h", "1d")
 STARTUP_BACKGROUND_PRIME_CHUNK_SIZE = 8
 STARTUP_HISTORY_REPAIR_SHORT_PERIOD = "1d"
 DEFAULT_OFFICIAL_5M_CLOSE_DELAY_SECONDS = max(1, int(os.environ.get("IBKR_OFFICIAL_5M_CLOSE_DELAY_SEC", "8")))
 DEFAULT_OFFICIAL_5M_REQUEST_PERIOD = os.environ.get("IBKR_OFFICIAL_5M_REQUEST_PERIOD", "1d").strip() or "1d"
+DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS = ("15m", "30m", "1h", "4h", "1d")
+DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS = max(1, int(os.environ.get("IBKR_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SEC", "30")))
+DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS = max(1.0, float(os.environ.get("IBKR_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SEC", "5")))
+DEFAULT_RUNTIME_DIRECT_TOPUP_PERIODS = {
+    "15m": os.environ.get("IBKR_RUNTIME_DIRECT_TOPUP_PERIOD_15M", "2d").strip() or "2d",
+    "30m": os.environ.get("IBKR_RUNTIME_DIRECT_TOPUP_PERIOD_30M", "3d").strip() or "3d",
+    "1h": os.environ.get("IBKR_RUNTIME_DIRECT_TOPUP_PERIOD_1H", "5d").strip() or "5d",
+    "4h": os.environ.get("IBKR_RUNTIME_DIRECT_TOPUP_PERIOD_4H", "20d").strip() or "20d",
+    "1d": os.environ.get("IBKR_RUNTIME_DIRECT_TOPUP_PERIOD_1D", "60d").strip() or "60d",
+}
 BAR_INTEGRITY_STATE_KEY = "ibkr_bar_integrity_cursor"
 BAR_INTEGRITY_STATE_DATE = "global"
 DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE = 8
@@ -272,6 +282,7 @@ class IBKRTradingService(
         self._watchlist_backfill_thread = None
         self._compute_thread = None
         self._official_close_thread = None
+        self._direct_topup_thread = None
         self._bar_close_thread = None
         self._warmup_thread = None
         self._auth_required_reason = ""
@@ -322,6 +333,8 @@ class IBKRTradingService(
         self._official_5m_lock = threading.RLock()
         self._official_5m_state = self._initial_official_5m_state()
         self._official_5m_last_cycle_at = 0.0
+        self._direct_topup_lock = threading.RLock()
+        self._direct_topup_state = self._initial_direct_topup_state()
         self._last_session_issue_kind = ""
         self._last_session_issue_title = ""
         self._last_session_issue_at = 0.0

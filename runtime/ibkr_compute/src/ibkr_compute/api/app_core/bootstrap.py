@@ -164,5 +164,7 @@ def build_constant_bundle() -> dict:
             "history_rebuild",
             "recompute",
             "targeted_recompute",
+            "direct_history_topup",
+            "runtime_direct_topup",
         },
     }

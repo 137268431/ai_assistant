@@ -549,6 +549,12 @@ class TradingServiceStartupMixin:
                 name="official-5m-close",
             )
             self._official_close_thread.start()
+            self._direct_topup_thread = threading.Thread(
+                target=self._runtime_direct_topup_loop,
+                daemon=True,
+                name="direct-history-topup",
+            )
+            self._direct_topup_thread.start()
             self._bar_close_thread = threading.Thread(
                 target=self._bar_close_loop,
                 daemon=True,

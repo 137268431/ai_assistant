@@ -61,6 +61,7 @@ class _FakeBackfill:
         self.incremental_rows = [dict(row) for row in (incremental_rows or [])]
         self.repair_rows = [dict(row) for row in (repair_rows or [])]
         self.repair_fetch_calls = 0
+        self.backfill_all_calls = []
 
     def _visible_rows(self, symbol: str) -> list[dict]:
         return [
@@ -115,6 +116,40 @@ class _FakeBackfill:
             "missing_us_times": [format_us_time(value) for value in missing[: max(1, int(example_limit or 0))]],
             "query_error": "",
         }
+
+    def backfill_all(self, conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None):
+        interval = str((intervals or ["5m"])[0])
+        self.backfill_all_calls.append(
+            {
+                "conid_map": dict(conid_map or {}),
+                "symbol_meta": dict(symbol_meta or {}),
+                "intervals": list(intervals or []),
+                "repair_symbols": list(repair_symbols or []),
+                "period_overrides": {
+                    symbol: dict(payload or {})
+                    for symbol, payload in (period_overrides or {}).items()
+                },
+            }
+        )
+        return {symbol: {interval: 1} for symbol in (conid_map or {})}
+
+
+class _FakeConfig:
+    def get_bool_for_environment(self, key: str, environment: str, default=False):
+        del key, environment
+        return default
+
+    def get_for_environment(self, key: str, environment: str, default=None):
+        del key, environment
+        return default
+
+    def get_int_for_environment(self, key: str, environment: str, default=0):
+        del key, environment
+        return default
+
+    def get_float_for_environment(self, key: str, environment: str, default=0.0):
+        del key, environment
+        return default
 
 
 class _FakePB:
@@ -172,7 +207,23 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         self.data_backfill = data_backfill
         self.pb = pb or _FakePB()
         self.snapshot = snapshot
+        self.config = _FakeConfig()
+        self._direct_topup_lock = threading.Lock()
+        self._direct_topup_state = {
+            "enabled": True,
+            "driver": "ibkr_history_direct_topup",
+            "intervals": ["15m", "30m", "1h", "4h", "1d"],
+            "close_delay_sec": 30,
+            "loop_interval_s": 5,
+            "last_run": "",
+            "last_error": "",
+            "total_written_bars": 0,
+            "last_completed_interval": "",
+            "intervals_state": {},
+        }
+        self._direct_topup_due_ms = due_bucket_ms
         self.compute_events = []
+        self.compute_triggers = []
 
     def _official_5m_enabled(self) -> bool:
         return True
@@ -208,6 +259,29 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
             }
         )
 
+    def _trigger_realtime_compute(
+        self,
+        source: str = "bar_close",
+        symbols=None,
+        persist_signals=None,
+        intervals=None,
+        rollup_intervals=None,
+    ):
+        self.compute_triggers.append(
+            {
+                "source": source,
+                "symbols": list(symbols or []),
+                "persist_signals": persist_signals,
+                "intervals": list(intervals or []),
+                "rollup_intervals": list(rollup_intervals or []),
+            }
+        )
+        return {"ok": True, "processed": 1, "signals": 0, "errors": 0}
+
+    def _runtime_direct_topup_latest_due_ms(self, interval: str) -> int:
+        del interval
+        return self._direct_topup_due_ms
+
     def _now_iso(self) -> str:
         return "2026-04-17T15:00:00Z"
 
@@ -222,7 +296,20 @@ class Official5mCloseFlushTest(unittest.TestCase):
             warning=lambda *args, **kwargs: None,
             error=lambda *args, **kwargs: None,
         )
-        return SimpleNamespace(ENVIRONMENT="live", logger=logger)
+        return SimpleNamespace(
+            ENVIRONMENT="live",
+            logger=logger,
+            DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS=("15m", "30m", "1h", "4h", "1d"),
+            DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS=30,
+            DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS=5.0,
+            DEFAULT_RUNTIME_DIRECT_TOPUP_PERIODS={
+                "15m": "2d",
+                "30m": "3d",
+                "1h": "5d",
+                "4h": "20d",
+                "1d": "60d",
+            },
+        )
 
     def test_flushes_incremental_write_before_sequence_validation(self):
         due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
@@ -392,6 +479,76 @@ class Official5mCloseFlushTest(unittest.TestCase):
             sorted(int(row["bar_time_ms"]) for row in writer.flushed_rows),
             sorted(int(row["bar_time_ms"]) for row in missing_rows),
         )
+
+    def test_runtime_direct_topup_fetches_higher_interval_from_ibkr_and_triggers_compute_only_for_interval(self):
+        due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)
+        due_15m_ms = int(datetime(2026, 4, 17, 10, 30, tzinfo=ET).timestamp() * 1000)
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(writer)
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_5m_ms,
+            last_completed_bucket_ms=due_5m_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            snapshot={
+                "symbols": ["AAPL", "MSFT"],
+                "trade_symbols": ["AAPL"],
+                "monitor_symbols": ["MSFT"],
+                "conid_map": {"AAPL": 1, "MSFT": 2},
+                "symbol_meta": {
+                    "AAPL": {"exchange": "NASDAQ"},
+                    "MSFT": {"exchange": "NASDAQ"},
+                },
+            },
+        )
+        pipeline._direct_topup_due_ms = due_15m_ms
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_runtime_direct_topup_cycle(["15m"])
+
+        self.assertEqual(len(backfill.backfill_all_calls), 1)
+        self.assertEqual(backfill.backfill_all_calls[0]["conid_map"], {"AAPL": 1})
+        self.assertEqual(backfill.backfill_all_calls[0]["intervals"], ["15m"])
+        self.assertEqual(backfill.backfill_all_calls[0]["repair_symbols"], [])
+        self.assertEqual(backfill.backfill_all_calls[0]["period_overrides"], {"AAPL": {"15m": "2d"}})
+        self.assertEqual(
+            pipeline.compute_triggers,
+            [
+                {
+                    "source": "direct_history_topup",
+                    "symbols": ["AAPL"],
+                    "persist_signals": False,
+                    "intervals": ["15m"],
+                    "rollup_intervals": [],
+                }
+            ],
+        )
+        state = pipeline._copy_direct_topup_state()
+        self.assertEqual(state["last_completed_interval"], "15m")
+        self.assertEqual(state["total_written_bars"], 1)
+        self.assertEqual(state["intervals_state"]["15m"]["status"], "completed")
+        self.assertEqual(state["intervals_state"]["15m"]["last_completed_bucket_ms"], due_15m_ms)
+        self.assertEqual(state["intervals_state"]["15m"]["written_symbols"], ["AAPL"])
+        self.assertEqual(writer.flush_calls, 1)
+
+    def test_runtime_direct_topup_skips_when_canonical_5m_is_not_current(self):
+        due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(writer)
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_5m_ms,
+            last_completed_bucket_ms=due_5m_ms - STEP_MS,
+            data_writer=writer,
+            data_backfill=backfill,
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_runtime_direct_topup_cycle(["15m"])
+
+        self.assertEqual(backfill.backfill_all_calls, [])
+        self.assertEqual(pipeline.compute_triggers, [])
+        state = pipeline._copy_direct_topup_state()
+        self.assertEqual(state["last_error"], "canonical_5m_not_current")
 
 
 if __name__ == "__main__":

@@ -270,11 +270,14 @@ function buildIbkrEngineEnvironmentReadySummary(engines, options = {}) {
         .join(' · ');
 }
 
+const IBKR_DATA_ONLINE_MAX_AGE_MIN = 10;
+const IBKR_DATA_DELAYED_MAX_AGE_MIN = 30;
+
 function getIbkrDataHealthStatus(ageMin, { noDataStatus = 'no_data' } = {}) {
     const numericAge = Number(ageMin);
     if (!Number.isFinite(numericAge) || numericAge < 0) return noDataStatus;
-    if (numericAge <= 5) return 'online';
-    if (numericAge <= 15) return 'delayed';
+    if (numericAge <= IBKR_DATA_ONLINE_MAX_AGE_MIN) return 'online';
+    if (numericAge <= IBKR_DATA_DELAYED_MAX_AGE_MIN) return 'delayed';
     return 'offline';
 }
 
@@ -312,7 +315,7 @@ function getIbkrFreshnessVisualState(ageMin) {
         };
     }
 
-    if (numericAge <= 2) {
+    if (numericAge <= 5) {
         return {
             color: '#22c55e',
             pct: 100,
@@ -322,7 +325,17 @@ function getIbkrFreshnessVisualState(ageMin) {
         };
     }
 
-    if (numericAge <= 5) {
+    if (numericAge <= IBKR_DATA_ONLINE_MAX_AGE_MIN) {
+        return {
+            color: '#22c55e',
+            pct: 84,
+            chipClass: 'is-fresh',
+            stateText: '正常',
+            ageLabel: `${numericAge}m`,
+        };
+    }
+
+    if (numericAge <= 20) {
         return {
             color: '#eab308',
             pct: 72,
@@ -332,7 +345,7 @@ function getIbkrFreshnessVisualState(ageMin) {
         };
     }
 
-    if (numericAge <= 15) {
+    if (numericAge <= IBKR_DATA_DELAYED_MAX_AGE_MIN) {
         return {
             color: '#f97316',
             pct: 45,
@@ -438,6 +451,8 @@ function getIbkrDataStatusCardModel(dataHealth = {}) {
     } else if (dataHealth?.status === 'offline') {
         dotClass = 'dot-red';
         mainText = '离线';
+    } else if (dataHealth?.status === 'loading') {
+        mainText = '加载中';
     }
 
     if (dataHealth?.last_bar_age_min != null && dataHealth.last_bar_age_min !== '') {
@@ -1444,16 +1459,17 @@ function getIbkrRuntimeDataChainCardModel({
     const latestBarExtra = getIbkrExtraObject(latestBar);
     const lastBarAgeMin = Number(dataHealth?.last_bar_age_min);
     const barAgeLabel = Number.isFinite(lastBarAgeMin) ? lastBarAgeMin : 0;
+    const dataIsLoading = String(dataHealth?.status || '').trim().toLowerCase() === 'loading';
 
     return {
         tone: Number.isFinite(lastBarAgeMin) && lastBarAgeMin > 30 ? 'warn' : 'info',
         kicker: 'Data Chain',
         title: latestBar
             ? `${latestBar.symbol || '--'} ${formatIbkrIntervalLabel(latestBar.interval)} · ${barAgeLabel}m`
-            : '当前没有 live bars',
+            : (dataIsLoading ? '正在加载最近 bars' : '当前没有 live bars'),
         copy: [
-            latestBar ? `bar ${getIbkrRecordBarLabel(latestBar)}` : 'bars missing',
-            latestBar ? `write ${String(getIbkrComputedTimeLabel(latestBar)).slice(0, 19)}` : 'write --',
+            latestBar ? `bar ${getIbkrRecordBarLabel(latestBar)}` : (dataIsLoading ? 'bars loading' : 'bars missing'),
+            latestBar ? `write ${String(getIbkrComputedTimeLabel(latestBar)).slice(0, 19)}` : (dataIsLoading ? 'write loading' : 'write --'),
             realtimeMetrics?.last_bar_close ? `close ${formatTimeLabel(realtimeMetrics.last_bar_close)}` : 'close --',
             realtimeMetrics?.close_delay_s != null ? `close delay ${formatIbkrSecondsLabel(realtimeMetrics.close_delay_s)}` : '',
             realtimeMetrics?.compute_after_close_s != null ? `compute ${formatIbkrSecondsLabel(realtimeMetrics.compute_after_close_s)}` : '',
@@ -1465,7 +1481,7 @@ function getIbkrRuntimeDataChainCardModel({
             String(warmupSummaryText || '').trim(),
             latestIndicator
                 ? `indicator ${latestIndicator.symbol || '--'} ${formatIbkrIntervalLabel(latestIndicator.interval)} · ${String(getIbkrComputedTimeLabel(latestIndicator)).slice(0, 19)}`
-                : 'indicator missing',
+                : (dataIsLoading ? 'indicator loading' : 'indicator missing'),
             latestSignal
                 ? `signal ${latestSignal.symbol || '--'} ${String(latestSignal.direction || '--').toUpperCase()} · ${latestSignal.status || '--'}`
                 : 'signal 暂无',
