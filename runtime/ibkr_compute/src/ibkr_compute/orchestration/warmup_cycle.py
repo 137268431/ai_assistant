@@ -119,12 +119,11 @@ class TradingServiceWarmupCycleMixin:
         ready_trade_symbols = len([symbol for symbol in snapshot["trade_symbols"] if symbol in ready_set])
         ready_monitor_symbols = len([symbol for symbol in snapshot["monitor_symbols"] if symbol in ready_set])
         trading_gate_open = bool(snapshot["trade_symbols"]) and ready_trade_symbols == snapshot["trade_symbols_total"]
-        blocking_pending_symbols = self._non_monitor_pending_symbols(
-            pending_symbols,
-            snapshot["monitor_symbols"],
-        )
+        data_ready = bool(snapshot["symbols"]) and not pending_symbols
         return {
-            "phase": "ready" if not blocking_pending_symbols else "degraded",
+            "phase": "ready" if data_ready else "degraded",
+            "data_ready": data_ready,
+            "trade_allowed": trading_gate_open,
             "required_interval": required_interval,
             "ready_symbols": len(ready_symbols),
             "ready_scan_symbols": ready_scan_symbols,
@@ -172,6 +171,78 @@ class TradingServiceWarmupCycleMixin:
             persist_latest_indicator=persist_latest_indicator,
         )
 
+    def _trigger_remote_warmup_prime(self, symbols: list[str] | None, *, source: str = "warmup") -> dict:
+        service_mod = _service_mod()
+        if not self._warmup_uses_remote_compute_service():
+            return {"ok": True, "skipped": True, "reason": "local_compute_mode"}
+        normalized_symbols = self._normalize_symbol_list(symbols or [])
+        if not normalized_symbols:
+            return {"ok": True, "skipped": True, "reason": "empty_symbols"}
+        from ibkr_compute.api.compute_status_client import trigger_remote_prime
+
+        # Keep the synchronous pending-symbol prime on the hard gate only; the
+        # background interval prime/topup handles higher timeframes separately.
+        intervals = [service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL]
+        chunk_size = max(1, int(getattr(service_mod, "STARTUP_BACKGROUND_PRIME_CHUNK_SIZE", 16) or 16))
+        results = []
+        errors = 0
+        for index in range(0, len(normalized_symbols), chunk_size):
+            chunk = normalized_symbols[index:index + chunk_size]
+            result = trigger_remote_prime({
+                "environments": [service_mod.ENVIRONMENT],
+                "symbols": chunk,
+                "intervals": intervals,
+                "persist_latest_indicator": False,
+                "source": source,
+            })
+            results.append(result)
+            if result.get("ok") is False:
+                errors += 1
+        return {
+            "ok": errors == 0,
+            "errors": errors,
+            "chunks": len(results),
+            "symbols": normalized_symbols,
+            "intervals": intervals,
+            "results": results,
+        }
+
+    def _schedule_remote_warmup_retry_if_needed(self, readiness: dict) -> bool:
+        if not self._warmup_uses_remote_compute_service():
+            return False
+        pending_sources = {
+            str((item or {}).get("source") or "").strip()
+            for item in (readiness.get("symbol_status") or [])
+            if not bool((item or {}).get("ready"))
+        }
+        retryable_sources = {
+            "remote_compute_status_missing",
+            "remote_compute_status_unavailable",
+        }
+        if not pending_sources or not pending_sources.issubset(retryable_sources):
+            return False
+
+        service_mod = _service_mod()
+        retry_delay_s = max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_warmup_remote_compute_retry_sec",
+                service_mod.ENVIRONMENT,
+                5,
+            ),
+        )
+        service_mod.logger.info(
+            "Warmup waiting for remote compute readiness: sources=%s retry_in=%ss",
+            ",".join(sorted(pending_sources)),
+            retry_delay_s,
+        )
+        if self._running:
+            time.sleep(retry_delay_s)
+            if self._running:
+                self._warmup_wakeup.set()
+                return True
+        return False
+
     def _collect_remote_warmup_readiness(self, snapshot: dict) -> dict:
         service_mod = _service_mod()
         from ibkr_compute.api.compute_status_client import (
@@ -180,7 +251,11 @@ class TradingServiceWarmupCycleMixin:
         )
 
         required_interval = service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL
-        payload = get_remote_compute_status(force_refresh=True)
+        payload = get_remote_compute_status(
+            force_refresh=True,
+            symbols=snapshot["symbols"],
+            include_engines=True,
+        )
         if not is_compute_status_payload(payload):
             readiness = self._build_warmup_readiness(
                 snapshot,
@@ -603,6 +678,8 @@ class TradingServiceWarmupCycleMixin:
         if not plan:
             readiness["integrity_pending_symbols"] = []
             readiness["integrity_repair_reasons"] = {}
+            readiness["data_ready"] = bool(snapshot.get("symbols")) and not (readiness.get("pending_symbols") or [])
+            readiness["trade_allowed"] = bool(readiness.get("trading_gate_open"))
             for item in readiness.get("symbol_status") or []:
                 if isinstance(item, dict):
                     item["integrity_ready"] = True
@@ -655,9 +732,10 @@ class TradingServiceWarmupCycleMixin:
             and ready_trade_symbols == int(snapshot.get("trade_symbols_total", 0) or 0)
             and not trade_blocked
         )
-        blocking_pending_symbols = self._non_monitor_pending_symbols(sorted(pending_set), snapshot.get("monitor_symbols") or [])
-
-        readiness["phase"] = "ready" if not blocking_pending_symbols else "degraded"
+        data_ready = bool(snapshot.get("symbols")) and not pending_set
+        readiness["phase"] = "ready" if data_ready else "degraded"
+        readiness["data_ready"] = data_ready
+        readiness["trade_allowed"] = trading_gate_open
         readiness["ready_symbols"] = len(ready_set)
         readiness["ready_scan_symbols"] = len([symbol for symbol in snapshot.get("scan_symbols") or [] if symbol in ready_set])
         readiness["ready_subscription_symbols"] = len([symbol for symbol in snapshot.get("subscription_symbols") or [] if symbol in ready_set])
@@ -898,22 +976,29 @@ class TradingServiceWarmupCycleMixin:
             readiness = self._apply_integrity_readiness(readiness, snapshot, preflight_blockers)
             if readiness["pending_symbols"]:
                 step_started = time.perf_counter()
-                pending_storage_bootstrap = self._materialize_warmup_compute_symbols(
-                    readiness["pending_symbols"],
-                    hydrate_signal_state=True,
-                )
+                if self._warmup_uses_remote_compute_service():
+                    pending_storage_bootstrap = self._trigger_remote_warmup_prime(
+                        readiness["pending_symbols"],
+                        source="warmup_pending",
+                    )
+                else:
+                    pending_storage_bootstrap = self._materialize_warmup_compute_symbols(
+                        readiness["pending_symbols"],
+                        hydrate_signal_state=True,
+                    )
                 warmup_timings["pending_storage_bootstrap_s"] = round(
                     time.perf_counter() - step_started,
                     3,
                 )
                 if pending_storage_bootstrap:
                     compute_result["pending_storage_bootstrap"] = pending_storage_bootstrap
-                    readiness = self._collect_warmup_readiness(snapshot)
-                    readiness = self._apply_integrity_readiness(
-                        readiness,
-                        snapshot,
-                        preflight_blockers,
-                    )
+                    if bool(pending_storage_bootstrap.get("ok", True)):
+                        readiness = self._collect_warmup_readiness(snapshot)
+                        readiness = self._apply_integrity_readiness(
+                            readiness,
+                            snapshot,
+                            preflight_blockers,
+                        )
             compute_result["warmup_timings"] = dict(warmup_timings)
             self._set_warmup_state(
                 phase="running",
@@ -1250,12 +1335,10 @@ class TradingServiceWarmupCycleMixin:
                 ):
                     if key in previous_ready_state:
                         readiness[key] = previous_ready_state.get(key)
-                blocking_pending_symbols = self._non_monitor_pending_symbols(
-                    readiness.get("pending_symbols") or [],
-                    snapshot.get("monitor_symbols") or [],
-                )
-                readiness["phase"] = "ready" if not blocking_pending_symbols else "degraded"
+                readiness["phase"] = "ready" if not (readiness.get("pending_symbols") or []) else "degraded"
+                readiness["data_ready"] = readiness["phase"] == "ready"
             readiness["trading_gate_open"] = True
+            readiness["trade_allowed"] = True
             if str(readiness.get("trading_gate_reason") or "").strip() != "ready":
                 readiness["trading_gate_reason"] = "background_repair"
         finished_at = self._now_iso()
@@ -1351,6 +1434,8 @@ class TradingServiceWarmupCycleMixin:
             if self._complete_startup_success(startup_title, startup_detail):
                 self._schedule_interval_prime(snapshot["symbols"], source="startup_ready")
             self._signal_wakeup.set()
+            if phase != "ready":
+                self._schedule_remote_warmup_retry_if_needed(readiness)
         else:
             self._sync_startup_progress(
                 action="update",

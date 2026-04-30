@@ -222,6 +222,57 @@ class RemoteWarmupReadinessTest(unittest.TestCase):
         self.assertEqual(readiness["pending_symbols"], [])
         self.assertEqual(readiness["symbol_status"][0]["source"], "remote_compute_bar_readiness")
 
+    def test_collect_warmup_readiness_marks_no_trade_data_ready(self):
+        cycle = _DummyWarmupCycle()
+        snapshot = {
+            "symbols": ["AAPL", "QQQ", "SPY", "VIX"],
+            "scan_symbols": ["AAPL"],
+            "subscription_symbols": ["QQQ", "SPY", "VIX"],
+            "trade_symbols": [],
+            "trade_symbols_total": 0,
+            "monitor_symbols": ["QQQ", "SPY", "VIX"],
+            "monitor_symbols_total": 3,
+        }
+        remote_status = {
+            "service_profile": "compute",
+            "engines": {},
+            "multi_timeframe_readiness": {
+                "symbols_total": 4,
+                "intervals": {
+                    "5m": {
+                        "status": "ready",
+                        "symbols_total": 4,
+                        "latest_bar_time_ms": 1776793800000,
+                        "latest_indicator_time_ms": 1776793800000,
+                        "missing_ready_symbols_total": 0,
+                    }
+                },
+            },
+        }
+
+        with mock.patch(
+            "ibkr_compute.orchestration.warmup_cycle._service_mod",
+            return_value=SimpleNamespace(
+                ENVIRONMENT="live",
+                DEFAULT_WARMUP_REQUIRED_INTERVAL="5m",
+            ),
+        ):
+            with mock.patch(
+                "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                return_value=True,
+            ):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.get_remote_compute_status",
+                    return_value=remote_status,
+                ):
+                    readiness = cycle._collect_warmup_readiness(snapshot)
+
+        self.assertEqual(readiness["phase"], "ready")
+        self.assertTrue(readiness["data_ready"])
+        self.assertFalse(readiness["trading_gate_open"])
+        self.assertEqual(readiness["trading_gate_reason"], "no_trade_symbols")
+        self.assertEqual(readiness["pending_symbols"], [])
+
     def test_collect_warmup_readiness_does_not_mark_all_pending_when_remote_status_unavailable(self):
         cycle = _DummyWarmupCycle()
         snapshot = {

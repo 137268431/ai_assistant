@@ -76,13 +76,13 @@ class ComputeStartupPreloadTest(unittest.TestCase):
 
         self.assertEqual(environments, ["live", "paper", "backtest"])
 
-    def test_resolve_preload_intervals_defaults_to_all_and_allows_override(self):
+    def test_resolve_preload_intervals_defaults_to_hard_gate_and_allows_override(self):
         fake_app = SimpleNamespace(INTERVALS=["5m", "15m", "30m", "1h", "4h", "1d"])
 
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
                 startup_preload.resolve_compute_startup_preload_intervals(fake_app),
-                ["5m", "15m", "30m", "1h", "4h", "1d"],
+                ["5m"],
             )
 
         with mock.patch.dict(
@@ -135,6 +135,15 @@ class ComputeStartupPreloadTest(unittest.TestCase):
 
         engines = {}
 
+        def bootstrap_engine_state(environment, symbol, interval, target_ms, inclusive=True):
+            call_log.append(("bootstrap", environment, symbol, interval, target_ms, inclusive))
+            engines[(environment, symbol, interval)] = SimpleNamespace(
+                bar_count=192,
+                last_bar_time_ms=target_ms,
+                is_ready=lambda: True,
+            )
+            return 1
+
         def materialize_engines_from_storage(
             environment,
             symbols,
@@ -166,7 +175,7 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             load_persisted_compute_cursors=load_persisted_compute_cursors,
             collect_environment_cursor_map=collect_environment_cursor_map,
             parse_compute_cursor_key=parse_compute_cursor_key,
-            bootstrap_engine_state=lambda *args, **kwargs: 0,
+            bootstrap_engine_state=bootstrap_engine_state,
             materialize_engines_from_storage=materialize_engines_from_storage,
             current_market_date=lambda: "2026-04-29",
             pb=SimpleNamespace(get_all_records=get_all_records),
@@ -191,42 +200,38 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["env_completed"], 2)
-        self.assertEqual(result["intervals"], ["5m", "15m", "30m", "1h", "4h", "1d"])
-        self.assertEqual(result["symbol_total"], 4)
-        self.assertEqual(result["symbol_completed"], 4)
-        self.assertEqual(result["ready_count"], 4)
+        self.assertEqual(result["intervals"], ["5m"])
+        self.assertEqual(result["symbol_total"], 3)
+        self.assertEqual(result["symbol_completed"], 3)
+        self.assertEqual(result["ready_count"], 3)
         self.assertEqual(result["indicator_seeded"], 0)
         self.assertEqual(result["environments"], ["live", "paper"])
         self.assertEqual(result["results"]["live"]["cursor_applied"], 3)
         self.assertEqual(result["results"]["live"]["cursor_count"], 3)
         self.assertEqual(result["results"]["live"]["status"], "completed")
-        self.assertEqual(result["results"]["live"]["interval_total"], 2)
-        self.assertEqual(result["results"]["live"]["symbol_total"], 3)
-        self.assertEqual(result["results"]["live"]["symbol_completed"], 3)
+        self.assertEqual(result["results"]["live"]["interval_total"], 1)
+        self.assertEqual(result["results"]["live"]["symbol_total"], 2)
+        self.assertEqual(result["results"]["live"]["symbol_completed"], 2)
         self.assertEqual(result["results"]["live"]["indicator_seeded"], 0)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_count"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_completed"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 0)
-        self.assertIn("1h", result["results"]["live"]["intervals"])
-        self.assertEqual(result["results"]["live"]["intervals"]["1h"]["symbol_count"], 1)
-        self.assertEqual(result["results"]["live"]["intervals"]["1h"]["symbol_completed"], 1)
+        self.assertNotIn("1h", result["results"]["live"]["intervals"])
         self.assertEqual(result["results"]["paper"]["indicator_seeded"], 0)
         self.assertEqual(result["results"]["paper"]["intervals"]["5m"]["ready_count"], 1)
         self.assertIn(("cfg_refresh",), call_log)
-        self.assertIn(("metadata", True), call_log)
-        self.assertIn(("daily_close", ("live", "paper"), True), call_log)
-        self.assertIn(("materialize", "live", ("AAPL",), "5m", True, False), call_log)
-        self.assertIn(("materialize", "live", ("MSFT",), "5m", True, False), call_log)
-        self.assertIn(("materialize", "paper", ("TSLA",), "5m", True, False), call_log)
+        self.assertIn(("bootstrap", "live", "AAPL", "5m", 100, True), call_log)
+        self.assertIn(("bootstrap", "live", "MSFT", "5m", 80, True), call_log)
+        self.assertIn(("bootstrap", "paper", "TSLA", "5m", 70, True), call_log)
 
         state = startup_preload.get_compute_startup_preload_state(fake_app)
         self.assertEqual(state["status"], "completed")
         self.assertEqual(state["env_total"], 2)
         self.assertEqual(state["env_completed"], 2)
-        self.assertEqual(state["intervals"], ["5m", "15m", "30m", "1h", "4h", "1d"])
-        self.assertEqual(state["symbol_total"], 4)
-        self.assertEqual(state["symbol_completed"], 4)
-        self.assertEqual(state["ready_count"], 4)
+        self.assertEqual(state["intervals"], ["5m"])
+        self.assertEqual(state["symbol_total"], 3)
+        self.assertEqual(state["symbol_completed"], 3)
+        self.assertEqual(state["ready_count"], 3)
         self.assertEqual(state["indicator_seeded"], 0)
         self.assertEqual(state["results"]["live"]["intervals"]["5m"]["ready_count"], 2)
         self.assertEqual(state["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 0)
@@ -249,6 +254,17 @@ class ComputeStartupPreloadTest(unittest.TestCase):
                 return [{"symbol": "AAPL", "environment": "live", "status": "active"}]
             return []
 
+        engines = {}
+
+        def bootstrap_engine_state(environment, symbol, interval, target_ms, inclusive=True):
+            call_log.append(("bootstrap", environment, symbol, interval, target_ms, inclusive))
+            engines[(environment, symbol, interval)] = SimpleNamespace(
+                bar_count=192,
+                last_bar_time_ms=target_ms,
+                is_ready=lambda: True,
+            )
+            return 1
+
         fake_app = SimpleNamespace(
             cfg=SimpleNamespace(refresh=lambda: None),
             refresh_symbol_metadata=lambda force=False: None,
@@ -256,14 +272,14 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             load_persisted_compute_cursors=lambda environment: len(cursor_maps.get(environment, {})),
             collect_environment_cursor_map=lambda environment: dict(cursor_maps.get(environment, {})),
             parse_compute_cursor_key=lambda raw_key: tuple(str(raw_key).split("|", 1)),
-            bootstrap_engine_state=lambda *args, **kwargs: 0,
+            bootstrap_engine_state=bootstrap_engine_state,
             materialize_engines_from_storage=lambda environment, symbols, interval, hydrate_signal_state=True, persist_latest_indicator=False: (
                 call_log.append(("materialize", environment, tuple(symbols), interval, hydrate_signal_state, persist_latest_indicator))
                 or {symbol: {"is_ready": True, "indicator_seeded": persist_latest_indicator} for symbol in symbols}
             ),
             current_market_date=lambda: "2026-04-29",
             pb=SimpleNamespace(get_all_records=get_all_records),
-            engines={},
+            engines=engines,
             DEFAULT_COMPUTE_ENVIRONMENTS=["live"],
             SUPPORTED_COMPUTE_ENVIRONMENTS=["live", "paper", "backtest"],
             INTERVALS=["5m", "15m", "30m", "1h", "4h", "1d"],
@@ -285,8 +301,8 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertEqual(result["intervals"], ["5m", "1h"])
         self.assertEqual(result["symbol_total"], 2)
         self.assertEqual(result["results"]["live"]["interval_total"], 2)
-        self.assertIn(("materialize", "live", ("AAPL",), "5m", True, False), call_log)
-        self.assertIn(("materialize", "live", ("AAPL",), "1h", True, False), call_log)
+        self.assertIn(("bootstrap", "live", "AAPL", "5m", 100, True), call_log)
+        self.assertIn(("bootstrap", "live", "AAPL", "1h", 90, True), call_log)
         self.assertNotIn(("materialize", "live", ("MSFT",), "15m", True, False), call_log)
 
     def test_get_preload_state_reports_disabled_when_schedule_guard_blocks(self):
@@ -393,8 +409,7 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["symbol_completed"], 2)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["ready_count"], 1)
         self.assertEqual(result["results"]["live"]["intervals"]["5m"]["indicator_seeded"], 0)
-        self.assertIn(("materialize", "live", ("AAPL",), "5m", True, False), call_log)
-        self.assertIn(("materialize", "live", ("MSFT",), "5m", True, False), call_log)
+        self.assertIn(("materialize", "live", ("AAPL", "MSFT"), "5m", True, False), call_log)
 
     def test_startup_direct_backfill_fetches_missing_ibkr_history_and_materializes(self):
         call_log = []

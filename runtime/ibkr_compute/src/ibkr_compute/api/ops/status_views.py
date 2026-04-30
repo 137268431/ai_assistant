@@ -26,11 +26,44 @@ def _include_engines_in_status() -> bool:
     return coerce_request_bool(request.args.get("full"), False) or not coerce_request_bool(request.args.get("lite"), True)
 
 
-def _safe_multi_timeframe_readiness(app_mod, requested_environment: str) -> dict:
+def _requested_status_symbols(app_mod) -> list[str]:
+    raw_value = request.args.get("symbols") or request.args.get("symbol") or ""
+    try:
+        normalizer = getattr(app_mod, "normalize_symbol_csv", None)
+        if callable(normalizer):
+            return normalizer(raw_value)
+        return app_mod.normalize_symbols(str(raw_value or "").replace("\n", ",").split(","))
+    except Exception:
+        normalized = []
+        seen = set()
+        for item in str(raw_value or "").replace("\n", ",").split(","):
+            symbol = str(item or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            normalized.append(symbol)
+        return normalized
+
+
+def _filter_engine_items(engine_items, symbols: list[str] | None):
+    symbol_set = {str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()}
+    if not symbol_set:
+        return list(engine_items or [])
+    return [
+        (key, engine)
+        for key, engine in (engine_items or [])
+        if isinstance(key, tuple)
+        and len(key) >= 2
+        and str(key[1] or "").strip().upper() in symbol_set
+    ]
+
+
+def _safe_multi_timeframe_readiness(app_mod, requested_environment: str, symbols: list[str] | None = None) -> dict:
     try:
         return build_multi_timeframe_readiness(
             app_mod,
             environment=requested_environment,
+            symbols=symbols,
             include_storage=False,
         )
     except Exception as exc:
@@ -56,7 +89,8 @@ def _safe_bar_repair_queue(app_mod) -> dict:
 def build_health_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
-    multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment)
+    requested_symbols = _requested_status_symbols(app_mod)
+    multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment, requested_symbols)
     return jsonify(
         {
             "ok": True,
@@ -79,9 +113,10 @@ def build_status_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
     include_engines = _include_engines_in_status()
-    engine_items = _snapshot_engine_items(app_mod, blocking=include_engines)
+    requested_symbols = _requested_status_symbols(app_mod)
+    engine_items = _filter_engine_items(_snapshot_engine_items(app_mod, blocking=include_engines), requested_symbols)
     engine_status = _build_engine_status_map(engine_items) if include_engines else {}
-    multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment)
+    multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment, requested_symbols)
     return jsonify(
         {
             "ok": True,

@@ -172,7 +172,9 @@ def _get_config_int(api_app, key: str, environment: str, fallback: int) -> int:
 
 
 def is_compute_startup_preload_enabled() -> bool:
-    return _env_flag("IBKR_COMPUTE_STARTUP_PRELOAD_ENABLED", True)
+    # Warmup owns the readiness gate. Startup preload is opt-in so deploys and
+    # off-hours restarts cannot be held by slow PocketBase storage hydration.
+    return _env_flag("IBKR_COMPUTE_STARTUP_PRELOAD_ENABLED", False)
 
 
 def should_schedule_compute_startup_preload() -> bool:
@@ -223,7 +225,9 @@ def resolve_compute_startup_preload_intervals(api_app=None) -> list[str]:
     supported_source = getattr(api_app, "INTERVALS", None) or ["5m"]
     supported = [str(interval or "").strip().lower() for interval in supported_source if str(interval or "").strip()]
     configured = str(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_INTERVALS", "") or "").strip()
-    candidates = _parse_preload_interval_csv(configured) if configured else supported
+    # Startup warmup should clear the hard data-readiness gate quickly. Higher
+    # timeframes can be requested explicitly or repaired by the background prime.
+    candidates = _parse_preload_interval_csv(configured) if configured else ["5m"]
     if any(item in {"*", "all"} for item in candidates):
         candidates = supported
 
@@ -237,15 +241,60 @@ def resolve_compute_startup_preload_intervals(api_app=None) -> list[str]:
     return intervals
 
 
-def resolve_startup_direct_backfill_enabled(api_app=None, environment: str = "live") -> bool:
+def _resolve_compute_startup_preload_chunk_size(api_app=None, environment: str = "live") -> int:
     api_app = api_app or _api_app()
     cfg = getattr(api_app, "cfg", None)
-    defaults = getattr(cfg, "DEFAULTS", {}) if cfg is not None else {}
-    default_enabled = str(
-        (defaults or {}).get("ibkr_startup_direct_backfill_enabled", "")
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    # Real Config defaults this to true; narrow unit-test fakes have no DEFAULTS and stay disabled.
-    return _get_config_bool(api_app, "ibkr_startup_direct_backfill_enabled", environment, default_enabled)
+    value = 32
+    if cfg is not None:
+        try:
+            value = int(
+                cfg.get_int_for_environment(
+                    "ibkr_compute_startup_preload_chunk_size",
+                    environment,
+                    32,
+                )
+            )
+        except Exception:
+            value = 32
+    raw_env = str(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_CHUNK_SIZE", "") or "").strip()
+    if raw_env:
+        try:
+            value = int(raw_env)
+        except ValueError:
+            value = 32
+    return max(1, min(128, value))
+
+
+def _resolve_compute_startup_preload_use_materialize(api_app=None, environment: str = "live") -> bool:
+    api_app = api_app or _api_app()
+    enabled = _get_config_bool(
+        api_app,
+        "ibkr_compute_startup_preload_use_materialize",
+        environment,
+        False,
+    )
+    raw_env = str(os.environ.get("IBKR_COMPUTE_STARTUP_PRELOAD_USE_MATERIALIZE", "") or "").strip().lower()
+    if raw_env:
+        enabled = raw_env in {"1", "true", "yes", "on"}
+    return enabled
+
+
+def _resolve_compute_startup_preload_refresh_enabled(api_app=None, environment: str = "live", *, kind: str) -> bool:
+    api_app = api_app or _api_app()
+    key = f"ibkr_compute_startup_preload_refresh_{kind}"
+    enabled = _get_config_bool(api_app, key, environment, False)
+    raw_env = str(os.environ.get(f"IBKR_COMPUTE_STARTUP_PRELOAD_REFRESH_{kind.upper()}", "") or "").strip().lower()
+    if raw_env:
+        enabled = raw_env in {"1", "true", "yes", "on"}
+    return enabled
+
+
+def resolve_startup_direct_backfill_enabled(api_app=None, environment: str = "live") -> bool:
+    api_app = api_app or _api_app()
+    # Direct IBKR backfill is useful for explicit repair, but it must not block
+    # deploy/startup readiness by default; storage warmup and runtime topups keep
+    # the full universe current without monopolizing the gateway.
+    return _get_config_bool(api_app, "ibkr_startup_direct_backfill_enabled", environment, False)
 
 
 def resolve_startup_direct_backfill_intervals(api_app=None, environment: str = "live") -> list[str]:
@@ -498,10 +547,11 @@ def _resolve_preload_watchlist_symbols(api_app, environment: str) -> list[str]:
 
 
 def _resolve_startup_direct_core_symbols(api_app, environment: str) -> list[str]:
-    """Limit startup API pulls to trade targets + monitor symbols.
+    """Resolve the full data universe that must stay warm all day.
 
-    Full watchlist freshness can be repaired asynchronously later; startup direct
-    backfill must stay conservative to avoid IBKR pacing pressure.
+    Trading windows decide whether orders may be placed, but compute readiness
+    should not degrade outside regular hours just because there are no active
+    trade targets yet.
     """
 
     runtime_environment = str(environment or "live").strip().lower() or "live"
@@ -547,6 +597,81 @@ def _resolve_startup_direct_core_symbols(api_app, environment: str) -> list[str]
             )
         except Exception:
             LOGGER.debug("Startup direct monitor symbols unavailable", exc_info=True)
+
+    symbols.update(_resolve_preload_watchlist_symbols(api_app, runtime_environment))
+
+    if not symbols:
+        try:
+            raw = str(api_app.cfg.get_for_environment("ibkr_market_ws_symbols", runtime_environment, "SPY,QQQ,VIX") or "")
+        except Exception:
+            raw = "SPY,QQQ,VIX"
+        symbols.update(str(item or "").strip().upper() for item in raw.split(",") if str(item or "").strip())
+    return sorted(symbols)
+
+
+def _startup_direct_backfill_full_watchlist_enabled(api_app, environment: str) -> bool:
+    return _get_config_bool(
+        api_app,
+        "ibkr_startup_direct_backfill_full_watchlist_enabled",
+        environment,
+        False,
+    )
+
+
+def _resolve_startup_direct_backfill_symbols(api_app, environment: str) -> list[str]:
+    """Resolve symbols allowed to use direct IBKR history requests at startup.
+
+    The full data universe is still warmed from storage, but direct IBKR
+    requests are intentionally narrower by default so deploy/restart warmup
+    cannot overload PocketBase or the gateway with the entire watchlist.
+    """
+
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    symbols: set[str] = set()
+    pb = getattr(api_app, "pb", None)
+    if pb is not None and hasattr(pb, "get_all_records"):
+        try:
+            market_date = api_app.current_market_date() if hasattr(api_app, "current_market_date") else ""
+            if market_date:
+                rows = pb.get_all_records(
+                    "ibkr_targets",
+                    filter=(
+                        f'date = "{_pb_filter_escape(market_date)}" && '
+                        f'environment = "{_pb_filter_escape(runtime_environment)}" && '
+                        '(status = "active" || status = "candidate")'
+                    ),
+                    max_pages=10,
+                )
+                symbols.update(
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in rows or []
+                    if str((row or {}).get("symbol") or "").strip()
+                )
+        except Exception:
+            LOGGER.debug("Startup direct target symbols unavailable", exc_info=True)
+
+        try:
+            rows = pb.get_all_records(
+                "watchlist",
+                filter=(
+                    f'(environment = "{_pb_filter_escape(runtime_environment)}" '
+                    '|| environment = "global" '
+                    '|| environment = "") && '
+                    'symbol_role = "market_monitor"'
+                ),
+                sort="-updated",
+                max_pages=10,
+            )
+            symbols.update(
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in rows or []
+                if str((row or {}).get("symbol") or "").strip()
+            )
+        except Exception:
+            LOGGER.debug("Startup direct monitor symbols unavailable", exc_info=True)
+
+    if _startup_direct_backfill_full_watchlist_enabled(api_app, runtime_environment):
+        symbols.update(_resolve_preload_watchlist_symbols(api_app, runtime_environment))
 
     if not symbols:
         try:
@@ -1145,12 +1270,14 @@ def _preload_symbol_indicator_state(
     symbol: str,
     interval: str,
     target_ms: int,
+    *,
+    use_materialize: bool = True,
 ) -> dict:
     normalized_environment = str(environment or "live").strip().lower() or "live"
     normalized_symbol = str(symbol or "").strip().upper()
     normalized_interval = str(interval or "").strip().lower()
 
-    if hasattr(api_app, "materialize_engines_from_storage"):
+    if use_materialize and hasattr(api_app, "materialize_engines_from_storage"):
         try:
             results = api_app.materialize_engines_from_storage(
                 normalized_environment,
@@ -1187,6 +1314,75 @@ def _preload_symbol_indicator_state(
         "indicator_seeded": False,
         "reason": "bootstrapped" if processed > 0 else "already_materialized",
     }
+
+
+def _preload_interval_indicator_state(
+    api_app,
+    environment: str,
+    symbols: list[str],
+    interval: str,
+    target_ms_by_symbol: dict[str, int] | None = None,
+) -> dict[str, dict]:
+    normalized_environment = str(environment or "live").strip().lower() or "live"
+    normalized_interval = str(interval or "").strip().lower()
+    normalized_symbols = [
+        str(symbol or "").strip().upper()
+        for symbol in (symbols or [])
+        if str(symbol or "").strip()
+    ]
+    if not normalized_symbols:
+        return {}
+
+    targets = {
+        str(symbol or "").strip().upper(): int(target_ms or 0)
+        for symbol, target_ms in (target_ms_by_symbol or {}).items()
+        if str(symbol or "").strip()
+    }
+
+    results: dict[str, dict] = {}
+    if hasattr(api_app, "materialize_engines_from_storage"):
+        try:
+            materialized = api_app.materialize_engines_from_storage(
+                normalized_environment,
+                normalized_symbols,
+                normalized_interval,
+                hydrate_signal_state=True,
+                persist_latest_indicator=False,
+            )
+            for symbol in normalized_symbols:
+                payload = dict((materialized or {}).get(symbol) or {})
+                if payload:
+                    payload.setdefault("indicator_seeded", False)
+                    results[symbol] = payload
+            missing = [symbol for symbol in normalized_symbols if symbol not in results]
+            if not missing:
+                return results
+            LOGGER.warning(
+                "Compute startup preload materialize returned partial result: env=%s interval=%s missing=%s",
+                normalized_environment,
+                normalized_interval,
+                ",".join(missing),
+            )
+        except Exception:
+            LOGGER.exception(
+                "Compute startup preload batch materialize failed: env=%s interval=%s symbols=%d",
+                normalized_environment,
+                normalized_interval,
+                len(normalized_symbols),
+            )
+
+    for symbol in normalized_symbols:
+        if symbol in results:
+            continue
+        results[symbol] = _preload_symbol_indicator_state(
+            api_app,
+            normalized_environment,
+            symbol,
+            normalized_interval,
+            int(targets.get(symbol, 0) or 0),
+            use_materialize=False,
+        )
+    return results
 
 
 def get_compute_startup_preload_state(api_app=None) -> dict:
@@ -1306,29 +1502,34 @@ def run_compute_startup_preload(api_app=None) -> dict:
     except Exception as exc:
         LOGGER.warning("Compute startup preload config refresh failed: %s", exc)
 
-    try:
-        api_app.refresh_symbol_metadata(force=True)
-    except Exception as exc:
-        LOGGER.warning("Compute startup preload symbol metadata refresh failed: %s", exc)
+    if _resolve_compute_startup_preload_refresh_enabled(api_app, environments[0] if environments else "live", kind="metadata"):
+        try:
+            api_app.refresh_symbol_metadata(force=True)
+        except Exception as exc:
+            LOGGER.warning("Compute startup preload symbol metadata refresh failed: %s", exc)
 
-    try:
-        api_app.refresh_daily_close_cache(environments, force=True)
-    except Exception as exc:
-        LOGGER.warning("Compute startup preload daily close refresh failed: %s", exc)
+    if _resolve_compute_startup_preload_refresh_enabled(api_app, environments[0] if environments else "live", kind="daily_close"):
+        try:
+            api_app.refresh_daily_close_cache(environments, force=True)
+        except Exception as exc:
+            LOGGER.warning("Compute startup preload daily close refresh failed: %s", exc)
 
     try:
         for environment in environments:
             cursor_applied = int(api_app.load_persisted_compute_cursors(environment) or 0)
             all_interval_targets = _collect_preload_interval_targets(api_app, environment, preload_intervals)
-            direct_symbols = _resolve_startup_direct_core_symbols(api_app, environment)
-            interval_targets = _filter_preload_interval_targets(all_interval_targets, direct_symbols)
+            data_symbols = _resolve_startup_direct_core_symbols(api_app, environment)
+            direct_symbols = _resolve_startup_direct_backfill_symbols(api_app, environment)
+            interval_targets = _filter_preload_interval_targets(all_interval_targets, data_symbols)
             cursor_count = len(api_app.collect_environment_cursor_map(environment) or {})
             full_cursor_symbol_total = sum(len(targets or {}) for targets in all_interval_targets.values())
             env_result = {
                 "status": "running",
-                "preload_scope": "core_symbols",
+                "preload_scope": "data_universe",
                 "core_symbols": list(direct_symbols),
                 "core_symbol_count": len(direct_symbols),
+                "data_symbols": list(data_symbols),
+                "data_symbol_count": len(data_symbols),
                 "cursor_applied": cursor_applied,
                 "cursor_count": cursor_count,
                 "full_cursor_symbol_total": full_cursor_symbol_total,
@@ -1369,7 +1570,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
 
             fallback_symbols = [
                 symbol
-                for symbol in direct_symbols
+                for symbol in data_symbols
                 if symbol not in set((interval_targets.get("5m") or {}).keys())
             ] if "5m" in preload_intervals else []
             if fallback_symbols:
@@ -1404,26 +1605,58 @@ def run_compute_startup_preload(api_app=None) -> dict:
                 )
                 interval_state["status"] = "running" if targets else "completed"
                 _publish_startup_preload_state(api_app, summary)
-                for symbol, target_ms in targets.items():
-                    preload_result = _preload_symbol_indicator_state(
-                        api_app,
-                        environment,
-                        symbol,
-                        interval,
-                        target_ms,
-                    )
-                    if bool(preload_result.get("is_ready")):
-                        interval_state["ready_count"] += 1
-                        env_result["ready_count"] += 1
-                        summary["ready_count"] += 1
-                    if bool(preload_result.get("indicator_seeded")):
-                        interval_state["indicator_seeded"] += 1
-                        env_result["indicator_seeded"] += 1
-                        summary["indicator_seeded"] += 1
-                    interval_state["symbol_completed"] += 1
-                    env_result["symbol_completed"] += 1
-                    summary["symbol_completed"] += 1
-                    _publish_startup_preload_state(api_app, summary)
+                use_materialize = _resolve_compute_startup_preload_use_materialize(api_app, environment)
+                if use_materialize:
+                    target_items = list((targets or {}).items())
+                    chunk_size = _resolve_compute_startup_preload_chunk_size(api_app, environment)
+                    for index in range(0, len(target_items), chunk_size):
+                        chunk_targets = {
+                            symbol: target_ms
+                            for symbol, target_ms in target_items[index:index + chunk_size]
+                        }
+                        chunk_results = _preload_interval_indicator_state(
+                            api_app,
+                            environment,
+                            list(chunk_targets.keys()),
+                            interval,
+                            chunk_targets,
+                        )
+                        for symbol in chunk_targets:
+                            preload_result = dict((chunk_results or {}).get(symbol) or {})
+                            if bool(preload_result.get("is_ready")):
+                                interval_state["ready_count"] += 1
+                                env_result["ready_count"] += 1
+                                summary["ready_count"] += 1
+                            if bool(preload_result.get("indicator_seeded")):
+                                interval_state["indicator_seeded"] += 1
+                                env_result["indicator_seeded"] += 1
+                                summary["indicator_seeded"] += 1
+                            interval_state["symbol_completed"] += 1
+                            env_result["symbol_completed"] += 1
+                            summary["symbol_completed"] += 1
+                        _publish_startup_preload_state(api_app, summary)
+                else:
+                    for symbol, target_ms in (targets or {}).items():
+                        preload_result = _preload_symbol_indicator_state(
+                            api_app,
+                            environment,
+                            symbol,
+                            interval,
+                            target_ms,
+                            use_materialize=False,
+                        )
+                        if bool(preload_result.get("is_ready")):
+                            interval_state["ready_count"] += 1
+                            env_result["ready_count"] += 1
+                            summary["ready_count"] += 1
+                        if bool(preload_result.get("indicator_seeded")):
+                            interval_state["indicator_seeded"] += 1
+                            env_result["indicator_seeded"] += 1
+                            summary["indicator_seeded"] += 1
+                        interval_state["symbol_completed"] += 1
+                        env_result["symbol_completed"] += 1
+                        summary["symbol_completed"] += 1
+                        _publish_startup_preload_state(api_app, summary)
                 interval_state["status"] = "completed"
                 env_result["interval_completed"] += 1
                 _publish_startup_preload_state(api_app, summary)
@@ -1442,27 +1675,30 @@ def run_compute_startup_preload(api_app=None) -> dict:
                 interval_state["status"] = "running"
                 _publish_startup_preload_state(api_app, summary)
                 indicator_seeded = 0
-                for symbol in fallback_symbols:
-                    fallback_results = api_app.materialize_engines_from_storage(
+                chunk_size = _resolve_compute_startup_preload_chunk_size(api_app, environment)
+                for index in range(0, len(fallback_symbols), chunk_size):
+                    chunk_symbols = fallback_symbols[index:index + chunk_size]
+                    fallback_results = _preload_interval_indicator_state(
+                        api_app,
                         environment,
-                        [symbol],
+                        chunk_symbols,
                         "5m",
-                        hydrate_signal_state=True,
-                        persist_latest_indicator=False,
+                        {},
                     )
-                    result = dict((fallback_results or {}).get(symbol) or {})
-                    if bool(result.get("is_ready")):
-                        interval_state["ready_count"] += 1
-                        env_result["ready_count"] += 1
-                        summary["ready_count"] += 1
-                    if bool(result.get("indicator_seeded")):
-                        indicator_seeded += 1
-                        interval_state["indicator_seeded"] += 1
-                        env_result["indicator_seeded"] += 1
-                        summary["indicator_seeded"] += 1
-                    interval_state["symbol_completed"] += 1
-                    env_result["symbol_completed"] += 1
-                    summary["symbol_completed"] += 1
+                    for symbol in chunk_symbols:
+                        result = dict((fallback_results or {}).get(symbol) or {})
+                        if bool(result.get("is_ready")):
+                            interval_state["ready_count"] += 1
+                            env_result["ready_count"] += 1
+                            summary["ready_count"] += 1
+                        if bool(result.get("indicator_seeded")):
+                            indicator_seeded += 1
+                            interval_state["indicator_seeded"] += 1
+                            env_result["indicator_seeded"] += 1
+                            summary["indicator_seeded"] += 1
+                        interval_state["symbol_completed"] += 1
+                        env_result["symbol_completed"] += 1
+                        summary["symbol_completed"] += 1
                     _publish_startup_preload_state(api_app, summary)
                 env_result["storage_fallback_indicator_seeded"] = indicator_seeded
                 if not interval_targets.get("5m"):

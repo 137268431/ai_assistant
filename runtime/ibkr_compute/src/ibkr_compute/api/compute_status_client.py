@@ -27,6 +27,7 @@ _compute_status_cache_lock = threading.Lock()
 _compute_status_cache: dict[str, Any] = {
     "expires_at": 0.0,
     "payload": None,
+    "cache_key": None,
 }
 
 
@@ -47,17 +48,48 @@ def is_compute_status_payload(payload: dict | None) -> bool:
     )
 
 
-def get_remote_compute_status(*, force_refresh: bool = False) -> dict:
+def _normalize_symbol_param(symbols) -> list[str]:
+    if symbols is None:
+        return []
+    source = symbols if isinstance(symbols, (list, tuple, set)) else [symbols]
+    normalized = []
+    seen = set()
+    for value in source:
+        for item in str(value or "").replace("\n", ",").split(","):
+            symbol = str(item or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            normalized.append(symbol)
+    return normalized
+
+
+def get_remote_compute_status(
+    *,
+    force_refresh: bool = False,
+    symbols=None,
+    include_engines: bool = False,
+) -> dict:
+    requested_symbols = _normalize_symbol_param(symbols)
+    cache_key = (tuple(requested_symbols), bool(include_engines))
     now = time.time()
     if not force_refresh:
         with _compute_status_cache_lock:
             cached_payload = _compute_status_cache.get("payload")
+            cached_key = _compute_status_cache.get("cache_key")
             expires_at = float(_compute_status_cache.get("expires_at") or 0.0)
-            if now < expires_at and isinstance(cached_payload, dict):
+            if cached_key == cache_key and now < expires_at and isinstance(cached_payload, dict):
                 return dict(cached_payload)
 
     payload: dict[str, Any] = {}
-    for params in ({"lite": "1"}, {"full": "1"}):
+    base_params = {"full": "1"} if include_engines else {"lite": "1"}
+    if requested_symbols:
+        base_params["symbols"] = ",".join(requested_symbols)
+    fallback_params = {"full": "1"}
+    if requested_symbols:
+        fallback_params["symbols"] = ",".join(requested_symbols)
+    query_plan = [base_params] if include_engines else [base_params, fallback_params]
+    for params in query_plan:
         try:
             response = requests.get(
                 f"{get_compute_internal_url()}/status",
@@ -74,6 +106,7 @@ def get_remote_compute_status(*, force_refresh: bool = False) -> dict:
 
     with _compute_status_cache_lock:
         _compute_status_cache["payload"] = dict(payload)
+        _compute_status_cache["cache_key"] = cache_key
         _compute_status_cache["expires_at"] = time.time() + COMPUTE_STATUS_CACHE_TTL_SECONDS
 
     return dict(payload)

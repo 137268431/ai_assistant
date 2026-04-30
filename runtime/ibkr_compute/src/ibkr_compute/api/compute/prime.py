@@ -20,7 +20,7 @@ from ibkr_compute.api.compute.request import (
 )
 
 
-PRIME_INTERVALS = ("15m", "30m", "1h")
+PRIME_INTERVALS = ("5m", "15m", "30m", "1h", "4h", "1d")
 READINESS_INTERVALS = ("5m", "15m", "30m", "1h")
 READINESS_SOFT_INTERVALS = ("15m", "30m", "1h")
 READINESS_MAX_MISSING_SYMBOLS = 20
@@ -387,13 +387,24 @@ def build_compute_prime_response(payload=None):
                 "symbols": requested_symbols,
             }
             for interval in intervals:
-                rollup_result = api_app.ensure_higher_timeframe_bars(
-                    [environment],
-                    force=True,
-                    symbols=requested_symbols,
-                    incremental=False,
-                    intervals=[interval],
-                )
+                if interval == "5m":
+                    rollup_result = {
+                        environment: {
+                            "skipped": True,
+                            "reason": "base_interval_materialize_only",
+                            "written": 0,
+                            "errors": 0,
+                            "intervals": ["5m"],
+                        }
+                    }
+                else:
+                    rollup_result = api_app.ensure_higher_timeframe_bars(
+                        [environment],
+                        force=True,
+                        symbols=requested_symbols,
+                        incremental=False,
+                        intervals=[interval],
+                    )
                 materialize_result = api_app.materialize_engines_from_storage(
                     environment,
                     requested_symbols,

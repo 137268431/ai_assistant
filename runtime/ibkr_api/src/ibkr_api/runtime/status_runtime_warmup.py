@@ -47,14 +47,25 @@ def build_runtime_warmup_payload(
         monitor_symbols,
         normalize_symbol_list=normalize_symbol_list,
     )
+    data_ready = bool(warmup.get("data_ready"))
+    trade_allowed = bool(warmup.get("trade_allowed", warmup.get("trading_gate_open")))
+    trade_symbols_total = int(warmup.get("trade_symbols_total") or 0)
+    phase = str(warmup.get("phase") or "")
+    if data_ready and phase in {"degraded", "pending", "running"}:
+        phase = "ready"
+    trading_gate_reason = str(warmup.get("trading_gate_reason") or "")
+    if data_ready and not trade_allowed and trade_symbols_total <= 0:
+        trading_gate_reason = "no_trade_symbols"
 
     return {
-        "phase": str(warmup.get("phase") or ""),
+        "phase": phase,
+        "data_ready": data_ready,
+        "trade_allowed": trade_allowed,
         "trading_gate_open": bool(warmup.get("trading_gate_open")),
-        "trading_gate_reason": str(warmup.get("trading_gate_reason") or ""),
+        "trading_gate_reason": trading_gate_reason,
         "required_interval": str(warmup.get("required_interval") or ""),
         "symbols_total": int(warmup.get("symbols_total") or 0),
-        "trade_symbols_total": int(warmup.get("trade_symbols_total") or 0),
+        "trade_symbols_total": trade_symbols_total,
         "monitor_symbols_total": int(warmup.get("monitor_symbols_total") or 0),
         "ready_symbols": int(warmup.get("ready_symbols") or 0),
         "ready_trade_symbols": int(warmup.get("ready_trade_symbols") or 0),

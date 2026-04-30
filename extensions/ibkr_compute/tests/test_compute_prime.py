@@ -176,13 +176,18 @@ class ComputePrimeResponseTest(unittest.TestCase):
             persist_latest_indicator=True,
         )
 
-    def test_prime_rejects_unsupported_interval(self):
+    def test_prime_materializes_1d_for_warmup_prime(self):
         fake_app = _fake_app()
 
         with mock.patch.object(compute_prime, "_api_app", return_value=fake_app), \
                 mock.patch.object(compute_request, "_api_app", return_value=fake_app), \
+                mock.patch.object(
+                    compute_prime,
+                    "build_multi_timeframe_readiness",
+                    return_value={"status": "ready"},
+                ), \
                 mock.patch.object(compute_prime, "jsonify", side_effect=lambda payload: _FakeResponse(payload)):
-            response, status = compute_prime.build_compute_prime_response(
+            response = compute_prime.build_compute_prime_response(
                 {
                     "environments": ["live"],
                     "symbols": ["AAPL"],
@@ -190,9 +195,23 @@ class ComputePrimeResponseTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(status, 400)
-        self.assertEqual(response.get_json()["error"], "unsupported_prime_intervals")
-        self.assertEqual(response.get_json()["unsupported_intervals"], ["1d"])
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["intervals"], ["1d"])
+        fake_app.ensure_higher_timeframe_bars.assert_called_once_with(
+            ["live"],
+            force=True,
+            symbols=["AAPL"],
+            incremental=False,
+            intervals=["1d"],
+        )
+        fake_app.materialize_engines_from_storage.assert_called_once_with(
+            "live",
+            ["AAPL"],
+            "1d",
+            hydrate_signal_state=False,
+            persist_latest_indicator=False,
+        )
 
     def test_prime_rejects_mixed_unsupported_intervals(self):
         fake_app = _fake_app()
@@ -204,14 +223,45 @@ class ComputePrimeResponseTest(unittest.TestCase):
                 {
                     "environments": ["live"],
                     "symbols": ["AAPL"],
-                    "intervals": ["15m", "4h"],
+                    "intervals": ["15m", "2h"],
                 }
             )
 
         self.assertEqual(status, 400)
         payload = response.get_json()
         self.assertEqual(payload["error"], "unsupported_prime_intervals")
-        self.assertEqual(payload["unsupported_intervals"], ["4h"])
+        self.assertEqual(payload["unsupported_intervals"], ["2h"])
+
+    def test_prime_materializes_5m_without_higher_timeframe_rollup(self):
+        fake_app = _fake_app()
+
+        with mock.patch.object(compute_prime, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_request, "_api_app", return_value=fake_app), \
+                mock.patch.object(
+                    compute_prime,
+                    "build_multi_timeframe_readiness",
+                    return_value={"status": "ready"},
+                ), \
+                mock.patch.object(compute_prime, "jsonify", side_effect=lambda payload: _FakeResponse(payload)):
+            response = compute_prime.build_compute_prime_response(
+                {
+                    "environments": ["live"],
+                    "symbols": ["aapl", "msft"],
+                    "intervals": ["5m"],
+                }
+            )
+
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["intervals"], ["5m"])
+        fake_app.ensure_higher_timeframe_bars.assert_not_called()
+        fake_app.materialize_engines_from_storage.assert_called_once_with(
+            "live",
+            ["AAPL", "MSFT"],
+            "5m",
+            hydrate_signal_state=False,
+            persist_latest_indicator=False,
+        )
 
 
 class MultiTimeframeReadinessTest(unittest.TestCase):

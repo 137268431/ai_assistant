@@ -23,6 +23,8 @@ class TradingServiceWarmupMixin:
             "finished_at": None,
             "last_success_at": None,
             "last_error": "",
+            "data_ready": False,
+            "trade_allowed": False,
             "trading_gate_open": False,
             "trading_gate_reason": "warmup_idle",
             "target_date": "",
@@ -368,6 +370,8 @@ class TradingServiceWarmupMixin:
             next_state["ready_subscription_symbols"] = len([symbol for symbol in subscription_symbols if symbol in ready_set])
             next_state["ready_trade_symbols"] = len([symbol for symbol in trade_symbols if symbol in ready_set])
             next_state["ready_monitor_symbols"] = len([symbol for symbol in monitor_symbols if symbol in ready_set])
+            next_state["data_ready"] = bool(symbols) and not pending_symbols and not integrity_pending_symbols
+            next_state["trade_allowed"] = bool(next_state.get("trading_gate_open"))
             self._warmup_state = next_state
             return self._copy_warmup_state(next_state)
 

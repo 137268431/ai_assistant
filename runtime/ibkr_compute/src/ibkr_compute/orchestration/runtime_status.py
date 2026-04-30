@@ -77,6 +77,7 @@ class TradingServiceRuntimeStatusMixin:
             round(max(0.0, (due_bucket_ms - completed_bucket_ms) / 1000.0), 1)
             if due_bucket_ms > completed_bucket_ms else 0.0
         )
+        websocket_status = self.ws_client.status()
         realtime_quotes = self.realtime_quote_book.status()
         warmup_state = self._copy_warmup_state()
         daily_scan_state = self._copy_daily_scan_state()
@@ -89,6 +90,15 @@ class TradingServiceRuntimeStatusMixin:
                 bar_repair_queue = {"ok": False, "error": str(exc), "pending": 0, "inflight": 0, "failed": 0}
         scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
         market_ws_symbols = self._market_ws_symbols()
+        with self._subscription_lock:
+            active_subscription_symbols = list(self._active_subscription_symbols)
+        active_subscription_set = set(active_subscription_symbols)
+        market_ws_subscribed_symbols = [
+            symbol for symbol in market_ws_symbols if symbol in active_subscription_set
+        ]
+        market_ws_ready = bool(websocket_status.get("connected") or websocket_status.get("ready")) and bool(market_ws_symbols) and (
+            len(market_ws_subscribed_symbols) >= len(market_ws_symbols)
+        )
         blocking_canonical_pending_symbols = self._non_monitor_pending_symbols(
             official_5m.get("pending_symbols") or [],
             market_ws_symbols,
@@ -110,18 +120,24 @@ class TradingServiceRuntimeStatusMixin:
             pipeline_stage = "resolve_universe"
             pipeline_status = str(warmup_state.get("phase") or "idle")
 
-        bar_freshness_status = (
-            "fresh"
-            if completed_bucket_ms > 0
-            and float(official_5m.get("lag_s", 0) or 0) <= 90
-            and not blocking_canonical_pending_symbols
-            else "stale"
-        )
-        indicator_freshness_status = (
-            "fresh"
-            if last_run_at > 0 and lag_since_last_run_s <= 90 and not stalled
-            else "stale"
-        )
+        market_session_kind = str(market_session.get("kind") or "").strip().lower()
+        live_freshness_required = market_session_kind in {"regular", "close_transition"}
+        bar_freshness_status = "fresh"
+        if live_freshness_required:
+            bar_freshness_status = (
+                "fresh"
+                if completed_bucket_ms > 0
+                and float(official_5m.get("lag_s", 0) or 0) <= 90
+                and not blocking_canonical_pending_symbols
+                else "stale"
+            )
+        indicator_freshness_status = "fresh"
+        if live_freshness_required:
+            indicator_freshness_status = (
+                "fresh"
+                if last_run_at > 0 and lag_since_last_run_s <= 90 and not stalled
+                else "stale"
+            )
         multi_timeframe_readiness = {}
         try:
             from ibkr_compute.api.service_topology import uses_remote_compute_service
@@ -129,7 +145,7 @@ class TradingServiceRuntimeStatusMixin:
             if uses_remote_compute_service():
                 from ibkr_compute.api.compute_status_client import get_remote_compute_status
 
-                compute_status = get_remote_compute_status(force_refresh=False)
+                compute_status = get_remote_compute_status(force_refresh=False, symbols=data_symbols)
                 candidate = compute_status.get("multi_timeframe_readiness")
                 if isinstance(candidate, dict):
                     multi_timeframe_readiness = dict(candidate)
@@ -148,7 +164,7 @@ class TradingServiceRuntimeStatusMixin:
             "gateway": self.gateway_manager.status(),
             "auth_recovery": auth_recovery,
             "session": session_status,
-            "websocket": self.ws_client.status(),
+            "websocket": websocket_status,
             "bar_aggregator": self.bar_aggregator.status(),
             "realtime_quotes": realtime_quotes,
             "canonical_5m": official_5m,
@@ -209,10 +225,13 @@ class TradingServiceRuntimeStatusMixin:
                 "market_ws_symbols": list(market_ws_symbols),
                 "active_target_date": self._active_target_date,
                 "active_target_count": len(self._active_trade_symbols),
-                "active_subscription_count": len(self._active_subscription_symbols),
+                "active_subscription_count": len(active_subscription_symbols),
                 "active_target_symbols": list(self._active_trade_symbols),
-                "active_subscription_symbols": list(self._active_subscription_symbols),
+                "active_subscription_symbols": list(active_subscription_symbols),
                 "active_trade_symbols": list(self._active_trade_symbols),
+                "market_ws_ready": market_ws_ready,
+                "market_ws_symbols_ready": len(market_ws_subscribed_symbols),
+                "market_ws_subscribed_symbols": list(market_ws_subscribed_symbols),
                 "last_successful_scan_market_date": (
                     str(daily_scan_state.get("market_date") or "")
                     if str(daily_scan_state.get("status") or "").strip().lower() == "completed"

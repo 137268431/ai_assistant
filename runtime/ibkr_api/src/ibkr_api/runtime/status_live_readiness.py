@@ -114,7 +114,112 @@ def _count_ready_symbols(
         "non_monitor_pending_total": non_monitor_pending_total,
         "monitor_pending_total": monitor_pending_total,
         "gate_open": len(trade_symbols) > 0 and ready_trade_symbols >= len(trade_symbols),
-        "phase": "ready" if all_symbols and non_monitor_pending_total == 0 else ("pending" if all_symbols else "idle"),
+        "phase": "ready" if all_symbols and ready_symbols >= len(all_symbols) else ("pending" if all_symbols else "idle"),
+    }
+
+
+def _as_readiness_summary_payload(
+    source: str,
+    payload: dict[str, Any],
+    *,
+    expected_symbols_total: int,
+    required_interval: str,
+) -> dict[str, Any]:
+    readiness = payload.get("multi_timeframe_readiness") if isinstance(payload, dict) else {}
+    if not isinstance(readiness, dict) or not readiness:
+        return {}
+    intervals = readiness.get("intervals") if isinstance(readiness.get("intervals"), dict) else {}
+    interval_payload = intervals.get(required_interval)
+    if not isinstance(interval_payload, dict):
+        return {}
+    symbols_total = int(readiness.get("symbols_total") or interval_payload.get("symbols_total") or 0)
+    if expected_symbols_total > 0 and symbols_total < expected_symbols_total:
+        return {}
+    return {
+        "source": source,
+        "readiness": readiness,
+        "interval": interval_payload,
+        "symbols_total": symbols_total,
+    }
+
+
+def _build_live_readiness_from_summary(
+    summary: dict[str, Any],
+    *,
+    environment: str,
+    required_interval: str,
+    all_symbols: list[str],
+    trade_symbols: list[str],
+    monitor_symbols: list[str],
+    warmup: dict[str, Any],
+    market_universe: dict[str, Any],
+) -> dict[str, Any]:
+    interval_payload = summary.get("interval") if isinstance(summary.get("interval"), dict) else {}
+    symbols_total = int(summary.get("symbols_total") or len(all_symbols) or 0)
+    missing_total = int(interval_payload.get("missing_ready_symbols_total") or 0)
+    ready_symbols = max(0, symbols_total - missing_total)
+    missing_symbols = {
+        str(symbol or "").strip().upper()
+        for symbol in (interval_payload.get("missing_ready_symbols") or [])
+        if str(symbol or "").strip()
+    }
+    missing_list_is_complete = len(missing_symbols) >= missing_total
+    if missing_total == 0:
+        ready_trade_symbols = len(trade_symbols)
+        ready_monitor_symbols = len(monitor_symbols)
+    elif missing_list_is_complete:
+        ready_trade_symbols = len([symbol for symbol in trade_symbols if symbol not in missing_symbols])
+        ready_monitor_symbols = len([symbol for symbol in monitor_symbols if symbol not in missing_symbols])
+    else:
+        ready_trade_symbols = int(warmup.get("ready_trade_symbols") or 0)
+        ready_monitor_symbols = int(warmup.get("ready_monitor_symbols") or 0)
+
+    interval_status = str(interval_payload.get("status") or "").strip().lower()
+    data_ready = bool(all_symbols) and interval_status == "ready" and missing_total == 0
+    gate_open = bool(trade_symbols) and ready_trade_symbols >= len(trade_symbols)
+    pending_symbols_total = max(0, symbols_total - ready_symbols)
+    monitor_pending_total = max(0, len(monitor_symbols) - ready_monitor_symbols)
+    non_monitor_pending_total = max(0, pending_symbols_total - monitor_pending_total)
+    snapshot_phase = str(warmup.get("phase") or "").strip().lower() or "idle"
+    snapshot_finished_at = warmup.get("finished_at") or ""
+    snapshot_ready_symbols = int(warmup.get("ready_symbols") or 0)
+    snapshot_differs = bool(
+        warmup
+        and (
+            int(warmup.get("symbols_total") or 0) != symbols_total
+            or snapshot_ready_symbols != ready_symbols
+            or int(warmup.get("ready_trade_symbols") or 0) != ready_trade_symbols
+            or int(warmup.get("ready_monitor_symbols") or 0) != ready_monitor_symbols
+        )
+    )
+    return {
+        "available": bool(all_symbols),
+        "engine_snapshot_available": False,
+        "source": str(summary.get("source") or "multi_timeframe_readiness"),
+        "environment": environment,
+        "required_interval": required_interval,
+        "computed_at": datetime.now(tz=ET).isoformat(),
+        "phase": "ready" if data_ready else ("degraded" if all_symbols else "idle"),
+        "data_ready": data_ready,
+        "trade_allowed": gate_open,
+        "market_ws_ready": bool(market_universe.get("market_ws_ready")),
+        "market_ws_symbols_ready": int(market_universe.get("market_ws_symbols_ready") or 0),
+        "market_ws_symbols_total": int(market_universe.get("market_ws_symbols_total") or len(monitor_symbols) or 0),
+        "gate_open": gate_open,
+        "gate_reason": "ready" if gate_open else ("no_trade_symbols" if not trade_symbols else "live_not_ready"),
+        "symbols_total": symbols_total,
+        "trade_symbols_total": len(trade_symbols),
+        "monitor_symbols_total": len(monitor_symbols),
+        "ready_symbols": ready_symbols,
+        "ready_trade_symbols": ready_trade_symbols,
+        "ready_monitor_symbols": ready_monitor_symbols,
+        "pending_symbols_total": pending_symbols_total,
+        "non_monitor_pending_symbols_total": non_monitor_pending_total,
+        "blocking_pending_symbols_total": pending_symbols_total,
+        "monitor_pending_symbols_total": monitor_pending_total,
+        "snapshot_differs": snapshot_differs,
+        "snapshot_phase": snapshot_phase,
+        "snapshot_finished_at": snapshot_finished_at,
     }
 
 
@@ -142,6 +247,7 @@ def build_statusz_live_readiness(
     trade_symbols = resolved["trade_symbols"]
     monitor_symbols = resolved["monitor_symbols"]
     all_symbols = resolved["all_symbols"]
+    market_universe = resolved["market_universe"]
 
     readiness_counts = _count_ready_symbols(
         engine_map,
@@ -175,7 +281,7 @@ def build_statusz_live_readiness(
     snapshot_monitor_pending_total = int(warmup.get("monitor_pending_symbols_total") or 0) or max(
         0, snapshot_monitor_symbols_total - snapshot_ready_monitor_symbols
     )
-    snapshot_blocking_pending_total = int(warmup.get("blocking_pending_symbols_total") or 0) or max(
+    snapshot_non_monitor_pending_total = int(warmup.get("blocking_pending_symbols_total") or 0) or max(
         0, snapshot_pending_symbols_total - snapshot_monitor_pending_total
     )
     snapshot_gate_open = bool(warmup.get("trading_gate_open"))
@@ -192,6 +298,33 @@ def build_statusz_live_readiness(
         or str(warmup.get("phase") or "").strip()
         or str(warmup.get("finished_at") or "").strip()
     )
+
+    for summary in (
+        _as_readiness_summary_payload(
+            "runtime_multi_timeframe_readiness",
+            runtime,
+            expected_symbols_total=len(all_symbols),
+            required_interval=required_interval,
+        ),
+        _as_readiness_summary_payload(
+            "compute_multi_timeframe_readiness",
+            compute,
+            expected_symbols_total=len(all_symbols),
+            required_interval=required_interval,
+        ),
+    ):
+        if summary:
+            return _build_live_readiness_from_summary(
+                summary,
+                environment=environment,
+                required_interval=required_interval,
+                all_symbols=all_symbols,
+                trade_symbols=trade_symbols,
+                monitor_symbols=monitor_symbols,
+                warmup=warmup,
+                market_universe=market_universe,
+            )
+
     snapshot_differs = bool(
         snapshot_present
         and (
@@ -225,6 +358,11 @@ def build_statusz_live_readiness(
             "required_interval": required_interval,
             "computed_at": datetime.now(tz=ET).isoformat(),
             "phase": snapshot_phase,
+            "data_ready": snapshot_phase == "ready" and snapshot_pending_symbols_total == 0,
+            "trade_allowed": snapshot_gate_open,
+            "market_ws_ready": bool(market_universe.get("market_ws_ready")),
+            "market_ws_symbols_ready": int(market_universe.get("market_ws_symbols_ready") or 0),
+            "market_ws_symbols_total": int(market_universe.get("market_ws_symbols_total") or snapshot_monitor_symbols_total or 0),
             "gate_open": snapshot_gate_open,
             "gate_reason": snapshot_gate_reason,
             "symbols_total": snapshot_symbols_total or len(all_symbols),
@@ -234,8 +372,8 @@ def build_statusz_live_readiness(
             "ready_trade_symbols": snapshot_ready_trade_symbols,
             "ready_monitor_symbols": snapshot_ready_monitor_symbols,
             "pending_symbols_total": snapshot_pending_symbols_total,
-            "non_monitor_pending_symbols_total": snapshot_blocking_pending_total,
-            "blocking_pending_symbols_total": snapshot_blocking_pending_total,
+            "non_monitor_pending_symbols_total": snapshot_non_monitor_pending_total,
+            "blocking_pending_symbols_total": snapshot_pending_symbols_total,
             "monitor_pending_symbols_total": snapshot_monitor_pending_total,
             "snapshot_differs": False,
             "snapshot_phase": snapshot_phase,
@@ -250,6 +388,11 @@ def build_statusz_live_readiness(
         "required_interval": required_interval,
         "computed_at": datetime.now(tz=ET).isoformat(),
         "phase": phase,
+        "data_ready": phase == "ready" and ready_symbols >= len(all_symbols),
+        "trade_allowed": gate_open,
+        "market_ws_ready": bool(market_universe.get("market_ws_ready")),
+        "market_ws_symbols_ready": int(market_universe.get("market_ws_symbols_ready") or 0),
+        "market_ws_symbols_total": int(market_universe.get("market_ws_symbols_total") or len(monitor_symbols) or 0),
         "gate_open": gate_open,
         "gate_reason": "ready" if gate_open else ("live_not_ready" if trade_symbols else "no_trade_symbols"),
         "symbols_total": len(all_symbols),
@@ -260,7 +403,7 @@ def build_statusz_live_readiness(
         "ready_monitor_symbols": ready_monitor_symbols,
         "pending_symbols_total": max(0, len(all_symbols) - ready_symbols),
         "non_monitor_pending_symbols_total": non_monitor_pending_total,
-        "blocking_pending_symbols_total": non_monitor_pending_total,
+        "blocking_pending_symbols_total": max(0, len(all_symbols) - ready_symbols),
         "monitor_pending_symbols_total": monitor_pending_total,
         "snapshot_differs": snapshot_differs,
         "snapshot_phase": snapshot_phase,

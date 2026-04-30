@@ -164,6 +164,8 @@ def build_market_universe_payload(
 ) -> dict[str, Any]:
     market_universe = as_dict(market_universe_payload)
     active_trade_symbols = market_universe.get("active_trade_symbols")
+    market_ws_symbols = market_universe.get("market_ws_symbols")
+    market_ws_subscribed_symbols = market_universe.get("market_ws_subscribed_symbols")
     active_repair_symbols = market_universe.get("last_active_repair_symbols")
     active_repair_reasons = market_universe.get("last_active_repair_reasons")
     return {
@@ -179,6 +181,20 @@ def build_market_universe_payload(
         "active_trade_symbols_total": _list_total(
             active_trade_symbols,
             market_universe.get("active_trade_symbols_total"),
+        ),
+        "market_ws_ready": bool(market_universe.get("market_ws_ready")),
+        "market_ws_symbols": trim_array(
+            market_ws_symbols,
+            len(market_ws_symbols) if isinstance(market_ws_symbols, list) else 0,
+        ),
+        "market_ws_symbols_total": _list_total(
+            market_ws_symbols,
+            market_universe.get("market_ws_symbols_total"),
+        ),
+        "market_ws_symbols_ready": int(market_universe.get("market_ws_symbols_ready") or 0),
+        "market_ws_subscribed_symbols": trim_array(
+            market_ws_subscribed_symbols,
+            len(market_ws_subscribed_symbols) if isinstance(market_ws_subscribed_symbols, list) else 0,
         ),
         "last_target_refresh": market_universe.get("last_target_refresh") or "",
         "active_repair_interval_min": int(market_universe.get("active_repair_interval_min") or 0),
