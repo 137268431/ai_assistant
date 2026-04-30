@@ -1,11 +1,12 @@
 const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
-        const CHART_UI_PREFS_KEY = 'ibkr_chart_ui_prefs_v1';
+        const CHART_UI_PREFS_KEY = 'ibkr_chart_ui_prefs_v2';
         const CHART_MOBILE_HINT_KEY = 'ibkr_chart_mobile_hint_seen_v1';
         const RANGE_PRESETS = [
             { key: '1d', shortLabel: '1D', longLabel: '最近1天', durationMs: 24 * 60 * 60 * 1000 },
             { key: '3d', shortLabel: '3D', longLabel: '最近3天', durationMs: 3 * 24 * 60 * 60 * 1000 },
             { key: '1w', shortLabel: '1W', longLabel: '最近1周', durationMs: 7 * 24 * 60 * 60 * 1000 },
             { key: '1m', shortLabel: '1M', longLabel: '最近1月', durationMs: 31 * 24 * 60 * 60 * 1000 },
+            { key: 'custom', shortLabel: '自定义', longLabel: '自定义范围', durationMs: null },
             { key: 'all', shortLabel: 'ALL', longLabel: '全部历史', durationMs: 0 },
         ];
         let currentEnvironment = getCurrentRuntimeEnvironment();
@@ -13,6 +14,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let currentInterval = '5m';
         let currentRangeKey = '1d';
         let currentAnchorMs = 0;
+        let customRangeStartMs = 0;
+        let customRangeEndMs = 0;
         let pendingFocusBarTimeMs = 0;
         let currentIndicatorId = '';
         let chartInstance = null;
@@ -41,7 +44,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let chartPointerLocked = false;
         let inspectorDrawerOpen = false;
         let chartTracePanelOpen = false;
-        let chartLegendCollapsed = false;
+        let chartLegendCollapsed = true;
         let chartMarkerDensityTier = '';
         let chartTooltipSyncRaf = 0;
         let chartTooltipSyncTimer = 0;
@@ -120,6 +123,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return defaults[normalized] || '1d';
         }
 
+        function isCustomRange(rangeKey = currentRangeKey) {
+            return String(rangeKey || '').trim().toLowerCase() === 'custom';
+        }
+
         function normalizeRangeKey(value, interval = currentInterval) {
             const key = String(value || '').trim().toLowerCase();
             const exists = RANGE_PRESETS.some((item) => item.key === key);
@@ -131,12 +138,78 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function getRangeLabel(rangeKey) {
+            if (isCustomRange(rangeKey)) {
+                if (customRangeStartMs && customRangeEndMs) {
+                    return `自定义 ${formatCustomRangeTime(customRangeStartMs)} → ${formatCustomRangeTime(customRangeEndMs)}`;
+                }
+                return '自定义范围';
+            }
             return getRangePreset(rangeKey)?.longLabel || '最近1天';
         }
 
+        function getRangeShortLabel(rangeKey) {
+            if (isCustomRange(rangeKey)) return '自定义';
+            return getRangePreset(rangeKey)?.shortLabel || String(rangeKey || '--').toUpperCase();
+        }
+
         function getRangeStartMs(endMs, rangeKey) {
+            if (isCustomRange(rangeKey)) return Math.max(0, Number(customRangeStartMs || 0));
             const durationMs = Number(getRangePreset(rangeKey)?.durationMs || 0);
             return durationMs > 0 && endMs > 0 ? Math.max(0, endMs - durationMs) : 0;
+        }
+
+        function padDatePart(value) {
+            return String(value).padStart(2, '0');
+        }
+
+        function formatDateTimeLocalValue(ms) {
+            const num = Number(ms || 0);
+            if (!Number.isFinite(num) || num <= 0) return '';
+            const date = new Date(num);
+            return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+        }
+
+        function parseDateTimeLocalValue(value) {
+            const text = String(value || '').trim();
+            if (!text) return 0;
+            const ms = new Date(text).getTime();
+            return Number.isFinite(ms) ? ms : 0;
+        }
+
+        function parseQueryTimeMs(value) {
+            const text = String(value || '').trim();
+            if (!text) return 0;
+            if (/^\d{10,13}$/.test(text)) {
+                const num = Number(text);
+                return text.length === 10 ? num * 1000 : num;
+            }
+            const parsed = new Date(text).getTime();
+            return Number.isFinite(parsed) ? parsed : 0;
+        }
+
+        function formatCustomRangeTime(ms) {
+            const num = Number(ms || 0);
+            if (!Number.isFinite(num) || num <= 0) return '--';
+            if (typeof formatBarTimeMsToET === 'function') return formatBarTimeMsToET(num);
+            return new Date(num).toISOString().slice(0, 16).replace('T', ' ');
+        }
+
+        function getChartRequestBounds({ previewBar = null } = {}) {
+            if (isCustomRange()) {
+                const fallbackEndMs = Number(customRangeEndMs || currentAnchorMs || Date.now()) || Date.now();
+                return {
+                    startMs: Math.max(0, Number(customRangeStartMs || 0)),
+                    endMs: fallbackEndMs,
+                    previewBar: null,
+                };
+            }
+            const previewBarMs = Number(previewBar?.bar_time_ms || 0) || 0;
+            const endMs = Math.max(Number(currentAnchorMs || 0), previewBarMs, Date.now());
+            return {
+                startMs: getRangeStartMs(endMs, currentRangeKey),
+                endMs,
+                previewBar,
+            };
         }
 
         function buildIntervalAliases(interval) {
@@ -356,7 +429,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false, swatches: ['#2196F3', '#9C27B0'], description: '背离提示标记' },
                 { key: 'tradeSignals', label: 'Trade Signals', shortLabel: 'Signal', disabled: !isTradeSignalInterval(), swatches: ['#48BB78', '#FC8181'], description: '多空交易信号' },
                 { key: 'volume', label: 'Volume', shortLabel: 'Vol', disabled: false, swatches: ['#38BDF8'], description: '成交量柱体' },
-            ];
+            ].filter((item) => !item.disabled);
         }
 
         function formatPrice(value) {
@@ -632,10 +705,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         function parseQueryContext() {
             const params = new URLSearchParams(window.location.search || '');
+            const startMs = parseQueryTimeMs(params.get('start_ms') || params.get('from') || '');
+            const endMs = parseQueryTimeMs(params.get('end_ms') || params.get('to') || '');
             return {
                 symbol: String(params.get('symbol') || '').trim().toUpperCase(),
                 interval: normalizeInterval(params.get('interval') || '5m'),
-                range: String(params.get('range') || '').trim().toLowerCase(),
+                range: String(params.get('range') || (startMs || endMs ? 'custom' : '')).trim().toLowerCase(),
+                customStartMs: startMs,
+                customEndMs: endMs,
                 barTimeMs: Number(params.get('bar_time_ms') || 0) || 0,
                 indicatorId: String(params.get('indicator_id') || '').trim(),
                 traceOpen: ['1', 'true', 'yes'].includes(String(params.get('trace') || '').trim().toLowerCase()),
@@ -648,6 +725,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 interval: currentInterval,
                 range: currentRangeKey,
             };
+            if (isCustomRange() && customRangeStartMs && customRangeEndMs) {
+                params.start_ms = Math.round(customRangeStartMs);
+                params.end_ms = Math.round(customRangeEndMs);
+            }
             if (chartTracePanelOpen) params.trace = 1;
             if (currentIndicatorId) params.indicator_id = currentIndicatorId;
             const url = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
@@ -782,9 +863,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         async function fetchChartTimelinePayload({ previewBar = null } = {}) {
-            const previewBarMs = Number(previewBar?.bar_time_ms || 0) || 0;
-            const cappedMs = Math.max(Number(currentAnchorMs || 0), previewBarMs, Date.now());
-            const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
+            const requestBounds = getChartRequestBounds({ previewBar });
             const response = await requestChartJson('/api/custom/ibkr/proxy', {
                 method: 'POST',
                 body: {
@@ -792,11 +871,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     environment: currentEnvironment,
                     symbol: currentSymbol,
                     interval: currentInterval,
-                    start_ms: rangeStartMs,
-                    end_ms: cappedMs,
+                    start_ms: requestBounds.startMs,
+                    end_ms: requestBounds.endMs,
                     include_signals: currentInterval === '5m',
                     include_trace: true,
-                    preview_bar: previewBar || undefined,
+                    preview_bar: requestBounds.previewBar || undefined,
                 }
             }, 2);
             return buildTimelinePayloadFromResponse(response);
@@ -804,6 +883,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         async function refreshComputedDisplayPayload() {
             if (!lastPayload) {
+                realtimeComputedPayload = null;
+                return;
+            }
+            if (isCustomRange()) {
                 realtimeComputedPayload = null;
                 return;
             }
@@ -957,7 +1040,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return realtimeComputedPayload;
             }
             const baseBars = Array.isArray(payload?.bars) ? payload.bars.slice() : [];
-            if (!baseBars.length || currentInterval !== '5m' || !formingBarSnapshot?.bar_time_ms) {
+            if (!baseBars.length || isCustomRange() || currentInterval !== '5m' || !formingBarSnapshot?.bar_time_ms) {
                 return payload;
             }
             const previewBarTimeMs = Number(formingBarSnapshot.bar_time_ms || 0);
@@ -1021,24 +1104,30 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function isCompareSupportedRange() {
-            return normalizeRangeKey(currentRangeKey, currentInterval) !== 'all';
+            if (normalizeRangeKey(currentRangeKey, currentInterval) === 'all') return false;
+            if (isCustomRange()) return Boolean(customRangeStartMs && customRangeEndMs && customRangeEndMs > customRangeStartMs);
+            return true;
         }
 
         function renderCompareButtons() {
             const compareBtn = document.getElementById('compareBtn');
             const clearCompareBtn = document.getElementById('clearCompareBtn');
+            const hasBars = Boolean(
+                currentSymbol
+                && lastPayload
+                && Array.isArray(lastPayload.bars)
+                && lastPayload.bars.length
+            );
+            const canCompare = Boolean(hasBars && isCompareSupportedRange() && !compareLoading);
             if (compareBtn) {
                 compareBtn.textContent = compareLoading ? 'IBKR 对比中...' : (comparePayload ? '重新对比' : 'IBKR 对比');
-                compareBtn.disabled = compareLoading
-                    || !isCompareSupportedRange()
-                    || !currentSymbol
-                    || !lastPayload
-                    || !Array.isArray(lastPayload.bars)
-                    || !lastPayload.bars.length;
+                compareBtn.hidden = !compareLoading && !canCompare;
+                compareBtn.disabled = compareLoading || !canCompare;
                 compareBtn.title = isCompareSupportedRange() ? '' : '当前 v1 不支持 ALL 范围的 IBKR 对比';
             }
             if (clearCompareBtn) {
-                clearCompareBtn.disabled = compareLoading || (!comparePayload && !compareError);
+                clearCompareBtn.hidden = !comparePayload && !compareError;
+                clearCompareBtn.disabled = compareLoading;
             }
         }
 
@@ -1150,7 +1239,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             currentSymbol = query.symbol;
             currentInterval = query.interval;
             currentRangeKey = normalizeRangeKey(query.range, currentInterval);
-            currentAnchorMs = 0;
+            customRangeStartMs = Number(query.customStartMs || 0) || 0;
+            customRangeEndMs = Number(query.customEndMs || 0) || 0;
+            currentAnchorMs = isCustomRange(currentRangeKey) && customRangeEndMs ? customRangeEndMs : 0;
             pendingFocusBarTimeMs = query.barTimeMs;
             if (query.traceOpen) {
                 chartTracePanelOpen = true;
@@ -1349,6 +1440,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function renderHeroStatus(payload) {
+            const title = document.getElementById('heroTitle');
+            if (title) {
+                title.textContent = currentSymbol
+                    ? `${currentSymbol} · ${getIntervalLabel(currentInterval)} 回测复盘图`
+                    : 'IBKR 回测复盘图';
+            }
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const stateBadge = getWorkspaceStateBadge();
@@ -1381,6 +1478,33 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             document.getElementById('rangeGroup').innerHTML = RANGE_PRESETS.map((preset) => `
                 <button class="range-btn ${preset.key === currentRangeKey ? 'active' : ''}" type="button" onclick="selectChartRange('${preset.key}')">${escapeHtml(preset.shortLabel)}</button>
             `).join('');
+            renderCustomRangeForm();
+        }
+
+        function seedCustomRangeFromPayload(payload = getChartDisplayPayload()) {
+            if (customRangeStartMs && customRangeEndMs) return;
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (bars.length) {
+                customRangeStartMs = Number(bars[0]?.bar_time_ms || 0) || customRangeStartMs;
+                customRangeEndMs = Number(bars[bars.length - 1]?.bar_time_ms || 0) || customRangeEndMs;
+                return;
+            }
+            const endMs = Number(currentAnchorMs || Date.now()) || Date.now();
+            customRangeEndMs = customRangeEndMs || endMs;
+            customRangeStartMs = customRangeStartMs || getRangeStartMs(endMs, getDefaultRangeKey(currentInterval));
+        }
+
+        function renderCustomRangeForm() {
+            const form = document.getElementById('customRangeForm');
+            const startInput = document.getElementById('customRangeStart');
+            const endInput = document.getElementById('customRangeEnd');
+            if (!form || !startInput || !endInput) return;
+            const show = isCustomRange();
+            form.hidden = !show;
+            if (!show) return;
+            seedCustomRangeFromPayload();
+            startInput.value = formatDateTimeLocalValue(customRangeStartMs);
+            endInput.value = formatDateTimeLocalValue(customRangeEndMs);
         }
 
         function renderSummaryStrip(payload) {
@@ -1388,24 +1512,19 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
-            const focusIndicator = focus?.indicator || null;
             const focusBar = focus?.bar || null;
+            const latestBar = bars.length ? bars[bars.length - 1] : null;
             const compareSummary = comparePayload?.comparison?.summary || {};
             const realtimeState = getRealtimeChipState(payload);
             const previewState = getPreviewChipState();
             const compareState = getCompareChipState(compareSummary, { compact: true });
+            const stateBadge = getWorkspaceStateBadge();
             const chips = [
-                { text: `K 线 ${bars.length}`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的 bars 数量。' },
-                { text: `指标 ${indicators.length}`, className: '', title: '当前窗口成功匹配到的指标快照数量。' },
-                { text: `信号 ${signals.length}`, className: '', title: '当前窗口内的交易信号数量。' },
-                { text: `范围 ${getRangeLabel(currentRangeKey)}`, className: '', title: '当前图表时间窗口。' },
-                { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, className: focusBar ? '' : 'placeholder', title: '焦点时间。' },
-                { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '趋势方向。' },
-                { text: `EMA 结构 ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'EMA 结构。' },
-                { text: `VWAP 偏离 ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'VWAP 偏离。' },
-                { text: `ATR 波动 ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'ATR 波动。' },
-                { text: `SD 通道 ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: 'SD 区间与斜率。' },
-                { text: `分形 ${focusIndicator ? getFractalStateText(focusIndicator) : '--'}`, className: focusIndicator ? '' : 'placeholder', title: '分形状态。' },
+                { text: `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} · ${getRangeShortLabel(currentRangeKey)}`, className: currentSymbol ? '' : 'placeholder', title: getRangeLabel(currentRangeKey) },
+                { text: `${bars.length} bars · ${indicators.length} ind · ${signals.length} sig`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的数据量。' },
+                { text: `Focus ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, className: focusBar ? '' : 'placeholder', title: '当前复盘焦点时间。' },
+                { text: `Latest ${latestBar ? String(latestBar.us_time || '--').slice(5) : '--'}`, className: latestBar ? '' : 'placeholder', title: '当前窗口最后一根 bar。' },
+                { text: stateBadge.text.replace('工作区 ', ''), className: stateBadge.className, title: '图表工作区状态。' },
                 { text: realtimeState.text, className: realtimeState.className, title: realtimeState.title },
                 { text: previewState.text, className: previewState.className, title: previewState.title },
                 { text: compareState.text, className: compareState.className, title: compareState.title },
@@ -1434,7 +1553,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { text: `K线 ${bars.length}`, title: '当前图表窗口实际绘制的 bars 数量。' },
                 { text: `指标 ${indicators.length}`, title: '当前窗口成功匹配到的指标快照数量。' },
                 { text: `信号 ${signals.length}`, title: '当前窗口内的交易信号数量。' },
-                { text: `范围 ${getRangePreset(currentRangeKey)?.shortLabel || currentRangeKey}`, title: '当前图表时间窗口。' },
+                { text: `范围 ${getRangeShortLabel(currentRangeKey)}`, title: getRangeLabel(currentRangeKey) },
                 { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, title: '当前 focus bar 时间。' },
                 { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, title: '趋势方向。' },
                 { text: `EMA ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, title: 'EMA 结构。' },
@@ -1549,15 +1668,23 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const compact = isCompactViewport();
             const phone = isPhoneViewport();
+            if (!bars.length) {
+                toolbar.innerHTML = `
+                    <div class="tv-toolbar-status">
+                        <span class="tv-copy-chip">${escapeHtml(chartWorkspaceState === 'loading' ? '正在加载图表数据' : '等待图表数据')}</span>
+                    </div>
+                `;
+                return;
+            }
             const labels = compact ? {
                 prevBar: '◀',
                 nextBar: '▶',
                 prevSignal: 'Sig−',
                 nextSignal: 'Sig+',
                 latest: phone ? 'Now' : 'Latest',
-                focus: chartFocusMode ? 'Exit' : 'Focus',
                 inspect: 'Info',
                 trace: 'Trace',
+                tools: 'Tools',
                 center: 'Center',
                 zoomOut: '−',
                 zoomIn: '+',
@@ -1568,50 +1695,51 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 prevSignal: 'Prev Signal',
                 nextSignal: 'Next Signal',
                 latest: 'Latest',
-                focus: chartFocusMode ? 'Exit Focus' : 'Focus',
-                inspect: 'Inspector',
-                trace: chartTracePanelOpen ? 'Hide Trace' : 'Show Trace',
+                inspect: inspectorDrawerOpen ? 'Hide Inspector' : 'Inspector',
+                trace: chartTracePanelOpen ? 'Hide Trace' : 'Trace',
+                tools: 'Tools',
                 center: 'Center',
                 zoomOut: '− Zoom',
                 zoomIn: '＋ Zoom',
                 reset: 'Reset',
             };
-            const copyChips = compact
-                ? [
-                    `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`,
-                    focus?.bar?.us_time || '等待数据'
-                ]
-                : [
-                    'Crosshair',
-                    `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`,
-                    getRangeLabel(currentRangeKey),
-                    focus?.bar?.us_time || '等待数据'
-                ];
-            const timeframeButtons = SUPPORTED_INTERVALS.map((interval) => `
-                <button class="tv-tool-btn tf ${interval === currentInterval ? 'accent active' : ''}" type="button" onclick="selectChartInterval('${interval}')">${escapeHtml(interval.toUpperCase())}</button>
-            `).join('');
+            const focusText = focus?.bar?.us_time || '等待数据';
+            const statusChips = [
+                `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} · ${getRangeShortLabel(currentRangeKey)}`,
+                `Focus ${compact ? String(focusText).replace(/^(\d{4}-)/, '') : focusText}`,
+                signals.length ? `${signals.length} signals` : 'No signals',
+                chartPointerLocked ? 'Locked' : '',
+            ].filter(Boolean);
+            const firstActions = [
+                { label: labels.prevBar, action: 'focusPreviousChartBar()' },
+                { label: labels.nextBar, action: 'focusNextChartBar()' },
+                ...(signals.length ? [
+                    { label: labels.prevSignal, action: 'focusPreviousChartSignal()' },
+                    { label: labels.nextSignal, action: 'focusNextChartSignal()' },
+                ] : []),
+            ];
+            const secondActions = [
+                { label: labels.latest, action: 'focusLatestChartBar()', className: 'accent' },
+                { label: labels.center, action: 'centerChartOnFocusBar()' },
+                { label: labels.zoomOut, action: 'zoomOutChartView()' },
+                { label: labels.zoomIn, action: 'zoomInChartView()' },
+                { label: labels.reset, action: 'resetChartView()' },
+                { label: labels.tools, action: 'openMobileQuickPanel()' },
+                { label: labels.inspect, action: 'toggleInspectorDrawer()', className: inspectorDrawerOpen ? 'accent' : '' },
+                { label: labels.trace, action: 'toggleChartTracePanel()', className: chartTracePanelOpen ? 'accent' : '' },
+            ];
+            const renderAction = (item) => `
+                <button class="tv-tool-btn ${escapeHtml(item.className || '')}" type="button" onclick="${item.action}">${escapeHtml(item.label)}</button>
+            `;
             toolbar.innerHTML = `
                 <div class="tv-toolbar-cluster">
-                    <button class="tv-tool-btn" type="button" onclick="focusPreviousChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.prevBar)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="focusNextChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.nextBar)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="focusPreviousChartSignal()" ${signals.length ? '' : 'disabled'}>${escapeHtml(labels.prevSignal)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="focusNextChartSignal()" ${signals.length ? '' : 'disabled'}>${escapeHtml(labels.nextSignal)}</button>
-                </div>
-                <div class="tv-toolbar-cluster tv-toolbar-timeframes">
-                    ${timeframeButtons}
+                    ${firstActions.map(renderAction).join('')}
                 </div>
                 <div class="tv-toolbar-cluster">
-                    <button class="tv-tool-btn accent" type="button" onclick="focusLatestChartBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.latest)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="toggleChartFocusMode()">${escapeHtml(labels.focus)}</button>
-                    <button class="tv-tool-btn ${inspectorDrawerOpen ? 'accent' : ''}" type="button" onclick="toggleInspectorDrawer()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.inspect)}</button>
-                    <button class="tv-tool-btn ${chartTracePanelOpen ? 'accent' : ''}" type="button" onclick="toggleChartTracePanel()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.trace)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="centerChartOnFocusBar()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.center)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="zoomOutChartView()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.zoomOut)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="zoomInChartView()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.zoomIn)}</button>
-                    <button class="tv-tool-btn" type="button" onclick="resetChartView()" ${bars.length ? '' : 'disabled'}>${escapeHtml(labels.reset)}</button>
+                    ${secondActions.map(renderAction).join('')}
                 </div>
                 <div class="tv-toolbar-copy">
-                    ${copyChips.map((text) => `<span class="tv-copy-chip">${escapeHtml(text)}</span>`).join('')}
+                    ${statusChips.map((text) => `<span class="tv-copy-chip">${escapeHtml(text)}</span>`).join('')}
                 </div>
             `;
         }
@@ -1623,14 +1751,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (!root) return;
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!bars.length) {
-                root.innerHTML = '<div class="tv-floating-shell"><div class="tv-floating-head"><span class="tv-floating-pill brand">等待图表数据</span></div></div>';
+                root.innerHTML = '<div class="tv-floating-shell compact-focus"><div class="tv-floating-head"><span class="tv-floating-pill brand">等待图表数据</span></div></div>';
                 return;
             }
             const activeIndex = getEffectiveCursorIndex(payload);
             const context = buildContext(payload, activeIndex, selectedSignalId);
             const bar = context?.bar || null;
-            const indicator = context?.indicator || null;
-            const isPreviewBar = Boolean(context?.isPreviewBar);
             const signal = context?.activeSignal || null;
             const compareRow = getCompareRowByBarTime(bar?.bar_time_ms);
             const previousClose = Number(activeIndex > 0 ? bars[activeIndex - 1]?.close : bar?.open);
@@ -1640,8 +1766,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const deltaClass = !Number.isFinite(deltaValue) ? '' : deltaValue >= 0 ? 'positive' : 'negative';
             const focusLabel = hoverBarIndex >= 0 ? 'Cursor' : 'Focus';
             const compact = isCompactViewport();
-            const phone = isPhoneViewport();
             const signalLabel = signal ? buildTradeSignalLabel(signal) : (isTradeSignalInterval() ? 'No trade signal' : 'Labels 仅 5m');
+            const decisionSignal = getDecisionSignalContext(context);
+            const traceStage = String(decisionSignal.signalState?.stage || '').trim().toLowerCase();
+            const traceLabel = buildTraceDecisionLabel(context?.trace, signal || decisionSignal.traceSignal);
             const summaryTime = compact ? String(bar?.us_time || '--').slice(5) : (bar?.us_time || '--');
             const summaryPills = [
                 buildFloatingLegendChip(`${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`, '当前查看的标的与周期。', 'brand'),
@@ -1652,88 +1780,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     '当前焦点 K 线收盘价与相对上一根 K 线的变化。',
                     deltaClass
                 ),
+                buildFloatingLegendChip(traceStage ? `${traceStage} · ${traceLabel}` : signalLabel, '当前焦点 bar 的信号/trace 状态。', getTraceStageBadgeClass(traceStage) || (signal ? getSignalBadgeClass(signal) : '')),
                 compareRow ? buildFloatingLegendChip(getCompareStatusLabel(compareRow?.status?.bar), '当前焦点 bar 的 IBKR 对比状态。', getCompareStatusClass(compareRow?.status?.bar)) : '',
             ].filter(Boolean).join('');
-            const overviewItems = getFloatingOverviewItems(payload, { compact });
-            const overviewRow = `
-                <div class="tv-floating-section">
-                    <div class="tv-floating-kicker">Overview</div>
-                    <div class="tv-floating-row">
-                        ${overviewItems.map((item) => buildFloatingLegendChip(item.text, item.title, item.className || '')).join('')}
-                    </div>
-                </div>
-            `;
-            const layerButtons = getChartLayerDefs().map((item) => buildFloatingLayerButton(item)).join('');
-            const layerRow = `
-                <div class="tv-floating-section">
-                    <div class="tv-floating-kicker">Layers</div>
-                    <div class="tv-layer-row">${layerButtons}</div>
-                </div>
-            `;
-            const detailRows = compact ? [
-                `
-                    <div class="tv-floating-row">
-                        <span class="tv-floating-pill">O ${escapeHtml(formatPrice(bar?.open))}</span>
-                        <span class="tv-floating-pill">H ${escapeHtml(formatPrice(bar?.high))}</span>
-                        <span class="tv-floating-pill">L ${escapeHtml(formatPrice(bar?.low))}</span>
-                        <span class="tv-floating-pill">C ${escapeHtml(formatPrice(bar?.close))}</span>
-                        <span class="tv-floating-pill">Vol ${escapeHtml(formatNumber(bar?.volume || 0, 0))}</span>
-                    </div>
-                `,
-                phone ? '' : `
-                    <div class="tv-floating-row">
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'EMA20 待收盘' : `EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'EMA50 待收盘' : `EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'VWAP 待收盘' : `VWAP ${escapeHtml(formatPrice(indicator?.vwap))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'ATR 待收盘' : `ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</span>
-                    </div>
-                `,
-                `
-                    <div class="tv-floating-row">
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? '预览 bar · 指标待收盘' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Frac 待收盘' : `Frac ${escapeHtml(getFractalSummary(indicator))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Touch 待确认' : `Touch ${escapeHtml(getTouchSummary(indicator))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Div 待确认' : `Div ${escapeHtml(getDivergenceSummary(indicator, phone ? 2 : 3))}`}</span>
-                    </div>
-                `
-            ] : [
-                `
-                    <div class="tv-floating-row">
-                        <span class="tv-floating-pill">O ${escapeHtml(formatPrice(bar?.open))}</span>
-                        <span class="tv-floating-pill">H ${escapeHtml(formatPrice(bar?.high))}</span>
-                        <span class="tv-floating-pill">L ${escapeHtml(formatPrice(bar?.low))}</span>
-                        <span class="tv-floating-pill">C ${escapeHtml(formatPrice(bar?.close))}</span>
-                        <span class="tv-floating-pill">Vol ${escapeHtml(formatNumber(bar?.volume || 0, 0))}</span>
-                        <span class="tv-floating-pill">EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))}</span>
-                        <span class="tv-floating-pill">EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}</span>
-                        <span class="tv-floating-pill">EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))}</span>
-                        <span class="tv-floating-pill">VWAP ${escapeHtml(formatPrice(indicator?.vwap))}</span>
-                    </div>
-                `,
-                `
-                    <div class="tv-floating-row">
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'CRSI 待收盘' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'OBV 待收盘' : `OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'ATR 待收盘' : `ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'SD 待收盘' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Frac 待收盘' : `Frac ${escapeHtml(getFractalSummary(indicator))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Touch 待确认' : `Touch ${escapeHtml(getTouchSummary(indicator))}`}</span>
-                        <span class="tv-floating-pill">${isPreviewBar && !indicator ? 'Div 待确认' : `Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</span>
-                    </div>
-                `,
-                `
-                    <div class="tv-floating-row">
-                        <span class="tv-floating-pill ${signal ? getSignalBadgeClass(signal) : ''}">${escapeHtml(signalLabel)}</span>
-                    </div>
-                `
-            ];
             root.innerHTML = `
-                <div class="tv-floating-shell ${chartLegendCollapsed ? 'collapsed' : ''}">
+                <div class="tv-floating-shell compact-focus">
                     <div class="tv-floating-head">
                         <div class="tv-floating-summary">${summaryPills}</div>
-                        <button class="tv-floating-toggle" type="button" onclick="toggleChartLegendCollapsed()">${chartLegendCollapsed ? 'Expand' : 'Collapse'}</button>
+                        <button class="tv-floating-toggle" type="button" onclick="toggleInspectorDrawer()">${compact ? 'Info' : 'Inspector'}</button>
                     </div>
-                    ${chartLegendCollapsed ? '' : `<div class="tv-floating-body">${overviewRow}${layerRow}${detailRows.filter(Boolean).join('')}</div>`}
                 </div>
             `;
         }
@@ -1742,59 +1797,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const statusRoot = document.getElementById('chartBottomStatus');
             const shortcutRoot = document.getElementById('chartShortcutStrip');
             if (!statusRoot || !shortcutRoot) return;
-            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
-            if (!bars.length) {
-                statusRoot.innerHTML = '<span class="chart-status-chip">等待图表数据</span>';
-                shortcutRoot.innerHTML = '';
-                return;
-            }
-            const viewport = chartViewportState.totalBars === bars.length
-                ? chartViewportState
-                : getCurrentZoomWindow(bars.length);
-            const focus = buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId);
-            const startBar = bars[viewport.startIndex] || bars[0];
-            const endBar = bars[viewport.endIndex] || bars[bars.length - 1];
-            const signalHits = Array.isArray(focus?.signalMatches) ? focus.signalMatches.length : 0;
-            const compact = isCompactViewport();
-            const statusItems = compact
-                ? [
-                    `Visible ${viewport.visibleBars}/${bars.length}`,
-                    `${startBar?.us_time || '--'} → ${endBar?.us_time || '--'}`.replace(/^(\d{4}-)/, ''),
-                    `Focus ${(focus?.bar?.us_time || '--').replace(/^(\d{4}-)/, '')}`,
-                    chartPointerLocked ? 'Locked' : '',
-                    signalHits ? `${signalHits} signal${signalHits > 1 ? 's' : ''}` : 'No signal'
-                ].filter(Boolean)
-                : [
-                    `Visible ${viewport.visibleBars}/${bars.length}`,
-                    `${startBar?.us_time || '--'} → ${endBar?.us_time || '--'}`,
-                    `Focus ${focus?.bar?.us_time || '--'}`,
-                    chartPointerLocked ? 'Locked' : '',
-                    signalHits ? `${signalHits} signal${signalHits > 1 ? 's' : ''}` : 'No signal'
-                ].filter(Boolean);
-            statusRoot.innerHTML = statusItems.map((text) => `
-                <span class="chart-status-chip">${escapeHtml(text)}</span>
-            `).join('');
-            const shortcutDefs = compact
-                ? [
-                    ['Swipe', '滑状态'],
-                    ['←/→', '切 bar'],
-                    ['N/P', '跳信号'],
-                    ['Info', '检视'],
-                    ['0', '重置'],
-                ]
-                : [
-                    ['Wheel', '缩放'],
-                    ['Drag', '平移'],
-                    ['← / →', '切 K 线'],
-                    ['N / P', '跳信号'],
-                    ['I', 'Inspect'],
-                    ['+ / -', '缩放'],
-                    ['0', '重置'],
-                    ['Double', 'Latest'],
-                ];
-            shortcutRoot.innerHTML = shortcutDefs.map(([key, text]) => `
-                <span class="chart-shortcut-chip"><strong>${escapeHtml(key)}</strong>${escapeHtml(text)}</span>
-            `).join('');
+            statusRoot.innerHTML = '';
+            shortcutRoot.innerHTML = '';
         }
 
         function getRailNavLabel(kicker) {
@@ -1866,7 +1870,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const viewRoot = document.getElementById('mobileQuickViewGroup');
             if (!panel || !layerRoot || !timeframeRoot || !rangeRoot || !viewRoot) return;
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
-            if (!isCompactViewport() || !bars.length) {
+            if (!bars.length) {
                 panel.classList.remove('show');
                 panel.setAttribute('aria-hidden', 'true');
                 layerRoot.innerHTML = '';
@@ -1887,11 +1891,19 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             rangeRoot.innerHTML = RANGE_PRESETS.map((preset) => `
                 <button class="mobile-quick-chip ${preset.key === currentRangeKey ? 'active' : ''}" type="button" onclick="selectChartRange('${preset.key}')">${escapeHtml(preset.shortLabel)}</button>
             `).join('');
+            const canCompare = Boolean(isCompareSupportedRange() && currentSymbol && bars.length && !compareLoading);
             viewRoot.innerHTML = [
                 { active: chartFocusMode, label: chartFocusMode ? 'Exit Focus' : 'Focus', action: 'toggleChartFocusMode()' },
                 { active: inspectorDrawerOpen, label: inspectorDrawerOpen ? 'Hide Info' : 'Inspector', action: 'toggleInspectorDrawer()' },
                 { active: chartPointerLocked, label: chartPointerLocked ? 'Unlock Cursor' : 'Lock Cursor', action: chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(getChartDisplayPayload()))' },
+                { active: chartTracePanelOpen, label: chartTracePanelOpen ? 'Hide Trace' : 'Trace', action: 'toggleChartTracePanel()' },
+                { active: false, label: 'Center', action: 'centerChartOnFocusBar()' },
+                { active: false, label: 'Zoom In', action: 'zoomInChartView()' },
+                { active: false, label: 'Zoom Out', action: 'zoomOutChartView()' },
                 { active: false, label: 'Reset Zoom', action: 'resetChartView()' },
+                { active: false, label: 'Export PNG', action: 'downloadChartImage()' },
+                ...(canCompare ? [{ active: Boolean(comparePayload), label: comparePayload ? 'Recompare' : 'IBKR Compare', action: 'runIbkrCompare()' }] : []),
+                ...(comparePayload || compareError ? [{ active: false, label: 'Clear Compare', action: 'clearIbkrCompare()' }] : []),
             ].map((item) => `
                 <button class="mobile-quick-chip ${item.active ? 'active' : ''}" type="button" onclick="${item.action}">${escapeHtml(item.label)}</button>
             `).join('');
@@ -2087,26 +2099,17 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 dock.innerHTML = '';
                 return;
             }
+            const signals = Array.isArray(payload?.signals) ? payload.signals : [];
             const focus = buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId);
             const focusSignal = focus?.activeSignal || null;
-            const compareText = comparePayload ? 'Diff' : 'Compare';
-            const compareAction = comparePayload ? "scrollInfoRailCardByKicker('Comparison')" : 'runIbkrCompare()';
-            const lockAction = chartPointerLocked ? 'unlockChartPointer({ preserveHover: false })' : 'lockChartPointerAtIndex(getEffectiveCursorIndex(getChartDisplayPayload()))';
-            const lockLabel = chartPointerLocked ? 'Unlock' : 'Lock';
-            const focusLabel = chartFocusMode ? 'Exit' : 'Focus';
             dock.innerHTML = `
                 <span class="mobile-dock-label">${escapeHtml(currentSymbol || '--')} · ${escapeHtml((focus?.bar?.us_time || '--').replace(/^(\d{4}-)/, ''))}</span>
                 <button class="mobile-dock-btn" type="button" onclick="focusPreviousChartBar()">◀</button>
                 <button class="mobile-dock-btn" type="button" onclick="focusNextChartBar()">▶</button>
                 <button class="mobile-dock-btn accent" type="button" onclick="focusLatestChartBar()">Now</button>
-                <button class="mobile-dock-btn" type="button" onclick="toggleChartFocusMode()">${escapeHtml(focusLabel)}</button>
                 <button class="mobile-dock-btn" type="button" onclick="openMobileQuickPanel()">Tools</button>
                 <button class="mobile-dock-btn ${inspectorDrawerOpen ? 'accent' : ''}" type="button" onclick="toggleInspectorDrawer()">Info</button>
-                <button class="mobile-dock-btn ${chartTracePanelOpen ? 'accent' : ''}" type="button" onclick="toggleChartTracePanel()">Trace</button>
-                <button class="mobile-dock-btn" type="button" onclick="${lockAction}">${escapeHtml(lockLabel)}</button>
-                <button class="mobile-dock-btn" type="button" onclick="centerChartOnFocusBar()">Center</button>
-                <button class="mobile-dock-btn" type="button" onclick="${focusSignal ? 'openFocusedSignalDrawer()' : 'focusNextChartSignal()'}">${focusSignal ? 'Signal' : 'Next Sig'}</button>
-                <button class="mobile-dock-btn" type="button" onclick="${compareAction}">${escapeHtml(compareText)}</button>
+                ${focusSignal || signals.length ? `<button class="mobile-dock-btn" type="button" onclick="${focusSignal ? 'openFocusedSignalDrawer()' : 'focusNextChartSignal()'}">${focusSignal ? 'Signal' : 'Next Sig'}</button>` : ''}
             `;
         }
 
@@ -3723,16 +3726,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             chartInstance.setOption({
                 animation: false,
                 backgroundColor: 'transparent',
-                toolbox: {
-                    right: 14,
-                    top: 14,
-                    feature: {
-                        dataZoom: { yAxisIndex: 'none' },
-                        restore: {},
-                        saveAsImage: { name: `${currentSymbol || 'ibkr'}-${currentInterval}-chart` },
-                    },
-                    iconStyle: { borderColor: '#9DB6D8' }
-                },
+                toolbox: { show: false },
                 title: subplotTitles.map((item) => ({
                     text: item.text,
                     subtext: item.subtext,
@@ -4020,8 +4014,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             renderSummaryStrip(null);
             renderCursorStrip(null);
 
-            const cappedMs = currentAnchorMs || Date.now();
-            const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
+            const requestBounds = getChartRequestBounds();
 
             try {
                 const timelineResp = await requestChartJson('/api/custom/ibkr/proxy', {
@@ -4031,8 +4024,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         environment: currentEnvironment,
                         symbol: currentSymbol,
                         interval: currentInterval,
-                        start_ms: rangeStartMs,
-                        end_ms: cappedMs,
+                        start_ms: requestBounds.startMs,
+                        end_ms: requestBounds.endMs,
                         include_signals: currentInterval === '5m',
                         include_trace: true,
                     }
@@ -4120,8 +4113,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             renderInfoRail(initialPayload);
             renderCursorStrip(initialPayload);
 
-            const cappedMs = currentAnchorMs || Number(lastPayload.bars[lastPayload.bars.length - 1]?.bar_time_ms || Date.now()) || Date.now();
-            const rangeStartMs = getRangeStartMs(cappedMs, currentRangeKey);
+            const requestBounds = getChartRequestBounds();
 
             try {
                 const response = await requestChartJson('/api/custom/ibkr/proxy', {
@@ -4131,8 +4123,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         environment: currentEnvironment,
                         symbol: currentSymbol,
                         interval: currentInterval,
-                        start_ms: rangeStartMs,
-                        end_ms: cappedMs,
+                        start_ms: requestBounds.startMs,
+                        end_ms: requestBounds.endMs,
                         include_signals: currentInterval === '5m'
                     }
                 }, 1);
@@ -4187,6 +4179,37 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         window.selectChartRange = async function(rangeKey) {
             currentRangeKey = normalizeRangeKey(rangeKey, currentInterval);
+            if (isCustomRange()) {
+                seedCustomRangeFromPayload();
+                currentAnchorMs = customRangeEndMs || currentAnchorMs;
+                renderRangeGroup();
+            }
+            pendingFocusBarTimeMs = 0;
+            selectedBarIndex = -1;
+            selectedSignalId = '';
+            hoverBarIndex = -1;
+            resetChartZoomState();
+            closeMobileQuickPanel();
+            await loadChartWorkspace();
+        };
+
+        window.applyCustomChartRange = async function() {
+            const startInput = document.getElementById('customRangeStart');
+            const endInput = document.getElementById('customRangeEnd');
+            const startMs = parseDateTimeLocalValue(startInput?.value || '');
+            const endMs = parseDateTimeLocalValue(endInput?.value || '');
+            if (!startMs || !endMs) {
+                showToast('请填写自定义开始和结束时间');
+                return;
+            }
+            if (endMs <= startMs) {
+                showToast('结束时间必须晚于开始时间');
+                return;
+            }
+            currentRangeKey = 'custom';
+            customRangeStartMs = startMs;
+            customRangeEndMs = endMs;
+            currentAnchorMs = endMs;
             pendingFocusBarTimeMs = 0;
             selectedBarIndex = -1;
             selectedSignalId = '';
@@ -4199,7 +4222,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         window.toggleChartLayer = function(layer) {
             if (!Object.prototype.hasOwnProperty.call(chartLayerState, layer)) return;
             const layerDef = getChartLayerDefs().find((item) => item.key === layer);
-            if (layerDef?.disabled) return;
+            if (!layerDef || layerDef.disabled) return;
             chartLayerState[layer] = !chartLayerState[layer];
             saveChartUiPrefs();
             renderLayerStrip();
@@ -4321,6 +4344,24 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         window.resetChartView = function() {
             resetChartViewAction();
             if (lastPayload) renderCursorStrip(getChartDisplayPayload());
+        };
+
+        window.downloadChartImage = function() {
+            if (!chartInstance) {
+                showToast('暂无可导出的图表');
+                return;
+            }
+            const url = chartInstance.getDataURL({
+                type: 'png',
+                pixelRatio: 2,
+                backgroundColor: '#07101a',
+            });
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${currentSymbol || 'ibkr'}-${currentInterval}-chart.png`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
         };
 
         window.toggleChartFocusMode = toggleChartFocusMode;
@@ -4456,9 +4497,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_chart.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { subtitle: '全屏分析 / 信号叠加' });
-            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_chart.html', {
-                chartParams: { symbol: currentSymbol, interval: currentInterval }
-            });
+            document.getElementById('pageBridge').innerHTML = '';
 
             document.getElementById('chartSymbolInput').addEventListener('keydown', async (event) => {
                 if (event.key !== 'Enter') return;

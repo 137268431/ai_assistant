@@ -20,8 +20,8 @@
             <div class="workspace-head">
                 <div class="workspace-head-top">
                     <div class="workspace-title-group">
-                        <div class="hero-title" id="heroTitle">当前图表工作区</div>
-                        <div class="workspace-copy">主图展示 K 线 / EMA / VWAP / 标准差通道 / 买卖点，副图展示 CRSI、OBV RSI、ATR% 和成交量。眉头负责页面身份，这里只保留当前标的、周期和分析操作本身。</div>
+                        <div class="hero-title" id="heroTitle">IBKR 回测复盘图</div>
+                        <div class="workspace-copy">只保留一套图表控制；复盘细节、图层和 trace 收进 Inspector / Tools，首屏优先看 K 线与焦点 bar。</div>
                     </div>
                     <div class="hero-status" id="heroStatus"></div>
                 </div>
@@ -29,8 +29,8 @@
                     <div class="symbol-form">
                         <input id="chartSymbolInput" class="symbol-input" type="text" placeholder="AAPL" maxlength="12">
                         <button class="toolbar-btn primary" type="button" onclick="loadSymbolFromInput()">加载标的</button>
-                        <button class="toolbar-btn" id="compareBtn" type="button" onclick="runIbkrCompare()">IBKR 对比</button>
-                        <button class="toolbar-btn" id="clearCompareBtn" type="button" onclick="clearIbkrCompare()">清空对比</button>
+                        <button class="toolbar-btn" id="compareBtn" type="button" onclick="runIbkrCompare()" hidden>IBKR 对比</button>
+                        <button class="toolbar-btn" id="clearCompareBtn" type="button" onclick="clearIbkrCompare()" hidden>清空对比</button>
                         <button class="toolbar-btn page-refresh-trigger" type="button" onclick="reloadChartPage()">刷新图表</button>
                     </div>
                     <div class="toolbar-filters">
@@ -42,6 +42,12 @@
                             <div class="toolbar-label">时间范围</div>
                             <div class="range-group" id="rangeGroup"></div>
                         </div>
+                        <div class="custom-range-form" id="customRangeForm" hidden>
+                            <input id="customRangeStart" class="custom-range-input" type="datetime-local" aria-label="自定义开始时间">
+                            <span class="custom-range-separator">→</span>
+                            <input id="customRangeEnd" class="custom-range-input" type="datetime-local" aria-label="自定义结束时间">
+                            <button class="toolbar-btn custom-range-apply" type="button" onclick="applyCustomChartRange()">应用</button>
+                        </div>
                     </div>
                 </div>
                 <div class="summary-strip" id="summaryStrip"></div>
@@ -51,7 +57,7 @@
             <div class="panel-header">
                 <div>
                     <div class="panel-title" id="chartPanelTitle">图表加载中</div>
-                    <div class="panel-copy">当前工作区只保留一套控制与状态条，数据缺失时会使用占位骨架，避免页面高度跳变。</div>
+                    <div class="panel-copy">图表优先显示；状态、导航和设置已合并到上方命令栏。</div>
                 </div>
                 <div class="panel-meta" id="chartMeta">--</div>
             </div>
@@ -93,7 +99,7 @@
         <div class="mobile-quick-card" role="dialog" aria-modal="true" aria-label="移动端快捷面板">
             <div class="mobile-quick-grabber"></div>
             <div class="mobile-quick-head">
-                <div class="mobile-quick-title">快捷设置</div>
+                <div class="mobile-quick-title">Tools</div>
                 <button class="mobile-quick-close" type="button" onclick="closeMobileQuickPanel()">×</button>
             </div>
             <div class="mobile-quick-section">
