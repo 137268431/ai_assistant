@@ -280,7 +280,7 @@ def derive_monitor_service_map(
     gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
     scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "offline"
     compute_preload_active = _compute_startup_preload_active() or _scheduler_compute_preload_deferred()
-    if scheduler_status == "running" and float(scheduler_summary.get("dispatch_lag_min") or 0) >= 10 and not compute_preload_active:
+    if scheduler_status == "running" and float(scheduler_summary.get("dispatch_lag_min") or 0) > 10 and not compute_preload_active:
         scheduler_status = "degraded"
 
     service_map = {

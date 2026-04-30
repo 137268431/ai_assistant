@@ -8,7 +8,7 @@
 <script src="common.js"></script>
 <script>document.write(getCommonStyles())</script>
 <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-<link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css?v=20260429-console-cohesion">
+<link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css?v=20260501-cockpit">
 </head>
 <body>
 <div class="page-shell">
@@ -555,15 +555,17 @@ function render() {
   html += renderCronOverview()
 
   for (const [groupName, groupItems] of displayGroups) {
-    html += `<div class="config-section">`
+    html += `<section class="config-section">`
     if (showSectionHeader) {
       html += `
         <div class="section-title">
-          <span>${groupName}</span>
+          <span class="section-title-text">${groupName}</span>
           <span class="section-count">${groupItems.length} 项</span>
         </div>
       `
     }
+
+    html += `<div class="config-grid">`
 
     for (const config of groupItems) {
       const key = config.key
@@ -586,14 +588,14 @@ function render() {
           </div>
           <div class="config-desc">${config._description || ''}</div>
           ${renderControl(config)}
-          <div style="margin-top: 8px; text-align: right;">
+          <div class="config-item-actions">
             <button class="reset-btn" onclick="resetOne('${key}')" ${resetDisabled}>重置</button>
           </div>
         </div>
       `
     }
 
-    html += `</div>`
+    html += `</div></section>`
   }
 
   container.innerHTML = html

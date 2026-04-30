@@ -171,7 +171,7 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
                 max_bar_lag_ms = max(max_bar_lag_ms, lag_ms)
         latest_indicator = _as_dict(latest_indicator_by_symbol.get(symbol))
         indicator_ms = _to_int(latest_indicator.get("bar_time_ms"), 0)
-        if bar_ms > 0 and (bar_ms - indicator_ms) >= INDICATOR_LAG_ALERT_MS:
+        if bar_ms > 0 and (bar_ms - indicator_ms) > INDICATOR_LAG_ALERT_MS:
             indicator_lag_symbols.append(symbol)
             max_indicator_lag_ms = max(max_indicator_lag_ms, bar_ms - indicator_ms)
         if len(sequence_gap_examples) >= 6:
