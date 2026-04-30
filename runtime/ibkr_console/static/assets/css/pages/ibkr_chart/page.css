@@ -2571,3 +2571,65 @@ body.chart-focus-mode .chart-stage {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
+
+/* Mobile guard: chart-first layout keeps strips scrollable and clears the global bottom nav. */
+@media (max-width: 768px) {
+    .workspace {
+        max-width: 100%;
+        overflow-x: hidden;
+        padding-bottom: calc(116px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .chart-panel,
+    .workspace-head,
+    .toolbar,
+    .toolbar-filters,
+    .filter-block,
+    .symbol-form,
+    .chart-shell,
+    .chart-stage-shell {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .summary-strip,
+    .tf-group,
+    .range-group,
+    .tv-toolbar-cluster,
+    .tv-toolbar-copy,
+    .chart-bottom-status {
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        scroll-padding-inline: 10px;
+        padding-right: 10px;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .summary-chip:last-child,
+    .tv-copy-chip:last-child,
+    .hero-chip:last-child {
+        margin-right: 10px;
+    }
+
+    .mobile-dock {
+        bottom: calc(70px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .mobile-gesture-hint {
+        bottom: calc(130px + env(safe-area-inset-bottom, 0px));
+    }
+}
+
+@media (max-width: 480px) {
+    .workspace {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .custom-range-input {
+        width: 100%;
+    }
+}

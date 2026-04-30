@@ -1155,3 +1155,100 @@
         padding: 11px;
     }
 }
+
+/* Mobile guard: keep the later desktop density pass from compressing the overview grid. */
+@media (max-width: 1180px) {
+    .home-overview-layout {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "head"
+            "side"
+            "stats";
+        align-items: stretch;
+    }
+
+    .home-panel,
+    .home-panel-head-overview,
+    .home-overview-side,
+    .home-overview-grid,
+    .home-primary-grid,
+    .home-secondary-grid {
+        min-width: 0;
+        width: 100%;
+    }
+
+    .home-overview-side .home-panel-meta {
+        text-align: left;
+    }
+
+    .home-stack-services {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+        align-items: stretch;
+    }
+
+    .home-stack-service {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .home-stack-service-name {
+        max-width: none;
+    }
+}
+
+@media (max-width: 720px) {
+    .home-shell {
+        width: 100%;
+        max-width: 100%;
+        padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+        overflow-x: hidden;
+    }
+
+    .home-main,
+    .home-overview-layout,
+    .home-primary-grid,
+    .home-secondary-grid {
+        min-width: 0;
+    }
+
+    .home-overview-grid,
+    .home-quick-grid,
+    .home-market-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .home-stat-card,
+    .home-quick-link,
+    .home-market-card,
+    .home-target-card,
+    .home-activity-item {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .home-panel-title,
+    .home-stat-label,
+    .home-stat-foot,
+    .home-stack-summary,
+    .home-stack-service-name {
+        overflow-wrap: anywhere;
+    }
+
+    .home-stat-dual {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+}
+
+@media (max-width: 360px) {
+    .home-overview-grid,
+    .home-quick-grid,
+    .home-market-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .home-stack-services {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}

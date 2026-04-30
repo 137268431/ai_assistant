@@ -1683,3 +1683,79 @@
         flex: 1 1 150px;
     }
 }
+
+/* Mobile guard: bounded horizontal strips should scroll, not clip text into the viewport edge. */
+@media (max-width: 720px) {
+    .page-shell {
+        max-width: 100%;
+        padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+        overflow-x: hidden;
+    }
+
+    .hero,
+    .panel,
+    .tab-panel,
+    .subview-panel,
+    .panel-stack,
+    .rules-board,
+    .mobile-card-list,
+    .mobile-data-card {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .summary-grid,
+    .domain-tabs,
+    .subview-tabs {
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        scroll-padding-inline: 10px;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .summary-grid {
+        grid-template-columns: none;
+        padding: 0 10px 6px 0;
+        grid-auto-columns: min(72vw, 280px);
+    }
+
+    .domain-tabs,
+    .subview-tabs {
+        padding-right: 10px;
+    }
+
+    .domain-tabs::-webkit-scrollbar,
+    .subview-tabs::-webkit-scrollbar,
+    .summary-grid::-webkit-scrollbar {
+        display: none;
+    }
+
+    .domain-tab,
+    .subview-tab {
+        flex: 0 0 min(72%, 286px);
+        max-width: calc(100vw - 40px);
+        min-width: 0;
+    }
+
+    .mobile-data-head,
+    .mobile-data-actions,
+    .mobile-data-foot,
+    .mobile-chip-row,
+    .pagination-group {
+        min-width: 0;
+    }
+}
+
+@media (max-width: 480px) {
+    .summary-grid {
+        grid-auto-columns: calc(100vw - 44px);
+    }
+
+    .domain-tab,
+    .subview-tab {
+        flex-basis: min(84%, 320px);
+    }
+}

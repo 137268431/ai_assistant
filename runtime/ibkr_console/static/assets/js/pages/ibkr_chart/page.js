@@ -2033,6 +2033,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 shell.onpointerleave = handlePointerExit;
                 shell.onmouseleave = handlePointerExit;
             }
+            canvas.removeEventListener('wheel', handleChartWheelGesture, { capture: true });
+            canvas.addEventListener('wheel', handleChartWheelGesture, { passive: false, capture: true });
             canvas.ontouchstart = null;
             canvas.ontouchmove = null;
             canvas.ontouchend = null;
@@ -2704,6 +2706,93 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             chartViewportState = { start: 0, end: 100, startIndex: 0, endIndex: 0, visibleBars: 0, totalBars: 0 };
         }
 
+        function zoomChartAroundIndex(anchorIndex, factor, payload = getChartDisplayPayload()) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!chartInstance || !bars.length) return false;
+            const viewport = chartViewportState.totalBars === bars.length
+                ? chartViewportState
+                : getCurrentZoomWindow(bars.length);
+            const currentVisible = Math.max(8, viewport.visibleBars || Math.min(120, bars.length));
+            const nextVisible = Math.max(12, Math.min(bars.length, Math.round(currentVisible * factor)));
+            if (nextVisible === currentVisible) return false;
+            const safeAnchor = clampIndex(anchorIndex >= 0 ? anchorIndex : getEffectiveCursorIndex(payload), bars.length);
+            const anchorRatio = currentVisible > 1
+                ? clampNumber((safeAnchor - viewport.startIndex) / Math.max(1, currentVisible - 1), 0, 1)
+                : 0.5;
+            let startIndex = Math.round(safeAnchor - ((nextVisible - 1) * anchorRatio));
+            startIndex = Math.max(0, Math.min(startIndex, Math.max(0, bars.length - nextVisible)));
+            const endIndex = Math.min(bars.length - 1, startIndex + nextVisible - 1);
+            setChartZoomWindow({
+                start: indexToPercent(startIndex, bars.length),
+                end: indexToPercent(endIndex, bars.length),
+            }, payload);
+            syncChartTooltip(safeAnchor);
+            return true;
+        }
+
+        function panChartByBars(deltaBars, payload = getChartDisplayPayload()) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!chartInstance || !bars.length || !Number.isFinite(Number(deltaBars))) return false;
+            const viewport = chartViewportState.totalBars === bars.length
+                ? chartViewportState
+                : getCurrentZoomWindow(bars.length);
+            const visibleBars = Math.max(1, viewport.visibleBars || bars.length);
+            if (visibleBars >= bars.length) return false;
+            const step = Math.trunc(Number(deltaBars));
+            if (!step) return false;
+            const maxStart = Math.max(0, bars.length - visibleBars);
+            const startIndex = Math.max(0, Math.min(maxStart, viewport.startIndex + step));
+            if (startIndex === viewport.startIndex) return false;
+            const endIndex = Math.min(bars.length - 1, startIndex + visibleBars - 1);
+            setChartZoomWindow({
+                start: indexToPercent(startIndex, bars.length),
+                end: indexToPercent(endIndex, bars.length),
+            }, payload);
+            return true;
+        }
+
+        function normalizeWheelDelta(delta, event) {
+            const mode = Number(event?.deltaMode || 0);
+            const multiplier = mode === 1 ? 16 : mode === 2 ? 240 : 1;
+            return Number(delta || 0) * multiplier;
+        }
+
+        function handleChartWheelGesture(event) {
+            const payload = getChartDisplayPayload();
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!chartInstance || !bars.length || !event) return;
+            const isPinchZoom = Boolean(event.ctrlKey || event.metaKey);
+            if (isPinchZoom) {
+                event.preventDefault();
+                event.stopPropagation();
+                const delta = clampNumber(normalizeWheelDelta(event.deltaY || event.deltaX, event), -600, 600);
+                const factor = Math.exp(delta * 0.0024);
+                const pointerIndex = getBarIndexFromClientPoint(event.clientX, event.clientY);
+                zoomChartAroundIndex(pointerIndex, factor, payload);
+                return;
+            }
+
+            const rawHorizontal = event.shiftKey && Math.abs(Number(event.deltaX || 0)) < 1
+                ? event.deltaY
+                : event.deltaX;
+            const horizontalDelta = normalizeWheelDelta(rawHorizontal, event);
+            if (Math.abs(horizontalDelta) < 1) return;
+
+            const canvas = document.getElementById('chartCanvas');
+            const width = Math.max(320, Number(canvas?.getBoundingClientRect?.().width || 0));
+            const viewport = chartViewportState.totalBars === bars.length
+                ? chartViewportState
+                : getCurrentZoomWindow(bars.length);
+            const visibleBars = Math.max(8, viewport.visibleBars || Math.min(120, bars.length));
+            const deltaBars = Math.trunc((horizontalDelta / width) * visibleBars * 1.35)
+                || (horizontalDelta > 0 ? 1 : -1);
+            const moved = panChartByBars(deltaBars, payload);
+            if (moved || Math.abs(Number(event.deltaX || 0)) >= Math.abs(Number(event.deltaY || 0))) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        }
+
         function ensureBarVisible(index, payload = getChartDisplayPayload(), { center = false, paddingBars = 10 } = {}) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!chartInstance || !bars.length) return;
@@ -2741,22 +2830,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function zoomChartAroundFocus(factor, payload = getChartDisplayPayload()) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!chartInstance || !bars.length) return;
-            const viewport = chartViewportState.totalBars === bars.length
-                ? chartViewportState
-                : getCurrentZoomWindow(bars.length);
-            const currentVisible = Math.max(8, viewport.visibleBars || Math.min(120, bars.length));
-            const nextVisible = Math.max(12, Math.min(bars.length, Math.round(currentVisible * factor)));
             const anchorIndex = getEffectiveCursorIndex(payload);
-            let startIndex = clampIndex(anchorIndex - Math.floor(nextVisible / 2), bars.length);
-            if (startIndex + nextVisible > bars.length) {
-                startIndex = Math.max(0, bars.length - nextVisible);
-            }
-            const endIndex = Math.min(bars.length - 1, startIndex + nextVisible - 1);
-            setChartZoomWindow({
-                start: indexToPercent(startIndex, bars.length),
-                end: indexToPercent(endIndex, bars.length),
-            }, payload);
-            syncChartTooltip(anchorIndex);
+            zoomChartAroundIndex(anchorIndex, factor, payload);
         }
 
         function focusRelativeBar(delta) {
@@ -3579,7 +3654,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             note.textContent += isCompactViewport()
                 ? ' 手机端会把状态卡和信息卡改成横向滑动区；支持长按锁定光标、轻扫切换 bar、双击回到最新。'
-                : ' 支持滚轮缩放、拖拽平移、双击回到最新，以及 ←/→ 与 N/P 键快速导航。';
+                : ' 支持触控板横向双指平移、捏合/ctrl+滚轮缩放、拖拽平移、双击回到最新，以及 ←/→ 与 N/P 键快速导航。';
 
             if (chartInstance) {
                 chartInstance.dispose();
@@ -3825,8 +3900,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         xAxisIndex: [0, 1, 2],
                         start: zoomWindow.start,
                         end: zoomWindow.end,
-                        // Let desktop trackpad two-finger scroll move the page instead of hijacking it for zoom.
-                        zoomOnMouseWheel: !isDesktopFinePointer(),
+                        // Custom wheel handling separates horizontal two-finger pan from pinch/ctrl zoom.
+                        zoomOnMouseWheel: false,
                         moveOnMouseMove: true,
                         moveOnMouseWheel: false,
                     },
@@ -4545,7 +4620,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
             document.addEventListener('keydown', handleChartHotkeys);
             document.addEventListener('pointerdown', (event) => {
-                const chartShell = document.querySelector('.chart-stage-shell');
+                const chartShell = document.querySelector('.chart-shell');
                 if (chartShell && !chartShell.contains(event.target)) {
                     clearTransientChartCursor();
                 }

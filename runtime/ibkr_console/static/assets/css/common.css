@@ -52,7 +52,7 @@
         color: var(--text);
         font-family: var(--font-body);
         min-height: 100vh;
-        padding-bottom: 72px;
+        padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px));
         overflow-x: hidden;
       }
 
@@ -85,7 +85,7 @@
         position: relative;
         z-index: 1;
         padding-inline: var(--page-gutter);
-        padding-bottom: 84px;
+        padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
       }
 
       .page-shell.page-shell-wide {
