@@ -261,7 +261,7 @@ class TradingServiceWarmupCycleMixin:
         payload = get_remote_compute_status(
             force_refresh=True,
             symbols=remote_symbols,
-            include_engines=True,
+            include_engines=False,
         )
         if not is_compute_status_payload(payload):
             readiness = self._build_warmup_readiness(
@@ -303,6 +303,13 @@ class TradingServiceWarmupCycleMixin:
             for symbol in ((readiness_interval or {}).get("missing_bar_symbols") or [])
             if str(symbol or "").strip()
         }
+        missing_ready_symbol_set = {
+            str(symbol or "").strip().upper()
+            for symbol in ((readiness_interval or {}).get("missing_ready_symbols") or [])
+            if str(symbol or "").strip()
+        }
+        missing_ready_total = int((readiness_interval or {}).get("missing_ready_symbols_total", 0) or 0)
+        missing_ready_list_complete = len(missing_ready_symbol_set) >= missing_ready_total
         status_by_symbol = {}
         if isinstance(engines, dict):
             for symbol in snapshot["symbols"]:
@@ -335,6 +342,22 @@ class TradingServiceWarmupCycleMixin:
                         ),
                         "source": "remote_compute_bar_readiness",
                     }
+                elif storage_checked and missing_ready_list_complete:
+                    source = "remote_compute_bar_readiness"
+                    if symbol in missing_bar_symbol_set:
+                        source = "remote_compute_bar_missing"
+                    elif symbol in missing_ready_symbol_set:
+                        source = "remote_compute_status_missing"
+                    status_by_symbol[symbol] = {
+                        "ready": symbol not in missing_ready_symbol_set,
+                        "bar_count": 0,
+                        "last_bar_time_ms": int(
+                            readiness_interval.get("latest_bar_time_ms", 0)
+                            or readiness_interval.get("latest_indicator_time_ms", 0)
+                            or 0
+                        ),
+                        "source": source,
+                    }
                 else:
                     source = "remote_compute_status_missing"
                     if storage_checked and symbol in missing_bar_symbol_set:
@@ -350,6 +373,102 @@ class TradingServiceWarmupCycleMixin:
             status_by_symbol,
             required_interval=required_interval,
         )
+
+    def _preserve_previous_gate_for_transient_remote_readiness(
+        self,
+        snapshot: dict,
+        readiness: dict,
+        previous_state: dict | None,
+    ) -> dict:
+        reason = str(readiness.get("trading_gate_reason") or "").strip().lower()
+        if reason not in {"remote_compute_status_unavailable", "remote_compute_status_missing"}:
+            return readiness
+        previous = self._copy_warmup_state(previous_state)
+        if not bool(previous.get("trading_gate_open")):
+            return readiness
+
+        symbols = self._normalize_symbol_list(snapshot.get("symbols") or [])
+        trade_symbols = self._normalize_symbol_list(snapshot.get("trade_symbols") or [])
+        if not symbols or not trade_symbols:
+            return readiness
+        previous_ready_set = set(self._normalize_symbol_list(previous.get("ready_symbols_list") or []))
+        if any(symbol not in previous_ready_set for symbol in trade_symbols):
+            return readiness
+
+        integrity_pending_set = set(self._normalize_symbol_list(readiness.get("integrity_pending_symbols") or []))
+        if integrity_pending_set.intersection(trade_symbols):
+            return readiness
+
+        current_ready_set = set(self._normalize_symbol_list(readiness.get("ready_symbols_list") or []))
+        ready_set = (current_ready_set | previous_ready_set.intersection(symbols)) - integrity_pending_set
+        if any(symbol not in ready_set for symbol in trade_symbols):
+            return readiness
+
+        scan_symbol_set = set(snapshot.get("scan_symbols") or [])
+        subscription_symbol_set = set(snapshot.get("subscription_symbols") or [])
+        trade_symbol_set = set(trade_symbols)
+        monitor_symbol_set = set(snapshot.get("monitor_symbols") or [])
+        current_status = {
+            str((item or {}).get("symbol") or "").strip().upper(): dict(item or {})
+            for item in (readiness.get("symbol_status") or [])
+            if str((item or {}).get("symbol") or "").strip()
+        }
+        previous_status = {
+            str((item or {}).get("symbol") or "").strip().upper(): dict(item or {})
+            for item in (previous.get("symbol_status") or [])
+            if str((item or {}).get("symbol") or "").strip()
+        }
+        symbol_status = []
+        for symbol in symbols:
+            if symbol in trade_symbol_set:
+                role = "trade"
+            elif symbol in monitor_symbol_set:
+                role = "monitor"
+            elif symbol in scan_symbol_set:
+                role = "scan"
+            elif symbol in subscription_symbol_set:
+                role = "subscription"
+            else:
+                role = "data"
+            row = dict(current_status.get(symbol) or {})
+            row["symbol"] = symbol
+            row["role"] = row.get("role") or role
+            if symbol in ready_set and not bool(row.get("ready")):
+                previous_row = previous_status.get(symbol) or {}
+                row["ready"] = True
+                row["bar_count"] = int(previous_row.get("bar_count", row.get("bar_count", 0)) or 0)
+                row["last_bar_time_ms"] = int(
+                    previous_row.get("last_bar_time_ms", row.get("last_bar_time_ms", 0)) or 0
+                )
+                row["source"] = "previous_warmup_snapshot"
+            elif symbol not in ready_set:
+                row["ready"] = False
+            symbol_status.append(row)
+
+        pending_symbols = [symbol for symbol in symbols if symbol not in ready_set]
+        ready_trade_symbols = len([symbol for symbol in trade_symbols if symbol in ready_set])
+        ready_monitor_symbols = len([symbol for symbol in snapshot.get("monitor_symbols") or [] if symbol in ready_set])
+        data_ready = bool(symbols) and not pending_symbols and not integrity_pending_set
+        preserved = dict(readiness)
+        preserved.update(
+            {
+                "phase": "ready" if data_ready else "degraded",
+                "data_ready": data_ready,
+                "trade_allowed": True,
+                "ready_symbols": len(ready_set),
+                "ready_scan_symbols": len([symbol for symbol in snapshot.get("scan_symbols") or [] if symbol in ready_set]),
+                "ready_subscription_symbols": len([symbol for symbol in snapshot.get("subscription_symbols") or [] if symbol in ready_set]),
+                "ready_trade_symbols": ready_trade_symbols,
+                "ready_monitor_symbols": ready_monitor_symbols,
+                "ready_symbols_list": [symbol for symbol in symbols if symbol in ready_set],
+                "pending_symbols": pending_symbols,
+                "symbol_status": symbol_status,
+                "trading_gate_open": True,
+                "trading_gate_reason": "ready",
+                "preserved_previous_success": True,
+            }
+        )
+        return preserved
 
     def _collect_warmup_readiness(self, snapshot: dict) -> dict:
         service_mod = _service_mod()
@@ -876,31 +995,52 @@ class TradingServiceWarmupCycleMixin:
         warmup_started_perf = time.perf_counter()
         warmup_timings = {}
         integrity_reference_et = datetime.now(service_mod.ET)
-        self._set_warmup_state(
-            phase="running",
-            reason=str(self._warmup_state.get("reason") or "warmup"),
+        refresh_state = self._build_transient_warmup_retry_state(
+            snapshot,
+            previous_warmup_state,
+            reason="refresh_running",
+            requested_at=started_at,
             started_at=started_at,
-            finished_at=None,
+        )
+        preserve_gate = bool(refresh_state.get("trading_gate_open"))
+        self._set_warmup_state(
+            phase=str(refresh_state.get("phase") or "running") if preserve_gate else "running",
+            reason="refresh_running" if preserve_gate else str(self._warmup_state.get("reason") or "warmup"),
+            started_at=refresh_state.get("started_at") if preserve_gate else started_at,
+            finished_at=refresh_state.get("finished_at") if preserve_gate else None,
             last_error="",
-            trading_gate_open=False,
-            trading_gate_reason="warmup_running",
+            trading_gate_open=preserve_gate,
+            trading_gate_reason=(
+                str(refresh_state.get("trading_gate_reason") or "ready")
+                if preserve_gate
+                else "warmup_running"
+            ),
             target_date=snapshot["target_date"],
             symbols_total=snapshot["symbols_total"],
+            scan_symbols_total=snapshot["scan_symbols_total"],
+            subscription_symbols_total=snapshot["subscription_symbols_total"],
             trade_symbols_total=snapshot["trade_symbols_total"],
             monitor_symbols_total=snapshot["monitor_symbols_total"],
             symbols=snapshot["symbols"],
+            scan_symbols=snapshot["scan_symbols"],
+            subscription_symbols=snapshot["subscription_symbols"],
             trade_symbols=snapshot["trade_symbols"],
             monitor_symbols=snapshot["monitor_symbols"],
-            pending_symbols=snapshot["symbols"],
-            symbol_status=[],
-            integrity_pending_symbols=[],
-            integrity_repair_reasons={},
-            preflight_repair={},
-            backfill_written=0,
-            backfill_result={},
-            compute_result={},
-            timings={},
-            last_duration_s=0.0,
+            ready_symbols_list=refresh_state.get("ready_symbols_list") if preserve_gate else [],
+            pending_symbols=refresh_state.get("pending_symbols") if preserve_gate else snapshot["symbols"],
+            symbol_status=refresh_state.get("symbol_status") if preserve_gate else [],
+            integrity_pending_symbols=refresh_state.get("integrity_pending_symbols") if preserve_gate else [],
+            integrity_repair_reasons=refresh_state.get("integrity_repair_reasons") if preserve_gate else {},
+            preflight_repair=previous_warmup_state.get("preflight_repair") if preserve_gate else {},
+            backfill_written=int(previous_warmup_state.get("backfill_written", 0) or 0) if preserve_gate else 0,
+            backfill_result=previous_warmup_state.get("backfill_result") if preserve_gate else {},
+            compute_result=previous_warmup_state.get("compute_result") if preserve_gate else {},
+            timings=previous_warmup_state.get("timings") if preserve_gate else {},
+            last_duration_s=(
+                float(previous_warmup_state.get("last_duration_s", 0.0) or 0.0)
+                if preserve_gate
+                else 0.0
+            ),
         )
 
         service_mod.logger.info(
@@ -993,6 +1133,11 @@ class TradingServiceWarmupCycleMixin:
 
             readiness = self._collect_warmup_readiness(snapshot)
             readiness = self._apply_integrity_readiness(readiness, snapshot, preflight_blockers)
+            readiness = self._preserve_previous_gate_for_transient_remote_readiness(
+                snapshot,
+                readiness,
+                previous_warmup_state,
+            )
             if readiness["pending_symbols"]:
                 step_started = time.perf_counter()
                 if self._warmup_uses_remote_compute_service():
@@ -1017,6 +1162,11 @@ class TradingServiceWarmupCycleMixin:
                             readiness,
                             snapshot,
                             preflight_blockers,
+                        )
+                        readiness = self._preserve_previous_gate_for_transient_remote_readiness(
+                            snapshot,
+                            readiness,
+                            previous_warmup_state,
                         )
             compute_result["warmup_timings"] = dict(warmup_timings)
             self._set_warmup_state(
@@ -1336,6 +1486,11 @@ class TradingServiceWarmupCycleMixin:
             for symbol in (final_preflight.get("remaining_repair_symbols") or [])
         }
         readiness = self._apply_integrity_readiness(readiness, snapshot, final_blockers)
+        readiness = self._preserve_previous_gate_for_transient_remote_readiness(
+            snapshot,
+            readiness,
+            previous_warmup_state,
+        )
         if startup_gate_open_once and not readiness["trading_gate_open"]:
             previous_ready_state = self._copy_warmup_state()
             if int(previous_ready_state.get("ready_symbols", 0) or 0) > int(readiness.get("ready_symbols", 0) or 0):

@@ -118,7 +118,7 @@ def build_status_response():
     requested_environment = get_requested_environment("live")
     include_engines = _include_engines_in_status()
     requested_symbols = _requested_status_symbols(app_mod)
-    engine_items = _filter_engine_items(_snapshot_engine_items(app_mod, blocking=include_engines), requested_symbols)
+    engine_items = _filter_engine_items(_snapshot_engine_items(app_mod, blocking=False), requested_symbols)
     engine_status = _build_engine_status_map(engine_items) if include_engines else {}
     multi_timeframe_readiness = _safe_multi_timeframe_readiness(app_mod, requested_environment, requested_symbols)
     return jsonify(

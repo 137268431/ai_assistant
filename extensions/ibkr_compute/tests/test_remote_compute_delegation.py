@@ -17,6 +17,17 @@ from ibkr_compute.orchestration.warmup_cycle import TradingServiceWarmupCycleMix
 
 
 class _DummyWarmupCycle(TradingServiceWarmupCycleMixin):
+    def _copy_warmup_state(self, source=None):
+        copied = {}
+        for key, value in dict(source or {}).items():
+            if isinstance(value, dict):
+                copied[key] = dict(value)
+            elif isinstance(value, list):
+                copied[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+            else:
+                copied[key] = value
+        return copied
+
     def _normalize_symbol_list(self, symbols):
         return [
             str(symbol or "").strip().upper()
@@ -160,9 +171,11 @@ class RemoteWarmupReadinessTest(unittest.TestCase):
                 with mock.patch(
                     "ibkr_compute.api.compute_status_client.get_remote_compute_status",
                     return_value=remote_status,
-                ):
+                ) as status_mock:
                     readiness = cycle._collect_warmup_readiness(snapshot)
 
+        status_mock.assert_called_once()
+        self.assertFalse(status_mock.call_args.kwargs["include_engines"])
         self.assertEqual(readiness["required_interval"], "5m")
         self.assertEqual(readiness["ready_symbols"], 1)
         self.assertEqual(readiness["ready_trade_symbols"], 1)
@@ -221,6 +234,110 @@ class RemoteWarmupReadinessTest(unittest.TestCase):
         self.assertTrue(readiness["trading_gate_open"])
         self.assertEqual(readiness["pending_symbols"], [])
         self.assertEqual(readiness["symbol_status"][0]["source"], "remote_compute_bar_readiness")
+
+    def test_collect_warmup_readiness_uses_storage_missing_list_without_engines(self):
+        cycle = _DummyWarmupCycle()
+        snapshot = {
+            "symbols": ["AAPL", "AMD", "VIX"],
+            "scan_symbols": [],
+            "subscription_symbols": ["AAPL", "AMD", "VIX"],
+            "trade_symbols": ["AAPL", "AMD"],
+            "trade_symbols_total": 2,
+            "monitor_symbols": ["VIX"],
+            "monitor_symbols_total": 1,
+        }
+        remote_status = {
+            "service_profile": "compute",
+            "engines": {},
+            "multi_timeframe_readiness": {
+                "intervals": {
+                    "5m": {
+                        "status": "blocked",
+                        "storage_checked": True,
+                        "latest_bar_time_ms": 1776793800000,
+                        "latest_indicator_time_ms": 1776793800000,
+                        "missing_ready_symbols": ["AMD"],
+                        "missing_ready_symbols_total": 1,
+                        "missing_bar_symbols": [],
+                    }
+                }
+            },
+        }
+
+        with mock.patch(
+            "ibkr_compute.orchestration.warmup_cycle._service_mod",
+            return_value=SimpleNamespace(
+                ENVIRONMENT="live",
+                DEFAULT_WARMUP_REQUIRED_INTERVAL="5m",
+            ),
+        ):
+            with mock.patch(
+                "ibkr_compute.api.service_topology.uses_remote_compute_service",
+                return_value=True,
+            ):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.get_remote_compute_status",
+                    return_value=remote_status,
+                ):
+                    readiness = cycle._collect_warmup_readiness(snapshot)
+
+        self.assertEqual(readiness["ready_symbols_list"], ["AAPL", "VIX"])
+        self.assertEqual(readiness["pending_symbols"], ["AMD"])
+        self.assertEqual(readiness["ready_trade_symbols"], 1)
+        self.assertFalse(readiness["trading_gate_open"])
+        self.assertEqual(readiness["symbol_status"][1]["source"], "remote_compute_status_missing")
+
+    def test_transient_remote_status_preserves_previous_open_gate(self):
+        cycle = _DummyWarmupCycle()
+        snapshot = {
+            "symbols": ["AAPL", "AMD", "SPY"],
+            "scan_symbols": [],
+            "subscription_symbols": ["AAPL", "AMD", "SPY"],
+            "trade_symbols": ["AAPL", "AMD"],
+            "trade_symbols_total": 2,
+            "monitor_symbols": ["SPY"],
+            "monitor_symbols_total": 1,
+        }
+        readiness = {
+            "phase": "degraded",
+            "data_ready": False,
+            "trade_allowed": False,
+            "ready_symbols": 0,
+            "ready_symbols_list": [],
+            "ready_trade_symbols": 0,
+            "ready_monitor_symbols": 0,
+            "pending_symbols": [],
+            "integrity_pending_symbols": [],
+            "symbol_status": [
+                {"symbol": "AAPL", "role": "trade", "ready": False, "source": "remote_compute_status_unavailable"},
+                {"symbol": "AMD", "role": "trade", "ready": False, "source": "remote_compute_status_unavailable"},
+                {"symbol": "SPY", "role": "monitor", "ready": False, "source": "remote_compute_status_unavailable"},
+            ],
+            "trading_gate_open": False,
+            "trading_gate_reason": "remote_compute_status_unavailable",
+        }
+        previous = {
+            "trading_gate_open": True,
+            "ready_symbols_list": ["AAPL", "AMD", "SPY"],
+            "symbol_status": [
+                {"symbol": "AAPL", "bar_count": 288, "last_bar_time_ms": 1776793800000},
+                {"symbol": "AMD", "bar_count": 288, "last_bar_time_ms": 1776793800000},
+                {"symbol": "SPY", "bar_count": 288, "last_bar_time_ms": 1776793800000},
+            ],
+        }
+
+        preserved = cycle._preserve_previous_gate_for_transient_remote_readiness(
+            snapshot,
+            readiness,
+            previous,
+        )
+
+        self.assertTrue(preserved["trading_gate_open"])
+        self.assertEqual(preserved["trading_gate_reason"], "ready")
+        self.assertEqual(preserved["ready_trade_symbols"], 2)
+        self.assertEqual(preserved["ready_monitor_symbols"], 1)
+        self.assertEqual(preserved["pending_symbols"], [])
+        self.assertEqual(preserved["symbol_status"][0]["source"], "previous_warmup_snapshot")
 
     def test_collect_warmup_readiness_marks_no_trade_data_ready(self):
         cycle = _DummyWarmupCycle()

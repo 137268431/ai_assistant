@@ -300,9 +300,15 @@ def build_statusz_live_readiness(
     )
     prefer_runtime_snapshot = bool(
         snapshot_present
-        and snapshot_phase == "ready"
-        and snapshot_pending_symbols_total == 0
+        and snapshot_trade_symbols_total > 0
         and snapshot_ready_trade_symbols >= snapshot_trade_symbols_total
+        and (
+            snapshot_gate_open
+            or (
+                snapshot_phase == "ready"
+                and snapshot_pending_symbols_total == 0
+            )
+        )
     )
 
     for summary in (

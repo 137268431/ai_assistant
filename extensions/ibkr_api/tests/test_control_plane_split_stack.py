@@ -1347,6 +1347,44 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIn("ibkr-runtime", payload["service_topology"]["services"])
         fetch_compute_status.assert_called_once_with("live", include_engines=False)
 
+    def test_live_readiness_prefers_open_runtime_gate_during_background_refresh(self):
+        compute_payload = _sample_compute_status_payload()
+        compute_payload["engines"] = {}
+        compute_payload["multi_timeframe_readiness"] = {
+            "symbols_total": 1,
+            "intervals": {
+                "5m": {
+                    "status": "blocked",
+                    "symbols_total": 1,
+                    "missing_ready_symbols_total": 1,
+                    "missing_ready_symbols": ["AAPL"],
+                }
+            },
+        }
+        runtime_payload = _sample_runtime_status_payload(authenticated=True)
+        runtime_payload["warmup"]["phase"] = "running"
+        runtime_payload["warmup"]["trading_gate_open"] = True
+        runtime_payload["warmup"]["trading_gate_reason"] = "ready"
+        runtime_payload["warmup"]["pending_symbols"] = ["SPY"]
+        runtime_payload["multi_timeframe_readiness"] = {
+            "symbols_total": 1,
+            "intervals": {
+                "5m": {
+                    "status": "blocked",
+                    "symbols_total": 1,
+                    "missing_ready_symbols_total": 1,
+                    "missing_ready_symbols": ["AAPL"],
+                }
+            },
+        }
+
+        live = api_app_mod._build_statusz_live_readiness(compute_payload, runtime_payload)
+
+        self.assertEqual(live["source"], "runtime_warmup_snapshot")
+        self.assertTrue(live["gate_open"])
+        self.assertTrue(live["trade_allowed"])
+        self.assertEqual(live["gate_reason"], "ready")
+
     def test_statusz_route_canonicalizes_reboot_starting_runtime_state(self):
         compute_result = {"ok": True, "payload": _sample_compute_status_payload(), "error": ""}
         runtime_result = {
