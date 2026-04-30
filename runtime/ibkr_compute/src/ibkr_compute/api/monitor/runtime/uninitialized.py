@@ -100,6 +100,41 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "throttle_count": 0,
             "total_backfilled": 0,
         },
+        "resource_governor": {
+            "status": "critical",
+            "health": "unhealthy",
+            "metrics": {},
+            "thresholds": {},
+            "reasons": [{"code": "runtime_unavailable", "message": detail}],
+            "admission": {
+                "watchlist_idle_topup": {
+                    "admit": False,
+                    "blockers": [{"code": "runtime_unavailable", "message": detail}],
+                },
+                "non_priority": {
+                    "admit": False,
+                    "blockers": [{"code": "runtime_unavailable", "message": detail}],
+                },
+            },
+        },
+        "host_resources": {
+            "ok": False,
+            "reason": "runtime_unavailable",
+        },
+        "watchlist_idle_topup": {
+            "enabled": False,
+            "running": False,
+            "status": "unavailable",
+            "skip_reason": "runtime_unavailable",
+            "completion": {
+                "total": 0,
+                "fresh": 0,
+                "stale": 0,
+                "missing": 0,
+                "unobserved": 0,
+                "progress_pct": 0,
+            },
+        },
         "order_tracker": {
             "last_poll": "",
             "running": False,
@@ -164,6 +199,12 @@ def _build_uninitialized_runtime_status(runtime_environment: str, error: str | N
             "last_daily_reset": "",
             "last_target_refresh": "",
             "last_watchlist_backfill": "",
+            "watchlist_idle_topup": {
+                "enabled": False,
+                "running": False,
+                "status": "unavailable",
+                "skip_reason": "runtime_unavailable",
+            },
             "market_date": "",
             "watchlist_backfill_interval_min": 0,
             "watchlist_pool_count": 0,

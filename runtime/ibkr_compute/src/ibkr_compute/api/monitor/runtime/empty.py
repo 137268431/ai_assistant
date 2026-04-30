@@ -30,7 +30,11 @@ def _resolve_trade_subscription_limit(runtime_environment: str) -> int:
     )
     resolved_trade_limit: int | None = trade_limit if trade_limit > 0 else None
     if total_limit > 0:
-        remaining_budget = max(0, total_limit - len(get_market_monitor_symbols(runtime_environment)))
+        try:
+            monitor_count = len(get_market_monitor_symbols(runtime_environment))
+        except Exception:
+            monitor_count = 0
+        remaining_budget = max(0, total_limit - monitor_count)
         resolved_trade_limit = remaining_budget if resolved_trade_limit is None else min(resolved_trade_limit, remaining_budget)
     if resolved_trade_limit is not None:
         return int(resolved_trade_limit)
@@ -50,13 +54,15 @@ def _build_empty_monitor_samples() -> dict:
 
 
 def _build_empty_api_utilization_snapshot(runtime_environment: str) -> dict:
+    trade_subscription_limit = _resolve_trade_subscription_limit(runtime_environment)
+    total_subscription_limit = _resolve_total_subscription_limit(runtime_environment)
     return {
-        "subscription_limit": _resolve_total_subscription_limit(runtime_environment),
-        "total_subscription_limit": _resolve_total_subscription_limit(runtime_environment),
+        "subscription_limit": trade_subscription_limit,
+        "total_subscription_limit": total_subscription_limit,
         "active_subscription_count": 0,
         "active_trade_symbol_count": 0,
         "active_monitor_symbol_count": 0,
-        "trade_subscription_limit": _resolve_trade_subscription_limit(runtime_environment),
+        "trade_subscription_limit": trade_subscription_limit,
         "ws_subscribed_count": 0,
         "pending_subscription_count": 0,
         "utilization_pct": 0.0,

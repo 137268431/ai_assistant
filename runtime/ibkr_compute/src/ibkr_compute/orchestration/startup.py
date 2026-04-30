@@ -512,6 +512,7 @@ class TradingServiceStartupMixin:
 
             self._running = True
             startup_ok = True
+            self._start_host_resource_monitor()
             self.session_keeper.start()
             self._signal_thread = threading.Thread(
                 target=self._signal_loop,

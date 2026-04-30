@@ -37,6 +37,18 @@ def _safe_method_payload(service, method_name: str, errors: list[dict]) -> dict:
         return {}
 
 
+def _with_resource_governor_snapshot(service, payload: dict, errors: list[dict]) -> dict:
+    if not isinstance(payload, dict):
+        payload = {}
+    if isinstance(payload.get("resource_governor"), dict):
+        return payload
+    resource_governor = _safe_method_payload(service, "_resource_governor_snapshot", errors)
+    if resource_governor:
+        payload = dict(payload)
+        payload["resource_governor"] = resource_governor
+    return payload
+
+
 def _safe_method_text(service, method_name: str, errors: list[dict]) -> str:
     method = getattr(service, method_name, None)
     if not callable(method):
@@ -89,6 +101,9 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         "daily_scan": _safe_method_payload(service, "_copy_daily_scan_state", errors),
         "data_writer": _safe_component_status(service, "data_writer", errors),
         "data_backfill": _safe_component_status(service, "data_backfill", errors),
+        "host_resources": _safe_method_payload(service, "_host_resources_snapshot", errors),
+        "resource_governor": _safe_method_payload(service, "_resource_governor_snapshot", errors),
+        "watchlist_idle_topup": _safe_method_payload(service, "_watchlist_idle_topup_status", errors),
         "order_tracker": _safe_component_status(service, "order_tracker", errors),
         "signal_router": _safe_component_status(service, "signal_router", errors),
         "signal_processor": _safe_component_status(service, "signal_processor", errors),
@@ -147,7 +162,16 @@ def get_service_status_snapshot(
         minimal = _build_minimal_runtime_status(service, exc)
         return {**fallback, **minimal}
 
-    return dict(payload) if isinstance(payload, dict) else fallback
+    if not isinstance(payload, dict):
+        return fallback
+    errors: list[dict] = []
+    status = _with_resource_governor_snapshot(service, dict(payload), errors)
+    if errors:
+        existing_errors = status.get("status_errors")
+        status_errors = list(existing_errors) if isinstance(existing_errors, list) else []
+        status_errors.extend(errors)
+        status["status_errors"] = status_errors
+    return status
 
 
 __all__ = ["get_service_status_snapshot"]

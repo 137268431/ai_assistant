@@ -97,6 +97,7 @@ class TradingServiceRuntimeOpsMixin:
         self._running = False
         self._last_session_authenticated = False
         self._auth_probe_stop.set()
+        self._resource_monitor_stop.set()
 
         self.auth_handler.cancel()
         self.bar_aggregator.force_close_all()
@@ -129,6 +130,8 @@ class TradingServiceRuntimeOpsMixin:
             self._warmup_thread.join(timeout=10)
         if self._interval_prime_thread:
             self._interval_prime_thread.join(timeout=10)
+        if self._resource_monitor_thread:
+            self._resource_monitor_thread.join(timeout=5)
         if self._auth_probe_thread and self._auth_probe_thread is not threading.current_thread():
             self._auth_probe_thread.join(timeout=5)
 

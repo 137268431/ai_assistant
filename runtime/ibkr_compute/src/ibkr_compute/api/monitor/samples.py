@@ -51,7 +51,11 @@ def _resolve_trade_subscription_limit(config_source, runtime_environment: str) -
     )
     resolved_trade_limit: int | None = trade_limit if trade_limit > 0 else None
     if total_limit > 0:
-        remaining_budget = max(0, total_limit - len(get_market_monitor_symbols(runtime_environment)))
+        try:
+            monitor_count = len(get_market_monitor_symbols(runtime_environment))
+        except Exception:
+            monitor_count = 0
+        remaining_budget = max(0, total_limit - monitor_count)
         resolved_trade_limit = remaining_budget if resolved_trade_limit is None else min(resolved_trade_limit, remaining_budget)
     if resolved_trade_limit is not None:
         return int(resolved_trade_limit)
@@ -235,8 +239,12 @@ def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_s
         round((active_trade_symbol_count / trade_subscription_limit) * 100.0, 2)
         if trade_subscription_limit > 0 else None
     )
+    legacy_utilization_pct = (
+        round((active_subscription_count / trade_subscription_limit) * 100.0, 2)
+        if trade_subscription_limit > 0 else None
+    )
     return {
-        "subscription_limit": total_subscription_limit,
+        "subscription_limit": trade_subscription_limit,
         "total_subscription_limit": total_subscription_limit,
         "active_subscription_count": active_subscription_count,
         "active_trade_symbol_count": active_trade_symbol_count,
@@ -244,7 +252,7 @@ def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_s
         "trade_subscription_limit": trade_subscription_limit,
         "ws_subscribed_count": ws_subscribed_count,
         "pending_subscription_count": pending_subscription_count,
-        "utilization_pct": total_utilization_pct,
+        "utilization_pct": legacy_utilization_pct,
         "total_utilization_pct": total_utilization_pct,
         "trade_utilization_pct": trade_utilization_pct,
         "request_count": int(data_backfill.get("request_count", 0) or 0),

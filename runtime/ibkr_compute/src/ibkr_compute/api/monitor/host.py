@@ -81,10 +81,12 @@ def _read_proc_cpu_times() -> dict | None:
         except (TypeError, ValueError):
             return None
         total = sum(values)
-        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        iowait = values[4] if len(values) > 4 else 0
+        idle = values[3] + iowait
         return {
             "total": total,
             "idle": idle,
+            "iowait": iowait,
             "sampled_at": time.time(),
         }
     return None
@@ -95,26 +97,31 @@ def _build_cpu_usage_snapshot(previous: dict | None, current: dict | None, sourc
         return {
             "used_pct": None,
             "idle_pct": None,
+            "iowait_pct": None,
             "sample_span_s": None,
             "source": source,
         }
 
     total_delta = int(current.get("total", 0) or 0) - int(previous.get("total", 0) or 0)
     idle_delta = int(current.get("idle", 0) or 0) - int(previous.get("idle", 0) or 0)
+    iowait_delta = int(current.get("iowait", 0) or 0) - int(previous.get("iowait", 0) or 0)
     sample_span_s = max(0.0, float(current.get("sampled_at", 0) or 0) - float(previous.get("sampled_at", 0) or 0))
     if total_delta <= 0:
         return {
             "used_pct": None,
             "idle_pct": None,
+            "iowait_pct": None,
             "sample_span_s": round(sample_span_s, 3) if sample_span_s > 0 else None,
             "source": source,
         }
 
     used_pct = max(0.0, min(100.0, ((total_delta - idle_delta) / total_delta) * 100.0))
     idle_pct = max(0.0, min(100.0, (idle_delta / total_delta) * 100.0))
+    iowait_pct = max(0.0, min(100.0, (iowait_delta / total_delta) * 100.0))
     return {
         "used_pct": round(used_pct, 2),
         "idle_pct": round(idle_pct, 2),
+        "iowait_pct": round(iowait_pct, 2),
         "sample_span_s": round(sample_span_s, 3) if sample_span_s > 0 else None,
         "source": source,
     }

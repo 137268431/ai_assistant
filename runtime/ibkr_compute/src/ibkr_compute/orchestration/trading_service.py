@@ -24,6 +24,7 @@ from ibkr_compute.broker import (
 from ibkr_compute.broker.cookie_store import clear_cookies
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.core.config import Config
+from ibkr_compute.core.host_resources import HostResourceMonitor
 from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.ws_client import IBKRWebSocketClient
 from ibkr_compute.market.bar_aggregator import BarAggregator
@@ -308,6 +309,9 @@ class IBKRTradingService(
         self._direct_topup_thread = None
         self._bar_close_thread = None
         self._warmup_thread = None
+        self.host_resource_monitor = HostResourceMonitor()
+        self._resource_monitor_thread = None
+        self._resource_monitor_stop = threading.Event()
         self._auth_required_reason = ""
         self._symbol_meta = {}
         self._watchlist_monitor_symbols = []
@@ -330,6 +334,11 @@ class IBKRTradingService(
         self._last_pipeline_repair_at = 0.0
         self._last_pipeline_repair_symbols = []
         self._watchlist_backfill_cursor = 0
+        self._watchlist_idle_topup_cursor = 0
+        self._watchlist_idle_topup_lock = threading.RLock()
+        self._watchlist_idle_observations = {}
+        self._last_watchlist_deep_maintenance_at = 0.0
+        self._watchlist_idle_topup_state = self._initial_watchlist_idle_topup_state()
         self._watchlist_integrity_cursor = 0
         self._last_watchlist_integrity_at = 0.0
         self._last_watchlist_integrity_symbols = []

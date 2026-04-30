@@ -19,6 +19,17 @@ from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.api.service_topology import build_service_topology
 
 
+def _service_host_resources_snapshot(service) -> dict:
+    method = getattr(service, "_host_resources_snapshot", None)
+    if not callable(method):
+        return {}
+    try:
+        payload = method()
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
 def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = None, service_error: str | None = None) -> dict:
     api_app = _api_app()
     runtime_environment = api_app._normalize_runtime_environment_name(
@@ -52,7 +63,9 @@ def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = No
             runtime_environment=runtime_environment,
         ),
     }
-    host_snapshot = _collect_host_snapshot()
+    host_snapshot = _service_host_resources_snapshot(service) if service_available else {}
+    if not host_snapshot:
+        host_snapshot = _collect_host_snapshot()
     flags = _build_monitor_flags(runtime_status, api_utilization, host_snapshot, sample_payload)
     payload = {
         "ok": service_available,
@@ -68,6 +81,9 @@ def _build_ibkr_monitor_snapshot(service, requested_environment: str | None = No
         "flags": flags,
         "service_topology": build_service_topology(service=service, service_status=runtime_status),
     }
+    resource_governor = runtime_status.get("resource_governor")
+    if isinstance(resource_governor, dict):
+        payload["resource_governor"] = resource_governor
     if not service_available and service_error:
         payload["error"] = str(service_error)
     return payload

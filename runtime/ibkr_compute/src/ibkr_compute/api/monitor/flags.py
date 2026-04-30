@@ -234,6 +234,61 @@ def _stale_control_symbols(sample_payload: dict) -> tuple[list[str], int]:
     return fallback_symbols, 0
 
 
+def _format_resource_governor_detail(resource_governor: dict) -> str:
+    status = str(resource_governor.get("status") or "unknown").strip().lower() or "unknown"
+    reasons = resource_governor.get("reasons") or []
+    reason_parts = []
+    if isinstance(reasons, list):
+        for item in reasons[:3]:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "").strip()
+            message = str(item.get("message") or "").strip()
+            actual = item.get("actual")
+            if actual is None:
+                actual = item.get("metric")
+            threshold = item.get("threshold")
+            metric_detail = ""
+            if actual is not None and threshold is not None:
+                metric_detail = f" actual={actual}, threshold={threshold}"
+            text = code or message
+            if code and message:
+                text = f"{code}: {message}"
+            if text:
+                reason_parts.append(f"{text}{metric_detail}")
+    if not reason_parts:
+        return f"Resource governor status={status}。"
+    more_count = max(0, len(reasons) - len(reason_parts)) if isinstance(reasons, list) else 0
+    more_suffix = f"；另有 {more_count} 项" if more_count else ""
+    return f"Resource governor status={status}：{'；'.join(reason_parts)}{more_suffix}。"
+
+
+def _append_resource_governor_flag(flags: list[dict], runtime_status: dict) -> bool:
+    resource_governor = runtime_status.get("resource_governor")
+    if not isinstance(resource_governor, dict):
+        return False
+    status = str(resource_governor.get("status") or "").strip().lower()
+    if status == "critical":
+        _append_monitor_flag(
+            flags,
+            "error",
+            "resource_governor_critical",
+            "Resource governor critical",
+            _format_resource_governor_detail(resource_governor),
+        )
+        return True
+    if status == "warning":
+        _append_monitor_flag(
+            flags,
+            "warning",
+            "resource_governor_warning",
+            "Resource governor warning",
+            _format_resource_governor_detail(resource_governor),
+        )
+        return True
+    return False
+
+
 def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snapshot: dict, sample_payload: dict) -> list[dict]:
     flags = []
     gateway = runtime_status.get("gateway") or {}
@@ -270,13 +325,19 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
         )
 
     trade_utilization_pct = api_utilization.get("trade_utilization_pct")
+    if trade_utilization_pct is None:
+        trade_utilization_pct = api_utilization.get("utilization_pct")
     trade_subscription_limit = int(
         api_utilization.get("trade_subscription_limit")
         or api_utilization.get("subscription_limit", 0)
         or 0
     )
-    active_trade_symbol_count = int(api_utilization.get("active_trade_symbol_count", 0) or 0)
     active_subscription_count = int(api_utilization.get("active_subscription_count", 0) or 0)
+    active_trade_symbol_count = int(
+        api_utilization.get("active_trade_symbol_count")
+        if api_utilization.get("active_trade_symbol_count") is not None
+        else active_subscription_count
+    )
     active_monitor_symbol_count = int(
         api_utilization.get("active_monitor_symbol_count")
         or max(0, active_subscription_count - active_trade_symbol_count)
@@ -397,82 +458,84 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             ),
         )
 
-    memory_used_pct = (host_snapshot.get("memory") or {}).get("used_pct")
-    if memory_used_pct is not None:
-        if float(memory_used_pct) >= 90:
-            _append_monitor_flag(
-                flags,
-                "error",
-                "host_memory_critical",
-                "Host memory critical",
-                f"主机内存占用 {memory_used_pct:.2f}% 。",
-            )
-        elif float(memory_used_pct) >= 80:
-            _append_monitor_flag(
-                flags,
-                "warning",
-                "host_memory_high",
-                "Host memory high",
-                f"主机内存占用 {memory_used_pct:.2f}% 。",
-            )
+    governor_flagged = _append_resource_governor_flag(flags, runtime_status)
+    if not governor_flagged:
+        memory_used_pct = (host_snapshot.get("memory") or {}).get("used_pct")
+        if memory_used_pct is not None:
+            if float(memory_used_pct) >= 90:
+                _append_monitor_flag(
+                    flags,
+                    "error",
+                    "host_memory_critical",
+                    "Host memory critical",
+                    f"主机内存占用 {memory_used_pct:.2f}% 。",
+                )
+            elif float(memory_used_pct) >= 80:
+                _append_monitor_flag(
+                    flags,
+                    "warning",
+                    "host_memory_high",
+                    "Host memory high",
+                    f"主机内存占用 {memory_used_pct:.2f}% 。",
+                )
 
-    disk_used_pct = (host_snapshot.get("disk") or {}).get("used_pct")
-    if disk_used_pct is not None:
-        if float(disk_used_pct) >= 92:
-            _append_monitor_flag(
-                flags,
-                "error",
-                "host_disk_critical",
-                "Host disk critical",
-                f"磁盘占用 {disk_used_pct:.2f}% 。",
-            )
-        elif float(disk_used_pct) >= 85:
-            _append_monitor_flag(
-                flags,
-                "warning",
-                "host_disk_high",
-                "Host disk high",
-                f"磁盘占用 {disk_used_pct:.2f}% 。",
-            )
+        disk_used_pct = (host_snapshot.get("disk") or {}).get("used_pct")
+        if disk_used_pct is not None:
+            if float(disk_used_pct) >= 92:
+                _append_monitor_flag(
+                    flags,
+                    "error",
+                    "host_disk_critical",
+                    "Host disk critical",
+                    f"磁盘占用 {disk_used_pct:.2f}% 。",
+                )
+            elif float(disk_used_pct) >= 85:
+                _append_monitor_flag(
+                    flags,
+                    "warning",
+                    "host_disk_high",
+                    "Host disk high",
+                    f"磁盘占用 {disk_used_pct:.2f}% 。",
+                )
 
-    load_per_cpu = (host_snapshot.get("loadavg") or {}).get("per_cpu_1")
-    cpu_count = int(host_snapshot.get("cpu_count", 0) or 0)
-    if load_per_cpu is not None and cpu_count > 0:
-        if float(load_per_cpu) >= 1.5:
-            _append_monitor_flag(
-                flags,
-                "error",
-                "host_load_critical",
-                "Host load critical",
-                f"1 分钟 load / CPU = {load_per_cpu:.3f} 。",
-            )
-        elif float(load_per_cpu) >= 1.0:
-            _append_monitor_flag(
-                flags,
-                "warning",
-                "host_load_high",
-                "Host load high",
-                f"1 分钟 load / CPU = {load_per_cpu:.3f} 。",
-            )
+        load_per_cpu = (host_snapshot.get("loadavg") or {}).get("per_cpu_1")
+        cpu_count = int(host_snapshot.get("cpu_count", 0) or 0)
+        if load_per_cpu is not None and cpu_count > 0:
+            if float(load_per_cpu) >= 1.5:
+                _append_monitor_flag(
+                    flags,
+                    "error",
+                    "host_load_critical",
+                    "Host load critical",
+                    f"1 分钟 load / CPU = {load_per_cpu:.3f} 。",
+                )
+            elif float(load_per_cpu) >= 1.0:
+                _append_monitor_flag(
+                    flags,
+                    "warning",
+                    "host_load_high",
+                    "Host load high",
+                    f"1 分钟 load / CPU = {load_per_cpu:.3f} 。",
+                )
 
-    cpu_used_pct = (host_snapshot.get("cpu") or {}).get("used_pct")
-    if cpu_used_pct is not None:
-        if float(cpu_used_pct) >= 95:
-            _append_monitor_flag(
-                flags,
-                "error",
-                "host_cpu_critical",
-                "Host CPU critical",
-                f"主机 CPU 占用 {cpu_used_pct:.2f}% 。",
-            )
-        elif float(cpu_used_pct) >= 85:
-            _append_monitor_flag(
-                flags,
-                "warning",
-                "host_cpu_high",
-                "Host CPU high",
-                f"主机 CPU 占用 {cpu_used_pct:.2f}% 。",
-            )
+        cpu_used_pct = (host_snapshot.get("cpu") or {}).get("used_pct")
+        if cpu_used_pct is not None:
+            if float(cpu_used_pct) >= 95:
+                _append_monitor_flag(
+                    flags,
+                    "error",
+                    "host_cpu_critical",
+                    "Host CPU critical",
+                    f"主机 CPU 占用 {cpu_used_pct:.2f}% 。",
+                )
+            elif float(cpu_used_pct) >= 85:
+                _append_monitor_flag(
+                    flags,
+                    "warning",
+                    "host_cpu_high",
+                    "Host CPU high",
+                    f"主机 CPU 占用 {cpu_used_pct:.2f}% 。",
+                )
 
     if not flags and int(market_universe.get("active_subscription_count", 0) or 0) > 0:
         _append_monitor_flag(

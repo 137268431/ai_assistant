@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from ibkr_compute.core.payload_compact import compact_json_payload
+from ibkr_compute.market.timeframe_utils import bucket_start_ms, format_us_time, interval_to_ms
 
 
 def _service_mod():
@@ -1463,6 +1464,11 @@ class TradingServiceMarketUniverseMixin:
         self._last_target_refresh_at = 0.0
         self._last_backfill_at = 0.0
         self._last_backfill_symbols = []
+        self._watchlist_idle_topup_cursor = 0
+        self._last_watchlist_deep_maintenance_at = 0.0
+        with self._watchlist_idle_topup_lock:
+            self._watchlist_idle_observations = {}
+            self._watchlist_idle_topup_state = self._initial_watchlist_idle_topup_state()
         self._last_active_repair_at = 0.0
         self._last_active_repair_symbols = []
         self._last_active_repair_reasons = {}
@@ -1569,6 +1575,495 @@ class TradingServiceMarketUniverseMixin:
         self._watchlist_backfill_cursor = (start + batch_size) % max(len(pool), 1)
         return ordered[:batch_size]
 
+    def _initial_watchlist_idle_topup_state(self) -> dict:
+        return {
+            "enabled": True,
+            "running": False,
+            "status": "idle",
+            "skip_reason": "",
+            "last_admission": {},
+            "last_started_at": "",
+            "last_finished_at": "",
+            "last_duration_s": 0.0,
+            "last_symbol": "",
+            "last_symbols": [],
+            "last_written_bars": 0,
+            "total_written_bars": 0,
+            "cycle_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "last_error": "",
+            "request_period": "1d",
+            "max_symbols_per_cycle": 1,
+            "loop_interval_sec": 60,
+        }
+
+    def _copy_watchlist_idle_topup_state(self, source: dict | None = None) -> dict:
+        payload = source if source is not None else self._watchlist_idle_topup_state
+        copied = {}
+        for key, value in (payload or {}).items():
+            if isinstance(value, dict):
+                copied[key] = dict(value)
+            elif isinstance(value, list):
+                copied[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+            else:
+                copied[key] = value
+        return copied
+
+    def _set_watchlist_idle_topup_state(self, **updates) -> dict:
+        with self._watchlist_idle_topup_lock:
+            next_state = self._copy_watchlist_idle_topup_state()
+            for key, value in updates.items():
+                if isinstance(value, dict):
+                    next_state[key] = dict(value)
+                elif isinstance(value, list):
+                    next_state[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+                else:
+                    next_state[key] = value
+            self._watchlist_idle_topup_state = next_state
+            return self._copy_watchlist_idle_topup_state(next_state)
+
+    def _watchlist_idle_topup_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return self.config.get_bool_for_environment(
+            "ibkr_watchlist_idle_topup_enabled",
+            service_mod.ENVIRONMENT,
+            True,
+        )
+
+    def _watchlist_idle_topup_loop_interval_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            5,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_idle_topup_loop_interval_sec",
+                service_mod.ENVIRONMENT,
+                60,
+            ),
+        )
+
+    def _watchlist_idle_topup_max_symbols_per_cycle(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_idle_topup_max_symbols_per_cycle",
+                service_mod.ENVIRONMENT,
+                1,
+            ),
+        )
+
+    def _watchlist_idle_topup_request_period(self) -> str:
+        service_mod = _service_mod()
+        value = self.config.get_for_environment(
+            "ibkr_watchlist_idle_topup_request_period",
+            service_mod.ENVIRONMENT,
+            "1d",
+        )
+        return str(value or "1d").strip() or "1d"
+
+    def _watchlist_idle_topup_stale_ms(self) -> int:
+        service_mod = _service_mod()
+        stale_minutes = max(
+            5,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_idle_topup_stale_min",
+                service_mod.ENVIRONMENT,
+                20,
+            ),
+        )
+        return stale_minutes * 60 * 1000
+
+    def _watchlist_active_due_guard_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            0,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_active_due_guard_sec",
+                service_mod.ENVIRONMENT,
+                180,
+            ),
+        )
+
+    def _seconds_until_next_active_5m_due(self, now_ts: float | None = None) -> float:
+        current_ts = float(now_ts or time.time())
+        interval_ms = interval_to_ms("5m")
+        now_ms = int(current_ts * 1000)
+        try:
+            current_bucket_ms = bucket_start_ms(now_ms, "5m")
+        except Exception:
+            return 0.0
+        next_due_ms = current_bucket_ms + interval_ms + (self._official_5m_close_delay_sec() * 1000)
+        while next_due_ms <= now_ms:
+            next_due_ms += interval_ms
+        return round(max(0.0, (next_due_ms - now_ms) / 1000.0), 1)
+
+    def _watchlist_idle_topup_completion_snapshot(self, *, now_ms: int | None = None) -> dict:
+        current_ms = int(now_ms or time.time() * 1000)
+        stale_ms = self._watchlist_idle_topup_stale_ms()
+        with self._subscription_lock:
+            active_symbols = set(self._active_subscription_symbols)
+            total = len([symbol for symbol in self._watchlist_symbols if symbol not in active_symbols])
+        with self._watchlist_idle_topup_lock:
+            observations = {
+                symbol: item
+                for symbol, item in dict(self._watchlist_idle_observations).items()
+                if symbol not in active_symbols
+            }
+
+        fresh = 0
+        stale = 0
+        missing = 0
+        oldest_ms = 0
+        oldest_symbol = ""
+        for symbol, item in observations.items():
+            latest_ms = _safe_int((item or {}).get("latest_ms"), 0)
+            if latest_ms <= 0:
+                missing += 1
+                continue
+            if (current_ms - latest_ms) >= stale_ms:
+                stale += 1
+            else:
+                fresh += 1
+            if oldest_ms <= 0 or latest_ms < oldest_ms:
+                oldest_ms = latest_ms
+                oldest_symbol = symbol
+
+        observed = len(observations)
+        return {
+            "total": total,
+            "observed": observed,
+            "fresh": fresh,
+            "stale": stale,
+            "missing": missing,
+            "unobserved": max(0, total - observed),
+            "progress_pct": round((fresh / total) * 100.0, 2) if total > 0 else 100.0,
+            "observed_pct": round((observed / total) * 100.0, 2) if total > 0 else 100.0,
+            "oldest_symbol": oldest_symbol,
+            "oldest_latest_ms": oldest_ms,
+            "oldest_latest_us": format_us_time(oldest_ms) if oldest_ms > 0 else "",
+        }
+
+    def _watchlist_idle_topup_status(self) -> dict:
+        with self._watchlist_idle_topup_lock:
+            state = self._copy_watchlist_idle_topup_state()
+        state["completion"] = self._watchlist_idle_topup_completion_snapshot()
+        return state
+
+    def _watchlist_idle_topup_compute_inflight(self) -> bool:
+        return bool(
+            float(self._last_realtime_compute_started_at or 0.0)
+            and float(self._last_realtime_compute_started_at or 0.0) > float(self._last_realtime_compute_at or 0.0)
+        )
+
+    def _watchlist_idle_topup_data_writer_busy(self) -> tuple[bool, dict]:
+        try:
+            status = self.data_writer.status()
+        except Exception as exc:
+            return True, {"error": str(exc), "pending_batch": 0, "inflight_batch": 0}
+        pending = _safe_int(status.get("pending_batch"), 0)
+        inflight = _safe_int(status.get("inflight_batch"), 0)
+        return pending > 0 or inflight > 0, {"pending_batch": pending, "inflight_batch": inflight}
+
+    def _watchlist_idle_topup_bar_repair_busy(self) -> tuple[bool, dict]:
+        coordinator = getattr(self, "bar_repair_coordinator", None)
+        if coordinator is None or not hasattr(coordinator, "status"):
+            return False, {"pending": 0, "inflight": 0}
+        try:
+            status = coordinator.status()
+        except Exception as exc:
+            return True, {"error": str(exc), "pending": 0, "inflight": 0}
+        pending = _safe_int(status.get("pending"), 0)
+        inflight = _safe_int(status.get("inflight"), 0)
+        return pending > 0 or inflight > 0, {"pending": pending, "inflight": inflight}
+
+    def _watchlist_idle_topup_admission(self) -> tuple[bool, dict]:
+        service_mod = _service_mod()
+        blockers = []
+        official_5m = self._copy_official_5m_state()
+        pending_symbols = self._normalize_symbol_list(official_5m.get("pending_symbols") or [])
+        queue_size = int(self._compute_queue.qsize())
+        compute_inflight = self._watchlist_idle_topup_compute_inflight()
+        writer_busy, writer_status = self._watchlist_idle_topup_data_writer_busy()
+        bar_repair_busy, bar_repair_status = self._watchlist_idle_topup_bar_repair_busy()
+        resource_governor = self._resource_governor_snapshot()
+        resource_admission = (
+            (resource_governor.get("admission") or {}).get("watchlist_idle_topup") or {}
+        )
+        seconds_until_due = self._seconds_until_next_active_5m_due()
+        due_guard_sec = self._watchlist_active_due_guard_sec()
+        websocket_status = {}
+        try:
+            websocket_status = self.ws_client.status()
+        except Exception:
+            websocket_status = {}
+        authenticated = bool(getattr(self.session_keeper, "is_authenticated", False))
+        websocket_ready = bool(websocket_status.get("connected") or websocket_status.get("ready"))
+        active_subscription_count = len(self._active_subscription_symbols)
+        active_target_count = len(self._active_trade_symbols)
+        market_session = service_mod.build_market_session_snapshot()
+        market_session_kind = str(market_session.get("kind") or "").strip().lower()
+        active_live_required = bool(
+            market_session_kind in {"regular", "close_transition"}
+            and active_target_count > 0
+        )
+        lag_s = 0.0
+        due_bucket_ms = _safe_int(official_5m.get("last_due_bucket_ms"), 0)
+        completed_bucket_ms = _safe_int(official_5m.get("last_completed_bucket_ms"), 0)
+        if due_bucket_ms > completed_bucket_ms:
+            lag_s = round(max(0.0, (due_bucket_ms - completed_bucket_ms) / 1000.0), 1)
+
+        if not self._watchlist_idle_topup_enabled():
+            blockers.append({"code": "disabled"})
+        if self._is_warmup_active():
+            blockers.append({"code": "warmup_active"})
+        if not authenticated:
+            blockers.append({"code": "session_unauthenticated"})
+        if active_subscription_count > 0 and not websocket_ready:
+            blockers.append({"code": "websocket_not_ready"})
+        if pending_symbols:
+            blockers.append({"code": "official_5m_pending", "pending_symbols": pending_symbols})
+        if queue_size > 0:
+            blockers.append({"code": "compute_queue_busy", "queue_size": queue_size})
+        if compute_inflight:
+            blockers.append({"code": "compute_inflight"})
+        if writer_busy:
+            blockers.append({"code": "data_writer_busy", **writer_status})
+        if bar_repair_busy:
+            blockers.append({"code": "bar_repair_busy", **bar_repair_status})
+        if due_guard_sec > 0 and active_target_count > 0 and seconds_until_due < due_guard_sec:
+            blockers.append(
+                {
+                    "code": "active_5m_due_guard",
+                    "seconds_until_due": seconds_until_due,
+                    "guard_sec": due_guard_sec,
+                }
+            )
+        if active_live_required and (completed_bucket_ms <= 0 or lag_s > 90):
+            blockers.append(
+                {
+                    "code": "active_5m_not_fresh",
+                    "lag_s": lag_s,
+                    "last_completed_bucket_ms": completed_bucket_ms,
+                }
+            )
+        if not bool(resource_admission.get("admit")):
+            blockers.append(
+                {
+                    "code": "resource_governor_denied",
+                    "status": resource_governor.get("status"),
+                    "blockers": list(resource_admission.get("blockers") or []),
+                }
+            )
+
+        snapshot = {
+            "admit": not blockers,
+            "blockers": blockers,
+            "queue_size": queue_size,
+            "compute_inflight": compute_inflight,
+            "data_writer": writer_status,
+            "bar_repair_queue": bar_repair_status,
+            "official_5m_pending_symbols": pending_symbols,
+            "active_target_count": active_target_count,
+            "active_subscription_count": active_subscription_count,
+            "authenticated": authenticated,
+            "websocket_ready": websocket_ready,
+            "seconds_until_next_active_5m_due": seconds_until_due,
+            "active_due_guard_sec": due_guard_sec,
+            "market_session": market_session_kind,
+            "resource_governor": resource_governor,
+        }
+        return not blockers, snapshot
+
+    def _observe_watchlist_idle_symbol(self, symbol: str, latest_ms: int):
+        normalized = str(symbol or "").strip().upper()
+        if not normalized:
+            return
+        with self._watchlist_idle_topup_lock:
+            self._watchlist_idle_observations[normalized] = {
+                "latest_ms": int(latest_ms or 0),
+                "observed_at": self._now_iso(),
+            }
+
+    def _watchlist_idle_topup_candidates(self) -> list[dict]:
+        service_mod = _service_mod()
+        with self._subscription_lock:
+            active_symbols = set(self._active_subscription_symbols)
+
+        pool = [symbol for symbol in self._watchlist_symbols if symbol not in active_symbols]
+        if not pool:
+            return []
+
+        scan_size = max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_idle_topup_candidate_scan_size",
+                service_mod.ENVIRONMENT,
+                24,
+            ),
+        )
+        start = self._watchlist_idle_topup_cursor % len(pool)
+        ordered = pool[start:] + pool[:start]
+        scanned = ordered[: min(scan_size, len(ordered))]
+        self._watchlist_idle_topup_cursor = (start + len(scanned)) % max(len(pool), 1)
+        stale_ms = self._watchlist_idle_topup_stale_ms()
+        now_ms = int(time.time() * 1000)
+        candidates = []
+        for symbol in scanned:
+            latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+            self._observe_watchlist_idle_symbol(symbol, latest_ms)
+            if latest_ms <= 0 or (now_ms - latest_ms) >= stale_ms:
+                candidates.append(
+                    {
+                        "symbol": symbol,
+                        "latest_ms": latest_ms,
+                        "missing": latest_ms <= 0,
+                        "stale_age_s": round(max(0, now_ms - max(0, latest_ms)) / 1000.0, 1)
+                        if latest_ms > 0 else None,
+                    }
+                )
+
+        candidates.sort(key=lambda item: (0 if item.get("missing") else 1, _safe_int(item.get("latest_ms"), 0)))
+        return candidates
+
+    def _run_watchlist_idle_topup_cycle(self) -> dict:
+        service_mod = _service_mod()
+        enabled = self._watchlist_idle_topup_enabled()
+        loop_interval_sec = self._watchlist_idle_topup_loop_interval_sec()
+        max_symbols = self._watchlist_idle_topup_max_symbols_per_cycle()
+        request_period = self._watchlist_idle_topup_request_period()
+        self._set_watchlist_idle_topup_state(
+            enabled=enabled,
+            loop_interval_sec=loop_interval_sec,
+            max_symbols_per_cycle=max_symbols,
+            request_period=request_period,
+        )
+        if not enabled:
+            state = self._set_watchlist_idle_topup_state(
+                running=False,
+                status="skipped",
+                skip_reason="disabled",
+                skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
+            )
+            return state
+
+        admitted, admission = self._watchlist_idle_topup_admission()
+        if not admitted:
+            reason = str(((admission.get("blockers") or [{}])[0] or {}).get("code") or "admission_blocked")
+            state = self._set_watchlist_idle_topup_state(
+                running=False,
+                status="skipped",
+                skip_reason=reason,
+                last_admission=admission,
+                skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
+            )
+            service_mod.logger.debug("Watchlist idle topup skipped: %s", reason)
+            return state
+
+        self._refresh_watchlist_pool()
+        candidates = self._watchlist_idle_topup_candidates()
+        if not candidates:
+            state = self._set_watchlist_idle_topup_state(
+                running=False,
+                status="skipped",
+                skip_reason="no_stale_or_missing_symbols",
+                last_admission=admission,
+                skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
+            )
+            return state
+
+        started = time.time()
+        started_at = self._now_iso()
+        written_total = 0
+        processed_symbols = []
+        self._set_watchlist_idle_topup_state(
+            running=True,
+            status="running",
+            skip_reason="",
+            last_error="",
+            last_admission=admission,
+            last_started_at=started_at,
+        )
+        try:
+            for candidate in candidates[:max_symbols]:
+                admitted, admission = self._watchlist_idle_topup_admission()
+                if not admitted:
+                    break
+                symbol = str(candidate.get("symbol") or "").strip().upper()
+                if not symbol:
+                    continue
+                conid_map = self.conid_resolver.resolve_bulk([symbol])
+                conid = int((conid_map or {}).get(symbol) or 0)
+                if conid <= 0:
+                    service_mod.logger.info("Watchlist idle topup skipped %s: conid unresolved", symbol)
+                    continue
+                meta = dict(self._symbol_meta.get(symbol, {}) or {})
+                written = self.data_backfill.backfill_symbol(
+                    conid,
+                    symbol,
+                    interval="5m",
+                    exchange=str(meta.get("exchange") or ""),
+                    repair=False,
+                    request_period=request_period,
+                )
+                self.data_writer.flush()
+                latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+                self._observe_watchlist_idle_symbol(symbol, latest_ms)
+                written_total += int(written or 0)
+                processed_symbols.append(symbol)
+                self._last_backfill_at = time.time()
+                self._last_backfill_symbols = [symbol]
+                if (
+                    written
+                    and self.config.get_bool_for_environment(
+                        "ibkr_watchlist_idle_topup_materialize_5m",
+                        service_mod.ENVIRONMENT,
+                        False,
+                    )
+                ):
+                    admitted_after_write, _ = self._watchlist_idle_topup_admission()
+                    if admitted_after_write:
+                        self._trigger_realtime_compute(
+                            source="watchlist_idle_topup",
+                            symbols=[symbol],
+                            persist_signals=False,
+                            intervals=["5m"],
+                            rollup_intervals=[],
+                        )
+        except Exception as exc:
+            state = self._set_watchlist_idle_topup_state(
+                running=False,
+                status="error",
+                skip_reason="",
+                last_error=str(exc),
+                error_count=_safe_int(self._watchlist_idle_topup_state.get("error_count"), 0) + 1,
+                last_finished_at=self._now_iso(),
+                last_duration_s=round(max(0.0, time.time() - started), 3),
+            )
+            service_mod.logger.warning("Watchlist idle topup failed: %s", exc)
+            return state
+
+        status = "completed" if processed_symbols else "skipped"
+        skip_reason = "" if processed_symbols else "no_resolved_symbols"
+        state = self._set_watchlist_idle_topup_state(
+            running=False,
+            status=status,
+            skip_reason=skip_reason,
+            last_admission=admission,
+            last_finished_at=self._now_iso(),
+            last_duration_s=round(max(0.0, time.time() - started), 3),
+            last_symbol=processed_symbols[-1] if processed_symbols else "",
+            last_symbols=processed_symbols,
+            last_written_bars=written_total,
+            total_written_bars=_safe_int(self._watchlist_idle_topup_state.get("total_written_bars"), 0) + written_total,
+            cycle_count=_safe_int(self._watchlist_idle_topup_state.get("cycle_count"), 0) + 1,
+            skipped_count=(
+                _safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0)
+                + (0 if processed_symbols else 1)
+            ),
+        )
+        return state
+
     def _active_repair_loop(self):
         service_mod = _service_mod()
         service_mod.logger.info("Active target repair loop started")
@@ -1645,7 +2140,7 @@ class TradingServiceMarketUniverseMixin:
             except Exception as exc:
                 service_mod.logger.error("Watchlist backfill loop error: %s", exc)
 
-            sleep_seconds = max(300, self.config.get_int_for_environment("ibkr_watchlist_backfill_interval_min", service_mod.ENVIRONMENT, 30) * 60)
+            sleep_seconds = self._watchlist_idle_topup_loop_interval_sec()
             for _ in range(sleep_seconds):
                 if not self._running:
                     break
@@ -1655,7 +2150,31 @@ class TradingServiceMarketUniverseMixin:
         service_mod = _service_mod()
         if self._is_warmup_active():
             service_mod.logger.info("Watchlist backfill skipped while startup warmup is active")
+            self._set_watchlist_idle_topup_state(
+                running=False,
+                status="skipped",
+                skip_reason="warmup_active",
+                skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
+            )
             return
+
+        self._run_watchlist_idle_topup_cycle()
+
+        deep_interval_sec = max(
+            300,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_backfill_interval_min",
+                service_mod.ENVIRONMENT,
+                30,
+            ) * 60,
+        )
+        now = time.time()
+        if self._last_watchlist_deep_maintenance_at and (
+            now - float(self._last_watchlist_deep_maintenance_at or 0.0)
+        ) < deep_interval_sec:
+            return
+        self._last_watchlist_deep_maintenance_at = now
+
         defer_repairs, defer_snapshot = self._should_defer_background_repairs()
         if defer_repairs:
             service_mod.logger.info(

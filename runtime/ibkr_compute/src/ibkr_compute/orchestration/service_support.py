@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 from datetime import datetime
 
 from ibkr_compute.market.timeframe_utils import interval_to_ms
@@ -36,6 +37,82 @@ class TradingServiceSupportMixin:
             False,
         )
         self.ws_client.set_order_updates_enabled(self.order_tracker.uses_websocket_updates())
+
+    def _host_resource_monitor_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return self.config.get_bool_for_environment(
+            "ibkr_host_resource_monitor_enabled",
+            service_mod.ENVIRONMENT,
+            True,
+        )
+
+    def _host_resource_monitor_interval_sec(self) -> float:
+        service_mod = _service_mod()
+        return max(
+            1.0,
+            self.config.get_float_for_environment(
+                "ibkr_host_resource_monitor_interval_sec",
+                service_mod.ENVIRONMENT,
+                5.0,
+            ),
+        )
+
+    def _start_host_resource_monitor(self):
+        if not self._host_resource_monitor_enabled():
+            return
+        if self._resource_monitor_thread and self._resource_monitor_thread.is_alive():
+            return
+        self._resource_monitor_stop.clear()
+        try:
+            self.host_resource_monitor.sample_once()
+        except Exception:
+            _service_mod().logger.debug("Initial host resource sample failed", exc_info=True)
+        self._resource_monitor_thread = threading.Thread(
+            target=self.host_resource_monitor.run,
+            args=(self._resource_monitor_stop, self._host_resource_monitor_interval_sec),
+            daemon=True,
+            name="host-resource-monitor",
+        )
+        self._resource_monitor_thread.start()
+
+    def _host_resources_snapshot(self) -> dict:
+        monitor = getattr(self, "host_resource_monitor", None)
+        if monitor is None or not hasattr(monitor, "snapshot"):
+            return {}
+        try:
+            return monitor.snapshot()
+        except Exception as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    def _resource_governor_snapshot(self) -> dict:
+        service_mod = _service_mod()
+        monitor = getattr(self, "host_resource_monitor", None)
+        if monitor is None or not hasattr(monitor, "governor_snapshot"):
+            return {
+                "status": "critical",
+                "health": "unhealthy",
+                "reasons": [{"code": "host_resource_monitor_unavailable"}],
+                "admission": {
+                    "watchlist_idle_topup": {
+                        "admit": False,
+                        "blockers": [{"code": "host_resource_monitor_unavailable"}],
+                    }
+                },
+            }
+        try:
+            return monitor.governor_snapshot(self.config, service_mod.ENVIRONMENT)
+        except Exception as exc:
+            return {
+                "status": "critical",
+                "health": "unhealthy",
+                "reasons": [{"code": "host_resource_governor_error", "message": str(exc)}],
+                "admission": {
+                    "watchlist_idle_topup": {
+                        "admit": False,
+                        "blockers": [{"code": "host_resource_governor_error", "message": str(exc)}],
+                    }
+                },
+            }
 
     def _get_prev_close_for_quote(self, symbol: str) -> float | None:
         service_mod = _service_mod()

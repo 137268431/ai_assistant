@@ -151,11 +151,26 @@ class TradingServiceRuntimeStatusMixin:
                     multi_timeframe_readiness = dict(candidate)
         except Exception:
             multi_timeframe_readiness = {}
+        host_resources = self._host_resources_snapshot()
+        resource_governor = self._resource_governor_snapshot()
+        watchlist_idle_topup = self._watchlist_idle_topup_status()
+        runtime_health = "ok"
+        if str(resource_governor.get("status") or "").strip().lower() == "critical":
+            runtime_health = "unhealthy"
+        elif str(resource_governor.get("status") or "").strip().lower() == "warning":
+            runtime_health = "degraded"
+        if live_freshness_required and bar_freshness_status != "fresh":
+            runtime_health = "unhealthy"
+        elif live_freshness_required and indicator_freshness_status != "fresh" and runtime_health == "ok":
+            runtime_health = "degraded"
+        if stalled:
+            runtime_health = "unhealthy"
 
         return {
             "gateway_control_available": True,
             "starting": self._starting,
             "startup_complete": bool(self._running and not self._starting),
+            "runtime_health": runtime_health,
             "runtime_phase": self._runtime_phase_label(),
             "startup_strategy": self.startup_strategy(),
             "auto_restore_guard": self.auto_restore_guard(),
@@ -169,6 +184,9 @@ class TradingServiceRuntimeStatusMixin:
             "realtime_quotes": realtime_quotes,
             "canonical_5m": official_5m,
             "direct_history_topup": direct_history_topup,
+            "host_resources": host_resources,
+            "resource_governor": resource_governor,
+            "watchlist_idle_topup": watchlist_idle_topup,
             "bar_repair_queue": bar_repair_queue,
             "data_writer": self.data_writer.status(),
             "data_backfill": self.data_backfill.status(),
@@ -265,6 +283,7 @@ class TradingServiceRuntimeStatusMixin:
                 },
                 "multi_timeframe_readiness": multi_timeframe_readiness,
                 "direct_history_topup": direct_history_topup,
+                "watchlist_idle_topup": watchlist_idle_topup,
                 "last_watchlist_refresh": (
                     datetime.fromtimestamp(self._last_watchlist_refresh_at, service_mod.ET).isoformat()
                     if self._last_watchlist_refresh_at else None
