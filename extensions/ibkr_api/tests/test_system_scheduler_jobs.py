@@ -104,7 +104,7 @@ class _ReminderPB:
 
 
 class SystemSchedulerJobsTest(unittest.TestCase):
-    def _reminder_deps(self, pb, sent, now_us="2026-04-23 09:20:00", date="2026-04-23", event_result=None):
+    def _reminder_deps(self, pb, sent, now_us="2026-04-23 09:30:00", date="2026-04-23", event_result=None):
         def emit_system_event(**kwargs):
             sent.append(kwargs)
             return dict(event_result or {"notified": True, "persisted": True, "message_id": "msg-1"})
@@ -139,7 +139,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
 
         return {
             "normalize_environment": lambda value, default: str(value or default).strip().lower() or default,
-            "time_strings": lambda: {"us": now_us, "cn": "2026-04-23 21:20:00", "date": date},
+            "time_strings": lambda: {"us": now_us, "cn": "2026-04-23 21:30:00", "date": date},
             "build_system_summary_payload": build_system_summary_payload,
             "build_system_monitor_payload": build_system_monitor_payload,
             "emit_system_event": emit_system_event,
@@ -241,9 +241,24 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["skipped"])
         self.assertEqual(payload["reason"], "outside_time_window")
-        self.assertEqual(payload["target_time_et"], "09:20")
+        self.assertEqual(payload["target_time_et"], "09:30")
         self.assertEqual(len(sent), 0)
         self.assertEqual(pb.states, {})
+
+    def test_market_open_reminder_retries_when_delivery_fails(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_market_open_reminder_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(pb, sent, event_result={"success": False, "error": "send_failed"}),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["ok"])
+        state = pb.states[("system_notify_daily", "live", "2026-04-23")]["data"]
+        self.assertNotIn("open_sent_at", state)
+        self.assertEqual(state["open_error"], "send_failed")
 
     def test_daily_report_skips_outside_target_window(self):
         pb = _ReminderPB()

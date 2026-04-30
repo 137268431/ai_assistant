@@ -190,7 +190,7 @@ const CONFIG_META = {
   order_chat_id: meta('订单群 Chat ID', '通知路由', 630, 'oc_5ca4585e1fd108c2c662dfc358684945', '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
   reverse_chat_id: meta('反转群 Chat ID', '通知路由', 640, 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转信号与反转执行卡片默认发送到这里'),
 
-  status_notify_enabled: meta('状态摘要通知', '系统通知', 900, 'TRUE', '开盘前 09:20、重启和 :00 / :30 的状态摘要通知；半点和整点会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
+  status_notify_enabled: meta('状态摘要通知', '系统通知', 900, 'TRUE', '09:30 开盘交易摘要、重启和 :00 / :30 的状态摘要通知；09:30 由开盘摘要接管，半点和整点会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
   daily_summary_notify_enabled: meta('日报通知', '系统通知', 910, 'TRUE', '收盘后发送当日交易汇总；周末或非交易日也会发送闭市汇总'),
   manual_stop_notify_enabled: meta('手动停止通知', '系统通知', 920, 'TRUE', '手动停止算法时发送通知'),
   health_check_notify_enabled: meta('兜底心跳通知', '系统通知', 930, 'TRUE', '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),

@@ -11,7 +11,6 @@ from ibkr_api.system.jobs import (
     build_order_expiry_response,
     build_system_daily_report_response,
     build_system_heartbeat_response,
-    build_system_market_open_reminder_response,
     build_system_monitor_alert_guard_response,
     build_system_scan_summary_response,
     build_system_status_reminder_response,
@@ -19,6 +18,7 @@ from ibkr_api.system.jobs import (
     build_weekly_reauth_followup_response,
     build_weekly_reauth_reminder_response,
 )
+from ibkr_api.system.jobs.open_report import build_system_open_report_response, load_market_snapshots_from_pb
 
 
 SystemDeps = dict[str, Any]
@@ -198,16 +198,29 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
 
     @app.route("/api/custom/system/jobs/market_open_reminder", methods=["POST"])
     def custom_system_job_market_open_reminder() -> Response:
-        payload, status_code = build_system_market_open_reminder_response(
+        payload, status_code = build_system_open_report_response(
             payload=request.get_json(silent=True) or {},
             normalize_environment=normalize_environment,
             time_strings=time_strings,
+            build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
             build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
             build_system_monitor_payload=build_system_monitor_payload,
-            emit_system_event=emit_system_event,
+            feishu_send_interactive=feishu_send_interactive,
+            write_system_event_record=write_system_event_record,
             get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
             upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+            config_value=config_value,
+            console_base_url=console_base_url,
+            system_status_chat_id=system_status_chat_id,
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
+                pb,
+                environment,
+                symbols,
+                market_date,
+                computed_at_ms,
+            ),
         )
+        payload["job_id"] = "system_market_open_reminder"
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
 
@@ -252,6 +265,8 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             normalize_environment=normalize_environment,
             time_strings=time_strings,
             build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
+            build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
+            build_system_monitor_payload=build_system_monitor_payload,
             feishu_send_interactive=feishu_send_interactive,
             write_system_event_record=write_system_event_record,
             get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
@@ -259,6 +274,14 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             config_value=config_value,
             console_base_url=console_base_url,
             signal_chat_id=signal_chat_id,
+            system_status_chat_id=system_status_chat_id,
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
+                pb,
+                environment,
+                symbols,
+                market_date,
+                computed_at_ms,
+            ),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

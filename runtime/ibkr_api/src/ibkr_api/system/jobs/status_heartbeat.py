@@ -6,6 +6,8 @@ from typing import Any, Callable
 
 HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
 HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+DEFAULT_OPEN_REPORT_TIME_ET = "09:30"
+DEFAULT_OPEN_REPORT_WINDOW_MINUTES = 10
 ALERT_FLAG_SEVERITIES = {"warning", "error"}
 CONNECTION_ISSUE_CODES = {"gateway_offline", "session_unauthenticated", "websocket_not_ready"}
 DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
@@ -30,6 +32,29 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _time_window_minutes(value: Any) -> int | None:
+    text = _to_text(value)
+    if len(text) < 5 or ":" not in text[:5]:
+        return None
+    try:
+        hour, minute = text[:5].split(":", 1)
+        return int(hour) * 60 + int(minute)
+    except Exception:
+        return None
+
+
+def _matches_open_report_time_window(current_us: str, target_et: str, window_minutes: int) -> bool:
+    current = _to_text(current_us)
+    if len(current) < 16:
+        return False
+    current_minute = _time_window_minutes(current[11:16])
+    target_minute = _time_window_minutes(target_et)
+    if current_minute is None or target_minute is None:
+        return False
+    window = max(1, int(window_minutes or DEFAULT_OPEN_REPORT_WINDOW_MINUTES))
+    return target_minute <= current_minute < target_minute + window
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -501,6 +526,19 @@ def build_system_status_reminder_response(
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
     times = time_strings()
+    if _matches_open_report_time_window(
+        times.get("us", ""),
+        _to_text(request_payload.get("open_report_time_et")) or DEFAULT_OPEN_REPORT_TIME_ET,
+        _to_int(request_payload.get("open_report_window_minutes"), DEFAULT_OPEN_REPORT_WINDOW_MINUTES),
+    ):
+        return {
+            "ok": True,
+            "environment": environment,
+            "job_id": "system_status_reminder",
+            "skipped": True,
+            "reason": "open_report_window",
+            "source": "ibkr-api",
+        }, 200
     snapshot = _runtime_health_snapshot(
         environment=environment,
         build_system_summary_payload=build_system_summary_payload,

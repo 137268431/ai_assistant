@@ -4,7 +4,8 @@ from typing import Any, Callable
 
 
 DAILY_REMINDER_STATE_KEY = "system_notify_daily"
-DEFAULT_MARKET_OPEN_REMINDER_TIME_ET = "09:20"
+DEFAULT_MARKET_OPEN_REMINDER_TIME_ET = "09:30"
+DEFAULT_MARKET_OPEN_REMINDER_WINDOW_MINUTES = 10
 DEFAULT_DAILY_REPORT_TIME_ET = "16:05"
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -31,12 +32,20 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _matches_time_window(current_us: str, target_et: str) -> bool:
+def _matches_time_window(current_us: str, target_et: str, *, window_minutes: int = 1) -> bool:
     current = _to_text(current_us)
     target = _to_text(target_et)
     if len(current) < 16 or len(target) < 5:
         return False
-    return current[11:16] == target[:5]
+    try:
+        current_hour, current_minute = current[11:16].split(":", 1)
+        target_hour, target_minute = target[:5].split(":", 1)
+        current_total = int(current_hour) * 60 + int(current_minute)
+        target_total = int(target_hour) * 60 + int(target_minute)
+    except Exception:
+        return False
+    window = max(1, int(window_minutes or 1))
+    return target_total <= current_total < target_total + window
 
 
 def _event_delivery_finalized(event_result: dict[str, Any]) -> bool:
@@ -106,13 +115,15 @@ def build_system_market_open_reminder_response(
     environment = normalize_environment(request_payload.get("environment"), "live")
     times = time_strings()
     target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_MARKET_OPEN_REMINDER_TIME_ET
-    if not _matches_time_window(times["us"], target_time_et):
+    window_minutes = _to_int(request_payload.get("window_minutes"), DEFAULT_MARKET_OPEN_REMINDER_WINDOW_MINUTES)
+    if not _matches_time_window(times["us"], target_time_et, window_minutes=window_minutes):
         return {
             "ok": True,
             "environment": environment,
             "skipped": True,
             "reason": "outside_time_window",
             "target_time_et": target_time_et,
+            "window_minutes": window_minutes,
             "source": "ibkr-api",
             "job_id": "system_market_open_reminder",
         }, 200
@@ -123,25 +134,41 @@ def build_system_market_open_reminder_response(
     summary = build_system_summary_payload(environment)
     monitor = build_system_monitor_payload(environment)
     level = "warning" if _to_text(summary.get("status")).lower() not in {"running", "ok"} else "info"
-    event_result = emit_system_event(
+    event_result = _as_dict(emit_system_event(
         event_type="status_change",
         level=level,
         source="ibkr_api",
-        title="IBKR 开盘前系统检查",
+        title="IBKR 09:30 开盘系统检查",
         detail=_summary_detail(summary, monitor, phase="open", timestamp_us=times["us"]),
         environment=environment,
-    )
+    ))
+    finalized = _event_delivery_finalized(event_result)
+    open_error = _event_result_error(event_result)
     next_state = {
         **current_state,
-        "open_sent_at": times["us"],
-        "open_title": "IBKR 开盘前系统检查",
+        "open_title": "IBKR 09:30 开盘系统检查",
         "open_status": _to_text(summary.get("status")) or "offline",
+        "open_last_attempt_at": times["us"],
+        "open_notified": bool(event_result.get("notified")),
+        "open_persisted": bool(event_result.get("persisted")),
+        "open_message_id": _to_text(event_result.get("message_id")),
+        "open_skipped": bool(event_result.get("skipped")),
+        "open_suppressed": bool(event_result.get("suppressed")),
+        "open_reason": _to_text(event_result.get("reason")),
+        "open_error": open_error,
     }
+    if finalized:
+        next_state["open_sent_at"] = times["us"]
     upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
     return {
-        "ok": True,
+        "ok": finalized,
         "environment": environment,
         "notified": bool(event_result.get("notified")),
+        "persisted": bool(event_result.get("persisted")),
+        "message_id": _to_text(event_result.get("message_id")),
+        "skipped": bool(event_result.get("skipped")),
+        "suppressed": bool(event_result.get("suppressed")),
+        "error": open_error,
         "state": next_state,
         "source": "ibkr-api",
         "job_id": "system_market_open_reminder",
