@@ -44,6 +44,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let chartLegendCollapsed = false;
         let chartMarkerDensityTier = '';
         let chartTooltipSyncRaf = 0;
+        let chartTooltipSyncTimer = 0;
+        let chartTooltipPinned = false;
         let chartFocusMarkerSyncRaf = 0;
         let mobileGestureHintSeen = false;
         let suppressNextChartClick = false;
@@ -1986,6 +1988,17 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function registerChartTouchInteractions() {
             const canvas = document.getElementById('chartCanvas');
             if (!canvas) return;
+            const shell = document.querySelector('.chart-stage-shell');
+            const handlePointerExit = (event) => {
+                if (event?.pointerType === 'touch') return;
+                clearTransientChartCursor();
+            };
+            canvas.onpointerleave = handlePointerExit;
+            canvas.onmouseleave = handlePointerExit;
+            if (shell) {
+                shell.onpointerleave = handlePointerExit;
+                shell.onmouseleave = handlePointerExit;
+            }
             canvas.ontouchstart = null;
             canvas.ontouchmove = null;
             canvas.ontouchend = null;
@@ -2358,22 +2371,62 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return buildContext(payload, safeIndex, selectedSignalId);
         }
 
+        function cancelChartTooltipSync() {
+            if (chartTooltipSyncRaf) {
+                window.cancelAnimationFrame(chartTooltipSyncRaf);
+                chartTooltipSyncRaf = 0;
+            }
+            if (chartTooltipSyncTimer) {
+                window.clearTimeout(chartTooltipSyncTimer);
+                chartTooltipSyncTimer = 0;
+            }
+        }
+
         function syncChartTooltip(index) {
             if (!chartInstance || !Number.isInteger(index) || index < 0) return;
+            setChartTooltipPinned(chartPointerLocked);
             chartInstance.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: index });
         }
 
         function scheduleChartTooltipSync(index) {
             if (!Number.isInteger(index) || index < 0) return;
-            if (chartTooltipSyncRaf) {
-                window.cancelAnimationFrame(chartTooltipSyncRaf);
-                chartTooltipSyncRaf = 0;
-            }
+            cancelChartTooltipSync();
             chartTooltipSyncRaf = window.requestAnimationFrame(() => {
                 chartTooltipSyncRaf = 0;
                 syncChartTooltip(index);
-                window.setTimeout(() => syncChartTooltip(index), 60);
+                chartTooltipSyncTimer = window.setTimeout(() => {
+                    chartTooltipSyncTimer = 0;
+                    syncChartTooltip(index);
+                }, 60);
             });
+        }
+
+        function hideChartTooltip() {
+            cancelChartTooltipSync();
+            if (!chartInstance) return;
+            setChartTooltipPinned(false);
+            chartInstance.dispatchAction({ type: 'hideTip' });
+        }
+
+        function setChartTooltipPinned(pinned) {
+            if (!chartInstance) return;
+            const nextPinned = Boolean(pinned);
+            if (chartTooltipPinned === nextPinned) return;
+            chartTooltipPinned = nextPinned;
+            chartInstance.setOption({ tooltip: { alwaysShowContent: nextPinned } });
+        }
+
+        function clearTransientChartCursor() {
+            if (chartPointerLocked) return;
+            const payload = getChartDisplayPayload();
+            hoverBarIndex = -1;
+            hideChartTooltip();
+            if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            renderCursorStrip(payload);
+            const focusIndex = getEffectiveCursorIndex(payload);
+            if (focusIndex >= 0) {
+                scheduleChartFocusMarkerSync(focusIndex, payload);
+            }
         }
 
         function scheduleChartFocusMarkerSync(index, payload = getChartDisplayPayload()) {
@@ -3666,6 +3719,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     markLine: buildMarkLineConfig(sessionDividerItemsSub)
                 }
             ];
+            chartTooltipPinned = Boolean(chartPointerLocked);
             chartInstance.setOption({
                 animation: false,
                 backgroundColor: 'transparent',
@@ -3708,12 +3762,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 tooltip: {
                     trigger: 'axis',
                     axisPointer: { type: 'cross', snap: true },
-                    alwaysShowContent: true,
+                    alwaysShowContent: chartTooltipPinned,
                     transitionDuration: 0,
                     backgroundColor: 'rgba(8,12,20,0.96)',
                     borderColor: 'rgba(99,179,237,0.16)',
                     textStyle: { color: '#E2EAF4' },
-                    enterable: true,
+                    enterable: false,
                     confine: true,
                     position(point, params, dom, rect, size) {
                         return resolveChartTooltipPosition(point, size);
@@ -3896,16 +3950,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (zr) {
                 zr.off('globalout');
                 zr.on('globalout', () => {
-                    const payload = getChartDisplayPayload();
-                    const activeIndex = getEffectiveCursorIndex(payload);
-                    if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
-                    if (Number.isInteger(activeIndex) && activeIndex >= 0) {
-                        if (!chartPointerLocked && hoverBarIndex < 0) {
-                            hoverBarIndex = activeIndex;
-                        }
-                        renderCursorStrip(payload);
-                        scheduleChartTooltipSync(activeIndex);
-                    }
+                    clearTransientChartCursor();
                 });
             }
             registerChartTouchInteractions();
@@ -3920,7 +3965,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 renderInfoRail(displayPayload);
                 hoverBarIndex = preserveCursorIndex ? focus.index : -1;
                 renderCursorStrip(displayPayload);
-                scheduleChartTooltipSync(focus.index);
+                if (chartPointerLocked || hoverBarIndex >= 0) {
+                    scheduleChartTooltipSync(focus.index);
+                } else {
+                    hideChartTooltip();
+                }
                 if (shouldKeepViewportFollowingFocus(focus.index, displayPayload)) {
                     ensureBarVisible(focus.index, displayPayload);
                 }
@@ -4429,6 +4478,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             await loadChartWorkspace();
 
             document.addEventListener('keydown', handleChartHotkeys);
+            document.addEventListener('pointerdown', (event) => {
+                const chartShell = document.querySelector('.chart-stage-shell');
+                if (chartShell && !chartShell.contains(event.target)) {
+                    clearTransientChartCursor();
+                }
+            }, true);
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) clearTransientChartCursor();
+            });
+            window.addEventListener('blur', clearTransientChartCursor);
 
             window.addEventListener('resize', () => {
                 if (lastPayload) renderCursorStrip(getChartDisplayPayload());
