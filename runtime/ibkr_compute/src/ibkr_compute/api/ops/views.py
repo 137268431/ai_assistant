@@ -6,6 +6,7 @@ from ibkr_compute.api.ops.action_views import (
     build_backtest_replay_response,
     build_backtest_run_response,
     build_backtest_status_response,
+    build_bar_repair_status_response,
     build_history_rebuild_start_response,
     build_history_rebuild_status_response,
     build_ibkr_data_quality_repair_response,

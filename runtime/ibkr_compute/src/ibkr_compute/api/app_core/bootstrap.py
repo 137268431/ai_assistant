@@ -8,6 +8,8 @@ import time
 from ibkr_compute.backtest import BacktestService
 from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
+from ibkr_compute.market.bar_repair import BarRepairCoordinator
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS
 from ibkr_compute.workflows.history_rebuild import HistoryRebuildManager
 
@@ -81,12 +83,25 @@ def build_service_bundle(
         current_market_date_resolver=current_market_date_resolver,
         runtime_status_resolver=runtime_status_resolver,
     )
+    bar_freshness_planner = BarFreshnessPlanner(pb_client, config, environment=os.environ.get("IBKR_ENVIRONMENT", "live"))
+    bar_repair_coordinator = BarRepairCoordinator(
+        pb_client=pb_client,
+        config=config,
+        environment=os.environ.get("IBKR_ENVIRONMENT", "live"),
+        symbol_meta_provider=lambda symbols: {
+            str(symbol or "").strip().upper(): {}
+            for symbol in (symbols or [])
+            if str(symbol or "").strip()
+        },
+    )
     return {
         "PB_BASE_URL": pb_base_url,
         "CONSOLE_BASE_URL": console_base_url,
         "PB_PUBLIC_URL": console_base_url,
         "pb": pb_client,
         "cfg": config,
+        "bar_freshness_planner": bar_freshness_planner,
+        "bar_repair_coordinator": bar_repair_coordinator,
         "backtest_service": backtest_service,
         "history_rebuild_manager": history_rebuild_manager,
     }

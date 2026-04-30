@@ -1455,6 +1455,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const realtimeState = getRealtimeChipState(payload);
             const previewState = getPreviewChipState();
             const compareState = getCompareChipState(compareSummary, { compact: false });
+            const freshnessState = getChartFreshnessChipState(payload);
             const chips = [
                 buildStripChip('hero-chip', `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`, currentSymbol ? '' : 'placeholder', '当前查看的标的与周期。'),
                 buildStripChip('hero-chip', getEnvironmentLabel(currentEnvironment), currentEnvironment ? '' : 'placeholder', '当前运行环境。'),
@@ -1463,9 +1464,28 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 buildStripChip('hero-chip', `最后收盘 bar ${lastBarTime}`, lastBarTime === '--' ? 'placeholder' : '', '当前窗口最后一根已收盘 bar 的时间。'),
                 buildStripChip('hero-chip', realtimeState.text, realtimeState.className, realtimeState.title),
                 buildStripChip('hero-chip', previewState.text, previewState.className, previewState.title),
+                buildStripChip('hero-chip', freshnessState.text, freshnessState.className, freshnessState.title),
                 buildStripChip('hero-chip', compareState.text, compareState.className, compareState.title),
             ];
             document.getElementById('heroStatus').innerHTML = chips.join('');
+        }
+
+        function getChartFreshnessChipState(payload) {
+            const freshness = payload?.meta?.freshness || {};
+            const repair = payload?.meta?.repair || {};
+            const status = String(freshness.status || '').trim().toLowerCase();
+            if (!status) return { text: 'Bars freshness --', className: 'placeholder', title: '后端尚未返回 bars 完整性状态。' };
+            const interval = freshness?.needs_repair_intervals?.[0] || currentInterval;
+            const row = freshness?.intervals?.[interval] || {};
+            if (status === 'ready') {
+                return { text: 'Bars Ready', className: 'good', title: `权威 bars 已到最新闭合桶 ${row.expected_closed_us || '--'}。` };
+            }
+            const repairText = repair.status ? ` · ${repair.status}` : '';
+            return {
+                text: `Bars ${status.toUpperCase()}${repairText}`,
+                className: status === 'stale' ? 'warning' : 'loading',
+                title: `latest ${row.latest_stored_us || '--'} / expected ${row.expected_closed_us || '--'}；已触发 IBKR API 异步补偿。`,
+            };
         }
 
         function renderTimeframeGroup() {
@@ -1519,6 +1539,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const previewState = getPreviewChipState();
             const compareState = getCompareChipState(compareSummary, { compact: true });
             const stateBadge = getWorkspaceStateBadge();
+            const freshnessState = getChartFreshnessChipState(payload);
             const chips = [
                 { text: `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} · ${getRangeShortLabel(currentRangeKey)}`, className: currentSymbol ? '' : 'placeholder', title: getRangeLabel(currentRangeKey) },
                 { text: `${bars.length} bars · ${indicators.length} ind · ${signals.length} sig`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的数据量。' },
@@ -1527,6 +1548,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { text: stateBadge.text.replace('工作区 ', ''), className: stateBadge.className, title: '图表工作区状态。' },
                 { text: realtimeState.text, className: realtimeState.className, title: realtimeState.title },
                 { text: previewState.text, className: previewState.className, title: previewState.title },
+                { text: freshnessState.text, className: freshnessState.className, title: freshnessState.title },
                 { text: compareState.text, className: compareState.className, title: compareState.title },
             ];
             document.getElementById('summaryStrip').innerHTML = chips.map((item) => buildStripChip('summary-chip', item.text, item.className, item.title)).join('');
@@ -3546,6 +3568,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 note.textContent += ' 当前主图仍展示 stored bars 链路；右侧 Compare 与上方 Cursor 显示 IBKR API 临时对比结果。';
             } else if (compareError) {
                 note.textContent += ' 最近一次 IBKR 对比失败，可查看右侧错误卡。';
+            }
+            const freshnessStatus = String(payload?.meta?.freshness?.status || '').trim().toLowerCase();
+            if (freshnessStatus && freshnessStatus !== 'ready') {
+                const repairStatus = String(payload?.meta?.repair?.status || '补偿中').trim();
+                note.textContent += ` 当前周期 bars ${freshnessStatus}，已触发 IBKR API 异步补偿（${repairStatus}），图表先显示已有权威数据。`;
             }
             if (supportsSessionDividers()) {
                 note.textContent += ' 竖线按美股 ET 时段分隔盘前 / 盘中 / 盘后。';

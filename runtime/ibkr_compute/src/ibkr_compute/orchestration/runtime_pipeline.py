@@ -1108,18 +1108,52 @@ class TradingServiceRuntimePipelineMixin:
             )
             last_error = str(exc)
 
+        verified_symbols = []
+        pending_freshness_symbols = []
+        freshness_by_symbol = {}
+        if not last_error:
+            planner = getattr(self, "bar_freshness_planner", None)
+            if planner is None:
+                verified_symbols = list(runnable_conids.keys())
+                pending_freshness_symbols = []
+                freshness_by_symbol = {symbol: {"status": "not_checked", "reason": "planner_unavailable"} for symbol in runnable_conids.keys()}
+            else:
+                for symbol in runnable_conids.keys():
+                    try:
+                        freshness = planner.plan_symbol(
+                            symbol,
+                            [normalized_interval],
+                            environment=service_mod.ENVIRONMENT,
+                            required_bars=0,
+                        )
+                        interval_payload = (freshness.get("intervals") or {}).get(normalized_interval) or {}
+                        latest_ms = int(interval_payload.get("latest_stored_ms", 0) or 0)
+                        freshness_by_symbol[symbol] = interval_payload
+                        if latest_ms >= due_bucket_ms:
+                            verified_symbols.append(symbol)
+                        else:
+                            pending_freshness_symbols.append(symbol)
+                    except Exception as exc:
+                        freshness_by_symbol[symbol] = {"status": "verify_failed", "error": str(exc)}
+                        pending_freshness_symbols.append(symbol)
+            if pending_freshness_symbols:
+                last_error = "freshness_pending_after_topup"
+
         completed = not last_error
         base_update.update(
             {
-                "status": "completed" if completed else "failed",
-                "reason": "",
+                "status": "completed" if completed else ("pending" if pending_freshness_symbols else "failed"),
+                "reason": "" if completed else str(last_error or "topup_failed"),
                 "last_completed_bucket_ms": due_bucket_ms if completed else last_completed_bucket_ms,
                 "last_completed_bucket_us": format_us_time(due_bucket_ms) if completed else str(interval_state.get("last_completed_bucket_us") or ""),
                 "last_written_bars": written_bars,
                 "written_symbols": sorted(written_symbols),
                 "written_symbols_total": len(written_symbols),
-                "pending_symbols": [] if completed else sorted(runnable_conids.keys()),
-                "pending_symbols_total": 0 if completed else len(runnable_conids),
+                "verified_symbols": sorted(verified_symbols),
+                "verified_symbols_total": len(verified_symbols),
+                "pending_symbols": [] if completed else sorted(pending_freshness_symbols or runnable_conids.keys()),
+                "pending_symbols_total": 0 if completed else len(pending_freshness_symbols or runnable_conids),
+                "freshness_by_symbol": freshness_by_symbol,
                 "duration_s": round(max(0.0, time.time() - started_at), 3),
                 "last_error": last_error,
             }

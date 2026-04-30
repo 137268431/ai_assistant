@@ -194,6 +194,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return `${formatNumber(num / 60, 1)} h`;
     }
 
+    function dataQualityChip(row) {
+      const quality = row?.data_quality && typeof row.data_quality === 'object' ? row.data_quality : {};
+      const status = String(quality.status || '').trim().toLowerCase();
+      if (!status) return '';
+      if (status === 'ready') return statusChip('数据完整', 'active');
+      const count = Array.isArray(quality.needs_repair_intervals) ? quality.needs_repair_intervals.length : 0;
+      return statusChip(`补偿中${count ? ` ${count}TF` : ''}`, status === 'stale' ? 'candidate' : 'stale');
+    }
+
     function getUsDate() {
       return new Intl.DateTimeFormat('en-CA', {
         timeZone: 'America/New_York',
@@ -592,7 +601,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         { label: 'OPERABLE', value: summary.operable || 0, copy: '可操作标的', className: 'good' },
         { label: 'CANDIDATES', value: summary.candidate_targets || 0, copy: 'candidate 数', className: 'accent' },
         { label: 'ACTIVE', value: summary.active_targets || 0, copy: 'active 数', className: 'good' },
-        { label: 'AVG PRE', value: formatVolume(summary.avg_premarket_volume || 0), copy: '平均盘前量', className: 'accent' }
+        { label: 'DATA GAP', value: summary.incomplete_data || 0, copy: summary.incomplete_data ? '异步 API 补偿中' : '数据完整', className: summary.incomplete_data ? 'accent' : 'good' }
       ]);
     }
 
@@ -1086,6 +1095,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
               ${statusChip(formatCurrentStateLabel(row.technical_state), row.technical_state || 'watch')}
               ${statusChip(formatCurrentStateLabel(signalStateKey), signalStateKey)}
               ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
+              ${dataQualityChip(row)}
             </div>
 
             <div class="mobile-data-grid">
@@ -1141,6 +1151,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
               ${buildScorePill(row)}
               ${statusChip(row.is_operable ? '可操作' : '人工复核', row.is_operable ? 'active' : 'neutral')}
               ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
+              ${dataQualityChip(row)}
             </div>
 
             <div class="mobile-data-grid">
@@ -1721,6 +1732,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             </td>
             <td>
               ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', '')}<br>
+              ${dataQualityChip(row)}<br>
               <span class="muted">${escapeHtml(row.latest_us_time || '--')}</span>
             </td>
             <td>
@@ -1751,7 +1763,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       renderScreenerCards(pageRows);
       renderScreenerPagination(pageRows);
 
-      document.getElementById('tableMeta').textContent = `过滤 ${filteredRows.length} · 本页 ${pageRows.length} · 可操作 ${filteredRows.filter((row) => row.is_operable).length} · live bars ${filteredRows.filter((row) => row.has_live_bar).length}`;
+      document.getElementById('tableMeta').textContent = `过滤 ${filteredRows.length} · 本页 ${pageRows.length} · 可操作 ${filteredRows.filter((row) => row.is_operable).length} · live bars ${filteredRows.filter((row) => row.has_live_bar).length} · 补偿中 ${filteredRows.filter((row) => Boolean(row?.data_quality?.needs_repair)).length}`;
       document.getElementById('tableMetaSecondary').textContent = `已选 ${filteredRows.filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase())).length} 条`;
     }
 

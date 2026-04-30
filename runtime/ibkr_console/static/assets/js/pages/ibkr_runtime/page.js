@@ -889,6 +889,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const dataIsLoading = dataHealth.status === 'loading';
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
+            const repairQueue = status?.bar_repair_queue || {};
             const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toUpperCase() || '--';
             const sessionCopy = runtimeStatus.snapshotIncomplete
@@ -935,6 +936,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     label: 'Data Freshness',
                     value: dataIsLoading ? 'LOADING' : (dataHealth.last_bar_age_min != null ? `${dataHealth.last_bar_age_min}m` : '--'),
                     copy: dataHealth.last_bar_time_ms ? `${dataHealth.last_symbol || 'n/a'} · ${dataHealth.last_bar_label}` : (dataIsLoading ? 'loading latest bar' : 'no latest')
+                },
+                {
+                    label: 'Bar Repair',
+                    value: `${Number(repairQueue.pending || 0) + Number(repairQueue.inflight || 0)}`,
+                    copy: `pending ${repairQueue.pending || 0} · inflight ${repairQueue.inflight || 0} · failed ${repairQueue.failed || 0}`
                 },
                 {
                     label: 'Close Delay',
@@ -1516,6 +1522,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Warmup Start', formatTimeLabel(warmup.started_at)],
                 ['Warmup Finish', formatTimeLabel(warmup.finished_at)],
                 ['Warmup Elapsed', formatDurationCompact(warmupElapsedS)],
+                ['Bar Repair Pending', String(status?.bar_repair_queue?.pending || 0)],
+                ['Bar Repair Inflight', String(status?.bar_repair_queue?.inflight || 0)],
+                ['Bar Repair Failed', String(status?.bar_repair_queue?.failed || 0)],
+                ['Bar Repair Recent', Array.isArray(status?.bar_repair_queue?.recent_jobs) ? status.bar_repair_queue.recent_jobs.slice(0, 3).map((job) => `${job.symbol || '--'} ${job.interval || '--'} ${job.status || '--'}`).join(' | ') || '--' : '--'],
                 ['Market Date', String(status?.market_universe?.market_date || '--')],
                 ['Last Daily Reset', formatTimeLabel(status?.market_universe?.last_daily_reset)],
                 ['Watchlist Pool', String(status?.market_universe?.watchlist_pool_count || 0)],

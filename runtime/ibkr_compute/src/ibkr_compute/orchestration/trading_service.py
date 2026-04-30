@@ -31,6 +31,8 @@ from ibkr_compute.market.realtime_quote_book import RealtimeQuoteBook
 from ibkr_compute.market.data_writer import DataWriter
 from ibkr_compute.market.data_backfill import DataBackfill, _regular_session_gap_summary
 from ibkr_compute.market.data_retention import DataRetention
+from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
+from ibkr_compute.market.bar_repair import BarRepairCoordinator
 from ibkr_compute.market.timeframe_utils import (
     build_market_session_snapshot,
     bucket_start_ms,
@@ -215,6 +217,27 @@ class IBKRTradingService(
             config=self.config,
             environment=ENVIRONMENT,
             broker=self.broker,
+        )
+        self.bar_freshness_planner = BarFreshnessPlanner(self.pb, self.config, environment=ENVIRONMENT)
+        self.bar_repair_coordinator = BarRepairCoordinator(
+            pb_client=self.pb,
+            config=self.config,
+            environment=ENVIRONMENT,
+            data_backfill=self.data_backfill,
+            data_writer=self.data_writer,
+            conid_resolver=self.conid_resolver,
+            symbol_meta_provider=lambda symbols: {
+                str(symbol or "").strip().upper(): dict(self._symbol_meta.get(str(symbol or "").strip().upper(), {}))
+                for symbol in (symbols or [])
+                if str(symbol or "").strip()
+            },
+            materialize_callback=lambda environment, symbols, interval: self._trigger_realtime_compute(
+                source="bar_repair_queue",
+                symbols=symbols,
+                persist_signals=False,
+                intervals=[interval],
+                rollup_intervals=[],
+            ),
         )
         self.data_retention = DataRetention(
             pb_client=self.pb,

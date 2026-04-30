@@ -41,6 +41,18 @@ def _safe_multi_timeframe_readiness(app_mod, requested_environment: str) -> dict
         }
 
 
+def _safe_bar_repair_queue(app_mod) -> dict:
+    coordinator = getattr(app_mod, "bar_repair_coordinator", None)
+    if coordinator is None or not hasattr(coordinator, "status"):
+        return {"ok": True, "available": False, "pending": 0, "inflight": 0, "failed": 0}
+    try:
+        payload = coordinator.status()
+        payload["available"] = True
+        return payload
+    except Exception as exc:
+        return {"ok": False, "available": True, "error": str(exc), "pending": 0, "inflight": 0, "failed": 0}
+
+
 def build_health_response():
     app_mod = get_app_module()
     requested_environment = get_requested_environment("live")
@@ -54,6 +66,7 @@ def build_health_response():
             "engines": len(app_mod.engines),
             "compute_startup_preload": get_compute_startup_preload_state(app_mod),
             "multi_timeframe_readiness": multi_timeframe_readiness,
+            "bar_repair_queue": _safe_bar_repair_queue(app_mod),
             **_build_runtime_summary(app_mod),
             "backtest": app_mod.backtest_service.status(),
             "history_rebuild": app_mod.history_rebuild_manager.status(requested_environment),
@@ -90,6 +103,7 @@ def build_status_response():
             "tracked_cursors": len(app_mod.last_processed_ms),
             "compute_startup_preload": get_compute_startup_preload_state(app_mod),
             "multi_timeframe_readiness": multi_timeframe_readiness,
+            "bar_repair_queue": _safe_bar_repair_queue(app_mod),
             **_build_runtime_summary(app_mod),
             "backtest": app_mod.backtest_service.status(),
             "history_rebuild": app_mod.history_rebuild_manager.status(requested_environment),

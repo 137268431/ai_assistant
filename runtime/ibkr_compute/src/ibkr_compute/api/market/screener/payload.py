@@ -13,7 +13,13 @@ from ibkr_compute.api.market.screener.scoring import (
 )
 from ibkr_compute.api.market.screener.watchlist import load_effective_watchlist
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.market.bar_freshness import (
+    BarFreshnessPlanner,
+    expected_closed_ms_from_latest_5m,
+    latest_expected_extended_5m_ms,
+)
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+from ibkr_compute.market.timeframe_utils import format_us_time, normalize_interval
 
 
 def parse_market_date_bounds_ms(market_date: str) -> tuple[int, int]:
@@ -39,6 +45,173 @@ def _build_symbol_placeholders(symbols: list[str]) -> tuple[str, list[str]]:
     if not normalized:
         return "", []
     return ", ".join("?" for _ in normalized), normalized
+
+
+def _load_latest_bar_times_sqlite(
+    *,
+    environment: str,
+    symbols: list[str],
+    intervals: list[str],
+) -> dict[str, dict[str, int]]:
+    symbol_placeholders, normalized_symbols = _build_symbol_placeholders(symbols)
+    normalized_intervals = [
+        normalize_interval(item)
+        for item in intervals or []
+        if str(item or "").strip()
+    ]
+    normalized_intervals = [item for item in dict.fromkeys(normalized_intervals) if item]
+    if not symbol_placeholders or not normalized_intervals:
+        return {}
+    interval_placeholders = ", ".join("?" for _ in normalized_intervals)
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    env_clause = "(environment = ? OR environment = '')" if runtime_environment == "live" else "environment = ?"
+    params = [
+        runtime_environment,
+        *normalized_intervals,
+        *normalized_symbols,
+    ]
+    with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT symbol, interval, MAX(bar_time_ms) AS latest_stored_ms
+            FROM ibkr_bars
+            WHERE {env_clause}
+              AND interval IN ({interval_placeholders})
+              AND symbol IN ({symbol_placeholders})
+            GROUP BY symbol, interval
+            """,
+            tuple(params),
+        ).fetchall()
+    result: dict[str, dict[str, int]] = {}
+    for row in rows:
+        symbol = str(row["symbol"] or "").strip().upper()
+        interval = normalize_interval(row["interval"])
+        latest_ms = coerce_int(row["latest_stored_ms"])
+        if symbol and interval and latest_ms > 0:
+            result.setdefault(symbol, {})[interval] = latest_ms
+    return result
+
+
+def _freshness_close_delay_seconds(api_app, environment: str) -> int:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_int_for_environment"):
+        try:
+            return max(0, int(cfg.get_int_for_environment("ibkr_official_5m_close_delay_sec", environment, 8)))
+        except Exception:
+            return 8
+    return 8
+
+
+def _build_bulk_freshness_payloads(
+    api_app,
+    *,
+    environment: str,
+    symbols: list[str],
+    intervals: list[str],
+) -> dict[str, dict]:
+    normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
+    normalized_intervals = [normalize_interval(item) for item in intervals or [] if str(item or "").strip()]
+    normalized_intervals = [item for item in dict.fromkeys(normalized_intervals) if item]
+    if not normalized_symbols or not normalized_intervals:
+        return {}
+    latest_by_symbol = _load_latest_bar_times_sqlite(
+        environment=environment,
+        symbols=normalized_symbols,
+        intervals=normalized_intervals,
+    )
+    expected_5m_ms = latest_expected_extended_5m_ms(
+        delay_seconds=_freshness_close_delay_seconds(api_app, environment)
+    )
+    payloads: dict[str, dict] = {}
+    for symbol in normalized_symbols:
+        latest_map = latest_by_symbol.get(symbol) or {}
+        latest_5m_ms = int(latest_map.get("5m", 0) or 0)
+        interval_payloads: dict[str, dict] = {}
+        needs_repair_intervals: list[str] = []
+        status_counts: dict[str, int] = {}
+        for interval in normalized_intervals:
+            latest_ms = int(latest_map.get(interval, 0) or 0)
+            expected_ms = (
+                expected_5m_ms
+                if interval == "5m"
+                else expected_closed_ms_from_latest_5m(latest_5m_ms or expected_5m_ms, interval)
+            )
+            reasons: list[str] = []
+            if latest_ms <= 0:
+                reasons.append("missing_bars")
+            elif expected_ms > 0 and latest_ms < expected_ms:
+                reasons.append("latest_stale")
+            status = "ready"
+            if "latest_stale" in reasons:
+                status = "stale"
+            elif reasons:
+                status = "missing"
+            if status != "ready":
+                needs_repair_intervals.append(interval)
+            status_counts[status] = int(status_counts.get(status, 0) or 0) + 1
+            interval_payloads[interval] = {
+                "environment": environment,
+                "symbol": symbol,
+                "interval": interval,
+                "status": status,
+                "ready": status == "ready",
+                "needs_repair": status != "ready",
+                "reason": ",".join(reasons),
+                "reasons": reasons,
+                "stored_count": 1 if latest_ms > 0 else 0,
+                "required_bars": 0,
+                "latest_stored_ms": latest_ms,
+                "latest_stored_us": format_us_time(latest_ms) if latest_ms > 0 else "",
+                "expected_closed_ms": expected_ms,
+                "expected_closed_us": format_us_time(expected_ms) if expected_ms > 0 else "",
+                "stale_by_ms": max(0, expected_ms - latest_ms) if expected_ms > 0 and latest_ms > 0 else 0,
+                "authoritative_source": "ibkr_history_api",
+            }
+        aggregate_status = "ready" if not needs_repair_intervals else (
+            "stale" if any(interval_payloads[item]["status"] == "stale" for item in needs_repair_intervals) else "missing"
+        )
+        payloads[symbol] = {
+            "ok": True,
+            "environment": environment,
+            "symbol": symbol,
+            "status": aggregate_status,
+            "ready": aggregate_status == "ready",
+            "needs_repair": aggregate_status != "ready",
+            "intervals": interval_payloads,
+            "needs_repair_intervals": needs_repair_intervals,
+            "status_counts": status_counts,
+            "latest_5m_ms": latest_5m_ms,
+            "latest_5m_us": format_us_time(latest_5m_ms) if latest_5m_ms > 0 else "",
+            "checked_at_ms": int(time.time() * 1000),
+            "planner": "sqlite_bulk",
+        }
+    return payloads
+
+
+def _build_screener_freshness_payloads(api_app, environment: str, symbols: list[str]) -> dict[str, dict]:
+    intervals = ["5m", "15m", "30m", "1h", "4h", "1d"]
+    try:
+        return _build_bulk_freshness_payloads(
+            api_app,
+            environment=environment,
+            symbols=symbols,
+            intervals=intervals,
+        )
+    except Exception:
+        planner = getattr(api_app, "bar_freshness_planner", None) or BarFreshnessPlanner(
+            getattr(api_app, "pb", None),
+            getattr(api_app, "cfg", None),
+            environment=environment,
+        )
+        return {
+            symbol: planner.plan_symbol(
+                symbol,
+                intervals,
+                environment=environment,
+                required_bars=0,
+            )
+            for symbol in symbols
+        }
 
 
 def _load_bar_rows_sqlite(
@@ -280,6 +453,16 @@ def build_screener_payload(
             if symbol not in universe_set and not selected_set:
                 universe_symbols.append(symbol)
                 universe_set.add(symbol)
+    freshness_by_symbol = {}
+    if not selected_symbols:
+        try:
+            freshness_by_symbol = _build_screener_freshness_payloads(
+                api_app,
+                runtime_environment,
+                universe_symbols,
+            )
+        except Exception:
+            freshness_by_symbol = {}
 
     if not universe_symbols:
         timestamps = api_app.build_runtime_timestamps()
@@ -538,6 +721,7 @@ def build_screener_payload(
             "target_score": target_score,
             "direction_bias": direction_bias,
             "scan_reason": scan_reason,
+            "data_quality": freshness_by_symbol.get(symbol) or {},
             **daily_fields,
         }
         tradability_score, operable_reasons = build_tradability_assessment(row)
@@ -585,6 +769,9 @@ def build_screener_payload(
             "total": len(items),
             "with_live_bars": sum(1 for item in items if item.get("has_live_bar")),
             "operable": sum(1 for item in items if item.get("is_operable")),
+            "data_completeness": "repairing" if any(bool((item.get("data_quality") or {}).get("needs_repair")) for item in items) else "ready",
+            "incomplete_data": sum(1 for item in items if bool((item.get("data_quality") or {}).get("needs_repair"))),
+            "repairing_count": sum(1 for item in items if bool((item.get("data_quality") or {}).get("needs_repair"))),
             "candidate_targets": candidate_targets,
             "active_targets": active_targets,
             "avg_premarket_volume": round(

@@ -19,6 +19,8 @@ from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_s
 from ibkr_compute.api.market.screener.payload import build_screener_payload
 from ibkr_compute.api.market.screener.runtime import get_api_app
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
+from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_interval
 
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
 DAILY_SCAN_SOURCE = "daily_scan"
@@ -46,6 +48,7 @@ REJECTION_BUCKET_AVG_10D = "avg_10d_volume_below_threshold"
 REJECTION_BUCKET_PREMARKET = "premarket_volume_below_threshold"
 REJECTION_BUCKET_ATR = "atr_pct_below_threshold"
 REJECTION_BUCKET_DAY_CHANGE = "day_change_below_threshold"
+REJECTION_BUCKET_DATA_INCOMPLETE = "data_incomplete_repairing"
 
 DAILY_SCAN_LONG_PRIMARY_RULES = (
     ("trend_dir", 1, "trend_dir=1"),
@@ -335,6 +338,67 @@ class DailyScanner:
         self.engines = engines
         self.api_app = get_api_app()
 
+    def _data_completeness_enabled(self, environment: str) -> bool:
+        cfg = getattr(self.api_app, "cfg", None)
+        if cfg is None or not hasattr(cfg, "get_bool_for_environment"):
+            return hasattr(self.api_app, "bar_freshness_planner")
+        try:
+            return bool(cfg.get_bool_for_environment("ibkr_daily_scan_data_completeness_enabled", environment, True))
+        except Exception:
+            return hasattr(self.api_app, "bar_freshness_planner")
+
+    def _data_completeness_intervals(self, environment: str) -> list[str]:
+        cfg = getattr(self.api_app, "cfg", None)
+        raw = "5m,15m,30m,1h,4h,1d"
+        if cfg is not None and hasattr(cfg, "get_for_environment"):
+            try:
+                raw = str(cfg.get_for_environment("ibkr_daily_scan_data_completeness_intervals", environment, raw) or raw)
+            except Exception:
+                raw = "5m,15m,30m,1h,4h,1d"
+        parsed = [normalize_interval(item) for item in raw.split(",") if str(item or "").strip()]
+        parsed = [item for item in dict.fromkeys(parsed) if item in COMPUTE_INTERVALS]
+        return parsed or list(COMPUTE_INTERVALS)
+
+    def _build_data_completeness_gate(self, environment: str, symbols: list[str]) -> dict:
+        normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
+        if not normalized_symbols or not self._data_completeness_enabled(environment):
+            return {"enabled": False, "items": {}, "incomplete_symbols": [], "repair_jobs": []}
+
+        planner = getattr(self.api_app, "bar_freshness_planner", None)
+        if planner is None:
+            planner = BarFreshnessPlanner(self.pb_client, getattr(self.api_app, "cfg", None), environment=environment)
+        intervals = self._data_completeness_intervals(environment)
+        items = {}
+        incomplete_symbols = []
+        repair_jobs = []
+        coordinator = getattr(self.api_app, "bar_repair_coordinator", None)
+        for symbol in normalized_symbols:
+            freshness = planner.plan_symbol(symbol, intervals, environment=environment, required_bars=0)
+            items[symbol] = freshness
+            if not bool(freshness.get("needs_repair")):
+                continue
+            incomplete_symbols.append(symbol)
+            if coordinator is not None and hasattr(coordinator, "enqueue_from_freshness"):
+                try:
+                    repair_jobs.extend(
+                        coordinator.enqueue_from_freshness(
+                            freshness,
+                            priority="daily_scan",
+                            trigger="daily_scan_data_completeness",
+                        )
+                    )
+                except Exception as exc:
+                    repair_jobs.append({"queued": False, "symbol": symbol, "error": str(exc)})
+        return {
+            "enabled": True,
+            "intervals": intervals,
+            "items": items,
+            "incomplete_symbols": incomplete_symbols,
+            "repairing_symbols": incomplete_symbols,
+            "repair_jobs": repair_jobs,
+            "status": "ready" if not incomplete_symbols else "repairing",
+        }
+
     def run_scan(self, date: str, environments=None) -> dict:
         """
         执行每日自动筛选。
@@ -350,6 +414,14 @@ class DailyScanner:
         eligible = 0
         rejection_summary: dict[str, int] = {}
         rejection_examples: list[dict[str, str]] = []
+        data_completeness = {
+            "enabled": False,
+            "status": "unknown",
+            "excluded_incomplete_count": 0,
+            "repairing_count": 0,
+            "incomplete_symbols": [],
+            "repair_jobs": [],
+        }
 
         runtime_environments = environments or ["live", "paper"]
 
@@ -385,6 +457,16 @@ class DailyScanner:
                 if environment and len(runtime_environments) > 1:
                     normalized["environment"] = str(environment).strip().lower()
                 rejection_examples.append(normalized)
+            completeness = result.get("data_completeness") or {}
+            if completeness:
+                data_completeness["enabled"] = bool(data_completeness.get("enabled")) or bool(completeness.get("enabled"))
+                data_completeness["excluded_incomplete_count"] += int(completeness.get("excluded_incomplete_count", 0) or 0)
+                data_completeness["repairing_count"] += int(completeness.get("repairing_count", 0) or 0)
+                data_completeness["incomplete_symbols"].extend(completeness.get("incomplete_symbols") or [])
+                data_completeness["repair_jobs"].extend(completeness.get("repair_jobs") or [])
+
+        data_completeness["incomplete_symbols"] = sorted(set(data_completeness.get("incomplete_symbols") or []))
+        data_completeness["status"] = "repairing" if data_completeness["incomplete_symbols"] else "ready"
 
         return {
             "scanned": scanned,
@@ -395,6 +477,8 @@ class DailyScanner:
             "errors": errors,
             "rejection_summary": rejection_summary,
             "rejection_examples": rejection_examples,
+            "data_completeness": data_completeness,
+            "excluded_incomplete_count": int(data_completeness.get("excluded_incomplete_count", 0) or 0),
             "environment_results": environment_results,
         }
 
@@ -409,6 +493,8 @@ class DailyScanner:
                 if str(item.get("symbol", "")).strip()
             }
         )
+        completeness_gate = self._build_data_completeness_gate(runtime_environment, watchlist_symbols)
+        incomplete_symbols = set(completeness_gate.get("incomplete_symbols") or [])
         metric_rows = self._build_metric_rows(date, runtime_environment, watchlist_symbols)
         existing_rows = self._load_today_target_rows(date, runtime_environment)
         manual_rows = {
@@ -429,6 +515,19 @@ class DailyScanner:
         for item in watchlist:
             symbol = str(item.get("symbol", "")).strip().upper()
             if not symbol:
+                continue
+            if symbol in incomplete_symbols:
+                freshness = (completeness_gate.get("items") or {}).get(symbol) or {}
+                stale_intervals = list(freshness.get("needs_repair_intervals") or [])
+                _record_rejection(
+                    rejection_summary,
+                    rejection_examples_by_bucket,
+                    bucket=REJECTION_BUCKET_DATA_INCOMPLETE,
+                    symbol=symbol,
+                    actual=",".join(stale_intervals) or str(freshness.get("status") or "incomplete"),
+                    threshold="all required intervals ready",
+                    note="数据不完整，已排除本轮筛选并进入异步 API 补偿",
+                )
                 continue
             try:
                 result = self.evaluate_symbol(
@@ -546,6 +645,15 @@ class DailyScanner:
             "trade_subscription_budget": trade_budget,
             "manual_active_count": manual_active_count,
             "manual_retained_count": len(manual_retained_symbols),
+            "data_completeness": {
+                "enabled": bool(completeness_gate.get("enabled")),
+                "status": str(completeness_gate.get("status") or ("ready" if not incomplete_symbols else "repairing")),
+                "intervals": list(completeness_gate.get("intervals") or []),
+                "excluded_incomplete_count": len(incomplete_symbols),
+                "repairing_count": len(incomplete_symbols),
+                "incomplete_symbols": sorted(incomplete_symbols),
+                "repair_jobs": list(completeness_gate.get("repair_jobs") or []),
+            },
             "rejection_summary": rejection_summary,
             "rejection_examples": _flatten_rejection_examples(rejection_examples_by_bucket),
         }

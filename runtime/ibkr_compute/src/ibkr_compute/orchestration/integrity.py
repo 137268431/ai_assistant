@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 
-from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, bucket_start_ms, format_us_time
+from ibkr_compute.market.bar_freshness import expected_closed_ms_from_latest_5m
+from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, format_us_time
 
 
 def _service_mod():
@@ -50,14 +51,9 @@ class TradingServiceIntegrityMixin:
             min_bars=min_bars,
             gap_lookback=gap_lookback,
         )
-        derived_sync = self._inspect_derived_interval_sync(normalized_symbol) if rollup_repair_enabled else {
-            "symbol": normalized_symbol,
-            "latest_5m_ms": int(snapshot.get("latest_stored_ms", 0) or 0),
-            "missing_intervals": [],
-            "stale_intervals": [],
-            "latest_interval_ms": {},
-            "expected_closed_ms": {},
-        }
+        derived_sync = self._inspect_derived_interval_sync(normalized_symbol)
+        derived_sync["rollup_diagnostic_only"] = True
+        derived_sync["rollup_repair_enabled"] = bool(rollup_repair_enabled)
 
         reasons = []
         if int(snapshot.get("stored_bar_count", 0) or 0) < min_bars:
@@ -69,9 +65,9 @@ class TradingServiceIntegrityMixin:
         if int(snapshot.get("bad_ohlc_count", 0) or 0) > 0:
             reasons.append(f"bad_ohlc={int(snapshot.get('bad_ohlc_count', 0) or 0)}")
         if derived_sync["missing_intervals"]:
-            reasons.append(f"rollup_missing={','.join(derived_sync['missing_intervals'])}")
+            reasons.append(f"api_missing={','.join(derived_sync['missing_intervals'])}")
         if derived_sync["stale_intervals"]:
-            reasons.append(f"rollup_stale={','.join(derived_sync['stale_intervals'])}")
+            reasons.append(f"api_stale={','.join(derived_sync['stale_intervals'])}")
 
         needs_history_fetch = (
             int(snapshot.get("stored_bar_count", 0) or 0) < min_bars
@@ -185,8 +181,11 @@ class TradingServiceIntegrityMixin:
                 "attempted": symbol in repair_symbols,
                 "result": {
                     "source": source,
-                    "history_needed": bool((snapshots.get(symbol) or {}).get("needs_history_fetch")),
+                    "history_needed": bool((snapshots.get(symbol) or {}).get("needs_history_fetch"))
+                    or bool(((snapshots.get(symbol) or {}).get("derived_sync") or {}).get("missing_intervals"))
+                    or bool(((snapshots.get(symbol) or {}).get("derived_sync") or {}).get("stale_intervals")),
                     "pipeline_needed": bool((snapshots.get(symbol) or {}).get("needs_pipeline_repair")),
+                    "authoritative_source": "history_api",
                 },
             }
             for symbol in snapshots.keys()
@@ -228,49 +227,100 @@ class TradingServiceIntegrityMixin:
                 "per_symbol": per_symbol,
             }
 
+        intervals_by_symbol = {}
+        for symbol in repair_symbols:
+            snapshot = snapshots.get(symbol) or {}
+            intervals = []
+            if bool(snapshot.get("needs_history_fetch")):
+                intervals.append("5m")
+            derived_sync = snapshot.get("derived_sync") or {}
+            intervals.extend(str(item or "").strip() for item in (derived_sync.get("missing_intervals") or []))
+            intervals.extend(str(item or "").strip() for item in (derived_sync.get("stale_intervals") or []))
+            intervals = [interval for interval in dict.fromkeys(intervals) if interval]
+            if intervals:
+                intervals_by_symbol[symbol] = intervals
+                per_symbol[symbol]["result"]["api_repair_intervals"] = intervals
+
         backfill_result = {}
         unresolved_history = []
-        conid_map = self.conid_resolver.resolve_bulk(history_symbols) if history_symbols else {}
-        if history_symbols:
-            unresolved_history = [symbol for symbol in history_symbols if symbol not in conid_map]
+        api_repair_symbols = sorted(intervals_by_symbol.keys())
+        conid_map = self.conid_resolver.resolve_bulk(api_repair_symbols) if api_repair_symbols else {}
+        if api_repair_symbols:
+            unresolved_history = [symbol for symbol in api_repair_symbols if symbol not in conid_map]
             for symbol in unresolved_history:
                 per_symbol[symbol]["result"]["history_error"] = "conid_unresolved"
             if conid_map:
                 symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
-                effective_period_overrides = {
-                    symbol: dict((history_period_overrides or {}).get(symbol) or {})
-                    for symbol in conid_map.keys()
-                    if (history_period_overrides or {}).get(symbol)
-                }
-                backfill_result = self.data_backfill.backfill_all(
-                    conid_map,
-                    symbol_meta=symbol_meta,
-                    intervals=["5m"],
-                    repair_symbols=list(conid_map.keys()),
-                    period_overrides=effective_period_overrides,
+                all_intervals = sorted(
+                    {
+                        interval
+                        for symbol in conid_map.keys()
+                        for interval in intervals_by_symbol.get(symbol, [])
+                    },
+                    key=lambda value: ("5m", "15m", "30m", "1h", "4h", "1d").index(value)
+                    if value in ("5m", "15m", "30m", "1h", "4h", "1d") else 99,
                 )
+                for interval in all_intervals:
+                    interval_symbols = [
+                        symbol for symbol in conid_map.keys()
+                        if interval in intervals_by_symbol.get(symbol, [])
+                    ]
+                    if not interval_symbols:
+                        continue
+                    interval_conids = {symbol: int(conid_map[symbol]) for symbol in interval_symbols}
+                    effective_period_overrides = {
+                        symbol: {interval: str(((history_period_overrides or {}).get(symbol) or {}).get(interval) or "")}
+                        for symbol in interval_symbols
+                        if str(((history_period_overrides or {}).get(symbol) or {}).get(interval) or "").strip()
+                    }
+                    result = self.data_backfill.backfill_all(
+                        interval_conids,
+                        symbol_meta={symbol: symbol_meta.get(symbol, {}) for symbol in interval_symbols},
+                        intervals=[interval],
+                        repair_symbols=interval_symbols,
+                        period_overrides=effective_period_overrides,
+                    )
+                    for symbol, payload in (result or {}).items():
+                        backfill_result.setdefault(symbol, {}).update(payload or {})
                 self.data_writer.flush()
                 self._last_history_repair_at = time.time()
                 self._last_history_repair_symbols = sorted(conid_map.keys())
                 for symbol in conid_map.keys():
-                    per_symbol[symbol]["result"]["history_written"] = int(
-                        ((backfill_result.get(symbol) or {}).get("5m", 0) or 0)
+                    per_symbol[symbol]["result"]["history_written"] = sum(
+                        int(count or 0) for count in (backfill_result.get(symbol) or {}).values()
                     )
-                    history_period = str(
-                        ((effective_period_overrides.get(symbol) or {}).get("5m") or "")
-                    ).strip()
-                    if history_period:
-                        per_symbol[symbol]["result"]["history_period"] = history_period
+                    per_symbol[symbol]["result"]["history_written_by_interval"] = dict(backfill_result.get(symbol) or {})
 
         pipeline_result = {
             "ok": True,
             "symbols": sorted(repair_symbols),
             "compute": {},
-            "rollup": {},
+            "rollup": {"written": 0, "diagnostic_only": True},
             "skipped": not run_pipeline_repair,
+            "authoritative_source": "history_api",
         }
-        if run_pipeline_repair:
-            pipeline_result = self._run_symbol_pipeline_repair(repair_symbols, source=source)
+        if run_pipeline_repair and api_repair_symbols:
+            try:
+                compute_result = self._trigger_realtime_compute(
+                    source="history_repair",
+                    symbols=api_repair_symbols,
+                    persist_signals=False,
+                    intervals=sorted(
+                        {
+                            interval
+                            for symbol in api_repair_symbols
+                            for interval in intervals_by_symbol.get(symbol, [])
+                        },
+                        key=lambda value: ("5m", "15m", "30m", "1h", "4h", "1d").index(value)
+                        if value in ("5m", "15m", "30m", "1h", "4h", "1d") else 99,
+                    ),
+                    rollup_intervals=[],
+                )
+                pipeline_result["compute"] = dict(compute_result or {})
+                pipeline_result["ok"] = bool((compute_result or {}).get("ok", True))
+            except Exception as exc:
+                pipeline_result["ok"] = False
+                pipeline_result["error"] = str(exc)
         pipeline_ok = bool(pipeline_result.get("ok", False))
         for symbol in repair_symbols:
             per_symbol[symbol]["result"]["pipeline_ok"] = pipeline_ok
@@ -283,7 +333,7 @@ class TradingServiceIntegrityMixin:
 
         return {
             "repair_symbols": sorted(repair_symbols),
-            "history_symbols": sorted(history_symbols),
+            "history_symbols": sorted(api_repair_symbols),
             "unresolved_history_symbols": sorted(unresolved_history),
             "per_symbol": per_symbol,
         }
@@ -537,19 +587,7 @@ class TradingServiceIntegrityMixin:
             latest_interval_ms = int((row or {}).get("bar_time_ms", 0) or 0)
             result["latest_interval_ms"][interval] = latest_interval_ms
 
-            current_bucket_ms = bucket_start_ms(latest_5m_ms, interval)
-            previous_source_row = self.pb.get_first_record(
-                "ibkr_bars",
-                filter=(
-                    f'symbol = "{normalized_symbol}" && '
-                    'interval = "5m" && '
-                    f'bar_time_ms < {int(current_bucket_ms)} && '
-                    f'{self._build_bar_environment_filter()}'
-                ),
-                sort="-bar_time_ms",
-            )
-            previous_source_ms = int((previous_source_row or {}).get("bar_time_ms", 0) or 0)
-            expected_closed_ms = bucket_start_ms(previous_source_ms, interval) if previous_source_ms > 0 else 0
+            expected_closed_ms = expected_closed_ms_from_latest_5m(latest_5m_ms, interval)
             result["expected_closed_ms"][interval] = expected_closed_ms
 
             if expected_closed_ms <= 0:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
+from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.timeframe_utils import interval_to_chart_tf, normalize_interval
 
 from ibkr_compute.api.chart.timeline.rows import (
@@ -187,6 +188,39 @@ def build_chart_timeline_payload(
         start_ms=start_ms,
         end_ms=effective_end_ms,
     )
+    chart_freshness = {}
+    repair_meta = {"queued": False, "status": "not_required"}
+    try:
+        planner = getattr(api_app, "bar_freshness_planner", None) or BarFreshnessPlanner(
+            getattr(api_app, "pb", None),
+            getattr(api_app, "cfg", None),
+            environment=runtime_environment,
+        )
+        chart_freshness = planner.plan_symbol(
+            normalized_symbol,
+            [normalized_interval],
+            environment=runtime_environment,
+            required_bars=0,
+        )
+        if bool(chart_freshness.get("needs_repair")):
+            coordinator = getattr(api_app, "bar_repair_coordinator", None)
+            if coordinator is not None and hasattr(coordinator, "enqueue_from_freshness"):
+                jobs = coordinator.enqueue_from_freshness(
+                    chart_freshness,
+                    priority="chart_active",
+                    trigger="chart_timeline",
+                )
+                repair_meta = {
+                    "queued": any(bool((job or {}).get("queued")) for job in jobs),
+                    "status": "queued" if jobs else "repairing",
+                    "jobs": jobs,
+                    "trigger": "chart_timeline",
+                }
+            else:
+                repair_meta = {"queued": False, "status": "planner_only", "trigger": "chart_timeline"}
+    except Exception as exc:
+        chart_freshness = {"status": "unknown", "error": str(exc), "symbol": normalized_symbol, "environment": runtime_environment}
+        repair_meta = {"queued": False, "status": "error", "error": str(exc)}
     if normalized_preview_bar:
         source = build_chart_source_window_from_rows(
             (source.get("source_rows") or []) + [normalized_preview_bar],
@@ -198,6 +232,17 @@ def build_chart_timeline_payload(
             "preview_bar": True,
             "preview_bar_time_ms": int(normalized_preview_bar.get("bar_time_ms", 0) or 0),
         }
+    source["meta"] = {
+        **(source.get("meta") or {}),
+        "freshness": chart_freshness,
+        "repair": repair_meta,
+        "progress": {
+            "status": "completed",
+            "phase": "timeline_ready",
+            "percent": 100,
+            "current_step": "bars_loaded_indicators_recomputed",
+        },
+    }
     return build_chart_timeline_payload_from_source(
         runtime_environment,
         normalized_symbol,

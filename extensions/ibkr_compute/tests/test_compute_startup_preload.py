@@ -122,6 +122,17 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             symbol, interval = raw_key.split("|", 1)
             return symbol, interval
 
+        def get_all_records(collection, **kwargs):
+            if collection != "ibkr_targets":
+                return []
+            text = str(kwargs.get("filter") or "")
+            if 'environment = "paper"' in text:
+                return [{"symbol": "TSLA", "environment": "paper", "status": "active"}]
+            return [
+                {"symbol": "AAPL", "environment": "live", "status": "active"},
+                {"symbol": "MSFT", "environment": "live", "status": "candidate"},
+            ]
+
         engines = {}
 
         def materialize_engines_from_storage(
@@ -157,7 +168,8 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             parse_compute_cursor_key=parse_compute_cursor_key,
             bootstrap_engine_state=lambda *args, **kwargs: 0,
             materialize_engines_from_storage=materialize_engines_from_storage,
-            pb=SimpleNamespace(get_all_records=lambda *args, **kwargs: []),
+            current_market_date=lambda: "2026-04-29",
+            pb=SimpleNamespace(get_all_records=get_all_records),
             engines=engines,
             DEFAULT_COMPUTE_ENVIRONMENTS=["live", "paper"],
             SUPPORTED_COMPUTE_ENVIRONMENTS=["live", "paper", "backtest"],
@@ -232,6 +244,11 @@ class ComputeStartupPreloadTest(unittest.TestCase):
             },
         }
 
+        def get_all_records(collection, **kwargs):
+            if collection == "ibkr_targets":
+                return [{"symbol": "AAPL", "environment": "live", "status": "active"}]
+            return []
+
         fake_app = SimpleNamespace(
             cfg=SimpleNamespace(refresh=lambda: None),
             refresh_symbol_metadata=lambda force=False: None,
@@ -244,7 +261,8 @@ class ComputeStartupPreloadTest(unittest.TestCase):
                 call_log.append(("materialize", environment, tuple(symbols), interval, hydrate_signal_state, persist_latest_indicator))
                 or {symbol: {"is_ready": True, "indicator_seeded": persist_latest_indicator} for symbol in symbols}
             ),
-            pb=SimpleNamespace(get_all_records=lambda *args, **kwargs: []),
+            current_market_date=lambda: "2026-04-29",
+            pb=SimpleNamespace(get_all_records=get_all_records),
             engines={},
             DEFAULT_COMPUTE_ENVIRONMENTS=["live"],
             SUPPORTED_COMPUTE_ENVIRONMENTS=["live", "paper", "backtest"],
@@ -456,6 +474,11 @@ class ComputeStartupPreloadTest(unittest.TestCase):
                     {"symbol": "AAPL", "environment": "live"},
                     {"symbol": "MSFT", "environment": "live"},
                 ]
+            if collection == "ibkr_targets":
+                return [
+                    {"symbol": "AAPL", "environment": "live", "status": "active"},
+                    {"symbol": "MSFT", "environment": "live", "status": "candidate"},
+                ]
             if collection == "ibkr_bars":
                 if "symbol =" in str(kwargs.get("filter") or ""):
                     return []
@@ -470,6 +493,7 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         fake_app = SimpleNamespace(
             cfg=FakeConfig(),
             refresh_symbol_metadata=lambda force=False: call_log.append(("metadata", force)),
+            current_market_date=lambda: "2026-04-29",
             refresh_daily_close_cache=lambda environments, force=False: call_log.append(("daily_close", tuple(environments), force)),
             load_persisted_compute_cursors=lambda environment: 0,
             collect_environment_cursor_map=lambda environment: {},
@@ -513,8 +537,10 @@ class ComputeStartupPreloadTest(unittest.TestCase):
         self.assertEqual(direct["results"]["live"]["intervals"]["1d"]["backfill_symbols_total"], 2)
         self.assertIn(("backfill_all", ("AAPL", "MSFT"), "4h", ("AAPL", "MSFT"), {"AAPL": {"4h": "120d"}, "MSFT": {"4h": "120d"}}), call_log)
         self.assertIn(("backfill_all", ("AAPL", "MSFT"), "1d", ("AAPL", "MSFT"), {"AAPL": {"1d": "2y"}, "MSFT": {"1d": "2y"}}), call_log)
-        self.assertIn(("materialize", "live", ("AAPL", "MSFT"), "4h", True, False), call_log)
-        self.assertIn(("materialize", "live", ("AAPL", "MSFT"), "1d", True, False), call_log)
+        self.assertIn(("materialize", "live", ("AAPL",), "4h", True, False), call_log)
+        self.assertIn(("materialize", "live", ("MSFT",), "4h", True, False), call_log)
+        self.assertIn(("materialize", "live", ("AAPL",), "1d", True, False), call_log)
+        self.assertIn(("materialize", "live", ("MSFT",), "1d", True, False), call_log)
 
 
 if __name__ == "__main__":

@@ -80,6 +80,13 @@ class TradingServiceRuntimeStatusMixin:
         realtime_quotes = self.realtime_quote_book.status()
         warmup_state = self._copy_warmup_state()
         daily_scan_state = self._copy_daily_scan_state()
+        bar_repair_queue = {}
+        coordinator = getattr(self, "bar_repair_coordinator", None)
+        if coordinator is not None and hasattr(coordinator, "status"):
+            try:
+                bar_repair_queue = coordinator.status()
+            except Exception as exc:
+                bar_repair_queue = {"ok": False, "error": str(exc), "pending": 0, "inflight": 0, "failed": 0}
         scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
         market_ws_symbols = self._market_ws_symbols()
         blocking_canonical_pending_symbols = self._non_monitor_pending_symbols(
@@ -146,6 +153,7 @@ class TradingServiceRuntimeStatusMixin:
             "realtime_quotes": realtime_quotes,
             "canonical_5m": official_5m,
             "direct_history_topup": direct_history_topup,
+            "bar_repair_queue": bar_repair_queue,
             "data_writer": self.data_writer.status(),
             "data_backfill": self.data_backfill.status(),
             "data_retention": self.data_retention.status(),

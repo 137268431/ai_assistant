@@ -1,0 +1,173 @@
+import sys
+import unittest
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+from zoneinfo import ZoneInfo
+
+SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
+from ibkr_compute.workflows import daily_scanner as daily_scanner_mod
+from ibkr_compute.workflows.daily_scanner import DailyScanner, REJECTION_BUCKET_DATA_INCOMPLETE
+
+
+ET = ZoneInfo("America/New_York")
+
+
+def _ms(year, month, day, hour, minute):
+    return int(datetime(year, month, day, hour, minute, tzinfo=ET).timestamp() * 1000)
+
+
+class _FakePB:
+    def __init__(self, rows=None, watchlist=None, targets=None):
+        self.rows = list(rows or [])
+        self.watchlist = list(watchlist or [])
+        self.targets = list(targets or [])
+        self.upserts = []
+
+    def get_records(self, collection, **kwargs):
+        if collection == "watchlist":
+            return list(self.watchlist)
+        if collection == "ibkr_bars":
+            return self.get_all_records(collection, **kwargs)[: kwargs.get("per_page", 200)]
+        return []
+
+    def get_all_records(self, collection, **kwargs):
+        if collection == "ibkr_targets":
+            return list(self.targets)
+        if collection != "ibkr_bars":
+            return []
+        text = str(kwargs.get("filter") or "")
+        result = list(self.rows)
+        if 'symbol = "SPY"' in text:
+            result = [row for row in result if row.get("symbol") == "SPY"]
+        if 'interval = "5m"' in text:
+            result = [row for row in result if row.get("interval") == "5m"]
+        elif 'interval = "15m"' in text:
+            result = [row for row in result if row.get("interval") == "15m"]
+        return sorted(result, key=lambda row: int(row.get("bar_time_ms", 0)), reverse=str(kwargs.get("sort")) == "-bar_time_ms")
+
+    def upsert_scan(self, payload):
+        self.upserts.append(dict(payload))
+
+
+class _FakeEngine:
+    def is_ready(self):
+        return True
+
+    def get_snapshot(self):
+        return {"ema_bullish": True}
+
+
+class _FakeCfg:
+    def get_bool_for_environment(self, key, environment, default=False):
+        return key == "ibkr_daily_scan_data_completeness_enabled"
+
+    def get_for_environment(self, key, environment, default=None):
+        if key == "ibkr_daily_scan_data_completeness_intervals":
+            return "5m,15m"
+        return default
+
+
+class _FakePlanner:
+    def plan_symbol(self, symbol, intervals, environment="live", required_bars=0):
+        if symbol == "NVDA":
+            return {
+                "ok": True,
+                "environment": environment,
+                "symbol": symbol,
+                "status": "stale",
+                "needs_repair": True,
+                "needs_repair_intervals": ["15m"],
+                "intervals": {"15m": {"status": "stale", "expected_closed_ms": _ms(2026, 4, 29, 19, 45), "reason": "latest_stale"}},
+            }
+        return {
+            "ok": True,
+            "environment": environment,
+            "symbol": symbol,
+            "status": "ready",
+            "needs_repair": False,
+            "needs_repair_intervals": [],
+            "intervals": {},
+        }
+
+
+class _FakeRepair:
+    def __init__(self):
+        self.calls = []
+
+    def enqueue_from_freshness(self, freshness, priority="manual", trigger="manual"):
+        self.calls.append((freshness["symbol"], priority, trigger))
+        return [{"queued": True, "job": {"symbol": freshness["symbol"], "priority": priority, "trigger": trigger}}]
+
+
+class BarFreshnessAndScanRepairTest(unittest.TestCase):
+    def test_high_interval_stale_even_when_source_5m_has_afterhours(self):
+        rows = [
+            {"symbol": "SPY", "interval": "5m", "environment": "live", "bar_time_ms": _ms(2026, 4, 29, 19, 55), "extra": {"conid": 756733}},
+            {"symbol": "SPY", "interval": "15m", "environment": "live", "bar_time_ms": _ms(2026, 4, 29, 11, 30)},
+        ]
+        planner = BarFreshnessPlanner(_FakePB(rows=rows), environment="live")
+
+        payload = planner.plan_symbol("SPY", ["15m"], environment="live", now_ms=_ms(2026, 4, 29, 20, 5))
+
+        interval = payload["intervals"]["15m"]
+        self.assertEqual(interval["status"], "stale")
+        self.assertTrue(payload["needs_repair"])
+        self.assertEqual(interval["expected_closed_ms"], _ms(2026, 4, 29, 19, 45))
+
+    def test_daily_scan_excludes_incomplete_symbol_and_enqueues_repair(self):
+        repair = _FakeRepair()
+        api_app = SimpleNamespace(
+            cfg=_FakeCfg(),
+            bar_freshness_planner=_FakePlanner(),
+            bar_repair_coordinator=repair,
+        )
+        pb = _FakePB(
+            watchlist=[
+                {"symbol": "AAPL", "environment": "live", "symbol_role": "trade"},
+                {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
+            ]
+        )
+        engines = {
+            ("live", "AAPL", "5m"): _FakeEngine(),
+            ("live", "NVDA", "5m"): _FakeEngine(),
+        }
+        with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
+            scanner = DailyScanner(pb_client=pb, engines=engines)
+        scanner.api_app = api_app
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.5,
+                "day_change_pct": 2.0,
+            }
+            for symbol in symbols
+        }
+
+        with mock.patch.object(daily_scanner_mod, "_load_scan_settings", return_value={
+            "scan_time_et": "09:20",
+            "min_avg_10d_volume": 100000,
+            "min_premarket_volume": 5000,
+            "min_atr_pct": 0.15,
+            "min_abs_day_change_pct": 1.0,
+            "monitor_count": 0,
+            "target_subscription_limit": 80,
+            "total_subscription_limit": 80,
+            "trade_subscription_budget": 80,
+        }):
+            result = scanner.run_scan("2026-04-29", environments=["live"])
+
+        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL"])
+        self.assertEqual(result["excluded_incomplete_count"], 1)
+        self.assertEqual(result["rejection_summary"][REJECTION_BUCKET_DATA_INCOMPLETE], 1)
+        self.assertEqual(repair.calls, [("NVDA", "daily_scan", "daily_scan_data_completeness")])
+
+
+if __name__ == "__main__":
+    unittest.main()

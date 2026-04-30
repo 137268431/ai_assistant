@@ -10,6 +10,7 @@ import traceback
 from datetime import datetime, timezone
 
 from ibkr_compute.api.service_topology import get_runtime_mode, get_service_profile
+from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.timeframe_utils import normalize_interval
 
 
@@ -430,6 +431,29 @@ def _collect_preload_interval_targets(api_app, environment: str, intervals: list
     return ordered_groups
 
 
+def _filter_preload_interval_targets(
+    interval_targets: dict[str, dict[str, int]],
+    symbols: list[str] | tuple[str, ...] | set[str],
+) -> dict[str, dict[str, int]]:
+    allowed = {
+        str(symbol or "").strip().upper()
+        for symbol in (symbols or [])
+        if str(symbol or "").strip()
+    }
+    if not allowed:
+        return {}
+    filtered: dict[str, dict[str, int]] = {}
+    for interval, targets in (interval_targets or {}).items():
+        kept = {
+            str(symbol or "").strip().upper(): int(target_ms or 0)
+            for symbol, target_ms in (targets or {}).items()
+            if str(symbol or "").strip().upper() in allowed and int(target_ms or 0) > 0
+        }
+        if kept:
+            filtered[interval] = {symbol: kept[symbol] for symbol in sorted(kept)}
+    return filtered
+
+
 def _resolve_preload_watchlist_symbols(api_app, environment: str) -> list[str]:
     try:
         runtime_environment = str(environment or "live").strip().lower() or "live"
@@ -471,6 +495,66 @@ def _resolve_preload_watchlist_symbols(api_app, environment: str) -> list[str]:
             if str(symbol or "").strip()
         }
     )
+
+
+def _resolve_startup_direct_core_symbols(api_app, environment: str) -> list[str]:
+    """Limit startup API pulls to trade targets + monitor symbols.
+
+    Full watchlist freshness can be repaired asynchronously later; startup direct
+    backfill must stay conservative to avoid IBKR pacing pressure.
+    """
+
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    symbols: set[str] = set()
+    pb = getattr(api_app, "pb", None)
+    if pb is not None and hasattr(pb, "get_all_records"):
+        try:
+            market_date = api_app.current_market_date() if hasattr(api_app, "current_market_date") else ""
+            if market_date:
+                rows = pb.get_all_records(
+                    "ibkr_targets",
+                    filter=(
+                        f'date = "{_pb_filter_escape(market_date)}" && '
+                        f'environment = "{_pb_filter_escape(runtime_environment)}" && '
+                        '(status = "active" || status = "candidate")'
+                    ),
+                    max_pages=10,
+                )
+                symbols.update(
+                    str((row or {}).get("symbol") or "").strip().upper()
+                    for row in rows or []
+                    if str((row or {}).get("symbol") or "").strip()
+                )
+        except Exception:
+            LOGGER.debug("Startup direct target symbols unavailable", exc_info=True)
+
+        try:
+            rows = pb.get_all_records(
+                "watchlist",
+                filter=(
+                    f'(environment = "{_pb_filter_escape(runtime_environment)}" '
+                    '|| environment = "global" '
+                    '|| environment = "") && '
+                    'symbol_role = "market_monitor"'
+                ),
+                sort="-updated",
+                max_pages=10,
+            )
+            symbols.update(
+                str((row or {}).get("symbol") or "").strip().upper()
+                for row in rows or []
+                if str((row or {}).get("symbol") or "").strip()
+            )
+        except Exception:
+            LOGGER.debug("Startup direct monitor symbols unavailable", exc_info=True)
+
+    if not symbols:
+        try:
+            raw = str(api_app.cfg.get_for_environment("ibkr_market_ws_symbols", runtime_environment, "SPY,QQQ,VIX") or "")
+        except Exception:
+            raw = "SPY,QQQ,VIX"
+        symbols.update(str(item or "").strip().upper() for item in raw.split(",") if str(item or "").strip())
+    return sorted(symbols)
 
 
 def _pb_filter_escape(value: str) -> str:
@@ -520,6 +604,53 @@ def _count_stored_bars_for_startup_direct_backfill(
             exc,
         )
         return 0
+
+
+def _startup_direct_backfill_freshness_plan(
+    api_app,
+    environment: str,
+    symbol: str,
+    interval: str,
+    required_bars: int,
+) -> dict:
+    pb = getattr(api_app, "pb", None)
+    if pb is None:
+        return {"status": "missing", "needs_repair": True, "stored_count": 0, "reason": "pb_unavailable"}
+    try:
+        planner = BarFreshnessPlanner(pb, getattr(api_app, "cfg", None), environment=environment)
+        payload = planner.plan_symbol(
+            symbol,
+            [interval],
+            environment=environment,
+            required_bars=required_bars,
+        )
+        interval_payload = (payload.get("intervals") or {}).get(normalize_interval(interval)) or {}
+        return {
+            **interval_payload,
+            "conid": int(payload.get("conid", 0) or 0),
+            "aggregate_status": str(payload.get("status") or ""),
+        }
+    except Exception as exc:
+        LOGGER.warning(
+            "Startup direct backfill freshness planning failed: env=%s interval=%s symbol=%s error=%s",
+            environment,
+            interval,
+            symbol,
+            exc,
+        )
+        stored_count = _count_stored_bars_for_startup_direct_backfill(
+            api_app,
+            environment,
+            symbol,
+            interval,
+            required_bars,
+        )
+        return {
+            "status": "ready" if stored_count >= required_bars else "missing",
+            "needs_repair": stored_count < required_bars,
+            "stored_count": stored_count,
+            "reason": "fallback_count",
+        }
 
 
 def _extract_conid_from_bar_row(row: dict | None) -> int:
@@ -777,6 +908,9 @@ def _run_startup_direct_backfill_environment(
             "symbol_count": len(normalized_symbols),
             "symbol_completed": 0,
             "backfill_symbols_total": 0,
+            "freshness_status_counts": {},
+            "stale_symbols": [],
+            "missing_symbols": [],
             "written": 0,
             "ready_count": 0,
             "indicator_seeded": 0,
@@ -791,15 +925,25 @@ def _run_startup_direct_backfill_environment(
         env_state["intervals"][normalized_interval] = interval_state
         targets = []
         for symbol in normalized_symbols:
-            stored_count = _count_stored_bars_for_startup_direct_backfill(
+            freshness = _startup_direct_backfill_freshness_plan(
                 api_app,
                 normalized_environment,
                 symbol,
                 normalized_interval,
                 required_bars,
-                planning_conid_map,
             )
-            if stored_count < required_bars:
+            conid = int(freshness.get("conid", 0) or 0)
+            if conid > 0 and symbol not in planning_conid_map:
+                planning_conid_map[symbol] = conid
+            freshness_status = str(freshness.get("status") or "unknown")
+            interval_state["freshness_status_counts"][freshness_status] = int(
+                interval_state["freshness_status_counts"].get(freshness_status, 0) or 0
+            ) + 1
+            if freshness_status == "stale":
+                interval_state["stale_symbols"].append(symbol)
+            elif freshness_status in {"missing", "gap", "failed", "unknown"}:
+                interval_state["missing_symbols"].append(symbol)
+            if bool(freshness.get("needs_repair")):
                 targets.append(symbol)
         interval_targets[normalized_interval] = targets
         interval_state["backfill_symbols_total"] = len(targets)
@@ -926,32 +1070,41 @@ def _run_startup_direct_backfill_environment(
                 continue
             if written <= 0:
                 interval_state["reason"] = "no_bars_written"
-                interval_state["symbol_completed"] = len(target_symbols)
+                interval_state["symbol_completed"] = len(normalized_symbols)
                 interval_state["status"] = "completed"
-                env_state["symbol_completed"] += len(target_symbols)
-                direct_state["symbol_completed"] += len(target_symbols)
+                env_state["symbol_completed"] += len(normalized_symbols)
+                direct_state["symbol_completed"] += len(normalized_symbols)
                 _publish_startup_preload_state(api_app, summary)
                 continue
 
             materialize_symbols = target_symbols
             interval_state["status"] = "materializing"
-            interval_state["symbol_count"] = len(materialize_symbols)
+            already_ready_count = max(0, len(normalized_symbols) - len(materialize_symbols))
+            interval_state["symbol_completed"] = already_ready_count
+            env_state["symbol_completed"] += already_ready_count
+            direct_state["symbol_completed"] += already_ready_count
             _publish_startup_preload_state(api_app, summary)
-            ready_count, indicator_seeded = _materialize_startup_direct_interval(
-                api_app,
-                normalized_environment,
-                materialize_symbols,
-                normalized_interval,
-            )
-            interval_state["ready_count"] = ready_count
-            interval_state["indicator_seeded"] = indicator_seeded
-            interval_state["symbol_completed"] = len(materialize_symbols)
+            ready_count = 0
+            indicator_seeded = 0
+            for symbol in materialize_symbols:
+                symbol_ready, symbol_seeded = _materialize_startup_direct_interval(
+                    api_app,
+                    normalized_environment,
+                    [symbol],
+                    normalized_interval,
+                )
+                ready_count += symbol_ready
+                indicator_seeded += symbol_seeded
+                interval_state["ready_count"] = ready_count
+                interval_state["indicator_seeded"] = indicator_seeded
+                interval_state["symbol_completed"] += 1
+                env_state["symbol_completed"] += 1
+                env_state["ready_count"] += symbol_ready
+                env_state["indicator_seeded"] += symbol_seeded
+                direct_state["symbol_completed"] += 1
+                direct_state["ready_count"] += symbol_ready
+                _publish_startup_preload_state(api_app, summary)
             interval_state["status"] = "completed"
-            env_state["symbol_completed"] += len(materialize_symbols)
-            env_state["ready_count"] += ready_count
-            env_state["indicator_seeded"] += indicator_seeded
-            direct_state["symbol_completed"] += len(materialize_symbols)
-            direct_state["ready_count"] += ready_count
             _publish_startup_preload_state(api_app, summary)
     except Exception as exc:
         LOGGER.exception("Startup direct backfill failed: env=%s", normalized_environment)
@@ -1166,12 +1319,20 @@ def run_compute_startup_preload(api_app=None) -> dict:
     try:
         for environment in environments:
             cursor_applied = int(api_app.load_persisted_compute_cursors(environment) or 0)
-            interval_targets = _collect_preload_interval_targets(api_app, environment, preload_intervals)
+            all_interval_targets = _collect_preload_interval_targets(api_app, environment, preload_intervals)
+            direct_symbols = _resolve_startup_direct_core_symbols(api_app, environment)
+            interval_targets = _filter_preload_interval_targets(all_interval_targets, direct_symbols)
             cursor_count = len(api_app.collect_environment_cursor_map(environment) or {})
+            full_cursor_symbol_total = sum(len(targets or {}) for targets in all_interval_targets.values())
             env_result = {
                 "status": "running",
+                "preload_scope": "core_symbols",
+                "core_symbols": list(direct_symbols),
+                "core_symbol_count": len(direct_symbols),
                 "cursor_applied": cursor_applied,
                 "cursor_count": cursor_count,
+                "full_cursor_symbol_total": full_cursor_symbol_total,
+                "full_cursor_interval_total": len(all_interval_targets),
                 "interval_total": len(interval_targets),
                 "interval_completed": 0,
                 "symbol_total": sum(len(targets or {}) for targets in interval_targets.values()),
@@ -1199,14 +1360,6 @@ def run_compute_startup_preload(api_app=None) -> dict:
                 len(interval_targets),
             )
 
-            watchlist_symbols = _resolve_preload_watchlist_symbols(api_app, environment)
-            direct_symbols = sorted(
-                set(watchlist_symbols).union(
-                    symbol
-                    for targets in interval_targets.values()
-                    for symbol in (targets or {}).keys()
-                )
-            )
             _run_startup_direct_backfill_environment(
                 api_app,
                 summary,
@@ -1216,7 +1369,7 @@ def run_compute_startup_preload(api_app=None) -> dict:
 
             fallback_symbols = [
                 symbol
-                for symbol in watchlist_symbols
+                for symbol in direct_symbols
                 if symbol not in set((interval_targets.get("5m") or {}).keys())
             ] if "5m" in preload_intervals else []
             if fallback_symbols:

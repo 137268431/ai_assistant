@@ -43,6 +43,19 @@ def build_history_rebuild_status_response():
     return jsonify(app_mod.history_rebuild_manager.status(environment))
 
 
+def build_bar_repair_status_response():
+    app_mod = get_app_module()
+    coordinator = getattr(app_mod, "bar_repair_coordinator", None)
+    if coordinator is None or not hasattr(coordinator, "status"):
+        return jsonify({"ok": True, "available": False, "pending": 0, "inflight": 0, "failed": 0})
+    try:
+        payload = coordinator.status(include_jobs=coerce_request_bool(get_query_arg_text("full", ""), False))
+        payload["available"] = True
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({"ok": False, "available": True, "error": str(exc)}), 500
+
+
 def build_retention_cleanup_response():
     app_mod = get_app_module()
     app_mod.cfg.refresh()

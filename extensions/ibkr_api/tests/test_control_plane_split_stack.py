@@ -315,6 +315,8 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertNotIn("signal/confirm", payload["compatibility"]["delegated_pocketbase_webhook_routes"])
         self.assertNotIn("signal/cancel", payload["compatibility"]["delegated_pocketbase_webhook_routes"])
         self.assertIn("ibkr/account", payload["compatibility"]["direct_proxy_routes"])
+        self.assertIn("ibkr/bar-repair/status", payload["compatibility"]["direct_proxy_routes"])
+        self.assertIn("bar_repair/status", payload["compatibility"]["proxy_action_routes"])
         self.assertNotIn("ibkr/account_snapshot", payload["compatibility"]["direct_proxy_routes"])
         self.assertIn("system/cronz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/event", payload["compatibility"]["native_custom_routes"])
